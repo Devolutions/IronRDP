@@ -13,8 +13,8 @@ import type { ResizeEvent } from '../interfaces/ResizeEvent';
 import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
 import type { SessionEvent, IronErrorKind, IronError } from '../interfaces/session-event';
-import type { ClipboardTransaction } from '../interfaces/ClipboardTransaction';
-import type { ClipboardContent } from '../interfaces/ClipboardContent';
+import type { ClipboardData } from '../interfaces/ClipboardData';
+import type { ClipboardItem } from '../interfaces/ClipboardItem';
 import type { Session } from '../interfaces/Session';
 import type { DeviceEvent } from '../interfaces/DeviceEvent';
 import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
@@ -22,7 +22,7 @@ import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
 import { ConfigBuilder } from './ConfigBuilder';
 import type { Config } from './Config';
 
-type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
+type OnRemoteClipboardChanged = (data: ClipboardData) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
 
@@ -65,16 +65,8 @@ export class RemoteDesktopService {
         loggingService.info('Web bridge initialized.');
     }
 
-    constructClipboardTransaction(): ClipboardTransaction {
-        return this.module.ClipboardTransaction.init();
-    }
-
-    constructClipboardContentFromText(mime_type: string, text: string): ClipboardContent {
-        return this.module.ClipboardContent.new_text(mime_type, text);
-    }
-
-    constructClipboardContentFromBinary(mime_type: string, binary: Uint8Array): ClipboardContent {
-        return this.module.ClipboardContent.new_binary(mime_type, binary);
+    createClipboardData(): ClipboardData {
+        return this.module.ClipboardData.init();
     }
 
     async init(debug: LogType) {
@@ -273,16 +265,16 @@ export class RemoteDesktopService {
 
     /// Triggered by the browser when local clipboard is updated. Clipboard backend should
     /// cache the content and send it to the server when it is requested.
-    onClipboardChanged(transaction: ClipboardTransaction): Promise<void> {
+    onClipboardChanged(data: ClipboardData): Promise<void> {
         const onClipboardChangedPromise = async () => {
-            await this.session?.on_clipboard_paste(transaction);
+            await this.session?.on_clipboard_paste(data);
         };
         return onClipboardChangedPromise();
     }
 
     onClipboardChangedEmpty(): Promise<void> {
         const onClipboardChangedPromise = async () => {
-            await this.session?.on_clipboard_paste(this.module.ClipboardTransaction.init());
+            await this.session?.on_clipboard_paste(this.module.ClipboardData.init());
         };
         return onClipboardChangedPromise();
     }

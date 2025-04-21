@@ -5,8 +5,8 @@ import type { IronError } from './session-event';
 import type { Session } from './Session';
 import type { SessionBuilder } from './SessionBuilder';
 import type { SessionTerminationInfo } from './SessionTerminationInfo';
-import type { ClipboardTransaction } from './ClipboardTransaction';
-import type { ClipboardContent } from './ClipboardContent';
+import type { ClipboardData } from './ClipboardData';
+import type { ClipboardItem } from './ClipboardItem';
 
 export interface RemoteDesktopModule {
     init: () => Promise<unknown>;
@@ -18,6 +18,6 @@ export interface RemoteDesktopModule {
     Session: Session;
     SessionBuilder: SessionBuilder;
     SessionTerminationInfo: SessionTerminationInfo;
-    ClipboardTransaction: ClipboardTransaction;
-    ClipboardContent: ClipboardContent;
+    ClipboardData: ClipboardData;
+    ClipboardItem: ClipboardItem;
 }

@@ -35,7 +35,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::canvas::Canvas;
 use crate::clipboard;
-use crate::clipboard::{RdpClipboardTransaction, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
+use crate::clipboard::{ClipboardData, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
 use crate::error::IronError;
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
@@ -433,7 +433,7 @@ impl Session {
 impl iron_remote_desktop::Session for Session {
     type SessionTerminationInfo = SessionTerminationInfo;
     type InputTransaction = InputTransaction;
-    type ClipboardTransaction = RdpClipboardTransaction;
+    type ClipboardTransaction = ClipboardData;
     type Error = IronError;
 
     async fn run(&self) -> Result<Self::SessionTerminationInfo, Self::Error> {

@@ -1,7 +1,7 @@
 use wasm_bindgen::JsValue;
 use web_sys::{js_sys, HtmlCanvasElement};
 
-use crate::clipboard::ClipboardTransaction;
+use crate::clipboard::ClipboardData;
 use crate::error::IronError;
 use crate::input::InputTransaction;
 use crate::{DesktopSize, Extension};
@@ -46,7 +46,7 @@ pub trait SessionBuilder {
 pub trait Session {
     type SessionTerminationInfo: SessionTerminationInfo;
     type InputTransaction: InputTransaction;
-    type ClipboardTransaction: ClipboardTransaction;
+    type ClipboardTransaction: ClipboardData;
     type Error: IronError;
 
     fn run(&self) -> impl core::future::Future<Output = Result<Self::SessionTerminationInfo, Self::Error>>;

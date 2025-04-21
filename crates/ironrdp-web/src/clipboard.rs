@@ -11,12 +11,9 @@
 //! requested: when pasting into notepad, which does not support "text/html", "text/plain"
 //! will be requested, and when pasting into WordPad, "text/html" will be requested.
 
-mod transaction;
-
 use std::collections::HashMap;
 
 use futures_channel::mpsc;
-use iron_remote_desktop::{ClipboardContent as _, ClipboardTransaction as _};
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackend};
 use ironrdp::cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest,
@@ -25,13 +22,9 @@ use ironrdp::cliprdr::pdu::{
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html};
 use ironrdp_core::{impl_as_any, IntoOwned};
-use transaction::ClipboardContentValue;
 use wasm_bindgen::prelude::*;
 
 use crate::session::RdpInputEvent;
-
-#[rustfmt::skip]
-pub(crate) use transaction::{RdpClipboardTransaction, RdpClipboardContent};
 
 const MIME_TEXT: &str = "text/plain";
 const MIME_HTML: &str = "text/html";
@@ -104,7 +97,7 @@ impl WasmClipboardMessageProxy {
 /// Messages sent by the JS code or CLIPRDR to the backend implementation.
 #[derive(Debug)]
 pub(crate) enum WasmClipboardBackendMessage {
-    LocalClipboardChanged(RdpClipboardTransaction),
+    LocalClipboardChanged(ClipboardData),
     RemoteDataRequest(ClipboardFormatId),
 
     RemoteClipboardChanged(Vec<ClipboardFormat>),
@@ -117,8 +110,8 @@ pub(crate) enum WasmClipboardBackendMessage {
 /// Clipboard backend implementation for web. This object should be created once per session and
 /// kept alive until session is terminated.
 pub(crate) struct WasmClipboard {
-    local_clipboard: Option<RdpClipboardTransaction>,
-    remote_clipboard: RdpClipboardTransaction,
+    local_clipboard: Option<ClipboardData>,
+    remote_clipboard: ClipboardData,
 
     remote_mapping: HashMap<ClipboardFormatId, String>,
     remote_formats_to_read: Vec<ClipboardFormatId>,
@@ -138,7 +131,7 @@ impl WasmClipboard {
     pub(crate) fn new(message_proxy: WasmClipboardMessageProxy, js_callbacks: JsClipboardCallbacks) -> Self {
         Self {
             local_clipboard: None,
-            remote_clipboard: RdpClipboardTransaction::init(),
+            remote_clipboard: ClipboardData::new(),
             proxy: message_proxy,
             js_callbacks,
 
@@ -154,13 +147,10 @@ impl WasmClipboard {
         }
     }
 
-    fn handle_local_clipboard_changed(
-        &mut self,
-        transaction: RdpClipboardTransaction,
-    ) -> anyhow::Result<Vec<ClipboardFormat>> {
+    fn handle_local_clipboard_changed(&mut self, transaction: ClipboardData) -> anyhow::Result<Vec<ClipboardFormat>> {
         let mut formats = Vec::new();
-        transaction.contents().iter().for_each(|content| {
-            match content.mime_type() {
+        transaction.items().iter().for_each(|content| {
+            match content.mime_type.as_str() {
                 MIME_TEXT => formats.push(ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)),
                 MIME_HTML => {
                     formats.extend([
@@ -204,15 +194,15 @@ impl WasmClipboard {
 
         let find_content_by_mime = |mime: &str| {
             transaction
-                .contents()
+                .items()
                 .iter()
-                .find(|content| content.mime_type() == mime)
+                .find(|content| content.mime_type.as_str() == mime)
         };
 
         let find_text_content_by_mime = |mime: &str| {
             find_content_by_mime(mime)
                 .and_then(|content| {
-                    if let ClipboardContentValue::Text(text) = content.value() {
+                    if let ClipboardItemValue::Text(text) = &content.value {
                         Some(text.as_str())
                     } else {
                         None
@@ -224,7 +214,7 @@ impl WasmClipboard {
         let find_binary_content_by_mime = |mime: &str| {
             find_content_by_mime(mime)
                 .and_then(|content| {
-                    if let ClipboardContentValue::Binary(binary) = content.value() {
+                    if let ClipboardItemValue::Binary(binary) = &content.value {
                         Some(binary.as_slice())
                     } else {
                         None
@@ -372,21 +362,21 @@ impl WasmClipboard {
 
         let content = match pending_format {
             ClipboardFormatId::CF_UNICODETEXT => match response.to_unicode_string() {
-                Ok(text) => Some(RdpClipboardContent::new_text(MIME_TEXT, &text)),
+                Ok(text) => Some(ClipboardItem::new_text(MIME_TEXT, text)),
                 Err(err) => {
                     error!("CF_UNICODETEXT decode error: {}", err);
                     None
                 }
             },
             ClipboardFormatId::CF_DIB => match dib_to_png(response.data()) {
-                Ok(png) => Some(RdpClipboardContent::new_binary(MIME_PNG, &png)),
+                Ok(png) => Some(ClipboardItem::new_binary(MIME_PNG, png)),
                 Err(err) => {
                     warn!("DIB decode error: {}", err);
                     None
                 }
             },
             ClipboardFormatId::CF_DIBV5 => match dibv5_to_png(response.data()) {
-                Ok(png) => Some(RdpClipboardContent::new_binary(MIME_PNG, &png)),
+                Ok(png) => Some(ClipboardItem::new_binary(MIME_PNG, png)),
                 Err(err) => {
                     warn!("DIBv5 decode error: {}", err);
                     None
@@ -394,23 +384,24 @@ impl WasmClipboard {
             },
             registered => {
                 let format_name = self.remote_mapping.get(&registered).map(|s| s.as_str());
+
                 match format_name {
                     Some(FORMAT_WIN_HTML_NAME) => match cf_html_to_plain_html(response.data()) {
-                        Ok(text) => Some(RdpClipboardContent::new_text(MIME_HTML, text)),
+                        Ok(text) => Some(ClipboardItem::new_text(MIME_HTML, text.to_owned())),
                         Err(err) => {
                             warn!("CF_HTML decode error: {}", err);
                             None
                         }
                     },
                     Some(FORMAT_MIME_HTML_NAME) => match response.to_string() {
-                        Ok(text) => Some(RdpClipboardContent::new_text(MIME_HTML, &text)),
+                        Ok(text) => Some(ClipboardItem::new_text(MIME_HTML, text)),
                         Err(err) => {
                             warn!("text/html decode error: {}", err);
                             None
                         }
                     },
                     Some(FORMAT_MIME_PNG_NAME) | Some(FORMAT_PNG_NAME) => {
-                        Some(RdpClipboardContent::new_binary(MIME_PNG, response.data()))
+                        Some(ClipboardItem::new_binary(MIME_PNG, response.data().to_owned()))
                     }
                     _ => {
                         // Not supported format
@@ -421,7 +412,7 @@ impl WasmClipboard {
         };
 
         if let Some(content) = content {
-            self.remote_clipboard.add_content(content);
+            self.remote_clipboard.add(content);
         }
 
         if let Some(format) = self.remote_formats_to_read.last() {
@@ -429,16 +420,20 @@ impl WasmClipboard {
             self.proxy
                 .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(*format));
         } else {
-            // All formats were read, send clipboard to JS
-            let transaction = core::mem::take(&mut self.remote_clipboard);
-            if transaction.is_empty() {
+            // All formats were read, send clipboard to JS.
+            let clipboard_data = core::mem::take(&mut self.remote_clipboard);
+
+            if clipboard_data.is_empty() {
                 return Ok(());
             }
 
-            // Set clipboard when all formats were read
+            // Set clipboard when all formats were read.
             self.js_callbacks
                 .on_remote_clipboard_changed
-                .call1(&JsValue::NULL, &JsValue::from(transaction))
+                .call1(
+                    &JsValue::NULL,
+                    &JsValue::from(crate::__wasm_ffi::ClipboardData::from(clipboard_data)),
+                )
                 .expect("failed to call JS callback");
         }
 
@@ -454,18 +449,18 @@ impl WasmClipboard {
                         self.proxy
                             .send_cliprdr_message(ClipboardMessage::SendInitiateCopy(formats));
                     }
-                    Err(err) => {
-                        // Not a critical error, we could skip single clipboard update
-                        error!("Failed to handle local clipboard change: {}", err);
+                    Err(e) => {
+                        // Not a critical error, we could skip single clipboard update.
+                        error!(error = format!("{e:#}"), "Failed to handle local clipboard change");
                     }
                 }
             }
             WasmClipboardBackendMessage::RemoteDataRequest(format) => {
                 let message = match self.process_remote_data_request(format) {
                     Ok(message) => message,
-                    Err(err) => {
-                        // Not a critical error, but we should notify remote about error
-                        error!("Failed to process remote data request: {}", err);
+                    Err(e) => {
+                        // Not a critical error, but we should notify remote about it.
+                        error!(error = format!("{e:#}"), "Failed to process remote data request");
                         FormatDataResponse::new_error()
                     }
                 };
@@ -483,32 +478,31 @@ impl WasmClipboard {
                     Ok(None) => {
                         // No formats to query
                     }
-                    Err(err) => {
-                        error!("Failed to process remote clipboard change: {}", err);
+                    Err(e) => {
+                        error!(error = format!("{e:#}"), "Failed to process remote clipboard change");
                     }
                 }
             }
             WasmClipboardBackendMessage::RemoteDataResponse(formats) => {
                 match self.process_remote_data_response(formats) {
                     Ok(()) => {}
-                    Err(err) => {
-                        error!("Failed to process remote data response: {}", err);
+                    Err(e) => {
+                        error!(error = format!("{e:#}"), "Failed to process remote data response");
                     }
                 }
             }
             WasmClipboardBackendMessage::FormatListReceived => {
                 if let Some(callback) = self.js_callbacks.on_remote_received_format_list.as_mut() {
-                    callback.call0(&JsValue::NULL).expect("Failed to call JS callback");
+                    callback.call0(&JsValue::NULL).expect("failed to call JS callback");
                 }
             }
             WasmClipboardBackendMessage::ForceClipboardUpdate => {
                 if let Some(callback) = self.js_callbacks.on_force_clipboard_update.as_mut() {
-                    callback.call0(&JsValue::NULL).expect("Failed to call JS callback");
+                    callback.call0(&JsValue::NULL).expect("failed to call JS callback");
                 } else {
                     // If no initial clipboard callback was set, send empty format list instead
-                    return self.process_event(WasmClipboardBackendMessage::LocalClipboardChanged(
-                        RdpClipboardTransaction::init(),
-                    ));
+                    return self
+                        .process_event(WasmClipboardBackendMessage::LocalClipboardChanged(ClipboardData::new()));
                 }
             }
         };
@@ -585,5 +579,110 @@ impl CliprdrBackend for WasmClipboardBackend {
 
     fn on_unlock(&mut self, _data_id: LockDataId) {
         // File transfer not implemented yet
+    }
+}
+
+/// Object which represents complete clipboard transaction with multiple MIME types.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ClipboardData {
+    items: Vec<ClipboardItem>,
+}
+
+impl ClipboardData {
+    pub(crate) fn new() -> Self {
+        Self { items: Vec::new() }
+    }
+
+    pub(crate) fn add(&mut self, item: ClipboardItem) {
+        self.items.push(item);
+    }
+
+    pub(crate) fn items(&self) -> &[ClipboardItem] {
+        &self.items
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.items.clear();
+    }
+}
+
+impl iron_remote_desktop::ClipboardData for ClipboardData {
+    type Item = ClipboardItem;
+
+    fn init() -> Self {
+        Self::new()
+    }
+
+    fn add_text(&mut self, mime_type: &str, text: &str) {
+        self.items.push(ClipboardItem {
+            mime_type: mime_type.to_owned(),
+            value: ClipboardItemValue::Text(text.to_owned()),
+        })
+    }
+
+    fn add_binary(&mut self, mime_type: &str, binary: &[u8]) {
+        self.items.push(ClipboardItem {
+            mime_type: mime_type.to_owned(),
+            value: ClipboardItemValue::Binary(binary.to_owned()),
+        })
+    }
+
+    fn items(&self) -> &[Self::Item] {
+        &self.items
+    }
+}
+
+impl FromIterator<ClipboardItem> for ClipboardData {
+    fn from_iter<T: IntoIterator<Item = ClipboardItem>>(iter: T) -> Self {
+        Self {
+            items: iter.into_iter().collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ClipboardItemValue {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+/// Object which represents single clipboard format represented standard MIME type.
+#[derive(Debug, Clone)]
+pub(crate) struct ClipboardItem {
+    pub(crate) mime_type: String,
+    pub(crate) value: ClipboardItemValue,
+}
+
+impl ClipboardItem {
+    pub(crate) fn new_text(mime_type: impl Into<String>, text: String) -> Self {
+        Self {
+            mime_type: mime_type.into(),
+            value: ClipboardItemValue::Text(text),
+        }
+    }
+
+    pub(crate) fn new_binary(mime_type: impl Into<String>, payload: Vec<u8>) -> Self {
+        Self {
+            mime_type: mime_type.into(),
+            value: ClipboardItemValue::Binary(payload),
+        }
+    }
+}
+
+impl iron_remote_desktop::ClipboardItem for ClipboardItem {
+    fn mime_type(&self) -> &str {
+        &self.mime_type
+    }
+
+    #[allow(refining_impl_trait)]
+    fn value(&self) -> JsValue {
+        match &self.value {
+            ClipboardItemValue::Text(text) => JsValue::from_str(text),
+            ClipboardItemValue::Binary(binary) => JsValue::from(js_sys::Uint8Array::from(binary.as_slice())),
+        }
     }
 }

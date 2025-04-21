@@ -6,7 +6,7 @@ mod extension;
 mod input;
 mod session;
 
-pub use clipboard::{ClipboardContent, ClipboardTransaction};
+pub use clipboard::{ClipboardData, ClipboardItem};
 pub use cursor::CursorStyle;
 pub use desktop_size::DesktopSize;
 pub use error::{IronError, IronErrorKind};
@@ -20,8 +20,8 @@ pub trait RemoteDesktopApi {
     type SessionTerminationInfo: SessionTerminationInfo;
     type DeviceEvent: DeviceEvent;
     type InputTransaction: InputTransaction;
-    type ClipboardTransaction: ClipboardTransaction;
-    type ClipboardContent: ClipboardContent;
+    type ClipboardData: ClipboardData;
+    type ClipboardItem: ClipboardItem;
     type Error: IronError;
 
     /// Called before the logger is set.
@@ -38,8 +38,8 @@ macro_rules! export {
             use wasm_bindgen::prelude::*;
             use web_sys::{js_sys, HtmlCanvasElement};
             use $crate::{
-                ClipboardContent as _, ClipboardTransaction as _, DeviceEvent as _, InputTransaction as _,
-                IronError as _, RemoteDesktopApi, Session as _, SessionBuilder as _, SessionTerminationInfo as _,
+                ClipboardData as _, ClipboardItem as _, DeviceEvent as _, InputTransaction as _, IronError as _,
+                RemoteDesktopApi, Session as _, SessionBuilder as _, SessionTerminationInfo as _,
             };
 
             #[wasm_bindgen]
@@ -51,6 +51,12 @@ macro_rules! export {
 
             #[wasm_bindgen]
             pub struct DeviceEvent(<$api as RemoteDesktopApi>::DeviceEvent);
+
+            impl From<<$api as RemoteDesktopApi>::DeviceEvent> for DeviceEvent {
+                fn from(value: <$api as RemoteDesktopApi>::DeviceEvent) -> Self {
+                    Self(value)
+                }
+            }
 
             #[wasm_bindgen]
             impl DeviceEvent {
@@ -101,6 +107,12 @@ macro_rules! export {
             #[wasm_bindgen]
             pub struct InputTransaction(<$api as RemoteDesktopApi>::InputTransaction);
 
+            impl From<<$api as RemoteDesktopApi>::InputTransaction> for InputTransaction {
+                fn from(value: <$api as RemoteDesktopApi>::InputTransaction) -> Self {
+                    Self(value)
+                }
+            }
+
             #[wasm_bindgen]
             impl InputTransaction {
                 pub fn init() -> Self {
@@ -115,6 +127,12 @@ macro_rules! export {
             #[wasm_bindgen]
             pub struct IronError(<$api as RemoteDesktopApi>::Error);
 
+            impl From<<$api as RemoteDesktopApi>::Error> for IronError {
+                fn from(value: <$api as RemoteDesktopApi>::Error) -> Self {
+                    Self(value)
+                }
+            }
+
             #[wasm_bindgen]
             impl IronError {
                 pub fn backtrace(&self) -> String {
@@ -128,6 +146,12 @@ macro_rules! export {
 
             #[wasm_bindgen]
             pub struct Session(<$api as RemoteDesktopApi>::Session);
+
+            impl From<<$api as RemoteDesktopApi>::Session> for Session {
+                fn from(value: <$api as RemoteDesktopApi>::Session) -> Self {
+                    Self(value)
+                }
+            }
 
             #[wasm_bindgen]
             impl Session {
@@ -163,7 +187,7 @@ macro_rules! export {
                     self.0.shutdown().map_err(IronError)
                 }
 
-                pub async fn on_clipboard_paste(&self, content: ClipboardTransaction) -> Result<(), IronError> {
+                pub async fn on_clipboard_paste(&self, content: ClipboardData) -> Result<(), IronError> {
                     self.0.on_clipboard_paste(content.0).await.map_err(IronError)
                 }
 
@@ -190,6 +214,12 @@ macro_rules! export {
 
             #[wasm_bindgen]
             pub struct SessionBuilder(<$api as RemoteDesktopApi>::SessionBuilder);
+
+            impl From<<$api as RemoteDesktopApi>::SessionBuilder> for SessionBuilder {
+                fn from(value: <$api as RemoteDesktopApi>::SessionBuilder) -> Self {
+                    Self(value)
+                }
+            }
 
             #[wasm_bindgen]
             impl SessionBuilder {
@@ -261,6 +291,12 @@ macro_rules! export {
             #[wasm_bindgen]
             pub struct SessionTerminationInfo(<$api as RemoteDesktopApi>::SessionTerminationInfo);
 
+            impl From<<$api as RemoteDesktopApi>::SessionTerminationInfo> for SessionTerminationInfo {
+                fn from(value: <$api as RemoteDesktopApi>::SessionTerminationInfo) -> Self {
+                    Self(value)
+                }
+            }
+
             #[wasm_bindgen]
             impl SessionTerminationInfo {
                 pub fn reason(&self) -> String {
@@ -269,50 +305,54 @@ macro_rules! export {
             }
 
             #[wasm_bindgen]
-            pub struct ClipboardTransaction(<$api as RemoteDesktopApi>::ClipboardTransaction);
+            pub struct ClipboardData(<$api as RemoteDesktopApi>::ClipboardData);
+
+            impl From<<$api as RemoteDesktopApi>::ClipboardData> for ClipboardData {
+                fn from(value: <$api as RemoteDesktopApi>::ClipboardData) -> Self {
+                    Self(value)
+                }
+            }
 
             #[wasm_bindgen]
-            impl ClipboardTransaction {
+            impl ClipboardData {
                 pub fn init() -> Self {
-                    Self(<<$api as RemoteDesktopApi>::ClipboardTransaction>::init())
+                    Self(<<$api as RemoteDesktopApi>::ClipboardData>::init())
                 }
 
-                pub fn add_content(&mut self, content: ClipboardContent) {
-                    self.0.add_content(content.0);
+                pub fn add_text(&mut self, mime_type: &str, text: &str) {
+                    self.0.add_text(mime_type, text);
+                }
+
+                pub fn add_binary(&mut self, mime_type: &str, binary: &[u8]) {
+                    self.0.add_binary(mime_type, binary);
+                }
+
+                pub fn items(&self) -> Vec<ClipboardItem> {
+                    self.0.items().into_iter().cloned().map(ClipboardItem).collect()
                 }
 
                 pub fn is_empty(&self) -> bool {
                     self.0.is_empty()
                 }
+            }
 
-                pub fn content(&self) -> js_sys::Array {
-                    iron_remote_desktop::ClipboardTransaction::contents(&self.0)
+            #[wasm_bindgen]
+            pub struct ClipboardItem(<$api as RemoteDesktopApi>::ClipboardItem);
+
+            impl From<<$api as RemoteDesktopApi>::ClipboardItem> for ClipboardItem {
+                fn from(value: <$api as RemoteDesktopApi>::ClipboardItem) -> Self {
+                    Self(value)
                 }
             }
 
             #[wasm_bindgen]
-            pub struct ClipboardContent(<$api as RemoteDesktopApi>::ClipboardContent);
-
-            #[wasm_bindgen]
-            impl ClipboardContent {
-                pub fn new_text(mime_type: &str, text: &str) -> Self {
-                    Self(<<$api as RemoteDesktopApi>::ClipboardContent>::new_text(
-                        mime_type, text,
-                    ))
-                }
-
-                pub fn new_binary(mime_type: &str, binary: &[u8]) -> Self {
-                    Self(<<$api as RemoteDesktopApi>::ClipboardContent>::new_binary(
-                        mime_type, binary,
-                    ))
-                }
-
+            impl ClipboardItem {
                 pub fn mime_type(&self) -> String {
                     self.0.mime_type().to_owned()
                 }
 
                 pub fn value(&self) -> JsValue {
-                    iron_remote_desktop::ClipboardContent::value(&self.0)
+                    self.0.value().into()
                 }
             }
         }

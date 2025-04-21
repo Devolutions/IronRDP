@@ -1,7 +1,7 @@
 import type { InputTransaction } from './InputTransaction';
 import type { DesktopSize } from './DesktopSize';
 import type { SessionTerminationInfo } from './SessionTerminationInfo';
-import type { ClipboardTransaction } from './ClipboardTransaction';
+import type { ClipboardData } from './ClipboardData';
 
 export interface Session {
     run(): Promise<SessionTerminationInfo>;
@@ -11,7 +11,7 @@ export interface Session {
     synchronize_lock_keys(scroll_lock: boolean, num_lock: boolean, caps_lock: boolean, kana_lock: boolean): void;
     extension_call(value: unknown): unknown;
     shutdown(): void;
-    on_clipboard_paste(content: ClipboardTransaction): Promise<void>;
+    on_clipboard_paste(data: ClipboardData): Promise<void>;
     resize(
         width: number,
         height: number,

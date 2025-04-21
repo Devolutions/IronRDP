@@ -1,6 +1,6 @@
 import type { Session } from './Session';
 import type { DesktopSize } from './DesktopSize';
-import type { ClipboardTransaction } from './ClipboardTransaction';
+import type { ClipboardData } from './ClipboardData';
 
 export interface SessionBuilder {
     init(): SessionBuilder;
@@ -76,7 +76,7 @@ interface SetCursorStyleCallback {
 }
 
 interface RemoteClipboardChangedCallback {
-    (transaction: ClipboardTransaction): void;
+    (data: ClipboardData): void;
 }
 
 interface RemoteReceiveForwardListCallback {
