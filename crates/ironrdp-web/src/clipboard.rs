@@ -432,7 +432,7 @@ impl WasmClipboard {
                 .on_remote_clipboard_changed
                 .call1(
                     &JsValue::NULL,
-                    &JsValue::from(crate::__wasm_ffi::ClipboardData::from(clipboard_data)),
+                    &JsValue::from(crate::wasm_bridge::ClipboardData::from(clipboard_data)),
                 )
                 .expect("failed to call JS callback");
         }

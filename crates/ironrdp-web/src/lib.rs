@@ -12,8 +12,6 @@ extern crate time as _;
 #[macro_use]
 extern crate tracing;
 
-use iron_remote_desktop::RemoteDesktopApi;
-
 mod canvas;
 mod clipboard;
 mod error;
@@ -24,7 +22,7 @@ mod session;
 
 struct Api;
 
-impl RemoteDesktopApi for Api {
+impl iron_remote_desktop::RemoteDesktopApi for Api {
     type Session = session::Session;
     type SessionBuilder = session::SessionBuilder;
     type SessionTerminationInfo = session::SessionTerminationInfo;
@@ -39,4 +37,6 @@ impl RemoteDesktopApi for Api {
     }
 }
 
-iron_remote_desktop::export!(crate::Api);
+mod wasm_bridge {
+    iron_remote_desktop::make_bridge!(crate::Api);
+}
