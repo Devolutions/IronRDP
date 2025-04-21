@@ -3,17 +3,18 @@
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import type { UserInteraction } from '../../../static/iron-remote-desktop';
     import IronRdp from '../../../static/iron-remote-desktop-rdp';
+    import { preConnectionBlob, displayControl, kdcProxyUrl } from '../../../static/iron-remote-desktop-rdp';
 
-    let uiService: UserInteraction;
+    let userInteraction: UserInteraction;
     let cursorOverrideActive = false;
     let showUtilityBar = false;
 
-    userInteractionService.subscribe((uis) => {
-        if (uis != null) {
-            uiService = uis;
-            uiService.onSessionEvent((event) => {
+    userInteractionService.subscribe((val) => {
+        if (val != null) {
+            userInteraction = val;
+            userInteraction.onSessionEvent((event) => {
                 if (event.type === 0) {
-                    uiService.setVisibility(true);
+                    userInteraction.setVisibility(true);
                 } else if (event.type === 1) {
                     setCurrentSessionActive(false);
                 }
@@ -23,7 +24,7 @@
 
     userInteractionService.subscribe((uis) => {
         if (uis != null) {
-            uiService = uis;
+            userInteraction = uis;
             //read query params named data
             const urlParams = new URLSearchParams(window.location.search);
             const data = urlParams.get('data');
@@ -36,7 +37,7 @@
             const { hostname, gatewayAddress, domain, username, password, authtoken, kdc_proxy_url, pcb, desktopSize } =
                 parsedData;
 
-            const configBuilder = uiService
+            const configBuilder = userInteraction
                 .configBuilder()
                 .withUsername(username)
                 .withPassword(password)
@@ -45,19 +46,20 @@
                 .withServerDomain(domain)
                 .withAuthToken(authtoken)
                 .withDesktopSize(desktopSize)
-                .withExtension('DisplayControl', true);
+                .withExtension(displayControl(true));
 
             if (pcb !== '') {
-                configBuilder.withExtension('Pcb', pcb);
+                configBuilder.withExtension(preConnectionBlob(pcb));
             }
 
             if (kdc_proxy_url !== '') {
-                configBuilder.withExtension('KdcProxyUrl', kdc_proxy_url);
+                configBuilder.withExtension(kdcProxyUrl(kdc_proxy_url));
             }
+
             const config = configBuilder.build();
 
-            uiService.connect(config).then(() => {
-                uiService.setVisibility(true);
+            userInteraction.connect(config).then(() => {
+                userInteraction.setVisibility(true);
                 window.onresize = onWindowResize;
             });
         }
@@ -66,7 +68,7 @@
     function onWindowResize() {
         const innerWidth = window.innerWidth;
         const innerHeight = window.innerHeight;
-        uiService.resize(innerWidth, innerHeight);
+        userInteraction.resize(innerWidth, innerHeight);
     }
 
     function onUnicodeModeChange(e: MouseEvent) {
@@ -80,14 +82,14 @@
             return;
         }
 
-        uiService.setKeyboardUnicodeMode(element.checked);
+        userInteraction.setKeyboardUnicodeMode(element.checked);
     }
 
     function toggleCursorKind() {
         if (cursorOverrideActive) {
-            uiService.setCursorStyleOverride(null);
+            userInteraction.setCursorStyleOverride(null);
         } else {
-            uiService.setCursorStyleOverride('url("crosshair.png") 7 7, default');
+            userInteraction.setCursorStyleOverride('url("crosshair.png") 7 7, default');
         }
 
         cursorOverrideActive = !cursorOverrideActive;
@@ -125,8 +127,8 @@
     <div class="tool-bar" class:hidden={!showUtilityBar}>
         <div class="toolbar-container">
             <button on:click={() => toggleFullScreen()}>Full Screen</button>
-            <button on:click={() => uiService.ctrlAltDel()}>Ctrl+Alt+Del</button>
-            <button on:click={() => uiService.metaKey()}>
+            <button on:click={() => userInteraction.ctrlAltDel()}>Ctrl+Alt+Del</button>
+            <button on:click={() => userInteraction.metaKey()}>
                 Meta
                 <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 512 512">
                     <title>ionicons-v5_logos</title>
@@ -137,7 +139,7 @@
                 </svg>
             </button>
             <button on:click={() => toggleCursorKind()}>Toggle cursor kind</button>
-            <button on:click={() => uiService.shutdown()}>Terminate Session</button>
+            <button on:click={() => userInteraction.shutdown()}>Terminate Session</button>
             <label style="color: white;">
                 <input on:click={(e) => onUnicodeModeChange(e)} type="checkbox" />
                 Unicode keyboard mode

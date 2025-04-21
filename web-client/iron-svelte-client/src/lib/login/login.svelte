@@ -2,6 +2,7 @@
     import { currentSession, userInteractionService } from '../../services/session.service';
     import { catchError, filter } from 'rxjs/operators';
     import type { UserInteraction, NewSessionInfo } from '../../../static/iron-remote-desktop';
+    import { preConnectionBlob, displayControl, kdcProxyUrl } from '../../../static/iron-remote-desktop-rdp';
     import { from, of } from 'rxjs';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
@@ -125,15 +126,16 @@
             .withServerDomain(domain)
             .withAuthToken(authtoken)
             .withDesktopSize(desktopSize)
-            .withExtension('DisplayControl', true);
+            .withExtension(displayControl(true));
 
         if (pcb !== '') {
-            configBuilder.withExtension('Pcb', pcb);
+            configBuilder.withExtension(preConnectionBlob(pcb));
         }
 
         if (kdc_proxy_url !== '') {
-            configBuilder.withExtension('KdcProxyUrl', kdc_proxy_url);
+            configBuilder.withExtension(kdcProxyUrl(kdc_proxy_url));
         }
+
         const config = configBuilder.build();
 
         from(userInteraction.connect(config))

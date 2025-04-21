@@ -4,7 +4,7 @@ use web_sys::{js_sys, HtmlCanvasElement};
 use crate::clipboard::ClipboardTransaction;
 use crate::error::IronError;
 use crate::input::InputTransaction;
-use crate::DesktopSize;
+use crate::{DesktopSize, Extension};
 
 pub trait SessionBuilder {
     type Session: Session;
@@ -38,7 +38,7 @@ pub trait SessionBuilder {
     #[must_use]
     fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> Self;
     #[must_use]
-    fn extension(&self, value: JsValue) -> Self;
+    fn extension(&self, ext: Extension) -> Self;
     #[expect(async_fn_in_trait)]
     async fn connect(&self) -> Result<Self::Session, Self::Error>;
 }
@@ -74,7 +74,7 @@ pub trait Session {
         physical_height: Option<u32>,
     );
     fn supports_unicode_keyboard_shortcuts(&self) -> bool;
-    fn extension_call(value: JsValue) -> Result<JsValue, Self::Error>;
+    fn extension_call(ext: Extension) -> Result<JsValue, Self::Error>;
 }
 
 pub trait SessionTerminationInfo {
