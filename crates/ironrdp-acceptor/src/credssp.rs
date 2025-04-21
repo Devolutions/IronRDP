@@ -66,9 +66,9 @@ impl CredentialsProxy for CredentialsProxyImpl<'_> {
 }
 
 impl<'a> CredsspSequence<'a> {
-    pub(crate) fn next_pdu_hint(&self) -> ConnectorResult<Option<&dyn PduHint>> {
+    pub(crate) fn next_pdu_hint(&self) -> ConnectorResult<Option<Box<&dyn PduHint>>> {
         match &self.state {
-            CredsspState::Ongoing => Ok(Some(&CREDSSP_TS_REQUEST_HINT)),
+            CredsspState::Ongoing => Ok(Some(Box::new(&CREDSSP_TS_REQUEST_HINT))),
             CredsspState::Finished => Ok(None),
             CredsspState::ServerError(err) => Err(custom_err!("Credssp server error", err.clone())),
         }

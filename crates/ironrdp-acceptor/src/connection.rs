@@ -262,22 +262,22 @@ impl State for AcceptorState {
 }
 
 impl Sequence for Acceptor {
-    fn next_pdu_hint(&self) -> Option<&dyn pdu::PduHint> {
+    fn next_pdu_hint(&self) -> Option<Box<&dyn pdu::PduHint>> {
         match &self.state {
             AcceptorState::Consumed => None,
-            AcceptorState::InitiationWaitRequest => Some(&pdu::X224_HINT),
+            AcceptorState::InitiationWaitRequest => Some(Box::new(&pdu::X224_HINT)),
             AcceptorState::InitiationSendConfirm { .. } => None,
             AcceptorState::SecurityUpgrade { .. } => None,
             AcceptorState::Credssp { .. } => None,
-            AcceptorState::BasicSettingsWaitInitial { .. } => Some(&pdu::X224_HINT),
+            AcceptorState::BasicSettingsWaitInitial { .. } => Some(Box::new(&pdu::X224_HINT)),
             AcceptorState::BasicSettingsSendResponse { .. } => None,
             AcceptorState::ChannelConnection { connection, .. } => connection.next_pdu_hint(),
             AcceptorState::RdpSecurityCommencement { .. } => None,
-            AcceptorState::SecureSettingsExchange { .. } => Some(&pdu::X224_HINT),
+            AcceptorState::SecureSettingsExchange { .. } => Some(Box::new(&pdu::X224_HINT)),
             AcceptorState::LicensingExchange { .. } => None,
             AcceptorState::CapabilitiesSendServer { .. } => None,
             AcceptorState::MonitorLayoutSend { .. } => None,
-            AcceptorState::CapabilitiesWaitConfirm { .. } => Some(&pdu::X224_HINT),
+            AcceptorState::CapabilitiesWaitConfirm { .. } => Some(Box::new(&pdu::X224_HINT)),
             AcceptorState::ConnectionFinalization { finalization, .. } => finalization.next_pdu_hint(),
             AcceptorState::Accepted { .. } => None,
         }

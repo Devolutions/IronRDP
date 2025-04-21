@@ -104,12 +104,12 @@ impl LicenseExchangeSequence {
 }
 
 impl Sequence for LicenseExchangeSequence {
-    fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
+    fn next_pdu_hint(&self) -> Option<Box<&dyn PduHint>> {
         match self.state {
             LicenseExchangeState::Consumed => None,
-            LicenseExchangeState::NewLicenseRequest => Some(&ironrdp_pdu::X224_HINT),
-            LicenseExchangeState::PlatformChallenge { .. } => Some(&ironrdp_pdu::X224_HINT),
-            LicenseExchangeState::UpgradeLicense { .. } => Some(&ironrdp_pdu::X224_HINT),
+            LicenseExchangeState::NewLicenseRequest => Some(Box::new(&ironrdp_pdu::X224_HINT)),
+            LicenseExchangeState::PlatformChallenge { .. } => Some(Box::new(&ironrdp_pdu::X224_HINT)),
+            LicenseExchangeState::UpgradeLicense { .. } => Some(Box::new(&ironrdp_pdu::X224_HINT)),
             LicenseExchangeState::LicenseExchanged => None,
         }
     }

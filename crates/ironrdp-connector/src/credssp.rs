@@ -80,10 +80,10 @@ pub(crate) enum CredsspState {
 }
 
 impl CredsspSequence {
-    pub fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
+    pub fn next_pdu_hint(&self) -> Option<Box<&dyn PduHint>> {
         match self.state {
-            CredsspState::Ongoing => Some(&CREDSSP_TS_REQUEST_HINT),
-            CredsspState::EarlyUserAuthResult => Some(&CREDSSP_EARLY_USER_AUTH_RESULT_HINT),
+            CredsspState::Ongoing => Some(Box::new(&CREDSSP_TS_REQUEST_HINT)),
+            CredsspState::EarlyUserAuthResult => Some(Box::new(&CREDSSP_EARLY_USER_AUTH_RESULT_HINT)),
             CredsspState::Finished => None,
         }
     }

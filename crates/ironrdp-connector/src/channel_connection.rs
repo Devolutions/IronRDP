@@ -81,14 +81,14 @@ impl ChannelConnectionSequence {
 }
 
 impl Sequence for ChannelConnectionSequence {
-    fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
+    fn next_pdu_hint(&self) -> Option<Box<&dyn PduHint>> {
         match self.state {
             ChannelConnectionState::Consumed => None,
             ChannelConnectionState::SendErectDomainRequest => None,
             ChannelConnectionState::SendAttachUserRequest => None,
-            ChannelConnectionState::WaitAttachUserConfirm => Some(&ironrdp_pdu::X224_HINT),
+            ChannelConnectionState::WaitAttachUserConfirm => Some(Box::new(&ironrdp_pdu::X224_HINT)),
             ChannelConnectionState::SendChannelJoinRequest { .. } => None,
-            ChannelConnectionState::WaitChannelJoinConfirm { .. } => Some(&ironrdp_pdu::X224_HINT),
+            ChannelConnectionState::WaitChannelJoinConfirm { .. } => Some(Box::new(&ironrdp_pdu::X224_HINT)),
             ChannelConnectionState::AllJoined { .. } => None,
         }
     }

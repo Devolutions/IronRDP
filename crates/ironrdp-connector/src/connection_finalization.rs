@@ -66,14 +66,14 @@ impl ConnectionFinalizationSequence {
 }
 
 impl Sequence for ConnectionFinalizationSequence {
-    fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
+    fn next_pdu_hint(&self) -> Option<Box<&dyn PduHint>> {
         match self.state {
             ConnectionFinalizationState::Consumed => None,
             ConnectionFinalizationState::SendSynchronize => None,
             ConnectionFinalizationState::SendControlCooperate => None,
             ConnectionFinalizationState::SendRequestControl => None,
             ConnectionFinalizationState::SendFontList => None,
-            ConnectionFinalizationState::WaitForResponse => Some(&ironrdp_pdu::X224_HINT),
+            ConnectionFinalizationState::WaitForResponse => Some(Box::new(&ironrdp_pdu::X224_HINT)),
             ConnectionFinalizationState::Finished => None,
         }
     }

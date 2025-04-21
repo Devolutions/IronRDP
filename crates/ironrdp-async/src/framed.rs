@@ -165,7 +165,7 @@ where
     /// `tokio::select!` statement and some other branch
     /// completes first, then it is safe to drop the future and re-create it later.
     /// Data may have been read, but it will be stored in the internal buffer.
-    pub async fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
+    pub async fn read_by_hint(&mut self, hint: Box<&dyn PduHint>) -> io::Result<Bytes> {
         loop {
             match hint
                 .find_size(self.peek())

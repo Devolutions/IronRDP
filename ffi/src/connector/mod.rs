@@ -186,7 +186,9 @@ pub mod ffi {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
             tracing::trace!(pduhint=?connector.next_pdu_hint(), "Reading next PDU hint");
-            Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
+            Ok(connector
+                .next_pdu_hint()
+                .map(|boxed_hint| Box::new(PduHint(&**boxed_hint))))
         }
 
         pub fn get_dyn_state(&self) -> Result<Box<DynState<'_>>, Box<IronRdpError>> {

@@ -1028,7 +1028,7 @@ where
         // RDCleanPath response
 
         let rdcleanpath_res = framed
-            .read_by_hint(&RDCLEANPATH_HINT)
+            .read_by_hint(Box::new(&RDCLEANPATH_HINT))
             .await
             .context("read RDCleanPath request")?;
 

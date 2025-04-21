@@ -59,13 +59,13 @@ impl State for FinalizationState {
 }
 
 impl Sequence for FinalizationSequence {
-    fn next_pdu_hint(&self) -> Option<&dyn pdu::PduHint> {
+    fn next_pdu_hint(&self) -> Option<Box<&dyn pdu::PduHint>> {
         match &self.state {
             FinalizationState::Consumed => None,
-            FinalizationState::WaitSynchronize => Some(&pdu::X224Hint),
-            FinalizationState::WaitControlCooperate => Some(&pdu::X224Hint),
-            FinalizationState::WaitRequestControl => Some(&pdu::X224Hint),
-            FinalizationState::WaitFontList => Some(&pdu::RdpHint),
+            FinalizationState::WaitSynchronize => Some(Box::new(&pdu::X224Hint)),
+            FinalizationState::WaitControlCooperate => Some(Box::new(&pdu::X224Hint)),
+            FinalizationState::WaitRequestControl => Some(Box::new(&pdu::X224Hint)),
+            FinalizationState::WaitFontList => Some(Box::new(&pdu::RdpHint)),
             FinalizationState::SendSynchronizeConfirm => None,
             FinalizationState::SendControlCooperateConfirm => None,
             FinalizationState::SendGrantedControlConfirm => None,

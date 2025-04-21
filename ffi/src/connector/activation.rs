@@ -20,8 +20,10 @@ pub mod ffi {
         }
 
         pub fn next_pdu_hint<'a>(&'a self) -> Result<Option<Box<PduHint<'a>>>, Box<IronRdpError>> {
-            let pdu_hint = self.0.next_pdu_hint();
-            Ok(pdu_hint.map(PduHint).map(Box::new))
+            Ok(self
+                .0
+                .next_pdu_hint()
+                .map(|boxed_hint| Box::new(PduHint(&**boxed_hint))))
         }
 
         pub fn step(&mut self, pdu_hint: &[u8], buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
