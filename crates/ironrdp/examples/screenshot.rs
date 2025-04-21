@@ -237,9 +237,11 @@ fn connect(
         .set_read_timeout(Some(Duration::from_secs(3)))
         .expect("set_read_timeout call failed");
 
+    let client_addr = tcp_stream.local_addr().context("get socket local address")?;
+
     let mut framed = ironrdp_blocking::Framed::new(tcp_stream);
 
-    let mut connector = connector::ClientConnector::new(config).with_client_addr(server_addr);
+    let mut connector = connector::ClientConnector::new(config, client_addr);
 
     let should_upgrade = ironrdp_blocking::connect_begin(&mut framed, &mut connector).context("begin connection")?;
 

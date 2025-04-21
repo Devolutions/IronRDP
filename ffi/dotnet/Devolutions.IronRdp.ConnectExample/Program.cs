@@ -32,7 +32,7 @@ namespace Devolutions.IronRdp.ConnectExample
                     var readPduTask = framed.ReadPdu();
                     Action? action = null;
                     byte[]? payload = null;
-                    if (readPduTask == await Task.WhenAny(readPduTask, Task.Delay(1000)))
+                    if (readPduTask == await Task.WhenAny(readPduTask, Task.Delay(2000)))
                     {
                         var pduReadTask = await readPduTask;
                         action = pduReadTask.Item1;
