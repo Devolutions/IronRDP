@@ -298,7 +298,14 @@
                 for (const item of clipboard_data.items()) {
                     // Firefox only supports text/plain mime type for clipboard writes :(
                     if (item.mime_type() === 'text/plain') {
-                        navigator.clipboard.writeText(item.value());
+                        const value = item.value();
+
+                        if (typeof value === 'string') {
+                            navigator.clipboard.writeText(value);
+                        } else {
+                            loggingService.error('Unexpected value for text/plain clipboard item');
+                        }
+
                         break;
                     }
                 }
