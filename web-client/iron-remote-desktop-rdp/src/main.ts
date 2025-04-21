@@ -7,8 +7,8 @@ import init, {
     Session,
     SessionBuilder,
     SessionTerminationInfo,
-    ClipboardTransaction,
-    ClipboardContent,
+    ClipboardData,
+    ClipboardItem,
     Extension,
 } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
 
@@ -20,8 +20,8 @@ export default {
     InputTransaction,
     IronError,
     SessionBuilder,
-    ClipboardTransaction,
-    ClipboardContent,
+    ClipboardData,
+    ClipboardItem,
     Session,
     SessionTerminationInfo,
     Extension,

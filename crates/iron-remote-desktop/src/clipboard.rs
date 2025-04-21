@@ -1,18 +1,15 @@
 use wasm_bindgen::JsValue;
-use web_sys::js_sys;
 
-pub trait ClipboardTransaction {
-    type ClipboardContent: ClipboardContent;
+pub trait ClipboardData {
+    type Item: ClipboardItem;
 
     fn init() -> Self;
-    fn add_content(&mut self, content: Self::ClipboardContent);
-    fn is_empty(&self) -> bool;
-    fn contents(&self) -> js_sys::Array;
+    fn add_text(&mut self, mime_type: &str, text: &str);
+    fn add_binary(&mut self, mime_type: &str, binary: &[u8]);
+    fn items(&self) -> &[Self::Item];
 }
 
-pub trait ClipboardContent {
-    fn new_text(mime_type: &str, text: &str) -> Self;
-    fn new_binary(mime_type: &str, binary: &[u8]) -> Self;
+pub trait ClipboardItem {
     fn mime_type(&self) -> &str;
-    fn value(&self) -> JsValue;
+    fn value(&self) -> impl Into<JsValue>;
 }

@@ -21,7 +21,7 @@
     import type { ResizeEvent } from './interfaces/ResizeEvent';
     import { PublicAPI } from './services/PublicAPI';
     import { ScreenScale } from './enums/ScreenScale';
-    import type { ClipboardTransaction } from './interfaces/ClipboardTransaction';
+    import type { ClipboardData } from './interfaces/ClipboardData';
     import type { RemoteDesktopModule } from './interfaces/RemoteDesktopModule';
 
     let {
@@ -68,14 +68,14 @@
 
     let isClipboardApiSupported = false;
     let lastClientClipboardItems = new Map<string, string | Uint8Array>();
-    let lastClientClipboardTransaction: ClipboardTransaction | null = null;
+    let lastClientClipboardData: ClipboardData | null = null;
     let lastClipboardMonitorLoopError: Error | null = null;
 
     /* Firefox-specific BEGIN */
 
-    // See `ffRemoteClipboardTransaction` variable docs below
-    const FF_REMOTE_CLIPBOARD_TRANSACTION_SET_RETRY_INTERVAL = 100; // ms
-    const FF_REMOTE_CLIPBOARD_TRANSACTION_SET_MAX_RETRIES = 30; // 3 seconds (100ms * 30)
+    // See `ffRemoteClipboardData` variable docs below
+    const FF_REMOTE_CLIPBOARD_DATA_SET_RETRY_INTERVAL = 100; // ms
+    const FF_REMOTE_CLIPBOARD_DATA_SET_MAX_RETRIES = 30; // 3 seconds (100ms * 30)
     // On Firefox, this interval is used to stop delaying the keyboard events if the paste event has
     // failed and we haven't received any clipboard data from the remote side.
     const FF_LOCAL_CLIPBOARD_COPY_TIMEOUT = 1000; // 1s (For text-only data this should be enough)
@@ -84,10 +84,10 @@
     // called in scope of user-initiated event processing (e.g. keyboard event), but we receive
     // clipboard data from the remote side asynchronously in wasm service callback. therefore we
     // set this variable in callback and use its value on the user-initiated copy event.
-    let ffRemoteClipboardTransaction: ClipboardTransaction | null = null;
+    let ffRemoteClipboardData: ClipboardData | null = null;
     // For Firefox we need this variable to perform wait loop for the remote side to finish sending
     // clipboard content to the client.
-    let ffRemoteClipboardTransactionRetriesLeft = 0;
+    let ffRemoteClipboardDataRetriesLeft = 0;
     let ffPostponeKeyboardEvents = false;
     let ffDelayedKeyboardEvents: KeyboardEvent[] = [];
     let ffCnavasFocused = false;
@@ -131,12 +131,12 @@
         return (evt.ctrlKey && evt.code === 'KeyV') || evt.code == 'Paste';
     }
 
-    // This function is required to covert `ClipboardTransaction` to a object that can be used
+    // This function is required to convert `ClipboardData` to a object that can be used
     // with `ClipboardItem` API.
-    function clipboardTransactionToRecord(transaction: ClipboardTransaction): Record<string, Blob> {
+    function clipboardDataToRecord(data: ClipboardData): Record<string, Blob> {
         let result = {} as Record<string, Blob>;
 
-        for (const item of transaction.content()) {
+        for (const item of data.items()) {
             let mime = item.mime_type();
             let value = new Blob([item.value()], { type: mime });
 
@@ -149,8 +149,8 @@
     // This callback is required to send initial clipboard state if available.
     function onForceClipboardUpdate() {
         try {
-            if (lastClientClipboardTransaction) {
-                remoteDesktopService.onClipboardChanged(lastClientClipboardTransaction);
+            if (lastClientClipboardData) {
+                remoteDesktopService.onClipboardChanged(lastClientClipboardData);
             } else {
                 remoteDesktopService.onClipboardChangedEmpty();
             }
@@ -160,9 +160,9 @@
     }
 
     // This callback is required to update client clipboard state when remote side has changed.
-    function onRemoteClipboardChanged(transaction: ClipboardTransaction) {
+    function onRemoteClipboardChanged(data: ClipboardData) {
         try {
-            const mime_formats = clipboardTransactionToRecord(transaction);
+            const mime_formats = clipboardDataToRecord(data);
             const clipboard_item = new ClipboardItem(mime_formats);
             navigator.clipboard.write([clipboard_item]);
         } catch (err) {
@@ -236,7 +236,7 @@
             if (!sameValue) {
                 lastClientClipboardItems = values;
 
-                let transaction = remoteDesktopService.constructClipboardTransaction();
+                let data = remoteDesktopService.createClipboardData();
 
                 // Iterate over `Record` type
                 values.forEach((value: string | Uint8Array, key: string) => {
@@ -246,15 +246,15 @@
                     }
 
                     if (key.startsWith('text/') && typeof value === 'string') {
-                        transaction.add_content(remoteDesktopService.constructClipboardContentFromText(key, value));
+                        data.add_text(key, value);
                     } else if (key.startsWith('image/') && value instanceof Uint8Array) {
-                        transaction.add_content(remoteDesktopService.constructClipboardContentFromBinary(key, value));
+                        data.add_binary(key, value);
                     }
                 });
 
-                if (!transaction.is_empty()) {
-                    lastClientClipboardTransaction = transaction;
-                    remoteDesktopService.onClipboardChanged(transaction);
+                if (!data.is_empty()) {
+                    lastClientClipboardData = data;
+                    remoteDesktopService.onClipboardChanged(data);
                 }
             }
         } catch (err) {
@@ -286,28 +286,35 @@
 
     // Only set variable on callback, the real clipboard update will be performed in keyboard
     // callback. (User-initiated event is required for Firefox to allow clipboard write)
-    function ffOnRemoteClipboardChanged(transaction: ClipboardTransaction) {
-        ffRemoteClipboardTransaction = transaction;
+    function ffOnRemoteClipboardChanged(data: ClipboardData) {
+        ffRemoteClipboardData = data;
     }
 
-    function ffWaitForRemoteClipboardTransactionSet() {
-        if (ffRemoteClipboardTransaction) {
+    function ffWaitForRemoteClipboardDataSet() {
+        if (ffRemoteClipboardData) {
             try {
-                let transaction = ffRemoteClipboardTransaction;
-                ffRemoteClipboardTransaction = null;
-                for (const content of transaction.content()) {
+                let clipboard_data = ffRemoteClipboardData;
+                ffRemoteClipboardData = null;
+                for (const item of clipboard_data.items()) {
                     // Firefox only supports text/plain mime type for clipboard writes :(
-                    if (content.mime_type() === 'text/plain') {
-                        navigator.clipboard.writeText(content.value());
+                    if (item.mime_type() === 'text/plain') {
+                        const value = item.value();
+
+                        if (typeof value === 'string') {
+                            navigator.clipboard.writeText(value);
+                        } else {
+                            loggingService.error('Unexpected value for text/plain clipboard item');
+                        }
+
                         break;
                     }
                 }
             } catch (err) {
                 console.error('Failed to set client clipboard: ' + err);
             }
-        } else if (ffRemoteClipboardTransactionRetriesLeft > 0) {
-            ffRemoteClipboardTransactionRetriesLeft--;
-            setTimeout(ffWaitForRemoteClipboardTransactionSet, FF_REMOTE_CLIPBOARD_TRANSACTION_SET_RETRY_INTERVAL);
+        } else if (ffRemoteClipboardDataRetriesLeft > 0) {
+            ffRemoteClipboardDataRetriesLeft--;
+            setTimeout(ffWaitForRemoteClipboardDataSet, FF_REMOTE_CLIPBOARD_DATA_SET_RETRY_INTERVAL);
         }
     }
 
@@ -334,7 +341,7 @@
         }
 
         try {
-            let transaction = remoteDesktopService.constructClipboardTransaction();
+            let clipboard_data = remoteDesktopService.createClipboardData();
 
             if (evt.clipboardData == null) {
                 return;
@@ -345,11 +352,10 @@
 
                 if (mime.startsWith('text/')) {
                     clipItem.getAsString((str: string) => {
-                        let content = remoteDesktopService.constructClipboardContentFromText(mime, str);
-                        transaction.add_content(content);
+                        clipboard_data.add_text(mime, str);
 
-                        if (!transaction.is_empty()) {
-                            remoteDesktopService.onClipboardChanged(transaction as ClipboardTransaction);
+                        if (!clipboard_data.is_empty()) {
+                            remoteDesktopService.onClipboardChanged(clipboard_data);
                         }
                     });
                     break;
@@ -363,11 +369,11 @@
 
                     file.arrayBuffer().then((buffer: ArrayBuffer) => {
                         const strict_buffer = new Uint8Array(buffer);
-                        let content = remoteDesktopService.constructClipboardContentFromBinary(mime, strict_buffer);
-                        transaction.add_content(content);
 
-                        if (!transaction.is_empty()) {
-                            remoteDesktopService.onClipboardChanged(transaction);
+                        clipboard_data.add_binary(mime, strict_buffer);
+
+                        if (!clipboard_data.is_empty()) {
+                            remoteDesktopService.onClipboardChanged(clipboard_data);
                         }
                     });
                     break;
@@ -634,8 +640,8 @@
             // only after some user-initiated event (e.g. keyboard event).
             // therefore we need to wait here for the clipboard data to be ready.
 
-            ffRemoteClipboardTransactionRetriesLeft = FF_REMOTE_CLIPBOARD_TRANSACTION_SET_MAX_RETRIES;
-            ffWaitForRemoteClipboardTransactionSet();
+            ffRemoteClipboardDataRetriesLeft = FF_REMOTE_CLIPBOARD_DATA_SET_MAX_RETRIES;
+            ffWaitForRemoteClipboardDataSet();
         }
 
         remoteDesktopService.sendKeyboardEvent(evt);
