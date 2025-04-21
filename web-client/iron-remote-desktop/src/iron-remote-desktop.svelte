@@ -655,7 +655,7 @@
     }
 
     async function initcanvas() {
-        loggingService.info('Start canvas initialization.');
+        loggingService.info('Start canvas initialization...');
 
         // Set a default canvas size. Need more test to know if i can remove it.
         canvas.width = 800;
@@ -671,6 +671,7 @@
 
         loggingService.info('Component ready');
         loggingService.info('Dispatching ready event');
+
         // bubbles:true is significant here, all our consumer code expect this specific event
         // but they only listen to the event on the custom element itself, not on the inner div
         // in Svelte 3, we had direct access to the customelement, but now in Svelte5, we have to
