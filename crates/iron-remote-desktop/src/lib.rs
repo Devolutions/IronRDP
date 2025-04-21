@@ -1,29 +1,18 @@
 mod clipboard;
 mod cursor;
+mod desktop_size;
 mod error;
+mod extension;
 mod input;
 mod session;
 
 pub use clipboard::{ClipboardContent, ClipboardTransaction};
 pub use cursor::CursorStyle;
+pub use desktop_size::DesktopSize;
 pub use error::{IronError, IronErrorKind};
+pub use extension::Extension;
 pub use input::{DeviceEvent, InputTransaction};
 pub use session::{Session, SessionBuilder, SessionTerminationInfo};
-use wasm_bindgen::prelude::wasm_bindgen;
-
-#[wasm_bindgen]
-#[derive(Clone, Copy)]
-pub struct DesktopSize {
-    pub width: u16,
-    pub height: u16,
-}
-
-#[wasm_bindgen]
-impl DesktopSize {
-    pub fn init(width: u16, height: u16) -> Self {
-        DesktopSize { width, height }
-    }
-}
 
 pub fn iron_init(log_level: &str) {
     // When the `console_error_panic_hook` feature is enabled, we can call the
@@ -229,8 +218,8 @@ macro_rules! export {
                     self.0.supports_unicode_keyboard_shortcuts()
                 }
 
-                pub fn extension_call(value: JsValue) -> Result<JsValue, IronError> {
-                    <<$api as RemoteDesktopApi>::Session>::extension_call(value).map_err(IronError)
+                pub fn extension_call(ext: $crate::Extension) -> Result<JsValue, IronError> {
+                    <<$api as RemoteDesktopApi>::Session>::extension_call(ext).map_err(IronError)
                 }
             }
 
@@ -295,8 +284,8 @@ macro_rules! export {
                     Self(self.0.force_clipboard_update_callback(callback))
                 }
 
-                pub fn extension(&self, value: JsValue) -> Self {
-                    Self(self.0.extension(value))
+                pub fn extension(&self, ext: $crate::Extension) -> Self {
+                    Self(self.0.extension(ext))
                 }
 
                 pub async fn connect(&self) -> Result<Session, IronError> {

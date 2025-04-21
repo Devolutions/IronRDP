@@ -1,6 +1,3 @@
-// https://github.com/rustwasm/wasm-bindgen/issues/4080
-#![allow(non_snake_case)]
-
 use core::cell::RefCell;
 use core::num::NonZeroU32;
 use core::time::Duration;
@@ -14,7 +11,7 @@ use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
-use iron_remote_desktop::{CursorStyle, DesktopSize, IronErrorKind};
+use iron_remote_desktop::{CursorStyle, DesktopSize, Extension, IronErrorKind};
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::connection_activation::ConnectionActivationState;
@@ -30,7 +27,6 @@ use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDiscon
 use ironrdp_core::WriteBuf;
 use ironrdp_futures::{single_sequence_step_read, FramedWrite};
 use rgb::AsPixels as _;
-use serde::{Deserialize, Serialize};
 use tap::prelude::*;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
@@ -207,16 +203,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
-    fn extension(&self, value: JsValue) -> Self {
-        match serde_wasm_bindgen::from_value::<Extension>(value) {
-            Ok(value) => match value {
-                Extension::KdcProxyUrl(kdc_proxy_url) => self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url),
-                Extension::Pcb(pcb) => self.0.borrow_mut().pcb = Some(pcb),
-                Extension::DisplayControl(use_display_control) => {
-                    self.0.borrow_mut().use_display_control = use_display_control
-                }
-            },
-            Err(error) => error!(%error, "Unsupported extension value"),
+    fn extension(&self, ext: Extension) -> Self {
+        iron_remote_desktop::extension_match! {
+            match ext;
+            |pcb: String| { self.0.borrow_mut().pcb = Some(pcb) };
+            |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
+            |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
         }
 
         self.clone()
@@ -352,13 +344,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             clipboard: RefCell::new(Some(clipboard)),
         })
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum Extension {
-    KdcProxyUrl(String),
-    Pcb(String),
-    DisplayControl(bool),
 }
 
 pub(crate) type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
@@ -813,13 +798,16 @@ impl iron_remote_desktop::Session for Session {
     }
 
     fn supports_unicode_keyboard_shortcuts(&self) -> bool {
-        // RDP does not support Unicode keyboard shortcuts (When key combinations are executed, only
-        // plain scancode events are allowed to function correctly).
+        // RDP does not support Unicode keyboard shortcuts.
+        // When key combinations are executed, only plain scancode events are allowed to function correctly.
         false
     }
 
-    fn extension_call(_value: JsValue) -> Result<JsValue, Self::Error> {
-        Ok(JsValue::null())
+    fn extension_call(ext: Extension) -> Result<JsValue, Self::Error> {
+        Err(
+            IronError::from(anyhow::Error::msg(format!("unknown extension: {}", ext.ident())))
+                .with_kind(IronErrorKind::General),
+        )
     }
 }
 

@@ -1,8 +1,6 @@
 import type { DesktopSize } from '../interfaces/DesktopSize';
 import { Config } from './Config';
-import type { ExtensionValue } from '../interfaces/ExtensionValue';
-
-type ExtensionConstructor = (ident: string, value: unknown) => ExtensionValue;
+import type { Extension } from '../interfaces/Extension';
 
 /**
  * Builder class for creating Config objects with a fluent interface.
@@ -19,8 +17,6 @@ type ExtensionConstructor = (ident: string, value: unknown) => ExtensionValue;
  * ```
  */
 export class ConfigBuilder {
-    private extensionConstructor: ExtensionConstructor;
-
     private username: string = '';
     private password: string = '';
     private destination: string = '';
@@ -28,17 +24,12 @@ export class ConfigBuilder {
     private serverDomain: string = '';
     private authToken: string = '';
     private desktopSize?: DesktopSize;
-
-    private extensions: ExtensionValue[] = [];
+    private extensions: Extension[] = [];
 
     /**
      * Creates a new ConfigBuilder instance.
-     *
-     * @param extensionConstructor - Function that creates extension values from identifiers and values.
      */
-    constructor(extensionConstructor: ExtensionConstructor) {
-        this.extensionConstructor = extensionConstructor;
-    }
+    constructor() {}
 
     /**
      * Optional parameter
@@ -109,12 +100,11 @@ export class ConfigBuilder {
     /**
      * Optional parameter
      *
-     * @param ident - The identifier for the extension
-     * @param value - The value for the extension
+     * @param ext - The extension
      * @returns The builder instance for method chaining
      */
-    withExtension(ident: string, value: unknown): ConfigBuilder {
-        this.extensions.push(this.extensionConstructor(ident, value));
+    withExtension(ext: Extension): ConfigBuilder {
+        this.extensions.push(ext);
         return this;
     }
 

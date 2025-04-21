@@ -1,5 +1,5 @@
 import type { DesktopSize } from '../interfaces/DesktopSize';
-import type { ExtensionValue } from '../interfaces/ExtensionValue';
+import type { Extension } from '../interfaces/Extension';
 
 export class Config {
     readonly username: string;
@@ -9,7 +9,7 @@ export class Config {
     readonly serverDomain: string;
     readonly authToken: string;
     readonly desktopSize?: DesktopSize;
-    readonly extensions: ExtensionValue[];
+    readonly extensions: Extension[];
 
     constructor(
         userData: { username: string; password: string },
@@ -17,7 +17,7 @@ export class Config {
         configOptions: {
             destination: string;
             serverDomain: string;
-            extensions: ExtensionValue[];
+            extensions: Extension[];
             desktopSize?: DesktopSize;
         },
     ) {

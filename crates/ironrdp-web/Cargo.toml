@@ -46,8 +46,6 @@ web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
 js-sys = "0.3"
 gloo-net = { version = "0.6", default-features = false, features = ["websocket", "http", "io-util"] }
 gloo-timers = { version = "0.3", default-features = false, features = ["futures"] }
-serde = { version = "1.0", features = ["derive"] }
-serde-wasm-bindgen = "0.6"
 
 # Rendering
 softbuffer = { version = "0.4", default-features = false }
