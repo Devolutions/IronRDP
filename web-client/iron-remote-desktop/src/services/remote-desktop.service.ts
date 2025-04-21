@@ -14,7 +14,6 @@ import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
 import type { SessionEvent, IronErrorKind, IronError } from '../interfaces/session-event';
 import type { ClipboardData } from '../interfaces/ClipboardData';
-import type { ClipboardItem } from '../interfaces/ClipboardItem';
 import type { Session } from '../interfaces/Session';
 import type { DeviceEvent } from '../interfaces/DeviceEvent';
 import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
