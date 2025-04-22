@@ -12,7 +12,8 @@ use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, Surfa
 use self::bitmap::BitmapEncoder;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
-use crate::{time_warn, ColorPointer, DisplayUpdate, Framebuffer, RGBAPointer};
+use crate::macros::time_warn;
+use crate::{ColorPointer, DisplayUpdate, Framebuffer, RGBAPointer};
 
 mod bitmap;
 mod fast_path;
