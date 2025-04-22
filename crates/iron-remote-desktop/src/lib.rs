@@ -37,125 +37,93 @@ pub trait RemoteDesktopApi {
 #[macro_export]
 macro_rules! make_bridge {
     ($api:ty) => {
-        use wasm_bindgen::prelude::*;
-        use web_sys::{js_sys, HtmlCanvasElement};
         use $crate::{
             ClipboardData as _, ClipboardItem as _, DeviceEvent as _, InputTransaction as _, IronError as _,
-            RemoteDesktopApi, Session as _, SessionBuilder as _, SessionTerminationInfo as _,
+            Session as _, SessionBuilder as _, SessionTerminationInfo as _,
         };
 
-        #[wasm_bindgen]
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        pub struct Session(<$api as $crate::RemoteDesktopApi>::Session);
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        pub struct SessionBuilder(<$api as $crate::RemoteDesktopApi>::SessionBuilder);
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        pub struct SessionTerminationInfo(<$api as $crate::RemoteDesktopApi>::SessionTerminationInfo);
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        pub struct DeviceEvent(<$api as $crate::RemoteDesktopApi>::DeviceEvent);
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        pub struct InputTransaction(<$api as $crate::RemoteDesktopApi>::InputTransaction);
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        pub struct ClipboardData(<$api as $crate::RemoteDesktopApi>::ClipboardData);
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        pub struct ClipboardItem(<$api as $crate::RemoteDesktopApi>::ClipboardItem);
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        pub struct IronError(<$api as $crate::RemoteDesktopApi>::Error);
+
+        impl From<<$api as $crate::RemoteDesktopApi>::Session> for Session {
+            fn from(value: <$api as $crate::RemoteDesktopApi>::Session) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<<$api as $crate::RemoteDesktopApi>::SessionBuilder> for SessionBuilder {
+            fn from(value: <$api as $crate::RemoteDesktopApi>::SessionBuilder) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<<$api as $crate::RemoteDesktopApi>::SessionTerminationInfo> for SessionTerminationInfo {
+            fn from(value: <$api as $crate::RemoteDesktopApi>::SessionTerminationInfo) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<<$api as $crate::RemoteDesktopApi>::DeviceEvent> for DeviceEvent {
+            fn from(value: <$api as $crate::RemoteDesktopApi>::DeviceEvent) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<<$api as $crate::RemoteDesktopApi>::InputTransaction> for InputTransaction {
+            fn from(value: <$api as $crate::RemoteDesktopApi>::InputTransaction) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<<$api as $crate::RemoteDesktopApi>::ClipboardData> for ClipboardData {
+            fn from(value: <$api as $crate::RemoteDesktopApi>::ClipboardData) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<<$api as $crate::RemoteDesktopApi>::ClipboardItem> for ClipboardItem {
+            fn from(value: <$api as $crate::RemoteDesktopApi>::ClipboardItem) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<<$api as $crate::RemoteDesktopApi>::Error> for IronError {
+            fn from(value: <$api as $crate::RemoteDesktopApi>::Error) -> Self {
+                Self(value)
+            }
+        }
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        #[doc(hidden)]
         pub fn setup(log_level: &str) {
-            <$api as RemoteDesktopApi>::pre_setup();
+            <$api as $crate::RemoteDesktopApi>::pre_setup();
             $crate::internal::setup(log_level);
-            <$api as RemoteDesktopApi>::post_setup();
+            <$api as $crate::RemoteDesktopApi>::post_setup();
         }
 
-        #[wasm_bindgen]
-        pub struct DeviceEvent(<$api as RemoteDesktopApi>::DeviceEvent);
-
-        impl From<<$api as RemoteDesktopApi>::DeviceEvent> for DeviceEvent {
-            fn from(value: <$api as RemoteDesktopApi>::DeviceEvent) -> Self {
-                Self(value)
-            }
-        }
-
-        #[wasm_bindgen]
-        impl DeviceEvent {
-            pub fn mouse_button_pressed(button: u8) -> Self {
-                Self(<<$api as RemoteDesktopApi>::DeviceEvent>::mouse_button_pressed(
-                    button,
-                ))
-            }
-
-            pub fn mouse_button_released(button: u8) -> Self {
-                Self(<<$api as RemoteDesktopApi>::DeviceEvent>::mouse_button_released(
-                    button,
-                ))
-            }
-
-            pub fn mouse_move(x: u16, y: u16) -> Self {
-                Self(<<$api as RemoteDesktopApi>::DeviceEvent>::mouse_move(x, y))
-            }
-
-            pub fn wheel_rotations(vertical: bool, rotation_units: i16) -> Self {
-                Self(<<$api as RemoteDesktopApi>::DeviceEvent>::wheel_rotations(
-                    vertical,
-                    rotation_units,
-                ))
-            }
-
-            pub fn key_pressed(scancode: u16) -> Self {
-                Self(<<$api as RemoteDesktopApi>::DeviceEvent>::key_pressed(scancode))
-            }
-
-            pub fn key_released(scancode: u16) -> Self {
-                Self(<<$api as RemoteDesktopApi>::DeviceEvent>::key_released(scancode))
-            }
-
-            pub fn unicode_pressed(unicode: char) -> Self {
-                Self(<<$api as RemoteDesktopApi>::DeviceEvent>::unicode_pressed(
-                    unicode,
-                ))
-            }
-
-            pub fn unicode_released(unicode: char) -> Self {
-                Self(<<$api as RemoteDesktopApi>::DeviceEvent>::unicode_released(
-                    unicode,
-                ))
-            }
-        }
-
-        #[wasm_bindgen]
-        pub struct InputTransaction(<$api as RemoteDesktopApi>::InputTransaction);
-
-        impl From<<$api as RemoteDesktopApi>::InputTransaction> for InputTransaction {
-            fn from(value: <$api as RemoteDesktopApi>::InputTransaction) -> Self {
-                Self(value)
-            }
-        }
-
-        #[wasm_bindgen]
-        impl InputTransaction {
-            pub fn init() -> Self {
-                Self(<<$api as RemoteDesktopApi>::InputTransaction>::init())
-            }
-
-            pub fn add_event(&mut self, event: DeviceEvent) {
-                self.0.add_event(event.0);
-            }
-        }
-
-        #[wasm_bindgen]
-        pub struct IronError(<$api as RemoteDesktopApi>::Error);
-
-        impl From<<$api as RemoteDesktopApi>::Error> for IronError {
-            fn from(value: <$api as RemoteDesktopApi>::Error) -> Self {
-                Self(value)
-            }
-        }
-
-        #[wasm_bindgen]
-        impl IronError {
-            pub fn backtrace(&self) -> String {
-                self.0.backtrace()
-            }
-
-            pub fn kind(&self) -> $crate::IronErrorKind {
-                self.0.kind()
-            }
-        }
-
-        #[wasm_bindgen]
-        pub struct Session(<$api as RemoteDesktopApi>::Session);
-
-        impl From<<$api as RemoteDesktopApi>::Session> for Session {
-            fn from(value: <$api as RemoteDesktopApi>::Session) -> Self {
-                Self(value)
-            }
-        }
-
-        #[wasm_bindgen]
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        #[doc(hidden)]
         impl Session {
             pub async fn run(&self) -> Result<SessionTerminationInfo, IronError> {
                 self.0.run().await.map(SessionTerminationInfo).map_err(IronError)
@@ -209,24 +177,18 @@ macro_rules! make_bridge {
                 self.0.supports_unicode_keyboard_shortcuts()
             }
 
-            pub fn extension_call(ext: $crate::Extension) -> Result<JsValue, IronError> {
-                <<$api as RemoteDesktopApi>::Session>::extension_call(ext).map_err(IronError)
+            pub fn extension_call(
+                ext: $crate::Extension,
+            ) -> Result<$crate::internal::wasm_bindgen::JsValue, IronError> {
+                <<$api as $crate::RemoteDesktopApi>::Session>::extension_call(ext).map_err(IronError)
             }
         }
 
-        #[wasm_bindgen]
-        pub struct SessionBuilder(<$api as RemoteDesktopApi>::SessionBuilder);
-
-        impl From<<$api as RemoteDesktopApi>::SessionBuilder> for SessionBuilder {
-            fn from(value: <$api as RemoteDesktopApi>::SessionBuilder) -> Self {
-                Self(value)
-            }
-        }
-
-        #[wasm_bindgen]
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        #[doc(hidden)]
         impl SessionBuilder {
             pub fn init() -> Self {
-                Self(<<$api as RemoteDesktopApi>::SessionBuilder>::init())
+                Self(<<$api as $crate::RemoteDesktopApi>::SessionBuilder>::init())
             }
 
             pub fn username(&self, username: String) -> Self {
@@ -257,27 +219,36 @@ macro_rules! make_bridge {
                 Self(self.0.desktop_size(desktop_size))
             }
 
-            pub fn render_canvas(&self, canvas: HtmlCanvasElement) -> Self {
+            pub fn render_canvas(&self, canvas: $crate::internal::web_sys::HtmlCanvasElement) -> Self {
                 Self(self.0.render_canvas(canvas))
             }
 
-            pub fn set_cursor_style_callback(&self, callback: js_sys::Function) -> Self {
+            pub fn set_cursor_style_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
                 Self(self.0.set_cursor_style_callback(callback))
             }
 
-            pub fn set_cursor_style_callback_context(&self, context: JsValue) -> Self {
+            pub fn set_cursor_style_callback_context(&self, context: $crate::internal::wasm_bindgen::JsValue) -> Self {
                 Self(self.0.set_cursor_style_callback_context(context))
             }
 
-            pub fn remote_clipboard_changed_callback(&self, callback: js_sys::Function) -> Self {
+            pub fn remote_clipboard_changed_callback(
+                &self,
+                callback: $crate::internal::web_sys::js_sys::Function,
+            ) -> Self {
                 Self(self.0.remote_clipboard_changed_callback(callback))
             }
 
-            pub fn remote_received_format_list_callback(&self, callback: js_sys::Function) -> Self {
+            pub fn remote_received_format_list_callback(
+                &self,
+                callback: $crate::internal::web_sys::js_sys::Function,
+            ) -> Self {
                 Self(self.0.remote_received_format_list_callback(callback))
             }
 
-            pub fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> Self {
+            pub fn force_clipboard_update_callback(
+                &self,
+                callback: $crate::internal::web_sys::js_sys::Function,
+            ) -> Self {
                 Self(self.0.force_clipboard_update_callback(callback))
             }
 
@@ -290,35 +261,73 @@ macro_rules! make_bridge {
             }
         }
 
-        #[wasm_bindgen]
-        pub struct SessionTerminationInfo(<$api as RemoteDesktopApi>::SessionTerminationInfo);
-
-        impl From<<$api as RemoteDesktopApi>::SessionTerminationInfo> for SessionTerminationInfo {
-            fn from(value: <$api as RemoteDesktopApi>::SessionTerminationInfo) -> Self {
-                Self(value)
-            }
-        }
-
-        #[wasm_bindgen]
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        #[doc(hidden)]
         impl SessionTerminationInfo {
             pub fn reason(&self) -> String {
                 self.0.reason()
             }
         }
 
-        #[wasm_bindgen]
-        pub struct ClipboardData(<$api as RemoteDesktopApi>::ClipboardData);
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        #[doc(hidden)]
+        impl DeviceEvent {
+            pub fn mouse_button_pressed(button: u8) -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::mouse_button_pressed(button))
+            }
 
-        impl From<<$api as RemoteDesktopApi>::ClipboardData> for ClipboardData {
-            fn from(value: <$api as RemoteDesktopApi>::ClipboardData) -> Self {
-                Self(value)
+            pub fn mouse_button_released(button: u8) -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::mouse_button_released(button))
+            }
+
+            pub fn mouse_move(x: u16, y: u16) -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::mouse_move(
+                    x, y,
+                ))
+            }
+
+            pub fn wheel_rotations(vertical: bool, rotation_units: i16) -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::wheel_rotations(vertical, rotation_units))
+            }
+
+            pub fn key_pressed(scancode: u16) -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::key_pressed(
+                    scancode,
+                ))
+            }
+
+            pub fn key_released(scancode: u16) -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::key_released(
+                    scancode,
+                ))
+            }
+
+            pub fn unicode_pressed(unicode: char) -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::unicode_pressed(unicode))
+            }
+
+            pub fn unicode_released(unicode: char) -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::unicode_released(unicode))
             }
         }
 
-        #[wasm_bindgen]
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        #[doc(hidden)]
+        impl InputTransaction {
+            pub fn init() -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::InputTransaction>::init())
+            }
+
+            pub fn add_event(&mut self, event: DeviceEvent) {
+                self.0.add_event(event.0);
+            }
+        }
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        #[doc(hidden)]
         impl ClipboardData {
             pub fn init() -> Self {
-                Self(<<$api as RemoteDesktopApi>::ClipboardData>::init())
+                Self(<<$api as $crate::RemoteDesktopApi>::ClipboardData>::init())
             }
 
             pub fn add_text(&mut self, mime_type: &str, text: &str) {
@@ -338,23 +347,27 @@ macro_rules! make_bridge {
             }
         }
 
-        #[wasm_bindgen]
-        pub struct ClipboardItem(<$api as RemoteDesktopApi>::ClipboardItem);
-
-        impl From<<$api as RemoteDesktopApi>::ClipboardItem> for ClipboardItem {
-            fn from(value: <$api as RemoteDesktopApi>::ClipboardItem) -> Self {
-                Self(value)
-            }
-        }
-
-        #[wasm_bindgen]
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        #[doc(hidden)]
         impl ClipboardItem {
             pub fn mime_type(&self) -> String {
                 self.0.mime_type().to_owned()
             }
 
-            pub fn value(&self) -> JsValue {
+            pub fn value(&self) -> $crate::internal::wasm_bindgen::JsValue {
                 self.0.value().into()
+            }
+        }
+
+        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
+        #[doc(hidden)]
+        impl IronError {
+            pub fn backtrace(&self) -> String {
+                self.0.backtrace()
+            }
+
+            pub fn kind(&self) -> $crate::IronErrorKind {
+                self.0.kind()
             }
         }
     };
@@ -362,6 +375,12 @@ macro_rules! make_bridge {
 
 #[doc(hidden)]
 pub mod internal {
+    #[doc(hidden)]
+    pub use web_sys;
+
+    #[doc(hidden)]
+    pub use wasm_bindgen;
+
     #[doc(hidden)]
     pub fn setup(log_level: &str) {
         // When the `console_error_panic_hook` feature is enabled, we can call the

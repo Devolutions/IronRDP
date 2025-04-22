@@ -19,23 +19,23 @@ mod input;
 mod network_client;
 mod session;
 
-struct Api;
-
-impl iron_remote_desktop::RemoteDesktopApi for Api {
-    type Session = session::Session;
-    type SessionBuilder = session::SessionBuilder;
-    type SessionTerminationInfo = session::SessionTerminationInfo;
-    type DeviceEvent = input::DeviceEvent;
-    type InputTransaction = input::InputTransaction;
-    type ClipboardData = clipboard::ClipboardData;
-    type ClipboardItem = clipboard::ClipboardItem;
-    type Error = error::IronError;
-
-    fn post_setup() {
-        debug!("IronRDP is ready");
-    }
-}
-
 mod wasm_bridge {
-    iron_remote_desktop::make_bridge!(crate::Api);
+    struct Api;
+
+    impl iron_remote_desktop::RemoteDesktopApi for Api {
+        type Session = crate::session::Session;
+        type SessionBuilder = crate::session::SessionBuilder;
+        type SessionTerminationInfo = crate::session::SessionTerminationInfo;
+        type DeviceEvent = crate::input::DeviceEvent;
+        type InputTransaction = crate::input::InputTransaction;
+        type ClipboardData = crate::clipboard::ClipboardData;
+        type ClipboardItem = crate::clipboard::ClipboardItem;
+        type Error = crate::error::IronError;
+
+        fn post_setup() {
+            debug!("IronRDP is ready");
+        }
+    }
+
+    iron_remote_desktop::make_bridge!(Api);
 }
