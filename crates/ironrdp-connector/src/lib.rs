@@ -250,7 +250,7 @@ impl Written {
 }
 
 pub trait Sequence: Send {
-    fn next_pdu_hint(&self) -> Option<Box<&dyn PduHint>>;
+    fn next_pdu_hint(&self) -> Option<Box<dyn PduHint>>;
 
     fn state(&self) -> &dyn State;
 

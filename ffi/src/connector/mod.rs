@@ -154,13 +154,12 @@ pub mod ffi {
     }
 
     #[diplomat::opaque]
-    pub struct PduHint<'a>(pub &'a dyn ironrdp::pdu::PduHint);
+    pub struct PduHint(pub Box<dyn ironrdp::pdu::PduHint>);
 
-    impl<'a> PduHint<'a> {
-        pub fn find_size(&'a self, bytes: &[u8]) -> Result<Box<crate::utils::ffi::OptionalUsize>, Box<IronRdpError>> {
-            let pdu_hint = self.0;
+    impl PduHint {
+        pub fn find_size(&self, bytes: &[u8]) -> Result<Box<crate::utils::ffi::OptionalUsize>, Box<IronRdpError>> {
             // TODO C# NuGet is only used on client-side so we probably don’t need to break the ABI for that just now.
-            let size = pdu_hint.find_size(bytes)?.map(|(_match, size)| size);
+            let size = self.0.find_size(bytes)?.map(|(_match, size)| size);
             Ok(Box::new(crate::utils::ffi::OptionalUsize(size)))
         }
     }
@@ -181,14 +180,14 @@ pub mod ffi {
     }
 
     impl ClientConnector {
-        pub fn next_pdu_hint(&self) -> Result<Option<Box<PduHint<'_>>>, Box<IronRdpError>> {
+        pub fn next_pdu_hint(&self) -> Result<Option<Box<PduHint>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
             tracing::trace!(pduhint=?connector.next_pdu_hint(), "Reading next PDU hint");
             Ok(connector
                 .next_pdu_hint()
-                .map(|boxed_hint| Box::new(PduHint(&**boxed_hint))))
+                .map(|boxed_hint| Box::new(PduHint(boxed_hint))))
         }
 
         pub fn get_dyn_state(&self) -> Result<Box<DynState<'_>>, Box<IronRdpError>> {

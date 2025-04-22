@@ -54,13 +54,13 @@ impl State for ChannelConnectionState {
 }
 
 impl Sequence for ChannelConnectionSequence {
-    fn next_pdu_hint(&self) -> Option<Box<&dyn pdu::PduHint>> {
+    fn next_pdu_hint(&self) -> Option<Box<dyn pdu::PduHint>> {
         match &self.state {
             ChannelConnectionState::Consumed => None,
-            ChannelConnectionState::WaitErectDomainRequest => Some(Box::new(&pdu::X224_HINT)),
-            ChannelConnectionState::WaitAttachUserRequest => Some(Box::new(&pdu::X224_HINT)),
+            ChannelConnectionState::WaitErectDomainRequest => Some(Box::new(pdu::X224_HINT)),
+            ChannelConnectionState::WaitAttachUserRequest => Some(Box::new(pdu::X224_HINT)),
             ChannelConnectionState::SendAttachUserConfirm => None,
-            ChannelConnectionState::WaitChannelJoinRequest { .. } => Some(Box::new(&pdu::X224_HINT)),
+            ChannelConnectionState::WaitChannelJoinRequest { .. } => Some(Box::new(pdu::X224_HINT)),
             ChannelConnectionState::SendChannelJoinConfirm { .. } => None,
             ChannelConnectionState::AllJoined => None,
         }

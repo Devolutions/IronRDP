@@ -188,15 +188,15 @@ impl ClientConnector {
 }
 
 impl Sequence for ClientConnector {
-    fn next_pdu_hint(&self) -> Option<Box<&dyn PduHint>> {
+    fn next_pdu_hint(&self) -> Option<Box<dyn PduHint>> {
         match &self.state {
             ClientConnectorState::Consumed => None,
             ClientConnectorState::ConnectionInitiationSendRequest => None,
-            ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(Box::new(&ironrdp_pdu::X224_HINT)),
+            ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(Box::new(ironrdp_pdu::X224_HINT)),
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
             ClientConnectorState::Credssp { .. } => None,
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
-            ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } => Some(Box::new(&ironrdp_pdu::X224_HINT)),
+            ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } => Some(Box::new(ironrdp_pdu::X224_HINT)),
             ClientConnectorState::ChannelConnection { channel_connection, .. } => channel_connection.next_pdu_hint(),
             ClientConnectorState::SecureSettingsExchange { .. } => None,
             ClientConnectorState::ConnectTimeAutoDetection { .. } => None,

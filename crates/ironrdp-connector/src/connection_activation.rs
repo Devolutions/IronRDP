@@ -68,11 +68,11 @@ impl ConnectionActivationSequence {
 }
 
 impl Sequence for ConnectionActivationSequence {
-    fn next_pdu_hint(&self) -> Option<Box<&dyn ironrdp_pdu::PduHint>> {
+    fn next_pdu_hint(&self) -> Option<Box<dyn ironrdp_pdu::PduHint>> {
         match &self.state {
             ConnectionActivationState::Consumed => None,
             ConnectionActivationState::Finalized { .. } => None,
-            ConnectionActivationState::CapabilitiesExchange { .. } => Some(Box::new(&ironrdp_pdu::X224_HINT)),
+            ConnectionActivationState::CapabilitiesExchange { .. } => Some(Box::new(ironrdp_pdu::X224_HINT)),
             ConnectionActivationState::ConnectionFinalization {
                 connection_finalization,
                 ..

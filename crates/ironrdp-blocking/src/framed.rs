@@ -87,7 +87,7 @@ where
     }
 
     /// Reads a frame using the provided PduHint.
-    pub fn read_by_hint(&mut self, hint: Box<&dyn PduHint>) -> io::Result<Bytes> {
+    pub fn read_by_hint(&mut self, hint: Box<dyn PduHint>) -> io::Result<Bytes> {
         loop {
             match hint
                 .find_size(self.peek())

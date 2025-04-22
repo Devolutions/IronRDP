@@ -19,11 +19,8 @@ pub mod ffi {
             Box::new(ConnectionActivationState(self.0.state.clone()))
         }
 
-        pub fn next_pdu_hint<'a>(&'a self) -> Result<Option<Box<PduHint<'a>>>, Box<IronRdpError>> {
-            Ok(self
-                .0
-                .next_pdu_hint()
-                .map(|boxed_hint| Box::new(PduHint(&**boxed_hint))))
+        pub fn next_pdu_hint(&self) -> Result<Option<Box<PduHint>>, Box<IronRdpError>> {
+            Ok(self.0.next_pdu_hint().map(|boxed_hint| Box::new(PduHint(boxed_hint))))
         }
 
         pub fn step(&mut self, pdu_hint: &[u8], buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
