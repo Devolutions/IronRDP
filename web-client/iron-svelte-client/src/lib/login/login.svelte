@@ -149,16 +149,16 @@
                 }),
                 filter((result) => result !== null && result !== undefined), // Explicitly checking for null/undefined
             )
-            .subscribe((start_info: NewSessionInfo | null) => {
-                if (start_info != null && start_info.initial_desktop_size !== null) {
+            .subscribe((info: NewSessionInfo | null) => {
+                if (info != null && info.initialDesktopSize !== null) {
                     toast.set({
                         type: 'info',
                         message: 'Success',
                     });
                     currentSession.update((session) =>
                         Object.assign(session, {
-                            sessionId: start_info.session_id,
-                            desktopSize: start_info.initial_desktop_size,
+                            sessionId: info.sessionId,
+                            desktopSize: info.initialDesktopSize,
                             active: true,
                         }),
                     );

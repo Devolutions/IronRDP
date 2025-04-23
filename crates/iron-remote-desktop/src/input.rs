@@ -12,6 +12,6 @@ pub trait DeviceEvent {
 pub trait InputTransaction {
     type DeviceEvent: DeviceEvent;
 
-    fn init() -> Self;
+    fn create() -> Self;
     fn add_event(&mut self, event: Self::DeviceEvent);
 }

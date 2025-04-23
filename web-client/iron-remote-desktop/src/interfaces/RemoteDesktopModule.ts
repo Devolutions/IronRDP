@@ -5,16 +5,18 @@ import type { SessionBuilder } from './SessionBuilder';
 import type { ClipboardData } from './ClipboardData';
 
 export interface RemoteDesktopModule {
-    createDesktopSize(width: number, height: number): DesktopSize;
-    createMouseButtonPressed(button: number): DeviceEvent;
-    createMouseButtonReleased(button: number): DeviceEvent;
-    createMouseMove(x: number, y: number): DeviceEvent;
-    createWheelRotations(vertical: boolean, rotation_units: number): DeviceEvent;
-    createKeyPressed(scancode: number): DeviceEvent;
-    createKeyReleased(scancode: number): DeviceEvent;
-    createUnicodePressed(unicode: string): DeviceEvent;
-    createUnicodeReleased(unicode: string): DeviceEvent;
-    createInputTransaction(): InputTransaction;
-    createSessionBuilder(): SessionBuilder;
-    createClipboardData(): ClipboardData;
+    DesktopSize: { new (width: number, height: number): DesktopSize };
+    InputTransaction: { new (): InputTransaction };
+    SessionBuilder: { new (): SessionBuilder };
+    ClipboardData: { new (): ClipboardData };
+    DeviceEvent: {
+        mouseButtonPressed(button: number): DeviceEvent;
+        mouseButtonReleased(button: number): DeviceEvent;
+        mouseMove(x: number, y: number): DeviceEvent;
+        wheelRotations(vertical: boolean, rotationUnits: number): DeviceEvent;
+        keyPressed(scancode: number): DeviceEvent;
+        keyReleased(scancode: number): DeviceEvent;
+        unicodePressed(unicode: string): DeviceEvent;
+        unicodeReleased(unicode: string): DeviceEvent;
+    };
 }
