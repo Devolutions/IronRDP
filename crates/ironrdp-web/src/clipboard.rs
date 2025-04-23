@@ -613,7 +613,7 @@ impl ClipboardData {
 impl iron_remote_desktop::ClipboardData for ClipboardData {
     type Item = ClipboardItem;
 
-    fn init() -> Self {
+    fn create() -> Self {
         Self::new()
     }
 

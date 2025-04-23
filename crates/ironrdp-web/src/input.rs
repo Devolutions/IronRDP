@@ -58,7 +58,7 @@ pub(crate) struct InputTransaction(pub(crate) SmallVec<[Operation; 3]>);
 impl iron_remote_desktop::InputTransaction for InputTransaction {
     type DeviceEvent = DeviceEvent;
 
-    fn init() -> Self {
+    fn create() -> Self {
         Self(SmallVec::new())
     }
 
