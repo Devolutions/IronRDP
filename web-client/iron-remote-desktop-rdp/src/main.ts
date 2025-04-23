@@ -1,30 +1,31 @@
-import init, {
+import wasm_init, {
     setup,
     DesktopSize,
     DeviceEvent,
     InputTransaction,
-    IronError,
-    Session,
     SessionBuilder,
-    SessionTerminationInfo,
     ClipboardData,
-    ClipboardItem,
     Extension,
 } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
 
-export default {
-    init,
-    setup,
-    DesktopSize,
-    DeviceEvent,
-    InputTransaction,
-    IronError,
-    SessionBuilder,
-    ClipboardData,
-    ClipboardItem,
-    Session,
-    SessionTerminationInfo,
-    Extension,
+export async function init(log_level: string) {
+    await wasm_init();
+    setup(log_level);
+}
+
+export const Backend = {
+    createDesktopSize: DesktopSize.init,
+    createMouseButtonPressed: DeviceEvent.mouse_button_pressed,
+    createMouseButtonReleased: DeviceEvent.mouse_button_released,
+    createMouseMove: DeviceEvent.mouse_move,
+    createWheelRotations: DeviceEvent.wheel_rotations,
+    createKeyPressed: DeviceEvent.key_pressed,
+    createKeyReleased: DeviceEvent.key_released,
+    createUnicodePressed: DeviceEvent.unicode_pressed,
+    createUnicodeReleased: DeviceEvent.unicode_released,
+    createInputTransaction: InputTransaction.init,
+    createSessionBuilder: SessionBuilder.init,
+    createClipboardData: ClipboardData.init,
 };
 
 export function preConnectionBlob(pcb: string): Extension {

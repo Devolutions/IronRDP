@@ -17,7 +17,6 @@
     import { onMount } from 'svelte';
     import { loggingService } from './services/logging.service';
     import { RemoteDesktopService } from './services/remote-desktop.service';
-    import { LogType } from './enums/LogType';
     import type { ResizeEvent } from './interfaces/ResizeEvent';
     import { PublicAPI } from './services/PublicAPI';
     import { ScreenScale } from './enums/ScreenScale';
@@ -27,13 +26,11 @@
     let {
         scale,
         verbose,
-        debugwasm,
         flexcenter,
         module,
     }: {
         scale: string;
         verbose: 'true' | 'false';
-        debugwasm: 'OFF' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE';
         flexcenter: string;
         module: RemoteDesktopModule;
     } = $props();
@@ -667,8 +664,6 @@
         canvas.width = 800;
         canvas.height = 600;
 
-        const logLevel = LogType[debugwasm] ?? LogType.INFO;
-        await remoteDesktopService.init(logLevel);
         remoteDesktopService.setCanvas(canvas);
 
         initListeners();

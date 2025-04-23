@@ -2,11 +2,11 @@
     import { currentSession, userInteractionService } from '../../services/session.service';
     import { catchError, filter } from 'rxjs/operators';
     import type { UserInteraction, NewSessionInfo } from '../../../static/iron-remote-desktop';
-    import { preConnectionBlob, displayControl, kdcProxyUrl } from '../../../static/iron-remote-desktop-rdp';
+    import { preConnectionBlob, displayControl, kdcProxyUrl, init } from '../../../static/iron-remote-desktop-rdp';
     import { from, of } from 'rxjs';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
-    import { DesktopSize } from '../../models/desktop-size';
+    import { onMount } from 'svelte';
 
     let username = 'Administrator';
     let password = 'DevoLabs123!';
@@ -15,7 +15,7 @@
     let domain = '';
     let authtoken = '';
     let kdc_proxy_url = '';
-    let desktopSize = new DesktopSize(1280, 768);
+    let desktopSize = { width: 1280, height: 720 };
     let pcb = '';
     let pop_up = false;
     let enable_clipboard = true;
@@ -171,6 +171,10 @@
                 }
             });
     };
+
+    onMount(async () => {
+        await init('INFO');
+    });
 </script>
 
 <main class="responsive login-container">
