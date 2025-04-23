@@ -1515,7 +1515,7 @@ dependencies = [
  "ironrdp-cliprdr-native",
  "ironrdp-core",
  "sspi",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2471,7 +2471,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tracing",
 ]
 
@@ -2481,7 +2481,7 @@ version = "0.1.3"
 dependencies = [
  "ironrdp-core",
  "png",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -2490,7 +2490,7 @@ version = "0.2.0"
 dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tracing",
  "windows 0.61.1",
 ]
@@ -2587,7 +2587,7 @@ dependencies = [
  "lazy_static",
  "num-derive",
  "num-traits",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "yuv",
 ]
 
@@ -2620,7 +2620,7 @@ dependencies = [
  "pkcs1",
  "sha1",
  "tap",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "x509-cert",
 ]
 
