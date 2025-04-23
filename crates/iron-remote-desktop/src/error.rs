@@ -2,6 +2,7 @@ use wasm_bindgen::prelude::*;
 
 pub trait IronError {
     fn backtrace(&self) -> String;
+
     fn kind(&self) -> IronErrorKind;
 }
 
