@@ -1,6 +1,6 @@
 use std::io;
 
-use yuvutils_rs::{
+use yuv::{
     rdp_abgr_to_yuv444, rdp_argb_to_yuv444, rdp_bgra_to_yuv444, rdp_rgba_to_yuv444, rdp_yuv444_to_argb,
     rdp_yuv444_to_rgba, BufferStoreMut, YuvPlanarImage, YuvPlanarImageMut,
 };

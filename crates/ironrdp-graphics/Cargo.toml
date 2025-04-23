@@ -26,7 +26,7 @@ lazy_static.workspace = true # Legacy crate; prefer std::sync::LazyLock or LazyC
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
 thiserror = "1" # FIXME: handwrite the Error trait implementations.
-yuvutils-rs = { version = "0.8", features = ["rdp"] }
+yuv = { version = "0.8", features = ["rdp"] }
 
 [dev-dependencies]
 bmp = "0.5"
