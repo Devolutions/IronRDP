@@ -134,7 +134,7 @@
         let result = {} as Record<string, Blob>;
 
         for (const item of data.items()) {
-            let mime = item.mime_type();
+            let mime = item.mimeType();
             let value = new Blob([item.value()], { type: mime });
 
             result[mime] = value;
@@ -233,7 +233,7 @@
             if (!sameValue) {
                 lastClientClipboardItems = values;
 
-                let data = remoteDesktopService.createClipboardData();
+                let clipboardData = new module.ClipboardData();
 
                 // Iterate over `Record` type
                 values.forEach((value: string | Uint8Array, key: string) => {
@@ -243,15 +243,15 @@
                     }
 
                     if (key.startsWith('text/') && typeof value === 'string') {
-                        data.add_text(key, value);
+                        clipboardData.addText(key, value);
                     } else if (key.startsWith('image/') && value instanceof Uint8Array) {
-                        data.add_binary(key, value);
+                        clipboardData.addBinary(key, value);
                     }
                 });
 
-                if (!data.is_empty()) {
-                    lastClientClipboardData = data;
-                    remoteDesktopService.onClipboardChanged(data);
+                if (!clipboardData.isEmpty()) {
+                    lastClientClipboardData = clipboardData;
+                    remoteDesktopService.onClipboardChanged(clipboardData);
                 }
             }
         } catch (err) {
@@ -294,7 +294,7 @@
                 ffRemoteClipboardData = null;
                 for (const item of clipboard_data.items()) {
                     // Firefox only supports text/plain mime type for clipboard writes :(
-                    if (item.mime_type() === 'text/plain') {
+                    if (item.mimeType() === 'text/plain') {
                         const value = item.value();
 
                         if (typeof value === 'string') {
@@ -338,7 +338,7 @@
         }
 
         try {
-            let clipboard_data = remoteDesktopService.createClipboardData();
+            let clipboardData = new module.ClipboardData();
 
             if (evt.clipboardData == null) {
                 return;
@@ -349,10 +349,10 @@
 
                 if (mime.startsWith('text/')) {
                     clipItem.getAsString((str: string) => {
-                        clipboard_data.add_text(mime, str);
+                        clipboardData.addText(mime, str);
 
-                        if (!clipboard_data.is_empty()) {
-                            remoteDesktopService.onClipboardChanged(clipboard_data);
+                        if (!clipboardData.isEmpty()) {
+                            remoteDesktopService.onClipboardChanged(clipboardData);
                         }
                     });
                     break;
@@ -367,10 +367,10 @@
                     file.arrayBuffer().then((buffer: ArrayBuffer) => {
                         const strict_buffer = new Uint8Array(buffer);
 
-                        clipboard_data.add_binary(mime, strict_buffer);
+                        clipboardData.addBinary(mime, strict_buffer);
 
-                        if (!clipboard_data.is_empty()) {
-                            remoteDesktopService.onClipboardChanged(clipboard_data);
+                        if (!clipboardData.isEmpty()) {
+                            remoteDesktopService.onClipboardChanged(clipboardData);
                         }
                     });
                     break;
@@ -457,9 +457,9 @@
 
     function serverBridgeListeners() {
         remoteDesktopService.resize.subscribe((evt: ResizeEvent) => {
-            loggingService.info(`Resize canvas to: ${evt.desktop_size.width}x${evt.desktop_size.height}`);
-            canvas.width = evt.desktop_size.width;
-            canvas.height = evt.desktop_size.height;
+            loggingService.info(`Resize canvas to: ${evt.desktopSize.width}x${evt.desktopSize.height}`);
+            canvas.width = evt.desktopSize.width;
+            canvas.height = evt.desktopSize.height;
             scaleSession(scale);
         });
     }

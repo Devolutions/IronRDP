@@ -13,7 +13,7 @@ export interface UserInteraction {
 
     connect(config: Config): Promise<NewSessionInfo>;
 
-    setKeyboardUnicodeMode(use_unicode: boolean): void;
+    setKeyboardUnicodeMode(useUnicode: boolean): void;
 
     ctrlAltDel(): void;
 

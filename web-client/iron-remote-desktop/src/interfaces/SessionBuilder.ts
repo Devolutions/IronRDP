@@ -14,7 +14,7 @@ export interface SessionBuilder {
     /**
      * Optional
      */
-    server_domain(server_domain: string): SessionBuilder;
+    serverDomain(serverDomain: string): SessionBuilder;
     /**
      * Required
      */
@@ -22,19 +22,19 @@ export interface SessionBuilder {
     /**
      * Required
      */
-    proxy_address(address: string): SessionBuilder;
+    proxyAddress(address: string): SessionBuilder;
     /**
      * Required
      */
-    auth_token(token: string): SessionBuilder;
+    authToken(token: string): SessionBuilder;
     /**
      * Optional
      */
-    desktop_size(desktop_size: DesktopSize): SessionBuilder;
+    desktopSize(desktopSize: DesktopSize): SessionBuilder;
     /**
      * Optional
      */
-    render_canvas(canvas: HTMLCanvasElement): SessionBuilder;
+    renderCanvas(canvas: HTMLCanvasElement): SessionBuilder;
     /**
      * Required.
      *
@@ -44,33 +44,33 @@ export interface SessionBuilder {
      * - `url` (custom cursor data URL); `cursor_data` contains the data URL with Base64-encoded
      *   cursor bitmap; `hotspot_x` and `hotspot_y` are set to the cursor hotspot coordinates.
      */
-    set_cursor_style_callback(callback: SetCursorStyleCallback): SessionBuilder;
+    setCursorStyleCallback(callback: SetCursorStyleCallback): SessionBuilder;
     /**
      * Required.
      */
-    set_cursor_style_callback_context(context: unknown): SessionBuilder;
+    setCursorStyleCallbackContext(context: unknown): SessionBuilder;
     /**
      * Optional
      */
-    remote_clipboard_changed_callback(callback: RemoteClipboardChangedCallback): SessionBuilder;
+    remoteClipboardChangedCallback(callback: RemoteClipboardChangedCallback): SessionBuilder;
     /**
      * Optional
      */
-    remote_received_format_list_callback(callback: RemoteReceiveForwardListCallback): SessionBuilder;
+    remoteReceivedFormatListCallback(callback: RemoteReceiveForwardListCallback): SessionBuilder;
     /**
      * Optional
      */
-    force_clipboard_update_callback(callback: ForceClipboardUpdateCallback): SessionBuilder;
+    forceClipboardUpdateCallback(callback: ForceClipboardUpdateCallback): SessionBuilder;
     extension(value: unknown): SessionBuilder;
     connect(): Promise<Session>;
 }
 
 interface SetCursorStyleCallback {
     (
-        cursor_kind: string,
-        cursor_data: string | undefined,
-        hotspot_x: number | undefined,
-        hotspot_y: number | undefined,
+        cursorKind: string,
+        cursorData: string | undefined,
+        hotspotX: number | undefined,
+        hotspotY: number | undefined,
     ): void;
 }
 

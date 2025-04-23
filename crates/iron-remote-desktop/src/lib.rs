@@ -129,18 +129,22 @@ macro_rules! make_bridge {
                 self.0.run().await.map(SessionTerminationInfo).map_err(IronError)
             }
 
+            #[wasm_bindgen(js_name = desktopSize)]
             pub fn desktop_size(&self) -> $crate::DesktopSize {
                 self.0.desktop_size()
             }
 
+            #[wasm_bindgen(js_name = applyInputs)]
             pub fn apply_inputs(&self, transaction: InputTransaction) -> Result<(), IronError> {
                 self.0.apply_inputs(transaction.0).map_err(IronError)
             }
 
+            #[wasm_bindgen(js_name = releaseAllInputs)]
             pub fn release_all_inputs(&self) -> Result<(), IronError> {
                 self.0.release_all_inputs().map_err(IronError)
             }
 
+            #[wasm_bindgen(js_name = synchronizeLockKeys)]
             pub fn synchronize_lock_keys(
                 &self,
                 scroll_lock: bool,
@@ -157,6 +161,7 @@ macro_rules! make_bridge {
                 self.0.shutdown().map_err(IronError)
             }
 
+            #[wasm_bindgen(js_name = onClipboardPaste)]
             pub async fn on_clipboard_paste(&self, content: ClipboardData) -> Result<(), IronError> {
                 self.0.on_clipboard_paste(content.0).await.map_err(IronError)
             }
@@ -173,10 +178,12 @@ macro_rules! make_bridge {
                     .resize(width, height, scale_factor, physical_width, physical_height);
             }
 
+            #[wasm_bindgen(js_name = supportsUnicodeKeyboardShortcuts)]
             pub fn supports_unicode_keyboard_shortcuts(&self) -> bool {
                 self.0.supports_unicode_keyboard_shortcuts()
             }
 
+            #[wasm_bindgen(js_name = extensionCall)]
             pub fn extension_call(
                 ext: $crate::Extension,
             ) -> Result<$crate::internal::wasm_bindgen::JsValue, IronError> {
@@ -187,8 +194,9 @@ macro_rules! make_bridge {
         #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
         #[doc(hidden)]
         impl SessionBuilder {
-            pub fn init() -> Self {
-                Self(<<$api as $crate::RemoteDesktopApi>::SessionBuilder>::init())
+            #[wasm_bindgen(constructor)]
+            pub fn create() -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::SessionBuilder>::create())
             }
 
             pub fn username(&self, username: String) -> Self {
@@ -199,6 +207,7 @@ macro_rules! make_bridge {
                 Self(self.0.destination(destination))
             }
 
+            #[wasm_bindgen(js_name = serverDomain)]
             pub fn server_domain(&self, server_domain: String) -> Self {
                 Self(self.0.server_domain(server_domain))
             }
@@ -207,30 +216,37 @@ macro_rules! make_bridge {
                 Self(self.0.password(password))
             }
 
+            #[wasm_bindgen(js_name = proxyAddress)]
             pub fn proxy_address(&self, address: String) -> Self {
                 Self(self.0.proxy_address(address))
             }
 
+            #[wasm_bindgen(js_name = authToken)]
             pub fn auth_token(&self, token: String) -> Self {
                 Self(self.0.auth_token(token))
             }
 
+            #[wasm_bindgen(js_name = desktopSize)]
             pub fn desktop_size(&self, desktop_size: $crate::DesktopSize) -> Self {
                 Self(self.0.desktop_size(desktop_size))
             }
 
+            #[wasm_bindgen(js_name = renderCanvas)]
             pub fn render_canvas(&self, canvas: $crate::internal::web_sys::HtmlCanvasElement) -> Self {
                 Self(self.0.render_canvas(canvas))
             }
 
+            #[wasm_bindgen(js_name = setCursorStyleCallback)]
             pub fn set_cursor_style_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
                 Self(self.0.set_cursor_style_callback(callback))
             }
 
+            #[wasm_bindgen(js_name = setCursorStyleCallbackContext)]
             pub fn set_cursor_style_callback_context(&self, context: $crate::internal::wasm_bindgen::JsValue) -> Self {
                 Self(self.0.set_cursor_style_callback_context(context))
             }
 
+            #[wasm_bindgen(js_name = remoteClipboardChangedCallback)]
             pub fn remote_clipboard_changed_callback(
                 &self,
                 callback: $crate::internal::web_sys::js_sys::Function,
@@ -238,6 +254,7 @@ macro_rules! make_bridge {
                 Self(self.0.remote_clipboard_changed_callback(callback))
             }
 
+            #[wasm_bindgen(js_name = remoteReceivedFormatListCallback)]
             pub fn remote_received_format_list_callback(
                 &self,
                 callback: $crate::internal::web_sys::js_sys::Function,
@@ -245,6 +262,7 @@ macro_rules! make_bridge {
                 Self(self.0.remote_received_format_list_callback(callback))
             }
 
+            #[wasm_bindgen(js_name = forceClipboardUpdateCallback)]
             pub fn force_clipboard_update_callback(
                 &self,
                 callback: $crate::internal::web_sys::js_sys::Function,
@@ -272,40 +290,48 @@ macro_rules! make_bridge {
         #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
         #[doc(hidden)]
         impl DeviceEvent {
+            #[wasm_bindgen(js_name = mouseButtonPressed)]
             pub fn mouse_button_pressed(button: u8) -> Self {
                 Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::mouse_button_pressed(button))
             }
 
+            #[wasm_bindgen(js_name = mouseButtonReleased)]
             pub fn mouse_button_released(button: u8) -> Self {
                 Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::mouse_button_released(button))
             }
 
+            #[wasm_bindgen(js_name = mouseMove)]
             pub fn mouse_move(x: u16, y: u16) -> Self {
                 Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::mouse_move(
                     x, y,
                 ))
             }
 
+            #[wasm_bindgen(js_name = wheelRotations)]
             pub fn wheel_rotations(vertical: bool, rotation_units: i16) -> Self {
                 Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::wheel_rotations(vertical, rotation_units))
             }
 
+            #[wasm_bindgen(js_name = keyPressed)]
             pub fn key_pressed(scancode: u16) -> Self {
                 Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::key_pressed(
                     scancode,
                 ))
             }
 
+            #[wasm_bindgen(js_name = keyReleased)]
             pub fn key_released(scancode: u16) -> Self {
                 Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::key_released(
                     scancode,
                 ))
             }
 
+            #[wasm_bindgen(js_name = unicodePressed)]
             pub fn unicode_pressed(unicode: char) -> Self {
                 Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::unicode_pressed(unicode))
             }
 
+            #[wasm_bindgen(js_name = unicodeReleased)]
             pub fn unicode_released(unicode: char) -> Self {
                 Self(<<$api as $crate::RemoteDesktopApi>::DeviceEvent>::unicode_released(unicode))
             }
@@ -314,10 +340,12 @@ macro_rules! make_bridge {
         #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
         #[doc(hidden)]
         impl InputTransaction {
-            pub fn init() -> Self {
-                Self(<<$api as $crate::RemoteDesktopApi>::InputTransaction>::init())
+            #[wasm_bindgen(constructor)]
+            pub fn create() -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::InputTransaction>::create())
             }
 
+            #[wasm_bindgen(js_name = addEvent)]
             pub fn add_event(&mut self, event: DeviceEvent) {
                 self.0.add_event(event.0);
             }
@@ -326,14 +354,17 @@ macro_rules! make_bridge {
         #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
         #[doc(hidden)]
         impl ClipboardData {
-            pub fn init() -> Self {
-                Self(<<$api as $crate::RemoteDesktopApi>::ClipboardData>::init())
+            #[wasm_bindgen(constructor)]
+            pub fn create() -> Self {
+                Self(<<$api as $crate::RemoteDesktopApi>::ClipboardData>::create())
             }
 
+            #[wasm_bindgen(js_name = addText)]
             pub fn add_text(&mut self, mime_type: &str, text: &str) {
                 self.0.add_text(mime_type, text);
             }
 
+            #[wasm_bindgen(js_name = addBinary)]
             pub fn add_binary(&mut self, mime_type: &str, binary: &[u8]) {
                 self.0.add_binary(mime_type, binary);
             }
@@ -342,6 +373,7 @@ macro_rules! make_bridge {
                 self.0.items().into_iter().cloned().map(ClipboardItem).collect()
             }
 
+            #[wasm_bindgen(js_name = isEmpty)]
             pub fn is_empty(&self) -> bool {
                 self.0.is_empty()
             }
@@ -350,6 +382,7 @@ macro_rules! make_bridge {
         #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
         #[doc(hidden)]
         impl ClipboardItem {
+            #[wasm_bindgen(js_name = mimeType)]
             pub fn mime_type(&self) -> String {
                 self.0.mime_type().to_owned()
             }

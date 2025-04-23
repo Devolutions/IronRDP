@@ -48,7 +48,7 @@ pub struct Extension {
 #[wasm_bindgen]
 impl Extension {
     #[wasm_bindgen(constructor)]
-    pub fn new(ident: String, value: JsValue) -> Self {
+    pub fn create(ident: String, value: JsValue) -> Self {
         Self { ident, value }
     }
 }

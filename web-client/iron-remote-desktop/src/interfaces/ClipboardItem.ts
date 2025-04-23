@@ -1,4 +1,4 @@
 export interface ClipboardItem {
-    mime_type(): string;
+    mimeType(): string;
     value(): string | Uint8Array;
 }

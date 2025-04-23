@@ -14,18 +14,11 @@ export async function init(log_level: string) {
 }
 
 export const Backend = {
-    createDesktopSize: DesktopSize.init,
-    createMouseButtonPressed: DeviceEvent.mouse_button_pressed,
-    createMouseButtonReleased: DeviceEvent.mouse_button_released,
-    createMouseMove: DeviceEvent.mouse_move,
-    createWheelRotations: DeviceEvent.wheel_rotations,
-    createKeyPressed: DeviceEvent.key_pressed,
-    createKeyReleased: DeviceEvent.key_released,
-    createUnicodePressed: DeviceEvent.unicode_pressed,
-    createUnicodeReleased: DeviceEvent.unicode_released,
-    createInputTransaction: InputTransaction.init,
-    createSessionBuilder: SessionBuilder.init,
-    createClipboardData: ClipboardData.init,
+    DesktopSize: DesktopSize,
+    InputTransaction: InputTransaction,
+    SessionBuilder: SessionBuilder,
+    ClipboardData: ClipboardData,
+    DeviceEvent: DeviceEvent,
 };
 
 export function preConnectionBlob(pcb: string): Extension {

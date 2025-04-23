@@ -102,7 +102,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     type Session = Session;
     type Error = IronError;
 
-    fn init() -> Self {
+    fn create() -> Self {
         Self(Rc::new(RefCell::new(SessionBuilderInner::default())))
     }
 

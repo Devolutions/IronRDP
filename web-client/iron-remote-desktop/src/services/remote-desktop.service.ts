@@ -63,10 +63,6 @@ export class RemoteDesktopService {
         loggingService.info('Web bridge initialized.');
     }
 
-    createClipboardData(): ClipboardData {
-        return this.module.createClipboardData();
-    }
-
     // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side
     setEnableClipboard(enable: boolean) {
         this.enableClipboard = enable;
@@ -108,12 +104,14 @@ export class RemoteDesktopService {
         if (preventDefault) {
             event.preventDefault(); // prevent default behavior (context menu, etc)
         }
-        const mouseFnc = isDown ? this.module.createMouseButtonPressed : this.module.createMouseButtonReleased;
+        const mouseFnc = isDown
+            ? this.module.DeviceEvent.mouseButtonPressed
+            : this.module.DeviceEvent.mouseButtonReleased;
         this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
     }
 
     updateMousePosition(position: MousePosition) {
-        this.doTransactionFromDeviceEvents([this.module.createMouseMove(position.x, position.y)]);
+        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.mouseMove(position.x, position.y)]);
         this.mousePosition.next(position);
     }
 
@@ -122,35 +120,35 @@ export class RemoteDesktopService {
     }
 
     connect(config: Config): Observable<NewSessionInfo> {
-        const sessionBuilder = this.module.createSessionBuilder();
+        const sessionBuilder = new this.module.SessionBuilder();
 
-        sessionBuilder.proxy_address(config.proxyAddress);
+        sessionBuilder.proxyAddress(config.proxyAddress);
         sessionBuilder.destination(config.destination);
-        sessionBuilder.server_domain(config.serverDomain);
+        sessionBuilder.serverDomain(config.serverDomain);
         sessionBuilder.password(config.password);
-        sessionBuilder.auth_token(config.authToken);
+        sessionBuilder.authToken(config.authToken);
         sessionBuilder.username(config.username);
-        sessionBuilder.render_canvas(this.canvas!);
-        sessionBuilder.set_cursor_style_callback_context(this);
-        sessionBuilder.set_cursor_style_callback(this.setCursorStyleCallback);
+        sessionBuilder.renderCanvas(this.canvas!);
+        sessionBuilder.setCursorStyleCallbackContext(this);
+        sessionBuilder.setCursorStyleCallback(this.setCursorStyleCallback);
 
         config.extensions.forEach((extension) => {
             sessionBuilder.extension(extension);
         });
 
         if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
-            sessionBuilder.remote_clipboard_changed_callback(this.onRemoteClipboardChanged);
+            sessionBuilder.remoteClipboardChangedCallback(this.onRemoteClipboardChanged);
         }
         if (this.onRemoteReceivedFormatList != null && this.enableClipboard) {
-            sessionBuilder.remote_received_format_list_callback(this.onRemoteReceivedFormatList);
+            sessionBuilder.remoteReceivedFormatListCallback(this.onRemoteReceivedFormatList);
         }
         if (this.onForceClipboardUpdate != null && this.enableClipboard) {
-            sessionBuilder.force_clipboard_update_callback(this.onForceClipboardUpdate);
+            sessionBuilder.forceClipboardUpdateCallback(this.onForceClipboardUpdate);
         }
 
         if (config.desktopSize != null) {
-            sessionBuilder.desktop_size(
-                this.module.createDesktopSize(config.desktopSize.width, config.desktopSize.height),
+            sessionBuilder.desktopSize(
+                new this.module.DesktopSize(config.desktopSize.width, config.desktopSize.height),
             );
         }
 
@@ -202,17 +200,17 @@ export class RemoteDesktopService {
                 loggingService.info('Session started.');
                 this.session = session;
                 this._resize.next({
-                    desktop_size: session.desktop_size(),
-                    session_id: 0,
+                    desktopSize: session.desktopSize(),
+                    sessionId: 0,
                 });
                 this.raiseSessionEvent({
                     type: SessionEventType.STARTED,
                     data: 'Session started',
                 });
                 return {
-                    session_id: 0,
-                    initial_desktop_size: session.desktop_size(),
-                    websocket_port: 0,
+                    sessionId: 0,
+                    initialDesktopSize: session.desktopSize(),
+                    websocketPort: 0,
                 };
             }),
         );
@@ -232,7 +230,7 @@ export class RemoteDesktopService {
     mouseWheel(event: WheelEvent) {
         const vertical = event.deltaY !== 0;
         const rotation = vertical ? event.deltaY : event.deltaX;
-        this.doTransactionFromDeviceEvents([this.module.createWheelRotations(vertical, -rotation)]);
+        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.wheelRotations(vertical, -rotation)]);
     }
 
     setVisibility(state: boolean) {
@@ -256,14 +254,14 @@ export class RemoteDesktopService {
     /// cache the content and send it to the server when it is requested.
     onClipboardChanged(data: ClipboardData): Promise<void> {
         const onClipboardChangedPromise = async () => {
-            await this.session?.on_clipboard_paste(data);
+            await this.session?.onClipboardPaste(data);
         };
         return onClipboardChangedPromise();
     }
 
     onClipboardChangedEmpty(): Promise<void> {
         const onClipboardChangedPromise = async () => {
-            await this.session?.on_clipboard_paste(this.module.createClipboardData());
+            await this.session?.onClipboardPaste(new this.module.ClipboardData());
         };
         return onClipboardChangedPromise();
     }
@@ -283,7 +281,7 @@ export class RemoteDesktopService {
     }
 
     private releaseAllInputs() {
-        this.session?.release_all_inputs();
+        this.session?.releaseAllInputs();
     }
 
     private supportsUnicodeKeyboardShortcuts(): boolean {
@@ -292,8 +290,8 @@ export class RemoteDesktopService {
             return this.backendSupportsUnicodeKeyboardShortcuts;
         }
 
-        if (this.session?.supports_unicode_keyboard_shortcuts) {
-            this.backendSupportsUnicodeKeyboardShortcuts = this.session?.supports_unicode_keyboard_shortcuts();
+        if (this.session?.supportsUnicodeKeyboardShortcuts) {
+            this.backendSupportsUnicodeKeyboardShortcuts = this.session?.supportsUnicodeKeyboardShortcuts();
             return this.backendSupportsUnicodeKeyboardShortcuts;
         }
 
@@ -308,11 +306,11 @@ export class RemoteDesktopService {
         let unicodeEvent;
 
         if (evt.type === 'keydown') {
-            keyEvent = this.module.createKeyPressed;
-            unicodeEvent = this.module.createUnicodePressed;
+            keyEvent = this.module.DeviceEvent.keyPressed;
+            unicodeEvent = this.module.DeviceEvent.unicodePressed;
         } else if (evt.type === 'keyup') {
-            keyEvent = this.module.createKeyReleased;
-            unicodeEvent = this.module.createUnicodeReleased;
+            keyEvent = this.module.DeviceEvent.keyReleased;
+            unicodeEvent = this.module.DeviceEvent.unicodeReleased;
         }
 
         let sendAsUnicode = true;
@@ -369,8 +367,8 @@ export class RemoteDesktopService {
     private setCursorStyleCallback(
         style: string,
         data: string | undefined,
-        hotspot_x: number | undefined,
-        hotspot_y: number | undefined,
+        hotspotX: number | undefined,
+        hotspotY: number | undefined,
     ) {
         let cssStyle;
 
@@ -384,7 +382,7 @@ export class RemoteDesktopService {
                 break;
             }
             case 'url': {
-                if (data == undefined || hotspot_x == undefined || hotspot_y == undefined) {
+                if (data == undefined || hotspotX == undefined || hotspotY == undefined) {
                     console.error('Invalid custom cursor parameters.');
                     return;
                 }
@@ -394,8 +392,8 @@ export class RemoteDesktopService {
                 const image = new Image();
                 image.src = data;
 
-                const rounded_hotspot_x = Math.round(hotspot_x);
-                const rounded_hotspot_y = Math.round(hotspot_y);
+                const rounded_hotspot_x = Math.round(hotspotX);
+                const rounded_hotspot_y = Math.round(hotspotY);
 
                 cssStyle = `url(${data}) ${rounded_hotspot_x} ${rounded_hotspot_y}, default`;
 
@@ -420,7 +418,7 @@ export class RemoteDesktopService {
         const syncScrollLockActive = evt.getModifierState(LockKey.SCROLL_LOCK);
         const syncKanaModeActive = evt.getModifierState(LockKey.KANA_MODE);
 
-        this.session?.synchronize_lock_keys(
+        this.session?.synchronizeLockKeys(
             syncScrollLockActive,
             syncNumsLockActive,
             syncCapsLockActive,
@@ -443,9 +441,9 @@ export class RemoteDesktopService {
     }
 
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
-        const transaction = this.module.createInputTransaction();
-        deviceEvents.forEach((event) => transaction.add_event(event));
-        this.session?.apply_inputs(transaction);
+        const transaction = new this.module.InputTransaction();
+        deviceEvents.forEach((event) => transaction.addEvent(event));
+        this.session?.applyInputs(transaction);
     }
 
     private ctrlAltDel() {
@@ -454,18 +452,21 @@ export class RemoteDesktopService {
         const suppr = parseInt('0xE053', 16);
 
         this.doTransactionFromDeviceEvents([
-            this.module.createKeyPressed(ctrl),
-            this.module.createKeyPressed(alt),
-            this.module.createKeyPressed(suppr),
-            this.module.createKeyReleased(ctrl),
-            this.module.createKeyReleased(alt),
-            this.module.createKeyReleased(suppr),
+            this.module.DeviceEvent.keyPressed(ctrl),
+            this.module.DeviceEvent.keyPressed(alt),
+            this.module.DeviceEvent.keyPressed(suppr),
+            this.module.DeviceEvent.keyReleased(ctrl),
+            this.module.DeviceEvent.keyReleased(alt),
+            this.module.DeviceEvent.keyReleased(suppr),
         ]);
     }
 
     private sendMeta() {
         const meta = parseInt('0xE05B', 16);
 
-        this.doTransactionFromDeviceEvents([this.module.createKeyPressed(meta), this.module.createKeyReleased(meta)]);
+        this.doTransactionFromDeviceEvents([
+            this.module.DeviceEvent.keyPressed(meta),
+            this.module.DeviceEvent.keyReleased(meta),
+        ]);
     }
 }

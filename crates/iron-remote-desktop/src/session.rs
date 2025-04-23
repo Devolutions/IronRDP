@@ -10,7 +10,7 @@ pub trait SessionBuilder {
     type Session: Session;
     type Error: IronError;
 
-    fn init() -> Self;
+    fn create() -> Self;
     #[must_use]
     fn username(&self, username: String) -> Self;
     #[must_use]
