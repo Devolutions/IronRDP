@@ -3,7 +3,6 @@ import type { DesktopSize } from './DesktopSize';
 import type { ClipboardData } from './ClipboardData';
 
 export interface SessionBuilder {
-    init(): SessionBuilder;
     /**
      * Required
      */

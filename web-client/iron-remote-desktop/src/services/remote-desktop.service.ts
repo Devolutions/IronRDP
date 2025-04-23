@@ -2,7 +2,6 @@ import { BehaviorSubject, from, Observable, of, Subject } from 'rxjs';
 import { loggingService } from './logging.service';
 import { catchError, filter, map } from 'rxjs/operators';
 import { scanCode } from '../lib/scancodes';
-import { LogType } from '../enums/LogType';
 import { OS } from '../enums/OS';
 import { ModifierKey } from '../enums/ModifierKey';
 import { LockKey } from '../enums/LockKey';
@@ -65,14 +64,7 @@ export class RemoteDesktopService {
     }
 
     createClipboardData(): ClipboardData {
-        return this.module.ClipboardData.init();
-    }
-
-    async init(debug: LogType) {
-        loggingService.info('Load wasm file...');
-        await this.module.init();
-        loggingService.info('Initialize the remote desktop module...');
-        this.module.setup(LogType[debug]);
+        return this.module.createClipboardData();
     }
 
     // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side
@@ -116,14 +108,12 @@ export class RemoteDesktopService {
         if (preventDefault) {
             event.preventDefault(); // prevent default behavior (context menu, etc)
         }
-        const mouseFnc = isDown
-            ? this.module.DeviceEvent.mouse_button_pressed
-            : this.module.DeviceEvent.mouse_button_released;
+        const mouseFnc = isDown ? this.module.createMouseButtonPressed : this.module.createMouseButtonReleased;
         this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
     }
 
     updateMousePosition(position: MousePosition) {
-        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.mouse_move(position.x, position.y)]);
+        this.doTransactionFromDeviceEvents([this.module.createMouseMove(position.x, position.y)]);
         this.mousePosition.next(position);
     }
 
@@ -132,7 +122,7 @@ export class RemoteDesktopService {
     }
 
     connect(config: Config): Observable<NewSessionInfo> {
-        const sessionBuilder = this.module.SessionBuilder.init();
+        const sessionBuilder = this.module.createSessionBuilder();
 
         sessionBuilder.proxy_address(config.proxyAddress);
         sessionBuilder.destination(config.destination);
@@ -160,7 +150,7 @@ export class RemoteDesktopService {
 
         if (config.desktopSize != null) {
             sessionBuilder.desktop_size(
-                this.module.DesktopSize.init(config.desktopSize.width, config.desktopSize.height),
+                this.module.createDesktopSize(config.desktopSize.width, config.desktopSize.height),
             );
         }
 
@@ -242,7 +232,7 @@ export class RemoteDesktopService {
     mouseWheel(event: WheelEvent) {
         const vertical = event.deltaY !== 0;
         const rotation = vertical ? event.deltaY : event.deltaX;
-        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.wheel_rotations(vertical, -rotation)]);
+        this.doTransactionFromDeviceEvents([this.module.createWheelRotations(vertical, -rotation)]);
     }
 
     setVisibility(state: boolean) {
@@ -273,7 +263,7 @@ export class RemoteDesktopService {
 
     onClipboardChangedEmpty(): Promise<void> {
         const onClipboardChangedPromise = async () => {
-            await this.session?.on_clipboard_paste(this.module.ClipboardData.init());
+            await this.session?.on_clipboard_paste(this.module.createClipboardData());
         };
         return onClipboardChangedPromise();
     }
@@ -318,11 +308,11 @@ export class RemoteDesktopService {
         let unicodeEvent;
 
         if (evt.type === 'keydown') {
-            keyEvent = this.module.DeviceEvent.key_pressed;
-            unicodeEvent = this.module.DeviceEvent.unicode_pressed;
+            keyEvent = this.module.createKeyPressed;
+            unicodeEvent = this.module.createUnicodePressed;
         } else if (evt.type === 'keyup') {
-            keyEvent = this.module.DeviceEvent.key_released;
-            unicodeEvent = this.module.DeviceEvent.unicode_released;
+            keyEvent = this.module.createKeyReleased;
+            unicodeEvent = this.module.createUnicodeReleased;
         }
 
         let sendAsUnicode = true;
@@ -453,7 +443,7 @@ export class RemoteDesktopService {
     }
 
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
-        const transaction = this.module.InputTransaction.init();
+        const transaction = this.module.createInputTransaction();
         deviceEvents.forEach((event) => transaction.add_event(event));
         this.session?.apply_inputs(transaction);
     }
@@ -464,21 +454,18 @@ export class RemoteDesktopService {
         const suppr = parseInt('0xE053', 16);
 
         this.doTransactionFromDeviceEvents([
-            this.module.DeviceEvent.key_pressed(ctrl),
-            this.module.DeviceEvent.key_pressed(alt),
-            this.module.DeviceEvent.key_pressed(suppr),
-            this.module.DeviceEvent.key_released(ctrl),
-            this.module.DeviceEvent.key_released(alt),
-            this.module.DeviceEvent.key_released(suppr),
+            this.module.createKeyPressed(ctrl),
+            this.module.createKeyPressed(alt),
+            this.module.createKeyPressed(suppr),
+            this.module.createKeyReleased(ctrl),
+            this.module.createKeyReleased(alt),
+            this.module.createKeyReleased(suppr),
         ]);
     }
 
     private sendMeta() {
         const meta = parseInt('0xE05B', 16);
 
-        this.doTransactionFromDeviceEvents([
-            this.module.DeviceEvent.key_pressed(meta),
-            this.module.DeviceEvent.key_released(meta),
-        ]);
+        this.doTransactionFromDeviceEvents([this.module.createKeyPressed(meta), this.module.createKeyReleased(meta)]);
     }
 }

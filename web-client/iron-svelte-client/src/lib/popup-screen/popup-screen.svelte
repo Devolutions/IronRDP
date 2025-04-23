@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import type { UserInteraction } from '../../../static/iron-remote-desktop';
-    import IronRdp from '../../../static/iron-remote-desktop-rdp';
+    import { Backend } from '../../../static/iron-remote-desktop-rdp';
     import { preConnectionBlob, displayControl, kdcProxyUrl } from '../../../static/iron-remote-desktop-rdp';
 
     let userInteraction: UserInteraction;
@@ -146,7 +146,7 @@
             </label>
         </div>
     </div>
-    <iron-remote-desktop debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" module={IronRdp} />
+    <iron-remote-desktop verbose="true" scale="fit" flexcenter="true" module={Backend} />
 </div>
 
 <style>
