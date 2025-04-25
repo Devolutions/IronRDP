@@ -147,7 +147,10 @@ impl WasmClipboard {
         }
     }
 
-    fn handle_local_clipboard_changed(&mut self, clipboard_data: ClipboardData) -> anyhow::Result<Vec<ClipboardFormat>> {
+    fn handle_local_clipboard_changed(
+        &mut self,
+        clipboard_data: ClipboardData,
+    ) -> anyhow::Result<Vec<ClipboardFormat>> {
         let mut formats = Vec::new();
         clipboard_data.items().iter().for_each(|item| {
             match item.mime_type.as_str() {
