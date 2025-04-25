@@ -147,10 +147,10 @@ impl WasmClipboard {
         }
     }
 
-    fn handle_local_clipboard_changed(&mut self, transaction: ClipboardData) -> anyhow::Result<Vec<ClipboardFormat>> {
+    fn handle_local_clipboard_changed(&mut self, clipboard_data: ClipboardData) -> anyhow::Result<Vec<ClipboardFormat>> {
         let mut formats = Vec::new();
-        transaction.items().iter().for_each(|content| {
-            match content.mime_type.as_str() {
+        clipboard_data.items().iter().for_each(|item| {
+            match item.mime_type.as_str() {
                 MIME_TEXT => formats.push(ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)),
                 MIME_HTML => {
                     formats.extend([
@@ -174,7 +174,7 @@ impl WasmClipboard {
             };
         });
 
-        self.local_clipboard = Some(transaction);
+        self.local_clipboard = Some(clipboard_data);
 
         trace!("Sending clipboard formats: {:?}", formats);
 
@@ -186,23 +186,23 @@ impl WasmClipboard {
         format: ClipboardFormatId,
     ) -> anyhow::Result<FormatDataResponse<'static>> {
         // Transaction is not set, bail!
-        let transaction = if let Some(transaction) = &self.local_clipboard {
-            transaction
+        let clipboard_data = if let Some(clipboard_data) = &self.local_clipboard {
+            clipboard_data
         } else {
             anyhow::bail!("Local clipboard is empty");
         };
 
         let find_content_by_mime = |mime: &str| {
-            transaction
+            clipboard_data
                 .items()
                 .iter()
-                .find(|content| content.mime_type.as_str() == mime)
+                .find(|item| item.mime_type.as_str() == mime)
         };
 
         let find_text_content_by_mime = |mime: &str| {
             find_content_by_mime(mime)
-                .and_then(|content| {
-                    if let ClipboardItemValue::Text(text) = &content.value {
+                .and_then(|item| {
+                    if let ClipboardItemValue::Text(text) = &item.value {
                         Some(text.as_str())
                     } else {
                         None
@@ -213,8 +213,8 @@ impl WasmClipboard {
 
         let find_binary_content_by_mime = |mime: &str| {
             find_content_by_mime(mime)
-                .and_then(|content| {
-                    if let ClipboardItemValue::Binary(binary) = &content.value {
+                .and_then(|item| {
+                    if let ClipboardItemValue::Binary(binary) = &item.value {
                         Some(binary.as_slice())
                     } else {
                         None
@@ -360,7 +360,7 @@ impl WasmClipboard {
             return Ok(());
         }
 
-        let content = match pending_format {
+        let item = match pending_format {
             ClipboardFormatId::CF_UNICODETEXT => match response.to_unicode_string() {
                 Ok(text) => Some(ClipboardItem::new_text(MIME_TEXT, text)),
                 Err(err) => {
@@ -411,8 +411,8 @@ impl WasmClipboard {
             }
         };
 
-        if let Some(content) = content {
-            self.remote_clipboard.add(content);
+        if let Some(item) = item {
+            self.remote_clipboard.add(item);
         }
 
         if let Some(format) = self.remote_formats_to_read.last() {
@@ -443,8 +443,8 @@ impl WasmClipboard {
     /// Process backend event. This method should be called from the main event loop.
     pub(crate) fn process_event(&mut self, event: WasmClipboardBackendMessage) -> anyhow::Result<()> {
         match event {
-            WasmClipboardBackendMessage::LocalClipboardChanged(transaction) => {
-                match self.handle_local_clipboard_changed(transaction) {
+            WasmClipboardBackendMessage::LocalClipboardChanged(clipboard_data) => {
+                match self.handle_local_clipboard_changed(clipboard_data) {
                     Ok(formats) => {
                         self.proxy
                             .send_cliprdr_message(ClipboardMessage::SendInitiateCopy(formats));
