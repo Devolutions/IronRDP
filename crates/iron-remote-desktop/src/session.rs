@@ -61,7 +61,7 @@ pub trait SessionBuilder {
 pub trait Session {
     type SessionTerminationInfo: SessionTerminationInfo;
     type InputTransaction: InputTransaction;
-    type ClipboardTransaction: ClipboardData;
+    type ClipboardData: ClipboardData;
     type Error: IronError;
 
     fn run(&self) -> impl core::future::Future<Output = Result<Self::SessionTerminationInfo, Self::Error>>;
@@ -84,7 +84,7 @@ pub trait Session {
 
     fn on_clipboard_paste(
         &self,
-        content: Self::ClipboardTransaction,
+        content: Self::ClipboardData,
     ) -> impl core::future::Future<Output = Result<(), Self::Error>>;
 
     fn resize(
