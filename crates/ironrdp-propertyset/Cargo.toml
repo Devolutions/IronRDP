@@ -1,0 +1,20 @@
+[package]
+name = "ironrdp-propertyset"
+version = "0.1.0"
+readme = "README.md"
+description = "A key-value store for configuration options"
+publish = false # Temporary.
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[lints]
+workspace = true

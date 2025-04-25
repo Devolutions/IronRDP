@@ -2430,6 +2430,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-cfg"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-propertyset",
+]
+
+[[package]]
 name = "ironrdp-client"
 version = "0.1.0"
 dependencies = [
@@ -2629,6 +2636,10 @@ name = "ironrdp-pdu-generators"
 version = "0.0.0"
 
 [[package]]
+name = "ironrdp-propertyset"
+version = "0.1.0"
+
+[[package]]
 name = "ironrdp-rdcleanpath"
 version = "0.1.3"
 dependencies = [
@@ -2657,6 +2668,13 @@ dependencies = [
  "ironrdp-svc",
  "nix",
  "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpfile"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-propertyset",
 ]
 
 [[package]]

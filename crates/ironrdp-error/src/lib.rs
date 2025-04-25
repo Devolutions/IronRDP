@@ -4,6 +4,7 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+
 #[cfg(feature = "alloc")]
 use alloc::boxed::Box;
 use core::fmt;
