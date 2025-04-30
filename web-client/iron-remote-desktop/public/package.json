@@ -6,10 +6,11 @@
     "Benoit Cortier",
     "Irving Ou",
     "Vladislav Nikonov",
-    "Zacharia Ellaham"
+    "Zacharia Ellaham",
+    "Alexandr Yusuk"
   ],
-  "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
-  "version": "0.13.1",
+  "description": "Web Component providing agnostic implementation for Iron Wasm base client",
+  "version": "0.1.0",
   "main": "iron-remote-desktop.js",
   "types": "index.d.ts",
   "files": [

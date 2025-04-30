@@ -1,15 +1,12 @@
 {
   "name": "@devolutions/iron-remote-desktop-rdp",
-  "author": "Nicolas Girot",
-  "email": "ngirot@devolutions.net",
+  "author": "Alexandr Yusuk",
+  "email": "thepulticula@gmail.com",
   "contributors": [
-    "Benoit Cortier",
-    "Irving Ou",
-    "Vladislav Nikonov",
-    "Zacharia Ellaham"
+    "Benoit Cortier"
   ],
-  "description": "RDP backend for iron-remote-desktop.",
-  "version": "0.13.1",
+  "description": "RDP backend for iron-remote-desktop",
+  "version": "0.1.0",
   "main": "iron-remote-desktop-rdp.js",
   "types": "index.d.ts",
   "files": [
