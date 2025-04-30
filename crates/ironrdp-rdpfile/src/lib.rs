@@ -16,7 +16,6 @@ pub enum ErrorKind {
     UnknownType { ty: String },
     InvalidValue { ty: String, value: String },
     MalformedLine { line: String },
-    DuplicatedKey { key: String },
 }
 
 #[derive(Debug, Clone)]
@@ -37,28 +36,21 @@ impl fmt::Display for Error {
                 write!(f, "invalid value at line {line_number} for type {ty} ({value})")
             }
             ErrorKind::MalformedLine { line } => write!(f, "malformed line at line {line_number} ({line})"),
-            ErrorKind::DuplicatedKey { key } => write!(f, "duplicated key at line {line_number} ({key})"),
         }
     }
 }
 
-pub struct ParseResult {
-    pub store: PropertySet,
-    pub errors: Vec<Error>,
-}
-
-pub fn parse(input: &str) -> ParseResult {
-    let mut store = PropertySet::new();
+pub fn load(properties: &mut PropertySet, input: &str) -> Result<(), Vec<Error>> {
     let mut errors = Vec::new();
 
     for (idx, line) in input.lines().enumerate() {
         let mut split = line.splitn(2, ':');
 
         if let (Some(key), Some(ty), Some(value)) = (split.next(), split.next(), split.next()) {
-            let is_duplicated = match ty {
+            match ty {
                 "i" => {
                     if let Ok(value) = value.parse::<i64>() {
-                        store.insert(key.to_owned(), value).is_some()
+                        properties.insert(key.to_owned(), value);
                     } else {
                         errors.push(Error {
                             kind: ErrorKind::InvalidValue {
@@ -67,24 +59,17 @@ pub fn parse(input: &str) -> ParseResult {
                             },
                             line: idx,
                         });
-                        continue;
                     }
                 }
-                "s" => store.insert(key.to_owned(), value).is_some(),
+                "s" => {
+                    properties.insert(key.to_owned(), value);
+                }
                 _ => {
                     errors.push(Error {
                         kind: ErrorKind::UnknownType { ty: ty.to_owned() },
                         line: idx,
                     });
-                    continue;
                 }
-            };
-
-            if is_duplicated {
-                errors.push(Error {
-                    kind: ErrorKind::DuplicatedKey { key: key.to_owned() },
-                    line: idx,
-                });
             }
         } else {
             errors.push(Error {
@@ -94,13 +79,33 @@ pub fn parse(input: &str) -> ParseResult {
         }
     }
 
-    ParseResult { store, errors }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
-pub fn write(store: &PropertySet) -> String {
+pub struct ParseResult {
+    pub properties: PropertySet,
+    pub errors: Vec<Error>,
+}
+
+pub fn parse(input: &str) -> ParseResult {
+    let mut properties = PropertySet::new();
+
+    let errors = match load(&mut properties, input) {
+        Ok(()) => Vec::new(),
+        Err(errors) => errors,
+    };
+
+    ParseResult { properties, errors }
+}
+
+pub fn write(properties: &PropertySet) -> String {
     let mut buf = String::new();
 
-    for (key, value) in store.iter() {
+    for (key, value) in properties.iter() {
         buf.push_str(key);
 
         match value {

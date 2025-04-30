@@ -4,6 +4,11 @@
 
 extern crate alloc;
 
+#[macro_use]
+extern crate tracing;
+
+use core::fmt::Display;
+
 use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -22,15 +27,31 @@ impl PropertySet {
     }
 
     pub fn insert(&mut self, key: impl Into<Key>, value: impl Into<Value>) -> Option<Value> {
-        self.inner.insert(key.into(), value.into())
+        let (key, value) = (key.into(), value.into());
+        debug!("PropertySet::insert({key}, {value})");
+        self.inner.insert(key, value)
     }
 
     pub fn remove(&mut self, key: &str) -> Option<Value> {
-        self.inner.remove(key)
+        let value = self.inner.remove(key);
+
+        match &value {
+            Some(value) => debug!("PropertySet::remove({key}) = {value}"),
+            None => debug!("PropertySet::remove({key}) = None"),
+        }
+
+        value
     }
 
     pub fn get<'a, V: ExtractFrom<&'a Value>>(&'a self, key: &str) -> Option<V> {
-        self.inner.get(key).and_then(|val| V::extract_from(val, private::Token))
+        let value = self.inner.get(key);
+
+        match &value {
+            Some(value) => debug!("PropertySet::get({key}) = {value}"),
+            None => debug!("PropertySet::get({key}) = None"),
+        }
+
+        value.and_then(|val| V::extract_from(val, private::Token))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&Key, &Value)> {
@@ -67,7 +88,7 @@ pub trait ExtractFrom<Value>: Sized {
 }
 
 /// Represents a value of any type of the .RDP file format.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     /// Numerical value.
     Int(i64),
@@ -89,6 +110,15 @@ impl Value {
             Some(*value)
         } else {
             None
+        }
+    }
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Value::Int(value) => write!(f, "{value}"),
+            Value::Str(value) => write!(f, "\"{value}\""),
         }
     }
 }

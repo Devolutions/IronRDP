@@ -16,5 +16,8 @@ categories.workspace = true
 doctest = false
 test = false
 
+[dependencies]
+tracing = { version = "0.1", features = ["log"] }
+
 [lints]
 workspace = true
