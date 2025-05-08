@@ -3,6 +3,7 @@ import type { NewSessionInfo } from './NewSessionInfo';
 import type { SessionEvent } from './session-event';
 import { ConfigBuilder } from '../services/ConfigBuilder';
 import type { Config } from '../services/Config';
+import type { PartialObserver } from 'rxjs';
 
 export interface UserInteraction {
     setVisibility(state: boolean): void;
@@ -23,7 +24,7 @@ export interface UserInteraction {
 
     setCursorStyleOverride(style: string | null): void;
 
-    onSessionEvent(callback: (event: SessionEvent) => void): void;
+    onSessionEvent(partialObserver: PartialObserver<SessionEvent>): void;
 
     resize(width: number, height: number, scale?: number): void;
 
