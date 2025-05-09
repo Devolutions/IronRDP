@@ -12,12 +12,14 @@
     userInteractionService.subscribe((val) => {
         if (val != null) {
             userInteraction = val;
-            userInteraction.onSessionEvent((event) => {
-                if (event.type === 0) {
-                    userInteraction.setVisibility(true);
-                } else if (event.type === 1) {
-                    setCurrentSessionActive(false);
-                }
+            userInteraction.onSessionEvent({
+                next: (event) => {
+                    if (event.type === 0) {
+                        userInteraction.setVisibility(true);
+                    } else if (event.type === 1) {
+                        setCurrentSessionActive(false);
+                    }
+                },
             });
         }
     });

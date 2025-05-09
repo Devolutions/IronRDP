@@ -30,20 +30,22 @@
     });
 
     const initListeners = () => {
-        userInteraction.onSessionEvent((event) => {
-            if (event.type === 2) {
-                console.log('Error event', event.data);
+        userInteraction.onSessionEvent({
+            next: (event) => {
+                if (event.type === 2) {
+                    console.log('Error event', event.data);
 
-                toast.set({
-                    type: 'error',
-                    message: typeof event.data !== 'string' ? event.data.backtrace() : event.data,
-                });
-            } else {
-                toast.set({
-                    type: 'info',
-                    message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
-                });
-            }
+                    toast.set({
+                        type: 'error',
+                        message: typeof event.data !== 'string' ? event.data.backtrace() : event.data,
+                    });
+                } else {
+                    toast.set({
+                        type: 'info',
+                        message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
+                    });
+                }
+            },
         });
     };
 

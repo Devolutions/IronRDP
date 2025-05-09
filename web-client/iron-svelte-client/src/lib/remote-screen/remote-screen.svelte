@@ -12,13 +12,15 @@
     userInteractionService.subscribe((uis) => {
         if (uis != null) {
             uiService = uis;
-            uiService.onSessionEvent((event) => {
-                if (event.type === 0) {
-                    uiService.setVisibility(true);
-                } else if (event.type === 1) {
-                    setCurrentSessionActive(false);
-                    showLogin.set(true);
-                }
+            uiService.onSessionEvent({
+                next: (event) => {
+                    if (event.type === 0) {
+                        uiService.setVisibility(true);
+                    } else if (event.type === 1) {
+                        setCurrentSessionActive(false);
+                        showLogin.set(true);
+                    }
+                },
             });
         }
     });
