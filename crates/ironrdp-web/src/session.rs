@@ -928,7 +928,7 @@ async fn connect(
     let (upgraded, server_public_key) =
         connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
 
-    let connection_result = ironrdp_futures::connect_finalize(
+    let connection_result = ironrdp_futures::wasm_connect_finalize(
         upgraded,
         &mut framed,
         connector,
@@ -1016,7 +1016,7 @@ where
         // RDCleanPath response
 
         let rdcleanpath_res = framed
-            .read_by_hint(&RDCLEANPATH_HINT)
+            .read_by_hint(Box::new(RDCLEANPATH_HINT))
             .await
             .context("read RDCleanPath request")?;
 
