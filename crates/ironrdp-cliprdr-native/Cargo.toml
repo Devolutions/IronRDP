@@ -21,7 +21,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
 tracing = { version = "0.1", features = ["log"] }
 
 [target.'cfg(windows)'.dependencies]
-thiserror = "1"
+thiserror = "2"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
