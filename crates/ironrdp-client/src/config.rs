@@ -21,6 +21,7 @@ pub struct Config {
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
     pub rdcleanpath: Option<RDCleanPathConfig>,
+    pub pcb: Option<String>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -238,6 +239,10 @@ struct Args {
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, value_parser, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
+
+    /// The Preconnection Blob
+    #[clap(long)]
+    pcb: Option<String>,
 }
 
 impl Config {
@@ -357,6 +362,7 @@ impl Config {
             connector,
             clipboard_type,
             rdcleanpath,
+            pcb: args.pcb,
         })
     }
 }
