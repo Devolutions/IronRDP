@@ -2422,6 +2422,7 @@ dependencies = [
  "ironrdp",
  "ironrdp-cliprdr-native",
  "ironrdp-core",
+ "ironrdp-dvc-pipe-proxy",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpsnd-native",
  "ironrdp-tls",
@@ -2522,6 +2523,18 @@ dependencies = [
  "ironrdp-svc",
  "slab",
  "tracing",
+]
+
+[[package]]
+name = "ironrdp-dvc-pipe-proxy"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+ "windows 0.61.1",
 ]
 
 [[package]]
