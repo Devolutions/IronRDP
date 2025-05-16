@@ -10,7 +10,7 @@ use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::{mcs, Action};
-use ironrdp_svc::{SvcProcessor, SvcProcessorMessages};
+use ironrdp_svc::{SvcMessage, SvcProcessor, SvcProcessorMessages};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
@@ -187,6 +187,10 @@ impl ActiveStage {
         self.x224_processor.get_dvc::<T>()
     }
 
+    pub fn get_dvc_by_channel_id(&mut self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
+        self.x224_processor.get_dvc_by_channel_id(channel_id)
+    }
+
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
     pub fn process_svc_processor_messages<C: SvcProcessor + 'static>(
@@ -244,6 +248,10 @@ impl ActiveStage {
         }
 
         None
+    }
+
+    pub fn encode_dvc_messages(&mut self, message: Vec<SvcMessage>) -> SessionResult<Vec<u8>> {
+        self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(message))
     }
 }
 

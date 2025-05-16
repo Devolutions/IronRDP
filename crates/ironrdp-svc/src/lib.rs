@@ -83,6 +83,15 @@ pub struct SvcMessage {
     flags: ChannelFlags,
 }
 
+impl fmt::Debug for SvcMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SvcMessage")
+            .field("pdu", &self.pdu.name())
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
 impl SvcMessage {
     /// Adds additional SVC header flags to the message.
     #[must_use]
