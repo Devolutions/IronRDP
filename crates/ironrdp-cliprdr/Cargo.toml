@@ -21,7 +21,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.3" } # public
 thiserror = "1.0" # FIXME: handwrite the Error trait implementations.
 tracing = { version = "0.1", features = ["log"] }
-bitflags = "2.4"
+bitflags = "2.9"
 
 [lints]
 workspace = true
