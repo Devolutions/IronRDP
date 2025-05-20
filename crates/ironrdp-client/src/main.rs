@@ -6,7 +6,7 @@ extern crate tracing;
 use anyhow::Context as _;
 use ironrdp_client::app::App;
 use ironrdp_client::config::{ClipboardType, Config};
-use ironrdp_client::rdp::{RdpClient, RdpInputEvent, RdpOutputEvent};
+use ironrdp_client::rdp::{DvcPipeProxyFactory, RdpClient, RdpInputEvent, RdpOutputEvent};
 use tokio::runtime;
 use winit::event_loop::EventLoop;
 
@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
             use ironrdp_client::clipboard::ClientClipboardMessageProxy;
             use ironrdp_cliprdr_native::WinClipboard;
 
-            let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender))?;
+            let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender.clone()))?;
 
             let factory = cliprdr.backend_factory();
             _win_clipboard = cliprdr;
@@ -59,11 +59,14 @@ fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    let dvc_pipe_proxy_factory = DvcPipeProxyFactory::new(input_event_sender);
+
     let client = RdpClient {
         config,
         event_loop_proxy,
         input_event_receiver,
         cliprdr_factory,
+        dvc_pipe_proxy_factory,
     };
 
     debug!("Start RDP thread");

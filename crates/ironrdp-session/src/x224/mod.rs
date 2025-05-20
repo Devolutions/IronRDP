@@ -88,6 +88,11 @@ impl Processor {
         self.get_svc_processor::<DrdynvcClient>()?.get_dvc_by_type_id::<T>()
     }
 
+    pub fn get_dvc_by_channel_id(&self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
+        self.get_svc_processor::<DrdynvcClient>()?
+            .get_dvc_by_channel_id(channel_id)
+    }
+
     /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that must be processed
     /// in the returned order.
     pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<ProcessorOutput>> {
@@ -186,6 +191,6 @@ impl Processor {
 /// The messages returned here are ready to be sent to the server.
 ///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
-fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> SessionResult<Vec<u8>> {
+pub fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> SessionResult<Vec<u8>> {
     client_encode_svc_messages(messages, channel_id, initiator_id).map_err(SessionError::encode)
 }
