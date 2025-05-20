@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-ainput"
-version = "0.2.0"
+version = "0.2.1"
 readme = "README.md"
 description = "AInput dynamic channel implementation"
 edition.workspace = true

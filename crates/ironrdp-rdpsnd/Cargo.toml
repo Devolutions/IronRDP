@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpsnd"
-version = "0.4.0"
+version = "0.5.0"
 readme = "README.md"
 description = "RDPSND static channel for audio output implemented as described in MS-RDPEA"
 edition.workspace = true
@@ -24,7 +24,7 @@ bitflags = "2.9"
 tracing = { version = "0.1", features = ["log"] }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.3" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["alloc"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5", features = ["alloc"] } # public
 
 [lints]
 workspace = true
