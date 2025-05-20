@@ -1,7 +1,6 @@
 use core::ops::DerefMut;
 use core::pin::Pin;
 
-use windows::core::Owned;
 use windows::Win32::Foundation::{ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
@@ -11,7 +10,7 @@ use windows::Win32::System::Pipes::{
 };
 use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
-use crate::windows::{ensure_overlapped_io_result, Event, WideString, WindowsError};
+use crate::windows::{ensure_overlapped_io_result, Event, Handle, WideString, WindowsError};
 
 const PIPE_INSTANCES: u32 = 2;
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024; // 64KB
@@ -20,7 +19,7 @@ const DEFAULT_PIPE_TIMEOUT: u32 = 10_000; // 10 seconds
 /// RAII wrapper for WinAPI named pipe server.
 #[derive(Debug)]
 pub(crate) struct MessagePipeServer {
-    handle: Owned<HANDLE>,
+    handle: Handle,
     connected: bool,
 }
 
@@ -48,14 +47,14 @@ impl MessagePipeServer {
             )
         };
 
-        // `windows` crate API inconsistency: CreateNamedPipeW returns invlid handle on error
+        // `windows` crate API inconsistency: CreateNamedPipeW returns invalid handle on error
         // instead of Result::Err.
         if handle.is_invalid() {
             return Err(WindowsError::CreateNamedPipe(windows::core::Error::from_win32()));
         }
 
         // SAFETY: Handle is valid and we are the owner of the handle.
-        let handle = unsafe { Owned::new(handle) };
+        let handle = unsafe { Handle::new_owned(handle)? };
 
         Ok(Self {
             handle,
@@ -64,7 +63,7 @@ impl MessagePipeServer {
     }
 
     pub(crate) fn raw(&self) -> HANDLE {
-        *self.handle
+        self.handle.raw()
     }
 
     /// Initializes context for overlapped connect operation.
@@ -81,10 +80,7 @@ impl MessagePipeServer {
     }
 
     /// Initializes context for overlapped write operation.
-    pub(crate) fn prepare_write_overlapped(
-        &self,
-        data: Vec<u8>,
-    ) -> Result<OverlappedWriteCtx<'_>, WindowsError> {
+    pub(crate) fn prepare_write_overlapped(&self, data: Vec<u8>) -> Result<OverlappedWriteCtx<'_>, WindowsError> {
         OverlappedWriteCtx::new(self, data)
     }
 }

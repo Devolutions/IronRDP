@@ -4,12 +4,14 @@
 
 mod error;
 mod event;
+mod handle;
 mod pipe;
 mod semaphore;
 mod wide_string;
 
 pub(crate) use error::WindowsError;
 pub(crate) use event::Event;
+pub(crate) use handle::Handle;
 pub(crate) use pipe::MessagePipeServer;
 pub(crate) use semaphore::Semaphore;
 pub(crate) use wide_string::WideString;
@@ -21,9 +23,7 @@ use windows::Win32::System::Threading::{WaitForMultipleObjects, INFINITE};
 // WaitForMultipleObjects wrapper with timeout.
 pub(crate) fn wait_any_with_timeout(handles: &[HANDLE], timeout: u32) -> Result<usize, WindowsError> {
     // SAFETY: FFI call with no outstanding preconditions.
-    let result = unsafe {
-        WaitForMultipleObjects(handles, false, timeout)
-    };
+    let result = unsafe { WaitForMultipleObjects(handles, false, timeout) };
 
     match result {
         WAIT_FAILED => Err(WindowsError::WaitForMultipleObjectsFailed(

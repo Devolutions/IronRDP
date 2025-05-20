@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
-    let dvc_pipe_proxy_factory = DvcPipeProxyFactory::new(input_event_sender.clone());
+    let dvc_pipe_proxy_factory = DvcPipeProxyFactory::new(input_event_sender);
 
     let client = RdpClient {
         config,
