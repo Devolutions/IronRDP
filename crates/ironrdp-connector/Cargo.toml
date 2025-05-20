@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-connector"
-version = "0.4.0"
+version = "0.5.0"
 readme = "README.md"
 description = "State machines to drive an RDP connection sequence"
 edition.workspace = true
@@ -22,7 +22,7 @@ arbitrary = ["dep:arbitrary"]
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.3" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5", features = ["std"] } # public
 arbitrary = { version = "1", features = ["derive"], optional = true } # public
 sspi = "0.15" # public
 url = "2.5" # public

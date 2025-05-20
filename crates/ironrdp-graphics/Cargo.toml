@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-graphics"
-version = "0.3.0"
+version = "0.3.1"
 readme = "README.md"
 description = "RDP image processing primitives"
 edition.workspace = true
@@ -20,7 +20,7 @@ bit_field = "0.10"
 bitflags = "2.9"
 bitvec = "1.0"
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5", features = ["std"] } # public
 byteorder = "1.5" # TODO: remove
 lazy_static.workspace = true # Legacy crate; prefer std::sync::LazyLock or LazyCell
 num-derive.workspace = true # TODO: remove
