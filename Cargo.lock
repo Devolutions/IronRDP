@@ -1164,9 +1164,9 @@ checksum = "575f75dfd25738df5b91b8e43e14d44bda14637a58fae779fd2b064f8bf3e010"
 
 [[package]]
 name = "der"
-version = "0.7.9"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f55bf8e7b65898637379c1b74eb1551107c8294ed26d855ceb9fd1a09cfc9bc0"
+checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid",
  "der_derive",
@@ -2386,7 +2386,7 @@ dependencies = [
  "ironrdp-svc",
  "opus",
  "pico-args",
- "rand 0.8.5",
+ "rand 0.9.0",
  "sspi",
  "tokio-rustls",
  "tracing",
@@ -2527,7 +2527,7 @@ dependencies = [
  "picky",
  "picky-asn1-der",
  "picky-asn1-x509",
- "rand_core 0.6.4",
+ "rand_core 0.9.3",
  "sspi",
  "tracing",
  "url",
