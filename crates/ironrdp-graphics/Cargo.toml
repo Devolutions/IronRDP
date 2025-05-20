@@ -17,7 +17,7 @@ doctest = false
 
 [dependencies]
 bit_field = "0.10"
-bitflags = "2.4"
+bitflags = "2.9"
 bitvec = "1.0"
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] } # public
