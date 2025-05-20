@@ -12,6 +12,7 @@ pub(crate) enum WindowsError {
     OverlappedRead(windows::core::Error),
     OverlappedWrite(windows::core::Error),
     CreateSemaphore(windows::core::Error),
+    InvalidHandle,
 }
 
 impl core::fmt::Display for WindowsError {
@@ -47,6 +48,9 @@ impl core::fmt::Display for WindowsError {
             WindowsError::CreateSemaphore(_) => {
                 write!(f, "CreateSemaphore failed")
             }
+            WindowsError::InvalidHandle => {
+                write!(f, "Invalid handle")
+            }
         }
     }
 }
@@ -65,6 +69,7 @@ impl core::error::Error for WindowsError {
             WindowsError::CreateEvent(err) => Some(err),
             WindowsError::InvalidSemaphoreParams(_)
             | WindowsError::WaitForMultipleObjectsTimeout
+            | WindowsError::InvalidHandle
             | WindowsError::WaitForMultipleObjectsAbandoned(_) => None,
         }
     }

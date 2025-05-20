@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
-use windows::core::Owned;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Threading::{CreateSemaphoreW, ReleaseSemaphore};
 
-use crate::windows::WindowsError;
+use crate::windows::{Handle, WindowsError};
 
 /// RAII wrapper for WinAPI semaphore handle.
 #[derive(Debug, Clone)]
 pub(crate) struct Semaphore {
-    handle: Arc<Owned<HANDLE>>,
+    handle: Arc<Handle>,
 }
 
 /// SAFETY: It is safe to send semaphore HANDLE between threads.
@@ -45,7 +44,7 @@ impl Semaphore {
         };
 
         // SAFETY: Handle is valid and we are the owner of the handle.
-        let handle = unsafe { Owned::new(handle) };
+        let handle = unsafe { Handle::new_owned(handle)? };
 
         // CreateSemaphoreW returns a valid handle on success.
         Ok(Self {
@@ -54,7 +53,7 @@ impl Semaphore {
     }
 
     pub(crate) fn raw(&self) -> HANDLE {
-        **self.handle
+        self.handle.raw()
     }
 
     pub(crate) fn release(&self, release_count: u16) -> Result<u32, WindowsError> {
@@ -73,7 +72,7 @@ impl Semaphore {
         // - lpPreviousCount points to valid stack memory.
         // - handle is valid and owned by this struct.
         unsafe {
-            ReleaseSemaphore(**self.handle, release_count, Some(&mut previous_count))
+            ReleaseSemaphore(self.handle.raw(), release_count, Some(&mut previous_count))
                 .map_err(WindowsError::ReleaseSemaphore)?;
         }
         Ok(previous_count.try_into().expect("semaphore count is negative"))

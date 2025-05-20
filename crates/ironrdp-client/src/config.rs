@@ -158,11 +158,11 @@ impl FromStr for DvcProxyInfo {
         let channel_name = parts
             .next()
             .ok_or_else(|| anyhow::anyhow!("missing DVC channel name"))?
-            .to_string();
+            .to_owned();
         let pipe_name = parts
             .next()
             .ok_or_else(|| anyhow::anyhow!("missing DVC proxy pipe name"))?
-            .to_string();
+            .to_owned();
 
         Ok(Self {
             channel_name,
