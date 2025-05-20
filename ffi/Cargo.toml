@@ -17,6 +17,7 @@ diplomat-runtime = "0.7"
 ironrdp = { path = "../crates/ironrdp", features = ["session", "connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol"] }
 ironrdp-cliprdr-native.path = "../crates/ironrdp-cliprdr-native"
 ironrdp-core = { path = "../crates/ironrdp-core", features = ["alloc"] }
+ironrdp-dvc-pipe-proxy.path = "../crates/ironrdp-dvc-pipe-proxy"
 sspi = { version = "0.15", features = ["network_client"] }
 thiserror = "1"
 tracing = { version = "0.1", features = ["log"] }

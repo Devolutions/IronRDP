@@ -143,6 +143,8 @@ pub mod ffi {
             connector.attach_static_channel(cliprdr);
             Ok(())
         }
+
+        // TODO: Attach DVC proxy
     }
 
     #[diplomat::opaque]

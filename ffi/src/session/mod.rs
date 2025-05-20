@@ -7,6 +7,7 @@ pub mod ffi {
     use crate::clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse};
     use crate::connector::activation::ffi::ConnectionActivationSequence;
     use crate::connector::result::ffi::ConnectionResult;
+    use crate::dvc::pipe_proxy::ffi::SendDvcChannelDataMessage;
     use crate::error::ffi::IronRdpError;
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::graphics::ffi::DecodedPointer;
@@ -119,6 +120,14 @@ pub mod ffi {
             let frame = self.0.process_svc_processor_messages(result)?;
 
             Ok(Box::new(VecU8(frame)))
+        }
+
+        pub fn send_dvc_pipe_proxy_messages(
+            &mut self,
+            messages: &mut SendDvcChannelDataMessage,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let encoded = self.0.encode_dvc_messages(messages.0.take_messages())?;
+            Ok(Box::new(VecU8(encoded)))
         }
 
         pub fn graceful_shutdown(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {

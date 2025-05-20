@@ -1534,6 +1534,7 @@ dependencies = [
  "ironrdp",
  "ironrdp-cliprdr-native",
  "ironrdp-core",
+ "ironrdp-dvc-pipe-proxy",
  "sspi",
  "thiserror 1.0.69",
  "tracing",
