@@ -67,6 +67,7 @@ pub struct SmartCardIdentity {
 
 #[derive(Debug, Clone)]
 pub enum Credentials {
+    None,
     UsernamePassword {
         username: String,
         password: String,
@@ -80,6 +81,7 @@ pub enum Credentials {
 impl Credentials {
     fn username(&self) -> Option<&str> {
         match self {
+            Self::None => None,
             Self::UsernamePassword { username, .. } => Some(username),
             Self::SmartCard { .. } => None, // Username is ultimately provided by the smart card certificate.
         }
@@ -87,9 +89,14 @@ impl Credentials {
 
     fn secret(&self) -> &str {
         match self {
+            Self::None => "",
             Self::UsernamePassword { password, .. } => password,
             Self::SmartCard { pin, .. } => pin,
         }
+    }
+
+    fn is_none(&self) -> bool {
+        matches!(self, Self::None)
     }
 }
 
@@ -187,6 +194,8 @@ pub struct Config {
     pub no_server_pointer: bool,
     pub pointer_software_rendering: bool,
     pub performance_flags: PerformanceFlags,
+
+    pub pcb: Option<String>,
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);

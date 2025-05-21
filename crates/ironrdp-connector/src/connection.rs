@@ -214,7 +214,7 @@ impl Sequence for ClientConnector {
 
             //== Connection Initiation ==//
             // Exchange supported security protocols and a few other connection flags.
-            ClientConnectorState::ConnectionInitiationSendRequest => {
+            ClientConnectorState::ConnectionInitiationSendRequest => 'state: {
                 debug!("Connection Initiation");
 
                 let mut security_protocol = nego::SecurityProtocol::empty();
@@ -238,6 +238,23 @@ impl Sequence for ClientConnector {
 
                 if security_protocol.is_standard_rdp_security() {
                     return Err(reason_err!("Initiation", "standard RDP security is not supported",));
+                }
+
+                // If there's pcb, we send it in the first message.
+                if let Some(pcb) = &self.config.pcb {
+                    let pcb = ironrdp_pdu::pcb::PreconnectionBlob {
+                        version: ironrdp_pdu::pcb::PcbVersion::V2,
+                        id: 0,
+                        v2_payload: Some(pcb.to_owned()),
+                    };
+                    let written = ironrdp_core::encode_buf(&pcb, output).map_err(ConnectorError::encode)?;
+
+                    break 'state (
+                        Written::from_size(written)?,
+                        ClientConnectorState::EnhancedSecurityUpgrade {
+                            selected_protocol: security_protocol,
+                        },
+                    );
                 }
 
                 let connection_request = nego::ConnectionRequest {

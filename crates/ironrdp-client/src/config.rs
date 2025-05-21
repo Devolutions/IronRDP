@@ -21,7 +21,6 @@ pub struct Config {
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
     pub rdcleanpath: Option<RDCleanPathConfig>,
-    pub pcb: Option<String>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -258,21 +257,6 @@ impl Config {
                 .pipe(Destination::new)?
         };
 
-        let username = if let Some(username) = args.username {
-            username
-        } else {
-            inquire::Text::new("Username:").prompt().context("Username prompt")?
-        };
-
-        let password = if let Some(password) = args.password {
-            password
-        } else {
-            inquire::Password::new("Password:")
-                .without_confirmation()
-                .prompt()
-                .context("Password prompt")?
-        };
-
         let codecs: Vec<_> = args.codecs.iter().map(|s| s.as_str()).collect();
         let codecs = match client_codecs_capabilities(&codecs) {
             Ok(codecs) => codecs,
@@ -307,8 +291,28 @@ impl Config {
             args.clipboard_type
         };
 
+        let credentials = if args.username.is_none() && args.password.is_none() {
+            Credentials::None
+        } else {
+            let username = args.username.unwrap_or_else(|| {
+                inquire::Text::new("Username:")
+                    .prompt()
+                    .context("Username prompt")
+                    .unwrap_or_else(|_| "Administrator".to_owned())
+            });
+
+            let password = args.password.unwrap_or_else(|| {
+                inquire::Password::new("Password:")
+                    .prompt()
+                    .context("Password prompt")
+                    .unwrap_or_else(|_| "password".to_owned())
+            });
+
+            Credentials::UsernamePassword { username, password }
+        };
+
         let connector = connector::Config {
-            credentials: Credentials::UsernamePassword { username, password },
+            credentials,
             domain: args.domain,
             enable_tls: !args.no_tls,
             enable_credssp: !args.no_credssp,
@@ -349,6 +353,7 @@ impl Config {
             request_data: None,
             pointer_software_rendering: true,
             performance_flags: PerformanceFlags::default(),
+            pcb: args.pcb,
         };
 
         let rdcleanpath = args
@@ -362,7 +367,6 @@ impl Config {
             connector,
             clipboard_type,
             rdcleanpath,
-            pcb: args.pcb,
         })
     }
 }
