@@ -313,6 +313,9 @@ impl Encode for ExtendedClientOptionalInfo {
             dst.write_array(reconnect_cookie);
         }
 
+        dst.write_u16(0); // reserved1
+        dst.write_u16(0); // reserved2
+
         Ok(())
     }
 
@@ -335,6 +338,8 @@ impl Encode for ExtendedClientOptionalInfo {
         if self.reconnect_cookie.is_some() {
             size += RECONNECT_COOKIE_LENGTH_SIZE + RECONNECT_COOKIE_LEN;
         }
+
+        size += 2 * 2; // reserved1 and reserved2
 
         size
     }

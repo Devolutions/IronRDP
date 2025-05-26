@@ -68,6 +68,8 @@ pub mod ffi {
                         server_name.into(),
                         server_public_key.to_owned(),
                         kerbero_configs.map(|config| config.0.clone()),
+                        // @Irving: TODO, enable vmconnect for FFI
+                        false,
                     )?;
 
                     Ok(Box::new(CredsspSequenceInitResult {

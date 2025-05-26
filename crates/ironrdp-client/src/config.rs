@@ -239,9 +239,9 @@ struct Args {
     #[clap(long, value_parser, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
 
-    /// The Preconnection Blob
+    /// The Virtual Machine ID for Hyper-V, used as Pre Connection Blob
     #[clap(long)]
-    pcb: Option<String>,
+    vmconnect: Option<String>,
 }
 
 impl Config {
@@ -353,7 +353,7 @@ impl Config {
             request_data: None,
             pointer_software_rendering: true,
             performance_flags: PerformanceFlags::default(),
-            pcb: args.pcb,
+            vmconnect: args.vmconnect,
         };
 
         let rdcleanpath = args

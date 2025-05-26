@@ -862,7 +862,7 @@ fn build_config(
         hardware_id: None,
         license_cache: None,
         // TODO: implement this
-        pcb: None,
+        vmconnect: None,
     }
 }
 

@@ -36,7 +36,10 @@ pub enum ClientConnectorState {
     #[default]
     Consumed,
 
-    ConnectionInitiationSendRequest,
+    PreconnectionBlob,
+    ConnectionInitiationSendRequest {
+        selected_protocol: Option<nego::SecurityProtocol>,
+    },
     ConnectionInitiationWaitConfirm {
         requested_protocol: nego::SecurityProtocol,
     },
@@ -88,7 +91,8 @@ impl State for ClientConnectorState {
     fn name(&self) -> &'static str {
         match self {
             Self::Consumed => "Consumed",
-            Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
+            Self::PreconnectionBlob => "PreconnectionBlob",
+            Self::ConnectionInitiationSendRequest { .. } => "ConnectionInitiationSendRequest",
             Self::ConnectionInitiationWaitConfirm { .. } => "ConnectionInitiationWaitResponse",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
             Self::Credssp { .. } => "Credssp",
@@ -132,7 +136,7 @@ impl ClientConnector {
     pub fn new(config: Config, client_addr: SocketAddr) -> Self {
         Self {
             config,
-            state: ClientConnectorState::ConnectionInitiationSendRequest,
+            state: ClientConnectorState::PreconnectionBlob,
             client_addr,
             static_channels: StaticChannelSet::new(),
         }
@@ -180,7 +184,8 @@ impl Sequence for ClientConnector {
     fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
         match &self.state {
             ClientConnectorState::Consumed => None,
-            ClientConnectorState::ConnectionInitiationSendRequest => None,
+            ClientConnectorState::PreconnectionBlob => None,
+            ClientConnectorState::ConnectionInitiationSendRequest { .. } => None,
             ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
             ClientConnectorState::Credssp { .. } => None,
@@ -211,11 +216,85 @@ impl Sequence for ClientConnector {
             ClientConnectorState::Consumed => {
                 return Err(general_err!("connector sequence state is consumed (this is a bug)",))
             }
+            ClientConnectorState::PreconnectionBlob => 'state: {
+                let Some(connection_id) = self.config.vmconnect.as_ref() else {
+                    break 'state (
+                        Written::Nothing,
+                        ClientConnectorState::ConnectionInitiationSendRequest {
+                            selected_protocol: None,
+                        },
+                    );
+                };
 
+                let pcb = ironrdp_pdu::pcb::PreconnectionBlob {
+                    version: ironrdp_pdu::pcb::PcbVersion::V2,
+                    id: 0,
+                    // v2_payload: Some(connection_id.to_owned()),
+                    v2_payload: Some(format!("{connection_id};EnhancedMode=1").into()),
+                };
+                
+                debug!(message = ?pcb, "Send");
+
+                let written = ironrdp_core::encode_buf(&pcb, output).map_err(ConnectorError::encode)?;
+
+                let mut security_protocol = nego::SecurityProtocol::empty();
+                if self.config.enable_tls {
+                    security_protocol.insert(nego::SecurityProtocol::SSL);
+                }
+
+                if self.config.enable_credssp {
+                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+                    // The spec is stating that `PROTOCOL_SSL` "SHOULD" also be set when using `PROTOCOL_HYBRID`.
+                    // > PROTOCOL_HYBRID (0x00000002)
+                    // > Credential Security Support Provider protocol (CredSSP) (section 5.4.5.2).
+                    // > If this flag is set, then the PROTOCOL_SSL (0x00000001) flag SHOULD also be set
+                    // > because Transport Layer Security (TLS) is a subset of CredSSP.
+                    // However, crucially, it’s not strictly required (not "MUST").
+                    // In fact, we purposefully choose to not set `PROTOCOL_SSL` unless `enable_winlogon` is `true`.
+                    // This tells the server that we are not going to accept downgrading NLA to TLS security.
+                    security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
+                }
+
+                if security_protocol.is_standard_rdp_security() {
+                    return Err(reason_err!("Initiation", "standard RDP security is not supported",));
+                }
+
+                break 'state (
+                    Written::from_size(written)?,
+                    ClientConnectorState::EnhancedSecurityUpgrade {
+                        selected_protocol: security_protocol,
+                    },
+                );
+            }
             //== Connection Initiation ==//
             // Exchange supported security protocols and a few other connection flags.
-            ClientConnectorState::ConnectionInitiationSendRequest => 'state: {
+            ClientConnectorState::ConnectionInitiationSendRequest { selected_protocol } => 'state: {
                 debug!("Connection Initiation");
+
+                if self.config.vmconnect.is_some() {
+                    let selected_protocol = selected_protocol.ok_or(reason_err!(
+                        "Initiation",
+                        "VMConnect requires a selected protocol at ConnectionInitiationSendRequest state",
+                    ))?;
+
+                    let connection_request = nego::ConnectionRequest {
+                        nego_data: None,
+                        flags: nego::RequestFlags::empty(),
+                        protocol: selected_protocol,
+                    };
+
+                    debug!(message = ?connection_request, "Send");
+
+                    let written =
+                        ironrdp_core::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
+
+                    break 'state (
+                        Written::from_size(written)?,
+                        ClientConnectorState::ConnectionInitiationWaitConfirm {
+                            requested_protocol: selected_protocol,
+                        },
+                    );
+                }
 
                 let mut security_protocol = nego::SecurityProtocol::empty();
 
@@ -238,23 +317,6 @@ impl Sequence for ClientConnector {
 
                 if security_protocol.is_standard_rdp_security() {
                     return Err(reason_err!("Initiation", "standard RDP security is not supported",));
-                }
-
-                // If there's pcb, we send it in the first message.
-                if let Some(pcb) = &self.config.pcb {
-                    let pcb = ironrdp_pdu::pcb::PreconnectionBlob {
-                        version: ironrdp_pdu::pcb::PcbVersion::V2,
-                        id: 0,
-                        v2_payload: Some(pcb.to_owned()),
-                    };
-                    let written = ironrdp_core::encode_buf(&pcb, output).map_err(ConnectorError::encode)?;
-
-                    break 'state (
-                        Written::from_size(written)?,
-                        ClientConnectorState::EnhancedSecurityUpgrade {
-                            selected_protocol: security_protocol,
-                        },
-                    );
                 }
 
                 let connection_request = nego::ConnectionRequest {
@@ -306,7 +368,10 @@ impl Sequence for ClientConnector {
 
                 (
                     Written::Nothing,
-                    ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol },
+                    match self.config.vmconnect.is_some() {
+                        false => ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol },
+                        true => ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
+                    },
                 )
             }
 
@@ -328,10 +393,20 @@ impl Sequence for ClientConnector {
             }
 
             //== CredSSP ==//
-            ClientConnectorState::Credssp { selected_protocol } => (
-                Written::Nothing,
-                ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
-            ),
+            ClientConnectorState::Credssp { selected_protocol } => 'state: {
+                if self.config.vmconnect.is_some() {
+                    break 'state (
+                        Written::Nothing,
+                        ClientConnectorState::ConnectionInitiationSendRequest {
+                            selected_protocol: Some(selected_protocol),
+                        },
+                    );
+                }
+                (
+                    Written::Nothing,
+                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
+                )
+            }
 
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.

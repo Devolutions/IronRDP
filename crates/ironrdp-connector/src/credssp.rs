@@ -70,6 +70,7 @@ pub struct CredsspSequence {
     client: CredSspClient,
     state: CredsspState,
     selected_protocol: nego::SecurityProtocol,
+    vmconnect: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -96,18 +97,17 @@ impl CredsspSequence {
         server_name: ServerName,
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
+        vmconnect: bool,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
-        let credentials: Option<sspi::Credentials> = match &credentials {
+        let credentials: sspi::Credentials = match &credentials {
             Credentials::UsernamePassword { username, password } => {
                 let username = Username::new(username, domain).map_err(|e| custom_err!("invalid username", e))?;
 
-                Some(
-                    sspi::AuthIdentity {
-                        username,
-                        password: password.to_owned().into(),
-                    }
-                    .into(),
-                )
+                sspi::AuthIdentity {
+                    username,
+                    password: password.to_owned().into(),
+                }
+                .into()
             }
             Credentials::SmartCard { pin, config } => match config {
                 Some(config) => {
@@ -128,13 +128,17 @@ impl CredsspSequence {
                         private_key_file_index: None,
                         private_key: Some(key.into()),
                     };
-                    Some(sspi::Credentials::SmartCard(Box::new(identity)))
+                    sspi::Credentials::SmartCard(Box::new(identity))
                 }
                 None => {
                     return Err(general_err!("smart card configuration missing"));
                 }
             },
-            Credentials::None => None,
+            Credentials::None => sspi::AuthIdentity {
+                username: Username::new("", None).map_err(|e| custom_err!("invalid username", e))?,
+                password: String::new().into(),
+            }
+            .into(),
         };
 
         let server_name = server_name.into_inner();
@@ -151,7 +155,7 @@ impl CredsspSequence {
 
         let client = CredSspClient::new(
             server_public_key,
-            credentials,
+            Some(credentials),
             credssp::CredSspMode::WithCredentials,
             credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
                 protocol_config: credssp_config,
@@ -166,6 +170,7 @@ impl CredsspSequence {
             client,
             state: CredsspState::Ongoing,
             selected_protocol: protocol,
+            vmconnect,
         };
 
         let initial_request = credssp::TsRequest::default();
@@ -213,12 +218,28 @@ impl CredsspSequence {
             CredsspState::Ongoing => {
                 let (ts_request_from_client, next_state) = match result {
                     ClientState::ReplyNeeded(ts_request) => (ts_request, CredsspState::Ongoing),
+                    // ClientState::FinalMessage(ts_request) => (
+                    //     ts_request,
+                    //     if self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
+                    //         CredsspState::EarlyUserAuthResult
+                    //     } else {
+                    //         CredsspState::Finished
+                    //     },
+                    // ),
                     ClientState::FinalMessage(ts_request) => (
                         ts_request,
-                        if self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-                            CredsspState::EarlyUserAuthResult
-                        } else {
-                            CredsspState::Finished
+                        // @Irving: I don't understand the security protocol, and how it interfares with the vmconnect
+                        // So I'll just proceed to make VM Connect work for now, remind me about this when you see this
+                        // comment in Pull Request
+                        match (
+                            self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX),
+                            self.vmconnect,
+                        ) {
+                            (true, false) => CredsspState::EarlyUserAuthResult,
+                            // (false, false) => CredsspState::Finished,
+                            // (true, true) => CredsspState::Finished,
+                            // (false, true) => CredsspState::Finished,
+                            _ => CredsspState::Finished,
                         },
                     ),
                 };

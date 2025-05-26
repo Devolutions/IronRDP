@@ -201,7 +201,7 @@ pub mod ffi {
                 hardware_id: None,
                 license_cache: None,
                 // TODO: implement this
-                pcb: None,
+                vmconnect: None,
             };
             tracing::debug!(config=?inner_config, "Built config");
             Ok(Box::new(Config(inner_config)))
