@@ -3,13 +3,13 @@ mod worker;
 
 use std::sync::mpsc;
 
-use error::DvcPipeProxyError;
 use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{pdu_other_err, PduResult};
 use ironrdp_svc::SvcMessage;
-use worker::{worker_thread_func, OnWriteDvcMessage, WorkerCtx};
 
+use crate::platform::windows::error::DvcPipeProxyError;
+use crate::platform::windows::worker::{worker_thread_func, OnWriteDvcMessage, WorkerCtx};
 use crate::windows::{Event, MessagePipeServer, Semaphore};
 
 const IO_MPSC_CHANNEL_SIZE: usize = 100;
@@ -61,8 +61,8 @@ impl Drop for DvcNamedPipeProxy {
 
 impl DvcNamedPipeProxy {
     fn start_impl(&mut self, channel_id: u32) -> Result<(), DvcPipeProxyError> {
-        // PIPE -> DVC channel - handled via callback passed to the constructor
-        // DVC -> PIPE channel - handled via mpsc internally in the worker thread
+        // PIPE -> DVC channel - handled via callback passed to the constructor.
+        // DVC -> PIPE channel - handled via mpsc internally in the worker thread.
         let (to_pipe_tx, to_pipe_rx) = mpsc::sync_channel(IO_MPSC_CHANNEL_SIZE);
 
         let semaphore_max_count = IO_MPSC_CHANNEL_SIZE
@@ -126,7 +126,6 @@ impl DvcProcessor for DvcNamedPipeProxy {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         // Send the payload to the worker thread via the mpsc channel.
-
         let ctx = match &self.worker_control_ctx {
             Some(ctx) => ctx,
             None => {

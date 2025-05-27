@@ -1,17 +1,22 @@
 use std::sync::Arc;
 
+use windows::core::Owned;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Threading::{CreateSemaphoreW, ReleaseSemaphore};
 
-use crate::windows::{Handle, WindowsError};
+use crate::windows::{BorrowedHandle, WindowsError};
 
 /// RAII wrapper for WinAPI semaphore handle.
 #[derive(Debug, Clone)]
 pub(crate) struct Semaphore {
-    handle: Arc<Handle>,
+    handle: Arc<Owned<HANDLE>>,
 }
 
-/// SAFETY: It is safe to send semaphore HANDLE between threads.
+// SAFETY: We ensure that inner handle is indeed could be sent and shared between threads via
+// Semaphore wrapper API itself by restricting handle usage:
+// - release() method which calls ReleaseSemaphore inside (which is thread-safe).
+// - borrow() method which returns a BorrowedHandle for waiting on the semaphore.
+// - Handle lifetime is ensured by Arc, so it is always valid when used.
 unsafe impl Send for Semaphore {}
 
 impl Semaphore {
@@ -44,16 +49,22 @@ impl Semaphore {
         };
 
         // SAFETY: Handle is valid and we are the owner of the handle.
-        let handle = unsafe { Handle::new_owned(handle)? };
+        let handle = unsafe { Owned::new(handle) };
 
         // CreateSemaphoreW returns a valid handle on success.
         Ok(Self {
+            // See `unsafe impl Send` comment.
+            #[allow(clippy::arc_with_non_send_sync)]
             handle: Arc::new(handle),
         })
     }
 
-    pub(crate) fn raw(&self) -> HANDLE {
-        self.handle.raw()
+    fn raw(&self) -> HANDLE {
+        **self.handle
+    }
+
+    pub(crate) fn borrow(&self) -> BorrowedHandle<'_> {
+        BorrowedHandle(&self.handle)
     }
 
     pub(crate) fn release(&self, release_count: u16) -> Result<u32, WindowsError> {
@@ -72,7 +83,7 @@ impl Semaphore {
         // - lpPreviousCount points to valid stack memory.
         // - handle is valid and owned by this struct.
         unsafe {
-            ReleaseSemaphore(self.handle.raw(), release_count, Some(&mut previous_count))
+            ReleaseSemaphore(self.raw(), release_count, Some(&mut previous_count))
                 .map_err(WindowsError::ReleaseSemaphore)?;
         }
         Ok(previous_count.try_into().expect("semaphore count is negative"))

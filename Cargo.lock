@@ -2533,7 +2533,9 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "smallvec",
  "tracing",
+ "widestring",
  "windows 0.61.1",
 ]
 

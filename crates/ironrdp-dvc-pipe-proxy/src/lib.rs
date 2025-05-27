@@ -9,4 +9,4 @@ mod windows;
 
 mod platform;
 
-pub use platform::*;
+pub use platform::DvcNamedPipeProxy;
