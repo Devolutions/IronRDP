@@ -440,10 +440,9 @@ macro_rules! make_bridge {
 #[doc(hidden)]
 pub mod internal {
     #[doc(hidden)]
-    pub use web_sys;
-
-    #[doc(hidden)]
     pub use wasm_bindgen;
+    #[doc(hidden)]
+    pub use web_sys;
 
     #[doc(hidden)]
     pub fn setup(log_level: &str) {
