@@ -12,28 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Make client_codecs_capabilities() configurable ([783702962a](https://github.com/Devolutions/IronRDP/commit/783702962a2e842f9d5046ac706048ba124e1401)) 
 
+- BitmapCodecs struct ([f03ee393a3](https://github.com/Devolutions/IronRDP/commit/f03ee393a36906114b5bcba0e88ebc6869a99785)) 
+
 ### <!-- 4 -->Bug Fixes
 
 - Fix possible out of bound indexing in RFX module (#724) ([9f4e6d410b](https://github.com/Devolutions/IronRDP/commit/9f4e6d410b631d8a6b0c09c2abc0817a83cf042b)) 
 
   An index bound check was missing in the RFX module. Found by fuzzer.
-
-### <!-- 7 -->Build
-
-- Bump bitflags from 2.9.0 to 2.9.1 in the patch group across 1 directory (#792) ([87ed315bc2](https://github.com/Devolutions/IronRDP/commit/87ed315bc28fdd2dcfea89b052fa620a7e346e5a)) 
-
-### Refactor
-
-- [**breaking**] Add supported codecs in BitmapConfig ([f03ee393a3](https://github.com/Devolutions/IronRDP/commit/f03ee393a36906114b5bcba0e88ebc6869a99785)) 
-
-  "session" has a fixed set of supported codecs with associated IDs.
-  
-  "connector" must expose the set of codecs during capabilities exchange.
-  It currently uses hard-codes codec IDs in different places.
-  
-  Move the BitmapCodecs set to ironrdp-pdu. Shared code will be used by
-  the server, so this is a suitable common place.
-
 
 
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.3.1...ironrdp-pdu-v0.4.0)] - 2025-03-12

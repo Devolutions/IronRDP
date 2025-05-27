@@ -22,27 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Lookup the associated format from the client list ([3d7bc28b97](https://github.com/Devolutions/IronRDP/commit/3d7bc28b9764b1f37b038bb2fbb676ec464ee5ee)) 
 
-  This is an index to the client list, according to:
-  https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/7df64d93-7594-4035-978d-229f2b15f1bc
-
 - Send client formats that match server (#742) ([a8b9614323](https://github.com/Devolutions/IronRDP/commit/a8b96143236ad457b5241f6a2f8acfaf969472b6)) 
 
-  Windows seems to be confused if the client replies with more formats, or
-  unknown formats (opus).
-  
-  ---------
-
-### <!-- 7 -->Build
-
-- Bump bitflags from 2.9.0 to 2.9.1 in the patch group across 1 directory (#792) ([87ed315bc2](https://github.com/Devolutions/IronRDP/commit/87ed315bc28fdd2dcfea89b052fa620a7e346e5a)) 
+  Windows seems to be confused if the client replies with more formats, or unknown formats (opus).
 
 ### Refactor
 
 - [**breaking**] Pass format_no instead of AudioFormat ([4172571e8e](https://github.com/Devolutions/IronRDP/commit/4172571e8e061a6a120643393881b5e37f1e61ab)) 
-
-  This can help avoid extra lookups and cloning.
-
-
 
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.3.1...ironrdp-rdpsnd-v0.4.0)] - 2025-03-12
 

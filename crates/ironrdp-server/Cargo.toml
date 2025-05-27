@@ -29,17 +29,17 @@ anyhow = "1.0"
 tokio = { version = "1", features = ["net", "macros", "sync", "rt"] } # public
 tokio-rustls = "0.26" # public
 async-trait = "0.1"
-ironrdp-async = { path = "../ironrdp-async", version = "0.4" }
+ironrdp-async = { path = "../ironrdp-async", version = "0.5" }
 ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.2" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5" } # public
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.3" } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.4" } # public
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.3" } # public
-ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.2" } # public
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.2" } # public
-ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.3" }
-ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.4" } # public
-ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.3" } # public
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.3" } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.3" } # public
+ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.4" }
+ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.5" } # public
+ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.4" } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.5" } # public
 tracing = { version = "0.1", features = ["log"] }
 x509-cert = { version = "0.2.5", optional = true }

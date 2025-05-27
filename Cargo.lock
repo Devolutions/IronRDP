@@ -439,7 +439,7 @@ dependencies = [
  "bitflags 2.9.1",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools 0.10.5",
  "lazy_static",
  "lazycell",
  "log",
@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-acceptor"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
@@ -2371,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-async"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
@@ -2392,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-blocking"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
@@ -2494,7 +2494,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -2505,7 +2505,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -2545,7 +2545,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bit_field",
  "bitflags 2.9.1",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-input"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bitvec",
  "ironrdp-pdu",
@@ -2621,7 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd-native"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2704,7 +2704,7 @@ version = "0.0.0"
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitflags 2.9.1",
  "ironrdp-core",
@@ -2769,10 +2769,11 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-tokio"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "ironrdp-async",
+ "ironrdp-connector",
  "reqwest",
  "sspi",
  "tokio",
@@ -2836,15 +2837,6 @@ name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
 dependencies = [
  "either",
 ]
@@ -4958,9 +4950,9 @@ dependencies = [
 
 [[package]]
 name = "sspi"
-version = "0.15.5"
+version = "0.15.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb47773eac44d7a383793e7935a667f700740acc8fbf242c678289dd1a30cbd0"
+checksum = "27fb016d04750b9ce0b4576bfcdb978cf26a234536f2f6a7697b703e0f5bc048"
 dependencies = [
  "async-dnssd",
  "async-recursion",

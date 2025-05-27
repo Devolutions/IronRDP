@@ -6,21 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.2.0...ironrdp-cliprdr-native-v0.3.0)] - 2025-05-27
-
-### <!-- 1 -->Features
-
-- [**breaking**] Add on_ready() callback (#729) ([4e581e0f47](https://github.com/Devolutions/IronRDP/commit/4e581e0f47593097c16f2dde43cd0ff0976fe73e)) 
-
-  Give a hint to the backend when the channel is actually connected &
-  ready to process messages.
-
-### <!-- 7 -->Build
-
-- Update `windows` crate to 0.61.1 (#743) ([135b8bc4f6](https://github.com/Devolutions/IronRDP/commit/135b8bc4f6e62a2b41ecc63c6804a01cc7d67b69)) 
-
-
-
 ## [[0.1.4](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.1.3...ironrdp-cliprdr-native-v0.1.4)] - 2025-03-12
 
 ### <!-- 7 -->Build

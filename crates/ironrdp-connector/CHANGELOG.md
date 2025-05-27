@@ -14,8 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Enable audio playback on the client.
 
-- Make client_codecs_capabilities() configurable ([783702962a](https://github.com/Devolutions/IronRDP/commit/783702962a2e842f9d5046ac706048ba124e1401)) 
-
 ### <!-- 4 -->Bug Fixes
 
 - [**breaking**] Fix name of client address field (#754) ([bdde2c76de](https://github.com/Devolutions/IronRDP/commit/bdde2c76ded7315f7bc91d81a0909a1cb827d870)) 
@@ -29,14 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Refactor
 
 - [**breaking**] Add supported codecs in BitmapConfig ([f03ee393a3](https://github.com/Devolutions/IronRDP/commit/f03ee393a36906114b5bcba0e88ebc6869a99785)) 
-
-  "session" has a fixed set of supported codecs with associated IDs.
-  
-  "connector" must expose the set of codecs during capabilities exchange.
-  It currently uses hard-codes codec IDs in different places.
-  
-  Move the BitmapCodecs set to ironrdp-pdu. Shared code will be used by
-  the server, so this is a suitable common place.
 
 
 

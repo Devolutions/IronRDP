@@ -12,11 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [**breaking**] Make DecodedImage Send ([45f66117ba](https://github.com/Devolutions/IronRDP/commit/45f66117ba05170d95b21ec7d97017b44b954f28)) 
 
-  This will allow to share it between different threads.
-
 - Add DecodeImage helpers ([cd7a60ba45](https://github.com/Devolutions/IronRDP/commit/cd7a60ba45a0241be4ecf3860ec4f82b431a7ce2)) 
-
-  Having a helper to take the slice of updated region data is generally helpful.
 
 ### <!-- 4 -->Bug Fixes
 
@@ -31,27 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Decrease verbosity of Rfx frame_index ([b31b99eafb](https://github.com/Devolutions/IronRDP/commit/b31b99eafb0aac2a5e5a610af21a4027ae5cd698)) 
 
 - Decrease verbosity of FastPath header ([f9b6992e74](https://github.com/Devolutions/IronRDP/commit/f9b6992e74abb929f3001e76abaff5d7215e1cb4)) 
-
-### <!-- 6 -->Documentation
-
-- Misc doc annotation fix ([b957c085b3](https://github.com/Devolutions/IronRDP/commit/b957c085b317f0823a41fdfde3ec694601b5d132)) 
-
-### <!-- 99 -->Please Sort
-
-- Trace the surface codec ([ff26400822](https://github.com/Devolutions/IronRDP/commit/ff264008223cd808b0c2e86e961a4c20265d614e)) 
-
-### Refactor
-
-- [**breaking**] Add supported codecs in BitmapConfig ([f03ee393a3](https://github.com/Devolutions/IronRDP/commit/f03ee393a36906114b5bcba0e88ebc6869a99785)) 
-
-  "session" has a fixed set of supported codecs with associated IDs.
-  
-  "connector" must expose the set of codecs during capabilities exchange.
-  It currently uses hard-codes codec IDs in different places.
-  
-  Move the BitmapCodecs set to ironrdp-pdu. Shared code will be used by
-  the server, so this is a suitable common place.
-
 
 
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.2.3...ironrdp-session-v0.3.0)] - 2025-03-12

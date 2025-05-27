@@ -27,18 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   In following changes, we will fix it to draw bitmap updates on it, to
   keep it up to date.
 
-- Find & send the damaged tiles ([fb3769c4a7](https://github.com/Devolutions/IronRDP/commit/fb3769c4a7fce56e340df8c4b19f7d90cda93e50)) 
+- Find and send the damaged tiles ([fb3769c4a7](https://github.com/Devolutions/IronRDP/commit/fb3769c4a7fce56e340df8c4b19f7d90cda93e50)) 
 
   Keep a framebuffer and tile-diff against it, to save from
   encoding/sending the same bitmap data regions.
-
-- Add perfenc ([dd787af5a0](https://github.com/Devolutions/IronRDP/commit/dd787af5a02557aae102988c534b055cce5f0996)) 
-
-  Make some internal APIs publicly visible thanks to "visibility" when
-  compiling with the "__bench" feature.
-  
-  ("testsuite-core" also learned "__bench", because fast_path.rs is a
-  shared file)
 
 ### <!-- 4 -->Bug Fixes
 
@@ -47,10 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [**breaking**] Remove time_warn! from the public API (#773) ([cc78b1e3dc](https://github.com/Devolutions/IronRDP/commit/cc78b1e3dc1c554dd3fcf6494763caa00ba28ad7)) 
 
   This is intended to be an internal macro.
-
-### <!-- 99 -->Please Sort
-
-- Trace ServerEvent dispatching ([d47c1e6415](https://github.com/Devolutions/IronRDP/commit/d47c1e6415f3952061d0830652715130fd3c900c)) 
 
 ### Refactor
 
@@ -65,9 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [**breaking**] Use bytes, allowing shareable bitmap data ([3c43fdda76](https://github.com/Devolutions/IronRDP/commit/3c43fdda76f4ef6413db4010471364d6b1be2798)) 
 
 - [**breaking**] Rename left/top -> x/y ([229070a435](https://github.com/Devolutions/IronRDP/commit/229070a43554927a01541052a819fe3fcd32a913)) 
-
-  This is more idiomatic, and thus less confusing.
-
 
 
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.4.2...ironrdp-server-v0.5.0)] - 2025-03-12
