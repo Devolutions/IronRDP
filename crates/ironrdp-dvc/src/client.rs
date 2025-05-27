@@ -68,6 +68,10 @@ impl DrdynvcClient {
         self.dynamic_channels.get_by_type_id(TypeId::of::<T>())
     }
 
+    pub fn get_dvc_by_channel_id(&self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
+        self.dynamic_channels.get_by_channel_id(channel_id)
+    }
+
     fn create_capabilities_response(&mut self) -> SvcMessage {
         let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V1));
         debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
@@ -141,7 +145,7 @@ impl SvcProcessor for DrdynvcClient {
             }
             DrdynvcServerPdu::Close(close_request) => {
                 debug!("Got DVC Close Request PDU: {close_request:?}");
-                self.dynamic_channels.remove_by_channel_id(&close_request.channel_id);
+                self.dynamic_channels.remove_by_channel_id(close_request.channel_id);
 
                 let close_response = DrdynvcClientPdu::Close(ClosePdu::new(close_request.channel_id));
 
@@ -153,7 +157,7 @@ impl SvcProcessor for DrdynvcClient {
 
                 let messages = self
                     .dynamic_channels
-                    .get_by_channel_id_mut(&channel_id)
+                    .get_by_channel_id_mut(channel_id)
                     .ok_or_else(|| pdu_other_err!("access to non existing DVC channel"))?
                     .process(data)?;
 
