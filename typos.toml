@@ -38,4 +38,7 @@ extend-ignore-re = [
 
    "cll",
    "CLL",
+
+   # Commit hashes in CHANGELOG.md files.
+   "\\b[0-9a-f]{7,40}\\b",
 ]

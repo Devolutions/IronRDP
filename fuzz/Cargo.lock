@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bit_field",
  "bitflags 2.9.1",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitflags 2.9.1",
  "ironrdp-core",
