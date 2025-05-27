@@ -13,7 +13,7 @@ use ironrdp_core::WriteBuf;
 
 mod channel_connection;
 mod connection;
-mod credssp;
+pub mod credssp;
 mod finalization;
 mod util;
 
