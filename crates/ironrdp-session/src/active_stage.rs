@@ -250,8 +250,8 @@ impl ActiveStage {
         None
     }
 
-    pub fn encode_dvc_messages(&mut self, message: Vec<SvcMessage>) -> SessionResult<Vec<u8>> {
-        self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(message))
+    pub fn encode_dvc_messages(&mut self, messages: Vec<SvcMessage>) -> SessionResult<Vec<u8>> {
+        self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(messages))
     }
 }
 

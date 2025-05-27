@@ -8,8 +8,8 @@ use ironrdp_svc::{ChannelFlags, SvcMessage};
 use crate::platform::windows::error::DvcPipeProxyError;
 use crate::windows::{wait_any, wait_any_with_timeout, Event, MessagePipeServer, Semaphore, WindowsError};
 
-const PIPE_CONNECT_TIMEOUT: u32 = 10_000; // 10 seconds
-const PIPE_WRITE_TIMEOUT: u32 = 3_000; // 3 seconds
+const PIPE_CONNECT_TIMEOUT_SECS: u32 = 10_000; // 10 seconds
+const PIPE_WRITE_TIMEOUT_SECS: u32 = 3_000; // 3 seconds
 const MESSAGE_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
 
 pub(crate) type OnWriteDvcMessage = Box<dyn Fn(u32, Vec<SvcMessage>) -> PduResult<()> + Send>;
@@ -44,9 +44,8 @@ pub(crate) fn worker_thread_func(worker_ctx: WorkerCtx) -> Result<(), DvcPipePro
 
         if !connect_ctx.overlapped_connect()? {
             const EVENT_ID_ABORT: usize = 0;
-            let events = &[abort_event.raw(), connect_ctx.event().raw()];
-
-            let wait_result = match wait_any_with_timeout(events, PIPE_CONNECT_TIMEOUT) {
+            let events = [abort_event.borrow(), connect_ctx.borrow_event()];
+            let wait_result = match wait_any_with_timeout(events, PIPE_CONNECT_TIMEOUT_SECS) {
                 Ok(idx) => idx,
                 Err(WindowsError::WaitForMultipleObjectsTimeout) => {
                     warn!(%channel_name, %pipe_name, "DVC pipe proxy connection timed out");
@@ -73,22 +72,25 @@ pub(crate) fn worker_thread_func(worker_ctx: WorkerCtx) -> Result<(), DvcPipePro
     const EVENT_ID_ABORT: usize = 0;
     const EVENT_ID_READ: usize = 1;
     const EVENT_ID_WRITE_MPSC: usize = 2;
-    let events = &[abort_event.raw(), read_ctx.event().raw(), to_pipe_semaphore.raw()];
 
     read_ctx.overlapped_read()?;
 
     info!(%channel_name, %pipe_name, "DVC pipe proxy IO loop started");
 
     loop {
+        let events = [
+            abort_event.borrow(),
+            read_ctx.borrow_event(),
+            to_pipe_semaphore.borrow(),
+        ];
         let wait_result = wait_any(events)?;
 
-        // abort event
         if wait_result == EVENT_ID_ABORT {
             info!(%channel_name, %pipe_name, "DVC pipe proxy connection has been aborted");
             return Ok(());
         }
 
-        // read from pipe
+        // Read end of pipe is ready, forward received data to DVC.
         if wait_result == EVENT_ID_READ {
             let read_result = read_ctx.get_result()?.to_vec();
 
@@ -107,12 +109,12 @@ pub(crate) fn worker_thread_func(worker_ctx: WorkerCtx) -> Result<(), DvcPipePro
                 }
             }
 
-            // Queue the read operation again
+            // Queue the read operation again.
             read_ctx.overlapped_read()?;
             continue;
         }
 
-        // read from mpsc and write to pipe
+        // DVC data received, forward it to the pipe.
         if wait_result == EVENT_ID_WRITE_MPSC {
             let payload = to_pipe_rx.recv().map_err(|_| DvcPipeProxyError::MpscIo)?;
 
@@ -125,25 +127,22 @@ pub(crate) fn worker_thread_func(worker_ctx: WorkerCtx) -> Result<(), DvcPipePro
 
             trace!(%channel_name, %pipe_name, "DVC proxy write {} bytes to pipe,", payload_len);
 
-            // write to pipe
             let mut overlapped_write = pipe.prepare_write_overlapped(payload)?;
 
-            let events = &[abort_event.raw(), overlapped_write.event().raw()];
-
             overlapped_write.overlapped_write()?;
-            let wait_result = wait_any_with_timeout(events, PIPE_WRITE_TIMEOUT)?;
 
-            // abort event
+            let events = [abort_event.borrow(), overlapped_write.borrow_event()];
+            let wait_result = wait_any_with_timeout(events, PIPE_WRITE_TIMEOUT_SECS)?;
+
             if wait_result == EVENT_ID_ABORT {
                 info!(%channel_name, %pipe_name, "DVC pipe proxy write aborted");
                 return Ok(());
             }
 
-            // write to pipe
             let bytes_written = overlapped_write.get_result()?;
 
             if bytes_written as usize != payload_len {
-                // Message-based pipe write failed
+                // Message-based pipe write failed.
                 return Err(DvcPipeProxyError::DvcIncompleteWrite);
             }
 

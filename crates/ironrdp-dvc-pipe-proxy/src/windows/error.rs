@@ -12,45 +12,27 @@ pub(crate) enum WindowsError {
     OverlappedRead(windows::core::Error),
     OverlappedWrite(windows::core::Error),
     CreateSemaphore(windows::core::Error),
-    InvalidHandle,
+    InvalidPipeName(String),
 }
 
 impl core::fmt::Display for WindowsError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            WindowsError::CreateNamedPipe(_) => write!(f, "CreateNamedPipe failed"),
-            WindowsError::CreateEvent(_) => write!(f, "CreateEvent failed"),
-            WindowsError::SetEvent(_) => write!(f, "SetEvent failed"),
-            WindowsError::InvalidSemaphoreParams(cause) => {
-                write!(f, "Invalid semaphore parameters: {}", cause)
-            }
-            WindowsError::ReleaseSemaphore(_) => {
-                write!(f, "ReleaseSemaphore failed")
-            }
-            WindowsError::WaitForMultipleObjectsFailed(_) => {
-                write!(f, "WaitForMultipleObjects failed")
-            }
-            WindowsError::WaitForMultipleObjectsTimeout => {
-                write!(f, "WaitForMultipleObjects timed out")
-            }
+            WindowsError::CreateNamedPipe(_) => write!(f, "failed to create named pipe"),
+            WindowsError::CreateEvent(_) => write!(f, "failed to create event object"),
+            WindowsError::SetEvent(_) => write!(f, "failed to set event to signaled state"),
+            WindowsError::InvalidSemaphoreParams(cause) => write!(f, "invalid semaphore parameters: {}", cause),
+            WindowsError::ReleaseSemaphore(_) => write!(f, "failed to release semaphore"),
+            WindowsError::WaitForMultipleObjectsFailed(_) => write!(f, "failed to wait for multiple objects"),
+            WindowsError::WaitForMultipleObjectsTimeout => write!(f, "timed out waiting for multiple objects"),
             WindowsError::WaitForMultipleObjectsAbandoned(idx) => {
-                write!(f, "WaitForMultipleObjects handle #{idx} was abandoned")
+                write!(f, "wait for multiple objects failed, handle #{idx} was abandoned")
             }
-            WindowsError::OverlappedConnect(_) => {
-                write!(f, "Overlapped connect failed")
-            }
-            WindowsError::OverlappedRead(_) => {
-                write!(f, "Overlapped read failed")
-            }
-            WindowsError::OverlappedWrite(_) => {
-                write!(f, "Overlapped write failed")
-            }
-            WindowsError::CreateSemaphore(_) => {
-                write!(f, "CreateSemaphore failed")
-            }
-            WindowsError::InvalidHandle => {
-                write!(f, "Invalid handle")
-            }
+            WindowsError::OverlappedConnect(_) => write!(f, "overlapped connect failed"),
+            WindowsError::OverlappedRead(_) => write!(f, "overlapped read failed"),
+            WindowsError::OverlappedWrite(_) => write!(f, "overlapped write failed"),
+            WindowsError::CreateSemaphore(_) => write!(f, "failed to create semaphore object"),
+            WindowsError::InvalidPipeName(cause) => write!(f, "invalid pipe name: `{}`", cause),
         }
     }
 }
@@ -69,8 +51,8 @@ impl core::error::Error for WindowsError {
             WindowsError::CreateEvent(err) => Some(err),
             WindowsError::InvalidSemaphoreParams(_)
             | WindowsError::WaitForMultipleObjectsTimeout
-            | WindowsError::InvalidHandle
-            | WindowsError::WaitForMultipleObjectsAbandoned(_) => None,
+            | WindowsError::InvalidPipeName(_) => None,
+            WindowsError::WaitForMultipleObjectsAbandoned(_) => None,
         }
     }
 }

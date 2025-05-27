@@ -1,6 +1,7 @@
 use core::ops::DerefMut;
 use core::pin::Pin;
 
+use windows::core::{Owned, PCWSTR};
 use windows::Win32::Foundation::{ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
@@ -10,7 +11,7 @@ use windows::Win32::System::Pipes::{
 };
 use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
-use crate::windows::{ensure_overlapped_io_result, Event, Handle, WideString, WindowsError};
+use crate::windows::{ensure_overlapped_io_result, BorrowedHandle, Event, WindowsError};
 
 const PIPE_INSTANCES: u32 = 2;
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024; // 64KB
@@ -19,7 +20,7 @@ const DEFAULT_PIPE_TIMEOUT: u32 = 10_000; // 10 seconds
 /// RAII wrapper for WinAPI named pipe server.
 #[derive(Debug)]
 pub(crate) struct MessagePipeServer {
-    handle: Handle,
+    handle: Owned<HANDLE>,
     connected: bool,
 }
 
@@ -29,14 +30,14 @@ unsafe impl Send for MessagePipeServer {}
 impl MessagePipeServer {
     /// Creates a new named pipe server.
     pub(crate) fn new(name: &str) -> Result<Self, WindowsError> {
-        let lpname = WideString::new(name);
-
         // Create a named pipe with the specified name.
+        let lpname =
+            widestring::U16CString::from_str(name).map_err(|_| WindowsError::InvalidPipeName(name.to_owned()))?;
 
         // SAFETY: lpname is a valid pointer to a null-terminated wide string.
         let handle = unsafe {
             CreateNamedPipeW(
-                lpname.as_pcwstr(),
+                PCWSTR(lpname.as_ptr()),
                 PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                 PIPE_INSTANCES,
@@ -54,7 +55,7 @@ impl MessagePipeServer {
         }
 
         // SAFETY: Handle is valid and we are the owner of the handle.
-        let handle = unsafe { Handle::new_owned(handle)? };
+        let handle = unsafe { Owned::new(handle) };
 
         Ok(Self {
             handle,
@@ -62,8 +63,8 @@ impl MessagePipeServer {
         })
     }
 
-    pub(crate) fn raw(&self) -> HANDLE {
-        self.handle.raw()
+    fn raw(&self) -> HANDLE {
+        *self.handle
     }
 
     /// Initializes context for overlapped connect operation.
@@ -107,14 +108,10 @@ impl<'a> OverlappedPipeConnectCtx<'a> {
         })
     }
 
-    pub(crate) fn event(&self) -> &Event {
-        &self.event
-    }
-
     /// Connects to the named pipe server.
-    /// Returns `true` if pipe is already connected prior to this call and no additional
-    /// overlapped io is needed. If `false` is returned, the caller should call `get_result()` to
-    /// after waiting for the event to be signaled.
+    /// Returns true if pipe is already connected prior to this call and no additional
+    /// overlapped io is needed. If false is returned, the caller should call `get_result()` to
+    /// after returned event handle is signaled to complete the connection.
     pub(crate) fn overlapped_connect(&mut self) -> Result<bool, WindowsError> {
         // SAFETY: The handle is valid and we are the owner of the handle.
         let result = unsafe { ConnectNamedPipe(self.pipe.raw(), Some(self.overlapped.deref_mut() as *mut _)) };
@@ -138,6 +135,10 @@ impl<'a> OverlappedPipeConnectCtx<'a> {
                 }
             }
         }
+    }
+
+    pub(crate) fn borrow_event(&'a self) -> BorrowedHandle<'a> {
+        self.event.borrow()
     }
 
     pub(crate) fn get_result(&mut self) -> Result<(), WindowsError> {
@@ -184,10 +185,6 @@ impl<'a> OverlappedPipeReadCtx<'a> {
         })
     }
 
-    pub(crate) fn event(&self) -> &Event {
-        &self.event
-    }
-
     pub(crate) fn overlapped_read(&mut self) -> Result<(), WindowsError> {
         // SAFETY: hfile is a valid handle to a named pipe; lpBuffer
         // is a valid pointer which should be alive until the operation is completed;
@@ -201,6 +198,10 @@ impl<'a> OverlappedPipeReadCtx<'a> {
         };
 
         ensure_overlapped_io_result(result)?.map_err(WindowsError::OverlappedRead)
+    }
+
+    pub(crate) fn borrow_event(&'a self) -> BorrowedHandle<'a> {
+        self.event.borrow()
     }
 
     pub(crate) fn get_result(&mut self) -> Result<&[u8], WindowsError> {
@@ -249,10 +250,6 @@ impl<'a> OverlappedWriteCtx<'a> {
         })
     }
 
-    pub(crate) fn event(&self) -> &Event {
-        &self.event
-    }
-
     pub(crate) fn overlapped_write(&mut self) -> Result<(), WindowsError> {
         // SAFETY: hfile is a valid handle to a named pipe; lpBuffer
         // is a valid pointer which should be alive until the operation is completed;
@@ -266,6 +263,10 @@ impl<'a> OverlappedWriteCtx<'a> {
         };
 
         ensure_overlapped_io_result(result)?.map_err(WindowsError::OverlappedWrite)
+    }
+
+    pub(crate) fn borrow_event(&'a self) -> BorrowedHandle<'a> {
+        self.event.borrow()
     }
 
     pub(crate) fn get_result(&mut self) -> Result<u32, WindowsError> {

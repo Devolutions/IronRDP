@@ -4,26 +4,34 @@
 
 mod error;
 mod event;
-mod handle;
 mod pipe;
 mod semaphore;
-mod wide_string;
 
 pub(crate) use error::WindowsError;
 pub(crate) use event::Event;
-pub(crate) use handle::Handle;
 pub(crate) use pipe::MessagePipeServer;
 pub(crate) use semaphore::Semaphore;
-pub(crate) use wide_string::WideString;
+
+use smallvec::SmallVec;
 use windows::Win32::Foundation::{
     ERROR_IO_PENDING, HANDLE, WAIT_ABANDONED_0, WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::System::Threading::{WaitForMultipleObjects, INFINITE};
 
-// WaitForMultipleObjects wrapper with timeout.
-pub(crate) fn wait_any_with_timeout(handles: &[HANDLE], timeout: u32) -> Result<usize, WindowsError> {
+/// Thin wrapper around borrowed `windows` crate `HANDLE` reference.
+/// This is used to ensure handle lifetime when passing it to FFI functions
+/// (see `wait_any_with_timeout` for example).
+pub(crate) struct BorrowedHandle<'a>(&'a HANDLE);
+
+/// Safe wrapper around `WaitForMultipleObjects`.
+pub(crate) fn wait_any_with_timeout<'a, T>(handles: T, timeout: u32) -> Result<usize, WindowsError>
+where
+    T: IntoIterator<Item = BorrowedHandle<'a>>,
+{
+    let handles: SmallVec<[HANDLE; 8]> = handles.into_iter().map(|h| *h.0).collect();
+
     // SAFETY: FFI call with no outstanding preconditions.
-    let result = unsafe { WaitForMultipleObjects(handles, false, timeout) };
+    let result = unsafe { WaitForMultipleObjects(&handles, false, timeout) };
 
     match result {
         WAIT_FAILED => Err(WindowsError::WaitForMultipleObjectsFailed(
@@ -38,9 +46,16 @@ pub(crate) fn wait_any_with_timeout(handles: &[HANDLE], timeout: u32) -> Result<
     }
 }
 
-/// WaitForMultipleObjects wrapper with infinite timeout.
-pub(crate) fn wait_any(events: &[HANDLE]) -> Result<usize, WindowsError> {
-    wait_any_with_timeout(events, INFINITE)
+/// Safe `WaitForMultipleObjects` wrapper with infinite timeout.
+pub(crate) fn wait_any<'a, T>(handles: T) -> Result<usize, WindowsError>
+where
+    T: IntoIterator<Item = BorrowedHandle<'a>>,
+{
+    // Standard generic syntax is used instead if `impl` because of the following lint:
+    // > warning: lifetime parameter `'a` only used once
+    //
+    // Fixing this lint (use of '_ lifetime) produces compiler error.
+    wait_any_with_timeout(handles, INFINITE)
 }
 
 /// Maps ERROR_IO_PENDING to Ok(()) and returns other errors as is.
