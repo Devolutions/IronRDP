@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp"
-version = "0.9.1"
+version = "0.10.0"
 readme = "README.md"
 description = "A meta crate re-exporting IronRDP crates for convenience"
 edition.workspace = true
@@ -37,23 +37,23 @@ __bench = ["ironrdp-server/__bench"]
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", optional = true } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", optional = true } # public
-ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.2", optional = true } # public
-ironrdp-connector = { path = "../ironrdp-connector", version = "0.4", optional = true } # public
-ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.4", optional = true } # public
-ironrdp-session = { path = "../ironrdp-session", version = "0.3", optional = true } # public
-ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.3", optional = true } # public
-ironrdp-input = { path = "../ironrdp-input", version = "0.2", optional = true } # public
-ironrdp-server = { path = "../ironrdp-server", version = "0.5", optional = true, features = ["helper"] } # public
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.3", optional = true } # public
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.2", optional = true } # public
-ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.2", optional = true } # public
-ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.4", optional = true } # public
-ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.2", optional = true } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5", optional = true } # public
+ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.3", optional = true } # public
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.5", optional = true } # public
+ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.5", optional = true } # public
+ironrdp-session = { path = "../ironrdp-session", version = "0.4", optional = true } # public
+ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.4", optional = true } # public
+ironrdp-input = { path = "../ironrdp-input", version = "0.3", optional = true } # public
+ironrdp-server = { path = "../ironrdp-server", version = "0.6", optional = true, features = ["helper"] } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.4", optional = true } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.3", optional = true } # public
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.3", optional = true } # public
+ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.5", optional = true } # public
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.3", optional = true } # public
 
 [dev-dependencies]
-ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.4.0" }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.2.0" }
+ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.5.0" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.3.0" }
 anyhow = "1"
 async-trait = "0.1"
 image = { version = "0.25.6", default-features = false, features = ["png"] }

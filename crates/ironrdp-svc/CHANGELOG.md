@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.3.0...ironrdp-svc-v0.4.0)] - 2025-05-27
+
+### <!-- 7 -->Build
+
+- Bump bitflags from 2.9.0 to 2.9.1 in the patch group across 1 directory (#792) ([87ed315bc2](https://github.com/Devolutions/IronRDP/commit/87ed315bc28fdd2dcfea89b052fa620a7e346e5a)) 
+
+
+
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.2.0...ironrdp-svc-v0.3.0)] - 2025-03-12
 
 ### <!-- 7 -->Build

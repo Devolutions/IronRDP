@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.3.0...ironrdp-tokio-v0.4.0)] - 2025-05-27
+
+### <!-- 1 -->Features
+
+- Add reqwest feature (#734) ([032c38be92](https://github.com/Devolutions/IronRDP/commit/032c38be9229cfd35f0f6fc8eac5cccc960480d3)) 
+
 ## [[0.2.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.2.2...ironrdp-tokio-v0.2.3)] - 2025-03-12
 
 ### <!-- 7 -->Build

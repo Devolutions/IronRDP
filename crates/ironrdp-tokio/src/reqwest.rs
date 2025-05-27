@@ -2,7 +2,7 @@ use core::future::Future;
 use core::pin::Pin;
 use std::net::{IpAddr, Ipv4Addr};
 
-use ironrdp_async::ironrdp_connector::{custom_err, ConnectorResult};
+use ironrdp_connector::{custom_err, ConnectorResult};
 use reqwest::Client;
 use sspi::{Error, ErrorKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

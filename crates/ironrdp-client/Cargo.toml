@@ -30,7 +30,7 @@ native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls"]
 
 [dependencies]
 # Protocols
-ironrdp = { path = "../ironrdp", version = "0.9", features = [
+ironrdp = { path = "../ironrdp", version = "0.10", features = [
     "session",
     "input",
     "graphics",
@@ -43,10 +43,10 @@ ironrdp = { path = "../ironrdp", version = "0.9", features = [
     "connector",
 ] }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.2" }
-ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.2" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.3" }
+ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.3" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.1" }
-ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.3", features = ["reqwest"] }
+ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.4", features = ["reqwest"] }
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 
 # Windowing and rendering
