@@ -296,9 +296,12 @@ pub trait RdpServerDisplay: Send {
 
 #[cfg(test)]
 mod tests {
-    use super::{BitmapUpdate, Framebuffer};
     use core::num::NonZeroU16;
-    use ironrdp_graphics::{diff::Rect, image_processing::PixelFormat};
+
+    use ironrdp_graphics::diff::Rect;
+    use ironrdp_graphics::image_processing::PixelFormat;
+
+    use super::{BitmapUpdate, Framebuffer};
 
     #[test]
     fn framebuffer_update() {
