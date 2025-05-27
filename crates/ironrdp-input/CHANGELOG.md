@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.2.0...ironrdp-input-v0.2.1)] - 2025-05-27
+
+### <!-- 7 -->Build
+
+- Bump smallvec from 1.14.0 to 1.15.0 (#739) ([e70e7e2c5f](https://github.com/Devolutions/IronRDP/commit/e70e7e2c5f4e3844e0d4135efb4b7b3d71f01c38)) 
+
+
+
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.1.3...ironrdp-input-v0.2.0)] - 2025-03-12
 
 ### <!-- 7 -->Build

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.4.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-async-v0.4.0...ironrdp-async-v0.4.1)] - 2025-05-27
+
+### <!-- 1 -->Features
+
+- Add reqwest feature (#734) ([032c38be92](https://github.com/Devolutions/IronRDP/commit/032c38be9229cfd35f0f6fc8eac5cccc960480d3)) 
+
+  Move the client ReqwestNetworkClient to ironrdp-tokio, so other clients
+  can optionally use the implementation.
+
+
+
 ## [[0.3.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-async-v0.3.1...ironrdp-async-v0.3.2)] - 2025-03-12
 
 ### <!-- 7 -->Build

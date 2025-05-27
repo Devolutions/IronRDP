@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.1.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.1.2...ironrdp-tls-v0.1.3)] - 2025-05-27
+
+### <!-- 7 -->Build
+
+- Bump the patch group across 1 directory with 2 updates (#738) ([1df0737b0d](https://github.com/Devolutions/IronRDP/commit/1df0737b0d5df8137536e42bfd3ab765cbe08ce7)) 
+
+
+
 ## [[0.1.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.1.1...ironrdp-tls-v0.1.2)] - 2025-01-28
 
 ### <!-- 6 -->Documentation
