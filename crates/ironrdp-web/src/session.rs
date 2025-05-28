@@ -861,6 +861,8 @@ fn build_config(
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,
+        // TODO: implement this
+        pcb: None,
     }
 }
 

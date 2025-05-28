@@ -147,23 +147,6 @@ async fn connect(
         connector.attach_static_channel(cliprdr);
     }
 
-    if let Some(pcb) = &config.pcb {
-        let pdu = ironrdp::pdu::pcb::PreconnectionBlob {
-            id: 0,
-            version: ironrdp::pdu::pcb::PcbVersion::V2,
-            v2_payload: Some(pcb.to_owned()),
-        };
-
-        let mut encoded: Vec<_> = Vec::new();
-        let mut cursor = WriteCursor::new(&mut encoded);
-        pdu.encode(&mut cursor)
-            .map_err(|e| connector::custom_err!("encode PreconnectionBlob", e))?;
-
-        framed
-            .write_all(&encoded)
-            .await
-            .map_err(|e| connector::custom_err!("couldn’t write PreconnectionBlob", e))?;
-    }
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 

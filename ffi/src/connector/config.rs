@@ -200,6 +200,8 @@ pub mod ffi {
                 desktop_scale_factor: 0,
                 hardware_id: None,
                 license_cache: None,
+                // TODO: implement this
+                pcb: None,
             };
             tracing::debug!(config=?inner_config, "Built config");
             Ok(Box::new(Config(inner_config)))

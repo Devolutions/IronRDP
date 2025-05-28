@@ -5,7 +5,7 @@ use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
-use sspi::Username;
+use sspi::{AuthIdentity, Username};
 
 use crate::{ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written};
 
@@ -97,15 +97,17 @@ impl CredsspSequence {
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
-        let credentials: sspi::Credentials = match &credentials {
+        let credentials: Option<sspi::Credentials> = match &credentials {
             Credentials::UsernamePassword { username, password } => {
                 let username = Username::new(username, domain).map_err(|e| custom_err!("invalid username", e))?;
 
-                sspi::AuthIdentity {
-                    username,
-                    password: password.to_owned().into(),
-                }
-                .into()
+                Some(
+                    sspi::AuthIdentity {
+                        username,
+                        password: password.to_owned().into(),
+                    }
+                    .into(),
+                )
             }
             Credentials::SmartCard { pin, config } => match config {
                 Some(config) => {
@@ -126,12 +128,13 @@ impl CredsspSequence {
                         private_key_file_index: None,
                         private_key: Some(key.into()),
                     };
-                    sspi::Credentials::SmartCard(Box::new(identity))
+                    Some(sspi::Credentials::SmartCard(Box::new(identity)))
                 }
                 None => {
                     return Err(general_err!("smart card configuration missing"));
                 }
             },
+            Credentials::None => None,
         };
 
         let server_name = server_name.into_inner();
