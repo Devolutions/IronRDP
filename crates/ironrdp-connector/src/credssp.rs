@@ -155,7 +155,7 @@ impl CredsspSequence {
 
         let client = CredSspClient::new(
             server_public_key,
-            Some(credentials),
+            credentials,
             credssp::CredSspMode::WithCredentials,
             credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
                 protocol_config: credssp_config,

@@ -991,7 +991,7 @@ where
     {
         // RDCleanPath request
 
-        let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+        let connector::ClientConnectorState::ConnectionInitiationSendRequest { .. } = connector.state else {
             return Err(anyhow::Error::msg("invalid connector state (send request)").into());
         };
 
