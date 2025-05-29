@@ -232,7 +232,7 @@ impl Sequence for ClientConnector {
                     // v2_payload: Some(connection_id.to_owned()),
                     v2_payload: Some(format!("{connection_id};EnhancedMode=1").into()),
                 };
-                
+
                 debug!(message = ?pcb, "Send");
 
                 let written = ironrdp_core::encode_buf(&pcb, output).map_err(ConnectorError::encode)?;
