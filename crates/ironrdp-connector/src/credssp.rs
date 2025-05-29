@@ -213,28 +213,12 @@ impl CredsspSequence {
             CredsspState::Ongoing => {
                 let (ts_request_from_client, next_state) = match result {
                     ClientState::ReplyNeeded(ts_request) => (ts_request, CredsspState::Ongoing),
-                    // ClientState::FinalMessage(ts_request) => (
-                    //     ts_request,
-                    //     if self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-                    //         CredsspState::EarlyUserAuthResult
-                    //     } else {
-                    //         CredsspState::Finished
-                    //     },
-                    // ),
                     ClientState::FinalMessage(ts_request) => (
                         ts_request,
-                        // @Irving: I don't understand the security protocol, and how it interfares with the vmconnect
-                        // So I'll just proceed to make VM Connect work for now, remind me about this when you see this
-                        // comment in Pull Request
-                        match (
-                            self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX),
-                            self.vmconnect,
-                        ) {
-                            (true, false) => CredsspState::EarlyUserAuthResult,
-                            // (false, false) => CredsspState::Finished,
-                            // (true, true) => CredsspState::Finished,
-                            // (false, true) => CredsspState::Finished,
-                            _ => CredsspState::Finished,
+                        if self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
+                            CredsspState::EarlyUserAuthResult
+                        } else {
+                            CredsspState::Finished
                         },
                     ),
                 };
