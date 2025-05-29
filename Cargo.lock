@@ -4950,7 +4950,9 @@ dependencies = [
 
 [[package]]
 name = "sspi"
-version = "0.15.6"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "334391dc5b51751fd80c960b8a40dc8862b903ce41d3b848f154b72ac47ed119"
 dependencies = [
  "async-dnssd",
  "async-recursion",
