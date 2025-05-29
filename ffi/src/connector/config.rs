@@ -42,6 +42,7 @@ pub mod ffi {
         pub no_audio_playback: Option<bool>,
         pub pointer_software_rendering: Option<bool>,
         pub performance_flags: Option<ironrdp::pdu::rdp::client_info::PerformanceFlags>,
+        pub vmconnect: Option<String>,
     }
 
     #[diplomat::enum_convert(ironrdp::pdu::gcc::KeyboardType)]
@@ -152,6 +153,10 @@ pub mod ffi {
             self.pointer_software_rendering = Some(pointer_software_rendering);
         }
 
+        pub fn set_vm_connect(&mut self, vmconnect: &str) {
+            self.vmconnect = Some(vmconnect.to_owned());
+        }
+
         pub fn build(&self) -> Result<Box<Config>, Box<IronRdpError>> {
             let inner_config = ironrdp::connector::Config {
                 credentials: self.credentials.clone().ok_or("credentials not set")?,
@@ -200,8 +205,7 @@ pub mod ffi {
                 desktop_scale_factor: 0,
                 hardware_id: None,
                 license_cache: None,
-                // TODO: implement this
-                vmconnect: None,
+                vmconnect: self.vmconnect.clone(),
             };
             tracing::debug!(config=?inner_config, "Built config");
             Ok(Box::new(Config(inner_config)))

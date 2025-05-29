@@ -291,25 +291,21 @@ impl Config {
             args.clipboard_type
         };
 
-        let credentials = if args.username.is_none() && args.password.is_none() {
-            Credentials::None
-        } else {
-            let username = args.username.unwrap_or_else(|| {
-                inquire::Text::new("Username:")
-                    .prompt()
-                    .context("Username prompt")
-                    .unwrap_or_else(|_| "Administrator".to_owned())
-            });
+        let username = args.username.unwrap_or_else(|| {
+            inquire::Text::new("Username:")
+                .prompt()
+                .context("Username prompt")
+                .unwrap_or_else(|_| "Administrator".to_owned())
+        });
 
-            let password = args.password.unwrap_or_else(|| {
-                inquire::Password::new("Password:")
-                    .prompt()
-                    .context("Password prompt")
-                    .unwrap_or_else(|_| "password".to_owned())
-            });
+        let password = args.password.unwrap_or_else(|| {
+            inquire::Password::new("Password:")
+                .prompt()
+                .context("Password prompt")
+                .unwrap_or_else(|_| "password".to_owned())
+        });
 
-            Credentials::UsernamePassword { username, password }
-        };
+        let credentials = Credentials::UsernamePassword { username, password };
 
         let connector = connector::Config {
             credentials,

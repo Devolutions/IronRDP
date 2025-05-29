@@ -5,7 +5,7 @@ use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
-use sspi::{AuthIdentity, Username};
+use sspi::Username;
 
 use crate::{ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written};
 
@@ -134,11 +134,6 @@ impl CredsspSequence {
                     return Err(general_err!("smart card configuration missing"));
                 }
             },
-            Credentials::None => sspi::AuthIdentity {
-                username: Username::new("", None).map_err(|e| custom_err!("invalid username", e))?,
-                password: String::new().into(),
-            }
-            .into(),
         };
 
         let server_name = server_name.into_inner();
