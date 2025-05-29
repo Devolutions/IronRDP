@@ -33,7 +33,7 @@ pub mod ffi {
                 .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
             {
                 ironrdp::connector::ClientConnectorState::Consumed => ClientConnectorStateType::Consumed,
-                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest => {
+                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest { .. } => {
                     ClientConnectorStateType::ConnectionInitiationSendRequest
                 }
                 ironrdp::connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => {

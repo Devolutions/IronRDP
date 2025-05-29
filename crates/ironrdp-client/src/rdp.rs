@@ -148,7 +148,7 @@ async fn connect(
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
-    debug!("TLS upgrade");
+    debug!(destination = ?config.destination,"TLS upgrade");
 
     // Ensure there is no leftover
     let (initial_stream, leftover_bytes) = framed.into_inner();
@@ -292,7 +292,7 @@ where
     {
         // RDCleanPath request
 
-        let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+        let connector::ClientConnectorState::ConnectionInitiationSendRequest { .. } = connector.state else {
             return Err(connector::general_err!("invalid connector state (send request)"));
         };
 

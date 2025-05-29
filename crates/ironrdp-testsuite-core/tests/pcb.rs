@@ -84,6 +84,15 @@ encode_decode_test! {
             "004b00770056004d0048004300660059007400650036004900330066004c006100590031005f006200330053007200",
             "77005800490057006a006e00350041000000"
         )).expect("pcb_v2_with_jwt payload");
+    v2_hyperv_guid :
+        PreconnectionBlob {
+            version: PcbVersion::V2,
+            id: 0,
+            v2_payload: Some(String::from("ff995b48-a34f-404a-938f-303e4bb5bf31")),
+        },
+         hex::decode(concat!(
+            "5c0000000000000002000000000000002500660066003900390035006200340038002d0061003300340066002d0034003000340061002d0039003300380066002d003300300033006500340062006200350062006600330031000000"
+        )).expect("v2_hyperv_guid payload");
 }
 
 const PRECONNECTION_PDU_V1_NULL_SIZE_BUF: [u8; 16] = [

@@ -70,6 +70,7 @@ pub struct CredsspSequence {
     client: CredSspClient,
     state: CredsspState,
     selected_protocol: nego::SecurityProtocol,
+    vmconnect: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -96,6 +97,7 @@ impl CredsspSequence {
         server_name: ServerName,
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
+        vmconnect: bool,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         let credentials: sspi::Credentials = match &credentials {
             Credentials::UsernamePassword { username, password } => {
@@ -163,6 +165,7 @@ impl CredsspSequence {
             client,
             state: CredsspState::Ongoing,
             selected_protocol: protocol,
+            vmconnect,
         };
 
         let initial_request = credssp::TsRequest::default();
