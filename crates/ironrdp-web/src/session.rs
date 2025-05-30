@@ -55,7 +55,7 @@ struct SessionBuilderInner {
     password: Option<String>,
     proxy_address: Option<String>,
     auth_token: Option<String>,
-    pcb: Option<String>,
+    pcb: PreconnectionBlob,
     kdc_proxy_url: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
@@ -79,7 +79,7 @@ impl Default for SessionBuilderInner {
             password: None,
             proxy_address: None,
             auth_token: None,
-            pcb: None,
+            pcb: PreconnectionBlob::None,
             kdc_proxy_url: None,
             client_name: "ironrdp-web".to_owned(),
             desktop_size: DesktopSize {
@@ -208,7 +208,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     fn extension(&self, ext: Extension) -> Self {
         iron_remote_desktop::extension_match! {
             match ext;
-            |pcb: String| { self.0.borrow_mut().pcb = Some(pcb) };
+            |pcb: String| { self.0.borrow_mut().pcb = PreconnectionBlob::General(pcb) };
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
         }
@@ -887,12 +887,29 @@ async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: WriteHalf
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreconnectionBlob {
+    None,
+    General(String),
+    VMConnect(String),
+}
+
+impl Into<Option<String>> for PreconnectionBlob {
+    fn into(self) -> Option<String> {
+        match self {
+            PreconnectionBlob::None => None,
+            PreconnectionBlob::General(blob) => Some(blob),
+            PreconnectionBlob::VMConnect(blob) => Some(blob),
+        }
+    }
+}
+
 struct ConnectParams {
     ws: WebSocket,
     config: connector::Config,
     proxy_auth_token: String,
     destination: String,
-    pcb: Option<String>,
+    pcb: PreconnectionBlob,
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
     use_display_control: bool,
@@ -958,7 +975,7 @@ async fn connect_rdcleanpath<S>(
     connector: &mut ClientConnector,
     destination: String,
     proxy_auth_token: String,
-    pcb: Option<String>,
+    pcb: PreconnectionBlob,
 ) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronError>
 where
     S: ironrdp_futures::FramedRead + FramedWrite,
@@ -991,9 +1008,15 @@ where
     {
         // RDCleanPath request
 
-        let connector::ClientConnectorState::ConnectionInitiationSendRequest { .. } = connector.state else {
-            return Err(anyhow::Error::msg("invalid connector state (send request)").into());
-        };
+        match connector.state {
+            connector::ClientConnectorState::ConnectionInitiationSendRequest { .. }
+            | connector::ClientConnectorState::PreconnectionBlob => {
+                // Valid states to send RDCleanPath request
+            }
+            _ => {
+                return Err(anyhow::Error::msg("invalid connector state (not send request)").into());
+            }
+        }
 
         debug_assert!(connector.next_pdu_hint().is_none());
 
@@ -1003,7 +1026,7 @@ where
         let x224_pdu = buf.filled().to_vec();
 
         let rdcleanpath_req =
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb.into())
                 .context("new RDCleanPath request")?;
         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
         let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;
