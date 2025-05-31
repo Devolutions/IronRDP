@@ -296,7 +296,7 @@ That’s why most (if not all) tests should go into the `ironrdp-testsuite-core`
 
 #### Fuzzing
 
-See [`fuzz/README.md`](../fuzz/README.md).
+See [`fuzz/README.md`](./fuzz/README.md).
 
 #### Readability
 
