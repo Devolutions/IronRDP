@@ -292,24 +292,29 @@ where
     {
         // RDCleanPath request
 
-        let connector::ClientConnectorState::ConnectionInitiationSendRequest { .. } = connector.state else {
-            return Err(connector::general_err!("invalid connector state (send request)"));
-        };
+        match connector.state {
+            connector::ClientConnectorState::ConnectionInitiationSendRequest { .. } => {
+                let written = connector.step_no_input(&mut buf)?;
+                let x224_pdu_len = written.size().expect("written size");
+                debug_assert_eq!(x224_pdu_len, buf.filled_len());
+                let x224_pdu = buf.filled().to_vec();
+
+                let rdcleanpath_req =
+                    ironrdp_rdcleanpath::RDCleanPathPdu::new_x224_request(x224_pdu, destination, proxy_auth_token)
+                        .map_err(|e| connector::custom_err!("new RDCleanPath request", e))?;
+                debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
+                let rdcleanpath_req = rdcleanpath_req
+                    .to_der()
+                    .map_err(|e| connector::custom_err!("RDCleanPath request encode", e))?;
+                rdcleanpath_req
+            }
+            connector::ClientConnectorState::PreconnectionBlob { .. } => {}
+            _ => {
+                return Err(connector::general_err!("invalid connector state (send request)"));
+            }
+        }
 
         debug_assert!(connector.next_pdu_hint().is_none());
-
-        let written = connector.step_no_input(&mut buf)?;
-        let x224_pdu_len = written.size().expect("written size");
-        debug_assert_eq!(x224_pdu_len, buf.filled_len());
-        let x224_pdu = buf.filled().to_vec();
-
-        let rdcleanpath_req =
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
-                .map_err(|e| connector::custom_err!("new RDCleanPath request", e))?;
-        debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
-        let rdcleanpath_req = rdcleanpath_req
-            .to_der()
-            .map_err(|e| connector::custom_err!("RDCleanPath request encode", e))?;
 
         framed
             .write_all(&rdcleanpath_req)
