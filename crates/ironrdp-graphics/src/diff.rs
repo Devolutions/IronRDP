@@ -209,8 +209,9 @@ pub fn find_different_rects_sub<const BPP: usize>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bytemuck::cast_slice;
+
+    use super::*;
 
     #[test]
     fn test_intersect() {

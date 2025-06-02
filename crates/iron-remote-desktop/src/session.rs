@@ -98,7 +98,7 @@ pub trait Session {
 
     fn supports_unicode_keyboard_shortcuts(&self) -> bool;
 
-    fn extension_call(ext: Extension) -> Result<JsValue, Self::Error>;
+    fn extension_call(&self, ext: Extension) -> Result<JsValue, Self::Error>;
 }
 
 pub trait SessionTerminationInfo {

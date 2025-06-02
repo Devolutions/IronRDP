@@ -3,15 +3,16 @@
 #![allow(clippy::print_stdout)]
 
 use core::time::Duration;
-use std::{io::Write, time::Instant};
+use std::io::Write;
+use std::time::Instant;
 
 use anyhow::Context;
 use ironrdp::pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
-use ironrdp::server::{
-    bench::encoder::{UpdateEncoder, UpdateEncoderCodecs},
-    BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat, RdpServerDisplayUpdates,
-};
-use tokio::{fs::File, io::AsyncReadExt, time::sleep};
+use ironrdp::server::bench::encoder::{UpdateEncoder, UpdateEncoderCodecs};
+use ironrdp::server::{BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat, RdpServerDisplayUpdates};
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use tokio::time::sleep;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), anyhow::Error> {

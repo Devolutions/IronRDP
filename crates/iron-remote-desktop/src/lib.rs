@@ -190,9 +190,11 @@ macro_rules! make_bridge {
 
             #[wasm_bindgen(js_name = extensionCall)]
             pub fn extension_call(
+                &self,
                 ext: $crate::Extension,
             ) -> Result<$crate::internal::wasm_bindgen::JsValue, IronError> {
-                <<$api as $crate::RemoteDesktopApi>::Session as $crate::Session>::extension_call(ext).map_err(IronError)
+                <<$api as $crate::RemoteDesktopApi>::Session as $crate::Session>::extension_call(&self.0, ext)
+                    .map_err(IronError)
             }
         }
 
@@ -440,10 +442,9 @@ macro_rules! make_bridge {
 #[doc(hidden)]
 pub mod internal {
     #[doc(hidden)]
-    pub use web_sys;
-
-    #[doc(hidden)]
     pub use wasm_bindgen;
+    #[doc(hidden)]
+    pub use web_sys;
 
     #[doc(hidden)]
     pub fn setup(log_level: &str) {

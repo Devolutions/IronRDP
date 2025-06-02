@@ -4,6 +4,7 @@ import type { SessionEvent } from './session-event';
 import { ConfigBuilder } from '../services/ConfigBuilder';
 import type { Config } from '../services/Config';
 import type { PartialObserver } from 'rxjs';
+import type { Extension } from './Extension';
 
 export interface UserInteraction {
     setVisibility(state: boolean): void;
@@ -29,4 +30,6 @@ export interface UserInteraction {
     resize(width: number, height: number, scale?: number): void;
 
     setEnableClipboard(enable: boolean): void;
+
+    callExtension(ext: Extension): void;
 }
