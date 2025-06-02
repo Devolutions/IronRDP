@@ -6,6 +6,7 @@ import type { UserInteraction } from '../interfaces/UserInteraction';
 import type { ScreenScale } from '../enums/ScreenScale';
 import { ConfigBuilder } from './ConfigBuilder';
 import { Config } from './Config';
+import type { Extension } from '../interfaces/Extension';
 
 export class PublicAPI {
     private remoteDesktopService: RemoteDesktopService;
@@ -62,6 +63,10 @@ export class PublicAPI {
         this.remoteDesktopService.setEnableClipboard(enable);
     }
 
+    private callExtension(ext: Extension) {
+        this.remoteDesktopService.callExtension(ext);
+    }
+
     getExposedFunctions(): UserInteraction {
         return {
             setVisibility: this.setVisibility.bind(this),
@@ -78,6 +83,7 @@ export class PublicAPI {
             setCursorStyleOverride: this.setCursorStyleOverride.bind(this),
             resize: this.resize.bind(this),
             setEnableClipboard: this.setEnableClipboard.bind(this),
+            callExtension: this.callExtension.bind(this),
         };
     }
 }

@@ -19,6 +19,7 @@ import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInf
 import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
 import { ConfigBuilder } from './ConfigBuilder';
 import type { Config } from './Config';
+import type { Extension } from '../interfaces/Extension';
 
 type OnRemoteClipboardChanged = (data: ClipboardData) => void;
 type OnRemoteReceivedFormatsList = () => void;
@@ -278,6 +279,10 @@ export class RemoteDesktopService {
             this.canvas!.style.cursor = style;
             this.cursorHasOverride = true;
         }
+    }
+
+    callExtension(ext: Extension) {
+        this.session?.extensionCall(ext);
     }
 
     private releaseAllInputs() {

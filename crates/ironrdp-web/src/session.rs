@@ -805,7 +805,7 @@ impl iron_remote_desktop::Session for Session {
         false
     }
 
-    fn extension_call(ext: Extension) -> Result<JsValue, Self::Error> {
+    fn extension_call(&self, ext: Extension) -> Result<JsValue, Self::Error> {
         Err(
             IronError::from(anyhow::Error::msg(format!("unknown extension: {}", ext.ident())))
                 .with_kind(IronErrorKind::General),
