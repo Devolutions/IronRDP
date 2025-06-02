@@ -68,6 +68,7 @@ where
             server_public_key,
             network_client,
             kerberos_config,
+            false, // use_vmconnect
         )
         .await?;
     }
@@ -114,6 +115,7 @@ pub async fn perform_credssp_step<S>(
     server_public_key: Vec<u8>,
     mut network_client: Option<&mut dyn AsyncNetworkClient>,
     kerberos_config: Option<KerberosConfig>,
+    use_vmconnect: bool,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
@@ -132,6 +134,7 @@ where
         server_name,
         server_public_key,
         kerberos_config,
+        use_vmconnect,
     )?;
 
     loop {

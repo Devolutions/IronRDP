@@ -70,6 +70,7 @@ pub struct CredsspSequence {
     client: CredSspClient,
     state: CredsspState,
     selected_protocol: nego::SecurityProtocol,
+    use_vmconnect: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -96,6 +97,7 @@ impl CredsspSequence {
         server_name: ServerName,
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
+        use_vmconnect: bool,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         let credentials: sspi::Credentials = match &credentials {
             Credentials::UsernamePassword { username, password } => {
@@ -163,6 +165,7 @@ impl CredsspSequence {
             client,
             state: CredsspState::Ongoing,
             selected_protocol: protocol,
+            use_vmconnect,
         };
 
         let initial_request = credssp::TsRequest::default();
@@ -213,8 +216,11 @@ impl CredsspSequence {
                     ClientState::FinalMessage(ts_request) => (
                         ts_request,
                         if self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-                            // Don't merge this, something needs to be done here for HyperV
-                            CredsspState::Finished
+                            if self.use_vmconnect {
+                                CredsspState::Finished
+                            } else {
+                                CredsspState::EarlyUserAuthResult
+                            }
                         } else {
                             CredsspState::Finished
                         },

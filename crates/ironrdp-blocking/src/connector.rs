@@ -137,6 +137,8 @@ where
         server_name,
         server_public_key,
         kerberos_config,
+        // TODO: implement vmconnect support for ironrdp-blocking
+        false,
     )?;
 
     loop {

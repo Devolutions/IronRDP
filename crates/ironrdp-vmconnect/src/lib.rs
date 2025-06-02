@@ -7,8 +7,13 @@ use ironrdp_connector::{
     ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, Sequence, ServerName,
 };
 use ironrdp_core::WriteBuf;
+use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::pcb::PcbVersion;
 use tracing::instrument;
+
+pub fn create_pcb_payload(vm_id: &str) -> String {
+    format!("{vm_id};EnhancedMode=1")
+}
 
 #[non_exhaustive]
 pub struct ShouldUpgrade;
@@ -47,7 +52,7 @@ where
     let pdu = ironrdp_pdu::pcb::PreconnectionBlob {
         id: 0,
         version: PcbVersion::V2,
-        v2_payload: Some(format!("{vm_id};EnhancedMode=1")),
+        v2_payload: Some(create_pcb_payload(vm_id)),
     };
 
     let to_write = ironrdp_core::encode_vec(&pdu)
@@ -69,38 +74,17 @@ pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector) -> Up
 }
 
 #[instrument(skip_all)]
-pub async fn connect_begin_cleanpath<S>(
-    framed: &mut Framed<S>,
-    connector: &mut ClientConnector,
-    vm_id: &str,
-) -> ConnectorResult<Upgraded>
-where
-    S: Sync + FramedRead + FramedWrite,
-{
-    info!("Pre-connection procedure");
-    let mut buf = WriteBuf::new();
-    debug_assert!(matches!(
-        connector.state,
-        ClientConnectorState::ConnectionInitiationSendRequest
-    ));
-
-    let _ = connector.step(&[], &mut buf)?;
-
-    let ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } = connector.state else {
-        return Err(ironrdp_connector::reason_err!(
-            "Invalid connector state",
-            "Expected ConnectionInitiationWaitConfirm",
-        ));
+pub fn force_upgrade(_: ShouldUpgrade, connector: &mut ClientConnector, protocol: SecurityProtocol) -> Upgraded {
+    trace!("Forcing security upgrade");
+    connector.state = ClientConnectorState::Credssp {
+        selected_protocol: protocol,
     };
+    Upgraded
+}
 
-    connector.state = ClientConnectorState::EnhancedSecurityUpgrade {
-        selected_protocol: requested_protocol,
-    };
-    framed
-        .write_all(format!("{vm_id};EnhancedMode=1").as_bytes())
-        .await
-        .map_err(|e| ironrdp_connector::custom_err!("Failed to write VM ID", e))?;
-    Ok(Upgraded)
+#[instrument(skip_all)]
+pub fn skip_connect_begin() -> ShouldUpgrade {
+    ShouldUpgrade
 }
 
 #[instrument(skip_all)]
@@ -127,6 +111,7 @@ where
             server_public_key,
             network_client,
             kerberos_config,
+            true, // use_vmconnect
         )
         .await?;
     }
