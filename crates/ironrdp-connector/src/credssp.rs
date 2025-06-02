@@ -213,7 +213,8 @@ impl CredsspSequence {
                     ClientState::FinalMessage(ts_request) => (
                         ts_request,
                         if self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-                            CredsspState::EarlyUserAuthResult
+                            // Don't merge this, something needs to be done here for HyperV
+                            CredsspState::Finished
                         } else {
                             CredsspState::Finished
                         },

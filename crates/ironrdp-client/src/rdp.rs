@@ -11,7 +11,7 @@ use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_core::WriteBuf;
 use ironrdp_rdpsnd_native::cpal;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
-use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed, FramedWrite};
+use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed, Framed, FramedWrite, TokioStream};
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -146,36 +146,67 @@ async fn connect(
         connector.attach_static_channel(cliprdr);
     }
 
-    let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
+    let result = if let Some(vmconnect) = &config.vmconnect {
+        let should_upgrade = ironrdp_vmconnect::connect_begin(&mut framed, &mut connector, vmconnect).await?;
+        debug!("VMConnect upgrade");
+        let (mut upgraded_framed, server_public_key) = upgrade(framed, config).await?;
+        let upgraded = ironrdp_vmconnect::mark_as_upgraded(should_upgrade, &mut connector);
 
-    debug!("TLS upgrade");
+        let connection_result = ironrdp_vmconnect::connect_finalize(
+            upgraded,
+            &mut upgraded_framed,
+            connector,
+            (&config.destination).into(),
+            server_public_key,
+            Some(&mut ReqwestNetworkClient::new()),
+            None,
+        )
+        .await?;
 
-    // Ensure there is no leftover
-    let (initial_stream, leftover_bytes) = framed.into_inner();
+        (connection_result, upgraded_framed)
+    } else {
+        let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
-    let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
-        .await
-        .map_err(|e| connector::custom_err!("TLS upgrade", e))?;
+        debug!("TLS upgrade");
 
-    let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
+        let (mut upgraded_framed, server_public_key) = upgrade(framed, config).await?;
+        let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
-    let erased_stream = Box::new(upgraded_stream) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
-    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
+        let connection_result = ironrdp_tokio::connect_finalize(
+            upgraded,
+            &mut upgraded_framed,
+            connector,
+            (&config.destination).into(),
+            server_public_key,
+            Some(&mut ReqwestNetworkClient::new()),
+            None,
+        )
+        .await?;
 
-    let connection_result = ironrdp_tokio::connect_finalize(
-        upgraded,
-        &mut upgraded_framed,
-        connector,
-        (&config.destination).into(),
-        server_public_key,
-        Some(&mut ReqwestNetworkClient::new()),
-        None,
-    )
-    .await?;
+        debug!(?connection_result);
+        (connection_result, upgraded_framed)
+    };
 
-    debug!(?connection_result);
+    return Ok(result);
 
-    Ok((connection_result, upgraded_framed))
+    async fn upgrade(
+        framed: Framed<TokioStream<TcpStream>>,
+        config: &Config,
+    ) -> ConnectorResult<(
+        Framed<TokioStream<Box<dyn AsyncReadWrite + Sync + Send + Unpin + 'static>>>,
+        Vec<u8>,
+    )> {
+        let (initial_stream, leftover_bytes) = framed.into_inner();
+
+        let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
+            .await
+            .map_err(|e| connector::custom_err!("TLS upgrade", e))?;
+
+        let erased_stream = Box::new(upgraded_stream) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
+        let upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
+
+        Ok((upgraded_framed, server_public_key))
+    }
 }
 
 async fn connect_ws(
@@ -255,7 +286,7 @@ async fn connect_ws(
 }
 
 async fn connect_rdcleanpath<S>(
-    framed: &mut ironrdp_tokio::Framed<S>,
+    framed: &mut Framed<S>,
     connector: &mut connector::ClientConnector,
     destination: String,
     proxy_auth_token: String,
@@ -306,6 +337,7 @@ where
         let rdcleanpath_req =
             ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
                 .map_err(|e| connector::custom_err!("new RDCleanPath request", e))?;
+
         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
         let rdcleanpath_req = rdcleanpath_req
             .to_der()

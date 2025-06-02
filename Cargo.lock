@@ -2416,6 +2416,7 @@ dependencies = [
  "ironrdp-rdpsnd-native",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-vmconnect",
  "proc-exit",
  "raw-window-handle",
  "semver",
@@ -2778,6 +2779,18 @@ dependencies = [
  "sspi",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "ironrdp-vmconnect"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ironrdp-async",
+ "ironrdp-connector",
+ "ironrdp-core",
+ "ironrdp-pdu",
+ "tracing",
 ]
 
 [[package]]
@@ -4951,8 +4964,6 @@ dependencies = [
 [[package]]
 name = "sspi"
 version = "0.15.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27fb016d04750b9ce0b4576bfcdb978cf26a234536f2f6a7697b703e0f5bc048"
 dependencies = [
  "async-dnssd",
  "async-recursion",

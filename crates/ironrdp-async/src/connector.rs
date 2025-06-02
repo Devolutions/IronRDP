@@ -106,7 +106,7 @@ async fn resolve_generator(
 }
 
 #[instrument(level = "trace", skip_all)]
-async fn perform_credssp_step<S>(
+pub async fn perform_credssp_step<S>(
     framed: &mut Framed<S>,
     connector: &mut ClientConnector,
     buf: &mut WriteBuf,
