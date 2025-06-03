@@ -188,12 +188,12 @@ macro_rules! make_bridge {
                 $crate::Session::supports_unicode_keyboard_shortcuts(&self.0)
             }
 
-            #[wasm_bindgen(js_name = extensionCall)]
-            pub fn extension_call(
+            #[wasm_bindgen(js_name = invokeExtension)]
+            pub fn invoke_extension(
                 &self,
                 ext: $crate::Extension,
             ) -> Result<$crate::internal::wasm_bindgen::JsValue, IronError> {
-                <<$api as $crate::RemoteDesktopApi>::Session as $crate::Session>::extension_call(&self.0, ext)
+                <<$api as $crate::RemoteDesktopApi>::Session as $crate::Session>::invoke_extension(&self.0, ext)
                     .map_err(IronError)
             }
         }

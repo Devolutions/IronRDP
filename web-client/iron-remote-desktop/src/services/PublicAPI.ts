@@ -63,8 +63,8 @@ export class PublicAPI {
         this.remoteDesktopService.setEnableClipboard(enable);
     }
 
-    private callExtension(ext: Extension) {
-        this.remoteDesktopService.callExtension(ext);
+    private invokeExtension(ext: Extension) {
+        this.remoteDesktopService.invokeExtension(ext);
     }
 
     getExposedFunctions(): UserInteraction {
@@ -83,7 +83,7 @@ export class PublicAPI {
             setCursorStyleOverride: this.setCursorStyleOverride.bind(this),
             resize: this.resize.bind(this),
             setEnableClipboard: this.setEnableClipboard.bind(this),
-            callExtension: this.callExtension.bind(this),
+            callExtension: this.invokeExtension.bind(this),
         };
     }
 }

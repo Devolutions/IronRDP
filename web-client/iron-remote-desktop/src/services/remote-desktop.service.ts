@@ -281,8 +281,8 @@ export class RemoteDesktopService {
         }
     }
 
-    callExtension(ext: Extension) {
-        this.session?.extensionCall(ext);
+    invokeExtension(ext: Extension) {
+        this.session?.invokeExtension(ext);
     }
 
     private releaseAllInputs() {
