@@ -10,6 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- [**breaking**] Rename callExtension to invokeExtension (#803) ([f68cd06ac3](https://github.com/Devolutions/IronRDP/commit/f68cd06ac3705608e6f2ac6bde684d9ae906ea53)) 
+- [**breaking**] Rename extension_call to invoke_extension (#803) ([f68cd06ac3](https://github.com/Devolutions/IronRDP/commit/f68cd06ac3705608e6f2ac6bde684d9ae906ea53)) 
 
 
