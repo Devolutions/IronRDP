@@ -13,7 +13,7 @@ use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersKeyState;
 use winit::platform::scancode::PhysicalKeyExtScancode;
-use winit::window::{Window, WindowAttributes};
+use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 
 use crate::rdp::{RdpInputEvent, RdpOutputEvent};
 
@@ -352,12 +352,27 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 window.set_cursor_visible(false);
             }
             RdpOutputEvent::PointerDefault => {
+                window.set_cursor(CursorIcon::default());
                 window.set_cursor_visible(true);
             }
             RdpOutputEvent::PointerPosition { x, y } => {
                 if let Err(error) = window.set_cursor_position(LogicalPosition::new(x, y)) {
                     error!(?error, "Failed to set cursor position");
                 }
+            }
+            RdpOutputEvent::PointerBitmap(pointer) => {
+                debug!(width = ?pointer.width, height = ?pointer.height, "Received pointer bitmap");
+                match CustomCursor::from_rgba(
+                    pointer.bitmap_data.clone(),
+                    pointer.width,
+                    pointer.height,
+                    pointer.hotspot_x,
+                    pointer.hotspot_y,
+                ) {
+                    Ok(cursor) => window.set_cursor(event_loop.create_custom_cursor(cursor)),
+                    Err(error) => error!(?error, "Failed to set cursor bitmap"),
+                }
+                window.set_cursor_visible(true);
             }
         }
     }
