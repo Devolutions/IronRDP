@@ -4964,6 +4964,7 @@ dependencies = [
 [[package]]
 name = "sspi"
 version = "0.15.6"
+source = "git+https://github.com/Devolutions/sspi-rs?branch=for-temporary-vmconnect-demo#823e62a8eb6df9254c35bd70713a56c58a8dad17"
 dependencies = [
  "async-dnssd",
  "async-recursion",
