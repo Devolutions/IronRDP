@@ -38,7 +38,7 @@ pub enum PointerError {
 }
 
 /// Represents RDP pointer in decoded form (color channels stored as RGBA pre-multiplied values)
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DecodedPointer {
     pub width: u16,
     pub height: u16,

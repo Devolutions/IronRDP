@@ -342,7 +342,7 @@ impl Config {
             autologon: args.autologon,
             no_audio_playback: false,
             request_data: None,
-            pointer_software_rendering: true,
+            pointer_software_rendering: false,
             performance_flags: PerformanceFlags::default(),
         };
 

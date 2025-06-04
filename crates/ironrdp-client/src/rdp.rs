@@ -4,6 +4,7 @@ use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::graphics::image_processing::PixelFormat;
+use ironrdp::graphics::pointer::DecodedPointer;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
@@ -28,6 +29,7 @@ pub enum RdpOutputEvent {
     PointerDefault,
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
+    PointerBitmap(DecodedPointer),
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -509,8 +511,10 @@ async fn active_session(
                         .send_event(RdpOutputEvent::PointerPosition { x, y })
                         .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
                 }
-                ActiveStageOutput::PointerBitmap(_) => {
-                    // Not applicable, because we use the software cursor rendering.
+                ActiveStageOutput::PointerBitmap(pointer) => {
+                    event_loop_proxy
+                        .send_event(RdpOutputEvent::PointerBitmap(pointer.as_ref().clone()))
+                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
                 }
                 ActiveStageOutput::DeactivateAll(mut connection_activation) => {
                     // Execute the Deactivation-Reactivation Sequence:
