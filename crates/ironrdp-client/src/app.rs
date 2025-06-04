@@ -363,7 +363,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             RdpOutputEvent::PointerBitmap(pointer) => {
                 debug!(width = ?pointer.width, height = ?pointer.height, "Received pointer bitmap");
                 match CustomCursor::from_rgba(
-                    pointer.bitmap_data,
+                    pointer.bitmap_data.clone(),
                     pointer.width,
                     pointer.height,
                     pointer.hotspot_x,
