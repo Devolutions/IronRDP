@@ -197,30 +197,34 @@ impl RDCleanPathPdu {
         }
     }
 
-    pub fn new_request(
-        x224_pdu: Vec<u8>,
-        destination: String,
-        proxy_auth: String,
-        pcb: Option<String>,
-    ) -> der::Result<Self> {
+    pub fn new_x224_request(x224_pdu: Vec<u8>, destination: String, proxy_auth: String) -> der::Result<Self> {
         Ok(Self {
             version: VERSION_1,
             destination: Some(destination),
             proxy_auth: Some(proxy_auth),
-            preconnection_blob: pcb,
             x224_connection_pdu: Some(OctetString::new(x224_pdu)?),
+            ..Self::default()
+        })
+    }
+
+    pub fn new_pcb_request(preconnection_blob: String, destination: String, proxy_auth: String) -> der::Result<Self> {
+        Ok(Self {
+            version: VERSION_1,
+            destination: Some(destination),
+            proxy_auth: Some(proxy_auth),
+            preconnection_blob: Some(preconnection_blob),
             ..Self::default()
         })
     }
 
     pub fn new_response(
         server_addr: String,
-        x224_pdu: Vec<u8>,
+        x224_pdu: Option<Vec<u8>>,
         x509_chain: impl IntoIterator<Item = Vec<u8>>,
     ) -> der::Result<Self> {
         Ok(Self {
             version: VERSION_1,
-            x224_connection_pdu: Some(OctetString::new(x224_pdu)?),
+            x224_connection_pdu: x224_pdu.map(OctetString::new).transpose()?,
             server_cert_chain: Some(
                 x509_chain
                     .into_iter()

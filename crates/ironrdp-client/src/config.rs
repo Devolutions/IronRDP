@@ -238,6 +238,10 @@ struct Args {
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, value_parser, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
+
+    /// The Virtual Machine ID for Hyper-V, used as Pre Connection Blob
+    #[clap(long)]
+    vmconnect: Option<String>,
 }
 
 impl Config {
@@ -251,21 +255,6 @@ impl Config {
                 .prompt()
                 .context("Address prompt")?
                 .pipe(Destination::new)?
-        };
-
-        let username = if let Some(username) = args.username {
-            username
-        } else {
-            inquire::Text::new("Username:").prompt().context("Username prompt")?
-        };
-
-        let password = if let Some(password) = args.password {
-            password
-        } else {
-            inquire::Password::new("Password:")
-                .without_confirmation()
-                .prompt()
-                .context("Password prompt")?
         };
 
         let codecs: Vec<_> = args.codecs.iter().map(|s| s.as_str()).collect();
@@ -302,8 +291,24 @@ impl Config {
             args.clipboard_type
         };
 
+        let username = args.username.unwrap_or_else(|| {
+            inquire::Text::new("Username:")
+                .prompt()
+                .context("Username prompt")
+                .unwrap_or_else(|_| "Administrator".to_owned())
+        });
+
+        let password = args.password.unwrap_or_else(|| {
+            inquire::Password::new("Password:")
+                .prompt()
+                .context("Password prompt")
+                .unwrap_or_else(|_| "password".to_owned())
+        });
+
+        let credentials = Credentials::UsernamePassword { username, password };
+
         let connector = connector::Config {
-            credentials: Credentials::UsernamePassword { username, password },
+            credentials,
             domain: args.domain,
             enable_tls: !args.no_tls,
             enable_credssp: !args.no_credssp,
@@ -344,6 +349,7 @@ impl Config {
             request_data: None,
             pointer_software_rendering: false,
             performance_flags: PerformanceFlags::default(),
+            vmconnect: args.vmconnect,
         };
 
         let rdcleanpath = args

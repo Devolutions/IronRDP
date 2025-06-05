@@ -11,12 +11,12 @@
     let username = 'Administrator';
     let password = 'DevoLabs123!';
     let gatewayAddress = 'ws://localhost:7171/jet/rdp';
-    let hostname = '10.10.0.3:3389';
+    let hostname = import.meta.env.VITE_IRON_HOSTNAME ?? '10.10.0.3:3389';
     let domain = '';
     let authtoken = '';
     let kdc_proxy_url = '';
     let desktopSize = { width: 1280, height: 720 };
-    let pcb = '';
+    let pcb = import.meta.env.VITE_IRON_RDP_PCB ?? '';
     let pop_up = false;
     let enable_clipboard = true;
 

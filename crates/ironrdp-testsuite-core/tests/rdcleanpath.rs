@@ -2,7 +2,7 @@ use ironrdp_rdcleanpath::{DetectionResult, RDCleanPathPdu, VERSION_1};
 use rstest::rstest;
 
 fn request() -> RDCleanPathPdu {
-    RDCleanPathPdu::new_request(
+    RDCleanPathPdu::new_x224_request(
         vec![0xDE, 0xAD, 0xBE, 0xFF],
         "destination".to_owned(),
         "proxy auth".to_owned(),

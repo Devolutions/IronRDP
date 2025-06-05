@@ -315,7 +315,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             config,
             proxy_auth_token: auth_token,
             destination,
-            pcb,
             kdc_proxy_url,
             clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
             use_display_control,
@@ -861,6 +860,8 @@ fn build_config(
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,
+        // TODO: implement this
+        vmconnect: None,
     }
 }
 
@@ -890,7 +891,6 @@ struct ConnectParams {
     config: connector::Config,
     proxy_auth_token: String,
     destination: String,
-    pcb: Option<String>,
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
     use_display_control: bool,
@@ -902,7 +902,6 @@ async fn connect(
         config,
         proxy_auth_token,
         destination,
-        pcb,
         kdc_proxy_url,
         clipboard_backend,
         use_display_control,
@@ -926,7 +925,7 @@ async fn connect(
     }
 
     let (upgraded, server_public_key) =
-        connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
+        connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token).await?;
 
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
@@ -956,7 +955,6 @@ async fn connect_rdcleanpath<S>(
     connector: &mut ClientConnector,
     destination: String,
     proxy_auth_token: String,
-    pcb: Option<String>,
 ) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronError>
 where
     S: ironrdp_futures::FramedRead + FramedWrite,
@@ -986,30 +984,53 @@ where
 
     info!("Begin connection procedure");
 
+    debug!(?connector, "Connector state before RDCleanPath request");
     {
-        // RDCleanPath request
+        let rdcleanpath_req = match connector.state {
+            connector::ClientConnectorState::ConnectionInitiationSendRequest { .. } => {
+                debug_assert!(connector.next_pdu_hint().is_none());
 
-        let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
-            return Err(anyhow::Error::msg("invalid connector state (send request)").into());
+                let written = connector.step_no_input(&mut buf)?;
+                let x224_pdu_len = written.size().expect("written size");
+                debug_assert_eq!(x224_pdu_len, buf.filled_len());
+                let x224_pdu = buf.filled().to_vec();
+
+                let rdcleanpath_req =
+                    ironrdp_rdcleanpath::RDCleanPathPdu::new_x224_request(x224_pdu, destination, proxy_auth_token)
+                        .context("new RDCleanPath request")?;
+
+                rdcleanpath_req
+            }
+            connector::ClientConnectorState::PreconnectionBlob => {
+                debug_assert!(connector.next_pdu_hint().is_none());
+                let written = connector.step_no_input(&mut buf)?;
+                let pcb_len = written.size().expect("written size");
+                debug_assert_eq!(pcb_len, buf.filled_len());
+                let preconnection_blob = buf.filled().to_vec();
+
+                let rdcleanpath_req = ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(
+                    preconnection_blob,
+                    destination,
+                    proxy_auth_token,
+                )
+                .context("new RDCleanPath preconnection blob request")?;
+
+                rdcleanpath_req
+            }
+            _ => {
+                return Err(anyhow::Error::msg("invalid connector state (send request)").into());
+            }
         };
 
-        debug_assert!(connector.next_pdu_hint().is_none());
-
-        let written = connector.step_no_input(&mut buf)?;
-        let x224_pdu_len = written.size().expect("written size");
-        debug_assert_eq!(x224_pdu_len, buf.filled_len());
-        let x224_pdu = buf.filled().to_vec();
-
-        let rdcleanpath_req =
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
-                .context("new RDCleanPath request")?;
-        debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
-        let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;
+        debug!(message = ?rdcleanpath_req, "Send RDCleanPath preconnection blob request");
+        let rdcleanpath_req = rdcleanpath_req
+            .to_der()
+            .context("RDCleanPath preconnection blob request encode")?;
 
         framed
             .write_all(&rdcleanpath_req)
             .await
-            .context("couldn’t write RDCleanPath request")?;
+            .context("couldn’t write RDCleanPath preconnection blob request")?;
     }
 
     {
@@ -1050,7 +1071,11 @@ where
         debug_assert!(connector.next_pdu_hint().is_some());
 
         buf.clear();
-        let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+
+        let written = match x224_connection_response {
+            Some(x224_connection_response) => connector.step(x224_connection_response.as_bytes(), &mut buf)?,
+            None => connector.step_no_input(&mut buf)?,
+        };
 
         debug_assert!(written.is_nothing());
 

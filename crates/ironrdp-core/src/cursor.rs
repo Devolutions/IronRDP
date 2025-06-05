@@ -578,6 +578,12 @@ impl<'a> WriteCursor<'a> {
         self.pos
     }
 
+    /// Returns the number of bytes written.
+    #[inline]
+    pub const fn bytes_written(&self) -> usize {
+        self.pos
+    }
+
     /// Write an array of bytes to the buffer.
     #[inline]
     #[track_caller]

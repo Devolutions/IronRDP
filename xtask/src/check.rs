@@ -9,6 +9,7 @@ pub fn fmt(sh: &Shell) -> anyhow::Result<()> {
         anyhow::bail!("Bad formatting, please run 'cargo +stable fmt --all'");
     }
 
+
     println!("All good!");
 
     Ok(())
