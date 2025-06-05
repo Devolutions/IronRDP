@@ -83,7 +83,7 @@ export class PublicAPI {
             setCursorStyleOverride: this.setCursorStyleOverride.bind(this),
             resize: this.resize.bind(this),
             setEnableClipboard: this.setEnableClipboard.bind(this),
-            callExtension: this.invokeExtension.bind(this),
+            invokeExtension: this.invokeExtension.bind(this),
         };
     }
 }

@@ -31,5 +31,5 @@ export interface UserInteraction {
 
     setEnableClipboard(enable: boolean): void;
 
-    callExtension(ext: Extension): void;
+    invokeExtension(ext: Extension): void;
 }
