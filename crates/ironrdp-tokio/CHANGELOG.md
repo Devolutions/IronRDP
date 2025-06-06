@@ -17,8 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Add `reqwest-rustls-ring` to enable rustls + ring backend.
   - Add `reqwest-native-tls` to enable native-tls backend.
 
-
-
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.3.0...ironrdp-tokio-v0.4.0)] - 2025-05-27
 
 ### <!-- 1 -->Features
