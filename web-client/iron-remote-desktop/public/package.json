@@ -9,8 +9,8 @@
     "Zacharia Ellaham",
     "Alexandr Yusuk"
   ],
-  "description": "Web Component providing agnostic implementation for Iron Wasm base client",
-  "version": "0.3.0",
+  "description": "Backend-agnostic Web Component for remote desktop protocols",
+  "version": "0.4.0",
   "main": "iron-remote-desktop.js",
   "types": "index.d.ts",
   "files": [
