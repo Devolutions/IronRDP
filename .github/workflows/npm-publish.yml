@@ -83,7 +83,7 @@ jobs:
           name: npm-${{matrix.library}}
           path: npm-packages/*.tgz
 
-  nuget-merge:
+  npm-merge:
     name: Merge artifacts
     runs-on: ubuntu-latest
     needs: build
@@ -103,7 +103,7 @@ jobs:
     environment: publish
     needs:
       - preflight
-      - build
+      - npm-merge
 
     steps:
       - name: Download NPM packages artifact
