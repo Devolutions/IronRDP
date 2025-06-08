@@ -1,6 +1,9 @@
+use std::char::ToUppercase;
+
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
-use ironrdp::connector::{ConnectionResult, ConnectorResult};
+use ironrdp::connector::sspi::network_client::NetworkClient;
+use ironrdp::connector::{ConnectionResult, ConnectorCore, ConnectorResult};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::graphics::image_processing::PixelFormat;
@@ -11,15 +14,20 @@ use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_core::WriteBuf;
 use ironrdp_rdpsnd_native::cpal;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
-use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed, FramedWrite};
+use ironrdp_tokio::{
+    perfrom_credssp, run_until_handover, send_pcb, single_sequence_step_read, split_tokio_framed, take_over, Framed,
+    FramedWrite, ShouldUpgrade, TokioStream,
+};
+use ironrdp_vmconnect::VmClientConnector;
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
+use x509_cert::der::asn1::OctetString;
 
-use crate::config::{Config, RDCleanPathConfig};
+use crate::config::{Config, PreconnectionBlobPayload, RDCleanPathConfig};
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
@@ -140,42 +148,77 @@ async fn connect(
 
     if let Some(builder) = cliprdr_factory {
         let backend = builder.build_cliprdr_backend();
-
         let cliprdr = cliprdr::Cliprdr::new(backend);
-
         connector.attach_static_channel(cliprdr);
     }
 
-    let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
+    let mut connector: Box<dyn ConnectorCore> =
+        if let Some(PreconnectionBlobPayload::VmConnect(vmconnect)) = &config.pcb {
+            let pcb_sent = send_pcb(&mut framed, vmconnect.to_owned()).await?;
+            let connector = take_over(pcb_sent, connector)?;
+            Box::new(connector)
+        } else {
+            Box::new(connector)
+        };
 
-    debug!("TLS upgrade");
+    let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, connector.as_mut()).await?;
+    let (mut upgraded_framed, server_public_key) = upgrade(framed, config.destination.name()).await?;
+    let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, connector.as_security_connector());
 
-    // Ensure there is no leftover
-    let (initial_stream, leftover_bytes) = framed.into_inner();
+    let server_name = (&config.destination).into();
 
-    let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
-        .await
-        .map_err(|e| connector::custom_err!("TLS upgrade", e))?;
-
-    let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
-
-    let erased_stream = Box::new(upgraded_stream) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
-    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
-
-    let connection_result = ironrdp_tokio::connect_finalize(
+    let mut credssp_finished = perfrom_credssp(
         upgraded,
+        connector.as_mut(),
         &mut upgraded_framed,
-        connector,
-        (&config.destination).into(),
+        server_name,
         server_public_key,
         Some(&mut ReqwestNetworkClient::new()),
         None,
     )
     .await?;
 
+    let connector = connector.into_any();
+    let connector = if connector.is::<VmClientConnector>() {
+        let connector = connector
+            .downcast::<VmClientConnector>()
+            .map_err(|_| connector::general_err!("connector is not a VmClientConnector, but it should be"))?;
+        let connector = run_until_handover(&mut credssp_finished, &mut upgraded_framed, *connector).await?;
+        connector
+    } else if connector.is::<connector::ClientConnector>() {
+        let connector = connector
+            .downcast::<connector::ClientConnector>()
+            .map_err(|_| connector::general_err!("connector is not a ClientConnector, but it should be"))?;
+        *connector
+    } else {
+        return Err(connector::general_err!(
+            "connector is not a ClientConnector or VmClientConnector"
+        ));
+    };
+
+    let connection_result = ironrdp_tokio::connect_finalize(credssp_finished, &mut upgraded_framed, connector).await?;
     debug!(?connection_result);
 
-    Ok((connection_result, upgraded_framed))
+    return Ok((connection_result, upgraded_framed));
+
+    async fn upgrade(
+        framed: Framed<TokioStream<TcpStream>>,
+        server_name: &str,
+    ) -> ConnectorResult<(
+        Framed<TokioStream<Box<dyn AsyncReadWrite + Sync + Send + Unpin + 'static>>>,
+        Vec<u8>,
+    )> {
+        let (initial_stream, leftover_bytes) = framed.into_inner();
+
+        let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, server_name)
+            .await
+            .map_err(|e| connector::custom_err!("TLS upgrade", e))?;
+
+        let erased_stream = Box::new(upgraded_stream) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
+        let upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
+
+        Ok((upgraded_framed, server_public_key))
+    }
 }
 
 async fn connect_ws(
@@ -183,207 +226,297 @@ async fn connect_ws(
     rdcleanpath: &RDCleanPathConfig,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
-    let hostname = rdcleanpath
-        .url
-        .host_str()
-        .ok_or_else(|| connector::general_err!("host missing from the URL"))?;
+    // let hostname = rdcleanpath
+    //     .url
+    //     .host_str()
+    //     .ok_or_else(|| connector::general_err!("host missing from the URL"))?;
 
-    let port = rdcleanpath.url.port_or_known_default().unwrap_or(443);
+    // let port = rdcleanpath.url.port_or_known_default().unwrap_or(443);
 
-    let socket = TcpStream::connect((hostname, port))
-        .await
-        .map_err(|e| connector::custom_err!("TCP connect", e))?;
+    // let socket = TcpStream::connect((hostname, port))
+    //     .await
+    //     .map_err(|e| connector::custom_err!("TCP connect", e))?;
 
-    socket
-        .set_nodelay(true)
-        .map_err(|e| connector::custom_err!("set TCP_NODELAY", e))?;
+    // socket
+    //     .set_nodelay(true)
+    //     .map_err(|e| connector::custom_err!("set TCP_NODELAY", e))?;
 
-    let client_addr = socket
-        .local_addr()
-        .map_err(|e| connector::custom_err!("get socket local address", e))?;
+    // let client_addr = socket
+    //     .local_addr()
+    //     .map_err(|e| connector::custom_err!("get socket local address", e))?;
 
-    let (ws, _) = tokio_tungstenite::client_async_tls(rdcleanpath.url.as_str(), socket)
-        .await
-        .map_err(|e| connector::custom_err!("WS connect", e))?;
+    // let (ws, _) = tokio_tungstenite::client_async_tls(rdcleanpath.url.as_str(), socket)
+    //     .await
+    //     .map_err(|e| connector::custom_err!("WS connect", e))?;
 
-    let ws = crate::ws::websocket_compat(ws);
+    // let ws = crate::ws::websocket_compat(ws);
 
-    let mut framed = ironrdp_tokio::TokioFramed::new(ws);
+    // let mut framed = ironrdp_tokio::TokioFramed::new(ws);
 
-    let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
-        .with_static_channel(
-            ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        )
-        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
-        .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
+    // let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
+    //     .with_static_channel(
+    //         ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
+    //     )
+    //     .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
+    //     .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
-    if let Some(builder) = cliprdr_factory {
-        let backend = builder.build_cliprdr_backend();
+    // if let Some(builder) = cliprdr_factory {
+    //     let backend = builder.build_cliprdr_backend();
 
-        let cliprdr = cliprdr::Cliprdr::new(backend);
+    //     let cliprdr = cliprdr::Cliprdr::new(backend);
 
-        connector.attach_static_channel(cliprdr);
-    }
+    //     connector.attach_static_channel(cliprdr);
+    // }
 
-    let destination = format!("{}:{}", config.destination.name(), config.destination.port());
+    // let destination = format!("{}:{}", config.destination.name(), config.destination.port());
 
-    let (upgraded, server_public_key) = connect_rdcleanpath(
-        &mut framed,
-        &mut connector,
-        destination,
-        rdcleanpath.auth_token.clone(),
-        None,
-    )
-    .await?;
+    // let (upgraded, server_public_key) = connect_rdcleanpath(
+    //     &mut framed,
+    //     &mut connector,
+    //     destination,
+    //     rdcleanpath.auth_token.clone(),
+    //     &config.pcb,
+    // )
+    // .await?;
 
-    let connection_result = ironrdp_tokio::connect_finalize(
-        upgraded,
-        &mut framed,
-        connector,
-        (&config.destination).into(),
-        server_public_key,
-        Some(&mut ReqwestNetworkClient::new()),
-        None,
-    )
-    .await?;
+    // let connection_result = match upgraded {
+    //     Upgraded::VM(upgraded) => {
+    //         ironrdp_vmconnect::connect_finalize(
+    //             upgraded,
+    //             &mut framed,
+    //             connector,
+    //             (&config.destination).into(),
+    //             server_public_key,
+    //             Some(&mut ReqwestNetworkClient::new()),
+    //             None,
+    //         )
+    //         .await?
+    //     }
+    //     Upgraded::Standard(upgraded) => {
+    //         ironrdp_tokio::connect_finalize(
+    //             upgraded,
+    //             &mut framed,
+    //             connector,
+    //             (&config.destination).into(),
+    //             server_public_key,
+    //             Some(&mut ReqwestNetworkClient::new()),
+    //             None,
+    //         )
+    //         .await?
+    //     }
+    // };
 
-    let (ws, leftover_bytes) = framed.into_inner();
-    let erased_stream = Box::new(ws) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
-    let upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
+    // let (ws, leftover_bytes) = framed.into_inner();
+    // let erased_stream = Box::new(ws) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
+    // let upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
 
-    Ok((connection_result, upgraded_framed))
+    // Ok((connection_result, upgraded_framed))
+    todo!()
 }
 
 async fn connect_rdcleanpath<S>(
-    framed: &mut ironrdp_tokio::Framed<S>,
+    framed: &mut Framed<S>,
     connector: &mut connector::ClientConnector,
     destination: String,
     proxy_auth_token: String,
-    pcb: Option<String>,
-) -> ConnectorResult<(ironrdp_tokio::Upgraded, Vec<u8>)>
+    pcb: &Option<PreconnectionBlobPayload>,
+) -> ConnectorResult<(ShouldUpgrade, Vec<u8>)>
 where
     S: ironrdp_tokio::FramedRead + FramedWrite,
 {
-    use ironrdp::connector::Sequence as _;
-    use x509_cert::der::Decode as _;
+    // use ironrdp::connector::Sequence as _;
+    // use x509_cert::der::Decode as _;
 
-    #[derive(Clone, Copy, Debug)]
-    struct RDCleanPathHint;
+    // #[derive(Clone, Copy, Debug)]
+    // struct RDCleanPathHint;
 
-    const RDCLEANPATH_HINT: RDCleanPathHint = RDCleanPathHint;
+    // const RDCLEANPATH_HINT: RDCleanPathHint = RDCleanPathHint;
 
-    impl ironrdp::pdu::PduHint for RDCleanPathHint {
-        fn find_size(&self, bytes: &[u8]) -> ironrdp::core::DecodeResult<Option<(bool, usize)>> {
-            match ironrdp_rdcleanpath::RDCleanPathPdu::detect(bytes) {
-                ironrdp_rdcleanpath::DetectionResult::Detected { total_length, .. } => Ok(Some((true, total_length))),
-                ironrdp_rdcleanpath::DetectionResult::NotEnoughBytes => Ok(None),
-                ironrdp_rdcleanpath::DetectionResult::Failed => Err(ironrdp::core::other_err!(
-                    "RDCleanPathHint",
-                    "detection failed (invalid PDU)"
-                )),
-            }
-        }
-    }
+    // impl ironrdp::pdu::PduHint for RDCleanPathHint {
+    //     fn find_size(&self, bytes: &[u8]) -> ironrdp::core::DecodeResult<Option<(bool, usize)>> {
+    //         match ironrdp_rdcleanpath::RDCleanPathPdu::detect(bytes) {
+    //             ironrdp_rdcleanpath::DetectionResult::Detected { total_length, .. } => Ok(Some((true, total_length))),
+    //             ironrdp_rdcleanpath::DetectionResult::NotEnoughBytes => Ok(None),
+    //             ironrdp_rdcleanpath::DetectionResult::Failed => Err(ironrdp::core::other_err!(
+    //                 "RDCleanPathHint",
+    //                 "detection failed (invalid PDU)"
+    //             )),
+    //         }
+    //     }
+    // }
 
-    let mut buf = WriteBuf::new();
+    // let mut buf = WriteBuf::new();
 
-    info!("Begin connection procedure");
+    // info!(?pcb, "Begin connection procedure");
+    // let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+    //     return Err(connector::general_err!("invalid connector state (send request)"));
+    // };
 
-    {
-        // RDCleanPath request
+    // debug_assert!(connector.next_pdu_hint().is_none());
 
-        let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
-            return Err(connector::general_err!("invalid connector state (send request)"));
-        };
+    // let written = connector.step_no_input(&mut buf)?;
+    // let x224_pdu_len = written.size().expect("written size");
+    // debug_assert_eq!(x224_pdu_len, buf.filled_len());
+    // let x224_pdu = buf.filled().to_vec();
 
-        debug_assert!(connector.next_pdu_hint().is_none());
+    // if let Some(PreconnectionBlobPayload::VmConnect(vm_id)) = pcb {
+    //     let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } = connector.state
+    //     else {
+    //         return Err(connector::general_err!("invalid connector state (wait confirm)"));
+    //     };
+    //     {
+    //         let rdcleanpath_req = ironrdp_rdcleanpath::RDCleanPathPdu::new_request(
+    //             None,
+    //             destination,
+    //             proxy_auth_token,
+    //             Some(ironrdp_vmconnect::create_pcb_payload(&vm_id)),
+    //         );
 
-        let written = connector.step_no_input(&mut buf)?;
-        let x224_pdu_len = written.size().expect("written size");
-        debug_assert_eq!(x224_pdu_len, buf.filled_len());
-        let x224_pdu = buf.filled().to_vec();
+    //         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
+    //         let rdcleanpath_req = rdcleanpath_req
+    //             .map_err(|e| connector::custom_err!("new RDCleanPath request", e))?
+    //             .to_der()
+    //             .map_err(|e| connector::custom_err!("RDCleanPath request encode", e))?;
 
-        let rdcleanpath_req =
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
-                .map_err(|e| connector::custom_err!("new RDCleanPath request", e))?;
-        debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
-        let rdcleanpath_req = rdcleanpath_req
-            .to_der()
-            .map_err(|e| connector::custom_err!("RDCleanPath request encode", e))?;
+    //         framed
+    //             .write_all(&rdcleanpath_req)
+    //             .await
+    //             .map_err(|e| connector::custom_err!("couldn’t write RDCleanPath request", e))?;
+    //     }
 
-        framed
-            .write_all(&rdcleanpath_req)
-            .await
-            .map_err(|e| connector::custom_err!("couldn’t write RDCleanPath request", e))?;
-    }
+    //     {
+    //         let rdcleanpath_res = framed
+    //             .read_by_hint(&RDCLEANPATH_HINT)
+    //             .await
+    //             .map_err(|e| connector::custom_err!("read RDCleanPath request", e))?;
 
-    {
-        // RDCleanPath response
+    //         let rdcleanpath_res = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res)
+    //             .map_err(|e| connector::custom_err!("RDCleanPath response decode", e))?;
 
-        let rdcleanpath_res = framed
-            .read_by_hint(&RDCLEANPATH_HINT)
-            .await
-            .map_err(|e| connector::custom_err!("read RDCleanPath request", e))?;
+    //         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
-        let rdcleanpath_res = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res)
-            .map_err(|e| connector::custom_err!("RDCleanPath response decode", e))?;
+    //         let server_cert_chain = match rdcleanpath_res
+    //             .into_enum()
+    //             .map_err(|e| connector::custom_err!("invalid RDCleanPath PDU", e))?
+    //         {
+    //             ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
+    //                 return Err(connector::general_err!(
+    //                     "received an unexpected RDCleanPath type (request)",
+    //                 ));
+    //             }
+    //             ironrdp_rdcleanpath::RDCleanPath::Response { server_cert_chain, .. } => server_cert_chain,
+    //             ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
+    //                 return Err(connector::custom_err!("received an RDCleanPath error", error));
+    //             }
+    //         };
 
-        debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
+    //         let server_public_key = extract_server_public_key(server_cert_chain)?;
 
-        let (x224_connection_response, server_cert_chain) = match rdcleanpath_res
-            .into_enum()
-            .map_err(|e| connector::custom_err!("invalid RDCleanPath PDU", e))?
-        {
-            ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
-                return Err(connector::general_err!(
-                    "received an unexpected RDCleanPath type (request)",
-                ));
-            }
-            ironrdp_rdcleanpath::RDCleanPath::Response {
-                x224_connection_response,
-                server_cert_chain,
-                server_addr: _,
-            } => (x224_connection_response, server_cert_chain),
-            ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
-                return Err(connector::custom_err!("received an RDCleanPath error", error));
-            }
-        };
+    //         let should_upgrade = ironrdp_vmconnect::skip_connect_begin();
+    //         let upgraded = ironrdp_vmconnect::force_upgrade(should_upgrade, connector, requested_protocol);
+    //         return Ok((Upgraded::VM(upgraded), server_public_key));
+    //     }
+    // } else {
+    //     {
+    //         let general_pcb = pcb.as_ref().map(|pcb| pcb.general()).flatten();
+    //         // RDCleanPath request
 
-        let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
-            return Err(connector::general_err!("invalid connector state (wait confirm)"));
-        };
+    //         let rdcleanpath_req = ironrdp_rdcleanpath::RDCleanPathPdu::new_request(
+    //             Some(x224_pdu),
+    //             destination,
+    //             proxy_auth_token,
+    //             general_pcb.map(str::to_string),
+    //         )
+    //         .map_err(|e| connector::custom_err!("new RDCleanPath request", e))?;
 
-        debug_assert!(connector.next_pdu_hint().is_some());
+    //         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
+    //         let rdcleanpath_req = rdcleanpath_req
+    //             .to_der()
+    //             .map_err(|e| connector::custom_err!("RDCleanPath request encode", e))?;
 
-        buf.clear();
-        let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+    //         framed
+    //             .write_all(&rdcleanpath_req)
+    //             .await
+    //             .map_err(|e| connector::custom_err!("couldn’t write RDCleanPath request", e))?;
+    //     }
+    //     // RDCleanPath response
+    //     {
+    //         let rdcleanpath_res = framed
+    //             .read_by_hint(&RDCLEANPATH_HINT)
+    //             .await
+    //             .map_err(|e| connector::custom_err!("read RDCleanPath request", e))?;
 
-        debug_assert!(written.is_nothing());
+    //         let rdcleanpath_res = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res)
+    //             .map_err(|e| connector::custom_err!("RDCleanPath response decode", e))?;
 
-        let server_cert = server_cert_chain
-            .into_iter()
-            .next()
-            .ok_or_else(|| connector::general_err!("server cert chain missing from rdcleanpath response"))?;
+    //         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
-        let cert = x509_cert::Certificate::from_der(server_cert.as_bytes())
-            .map_err(|e| connector::custom_err!("server cert chain missing from rdcleanpath response", e))?;
+    //         let (x224_connection_response, server_cert_chain) = match rdcleanpath_res
+    //             .into_enum()
+    //             .map_err(|e| connector::custom_err!("invalid RDCleanPath PDU", e))?
+    //         {
+    //             ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
+    //                 return Err(connector::general_err!(
+    //                     "received an unexpected RDCleanPath type (request)",
+    //                 ));
+    //             }
+    //             ironrdp_rdcleanpath::RDCleanPath::Response {
+    //                 x224_connection_response,
+    //                 server_cert_chain,
+    //                 server_addr: _,
+    //             } => (x224_connection_response, server_cert_chain),
+    //             ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
+    //                 return Err(connector::custom_err!("received an RDCleanPath error", error));
+    //             }
+    //         };
 
-        let server_public_key = cert
-            .tbs_certificate
-            .subject_public_key_info
-            .subject_public_key
-            .as_bytes()
-            .ok_or_else(|| connector::general_err!("subject public key BIT STRING is not aligned"))?
-            .to_owned();
+    //         let x224_connection_response = x224_connection_response.ok_or(connector::general_err!(
+    //             "RDCleanPath response missing X.224 connection response"
+    //         ))?;
 
-        let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);
+    //         let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
+    //             return Err(connector::general_err!("invalid connector state (wait confirm)"));
+    //         };
 
-        // At this point, proxy established the TLS session.
+    //         debug_assert!(connector.next_pdu_hint().is_some());
 
-        let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, connector);
+    //         buf.clear();
+    //         let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
 
-        Ok((upgraded, server_public_key))
-    }
+    //         debug_assert!(written.is_nothing());
+
+    //         let server_public_key = extract_server_public_key(server_cert_chain)?;
+
+    //         let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);
+
+    //         // At this point, proxy established the TLS session.
+
+    //         let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, connector);
+
+    //         return Ok((Upgraded::Standard(upgraded), server_public_key));
+    //     }
+    // }
+
+    // fn extract_server_public_key(server_cert_chain: Vec<OctetString>) -> ConnectorResult<Vec<u8>> {
+    //     let server_cert = server_cert_chain
+    //         .into_iter()
+    //         .next()
+    //         .ok_or_else(|| connector::general_err!("server cert chain missing from rdcleanpath response"))?;
+
+    //     let cert = x509_cert::Certificate::from_der(server_cert.as_bytes())
+    //         .map_err(|e| connector::custom_err!("server cert chain missing from rdcleanpath response", e))?;
+
+    //     let server_public_key = cert
+    //         .tbs_certificate
+    //         .subject_public_key_info
+    //         .subject_public_key
+    //         .as_bytes()
+    //         .ok_or_else(|| connector::general_err!("subject public key BIT STRING is not aligned"))?
+    //         .to_owned();
+
+    //     Ok(server_public_key)
+    // }
+    todo!()
 }
 
 async fn active_session(

@@ -2377,6 +2377,7 @@ dependencies = [
  "ironrdp-connector",
  "ironrdp-core",
  "ironrdp-pdu",
+ "ironrdp-vmconnect",
  "tracing",
 ]
 
@@ -2416,6 +2417,7 @@ dependencies = [
  "ironrdp-rdpsnd-native",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-vmconnect",
  "proc-exit",
  "raw-window-handle",
  "semver",
@@ -2777,6 +2779,25 @@ dependencies = [
  "reqwest",
  "sspi",
  "tokio",
+ "url",
+]
+
+[[package]]
+name = "ironrdp-vmconnect"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "ironrdp-connector",
+ "ironrdp-core",
+ "ironrdp-error",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "picky",
+ "picky-asn1-der",
+ "picky-asn1-x509",
+ "rand_core 0.6.4",
+ "sspi",
+ "tracing",
  "url",
 ]
 
