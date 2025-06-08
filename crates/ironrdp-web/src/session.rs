@@ -1001,7 +1001,7 @@ where
         let x224_pdu = buf.filled().to_vec();
 
         let rdcleanpath_req =
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(Some(x224_pdu), destination, proxy_auth_token, pcb)
                 .context("new RDCleanPath request")?;
         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
         let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;

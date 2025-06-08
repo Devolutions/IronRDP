@@ -21,6 +21,7 @@ pub struct Config {
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
     pub rdcleanpath: Option<RDCleanPathConfig>,
+    pub pcb: Option<PreconnectionBlobPayload>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -238,6 +239,36 @@ struct Args {
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, value_parser, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
+
+    /// The ID for the HyperV VM server to connect to
+    #[clap(long, value_parser)]
+    vmconnect: Option<String>,
+
+    /// Preconnection Blob payload to use, cannot be used with `--vmconnect`
+    #[clap(long, value_parser)]
+    pcb: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreconnectionBlobPayload {
+    General(String),
+    VmConnect(String),
+}
+
+impl PreconnectionBlobPayload {
+    pub fn general(&self) -> Option<&str> {
+        match self {
+            PreconnectionBlobPayload::General(pcb) => Some(pcb),
+            PreconnectionBlobPayload::VmConnect(_) => None,
+        }
+    }
+
+    pub fn vmconnect(&self) -> Option<&str> {
+        match self {
+            PreconnectionBlobPayload::VmConnect(vm_id) => Some(vm_id),
+            PreconnectionBlobPayload::General(_) => None,
+        }
+    }
 }
 
 impl Config {
@@ -351,12 +382,22 @@ impl Config {
             .zip(args.rdcleanpath_token)
             .map(|(url, auth_token)| RDCleanPathConfig { url, auth_token });
 
+        let pcb = match (args.vmconnect, args.pcb) {
+            (Some(_), Some(_)) => {
+                anyhow::bail!("Cannot use both --vmconnect and --pcb options. Choose one of them.");
+            }
+            (Some(vm_id), None) => Some(PreconnectionBlobPayload::VmConnect(vm_id)),
+            (None, Some(pcb)) => Some(PreconnectionBlobPayload::General(pcb)),
+            (None, None) => None,
+        };
+
         Ok(Self {
             log_file: args.log_file,
             destination,
             connector,
             clipboard_type,
             rdcleanpath,
+            pcb,
         })
     }
 }
