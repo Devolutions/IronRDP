@@ -20,7 +20,7 @@ opus = ["dep:opus", "dep:bytemuck"]
 
 [dependencies]
 anyhow = "1"
-bytemuck = { version = "1.21", optional = true }
+bytemuck = { version = "1.23", optional = true }
 cpal = "0.15"
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.5" } # public
 opus = { version = "0.3", optional = true }
