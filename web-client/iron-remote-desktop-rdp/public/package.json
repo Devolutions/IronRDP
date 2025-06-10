@@ -12,8 +12,5 @@
   "files": [
     "iron-remote-desktop-rdp.js",
     "index.d.ts"
-  ],
-  "dependencies": {
-    "rxjs": "^6.6.7"
-  }
+  ]
 }

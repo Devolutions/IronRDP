@@ -1,9 +1,8 @@
 <script lang="ts">
     import { currentSession, userInteractionService } from '../../services/session.service';
-    import { catchError, filter } from 'rxjs/operators';
-    import type { UserInteraction, NewSessionInfo } from '../../../static/iron-remote-desktop';
+    import type { UserInteraction, IronError } from '../../../static/iron-remote-desktop';
+    import type { Session } from '../../models/session';
     import { preConnectionBlob, displayControl, kdcProxyUrl, init } from '../../../static/iron-remote-desktop-rdp';
-    import { from, of } from 'rxjs';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
     import { onMount } from 'svelte';
@@ -22,32 +21,36 @@
 
     let userInteraction: UserInteraction;
 
+    const isIronError = (error: unknown): error is IronError =>
+        typeof error === 'object' &&
+        error !== null &&
+        typeof (error as IronError).backtrace === 'function' &&
+        typeof (error as IronError).kind === 'function';
+
+    const initListeners = () => {
+        userInteraction.onSessionEvent((event) => {
+            if (event.type === 2) {
+                console.log('Error event', event.data);
+
+                toast.set({
+                    type: 'error',
+                    message: typeof event.data !== 'string' ? event.data.backtrace() : event.data,
+                });
+            } else {
+                toast.set({
+                    type: 'info',
+                    message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
+                });
+            }
+        });
+    };
+
     userInteractionService.subscribe((val) => {
         userInteraction = val;
         if (val != null) {
             initListeners();
         }
     });
-
-    const initListeners = () => {
-        userInteraction.onSessionEvent({
-            next: (event) => {
-                if (event.type === 2) {
-                    console.log('Error event', event.data);
-
-                    toast.set({
-                        type: 'error',
-                        message: typeof event.data !== 'string' ? event.data.backtrace() : event.data,
-                    });
-                } else {
-                    toast.set({
-                        type: 'info',
-                        message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
-                    });
-                }
-            },
-        });
-    };
 
     const StartSession = async () => {
         if (authtoken === '') {
@@ -140,38 +143,44 @@
 
         const config = configBuilder.build();
 
-        from(userInteraction.connect(config))
-            .pipe(
-                catchError((err) => {
-                    toast.set({
-                        type: 'info',
-                        message: err.backtrace(),
-                    });
-                    return of(null);
-                }),
-                filter((result) => result !== null && result !== undefined), // Explicitly checking for null/undefined
-            )
-            .subscribe((info: NewSessionInfo | null) => {
-                if (info != null && info.initialDesktopSize !== null) {
-                    toast.set({
-                        type: 'info',
-                        message: 'Success',
-                    });
-                    currentSession.update((session) =>
-                        Object.assign(session, {
-                            sessionId: info.sessionId,
-                            desktopSize: info.initialDesktopSize,
-                            active: true,
-                        }),
-                    );
-                    showLogin.set(false);
-                } else {
-                    toast.set({
-                        type: 'error',
-                        message: 'Failure',
-                    });
-                }
-            });
+        try {
+            const session_info = await userInteraction.connect(config);
+
+            if (session_info.initialDesktopSize !== null) {
+                toast.set({
+                    type: 'info',
+                    message: 'Success',
+                });
+
+                const updater = (session: Session): Session => ({
+                    ...session,
+                    sessionId: session_info.sessionId,
+                    desktopSize: session_info.initialDesktopSize,
+                    active: true,
+                });
+
+                currentSession.update(updater);
+
+                showLogin.set(false);
+            } else {
+                toast.set({
+                    type: 'error',
+                    message: 'Failure',
+                });
+            }
+        } catch (err) {
+            if (isIronError(err)) {
+                toast.set({
+                    type: 'info',
+                    message: err.backtrace(),
+                });
+            } else {
+                toast.set({
+                    type: 'error',
+                    message: 'Failure',
+                });
+            }
+        }
     };
 
     onMount(async () => {

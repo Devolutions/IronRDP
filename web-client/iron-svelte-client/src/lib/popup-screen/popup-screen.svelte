@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
-    import type { UserInteraction } from '../../../static/iron-remote-desktop';
+    import type { UserInteraction, SessionEvent } from '../../../static/iron-remote-desktop';
     import { Backend } from '../../../static/iron-remote-desktop-rdp';
     import { preConnectionBlob, displayControl, kdcProxyUrl } from '../../../static/iron-remote-desktop-rdp';
 
@@ -12,15 +12,16 @@
     userInteractionService.subscribe((val) => {
         if (val != null) {
             userInteraction = val;
-            userInteraction.onSessionEvent({
-                next: (event) => {
-                    if (event.type === 0) {
-                        userInteraction.setVisibility(true);
-                    } else if (event.type === 1) {
-                        setCurrentSessionActive(false);
-                    }
-                },
-            });
+
+            const callback = (event: SessionEvent) => {
+                if (event.type === 0) {
+                    userInteraction.setVisibility(true);
+                } else if (event.type === 1) {
+                    setCurrentSessionActive(false);
+                }
+            };
+
+            userInteraction.onSessionEvent(callback);
         }
     });
 

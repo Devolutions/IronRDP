@@ -16,8 +16,5 @@
   "files": [
     "iron-remote-desktop.js",
     "index.d.ts"
-  ],
-  "dependencies": {
-    "rxjs": "^6.6.7"
-  }
+  ]
 }
