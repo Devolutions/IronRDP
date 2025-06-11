@@ -9,7 +9,7 @@ import { SpecialCombination } from '../enums/SpecialCombination';
 import type { ResizeEvent } from '../interfaces/ResizeEvent';
 import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
-import type { SessionEvent, IronErrorKind, IronError } from '../interfaces/session-event';
+import type { IronError, IronErrorKind, SessionEvent } from '../interfaces/session-event';
 import type { ClipboardData } from '../interfaces/ClipboardData';
 import type { Session } from '../interfaces/Session';
 import type { DeviceEvent } from '../interfaces/DeviceEvent';
@@ -17,7 +17,7 @@ import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
 import { ConfigBuilder } from './ConfigBuilder';
 import type { Config } from './Config';
 import type { Extension } from '../interfaces/Extension';
-import { Observable } from '../lib/observable';
+import { Observable } from '../lib/Observable';
 
 type OnRemoteClipboardChanged = (data: ClipboardData) => void;
 type OnRemoteReceivedFormatsList = () => void;
@@ -147,46 +147,37 @@ export class RemoteDesktopService {
             );
         }
 
-        try {
-            const session = await sessionBuilder.connect();
-
-            this.run(session);
-
-            loggingService.info('Session started.');
-
-            this.session = session;
-
-            this.resizeObservable.publish({
-                desktopSize: session.desktopSize(),
-                sessionId: 0,
-            });
+        const session = await sessionBuilder.connect().catch((err: IronError) => {
             this.raiseSessionEvent({
-                type: SessionEventType.STARTED,
-                data: 'Session started',
+                type: SessionEventType.ERROR,
+                data: {
+                    backtrace: () => err.backtrace(),
+                    kind: () => err.kind() as number as IronErrorKind,
+                },
             });
+            throw new Error('could not connect to the session');
+        });
 
-            return {
-                sessionId: 0,
-                initialDesktopSize: session.desktopSize(),
-                websocketPort: 0,
-            };
-        } catch (err: unknown) {
-            if (isIronError(err)) {
-                const ironError = err;
+        await this.run(session);
 
-                const event = {
-                    type: SessionEventType.ERROR,
-                    data: {
-                        backtrace: () => ironError.backtrace(),
-                        kind: () => ironError.kind() as number as IronErrorKind,
-                    },
-                };
+        loggingService.info('Session started.');
 
-                this.raiseSessionEvent(event);
-            }
+        this.session = session;
 
-            throw err;
-        }
+        this.resizeObservable.publish({
+            desktopSize: session.desktopSize(),
+            sessionId: 0,
+        });
+        this.raiseSessionEvent({
+            type: SessionEventType.STARTED,
+            data: 'Session started',
+        });
+
+        return {
+            sessionId: 0,
+            initialDesktopSize: session.desktopSize(),
+            websocketPort: 0,
+        };
     }
 
     async run(session: Session): Promise<Session> {
@@ -214,7 +205,7 @@ export class RemoteDesktopService {
                 });
             }
 
-            throw err;
+            throw new Error('could not run the session.');
         }
     }
 

@@ -9,10 +9,8 @@
     let cursorOverrideActive = false;
     let showUtilityBar = false;
 
-    userInteractionService.subscribe((val) => {
-        if (val != null) {
-            userInteraction = val;
-
+    userInteractionService.subscribe((userInteraction) => {
+        if (userInteraction != null) {
             const callback = (event: SessionEvent) => {
                 if (event.type === 0) {
                     userInteraction.setVisibility(true);

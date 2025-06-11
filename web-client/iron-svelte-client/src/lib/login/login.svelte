@@ -1,6 +1,6 @@
 <script lang="ts">
     import { currentSession, userInteractionService } from '../../services/session.service';
-    import type { UserInteraction, IronError } from '../../../static/iron-remote-desktop';
+    import type { UserInteraction } from '../../../static/iron-remote-desktop';
     import type { Session } from '../../models/session';
     import { preConnectionBlob, displayControl, kdcProxyUrl, init } from '../../../static/iron-remote-desktop-rdp';
     import { toast } from '$lib/messages/message-store';
@@ -20,12 +20,6 @@
     let enable_clipboard = true;
 
     let userInteraction: UserInteraction;
-
-    const isIronError = (error: unknown): error is IronError =>
-        typeof error === 'object' &&
-        error !== null &&
-        typeof (error as IronError).backtrace === 'function' &&
-        typeof (error as IronError).kind === 'function';
 
     const initListeners = () => {
         userInteraction.onSessionEvent((event) => {
@@ -146,40 +140,23 @@
         try {
             const session_info = await userInteraction.connect(config);
 
-            if (session_info.initialDesktopSize !== null) {
-                toast.set({
-                    type: 'info',
-                    message: 'Success',
-                });
+            toast.set({
+                type: 'info',
+                message: 'Success',
+            });
 
-                const updater = (session: Session): Session => ({
-                    ...session,
-                    sessionId: session_info.sessionId,
-                    desktopSize: session_info.initialDesktopSize,
-                    active: true,
-                });
+            const updater = (session: Session): Session => ({
+                ...session,
+                sessionId: session_info.sessionId,
+                desktopSize: session_info.initialDesktopSize,
+                active: true,
+            });
 
-                currentSession.update(updater);
+            currentSession.update(updater);
 
-                showLogin.set(false);
-            } else {
-                toast.set({
-                    type: 'error',
-                    message: 'Failure',
-                });
-            }
+            showLogin.set(false);
         } catch (err) {
-            if (isIronError(err)) {
-                toast.set({
-                    type: 'info',
-                    message: err.backtrace(),
-                });
-            } else {
-                toast.set({
-                    type: 'error',
-                    message: 'Failure',
-                });
-            }
+            console.error(`Error occurred: ${err}`);
         }
     };
 

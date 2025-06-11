@@ -71,8 +71,8 @@ export class PublicAPI {
             configBuilder: this.configBuilder.bind(this),
             connect: this.connect.bind(this),
             setScale: this.setScale.bind(this),
-            onSessionEvent: (partialObserver) => {
-                this.remoteDesktopService.sessionEventObservable.subscribe(partialObserver);
+            onSessionEvent: (callback) => {
+                this.remoteDesktopService.sessionEventObservable.subscribe(callback);
             },
             ctrlAltDel: this.ctrlAltDel.bind(this),
             metaKey: this.metaKey.bind(this),
