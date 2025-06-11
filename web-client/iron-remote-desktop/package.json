@@ -33,6 +33,7 @@
     "@types/ua-parser-js": "^0.7.36",
     "@typescript-eslint/eslint-plugin": "^8.25.0",
     "eslint": "^9.21.0",
+    "svelte-eslint-parser": "^1.0.0",
     "eslint-config-prettier": "^9.0.0",
     "eslint-plugin-prettier": "^5.0.1",
     "eslint-plugin-svelte": "^3.0.2",
@@ -46,10 +47,7 @@
     "vite": "^6.2.0",
     "vite-plugin-dts": "^4.5.0",
     "vite-plugin-top-level-await": "^1.2.2",
-    "vite-plugin-wasm": "^3.1.0"
-  },
-  "dependencies": {
-    "svelte-eslint-parser": "^1.0.0",
+    "vite-plugin-wasm": "^3.1.0",
     "ua-parser-js": "^1.0.33"
   }
 }

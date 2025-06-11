@@ -38,9 +38,7 @@
     "vite": "^6.2.0",
     "vite-plugin-dts": "^4.5.0",
     "vite-plugin-top-level-await": "^1.2.2",
-    "vite-plugin-wasm": "^3.1.0"
-  },
-  "dependencies": {
+    "vite-plugin-wasm": "^3.1.0",
     "ua-parser-js": "^1.0.33"
   }
 }
