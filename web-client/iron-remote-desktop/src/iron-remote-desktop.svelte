@@ -456,7 +456,7 @@
     }
 
     function serverBridgeListeners() {
-        remoteDesktopService.resize.subscribe((evt: ResizeEvent) => {
+        remoteDesktopService.resizeObservable.subscribe((evt: ResizeEvent) => {
             loggingService.info(`Resize canvas to: ${evt.desktopSize.width}x${evt.desktopSize.height}`);
             canvas.width = evt.desktopSize.width;
             canvas.height = evt.desktopSize.height;
@@ -469,12 +469,12 @@
             scaleSession(scale);
         });
 
-        remoteDesktopService.scaleObserver.subscribe((s) => {
+        remoteDesktopService.scaleObservable.subscribe((s) => {
             loggingService.info('Change scale!');
             scaleSession(s);
         });
 
-        remoteDesktopService.dynamicResize.subscribe((evt) => {
+        remoteDesktopService.dynamicResizeObservable.subscribe((evt) => {
             loggingService.info(`Dynamic resize!, width: ${evt.width}, height: ${evt.height}`);
             setViewerStyle(evt.height.toString(), evt.width.toString(), true);
         });

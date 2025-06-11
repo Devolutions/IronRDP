@@ -1,6 +1,4 @@
-import { BehaviorSubject, from, Observable, of, Subject } from 'rxjs';
 import { loggingService } from './logging.service';
-import { catchError, filter, map } from 'rxjs/operators';
 import { scanCode } from '../lib/scancodes';
 import { OS } from '../enums/OS';
 import { ModifierKey } from '../enums/ModifierKey';
@@ -11,30 +9,28 @@ import { SpecialCombination } from '../enums/SpecialCombination';
 import type { ResizeEvent } from '../interfaces/ResizeEvent';
 import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
-import type { SessionEvent, IronErrorKind, IronError } from '../interfaces/session-event';
+import type { IronError, IronErrorKind, SessionEvent } from '../interfaces/session-event';
 import type { ClipboardData } from '../interfaces/ClipboardData';
 import type { Session } from '../interfaces/Session';
 import type { DeviceEvent } from '../interfaces/DeviceEvent';
-import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
 import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
 import { ConfigBuilder } from './ConfigBuilder';
 import type { Config } from './Config';
 import type { Extension } from '../interfaces/Extension';
+import { Observable } from '../lib/Observable';
 
 type OnRemoteClipboardChanged = (data: ClipboardData) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
 
+const isIronError = (error: unknown): error is IronError =>
+    typeof error === 'object' &&
+    error !== null &&
+    typeof (error as IronError).backtrace === 'function' &&
+    typeof (error as IronError).kind === 'function';
+
 export class RemoteDesktopService {
     private module: RemoteDesktopModule;
-    private _resize: Subject<ResizeEvent> = new Subject<ResizeEvent>();
-    private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
-        x: 0,
-        y: 0,
-    });
-    private changeVisibility: Subject<boolean> = new Subject();
-    private sessionEvent: Subject<SessionEvent> = new Subject();
-    private scale: BehaviorSubject<ScreenScale> = new BehaviorSubject(ScreenScale.Fit as ScreenScale);
     private canvas?: HTMLCanvasElement;
     private keyboardUnicodeMode: boolean = false;
     private backendSupportsUnicodeKeyboardShortcuts: boolean | undefined = undefined;
@@ -45,21 +41,19 @@ export class RemoteDesktopService {
     private lastCursorStyle: string = 'default';
     private enableClipboard: boolean = true;
 
-    resize: Observable<ResizeEvent>;
+    resizeObservable: Observable<ResizeEvent> = new Observable();
+
     session?: Session;
     modifierKeyPressed: ModifierKey[] = [];
-    mousePositionObservable: Observable<MousePosition> = this.mousePosition.asObservable();
-    changeVisibilityObservable: Observable<boolean> = this.changeVisibility.asObservable();
-    sessionObserver: Observable<SessionEvent> = this.sessionEvent.asObservable();
-    scaleObserver: Observable<ScreenScale> = this.scale.asObservable();
 
-    dynamicResize = new Subject<{
-        width: number;
-        height: number;
-    }>();
+    mousePositionObservable: Observable<MousePosition> = new Observable();
+    changeVisibilityObservable: Observable<boolean> = new Observable();
+    sessionEventObservable: Observable<SessionEvent> = new Observable();
+    scaleObservable: Observable<ScreenScale> = new Observable();
+
+    dynamicResizeObservable: Observable<{ width: number; height: number }> = new Observable();
 
     constructor(module: RemoteDesktopModule) {
-        this.resize = this._resize.asObservable();
         this.module = module;
         loggingService.info('Web bridge initialized.');
     }
@@ -113,14 +107,14 @@ export class RemoteDesktopService {
 
     updateMousePosition(position: MousePosition) {
         this.doTransactionFromDeviceEvents([this.module.DeviceEvent.mouseMove(position.x, position.y)]);
-        this.mousePosition.next(position);
+        this.mousePositionObservable.publish(position);
     }
 
     configBuilder(): ConfigBuilder {
         return new ConfigBuilder();
     }
 
-    connect(config: Config): Observable<NewSessionInfo> {
+    async connect(config: Config): Promise<NewSessionInfo> {
         const sessionBuilder = new this.module.SessionBuilder();
 
         sessionBuilder.proxyAddress(config.proxyAddress);
@@ -153,68 +147,66 @@ export class RemoteDesktopService {
             );
         }
 
-        // Type guard to filter out errors
-        function isSession(result: IronError | Session): result is Session {
-            // Check whether function exists. To make it more robust we can check every method.
-            return (<Session>result).run !== undefined;
-        }
+        const session = await sessionBuilder.connect().catch((err: IronError) => {
+            this.raiseSessionEvent({
+                type: SessionEventType.ERROR,
+                data: {
+                    backtrace: () => err.backtrace(),
+                    kind: () => err.kind() as number as IronErrorKind,
+                },
+            });
+            throw new Error('could not connect to the session');
+        });
 
-        return from(sessionBuilder.connect()).pipe(
-            catchError((err: IronError) => {
+        await this.run(session);
+
+        loggingService.info('Session started.');
+
+        this.session = session;
+
+        this.resizeObservable.publish({
+            desktopSize: session.desktopSize(),
+            sessionId: 0,
+        });
+        this.raiseSessionEvent({
+            type: SessionEventType.STARTED,
+            data: 'Session started',
+        });
+
+        return {
+            sessionId: 0,
+            initialDesktopSize: session.desktopSize(),
+            websocketPort: 0,
+        };
+    }
+
+    async run(session: Session): Promise<Session> {
+        try {
+            const termination_info = await session.run();
+
+            this.setVisibility(false);
+            this.raiseSessionEvent({
+                type: SessionEventType.TERMINATED,
+                data: 'Session was terminated: ' + termination_info.reason() + '.',
+            });
+
+            return session;
+        } catch (err) {
+            if (isIronError(err)) {
+                this.setVisibility(false);
+
                 this.raiseSessionEvent({
                     type: SessionEventType.ERROR,
-                    data: {
-                        backtrace: () => err.backtrace(),
-                        kind: () => err.kind() as number as IronErrorKind,
-                    },
-                });
-                return of(err);
-            }),
-            filter(isSession),
-            map((session: Session) => {
-                from(session.run())
-                    .pipe(
-                        catchError((err: IronError) => {
-                            this.setVisibility(false);
-                            this.raiseSessionEvent({
-                                type: SessionEventType.ERROR,
-                                data: err.backtrace(),
-                            });
-                            this.raiseSessionEvent({
-                                type: SessionEventType.TERMINATED,
-                                data: 'Session was terminated.',
-                            });
-                            throw err;
-                        }),
-                        map((termination_info: SessionTerminationInfo) => {
-                            this.setVisibility(false);
-                            this.raiseSessionEvent({
-                                type: SessionEventType.TERMINATED,
-                                data: 'Session was terminated: ' + termination_info.reason() + '.',
-                            });
-                        }),
-                    )
-                    .subscribe();
-                return session;
-            }),
-            map((session: Session) => {
-                loggingService.info('Session started.');
-                this.session = session;
-                this._resize.next({
-                    desktopSize: session.desktopSize(),
-                    sessionId: 0,
+                    data: err.backtrace(),
                 });
                 this.raiseSessionEvent({
-                    type: SessionEventType.STARTED,
-                    data: 'Session started',
+                    type: SessionEventType.TERMINATED,
+                    data: 'Session was terminated.',
                 });
-                return {
-                    sessionId: 0,
-                    initialDesktopSize: session.desktopSize(),
-                    websocketPort: 0,
-                };
-            }),
-        );
+            }
+
+            throw new Error('could not run the session.');
+        }
     }
 
     sendSpecialCombination(specialCombination: SpecialCombination): void {
@@ -235,11 +227,11 @@ export class RemoteDesktopService {
     }
 
     setVisibility(state: boolean) {
-        this.changeVisibility.next(state);
+        this.changeVisibilityObservable.publish(state);
     }
 
     setScale(scale: ScreenScale) {
-        this.scale.next(scale);
+        this.scaleObservable.publish(scale);
     }
 
     setCanvas(canvas: HTMLCanvasElement) {
@@ -247,7 +239,7 @@ export class RemoteDesktopService {
     }
 
     resizeDynamic(width: number, height: number, scale?: number) {
-        this.dynamicResize.next({ width, height });
+        this.dynamicResizeObservable.publish({ width, height });
         this.session?.resize(width, height, scale);
     }
 
@@ -432,7 +424,7 @@ export class RemoteDesktopService {
     }
 
     private raiseSessionEvent(event: SessionEvent) {
-        this.sessionEvent.next(event);
+        this.sessionEventObservable.publish(event);
     }
 
     private updateModifierKeyState(evt: KeyboardEvent) {

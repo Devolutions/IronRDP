@@ -21,9 +21,7 @@ export class PublicAPI {
 
     private connect(config: Config): Promise<NewSessionInfo> {
         loggingService.info('Initializing connection.');
-        const resultObservable = this.remoteDesktopService.connect(config);
-
-        return resultObservable.toPromise();
+        return this.remoteDesktopService.connect(config);
     }
 
     private ctrlAltDel() {
@@ -73,8 +71,8 @@ export class PublicAPI {
             configBuilder: this.configBuilder.bind(this),
             connect: this.connect.bind(this),
             setScale: this.setScale.bind(this),
-            onSessionEvent: (partialObserver) => {
-                this.remoteDesktopService.sessionObserver.subscribe(partialObserver);
+            onSessionEvent: (callback) => {
+                this.remoteDesktopService.sessionEventObservable.subscribe(callback);
             },
             ctrlAltDel: this.ctrlAltDel.bind(this),
             metaKey: this.metaKey.bind(this),
