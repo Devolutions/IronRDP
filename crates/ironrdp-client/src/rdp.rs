@@ -8,8 +8,10 @@ use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::graphics::pointer::DecodedPointer;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
+use ironrdp::pdu::{pdu_other_err, PduResult};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
+use ironrdp::svc::SvcMessage;
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_core::WriteBuf;
 use ironrdp_rdpsnd_native::cpal;
@@ -23,6 +25,7 @@ use tokio::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
 
 use crate::config::{Config, RDCleanPathConfig};
+use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
@@ -47,6 +50,10 @@ pub enum RdpInputEvent {
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
     Close,
     Clipboard(ClipboardMessage),
+    SendDvcMessages {
+        channel_id: u32,
+        messages: Vec<SvcMessage>,
+    },
 }
 
 impl RdpInputEvent {
@@ -55,18 +62,50 @@ impl RdpInputEvent {
     }
 }
 
+pub struct DvcPipeProxyFactory {
+    rdp_input_sender: mpsc::UnboundedSender<RdpInputEvent>,
+}
+
+impl DvcPipeProxyFactory {
+    pub fn new(rdp_input_sender: mpsc::UnboundedSender<RdpInputEvent>) -> Self {
+        Self { rdp_input_sender }
+    }
+
+    pub fn create(&self, channel_name: String, pipe_name: String) -> DvcNamedPipeProxy {
+        let rdp_input_sender = self.rdp_input_sender.clone();
+
+        DvcNamedPipeProxy::new(&channel_name, &pipe_name, move |channel_id, messages| {
+            rdp_input_sender
+                .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                .map_err(|_error| pdu_other_err!("send DVC messages to the event loop",))?;
+
+            Ok(())
+        })
+    }
+}
+
+pub type WriteDvcMessageFn = Box<dyn Fn(u32, SvcMessage) -> PduResult<()> + Send + 'static>;
+
 pub struct RdpClient {
     pub config: Config,
     pub event_loop_proxy: EventLoopProxy<RdpOutputEvent>,
     pub input_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
     pub cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
+    pub dvc_pipe_proxy_factory: DvcPipeProxyFactory,
 }
 
 impl RdpClient {
     pub async fn run(mut self) {
         loop {
             let (connection_result, framed) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
-                match connect_ws(&self.config, rdcleanpath, self.cliprdr_factory.as_deref()).await {
+                match connect_ws(
+                    &self.config,
+                    rdcleanpath,
+                    self.cliprdr_factory.as_deref(),
+                    &self.dvc_pipe_proxy_factory,
+                )
+                .await
+                {
                     Ok(result) => result,
                     Err(e) => {
                         let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
@@ -74,7 +113,13 @@ impl RdpClient {
                     }
                 }
             } else {
-                match connect(&self.config, self.cliprdr_factory.as_deref()).await {
+                match connect(
+                    &self.config,
+                    self.cliprdr_factory.as_deref(),
+                    &self.dvc_pipe_proxy_factory,
+                )
+                .await
+                {
                     Ok(result) => result,
                     Err(e) => {
                         let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
@@ -122,6 +167,7 @@ type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin 
 async fn connect(
     config: &Config,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
+    dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
@@ -135,10 +181,21 @@ async fn connect(
 
     let mut framed = ironrdp_tokio::TokioFramed::new(socket);
 
+    let mut drdynvc =
+        ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+
+    // Instantiate all DVC proxies
+    for proxy in config.dvc_pipe_proxies.iter() {
+        let channel_name = proxy.channel_name.clone();
+        let pipe_name = proxy.pipe_name.clone();
+
+        trace!(%channel_name, %pipe_name, "Creating DVC proxy");
+
+        drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
+    }
+
     let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
-        .with_static_channel(
-            ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        )
+        .with_static_channel(drdynvc)
         .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
@@ -186,6 +243,7 @@ async fn connect_ws(
     config: &Config,
     rdcleanpath: &RDCleanPathConfig,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
+    dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let hostname = rdcleanpath
         .url
@@ -214,10 +272,21 @@ async fn connect_ws(
 
     let mut framed = ironrdp_tokio::TokioFramed::new(ws);
 
+    let mut drdynvc =
+        ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+
+    // Instantiate all DVC proxies
+    for proxy in config.dvc_pipe_proxies.iter() {
+        let channel_name = proxy.channel_name.clone();
+        let pipe_name = proxy.pipe_name.clone();
+
+        trace!(%channel_name, %pipe_name, "Creating DVC proxy");
+
+        drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
+    }
+
     let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
-        .with_static_channel(
-            ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        )
+        .with_static_channel(drdynvc)
         .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
@@ -467,6 +536,12 @@ async fn active_session(
                             warn!("Clipboard event received, but Cliprdr is not available");
                             Vec::new()
                         }
+                    }
+                    RdpInputEvent::SendDvcMessages { channel_id, messages } => {
+                        trace!(channel_id, ?messages, "Send DVC messages");
+
+                        let frame = active_stage.encode_dvc_messages(messages)?;
+                        vec![ActiveStageOutput::ResponseFrame(frame)]
                     }
                 }
             }
