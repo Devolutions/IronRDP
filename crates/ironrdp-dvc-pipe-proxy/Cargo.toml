@@ -16,10 +16,10 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.2" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4" } # public
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.3" } # public
+ironrdp-core.path = "../ironrdp-core"
+ironrdp-dvc.path = "../ironrdp-dvc"
+ironrdp-pdu.path = "../ironrdp-pdu"
+ironrdp-svc.path = "../ironrdp-svc"
 
 tracing = { version = "0.1", features = ["log"] }
 
