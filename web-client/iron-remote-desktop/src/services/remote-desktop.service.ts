@@ -18,16 +18,11 @@ import { ConfigBuilder } from './ConfigBuilder';
 import type { Config } from './Config';
 import type { Extension } from '../interfaces/Extension';
 import { Observable } from '../lib/Observable';
+import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
 
 type OnRemoteClipboardChanged = (data: ClipboardData) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
-
-const isIronError = (error: unknown): error is IronError =>
-    typeof error === 'object' &&
-    error !== null &&
-    typeof (error as IronError).backtrace === 'function' &&
-    typeof (error as IronError).kind === 'function';
 
 export class RemoteDesktopService {
     private module: RemoteDesktopModule;
@@ -158,7 +153,7 @@ export class RemoteDesktopService {
             throw new Error('could not connect to the session');
         });
 
-        await this.run(session);
+        this.run(session);
 
         loggingService.info('Session started.');
 
@@ -180,19 +175,17 @@ export class RemoteDesktopService {
         };
     }
 
-    async run(session: Session): Promise<Session> {
-        try {
-            const termination_info = await session.run();
-
-            this.setVisibility(false);
-            this.raiseSessionEvent({
-                type: SessionEventType.TERMINATED,
-                data: 'Session was terminated: ' + termination_info.reason() + '.',
-            });
-
-            return session;
-        } catch (err) {
-            if (isIronError(err)) {
+    run(session: Session) {
+        session
+            .run()
+            .then((terminationInfo: SessionTerminationInfo) => {
+                this.setVisibility(false);
+                this.raiseSessionEvent({
+                    type: SessionEventType.TERMINATED,
+                    data: 'Session was terminated: ' + terminationInfo.reason() + '.',
+                });
+            })
+            .catch((err: IronError) => {
                 this.setVisibility(false);
 
                 this.raiseSessionEvent({
@@ -203,10 +196,7 @@ export class RemoteDesktopService {
                     type: SessionEventType.TERMINATED,
                     data: 'Session was terminated.',
                 });
-            }
-
-            throw new Error('could not run the session.');
-        }
+            });
     }
 
     sendSpecialCombination(specialCombination: SpecialCombination): void {
