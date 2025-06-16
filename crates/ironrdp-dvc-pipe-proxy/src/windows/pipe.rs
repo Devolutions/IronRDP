@@ -186,8 +186,10 @@ impl<'a> OverlappedPipeReadCtx<'a> {
     }
 
     pub(crate) fn overlapped_read(&mut self) -> Result<(), WindowsError> {
-        // SAFETY: hfile is a valid handle to a named pipe; lpBuffer
-        // is a valid pointer which should be alive until the operation is completed;
+        // SAFETY: self.pipe.raw() returns a valid handle. The read buffer pointer returned
+        // by self.buffer.as_mut_slice() is valid and remains alive for the entire duration
+        // of the overlapped I/O operation. The OVERLAPPED structure is pinned and not moved
+        // in memory, ensuring its address remains stable until the operation completes.
         let result = unsafe {
             ReadFile(
                 self.pipe.raw(),
@@ -251,8 +253,10 @@ impl<'a> OverlappedWriteCtx<'a> {
     }
 
     pub(crate) fn overlapped_write(&mut self) -> Result<(), WindowsError> {
-        // SAFETY: hfile is a valid handle to a named pipe; lpBuffer
-        // is a valid pointer which should be alive until the operation is completed;
+        // SAFETY: self.pipe.raw() returns a valid handle. The write buffer pointer (&self.data) is valid
+        // and remains alive for the entire duration of the overlapped I/O operation. The OVERLAPPED
+        // structure is pinned and not moved in memory, ensuring its address remains stable until the
+        // operation completes.
         let result = unsafe {
             WriteFile(
                 self.pipe.raw(),
@@ -271,8 +275,7 @@ impl<'a> OverlappedWriteCtx<'a> {
 
     pub(crate) fn get_result(&mut self) -> Result<u32, WindowsError> {
         let mut bytes_written = 0u32;
-
-        // SAFETY: The handle is valid and we are the owner of the handle.
+        // SAFETY: The pipe handle is valid and we are the owner of the handle.
         unsafe {
             GetOverlappedResult(
                 self.pipe.raw(),

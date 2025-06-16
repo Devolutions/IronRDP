@@ -25,9 +25,7 @@ tracing = { version = "0.1", features = ["log"] }
 
 
 [target.'cfg(windows)'.dependencies]
-
 widestring = "1"
-smallvec = "1"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

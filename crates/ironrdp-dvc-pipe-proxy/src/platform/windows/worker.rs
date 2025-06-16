@@ -45,7 +45,7 @@ pub(crate) fn worker_thread_func(worker_ctx: WorkerCtx) -> Result<(), DvcPipePro
         if !connect_ctx.overlapped_connect()? {
             const EVENT_ID_ABORT: usize = 0;
             let events = [abort_event.borrow(), connect_ctx.borrow_event()];
-            let wait_result = match wait_any_with_timeout(events, PIPE_CONNECT_TIMEOUT_SECS) {
+            let wait_result = match wait_any_with_timeout(&events, PIPE_CONNECT_TIMEOUT_SECS) {
                 Ok(idx) => idx,
                 Err(WindowsError::WaitForMultipleObjectsTimeout) => {
                     warn!(%channel_name, %pipe_name, "DVC pipe proxy connection timed out");
@@ -83,7 +83,7 @@ pub(crate) fn worker_thread_func(worker_ctx: WorkerCtx) -> Result<(), DvcPipePro
             read_ctx.borrow_event(),
             to_pipe_semaphore.borrow(),
         ];
-        let wait_result = wait_any(events)?;
+        let wait_result = wait_any(&events)?;
 
         if wait_result == EVENT_ID_ABORT {
             info!(%channel_name, %pipe_name, "DVC pipe proxy connection has been aborted");
@@ -132,7 +132,7 @@ pub(crate) fn worker_thread_func(worker_ctx: WorkerCtx) -> Result<(), DvcPipePro
             overlapped_write.overlapped_write()?;
 
             let events = [abort_event.borrow(), overlapped_write.borrow_event()];
-            let wait_result = wait_any_with_timeout(events, PIPE_WRITE_TIMEOUT_SECS)?;
+            let wait_result = wait_any_with_timeout(&events, PIPE_WRITE_TIMEOUT_SECS)?;
 
             if wait_result == EVENT_ID_ABORT {
                 info!(%channel_name, %pipe_name, "DVC pipe proxy write aborted");
