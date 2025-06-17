@@ -2535,7 +2535,7 @@ dependencies = [
  "ironrdp-svc",
  "tracing",
  "widestring",
- "windows 0.61.1",
+ "windows 0.61.3",
 ]
 
 [[package]]
