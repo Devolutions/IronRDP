@@ -651,12 +651,9 @@ checksum = "d66dc143e6b11c1eddc06d5c423cfc97062865baf299914ab64caa38182078fe"
 
 [[package]]
 name = "slab"
-version = "0.4.9"
+version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f92a496fb766b417c996b9c5e57daf2f7ad3b0bebe1ccfca4856390e3d3bb67"
-dependencies = [
- "autocfg",
-]
+checksum = "04dc19736151f35336d325007ac991178d504a119863a2fcb3758cdb5e52c50d"
 
 [[package]]
 name = "spki"
@@ -828,9 +825,9 @@ dependencies = [
 
 [[package]]
 name = "yuv"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d03c082fceb319b53bc35ddb2c8bf9c7f9a64f34090f18a0f05737def94c48d"
+checksum = "edbbcfeb785840e02cad75cd8bc9e53854a5cb7853b6e2a9266d478ccc741709"
 dependencies = [
  "num-traits",
 ]
