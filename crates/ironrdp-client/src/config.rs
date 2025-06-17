@@ -21,6 +21,13 @@ pub struct Config {
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
     pub rdcleanpath: Option<RDCleanPathConfig>,
+
+    /// DVC channel <-> named pipe proxy configuration.
+    ///
+    /// Each configured proxy enables IronRDP to connect to DVC channel and create a named pipe
+    /// server, which will be used for proxying DVC messages to/from user-defined DVC logic
+    /// implemented as named pipe clients (either in the same process or in a different process).
+    pub dvc_pipe_proxies: Vec<DvcProxyInfo>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -137,6 +144,33 @@ pub struct RDCleanPathConfig {
     pub auth_token: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct DvcProxyInfo {
+    pub channel_name: String,
+    pub pipe_name: String,
+}
+
+impl FromStr for DvcProxyInfo {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split('=');
+        let channel_name = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing DVC channel name"))?
+            .to_owned();
+        let pipe_name = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing DVC proxy pipe name"))?
+            .to_owned();
+
+        Ok(Self {
+            channel_name,
+            pipe_name,
+        })
+    }
+}
+
 /// Devolutions IronRDP client
 #[derive(Parser, Debug)]
 #[clap(author = "Devolutions", about = "Devolutions-IronRDP client")]
@@ -238,6 +272,14 @@ struct Args {
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, value_parser, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
+
+    /// Add DVC channel named pipe proxy.
+    /// the format is <name>=<pipe>
+    /// e.g. `ChannelName=PipeName` where `ChannelName` is the name of the channel,
+    /// and `PipeName` is the name of the named pipe to connect to (without OS-specific prefix),
+    /// e.g. PipeName will automatically be prefixed with `\\.\pipe\` on Windows.
+    #[clap(long, value_parser)]
+    dvc_proxy: Vec<DvcProxyInfo>,
 }
 
 impl Config {
@@ -357,6 +399,7 @@ impl Config {
             connector,
             clipboard_type,
             rdcleanpath,
+            dvc_pipe_proxies: args.dvc_proxy,
         })
     }
 }

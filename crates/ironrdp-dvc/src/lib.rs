@@ -202,14 +202,20 @@ impl DynamicChannelSet {
         self.channels.get_mut(name)
     }
 
-    fn get_by_channel_id_mut(&mut self, id: &DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {
+    fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {
         self.channel_id_to_name
-            .get(id)
+            .get(&id)
+            .and_then(|name| self.channels.get(name))
+    }
+
+    fn get_by_channel_id_mut(&mut self, id: DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {
+        self.channel_id_to_name
+            .get(&id)
             .and_then(|name| self.channels.get_mut(name))
     }
 
-    fn remove_by_channel_id(&mut self, id: &DynamicChannelId) -> Option<DynamicChannelId> {
-        if let Some(name) = self.channel_id_to_name.remove(id) {
+    fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> Option<DynamicChannelId> {
+        if let Some(name) = self.channel_id_to_name.remove(&id) {
             return self.name_to_channel_id.remove(&name);
             // Channels are retained in the `self.channels` and `self.type_id_to_name` map to allow potential
             // dynamic re-addition by the server.
