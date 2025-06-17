@@ -16,13 +16,12 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core.path = "../ironrdp-core"
-ironrdp-dvc.path = "../ironrdp-dvc"
-ironrdp-pdu.path = "../ironrdp-pdu"
-ironrdp-svc.path = "../ironrdp-svc"
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5" } # public (PduResult type)
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.3" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.4" } # public (SvcMessage type)
 
 tracing = { version = "0.1", features = ["log"] }
-
 
 [target.'cfg(windows)'.dependencies]
 widestring = "1"
@@ -34,7 +33,6 @@ windows = { version = "0.61", features = [
     "Win32_System_Pipes",
     "Win32_System_IO",
 ] }
-
 
 [lints]
 workspace = true
