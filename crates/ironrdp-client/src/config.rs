@@ -297,11 +297,11 @@ impl Config {
         let mut gw: Option<GwConnectTarget> = None;
 
         let gw_addr = if let Some(gw_addr) = args.gw_endpoint {
-            gw_addr 
+            gw_addr
         } else {
             inquire::Text::new("Gateway address:")
-            .prompt()
-            .context("Address prompt")?
+                .prompt()
+                .context("Address prompt")?
         };
 
         if gw_addr != "" {
@@ -318,16 +318,17 @@ impl Config {
                 gw_user
             } else {
                 inquire::Text::new("Gateway Username:")
-                .prompt().context("Username prompt")?
+                    .prompt()
+                    .context("Username prompt")?
             };
 
             gw.gw_pass = if let Some(gw_pass) = args.gw_pass {
                 gw_pass
             } else {
                 inquire::Password::new("Gateway Password:")
-                .without_confirmation()
-                .prompt()
-                .context("Password prompt")?
+                    .without_confirmation()
+                    .prompt()
+                    .context("Password prompt")?
             };
         };
 

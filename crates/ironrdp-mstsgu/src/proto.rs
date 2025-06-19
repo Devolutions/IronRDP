@@ -42,7 +42,7 @@ impl TryFrom<u16> for PktTy {
             0x10 => PktTy::ChannelClose,
             _ => return Err(()),
         };
-        return Ok(mapped)
+        return Ok(mapped);
     }
 }
 
@@ -80,7 +80,7 @@ impl<'a> Decode<'a> for PktHdr {
         Ok(PktHdr {
             ty: mty,
             _reserved: src.read_u16(),
-            length: src.read_u32()
+            length: src.read_u32(),
         })
     }
 }
@@ -142,7 +142,7 @@ impl Decode<'_> for HandshakeRespPkt {
     }
 }
 
-/// 2.2.10.18 HTTP_TUNNEL_PACKET 
+/// 2.2.10.18 HTTP_TUNNEL_PACKET
 #[derive(Default)]
 pub(crate) struct TunnelReqPkt {
     pub caps: u32,
@@ -192,7 +192,7 @@ enum HttpTunnelResponseFields {
     Caps = 2,
     /// nonce & server_cert
     SOH = 4,
-    Consent = 0x10
+    Consent = 0x10,
 }
 
 /// 2.2.10.20 HTTP_TUNNEL_RESPONSE Structure
@@ -244,7 +244,7 @@ impl Decode<'_> for TunnelRespPkt {
 /// 2.2.10.7 HTTP_EXTENDED_AUTH_PACKET Structure
 pub(crate) struct ExtendedAuthPkt {
     error_code: u32,
-    blob: Vec<u8>
+    blob: Vec<u8>,
 }
 
 impl Encode for ExtendedAuthPkt {
@@ -299,7 +299,7 @@ impl Encode for TunnelAuthPkt {
         hdr.encode(dst)?;
 
         dst.write_u16(self.fields_present);
-        dst.write_u16(2*(self.client_name.len() as u16+1));
+        dst.write_u16(2 * (self.client_name.len() as u16 + 1));
         for c in self.client_name.encode_utf16() {
             dst.write_u16(c);
         }
@@ -312,7 +312,7 @@ impl Encode for TunnelAuthPkt {
     }
 
     fn size(&self) -> usize {
-        PktHdr::default().size() + 4 + 2*(self.client_name.len()+1)
+        PktHdr::default().size() + 4 + 2 * (self.client_name.len() + 1)
     }
 }
 
@@ -334,7 +334,7 @@ impl Decode<'_> for TunnelAuthRespPkt {
     }
 }
 
-/// 2.2.10.2 HTTP_CHANNEL_PACKET 
+/// 2.2.10.2 HTTP_CHANNEL_PACKET
 pub(crate) struct ChannelPkt {
     pub resources: Vec<String>,
     pub port: u16,
@@ -357,7 +357,7 @@ impl Encode for ChannelPkt {
 
         // 2.2.10.3 HTTP_CHANNEL_PACKET_VARIABLE
         for res in &self.resources {
-            dst.write_u16(2*(res.len()+1) as u16);
+            dst.write_u16(2 * (res.len() + 1) as u16);
             // dst.write_slice(res.as_bytes());
             for b in res.encode_utf16() {
                 dst.write_u16(b);
@@ -373,7 +373,7 @@ impl Encode for ChannelPkt {
     }
 
     fn size(&self) -> usize {
-        PktHdr::default().size() + 6 + self.resources.iter().map(|x| 2+2*(x.len()+1)).sum::<usize>()
+        PktHdr::default().size() + 6 + self.resources.iter().map(|x| 2 + 2 * (x.len() + 1)).sum::<usize>()
     }
 }
 
@@ -393,8 +393,8 @@ pub(crate) struct ChannelResp {
 impl Decode<'_> for ChannelResp {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
         let mut resp = ChannelResp {
-            error_code: src.read_u32(), 
-            fields_present: src.read_u16(), 
+            error_code: src.read_u32(),
+            fields_present: src.read_u16(),
             _reserved: src.read_u16(),
             ..ChannelResp::default()
         };
@@ -412,9 +412,9 @@ impl Decode<'_> for ChannelResp {
     }
 }
 
-/// 2.2.10.6 HTTP_DATA_PACKET 
+/// 2.2.10.6 HTTP_DATA_PACKET
 pub(crate) struct DataPkt<'a> {
-    pub data: &'a [u8]
+    pub data: &'a [u8],
 }
 
 impl Encode for DataPkt<'_> {
@@ -442,6 +442,8 @@ impl Encode for DataPkt<'_> {
 impl<'a> Decode<'a> for DataPkt<'a> {
     fn decode(src: &mut ReadCursor<'a>) -> ironrdp_core::DecodeResult<Self> {
         let len = src.read_u16();
-        Ok(DataPkt{ data: src.read_slice(len as usize) })
+        Ok(DataPkt {
+            data: src.read_slice(len as usize),
+        })
     }
 }
