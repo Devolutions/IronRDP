@@ -3,7 +3,7 @@ use ironrdp_core::{unsupported_value_err, Decode, Encode, ReadCursor, WriteCurso
 /// 2.2.5.3.3 HTTP_PACKET_TYPE Enumeration
 #[repr(u16)]
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
-pub enum PktTy {
+pub(crate) enum PktTy {
     Invalid,
     HandshakeReq = 0x01,
     HandshakeResp = 0x02,
@@ -48,7 +48,7 @@ impl TryFrom<u16> for PktTy {
 
 /// 2.2.10.9 HTTP_PACKET_HEADER Structure
 #[derive(Default, Debug)]
-pub struct PktHdr {
+pub(crate) struct PktHdr {
     pub ty: PktTy,
     _reserved: u16,
     pub length: u32,
@@ -87,7 +87,7 @@ impl<'a> Decode<'a> for PktHdr {
 
 /// 2.2.10.10 HTTP_HANDSHAKE_REQUEST_PACKET Structure
 #[derive(Default)]
-pub struct HandshakeReqPkt {
+pub(crate) struct HandshakeReqPkt {
     pub ver_major: u8,
     pub ver_minor: u8,
     pub client_version: u16,
@@ -122,7 +122,7 @@ impl Encode for HandshakeReqPkt {
 
 /// 2.2.10.11 HTTP_HANDSHAKE_RESPONSE_PACKET Structure
 #[derive(Debug)]
-pub struct HandshakeRespPkt {
+pub(crate) struct HandshakeRespPkt {
     pub error_code: u32,
     pub ver_major: u8,
     pub ver_minor: u8,
@@ -144,7 +144,7 @@ impl Decode<'_> for HandshakeRespPkt {
 
 /// 2.2.10.18 HTTP_TUNNEL_PACKET 
 #[derive(Default)]
-pub struct TunnelReqPkt {
+pub(crate) struct TunnelReqPkt {
     pub caps: u32,
     pub fields_present: u16,
     pub(crate) _reserved: u16,
@@ -197,7 +197,7 @@ enum HttpTunnelResponseFields {
 
 /// 2.2.10.20 HTTP_TUNNEL_RESPONSE Structure
 #[derive(Debug, Default)]
-pub struct TunnelRespPkt {
+pub(crate) struct TunnelRespPkt {
     pub server_version: u16,
     pub status_code: u32,
     pub fields_present: u16,
@@ -242,7 +242,7 @@ impl Decode<'_> for TunnelRespPkt {
 }
 
 /// 2.2.10.7 HTTP_EXTENDED_AUTH_PACKET Structure
-pub struct ExtendedAuthPkt {
+pub(crate) struct ExtendedAuthPkt {
     error_code: u32,
     blob: Vec<u8>
 }
@@ -284,7 +284,7 @@ impl Decode<'_> for ExtendedAuthPkt {
 }
 
 /// 2.2.10.14 HTTP_TUNNEL_AUTH_PACKET Structure
-pub struct TunnelAuthPkt {
+pub(crate) struct TunnelAuthPkt {
     pub fields_present: u16,
     pub client_name: String,
 }
@@ -318,7 +318,7 @@ impl Encode for TunnelAuthPkt {
 
 /// 2.2.10.16 HTTP_TUNNEL_AUTH_RESPONSE Structure
 #[derive(Debug)]
-pub struct TunnelAuthRespPkt {
+pub(crate) struct TunnelAuthRespPkt {
     pub error_code: u32,
     fields_present: u16,
     _reserved: u16,
@@ -335,7 +335,7 @@ impl Decode<'_> for TunnelAuthRespPkt {
 }
 
 /// 2.2.10.2 HTTP_CHANNEL_PACKET 
-pub struct ChannelPkt {
+pub(crate) struct ChannelPkt {
     pub resources: Vec<String>,
     pub port: u16,
     pub protocol: u16,
@@ -379,7 +379,7 @@ impl Encode for ChannelPkt {
 
 /// 2.2.10.4 HTTP_CHANNEL_RESPONSE
 #[derive(Default, Debug)]
-pub struct ChannelResp {
+pub(crate) struct ChannelResp {
     pub error_code: u32,
     fields_present: u16,
     _reserved: u16,
@@ -413,7 +413,7 @@ impl Decode<'_> for ChannelResp {
 }
 
 /// 2.2.10.6 HTTP_DATA_PACKET 
-pub struct DataPkt<'a> {
+pub(crate) struct DataPkt<'a> {
     pub data: &'a [u8]
 }
 

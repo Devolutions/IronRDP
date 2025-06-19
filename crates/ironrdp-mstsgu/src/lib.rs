@@ -82,6 +82,7 @@ pub struct GwClient {
 
 impl GwClient {
     pub async fn connect(target: &GwConnectTarget) -> Result<TlsStream<TcpStream>, Error> {
+        println!("CFG: {:?}", target);
         let gw_host = target.gw_endpoint.split(":").nth(0).unwrap();
 
         let stream = TcpStream::connect(&target.gw_endpoint)
@@ -154,11 +155,11 @@ impl GwClient {
                 tokio::select!(
                     next = gw.ws_stream.next() => {
                         let msg = next.expect("WS Stream END/DEAD TODO").unwrap().into_data();
-                        println!("recv through websocket {}", msg.len());
+                        // println!("recv through websocket {}", msg.len());
                         let mut cur = ReadCursor::new(&msg);
                         let hdr = PktHdr::decode(&mut cur).unwrap();
                         assert!(cur.len() >= hdr.length as usize - hdr.size()); // TODO
-                        println!("{:?}", msg);
+                        // println!("{:?}", msg);
                         assert_eq!(hdr.ty, PktTy::Data); // TODO
                         let p = DataPkt::decode(&mut cur).unwrap();
                         in_tx.send(Bytes::from(p.data.to_vec())).await.unwrap();
@@ -166,7 +167,7 @@ impl GwClient {
                     next = out_rx.recv() => {
                         let next = next.expect("WS Sink END/DEAD TODO");
                         let pkt = DataPkt { data: &next };
-                        println!("send through websocket {}", next.len());
+                        // println!("send through websocket {}", next.len());
                 
                         let pos = {
                             let mut cur = WriteCursor::new(&mut wsbuf);
@@ -231,9 +232,11 @@ impl GwConn {
     }
 
     async fn tunnel(&mut self) -> Result<(), Error> {
+        // TODO not really supported but my test server didnt even work without it
         const HTTP_CAPABILITY_MESSAGING_CONSENT_SIGN: u32 = 0x4;
+        
         let req = TunnelReqPkt {
-            caps: HTTP_CAPABILITY_MESSAGING_CONSENT_SIGN,
+            caps: HTTP_CAPABILITY_MESSAGING_CONSENT_SIGN, 
             fields_present: 0,
             ..TunnelReqPkt::default()
         };

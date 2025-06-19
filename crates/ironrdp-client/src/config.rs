@@ -8,6 +8,7 @@ use clap::Parser;
 use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+use ironrdp_mstsgu::GwConnectTarget;
 use tap::prelude::*;
 
 const DEFAULT_WIDTH: u16 = 1920;
@@ -16,7 +17,7 @@ const DEFAULT_HEIGHT: u16 = 1080;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub log_file: Option<String>,
-    pub gw: ironrdp_mstsgu::GwConnectTarget,
+    pub gw: Option<GwConnectTarget>,
     pub destination: Destination,
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
@@ -237,19 +238,42 @@ struct Args {
 impl Config {
     pub fn parse_args() -> anyhow::Result<Self> {
         let args = Args::parse();
+        let mut gw: Option<GwConnectTarget> = None;
 
-        let gw_addr = inquire::Text::new("Gateway address:")
+        let gw_addr = if let Some(gw_addr) = args.gw_endpoint {
+            gw_addr 
+        } else {
+            inquire::Text::new("Gateway address:")
             .prompt()
-            .context("Address prompt")?;
+            .context("Address prompt")?
+        };
 
-        let gw_user = inquire::Text::new("Gateway Username:")
-            .prompt().context("Username prompt")?;
+        if gw_addr != "" {
+            gw = Some(GwConnectTarget {
+                gw_endpoint: gw_addr,
+                gw_user: String::new(),
+                gw_pass: String::new(),
+                server: String::new(), // TODO non-standard port? also dont use here?
+            });
+        }
 
-        let gw_pass = inquire::Password::new("Gateway Password:")
-            .without_confirmation()
-            .prompt()
-            .context("Password prompt")?;
-    
+        if let Some(ref mut gw) = gw {
+            gw.gw_user = if let Some(gw_user) = args.gw_user {
+                gw_user
+            } else {
+                inquire::Text::new("Gateway Username:")
+                .prompt().context("Username prompt")?
+            };
+
+            gw.gw_pass = if let Some(gw_pass) = args.gw_pass {
+                gw_pass
+            } else {
+                inquire::Password::new("Gateway Password:")
+                .without_confirmation()
+                .prompt()
+                .context("Password prompt")?
+            };
+        };
 
         let destination = if let Some(destination) = args.destination {
             destination
@@ -259,6 +283,9 @@ impl Config {
                 .context("Address prompt")?
                 .pipe(Destination::new)?
         };
+        if let Some(ref mut gw) = gw {
+            gw.server = destination.name.clone(); // TODO
+        }
 
         let username = if let Some(username) = args.username {
             username
@@ -301,12 +328,6 @@ impl Config {
             args.clipboard_type
         };
 
-        let gw = ironrdp_mstsgu::GwConnectTarget {
-            gw_endpoint: gw_addr,
-            gw_user: gw_user,
-            gw_pass: gw_pass,
-            server: destination.name.to_string(), // TODO non-standard port? also dont use here?
-        };
         let connector = connector::Config {
             credentials: Credentials::UsernamePassword { username, password },
             domain: args.domain,

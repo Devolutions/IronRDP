@@ -65,6 +65,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async, futures
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7" }
 
 # Utils
 whoami = "1.5"

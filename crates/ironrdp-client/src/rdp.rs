@@ -97,7 +97,8 @@ enum RdpControlFlow {
     TerminatedGracefully(GracefulDisconnectReason),
 }
 
-type UpgradedFramed = ironrdp_tokio::TokioFramed<ironrdp_tls::TlsStream<ironrdp_mstsgu::GwClient>>;
+type MaybeGatewayStream = tokio_util::either::Either<ironrdp_mstsgu::GwClient, TcpStream>;
+type UpgradedFramed = ironrdp_tokio::TokioFramed<ironrdp_tls::TlsStream<MaybeGatewayStream>>;
 
 async fn connect(
     config: &Config,
@@ -105,19 +106,20 @@ async fn connect(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
-    let gw_stream = ironrdp_mstsgu::GwClient::connect(&config.gw).await.unwrap();
-    let gw = ironrdp_mstsgu::GwClient::connect_ws(config.gw.clone(), gw_stream).await;
-
-    /*let stream = TcpStream::connect(dest)
-        .await
-        .map_err(|e| connector::custom_err!("TCP connect", e))?;*/
-    let stream = gw.unwrap();
-    let server_addr = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 1234));
-
-    /*let server_addr = stream
-        .peer_addr()
-        .map_err(|e| connector::custom_err!("Peer address", e))?;*/
-
+    let mut server_addr = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 1234));
+    let stream = if let Some(ref gw_config) = config.gw {
+        let gw_stream = ironrdp_mstsgu::GwClient::connect(&gw_config).await.unwrap();
+        let gw = ironrdp_mstsgu::GwClient::connect_ws(gw_config.clone(), gw_stream).await;
+        tokio_util::either::Either::Left(gw.unwrap())
+    } else {
+        let stream = TcpStream::connect(dest)
+            .await
+            .map_err(|e| connector::custom_err!("TCP connect", e))?;
+        server_addr = stream
+            .peer_addr()
+            .map_err(|e| connector::custom_err!("Peer address", e))?;
+        tokio_util::either::Either::Right(stream)
+    };
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
