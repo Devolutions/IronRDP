@@ -1,0 +1,27 @@
+[package]
+name = "benches"
+version = "0.0.0"
+description = "IronRDP benchmarks"
+publish = false
+edition.workspace = true
+
+[[bin]]
+name = "perfenc"
+path = "src/perfenc.rs"
+
+[dependencies]
+anyhow = "1.0.98"
+async-trait = "0.1.88"
+bytesize = "2.0.1"
+ironrdp = { path = "../crates/ironrdp", features = [
+    "server",
+    "pdu",
+    "__bench",
+] }
+pico-args = "0.5.0"
+tokio = { version = "1", features = ["sync", "fs"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { version = "0.1", features = ["log"] }
+
+[lints]
+workspace = true

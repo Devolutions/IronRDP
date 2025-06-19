@@ -15,5 +15,6 @@ extern crate tracing;
 pub mod app;
 pub mod clipboard;
 pub mod config;
-pub mod network_client;
 pub mod rdp;
+
+mod ws;

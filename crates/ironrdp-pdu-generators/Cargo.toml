@@ -1,9 +1,9 @@
 [package]
 name = "ironrdp-pdu-generators"
 version = "0.0.0"
-edition = "2021"
 description = "`proptest` generators for `ironrdp-pdu` types"
 publish = false
+edition.workspace = true
 
 [lib]
 doctest = false

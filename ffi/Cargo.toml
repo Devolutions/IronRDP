@@ -1,6 +1,6 @@
 [package]
 name = "ffi"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
 publish = false
 
@@ -27,4 +27,3 @@ embed-resource = "3.0"
 
 [lints]
 workspace = true
-

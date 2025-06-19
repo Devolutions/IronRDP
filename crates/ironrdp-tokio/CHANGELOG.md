@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.4.0...ironrdp-tokio-v0.5.0)] - 2025-06-06
+
+### <!-- 4 -->Bug Fixes
+
+- [**breaking**] Adjust reqwest-related features (#812) ([9408789491](https://github.com/Devolutions/IronRDP/commit/9408789491b3e09b69e0aaa03fd215326b624ec0)) 
+
+  - Remove `reqwest` from the default feature set.
+  - Disable default TLS backend.
+  - Add `reqwest-rustls-ring` to enable rustls + ring backend.
+  - Add `reqwest-native-tls` to enable native-tls backend.
+
+## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.3.0...ironrdp-tokio-v0.4.0)] - 2025-05-27
+
+### <!-- 1 -->Features
+
+- Add reqwest feature (#734) ([032c38be92](https://github.com/Devolutions/IronRDP/commit/032c38be9229cfd35f0f6fc8eac5cccc960480d3)) 
+
 ## [[0.2.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.2.2...ironrdp-tokio-v0.2.3)] - 2025-03-12
 
 ### <!-- 7 -->Build

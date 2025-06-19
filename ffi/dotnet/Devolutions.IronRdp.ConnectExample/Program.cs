@@ -20,9 +20,10 @@ namespace Devolutions.IronRdp.ConnectExample
             var username = arguments["--username"];
             var password = arguments["--password"];
             var domain = arguments["--domain"];
+
             try
             {
-                var (res, framed) = await Connection.Connect(buildConfig(serverName, username, password, domain, 1980, 1080), serverName);
+                var (res, framed) = await Connection.Connect(buildConfig(serverName, username, password, domain, 1980, 1080), serverName, null);
                 var decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(), res.GetDesktopSize().GetHeight());
                 var activeState = ActiveStage.New(res);
                 var keepLooping = true;
@@ -31,7 +32,7 @@ namespace Devolutions.IronRdp.ConnectExample
                     var readPduTask = framed.ReadPdu();
                     Action? action = null;
                     byte[]? payload = null;
-                    if (readPduTask == await Task.WhenAny(readPduTask, Task.Delay(1000)))
+                    if (readPduTask == await Task.WhenAny(readPduTask, Task.Delay(2000)))
                     {
                         var pduReadTask = await readPduTask;
                         action = pduReadTask.Item1;

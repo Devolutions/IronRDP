@@ -2,7 +2,10 @@
 mod tests;
 
 use bitflags::bitflags;
-use ironrdp_core::{ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_core::{
+    ensure_fixed_part_size, read_padding, write_padding, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
+};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};

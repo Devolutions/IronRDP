@@ -1,4 +1,6 @@
-use ironrdp_core::{ensure_fixed_part_size, unsupported_version_err, ReadCursor, WriteCursor};
+use ironrdp_core::{
+    ensure_fixed_part_size, read_padding, unsupported_version_err, write_padding, ReadCursor, WriteCursor,
+};
 
 use crate::{DecodeResult, EncodeResult};
 

@@ -271,7 +271,7 @@ impl WinClipboardImpl {
                     // SAFETY: `SetTimer` is always safe to call when `hwnd` is a valid window handle
                     unsafe {
                         SetTimer(
-                            self.window,
+                            Some(self.window),
                             IDT_CLIPBOARD_RETRY,
                             self.attempt * PROCESSING_TIMEOUT_MS,
                             None,
@@ -370,7 +370,7 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
                 // Timer is one-shot, we need to stop it immediately
 
                 // SAFETY: `KillTimer` is always safe to call when `hwnd` is a valid window handle.
-                if let Err(err) = unsafe { KillTimer(hwnd, IDT_CLIPBOARD_RETRY) } {
+                if let Err(err) = unsafe { KillTimer(Some(hwnd), IDT_CLIPBOARD_RETRY) } {
                     tracing::error!("Failed to kill timer: {}", err);
                 }
 

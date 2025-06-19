@@ -9,21 +9,16 @@ public static class Connection
     public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName,
         CliprdrBackendFactory? factory, int port = 3389)
     {
-        var stream = await CreateTcpConnection(serverName, port);
-        var framed = new Framed<NetworkStream>(stream);
+        var client = await CreateTcpConnection(serverName, port);
+        string clientAddr = client.Client.LocalEndPoint.ToString();
+        Console.WriteLine(clientAddr);
 
-        var connector = ClientConnector.New(config);
+        var framed = new Framed<NetworkStream>(client.GetStream());
 
-        var ip = await Dns.GetHostAddressesAsync(serverName);
-        if (ip.Length == 0)
-        {
-            throw new IronRdpLibException(IronRdpLibExceptionType.CannotResolveDns,
-                "Cannot resolve DNS to " + serverName);
-        }
+        var connector = ClientConnector.New(config, clientAddr);
 
-        var serverAddr = ip[0] + ":" + port;
-        connector.WithServerAddr(serverAddr);
         connector.WithDynamicChannelDisplayControl();
+
         if (factory != null)
         {
             var cliprdr = factory.BuildCliprdr();
@@ -33,6 +28,7 @@ public static class Connection
         await ConnectBegin(framed, connector);
         var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector);
         var result = await ConnectFinalize(serverName, connector, serverPublicKey, framedSsl);
+
         return (result, framedSsl);
     }
 
@@ -209,7 +205,7 @@ public static class Connection
         await framed.Write(response);
     }
 
-    static async Task<NetworkStream> CreateTcpConnection(String servername, int port)
+    static async Task<TcpClient> CreateTcpConnection(String servername, int port)
     {
         IPAddress ipAddress;
 
@@ -228,9 +224,8 @@ public static class Connection
         TcpClient client = new TcpClient();
 
         await client.ConnectAsync(ipEndPoint);
-        NetworkStream stream = client.GetStream();
 
-        return stream;
+        return client;
     }
 }
 

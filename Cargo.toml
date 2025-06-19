@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/*",
+  "benches",
   "xtask",
   "ffi",
 ]
@@ -143,3 +144,8 @@ opt-level = 3
 
 [profile.test.package.rand_chacha]
 opt-level = 3
+
+[patch.crates-io]
+# FIXME: We need to catch up with Diplomat upstream again, but this is a significant amount of work.
+# In the meantime, we use this forked version which fixes an undefined behavior in the code expanded by the bridge macro.
+diplomat = { git = "https://github.com/CBenoit/diplomat", rev = "6dc806e80162b6b39509a04a2835744236cd2396" }

@@ -1,0 +1,20 @@
+{
+  "name": "@devolutions/iron-remote-desktop",
+  "author": "Nicolas Girot",
+  "email": "ngirot@devolutions.net",
+  "contributors": [
+    "Benoit Cortier",
+    "Irving Ou",
+    "Vladislav Nikonov",
+    "Zacharia Ellaham",
+    "Alexandr Yusuk"
+  ],
+  "description": "Backend-agnostic Web Component for remote desktop protocols",
+  "version": "0.5.1",
+  "main": "iron-remote-desktop.js",
+  "types": "index.d.ts",
+  "files": [
+    "iron-remote-desktop.js",
+    "index.d.ts"
+  ]
+}

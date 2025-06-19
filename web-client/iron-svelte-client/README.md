@@ -1,7 +1,7 @@
 # SvelteKit UI for IronRDP
 
 Web-based frontend using [`SvelteKit`](https://kit.svelte.dev/) and [`Material`](https://material.io) frameworks.
-This is a simple wrapper around the `iron-remote-gui` Web Component demonstrating how to use the API.
+This is a simple wrapper around the `iron-remote-desktop` Web Component demonstrating how to use the API.
 
 Note that this demonstration client is not intended to be used in production as-is.
 Devolutions is shipping well-integrated, production-ready IronRDP web clients as part of:
@@ -58,6 +58,40 @@ Make sure to start or restart the service before proceeding further.
 
 ### Token generation
 
+### Automatic Token Generation
+
+**Prerequisites:**  
+Ensure the Rust toolchain is installed and available on your system.
+
+#### Steps:
+
+1. **Locate the `tokengen` Project:**  
+   Navigate to the root directory of the `tokengen` project under the [Devolutions Gateway repository](https://github.com/Devolutions/devolutions-gateway/tree/master/tools/tokengen).
+
+2. **Set the Configuration Path:**  
+   Define the environment variable `DGATEWAY_CONFIG_PATH` to the directory containing your `gateway.json` file.
+   Also ensure the `ProvisionerPrivateKeyFile` config key is properly set in the `gateway.json` file.
+
+3. **Run the tokengen server:**  
+   In the root of the `tokengen` project, execute the following command:
+
+   ```sh
+   cargo run -- server
+   ```
+
+4. **Configure the Environment Variable for Vite:**  
+   Either update the `.env` file or manually set the following environment variable:
+
+   ```sh
+   VITE_IRON_TOKEN_SERVER_URL="http://localhost:8080"
+   ```
+
+   Ensure that Vite correctly detects this variable.
+
+Once these steps are completed, token generation will be fully automated, and the next section can be ignored.
+
+#### Manual token generation
+
 The most straightforward way of generating a token if you don’t have a Rust toolchain installed is
 the PowerShell package.
 
@@ -77,13 +111,13 @@ If you have a Rust toolchain available, you can use the [`tokengen`][tokengen] t
 
 ## Run in development mode
 
-First, run `npm install` in the [iron-remote-gui](../iron-remote-gui/) folder, and then `npm install` in [iron-svelte-client](./) folder.
+First, run `npm install` in [iron-remote-desktop](../iron-remote-desktop) and [iron-remote-desktop-rdp](../iron-remote-desktop-rdp) folders, and then `npm install` in [iron-svelte-client](./) folder.
 
 You can then start the dev server with either:
 
 - `npm run dev` - Runs only the final application.
-- `npm run dev-all` - Builds WASM module and `iron-remote-gui` prior to starting the dev server.
-- `npm run dev-no-wasm` - Only builds `iron-remote-gui` prior to starting the dev server.
+- `npm run dev-all` - Builds WASM module and `iron-remote-desktop` prior to starting the dev server.
+- `npm run dev-no-wasm` - Only builds `iron-remote-desktop` prior to starting the dev server.
 
 You can build distribution files with `npm run build`.
 Files are to be found in `./iron-svelte-client/build/browser`.

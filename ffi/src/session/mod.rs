@@ -225,7 +225,7 @@ pub mod ffi {
         pub fn get_pointer_bitmap(&self) -> Result<Box<DecodedPointer>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::PointerBitmap(decoded_pointer) => {
-                    Ok(DecodedPointer(std::rc::Rc::clone(decoded_pointer)))
+                    Ok(DecodedPointer(std::sync::Arc::clone(decoded_pointer)))
                 }
                 _ => Err(IncorrectEnumTypeError::on_variant("PointerBitmap")
                     .of_enum("ActiveStageOutput")

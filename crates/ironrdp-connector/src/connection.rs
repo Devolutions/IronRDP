@@ -123,30 +123,19 @@ impl State for ClientConnectorState {
 pub struct ClientConnector {
     pub config: Config,
     pub state: ClientConnectorState,
-    pub server_addr: Option<SocketAddr>,
+    /// The client address to be used in the Client Info PDU.
+    pub client_addr: SocketAddr,
     pub static_channels: StaticChannelSet,
 }
 
 impl ClientConnector {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, client_addr: SocketAddr) -> Self {
         Self {
             config,
             state: ClientConnectorState::ConnectionInitiationSendRequest,
-            server_addr: None,
+            client_addr,
             static_channels: StaticChannelSet::new(),
         }
-    }
-
-    /// Must be set to the actual target server address (as opposed to the proxy)
-    #[must_use]
-    pub fn with_server_addr(mut self, addr: SocketAddr) -> Self {
-        self.server_addr = Some(addr);
-        self
-    }
-
-    /// Must be set to the actual target server address (as opposed to the proxy)
-    pub fn attach_server_addr(&mut self, addr: SocketAddr) {
-        self.server_addr = Some(addr);
     }
 
     #[must_use]
@@ -448,12 +437,7 @@ impl Sequence for ClientConnector {
             } => {
                 debug!("Secure Settings Exchange");
 
-                let routing_addr = self
-                    .server_addr
-                    .as_ref()
-                    .ok_or_else(|| general_err!("server address is missing"))?;
-
-                let client_info = create_client_info_pdu(&self.config, routing_addr);
+                let client_info = create_client_info_pdu(&self.config, &self.client_addr);
 
                 debug!(message = ?client_info, "Send");
 
@@ -710,7 +694,7 @@ fn create_gcc_blocks<'a>(
     }
 }
 
-fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::ClientInfoPdu {
+fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::ClientInfoPdu {
     use ironrdp_pdu::rdp::client_info::{
         AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, ExtendedClientInfo,
         ExtendedClientOptionalInfo,
@@ -729,7 +713,6 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
         | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
         | ClientInfoFlags::LOGON_NOTIFY
         | ClientInfoFlags::LOGON_ERRORS
-        | ClientInfoFlags::NO_AUDIO_PLAYBACK
         | ClientInfoFlags::VIDEO_DISABLE
         | ClientInfoFlags::ENABLE_WINDOWS_KEY
         | ClientInfoFlags::MAXIMIZE_SHELL;
@@ -740,6 +723,10 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
 
     if let crate::Credentials::SmartCard { .. } = &config.credentials {
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
+    }
+
+    if config.no_audio_playback {
+        flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 
     let client_info = ClientInfo {
@@ -754,11 +741,11 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
         alternate_shell: String::new(),
         work_dir: String::new(),
         extra_info: ExtendedClientInfo {
-            address_family: match routing_addr {
+            address_family: match client_addr {
                 SocketAddr::V4(_) => AddressFamily::INET,
                 SocketAddr::V6(_) => AddressFamily::INET_6,
             },
-            address: routing_addr.ip().to_string(),
+            address: client_addr.ip().to_string(),
             dir: config.client_dir.clone(),
             optional_data: ExtendedClientOptionalInfo::builder()
                 .timezone(TimezoneInfo {

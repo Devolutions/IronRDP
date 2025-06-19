@@ -1,5 +1,6 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
+use ironrdp_core::assert_impl;
 use ironrdp_graphics::color_conversion::rdp_16bit_to_rgb;
 use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
 use ironrdp_graphics::pointer::DecodedPointer;
@@ -24,7 +25,7 @@ pub struct DecodedImage {
     pointer_x: u16,
     pointer_y: u16,
 
-    pointer: Option<Rc<DecodedPointer>>,
+    pointer: Option<Arc<DecodedPointer>>,
     /// Image data, overridden by pointer. Used to restore image after pointer was hidden or moved
     pointer_backbuffer: Vec<u8>,
     /// Whether to show pointer or not
@@ -35,6 +36,8 @@ pub struct DecodedImage {
     width: u16,
     height: u16,
 }
+
+assert_impl!(DecodedImage: Send);
 
 impl core::fmt::Debug for DecodedImage {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -170,6 +173,21 @@ impl DecodedImage {
 
     pub fn width(&self) -> u16 {
         self.width
+    }
+
+    pub fn bytes_per_pixel(&self) -> usize {
+        usize::from(self.pixel_format.bytes_per_pixel())
+    }
+
+    pub fn stride(&self) -> usize {
+        usize::from(self.width) * self.bytes_per_pixel()
+    }
+
+    pub fn data_for_rect(&self, rect: &InclusiveRectangle) -> &[u8] {
+        let start = usize::from(rect.left) * self.bytes_per_pixel() + usize::from(rect.top) * self.stride();
+        let end =
+            start + usize::from(rect.height() - 1) * self.stride() + usize::from(rect.width()) * self.bytes_per_pixel();
+        &self.data[start..end]
     }
 
     pub fn height(&self) -> u16 {
@@ -384,7 +402,7 @@ impl DecodedImage {
         }
     }
 
-    pub(crate) fn update_pointer(&mut self, pointer: Rc<DecodedPointer>) -> SessionResult<Option<InclusiveRectangle>> {
+    pub(crate) fn update_pointer(&mut self, pointer: Arc<DecodedPointer>) -> SessionResult<Option<InclusiveRectangle>> {
         self.show_pointer = true;
 
         // Remove old pointer from frame buffer

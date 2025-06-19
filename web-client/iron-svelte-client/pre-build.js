@@ -1,15 +1,11 @@
 ﻿import * as fs from 'fs-extra';
 import { spawn } from 'child_process';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
 import { argv } from 'node:process';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 let noWasm = false;
 
-let assetIronRemoteGuiFolder = './static/iron-remote-gui';
+const assetIronRemoteDesktopFolder = './static/iron-remote-desktop';
+const assetIronRemoteDesktopRdpFolder = './static/iron-remote-desktop-rdp';
 
 argv.forEach((val, index) => {
     if (index === 2 && val === 'no-wasm') {
@@ -17,8 +13,8 @@ argv.forEach((val, index) => {
     }
 });
 
-let run = async function (command, cwd) {
-    return new Promise((resolve) => {
+const run = async (command, cwd) => {
+    try {
         const buildCommand = spawn(command, { stdio: 'pipe', shell: true, cwd: cwd });
 
         buildCommand.stdout.on('data', (data) => {
@@ -29,35 +25,44 @@ let run = async function (command, cwd) {
             console.error(`${data}`);
         });
 
-        buildCommand.on('close', (code) => {
-            console.log(`child process exited with code ${code}`);
-            resolve();
+        return new Promise((resolve, reject) => {
+            buildCommand.on('close', (code) => {
+                if (code !== 0) {
+                    reject(new Error(`Process exited with code ${code}`));
+                } else {
+                    console.log(`Child process exited successfully with code ${code}`);
+                    resolve();
+                }
+            });
         });
-    });
+    } catch (err) {
+        console.error(`Failed to execute the process: ${err}`);
+    }
 };
 
-let copyCoreFiles = async function () {
-    console.log('Copying core files…');
-    await fs.remove(assetIronRemoteGuiFolder);
-    return new Promise((resolve) => {
-        let source = '../iron-remote-gui/dist';
-        let destination = assetIronRemoteGuiFolder;
+const copyCoreFiles = async () => {
+    try {
+        console.log('Copying core files…');
+        await fs.remove(assetIronRemoteDesktopFolder);
+        await fs.remove(assetIronRemoteDesktopRdpFolder);
 
-        fs.copy(source, destination, function (err) {
-            if (err) {
-                console.log('An error occurred while copying core files.');
-                return console.error(err);
-            }
-            console.log('Core files were copied successfully');
-            resolve();
-        });
-    });
+        const source = '../iron-remote-desktop/dist';
+        const sourceRdp = '../iron-remote-desktop-rdp/dist';
+
+        await fs.copy(source, assetIronRemoteDesktopFolder);
+        await fs.copy(sourceRdp, assetIronRemoteDesktopRdpFolder);
+        console.log('Core files were copied successfully');
+    } catch (err) {
+        console.error(`An error occurred while copying core files: ${err}`);
+    }
 };
+
+await run('npm run build', '../iron-remote-desktop');
 
 let buildCommand = 'npm run build';
 if (noWasm) {
     buildCommand = 'npm run build-alone';
 }
+await run(buildCommand, '../iron-remote-desktop-rdp');
 
-await run(buildCommand, '../iron-remote-gui');
 await copyCoreFiles();

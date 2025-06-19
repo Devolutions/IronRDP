@@ -20,7 +20,7 @@ pub fn lints(sh: &Shell) -> anyhow::Result<()> {
     // TODO: when 1.74 is released use `--keep-going`: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#keep-going
     cmd!(
         sh,
-        "{CARGO} clippy --workspace --all-targets --features helper --locked -- -D warnings"
+        "{CARGO} clippy --workspace --all-targets --features helper,__bench --locked -- -D warnings"
     )
     .run()?;
 
@@ -76,7 +76,8 @@ pub fn lock_files(sh: &Shell) -> anyhow::Result<()> {
     const LOCK_FILES: &[&str] = &[
         "Cargo.lock",
         "fuzz/Cargo.lock",
-        "web-client/iron-remote-gui/package-lock.json",
+        "web-client/iron-remote-desktop/package-lock.json",
+        "web-client/iron-remote-desktop-rdp/package-lock.json",
         "web-client/iron-svelte-client/package-lock.json",
     ];
 

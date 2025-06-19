@@ -2,7 +2,10 @@
 mod tests;
 
 use bitflags::bitflags;
-use ironrdp_core::{ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_core::{
+    ensure_fixed_part_size, read_padding, write_padding, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
+};
 
 pub const BITMAP_CACHE_ENTRIES_NUM: usize = 3;
 

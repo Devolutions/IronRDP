@@ -152,7 +152,7 @@ impl WinClipboard {
                 CW_USEDEFAULT,
                 None,
                 None,
-                instance,
+                Some(instance.into()),
                 None,
             )?
         };

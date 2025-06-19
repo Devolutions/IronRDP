@@ -1,9 +1,9 @@
 [package]
 name = "ironrdp-session-generators"
 version = "0.0.0"
-edition = "2021"
 description = "`proptest` generators for `ironrdp-session` types"
 publish = false
+edition.workspace = true
 
 [lib]
 doctest = false

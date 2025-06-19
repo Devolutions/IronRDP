@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use ironrdp_core::{cast_length, impl_as_any, Decode, EncodeResult, ReadCursor};
 use ironrdp_pdu::gcc::ChannelName;
@@ -10,9 +11,13 @@ use crate::pdu::{self, AudioFormat, PitchPdu, ServerAudioFormatPdu, TrainingPdu,
 use crate::server::RdpsndSvcMessages;
 
 pub trait RdpsndClientHandler: Send + core::fmt::Debug {
+    fn get_flags(&self) -> pdu::AudioFormatFlags {
+        pdu::AudioFormatFlags::empty()
+    }
+
     fn get_formats(&self) -> &[AudioFormat];
 
-    fn wave(&mut self, format: &AudioFormat, ts: u32, data: Cow<'_, [u8]>);
+    fn wave(&mut self, format_no: usize, ts: u32, data: Cow<'_, [u8]>);
 
     fn set_volume(&mut self, volume: VolumePdu);
 
@@ -29,7 +34,7 @@ impl RdpsndClientHandler for NoopRdpsndBackend {
         &[]
     }
 
-    fn wave(&mut self, _format: &AudioFormat, _ts: u32, _data: Cow<'_, [u8]>) {}
+    fn wave(&mut self, _format_no: usize, _ts: u32, _data: Cow<'_, [u8]>) {}
 
     fn set_volume(&mut self, _volume: VolumePdu) {}
 
@@ -89,10 +94,22 @@ impl Rdpsnd {
     }
 
     pub fn client_formats(&mut self) -> PduResult<RdpsndSvcMessages> {
+        // Windows seems to be confused if the client replies with more formats, or unknown formats (e.g.: opus).
+        // We ensure to only send supported formats in common with the server.
+        let server_format: HashSet<_> = self
+            .server_format
+            .as_ref()
+            .ok_or_else(|| pdu_other_err!("invalid state - no server format"))?
+            .formats
+            .iter()
+            .collect();
+        let formats: HashSet<_> = self.handler.get_formats().iter().collect();
+        let formats = formats.intersection(&server_format).map(|&x| x.clone()).collect();
+
         let pdu = pdu::ClientAudioFormatPdu {
             version: self.version()?,
-            flags: pdu::AudioFormatFlags::empty(),
-            formats: self.handler.get_formats().to_vec(),
+            flags: self.handler.get_flags() | pdu::AudioFormatFlags::ALIVE,
+            formats,
             volume_left: 0xFFFF,
             volume_right: 0xFFFF,
             pitch: 0x00010000,
@@ -179,9 +196,9 @@ impl SvcProcessor for Rdpsnd {
                 match pdu {
                     // TODO: handle WaveInfo for < v8
                     pdu::ServerAudioOutputPdu::Wave2(pdu) => {
-                        let fmt = self.get_format(pdu.format_no)?.clone();
+                        let format_no = pdu.format_no as usize;
                         let ts = pdu.audio_timestamp;
-                        self.handler.wave(&fmt, ts, pdu.data);
+                        self.handler.wave(format_no, ts, pdu.data);
                         return Ok(self.wave_confirm(pdu.timestamp, pdu.block_no)?.into());
                     }
                     pdu::ServerAudioOutputPdu::Volume(pdu) => {
@@ -193,6 +210,7 @@ impl SvcProcessor for Rdpsnd {
                     pdu::ServerAudioOutputPdu::Close => {
                         self.handler.close();
                     }
+                    pdu::ServerAudioOutputPdu::Training(pdu) => return Ok(self.training_confirm(&pdu)?.into()),
                     _ => {
                         error!("Invalid PDU");
                         self.state = RdpsndState::Stop;

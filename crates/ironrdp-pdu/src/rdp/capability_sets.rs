@@ -1,8 +1,8 @@
 use std::io;
 
 use ironrdp_core::{
-    cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, unsupported_value_err, Decode,
-    DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, unsupported_value_err, write_padding,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
@@ -32,8 +32,9 @@ pub use self::bitmap_cache::{
     BitmapCache, BitmapCacheRev2, CacheEntry, CacheFlags, CellInfo, BITMAP_CACHE_ENTRIES_NUM,
 };
 pub use self::bitmap_codecs::{
-    BitmapCodecs, CaptureFlags, Codec, CodecProperty, EntropyBits, Guid, NsCodec, RemoteFxContainer, RfxCaps,
-    RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
+    client_codecs_capabilities, BitmapCodecs, CaptureFlags, Codec, CodecId, CodecProperty, EntropyBits, Guid, NsCodec,
+    RemoteFxContainer, RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags, CODEC_ID_NONE,
+    CODEC_ID_REMOTEFX,
 };
 pub use self::brush::{Brush, SupportLevel};
 pub use self::frame_acknowledge::FrameAcknowledge;

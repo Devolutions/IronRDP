@@ -19,7 +19,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["panic_hook"]
-panic_hook = ["dep:console_error_panic_hook"]
+panic_hook = ["iron-remote-desktop/panic_hook"]
 
 [dependencies]
 # Protocols
@@ -37,6 +37,7 @@ ironrdp-core.path = "../ironrdp-core"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-futures.path = "../ironrdp-futures"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
+iron-remote-desktop.path = "../iron-remote-desktop"
 
 # WASM
 wasm-bindgen = "0.2"
@@ -45,7 +46,6 @@ web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
 js-sys = "0.3"
 gloo-net = { version = "0.6", default-features = false, features = ["websocket", "http", "io-util"] }
 gloo-timers = { version = "0.3", default-features = false, features = ["futures"] }
-tracing-web = "0.1"
 
 # Rendering
 softbuffer = { version = "0.4", default-features = false }
@@ -58,23 +58,16 @@ getrandom = { version = "0.2", features = ["js"] }
 chrono = { version = "0.4", features = ["wasmbind"] }
 time = { version = "0.3", features = ["wasm-bindgen"] }
 
-# The `console_error_panic_hook` crate provides better debugging of panics by
-# logging them with `console.error`. This is great for development, but requires
-# all the `std::fmt` and `std::panicking` infrastructure, so isn't great for
-# code size when deploying.
-console_error_panic_hook = { version = "0.1", optional = true }
-
 # Async
 futures-util = { version = "0.3", features = ["sink", "io"] }
 futures-channel = "0.3"
 
 # Logging
 tracing = { version = "0.1", features = ["log"] }
-tracing-subscriber = { version = "0.3", features = ["time"] }
 
 # Utils
 anyhow = "1"
-smallvec = "1.13"
+smallvec = "1.15"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tap = "1"
 semver = "1"

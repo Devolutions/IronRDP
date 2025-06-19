@@ -32,10 +32,17 @@ jobs:
           }
 
   build:
-    name: Build package
+    name: Build package [${{matrix.library}}]
     runs-on: ubuntu-latest
     needs:
       - preflight
+
+    strategy:
+      fail-fast: false
+      matrix:
+        library:
+          - iron-remote-desktop
+          - iron-remote-desktop-rdp
 
     steps:
       - name: Checkout
@@ -49,7 +56,7 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          Set-Location -Path ./web-client/iron-remote-gui/
+          Set-Location -Path "./web-client/${{matrix.library}}/"
           npm install
 
       - name: Build package
@@ -57,7 +64,7 @@ jobs:
         run: |
           Set-PSDebug -Trace 1
 
-          Set-Location -Path ./web-client/iron-remote-gui/
+          Set-Location -Path "./web-client/${{matrix.library}}/"
           npm run build
           Set-Location -Path ./dist
           npm pack
@@ -73,8 +80,21 @@ jobs:
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: npm
+          name: npm-${{matrix.library}}
           path: npm-packages/*.tgz
+
+  npm-merge:
+    name: Merge artifacts
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Merge Artifacts
+        uses: actions/upload-artifact/merge@v4
+        with:
+          name: npm
+          pattern: npm-*
+          delete-merged: true
 
   publish:
     name: Publish package
@@ -83,7 +103,7 @@ jobs:
     environment: publish
     needs:
       - preflight
-      - build
+      - npm-merge
 
     steps:
       - name: Download NPM packages artifact

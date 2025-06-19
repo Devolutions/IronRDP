@@ -1,28 +1,31 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
-    import type { UserInteraction } from '../../../static/iron-remote-gui';
+    import type { UserInteraction, SessionEvent } from '../../../static/iron-remote-desktop';
+    import { Backend } from '../../../static/iron-remote-desktop-rdp';
+    import { preConnectionBlob, displayControl, kdcProxyUrl } from '../../../static/iron-remote-desktop-rdp';
 
-    let uiService: UserInteraction;
+    let userInteraction: UserInteraction;
     let cursorOverrideActive = false;
     let showUtilityBar = false;
 
-    userInteractionService.subscribe((uis) => {
-        if (uis != null) {
-            uiService = uis;
-            uiService.onSessionEvent((event) => {
+    userInteractionService.subscribe((userInteraction) => {
+        if (userInteraction != null) {
+            const callback = (event: SessionEvent) => {
                 if (event.type === 0) {
-                    uiService.setVisibility(true);
+                    userInteraction.setVisibility(true);
                 } else if (event.type === 1) {
                     setCurrentSessionActive(false);
                 }
-            });
+            };
+
+            userInteraction.onSessionEvent(callback);
         }
     });
 
     userInteractionService.subscribe((uis) => {
         if (uis != null) {
-            uiService = uis;
+            userInteraction = uis;
             //read query params named data
             const urlParams = new URLSearchParams(window.location.search);
             const data = urlParams.get('data');
@@ -34,30 +37,39 @@
             const parsedData = JSON.parse(atob(data));
             const { hostname, gatewayAddress, domain, username, password, authtoken, kdc_proxy_url, pcb, desktopSize } =
                 parsedData;
-            uiService
-                .connect(
-                    username,
-                    password,
-                    hostname,
-                    gatewayAddress,
-                    domain,
-                    authtoken,
-                    desktopSize,
-                    pcb,
-                    kdc_proxy_url,
-                    true,
-                )
-                .then(() => {
-                    uiService.setVisibility(true);
-                    window.onresize = onWindowResize;
-                });
+
+            const configBuilder = userInteraction
+                .configBuilder()
+                .withUsername(username)
+                .withPassword(password)
+                .withDestination(hostname)
+                .withProxyAddress(gatewayAddress)
+                .withServerDomain(domain)
+                .withAuthToken(authtoken)
+                .withDesktopSize(desktopSize)
+                .withExtension(displayControl(true));
+
+            if (pcb !== '') {
+                configBuilder.withExtension(preConnectionBlob(pcb));
+            }
+
+            if (kdc_proxy_url !== '') {
+                configBuilder.withExtension(kdcProxyUrl(kdc_proxy_url));
+            }
+
+            const config = configBuilder.build();
+
+            userInteraction.connect(config).then(() => {
+                userInteraction.setVisibility(true);
+                window.onresize = onWindowResize;
+            });
         }
     });
 
     function onWindowResize() {
         const innerWidth = window.innerWidth;
         const innerHeight = window.innerHeight;
-        uiService.resize(innerWidth, innerHeight);
+        userInteraction.resize(innerWidth, innerHeight);
     }
 
     function onUnicodeModeChange(e: MouseEvent) {
@@ -71,14 +83,14 @@
             return;
         }
 
-        uiService.setKeyboardUnicodeMode(element.checked);
+        userInteraction.setKeyboardUnicodeMode(element.checked);
     }
 
     function toggleCursorKind() {
         if (cursorOverrideActive) {
-            uiService.setCursorStyleOverride(null);
+            userInteraction.setCursorStyleOverride(null);
         } else {
-            uiService.setCursorStyleOverride('url("crosshair.png") 7 7, default');
+            userInteraction.setCursorStyleOverride('url("crosshair.png") 7 7, default');
         }
 
         cursorOverrideActive = !cursorOverrideActive;
@@ -93,10 +105,10 @@
     }
 
     onMount(async () => {
-        const el = document.querySelector('iron-remote-gui');
+        const el = document.querySelector('iron-remote-desktop');
 
         if (el == null) {
-            throw '`iron-remote-gui` element not found';
+            throw '`iron-remote-desktop` element not found';
         }
 
         el.addEventListener('ready', (e) => {
@@ -110,18 +122,14 @@
     id="popup-screen"
     style="display: flex; height: 100%; flex-direction: column; background-color: #2e2e2e; position: relative"
     on:mousemove={(event) => {
-        if (event.clientY < 100) {
-            showUtilityBar = true;
-        } else {
-            showUtilityBar = false;
-        }
+        showUtilityBar = event.clientY < 100;
     }}
 >
     <div class="tool-bar" class:hidden={!showUtilityBar}>
         <div class="toolbar-container">
             <button on:click={() => toggleFullScreen()}>Full Screen</button>
-            <button on:click={() => uiService.ctrlAltDel()}>Ctrl+Alt+Del</button>
-            <button on:click={() => uiService.metaKey()}>
+            <button on:click={() => userInteraction.ctrlAltDel()}>Ctrl+Alt+Del</button>
+            <button on:click={() => userInteraction.metaKey()}>
                 Meta
                 <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 512 512">
                     <title>ionicons-v5_logos</title>
@@ -132,14 +140,14 @@
                 </svg>
             </button>
             <button on:click={() => toggleCursorKind()}>Toggle cursor kind</button>
-            <button on:click={() => uiService.shutdown()}>Terminate Session</button>
+            <button on:click={() => userInteraction.shutdown()}>Terminate Session</button>
             <label style="color: white;">
                 <input on:click={(e) => onUnicodeModeChange(e)} type="checkbox" />
                 Unicode keyboard mode
             </label>
         </div>
     </div>
-    <iron-remote-gui debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" />
+    <iron-remote-desktop verbose="true" scale="fit" flexcenter="true" module={Backend} />
 </div>
 
 <style>

@@ -88,6 +88,11 @@ impl Processor {
         self.get_svc_processor::<DrdynvcClient>()?.get_dvc_by_type_id::<T>()
     }
 
+    pub fn get_dvc_by_channel_id(&self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
+        self.get_svc_processor::<DrdynvcClient>()?
+            .get_dvc_by_channel_id(channel_id)
+    }
+
     /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that must be processed
     /// in the returned order.
     pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<ProcessorOutput>> {

@@ -1,23 +1,31 @@
+use std::sync::Arc;
+
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::graphics::image_processing::PixelFormat;
+use ironrdp::graphics::pointer::DecodedPointer;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
+use ironrdp::pdu::{pdu_other_err, PduResult};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
+use ironrdp::svc::SvcMessage;
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_core::WriteBuf;
 use ironrdp_rdpsnd_native::cpal;
+use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed, FramedWrite};
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
 
-use crate::config::Config;
+use crate::config::{Config, RDCleanPathConfig};
+use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
@@ -26,6 +34,7 @@ pub enum RdpOutputEvent {
     PointerDefault,
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
+    PointerBitmap(Arc<DecodedPointer>),
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -41,6 +50,10 @@ pub enum RdpInputEvent {
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
     Close,
     Clipboard(ClipboardMessage),
+    SendDvcMessages {
+        channel_id: u32,
+        messages: Vec<SvcMessage>,
+    },
 }
 
 impl RdpInputEvent {
@@ -49,21 +62,69 @@ impl RdpInputEvent {
     }
 }
 
+pub struct DvcPipeProxyFactory {
+    rdp_input_sender: mpsc::UnboundedSender<RdpInputEvent>,
+}
+
+impl DvcPipeProxyFactory {
+    pub fn new(rdp_input_sender: mpsc::UnboundedSender<RdpInputEvent>) -> Self {
+        Self { rdp_input_sender }
+    }
+
+    pub fn create(&self, channel_name: String, pipe_name: String) -> DvcNamedPipeProxy {
+        let rdp_input_sender = self.rdp_input_sender.clone();
+
+        DvcNamedPipeProxy::new(&channel_name, &pipe_name, move |channel_id, messages| {
+            rdp_input_sender
+                .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                .map_err(|_error| pdu_other_err!("send DVC messages to the event loop",))?;
+
+            Ok(())
+        })
+    }
+}
+
+pub type WriteDvcMessageFn = Box<dyn Fn(u32, SvcMessage) -> PduResult<()> + Send + 'static>;
+
 pub struct RdpClient {
     pub config: Config,
     pub event_loop_proxy: EventLoopProxy<RdpOutputEvent>,
     pub input_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
     pub cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
+    pub dvc_pipe_proxy_factory: DvcPipeProxyFactory,
 }
 
 impl RdpClient {
     pub async fn run(mut self) {
         loop {
-            let (connection_result, framed) = match connect(&self.config, self.cliprdr_factory.as_deref()).await {
-                Ok(result) => result,
-                Err(e) => {
-                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
-                    break;
+            let (connection_result, framed) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
+                match connect_ws(
+                    &self.config,
+                    rdcleanpath,
+                    self.cliprdr_factory.as_deref(),
+                    &self.dvc_pipe_proxy_factory,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(e) => {
+                        let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
+                        break;
+                    }
+                }
+            } else {
+                match connect(
+                    &self.config,
+                    self.cliprdr_factory.as_deref(),
+                    &self.dvc_pipe_proxy_factory,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(e) => {
+                        let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
+                        break;
+                    }
                 }
             };
 
@@ -97,12 +158,16 @@ enum RdpControlFlow {
     TerminatedGracefully(GracefulDisconnectReason),
 }
 
-type MaybeGatewayStream = tokio_util::either::Either<ironrdp_mstsgu::GwClient, TcpStream>;
-type UpgradedFramed = ironrdp_tokio::TokioFramed<ironrdp_tls::TlsStream<MaybeGatewayStream>>;
+trait AsyncReadWrite: AsyncRead + AsyncWrite {}
+
+impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite {}
+
+type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>;
 
 async fn connect(
     config: &Config,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
+    dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
@@ -122,11 +187,21 @@ async fn connect(
     };
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
-    let mut connector = connector::ClientConnector::new(config.connector.clone())
-        .with_server_addr(server_addr)
-        .with_static_channel(
-            ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        )
+    let mut drdynvc =
+        ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+
+    // Instantiate all DVC proxies
+    for proxy in config.dvc_pipe_proxies.iter() {
+        let channel_name = proxy.channel_name.clone();
+        let pipe_name = proxy.pipe_name.clone();
+
+        trace!(%channel_name, %pipe_name, "Creating DVC proxy");
+
+        drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
+    }
+
+    let mut connector = connector::ClientConnector::new(config.connector.clone(), server_addr)
+        .with_static_channel(drdynvc)
         .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
@@ -143,7 +218,7 @@ async fn connect(
     debug!("TLS upgrade");
 
     // Ensure there is no leftover
-    let initial_stream = framed.into_inner_no_leftover();
+    let (initial_stream, leftover_bytes) = framed.into_inner();
 
     let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
         .await
@@ -151,16 +226,16 @@ async fn connect(
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
-    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
+    let erased_stream = Box::new(upgraded_stream) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
+    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
 
-    let mut network_client = crate::network_client::ReqwestNetworkClient::new();
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         &mut upgraded_framed,
         connector,
         (&config.destination).into(),
         server_public_key,
-        Some(&mut network_client),
+        Some(&mut ReqwestNetworkClient::new()),
         None,
     )
     .await?;
@@ -168,6 +243,226 @@ async fn connect(
     debug!(?connection_result);
 
     Ok((connection_result, upgraded_framed))
+}
+
+async fn connect_ws(
+    config: &Config,
+    rdcleanpath: &RDCleanPathConfig,
+    cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
+    dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
+) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
+    let hostname = rdcleanpath
+        .url
+        .host_str()
+        .ok_or_else(|| connector::general_err!("host missing from the URL"))?;
+
+    let port = rdcleanpath.url.port_or_known_default().unwrap_or(443);
+
+    let socket = TcpStream::connect((hostname, port))
+        .await
+        .map_err(|e| connector::custom_err!("TCP connect", e))?;
+
+    socket
+        .set_nodelay(true)
+        .map_err(|e| connector::custom_err!("set TCP_NODELAY", e))?;
+
+    let client_addr = socket
+        .local_addr()
+        .map_err(|e| connector::custom_err!("get socket local address", e))?;
+
+    let (ws, _) = tokio_tungstenite::client_async_tls(rdcleanpath.url.as_str(), socket)
+        .await
+        .map_err(|e| connector::custom_err!("WS connect", e))?;
+
+    let ws = crate::ws::websocket_compat(ws);
+
+    let mut framed = ironrdp_tokio::TokioFramed::new(ws);
+
+    let mut drdynvc =
+        ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+
+    // Instantiate all DVC proxies
+    for proxy in config.dvc_pipe_proxies.iter() {
+        let channel_name = proxy.channel_name.clone();
+        let pipe_name = proxy.pipe_name.clone();
+
+        trace!(%channel_name, %pipe_name, "Creating DVC proxy");
+
+        drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
+    }
+
+    let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
+        .with_static_channel(drdynvc)
+        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
+        .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
+
+    if let Some(builder) = cliprdr_factory {
+        let backend = builder.build_cliprdr_backend();
+
+        let cliprdr = cliprdr::Cliprdr::new(backend);
+
+        connector.attach_static_channel(cliprdr);
+    }
+
+    let destination = format!("{}:{}", config.destination.name(), config.destination.port());
+
+    let (upgraded, server_public_key) = connect_rdcleanpath(
+        &mut framed,
+        &mut connector,
+        destination,
+        rdcleanpath.auth_token.clone(),
+        None,
+    )
+    .await?;
+
+    let connection_result = ironrdp_tokio::connect_finalize(
+        upgraded,
+        &mut framed,
+        connector,
+        (&config.destination).into(),
+        server_public_key,
+        Some(&mut ReqwestNetworkClient::new()),
+        None,
+    )
+    .await?;
+
+    let (ws, leftover_bytes) = framed.into_inner();
+    let erased_stream = Box::new(ws) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
+    let upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
+
+    Ok((connection_result, upgraded_framed))
+}
+
+async fn connect_rdcleanpath<S>(
+    framed: &mut ironrdp_tokio::Framed<S>,
+    connector: &mut connector::ClientConnector,
+    destination: String,
+    proxy_auth_token: String,
+    pcb: Option<String>,
+) -> ConnectorResult<(ironrdp_tokio::Upgraded, Vec<u8>)>
+where
+    S: ironrdp_tokio::FramedRead + FramedWrite,
+{
+    use ironrdp::connector::Sequence as _;
+    use x509_cert::der::Decode as _;
+
+    #[derive(Clone, Copy, Debug)]
+    struct RDCleanPathHint;
+
+    const RDCLEANPATH_HINT: RDCleanPathHint = RDCleanPathHint;
+
+    impl ironrdp::pdu::PduHint for RDCleanPathHint {
+        fn find_size(&self, bytes: &[u8]) -> ironrdp::core::DecodeResult<Option<(bool, usize)>> {
+            match ironrdp_rdcleanpath::RDCleanPathPdu::detect(bytes) {
+                ironrdp_rdcleanpath::DetectionResult::Detected { total_length, .. } => Ok(Some((true, total_length))),
+                ironrdp_rdcleanpath::DetectionResult::NotEnoughBytes => Ok(None),
+                ironrdp_rdcleanpath::DetectionResult::Failed => Err(ironrdp::core::other_err!(
+                    "RDCleanPathHint",
+                    "detection failed (invalid PDU)"
+                )),
+            }
+        }
+    }
+
+    let mut buf = WriteBuf::new();
+
+    info!("Begin connection procedure");
+
+    {
+        // RDCleanPath request
+
+        let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+            return Err(connector::general_err!("invalid connector state (send request)"));
+        };
+
+        debug_assert!(connector.next_pdu_hint().is_none());
+
+        let written = connector.step_no_input(&mut buf)?;
+        let x224_pdu_len = written.size().expect("written size");
+        debug_assert_eq!(x224_pdu_len, buf.filled_len());
+        let x224_pdu = buf.filled().to_vec();
+
+        let rdcleanpath_req =
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
+                .map_err(|e| connector::custom_err!("new RDCleanPath request", e))?;
+        debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
+        let rdcleanpath_req = rdcleanpath_req
+            .to_der()
+            .map_err(|e| connector::custom_err!("RDCleanPath request encode", e))?;
+
+        framed
+            .write_all(&rdcleanpath_req)
+            .await
+            .map_err(|e| connector::custom_err!("couldn’t write RDCleanPath request", e))?;
+    }
+
+    {
+        // RDCleanPath response
+
+        let rdcleanpath_res = framed
+            .read_by_hint(&RDCLEANPATH_HINT)
+            .await
+            .map_err(|e| connector::custom_err!("read RDCleanPath request", e))?;
+
+        let rdcleanpath_res = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res)
+            .map_err(|e| connector::custom_err!("RDCleanPath response decode", e))?;
+
+        debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
+
+        let (x224_connection_response, server_cert_chain) = match rdcleanpath_res
+            .into_enum()
+            .map_err(|e| connector::custom_err!("invalid RDCleanPath PDU", e))?
+        {
+            ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
+                return Err(connector::general_err!(
+                    "received an unexpected RDCleanPath type (request)",
+                ));
+            }
+            ironrdp_rdcleanpath::RDCleanPath::Response {
+                x224_connection_response,
+                server_cert_chain,
+                server_addr: _,
+            } => (x224_connection_response, server_cert_chain),
+            ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
+                return Err(connector::custom_err!("received an RDCleanPath error", error));
+            }
+        };
+
+        let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
+            return Err(connector::general_err!("invalid connector state (wait confirm)"));
+        };
+
+        debug_assert!(connector.next_pdu_hint().is_some());
+
+        buf.clear();
+        let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+
+        debug_assert!(written.is_nothing());
+
+        let server_cert = server_cert_chain
+            .into_iter()
+            .next()
+            .ok_or_else(|| connector::general_err!("server cert chain missing from rdcleanpath response"))?;
+
+        let cert = x509_cert::Certificate::from_der(server_cert.as_bytes())
+            .map_err(|e| connector::custom_err!("server cert chain missing from rdcleanpath response", e))?;
+
+        let server_public_key = cert
+            .tbs_certificate
+            .subject_public_key_info
+            .subject_public_key
+            .as_bytes()
+            .ok_or_else(|| connector::general_err!("subject public key BIT STRING is not aligned"))?
+            .to_owned();
+
+        let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);
+
+        // At this point, proxy established the TLS session.
+
+        let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, connector);
+
+        Ok((upgraded, server_public_key))
+    }
 }
 
 async fn active_session(
@@ -248,6 +543,12 @@ async fn active_session(
                             Vec::new()
                         }
                     }
+                    RdpInputEvent::SendDvcMessages { channel_id, messages } => {
+                        trace!(channel_id, ?messages, "Send DVC messages");
+
+                        let frame = active_stage.encode_dvc_messages(messages)?;
+                        vec![ActiveStageOutput::ResponseFrame(frame)]
+                    }
                 }
             }
         };
@@ -293,8 +594,10 @@ async fn active_session(
                         .send_event(RdpOutputEvent::PointerPosition { x, y })
                         .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
                 }
-                ActiveStageOutput::PointerBitmap(_) => {
-                    // Not applicable, because we use the software cursor rendering.
+                ActiveStageOutput::PointerBitmap(pointer) => {
+                    event_loop_proxy
+                        .send_event(RdpOutputEvent::PointerBitmap(pointer))
+                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
                 }
                 ActiveStageOutput::DeactivateAll(mut connection_activation) => {
                     // Execute the Deactivation-Reactivation Sequence:

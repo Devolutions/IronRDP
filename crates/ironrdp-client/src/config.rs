@@ -1,15 +1,16 @@
+#![allow(clippy::print_stdout)]
 use core::num::ParseIntError;
 use core::str::FromStr;
-use std::io;
 
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::Parser;
 use ironrdp::connector::{self, Credentials};
-use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
+use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use ironrdp_mstsgu::GwConnectTarget;
 use tap::prelude::*;
+use url::Url;
 
 const DEFAULT_WIDTH: u16 = 1920;
 const DEFAULT_HEIGHT: u16 = 1080;
@@ -21,6 +22,14 @@ pub struct Config {
     pub destination: Destination,
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
+    pub rdcleanpath: Option<RDCleanPathConfig>,
+
+    /// DVC channel <-> named pipe proxy configuration.
+    ///
+    /// Each configured proxy enables IronRDP to connect to DVC channel and create a named pipe
+    /// server, which will be used for proxying DVC messages to/from user-defined DVC logic
+    /// implemented as named pipe clients (either in the same process or in a different process).
+    pub dvc_pipe_proxies: Vec<DvcProxyInfo>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -109,14 +118,6 @@ impl Destination {
     pub fn port(&self) -> u16 {
         self.port
     }
-
-    pub fn lookup_addr(&self) -> io::Result<std::net::SocketAddr> {
-        use std::net::ToSocketAddrs as _;
-
-        let sockaddr = (self.name.as_str(), self.port).to_socket_addrs()?.next().unwrap();
-
-        Ok(sockaddr)
-    }
 }
 
 impl FromStr for Destination {
@@ -136,6 +137,39 @@ impl From<Destination> for connector::ServerName {
 impl From<&Destination> for connector::ServerName {
     fn from(value: &Destination) -> Self {
         Self::new(&value.name)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RDCleanPathConfig {
+    pub url: Url,
+    pub auth_token: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct DvcProxyInfo {
+    pub channel_name: String,
+    pub pipe_name: String,
+}
+
+impl FromStr for DvcProxyInfo {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split('=');
+        let channel_name = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing DVC channel name"))?
+            .to_owned();
+        let pipe_name = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing DVC proxy pipe name"))?
+            .to_owned();
+
+        Ok(Self {
+            channel_name,
+            pipe_name,
+        })
     }
 }
 
@@ -167,6 +201,14 @@ struct Args {
     /// A target RDP server user password
     #[clap(short, long, value_parser)]
     password: Option<String>,
+
+    /// Proxy URL to connect to for the RDCleanPath
+    #[clap(long, requires("rdcleanpath_token"))]
+    rdcleanpath_url: Option<Url>,
+
+    /// Authentication token to insert in the RDCleanPath packet
+    #[clap(long, requires("rdcleanpath_url"))]
+    rdcleanpath_token: Option<String>,
 
     /// The keyboard type
     #[clap(long, value_enum, value_parser, default_value_t = KeyboardType::IbmEnhanced)]
@@ -233,6 +275,18 @@ struct Args {
     /// The clipboard type
     #[clap(long, value_enum, value_parser, default_value_t = ClipboardType::Default)]
     clipboard_type: ClipboardType,
+
+    /// The bitmap codecs to use (remotefx:on, ...)
+    #[clap(long, value_parser, num_args = 1.., value_delimiter = ',')]
+    codecs: Vec<String>,
+
+    /// Add DVC channel named pipe proxy.
+    /// the format is <name>=<pipe>
+    /// e.g. `ChannelName=PipeName` where `ChannelName` is the name of the channel,
+    /// and `PipeName` is the name of the named pipe to connect to (without OS-specific prefix),
+    /// e.g. PipeName will automatically be prefixed with `\\.\pipe\` on Windows.
+    #[clap(long, value_parser)]
+    dvc_proxy: Vec<DvcProxyInfo>,
 }
 
 impl Config {
@@ -302,17 +356,25 @@ impl Config {
                 .context("Password prompt")?
         };
 
-        let bitmap = if let Some(color_depth) = args.color_depth {
+        let codecs: Vec<_> = args.codecs.iter().map(|s| s.as_str()).collect();
+        let codecs = match client_codecs_capabilities(&codecs) {
+            Ok(codecs) => codecs,
+            Err(help) => {
+                print!("{}", help);
+                std::process::exit(0);
+            }
+        };
+        let mut bitmap = connector::BitmapConfig {
+            color_depth: 32,
+            lossy_compression: true,
+            codecs,
+        };
+
+        if let Some(color_depth) = args.color_depth {
             if color_depth != 16 && color_depth != 32 {
                 anyhow::bail!("Invalid color depth. Only 16 and 32 bit color depths are supported.");
             }
-
-            Some(connector::BitmapConfig {
-                color_depth,
-                lossy_compression: true,
-            })
-        } else {
-            None
+            bitmap.color_depth = color_depth;
         };
 
         let clipboard_type = if args.clipboard_type == ClipboardType::Default {
@@ -344,7 +406,7 @@ impl Config {
                 height: DEFAULT_HEIGHT,
             },
             desktop_scale_factor: 0, // Default to 0 per FreeRDP
-            bitmap,
+            bitmap: Some(bitmap),
             client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .map(|version| version.major * 100 + version.minor * 10 + version.patch)
                 .unwrap_or(0)
@@ -366,10 +428,16 @@ impl Config {
             license_cache: None,
             no_server_pointer: args.no_server_pointer,
             autologon: args.autologon,
+            no_audio_playback: false,
             request_data: None,
-            pointer_software_rendering: true,
+            pointer_software_rendering: false,
             performance_flags: PerformanceFlags::default(),
         };
+
+        let rdcleanpath = args
+            .rdcleanpath_url
+            .zip(args.rdcleanpath_token)
+            .map(|(url, auth_token)| RDCleanPathConfig { url, auth_token });
 
         Ok(Self {
             log_file: args.log_file,
@@ -377,6 +445,8 @@ impl Config {
             destination,
             connector,
             clipboard_type,
+            rdcleanpath,
+            dvc_pipe_proxies: args.dvc_proxy,
         })
     }
 }

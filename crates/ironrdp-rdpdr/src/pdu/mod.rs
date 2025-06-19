@@ -34,6 +34,7 @@ pub enum RdpdrPdu {
     DeviceReadResponse(DeviceReadResponse),
     DeviceWriteResponse(DeviceWriteResponse),
     ClientDriveSetInformationResponse(ClientDriveSetInformationResponse),
+    UserLoggedon,
     EmptyResponse,
 }
 
@@ -94,6 +95,10 @@ impl RdpdrPdu {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDeviceIoCompletion,
             },
+            RdpdrPdu::UserLoggedon => SharedHeader {
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreUserLoggedon,
+            },
         }
     }
 }
@@ -109,6 +114,7 @@ impl Decode<'_> for RdpdrPdu {
                 ServerDeviceAnnounceResponse::decode(src)?,
             )),
             PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
+            PacketId::CoreUserLoggedon => Ok(RdpdrPdu::UserLoggedon),
             _ => Err(unsupported_value_err!(
                 "RdpdrPdu",
                 "PacketId",
@@ -138,6 +144,7 @@ impl Encode for RdpdrPdu {
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceWriteResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::UserLoggedon => Ok(()),
             RdpdrPdu::EmptyResponse => {
                 // https://github.com/FreeRDP/FreeRDP/blob/dfa231c0a55b005af775b833f92f6bcd30363d77/channels/drive/client/drive_main.c#L601
                 dst.write_u32(0);
@@ -163,6 +170,7 @@ impl Encode for RdpdrPdu {
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceWriteResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.name(),
+            RdpdrPdu::UserLoggedon => "UserLoggedon",
             RdpdrPdu::EmptyResponse => "EmptyResponse",
         }
     }
@@ -185,6 +193,7 @@ impl Encode for RdpdrPdu {
                 RdpdrPdu::DeviceReadResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceWriteResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.size(),
+                RdpdrPdu::UserLoggedon => 0,
                 RdpdrPdu::EmptyResponse => size_of::<u32>(),
             }
     }
@@ -239,6 +248,9 @@ impl fmt::Debug for RdpdrPdu {
             }
             Self::ClientDriveSetInformationResponse(it) => {
                 write!(f, "RdpdrPdu({:?})", it)
+            }
+            Self::UserLoggedon => {
+                write!(f, "RdpdrPdu(UserLoggedon)")
             }
             Self::EmptyResponse => {
                 write!(f, "RdpdrPdu(EmptyResponse)")

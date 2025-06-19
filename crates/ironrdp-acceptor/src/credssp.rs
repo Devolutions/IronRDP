@@ -33,10 +33,9 @@ impl PduHint for CredsspTsRequestHint {
 }
 
 #[derive(Debug)]
-pub(crate) struct CredsspSequence<'a> {
+pub struct CredsspSequence<'a> {
     server: CredSspServer<CredentialsProxyImpl<'a>>,
     state: CredsspState,
-    // selected_protocol: nego::SecurityProtocol,
 }
 
 #[derive(Debug)]
@@ -66,7 +65,7 @@ impl CredentialsProxy for CredentialsProxyImpl<'_> {
 }
 
 impl<'a> CredsspSequence<'a> {
-    pub(crate) fn next_pdu_hint(&self) -> ConnectorResult<Option<&dyn PduHint>> {
+    pub fn next_pdu_hint(&self) -> ConnectorResult<Option<&dyn PduHint>> {
         match &self.state {
             CredsspState::Ongoing => Ok(Some(&CREDSSP_TS_REQUEST_HINT)),
             CredsspState::Finished => Ok(None),
@@ -74,7 +73,7 @@ impl<'a> CredsspSequence<'a> {
         }
     }
 
-    pub(crate) fn init(
+    pub fn init(
         creds: &'a AuthIdentity,
         client_computer_name: ServerName,
         public_key: Vec<u8>,
@@ -110,7 +109,7 @@ impl<'a> CredsspSequence<'a> {
     }
 
     /// Returns Some(ts_request) when a TS request is received from client,
-    pub(crate) fn decode_client_message(&mut self, input: &[u8]) -> ConnectorResult<Option<TsRequest>> {
+    pub fn decode_client_message(&mut self, input: &[u8]) -> ConnectorResult<Option<TsRequest>> {
         match self.state {
             CredsspState::Ongoing => {
                 let message = TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
@@ -123,11 +122,11 @@ impl<'a> CredsspSequence<'a> {
         }
     }
 
-    pub(crate) fn process_ts_request(&mut self, request: TsRequest) -> Result<ServerState, Box<ServerError>> {
+    pub fn process_ts_request(&mut self, request: TsRequest) -> Result<ServerState, Box<ServerError>> {
         Ok(self.server.process(request)?)
     }
 
-    pub(crate) fn handle_process_result(
+    pub fn handle_process_result(
         &mut self,
         result: Result<ServerState, Box<ServerError>>,
         output: &mut WriteBuf,

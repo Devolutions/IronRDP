@@ -195,10 +195,11 @@ where
             let client = tokio::task::spawn_local(async move {
                 let (tx, rx) = oneshot::channel();
                 ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
-                let addr = rx.await.unwrap().unwrap();
-                let tcp_stream = TcpStream::connect(addr).await.expect("TCP connect");
+                let server_addr = rx.await.unwrap().unwrap();
+                let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+                let client_addr = tcp_stream.local_addr().expect("local_addr");
                 let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
-                let mut connector = connector::ClientConnector::new(client_config).with_server_addr(addr);
+                let mut connector = connector::ClientConnector::new(client_config, client_addr);
                 let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
                     .await
                     .expect("begin connection");
@@ -296,6 +297,7 @@ fn default_client_config() -> connector::Config {
         hardware_id: None,
         request_data: None,
         autologon: false,
+        no_audio_playback: false,
         license_cache: None,
         no_server_pointer: true,
         pointer_software_rendering: true,

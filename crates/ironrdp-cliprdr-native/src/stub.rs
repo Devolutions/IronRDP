@@ -54,6 +54,8 @@ impl CliprdrBackend for StubCliprdrBackend {
         ".cliprdr"
     }
 
+    fn on_ready(&mut self) {}
+
     fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
         // No additional capabilities yet
         ClipboardGeneralCapabilityFlags::empty()

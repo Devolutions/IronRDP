@@ -25,23 +25,15 @@ pub mod ffi {
 
     // Basic Impl for ClientConnector
     impl ClientConnector {
-        pub fn new(config: &Config) -> Box<ClientConnector> {
-            Box::new(ClientConnector(Some(ironrdp::connector::ClientConnector::new(
-                config.0.clone(),
+        pub fn new(config: &Config, client_addr: &str) -> Result<Box<ClientConnector>, Box<IronRdpError>> {
+            let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
+
+            Ok(Box::new(ClientConnector(Some(
+                ironrdp::connector::ClientConnector::new(config.0.clone(), client_addr),
             ))))
         }
 
-        /// Must use
-        pub fn with_server_addr(&mut self, server_addr: &str) -> Result<(), Box<IronRdpError>> {
-            let Some(connector) = self.0.take() else {
-                return Err(IronRdpErrorKind::Consumed.into());
-            };
-            let server_addr = server_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
-            self.0 = Some(connector.with_server_addr(server_addr));
-
-            Ok(())
-        }
-
+        // FIXME: Naming: since this is not a builder pattern, use "attach"?
         // FIXME: We need to create opaque for ironrdp::svc::StaticChannelSet
         /// Must use
         pub fn with_static_channel_rdp_snd(&mut self) -> Result<(), Box<IronRdpError>> {

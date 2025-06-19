@@ -1,14 +1,11 @@
 use ironrdp::input::{MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use smallvec::SmallVec;
-use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
 #[derive(Clone)]
-pub struct DeviceEvent(pub(crate) Operation);
+pub(crate) struct DeviceEvent(pub(crate) Operation);
 
-#[wasm_bindgen]
-impl DeviceEvent {
-    pub fn new_mouse_button_pressed(button: u8) -> Self {
+impl iron_remote_desktop::DeviceEvent for DeviceEvent {
+    fn mouse_button_pressed(button: u8) -> Self {
         match MouseButton::from_web_button(button) {
             Some(button) => Self(Operation::MouseButtonPressed(button)),
             None => {
@@ -18,7 +15,7 @@ impl DeviceEvent {
         }
     }
 
-    pub fn new_mouse_button_released(button: u8) -> Self {
+    fn mouse_button_released(button: u8) -> Self {
         match MouseButton::from_web_button(button) {
             Some(button) => Self(Operation::MouseButtonReleased(button)),
             None => {
@@ -28,44 +25,44 @@ impl DeviceEvent {
         }
     }
 
-    pub fn new_mouse_move(x: u16, y: u16) -> Self {
+    fn mouse_move(x: u16, y: u16) -> Self {
         Self(Operation::MouseMove(MousePosition { x, y }))
     }
 
-    pub fn new_wheel_rotations(vertical: bool, rotation_units: i16) -> Self {
+    fn wheel_rotations(vertical: bool, rotation_units: i16) -> Self {
         Self(Operation::WheelRotations(WheelRotations {
             is_vertical: vertical,
             rotation_units,
         }))
     }
 
-    pub fn new_key_pressed(scancode: u16) -> Self {
+    fn key_pressed(scancode: u16) -> Self {
         Self(Operation::KeyPressed(Scancode::from_u16(scancode)))
     }
 
-    pub fn new_key_released(scancode: u16) -> Self {
+    fn key_released(scancode: u16) -> Self {
         Self(Operation::KeyReleased(Scancode::from_u16(scancode)))
     }
 
-    pub fn new_unicode_pressed(unicode: char) -> Self {
+    fn unicode_pressed(unicode: char) -> Self {
         Self(Operation::UnicodeKeyPressed(unicode))
     }
 
-    pub fn new_unicode_released(unicode: char) -> Self {
+    fn unicode_released(unicode: char) -> Self {
         Self(Operation::UnicodeKeyReleased(unicode))
     }
 }
 
-#[wasm_bindgen]
-pub struct InputTransaction(pub(crate) SmallVec<[Operation; 3]>);
+pub(crate) struct InputTransaction(pub(crate) SmallVec<[Operation; 3]>);
 
-#[wasm_bindgen]
-impl InputTransaction {
-    pub fn new() -> Self {
+impl iron_remote_desktop::InputTransaction for InputTransaction {
+    type DeviceEvent = DeviceEvent;
+
+    fn create() -> Self {
         Self(SmallVec::new())
     }
 
-    pub fn add_event(&mut self, event: DeviceEvent) {
+    fn add_event(&mut self, event: Self::DeviceEvent) {
         self.0.push(event.0);
     }
 }

@@ -110,9 +110,11 @@ fn main() -> anyhow::Result<()> {
         Action::WasmCheck => wasm::check(&sh)?,
         Action::WasmInstall => wasm::install(&sh)?,
         Action::WebCheck => web::check(&sh)?,
+        Action::WebBuild => web::build(&sh, false)?,
         Action::WebInstall => web::install(&sh)?,
         Action::WebRun => web::run(&sh)?,
-        Action::FfiBuildDll { release: debug } => ffi::build_dynamic_lib(&sh, debug)?,
+        Action::FfiInstall => ffi::install(&sh)?,
+        Action::FfiBuildDll { release } => ffi::build_dynamic_lib(&sh, release)?,
         Action::FfiBuildBindings { skip_dotnet_build } => ffi::build_bindings(&sh, skip_dotnet_build)?,
     }
 

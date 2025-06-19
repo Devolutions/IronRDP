@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-pdu"
-version = "0.4.0"
+version = "0.5.0"
 readme = "README.md"
 description = "RDP PDU encoding and decoding"
 edition.workspace = true
@@ -21,7 +21,7 @@ std = ["alloc", "ironrdp-error/std", "ironrdp-core/std"]
 alloc = ["ironrdp-core/alloc", "ironrdp-error/alloc"]
 
 [dependencies]
-bitflags = "2.4"
+bitflags = "2.9"
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 tap = "1"

@@ -30,9 +30,9 @@ use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
-use crate::encoder::UpdateEncoder;
+use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use crate::handler::RdpServerInputHandler;
-use crate::{builder, capabilities, time_warn, SoundServerFactory};
+use crate::{builder, capabilities, SoundServerFactory};
 
 #[derive(Clone)]
 pub struct RdpServerOptions {
@@ -423,38 +423,30 @@ impl RdpServer {
         buffer: &mut Vec<u8>,
         mut encoder: UpdateEncoder,
     ) -> Result<(RunState, UpdateEncoder)> {
-        let mut fragmenter = match update {
-            DisplayUpdate::Bitmap(bitmap) => {
-                let (enc, res) = task::spawn_blocking(move || {
-                    let res = time_warn!("Encoding bitmap", 10, encoder.bitmap(bitmap).map(|r| r.into_owned()));
-                    (encoder, res)
-                })
-                .await?;
-                encoder = enc;
-                res.map(|r| encoder.fragmenter_from_owned(r))
-            }
-            DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
-            DisplayUpdate::Resize(desktop_size) => {
-                debug!(?desktop_size, "Display resize");
-                deactivate_all(io_channel_id, user_channel_id, writer).await?;
-                return Ok((RunState::DeactivationReactivation { desktop_size }, encoder));
-            }
-            DisplayUpdate::RGBAPointer(ptr) => encoder.rgba_pointer(ptr),
-            DisplayUpdate::ColorPointer(ptr) => encoder.color_pointer(ptr),
-            DisplayUpdate::HidePointer => encoder.hide_pointer(),
-            DisplayUpdate::DefaultPointer => encoder.default_pointer(),
-        }
-        .context("error during update encoding")?;
-
-        if fragmenter.size_hint() > buffer.len() {
-            buffer.resize(fragmenter.size_hint(), 0);
+        if let DisplayUpdate::Resize(desktop_size) = update {
+            debug!(?desktop_size, "Display resize");
+            encoder.set_desktop_size(desktop_size);
+            deactivate_all(io_channel_id, user_channel_id, writer).await?;
+            return Ok((RunState::DeactivationReactivation { desktop_size }, encoder));
         }
 
-        while let Some(len) = fragmenter.next(buffer) {
-            writer
-                .write_all(&buffer[..len])
-                .await
-                .context("failed to write display update")?;
+        let mut encoder_iter = encoder.update(update);
+        loop {
+            let Some(fragmenter) = encoder_iter.next().await else {
+                break;
+            };
+
+            let mut fragmenter = fragmenter.context("error while encoding")?;
+            if fragmenter.size_hint() > buffer.len() {
+                buffer.resize(fragmenter.size_hint(), 0);
+            }
+
+            while let Some(len) = fragmenter.next(buffer) {
+                writer
+                    .write_all(&buffer[..len])
+                    .await
+                    .context("failed to write display update")?;
+            }
         }
 
         Ok((RunState::Continue, encoder))
@@ -471,6 +463,7 @@ impl RdpServer {
         // 4 frames should roughly corresponds to hundreds of ms in regular setups.
         let mut wave_limit = 4;
         for event in events.drain(..) {
+            trace!(?event, "Dispatching");
             match event {
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
@@ -670,7 +663,7 @@ impl RdpServer {
             }
         }
 
-        let mut rfxcodec = None;
+        let mut update_codecs = UpdateEncoderCodecs::new();
         let mut surface_flags = CmdFlags::empty();
         for c in result.capabilities {
             match c {
@@ -721,14 +714,14 @@ impl RdpServer {
                                 rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
                             ) if self.opts.with_remote_fx => {
                                 for caps in c.caps_data.0 .0 {
-                                    rfxcodec = Some((caps.entropy_bits, codec.id));
+                                    update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
                             rdp::capability_sets::CodecProperty::ImageRemoteFx(
                                 rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
                             ) if self.opts.with_remote_fx => {
                                 for caps in c.caps_data.0 .0 {
-                                    rfxcodec = Some((caps.entropy_bits, codec.id));
+                                    update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
                             rdp::capability_sets::CodecProperty::NsCodec(_) => (),
@@ -740,7 +733,8 @@ impl RdpServer {
             }
         }
 
-        let encoder = UpdateEncoder::new(surface_flags, rfxcodec);
+        let desktop_size = self.display.lock().await.size().await;
+        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs);
 
         let state = self
             .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)

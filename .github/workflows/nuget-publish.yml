@@ -136,7 +136,9 @@ jobs:
       # > Unable to generate bindings: ClangDiagnostic("/usr/include/stdint.h:26:10: fatal error: 'bits/libc-header-start.h' file not found\n")
       - name: Install gcc-multilib
         if: ${{ matrix.os == 'android' }}
-        run: sudo apt install gcc-multilib
+        run: |
+          sudo apt-get update
+          sudo apt-get install gcc-multilib
 
       - name: Setup LLVM
         uses: Devolutions/actions-public/setup-llvm@v1

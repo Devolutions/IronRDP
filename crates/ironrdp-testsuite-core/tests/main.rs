@@ -21,5 +21,6 @@ mod pcb;
 mod pdu;
 mod rdcleanpath;
 mod rdpsnd;
+mod server;
 mod server_name;
 mod session;

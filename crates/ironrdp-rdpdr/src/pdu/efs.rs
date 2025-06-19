@@ -364,7 +364,9 @@ impl CapabilityMessage {
                 protocol_minor_version: VERSION_MINOR_12,
                 io_code_1: IoCode1::REQUIRED,
                 io_code_2: 0,
-                extended_pdu: ExtendedPdu::RDPDR_DEVICE_REMOVE_PDUS | ExtendedPdu::RDPDR_CLIENT_DISPLAY_NAME_PDU,
+                extended_pdu: ExtendedPdu::RDPDR_DEVICE_REMOVE_PDUS
+                    | ExtendedPdu::RDPDR_CLIENT_DISPLAY_NAME_PDU
+                    | ExtendedPdu::RDPDR_USER_LOGGEDON_PDU,
                 extra_flags_1: ExtraFlags1::empty(),
                 extra_flags_2: 0,
                 special_type_device_cap,

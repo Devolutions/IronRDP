@@ -1,36 +1,25 @@
 <script lang="ts">
     import { currentSession, userInteractionService } from '../../services/session.service';
-    import { catchError, filter } from 'rxjs/operators';
-    import type { UserInteraction, NewSessionInfo } from '../../../static/iron-remote-gui';
-    import { from, of } from 'rxjs';
+    import type { UserInteraction } from '../../../static/iron-remote-desktop';
+    import type { Session } from '../../models/session';
+    import { preConnectionBlob, displayControl, kdcProxyUrl, init } from '../../../static/iron-remote-desktop-rdp';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
-    import type { DesktopSize } from '../../models/desktop-size';
+    import { onMount } from 'svelte';
 
     let username = 'Administrator';
     let password = 'DevoLabs123!';
     let gatewayAddress = 'ws://localhost:7171/jet/rdp';
     let hostname = '10.10.0.3:3389';
     let domain = '';
-    let authtoken =
-        'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTkyLjE2OC41Ni4xMDE6MzM4OSIsImV4cCI6MTY5MzQyMzY1NSwiamV0X2FpZCI6IjMwNzZjZGIwLWYxNTctNDJlNy1iOWMzLThhMTdlNDFkYjYwNyIsImpldF9hcCI6InJkcCIsImpldF9jbSI6ImZ3ZCIsImp0aSI6IjAwYjY4OTY2LWJiYjAtNDU0NS05ZDZiLWRjNmFmMjAzNjY5MiIsIm5iZiI6MTY5MzQyMjc1NX0.SYQv4HtWQbdHMHgoCLYejCfO3TtsMAyjjILB6-Nir3mBznKiSad3POeLf02n05JFc5QhCeSGxspAaoNU7-znQFhHr0Tt0MnZJ1YMQt4UoR3PR2fTuUqv8M5TKdm4lKwCIjh73tTD001glTkXHaxuCQBTFCUSzfZhXDIqq5-CQueKtCrgJfYepJLmlvgH-ujGcxfXoGJGmeUy3Fmaijiy0uaC98j9GNCfnAd6JENmSAOkxfroMFhq601PSEizRbPzq2exDakfJ0EkaANz15udBX1a7NP-RyANHWQb8hp0rj6hyuyg1-vfUKYusw5qNUjAGXaWOjHC5bLgnqfE2V8Xnw';
+    let authtoken = '';
     let kdc_proxy_url = '';
-    let desktopSize: DesktopSize = {
-        width: 1280,
-        height: 768,
-    };
-    let pcb: string;
+    let desktopSize = { width: 1280, height: 720 };
+    let pcb = '';
     let pop_up = false;
     let enable_clipboard = true;
 
     let userInteraction: UserInteraction;
-
-    userInteractionService.subscribe((val) => {
-        userInteraction = val;
-        if (val != null) {
-            initListeners();
-        }
-    });
 
     const initListeners = () => {
         userInteraction.onSessionEvent((event) => {
@@ -44,13 +33,60 @@
             } else {
                 toast.set({
                     type: 'info',
-                    message: typeof event.data !== 'string' ? event.data.backtrace() : event.data ?? 'No info',
+                    message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
                 });
             }
         });
     };
 
-    const StartSession = () => {
+    userInteractionService.subscribe((val) => {
+        userInteraction = val;
+        if (val != null) {
+            initListeners();
+        }
+    });
+
+    const StartSession = async () => {
+        if (authtoken === '') {
+            const token_server_url = import.meta.env.VITE_IRON_TOKEN_SERVER_URL as string | undefined;
+            if (token_server_url === undefined || token_server_url.trim() === '') {
+                toast.set({
+                    type: 'error',
+                    message: 'Token server is not set and no token provided',
+                });
+                throw new Error('Token server is not set and no token provided');
+            }
+            try {
+                const response = await fetch(`${token_server_url}/forward`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        dst_hst: hostname,
+                        jet_ap: 'rdp',
+                        jet_ttl: 3600,
+                        jet_rec: false,
+                    }),
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    authtoken = data.token;
+                } else if (data.error !== undefined) {
+                    throw new Error(data.error);
+                } else {
+                    throw new Error('Unknown error occurred');
+                }
+            } catch (error) {
+                console.error('Error fetching token:', error);
+                toast.set({
+                    type: 'error',
+                    message: 'Error fetching token',
+                });
+            }
+        }
+
         toast.set({
             type: 'info',
             message: 'Connection in progress...',
@@ -79,52 +115,54 @@
         }
 
         userInteraction.setEnableClipboard(enable_clipboard);
-        from(
-            userInteraction.connect(
-                username,
-                password,
-                hostname,
-                gatewayAddress,
-                domain,
-                authtoken,
-                desktopSize,
-                pcb,
-                kdc_proxy_url,
-                true,
-            ),
-        )
-            .pipe(
-                catchError((err) => {
-                    toast.set({
-                        type: 'info',
-                        message: err.backtrace(),
-                    });
-                    return of(null);
-                }),
-                filter((result) => !!result),
-            )
-            .subscribe((start_info: NewSessionInfo | null) => {
-                if (start_info != null && start_info.initial_desktop_size !== null) {
-                    toast.set({
-                        type: 'info',
-                        message: 'Success',
-                    });
-                    currentSession.update((session) =>
-                        Object.assign(session, {
-                            sessionId: start_info.session_id,
-                            desktopSize: start_info.initial_desktop_size,
-                            active: true,
-                        }),
-                    );
-                    showLogin.set(false);
-                } else {
-                    toast.set({
-                        type: 'error',
-                        message: 'Failure',
-                    });
-                }
+
+        const configBuilder = userInteraction
+            .configBuilder()
+            .withUsername(username)
+            .withPassword(password)
+            .withDestination(hostname)
+            .withProxyAddress(gatewayAddress)
+            .withServerDomain(domain)
+            .withAuthToken(authtoken)
+            .withDesktopSize(desktopSize)
+            .withExtension(displayControl(true));
+
+        if (pcb !== '') {
+            configBuilder.withExtension(preConnectionBlob(pcb));
+        }
+
+        if (kdc_proxy_url !== '') {
+            configBuilder.withExtension(kdcProxyUrl(kdc_proxy_url));
+        }
+
+        const config = configBuilder.build();
+
+        try {
+            const session_info = await userInteraction.connect(config);
+
+            toast.set({
+                type: 'info',
+                message: 'Success',
             });
+
+            const updater = (session: Session): Session => ({
+                ...session,
+                sessionId: session_info.sessionId,
+                desktopSize: session_info.initialDesktopSize,
+                active: true,
+            });
+
+            currentSession.update(updater);
+
+            showLogin.set(false);
+        } catch (err) {
+            console.error(`Error occurred: ${err}`);
+        }
     };
+
+    onMount(async () => {
+        await init('INFO');
+    });
 </script>
 
 <main class="responsive login-container">
@@ -158,7 +196,7 @@
                         </div>
                         <div class="field label border">
                             <input id="authtoken" type="text" bind:value={authtoken} />
-                            <label for="authtoken">AuthToken</label>
+                            <label for="authtoken">AuthToken (Optional)</label>
                         </div>
                         <div class="field label border">
                             <input id="pcb" type="text" bind:value={pcb} />
