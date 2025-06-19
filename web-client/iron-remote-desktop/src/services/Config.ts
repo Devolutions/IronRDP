@@ -10,6 +10,7 @@ export class Config {
     readonly authToken: string;
     readonly desktopSize?: DesktopSize;
     readonly extensions: Extension[];
+    readonly dynamicResizeSupportedCallback?: () => void;
 
     constructor(
         userData: { username: string; password: string },
@@ -20,6 +21,9 @@ export class Config {
             extensions: Extension[];
             desktopSize?: DesktopSize;
         },
+        callbacks: {
+            dynamicResizeSupportedCallback?: () => void;
+        },
     ) {
         this.username = userData.username;
         this.password = userData.password;
@@ -29,5 +33,6 @@ export class Config {
         this.serverDomain = configOptions.serverDomain;
         this.extensions = configOptions.extensions;
         this.desktopSize = configOptions.desktopSize;
+        this.dynamicResizeSupportedCallback = callbacks.dynamicResizeSupportedCallback;
     }
 }
