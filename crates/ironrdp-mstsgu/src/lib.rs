@@ -13,7 +13,7 @@ use futures_util::{
 use hyper::body::Bytes;
 use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::oneshot,
 };
@@ -48,6 +48,7 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 pub enum GwErrorKind {
     Connect,
     PacketEOF,
+    UnsupportedFeature,
     Custom,
 }
 
@@ -67,7 +68,7 @@ impl GwErrorExt for ironrdp_error::Error<GwErrorKind> {
 }
 
 impl Display for GwErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         todo!()
     }
 }
@@ -219,7 +220,7 @@ impl GwClient {
 }
 
 impl GwConn {
-    async fn send_packet<'a, E: Encode>(&mut self, payload: &E) -> Result<(), Error> {
+    async fn send_packet<E: Encode>(&mut self, payload: &E) -> Result<(), Error> {
         let mut buf = [0u8; 4096];
         let pos = {
             let mut cur = WriteCursor::new(&mut buf);
@@ -253,7 +254,7 @@ impl GwConn {
             ..HandshakeReqPkt::default()
         };
         self.send_packet(&hs).await?;
-        let (hdr, bytes) = self.read_packet().await?;
+        let (_hdr, bytes) = self.read_packet().await?;
 
         let mut cur = ReadCursor::new(&bytes);
         let resp = HandshakeRespPkt::decode(&mut cur).unwrap();
@@ -262,12 +263,12 @@ impl GwConn {
             return Err(Error::new("Handshake", GwErrorKind::Connect));
         }
 
-        assert_eq!(resp.extended_auth, 7); //TODO....
+        assert_eq!(resp.extended_auth, HttpExtendedAuth::all()); //TODO....
         Ok(())
     }
 
     async fn tunnel(&mut self) -> Result<(), Error> {
-        // TODO not really supported but my test server didnt even work without it
+        // Havent seen any server working without this.
         const HTTP_CAPABILITY_MESSAGING_CONSENT_SIGN: u32 = 0x4;
 
         let req = TunnelReqPkt {
@@ -277,7 +278,7 @@ impl GwConn {
         };
         self.send_packet(&req).await?;
 
-        let (hdr, bytes) = self.read_packet().await?;
+        let (_hdr, bytes) = self.read_packet().await?;
         let mut cur = ReadCursor::new(&bytes);
         let resp = TunnelRespPkt::decode(&mut cur).unwrap();
 
@@ -286,19 +287,22 @@ impl GwConn {
             return Err(Error::new("Tunnel", GwErrorKind::Connect));
         }
         assert!(cur.eof());
+        if !resp.consent_msg.is_empty() {
+            return Err(Error::new("Received consent message but showing it not implemented", GwErrorKind::UnsupportedFeature));
+        }
         Ok(())
     }
 
     async fn tunnel_auth(&mut self) -> Result<(), Error> {
         let req = TunnelAuthPkt {
             fields_present: 0,
-            client_name: "testpc".to_string(),
+            client_name: "testpc".to_string(), // TODO
         };
         self.send_packet(&req).await?;
 
-        let (hdr, bytes) = self.read_packet().await?;
+        let (_hdr, bytes) = self.read_packet().await?;
         let mut cur = ReadCursor::new(&bytes);
-        let resp = TunnelAuthRespPkt::decode(&mut cur).unwrap();
+        let resp: TunnelAuthRespPkt = TunnelAuthRespPkt::decode(&mut cur).unwrap();
 
         // println!("TUNNEL AUTH RESP: {:?}", resp);
         if resp.error_code != 0 {
@@ -315,7 +319,7 @@ impl GwConn {
         };
         self.send_packet(&req).await?;
 
-        let (hdr, bytes) = self.read_packet().await?;
+        let (_hdr, bytes) = self.read_packet().await?;
         // TODO: asserts atleast for hdr.type missing since the port
         let mut cur = ReadCursor::new(&bytes);
         let resp = ChannelResp::decode(&mut cur).unwrap();
@@ -401,15 +405,12 @@ impl AsyncWrite for GwClient {
         Poll::Pending
     }
 
-    fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), io::Error>> {
         // TODO: call flush on the backing/websocket sink?
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), io::Error>> {
+    fn poll_shutdown(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
 }

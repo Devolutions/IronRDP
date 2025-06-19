@@ -1,4 +1,16 @@
+use bitflags::bitflags;
 use ironrdp_core::{unsupported_value_err, Decode, Encode, ReadCursor, WriteCursor};
+
+bitflags! {
+    /// 2.2.5.3.2 HTTP_EXTENDED_AUTH Enumeration
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub(crate) struct HttpExtendedAuth: u16 {
+        const HTTP_EXTENDED_AUTH_NONE = 0x01;
+        const HTTP_EXTENDED_AUTH_SC = 0x01;
+        const HTTP_EXTENDED_AUTH_PAA = 0x02;
+        const HTTP_EXTENDED_AUTH_SSPI_NTLM = 0x04;
+    }
+}
 
 /// 2.2.5.3.3 HTTP_PACKET_TYPE Enumeration
 #[repr(u16)]
@@ -91,7 +103,7 @@ pub(crate) struct HandshakeReqPkt {
     pub ver_major: u8,
     pub ver_minor: u8,
     pub client_version: u16,
-    pub extended_auth: u16,
+    pub extended_auth: HttpExtendedAuth,
 }
 
 impl Encode for HandshakeReqPkt {
@@ -106,7 +118,7 @@ impl Encode for HandshakeReqPkt {
         dst.write_u8(self.ver_major);
         dst.write_u8(self.ver_minor);
         dst.write_u16(self.client_version);
-        dst.write_u16(self.extended_auth);
+        dst.write_u16(self.extended_auth.bits());
 
         Ok(())
     }
@@ -127,7 +139,7 @@ pub(crate) struct HandshakeRespPkt {
     pub ver_major: u8,
     pub ver_minor: u8,
     pub server_version: u16,
-    pub extended_auth: u16,
+    pub extended_auth: HttpExtendedAuth,
 }
 
 impl Decode<'_> for HandshakeRespPkt {
@@ -137,7 +149,11 @@ impl Decode<'_> for HandshakeRespPkt {
             ver_major: src.read_u8(),
             ver_minor: src.read_u8(),
             server_version: src.read_u16(),
-            extended_auth: src.read_u16(),
+            extended_auth: {
+                let raw = src.read_u16();
+                HttpExtendedAuth::from_bits(raw)
+                    .ok_or_else(|| unsupported_value_err("HandshakeResp", "extended_auth", format!("0x{:x}", raw)))?
+            },
         })
     }
 }
