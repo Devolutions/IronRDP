@@ -182,9 +182,11 @@ struct Args {
     #[clap(short, long, value_parser)]
     log_file: Option<String>,
 
-    // TODO: clap args, flags, ...
+    #[clap(long, value_parser)]
     gw_endpoint: Option<String>,
+    #[clap(long, value_parser)]
     gw_user: Option<String>,
+    #[clap(long, value_parser)]
     gw_pass: Option<String>,
 
     /// An address on which the client will connect.
