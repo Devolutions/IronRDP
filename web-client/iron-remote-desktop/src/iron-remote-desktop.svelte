@@ -14,7 +14,7 @@
 />
 
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onDestroy, onMount } from 'svelte';
     import { loggingService } from './services/logging.service';
     import { RemoteDesktopService } from './services/remote-desktop.service';
     import type { ResizeEvent } from './interfaces/ResizeEvent';
@@ -455,6 +455,10 @@
         wrapperStyle = `height: ${height}; width: ${width}; overflow: ${overflow}`;
     }
 
+    const resizeHandler = (_evt: UIEvent) => {
+        scaleSession(scale);
+    };
+
     function serverBridgeListeners() {
         remoteDesktopService.resizeObservable.subscribe((evt: ResizeEvent) => {
             loggingService.info(`Resize canvas to: ${evt.desktopSize.width}x${evt.desktopSize.height}`);
@@ -465,9 +469,7 @@
     }
 
     function userInteractionListeners() {
-        window.addEventListener('resize', (_evt) => {
-            scaleSession(scale);
-        });
+        window.addEventListener('resize', resizeHandler);
 
         remoteDesktopService.scaleObservable.subscribe((s) => {
             loggingService.info('Change scale!');
@@ -513,6 +515,10 @@
                     break;
             }
         }
+
+        onDestroy(() => {
+            window.removeEventListener('resize', resizeHandler);
+        });
     }
 
     function fullResize() {
