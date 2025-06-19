@@ -95,6 +95,12 @@ pub struct GwClient {
     tx: PollSender<Bytes>,
 }
 
+impl Drop for GwClient {
+    fn drop(&mut self) {
+        self.work.abort();
+    }
+}
+
 impl GwClient {
     pub async fn connect(target: &GwConnectTarget) -> Result<TlsStream<TcpStream>, Error> {
         // println!("CFG: {:?}", target);
@@ -395,14 +401,15 @@ impl AsyncWrite for GwClient {
         Poll::Pending
     }
 
-    fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        Poll::Ready(Ok(())) // TODO NOP
+    fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Result<(), io::Error>> {
+        // TODO: call flush on the backing/websocket sink?
+        Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        todo!()
+    ) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
     }
 }
