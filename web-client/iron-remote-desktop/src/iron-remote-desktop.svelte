@@ -515,10 +515,6 @@
                     break;
             }
         }
-
-        onDestroy(() => {
-            window.removeEventListener('resize', resizeHandler);
-        });
     }
 
     function fullResize() {
@@ -690,6 +686,10 @@
         loggingService.info('Dom ready');
         await initcanvas();
         initClipboard();
+    });
+
+    onDestroy(() => {
+        window.removeEventListener('resize', resizeHandler);
     });
 </script>
 
