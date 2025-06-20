@@ -25,7 +25,6 @@ export class ConfigBuilder {
     private authToken: string = '';
     private desktopSize?: DesktopSize;
     private extensions: Extension[] = [];
-    private dynamicResizeSupportedCallback?: () => void;
 
     /**
      * Creates a new ConfigBuilder instance.
@@ -121,16 +120,6 @@ export class ConfigBuilder {
     }
 
     /**
-     * Optional
-     * @param callback - The callback function
-     * @returns The builder instance for method chaining
-     */
-    withDynamicResizeSupportedCallback(callback: () => void): ConfigBuilder {
-        this.dynamicResizeSupportedCallback = callback;
-        return this;
-    }
-
-    /**
      * Builds a new Config instance.
      *
      * @throws {Error} If required parameters (destination, proxyAddress, authToken) are not set
@@ -156,10 +145,6 @@ export class ConfigBuilder {
             desktopSize: this.desktopSize,
         };
 
-        const callbacks = {
-            dynamicResizeSupportedCallback: this.dynamicResizeSupportedCallback,
-        };
-
-        return new Config(userData, proxyData, configOptions, callbacks);
+        return new Config(userData, proxyData, configOptions);
     }
 }

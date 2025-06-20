@@ -136,10 +136,6 @@ export class RemoteDesktopService {
             sessionBuilder.forceClipboardUpdateCallback(this.onForceClipboardUpdate);
         }
 
-        if (config.dynamicResizeSupportedCallback != null) {
-            sessionBuilder.dynamicResizingSupportedCallback(config.dynamicResizeSupportedCallback);
-        }
-
         if (config.desktopSize != null) {
             sessionBuilder.desktopSize(
                 new this.module.DesktopSize(config.desktopSize.width, config.desktopSize.height),

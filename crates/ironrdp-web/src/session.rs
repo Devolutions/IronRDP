@@ -66,7 +66,6 @@ struct SessionBuilderInner {
     remote_clipboard_changed_callback: Option<js_sys::Function>,
     remote_received_format_list_callback: Option<js_sys::Function>,
     force_clipboard_update_callback: Option<js_sys::Function>,
-    dynamic_resizing_supported_callback: Option<js_sys::Function>,
 
     use_display_control: bool,
 }
@@ -94,7 +93,6 @@ impl Default for SessionBuilderInner {
             remote_clipboard_changed_callback: None,
             remote_received_format_list_callback: None,
             force_clipboard_update_callback: None,
-            dynamic_resizing_supported_callback: None,
 
             use_display_control: false,
         }
@@ -207,12 +205,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
-    /// Optional
-    fn dynamic_resizing_supported_callback(&self, callback: js_sys::Function) -> Self {
-        self.0.borrow_mut().dynamic_resizing_supported_callback = Some(callback);
-        self.clone()
-    }
-
     fn extension(&self, ext: Extension) -> Self {
         iron_remote_desktop::extension_match! {
             match ext;
@@ -317,12 +309,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         }
 
         let use_display_control = self.0.borrow().use_display_control;
-
-        if use_display_control {
-            if let Some(callback) = self.0.borrow().dynamic_resizing_supported_callback.clone() {
-                callback.call0(&JsValue::NULL).expect("failed to call JS callback");
-            };
-        }
 
         let (connection_result, ws) = connect(ConnectParams {
             ws,

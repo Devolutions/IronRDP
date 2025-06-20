@@ -530,11 +530,11 @@
         let width = canvas.width;
         let height = canvas.height;
 
-        const ratio = Math.min(containerWidth / canvas.width, containerHeight / canvas.height);
+        const ratio = Math.max(containerWidth / canvas.width, containerHeight / canvas.height);
         width = width * ratio;
         height = height * ratio;
 
-        setWrapperStyle(`${containerHeight}px`, `${containerWidth}px`, 'hidden');
+        setWrapperStyle(`${containerHeight}px`, `${containerWidth}px`, 'auto');
 
         width = width > 0 ? width : 0;
         height = height > 0 ? height : 0;
