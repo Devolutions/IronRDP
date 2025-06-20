@@ -478,7 +478,7 @@
 
         remoteDesktopService.dynamicResizeObservable.subscribe((evt) => {
             loggingService.info(`Dynamic resize!, width: ${evt.width}, height: ${evt.height}`);
-            setViewerStyle(evt.height.toString(), evt.width.toString(), true);
+            setViewerStyle(evt.height.toString() + 'px', evt.width.toString() + 'px', true);
         });
 
         remoteDesktopService.changeVisibilityObservable.subscribe((val) => {
