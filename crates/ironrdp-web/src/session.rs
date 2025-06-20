@@ -479,6 +479,8 @@ impl iron_remote_desktop::Session for Session {
             connection_result.desktop_size.height,
         );
 
+        let mut requested_resize = None;
+
         let mut active_stage = ActiveStage::new(connection_result);
 
         let disconnect_reason = 'outer: loop {
@@ -542,9 +544,7 @@ impl iron_remote_desktop::Session for Session {
                                 warn!("Resize event ignored: width or height is zero");
                                 Vec::new()
                             } else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
-                                self.render_canvas.set_width(width);
-                                self.render_canvas.set_height(height);
-                                gui.resize(NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap());
+                                requested_resize = Some((NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap()));
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                             } else {
                                 debug!("Resize event ignored");
@@ -675,6 +675,16 @@ impl iron_remote_desktop::Session for Session {
                         // Execute the Deactivation-Reactivation Sequence:
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
                         debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
+
+                        // We need to perform resize after receiving the Deactivate All PDU, because there may be frames
+                        // with the previous dimensions arriving between the resize request and this message.
+                        if let Some((width, height)) = requested_resize {
+                            self.render_canvas.set_width(width.get());
+                            self.render_canvas.set_height(height.get());
+                            gui.resize(width, height);
+                            requested_resize = None;
+                        }
+
                         let mut buf = WriteBuf::new();
                         'activation_seq: loop {
                             let written =
