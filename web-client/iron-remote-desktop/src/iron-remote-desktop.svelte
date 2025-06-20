@@ -535,7 +535,7 @@
         width = width * ratio;
         height = height * ratio;
 
-        setWrapperStyle(`${containerHeight}px`, `${containerWidth}px`, 'auto');
+        setWrapperStyle(`${containerHeight}px`, `${containerWidth}px`, 'hidden');
 
         width = width > 0 ? width : 0;
         height = height > 0 ? height : 0;
