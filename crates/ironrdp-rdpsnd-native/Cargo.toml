@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpsnd-native"
-version = "0.3.0"
+version = "0.3.1"
 description = "Native RDPSND static channel backend implementations for IronRDP"
 edition.workspace = true
 license.workspace = true
