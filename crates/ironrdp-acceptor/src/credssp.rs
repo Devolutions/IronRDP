@@ -79,7 +79,10 @@ pub(crate) async fn resolve_generator(
             GeneratorState::Suspended(request) => {
                 let response = network_client.send(&request).await.map_err(|err| {
                     error!(?err, "Failed to send a Kerberos message");
-                    Box::new(ServerError { ts_request: Default::default(), error: sspi::Error::new(sspi::ErrorKind::InternalError, err) })
+                    Box::new(ServerError {
+                        ts_request: None,
+                        error: sspi::Error::new(sspi::ErrorKind::InternalError, err),
+                    })
                 })?;
                 state = generator.resume(Ok(response));
             }
@@ -157,7 +160,7 @@ impl<'a> CredsspSequence<'a> {
         let (ts_request, next_state) = match result {
             Ok(ServerState::ReplyNeeded(ts_request)) => (Some(ts_request), CredsspState::Ongoing),
             Ok(ServerState::Finished(_id)) => (None, CredsspState::Finished),
-            Err(err) => (Some(err.ts_request), CredsspState::ServerError(err.error)),
+            Err(err) => (err.ts_request, CredsspState::ServerError(err.error)),
         };
 
         self.state = next_state;
