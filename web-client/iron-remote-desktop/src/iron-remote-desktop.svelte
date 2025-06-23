@@ -603,7 +603,7 @@
                 // canvas first in order to receive paste events.
                 // wasmService.mouseButtonState(state, isDown, false);
                 // Focus `contenteditable` element to receive `on_paste` events
-                screenViewer.focus();
+                canvas.focus();
                 // Finish the focus sequence on Firefox
                 ffCnavasFocused = true;
             } else {
