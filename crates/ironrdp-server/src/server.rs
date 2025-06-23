@@ -318,6 +318,7 @@ impl RdpServer {
                         client_name.into(),
                         pub_key.clone(),
                         None,
+                        None,
                     )
                     .await?;
                 }

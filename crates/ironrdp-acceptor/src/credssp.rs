@@ -1,9 +1,10 @@
-use ironrdp_connector::credssp::KerberosConfig;
+use ironrdp_async::AsyncNetworkClient;
 use ironrdp_connector::sspi::credssp::{
-    ClientMode, CredSspServer, CredentialsProxy, ServerError, ServerState, TsRequest,
+    CredSspServer, CredentialsProxy, ServerError, ServerMode, ServerState, TsRequest,
 };
+use ironrdp_connector::sspi::generator::{Generator, GeneratorState};
 use ironrdp_connector::sspi::negotiate::ProtocolConfig;
-use ironrdp_connector::sspi::{self, AuthIdentity, Username};
+use ironrdp_connector::sspi::{self, AuthIdentity, KerberosServerConfig, NegotiateConfig, NetworkRequest, Username};
 use ironrdp_connector::{
     custom_err, general_err, ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written,
 };
@@ -31,6 +32,9 @@ impl PduHint for CredsspTsRequestHint {
         }
     }
 }
+
+pub type CredsspProcessGenerator<'a> =
+    Generator<'a, NetworkRequest, sspi::Result<Vec<u8>>, Result<ServerState, Box<ServerError>>>;
 
 #[derive(Debug)]
 pub struct CredsspSequence<'a> {
@@ -64,6 +68,26 @@ impl CredentialsProxy for CredentialsProxyImpl<'_> {
     }
 }
 
+pub(crate) async fn resolve_generator(
+    generator: &mut CredsspProcessGenerator<'_>,
+    network_client: &mut dyn AsyncNetworkClient,
+) -> Result<ServerState, Box<ServerError>> {
+    let mut state = generator.start();
+
+    loop {
+        match state {
+            GeneratorState::Suspended(request) => {
+                let response = network_client.send(&request).await.map_err(|err| {
+                    error!(?err, "Failed to send a Kerberos message");
+                    Box::new(ServerError { ts_request: Default::default(), error: sspi::Error::new(sspi::ErrorKind::InternalError, err) })
+                })?;
+                state = generator.resume(Ok(response));
+            }
+            GeneratorState::Completed(client_state) => break client_state,
+        }
+    }
+}
+
 impl<'a> CredsspSequence<'a> {
     pub fn next_pdu_hint(&self) -> ConnectorResult<Option<&dyn PduHint>> {
         match &self.state {
@@ -77,22 +101,21 @@ impl<'a> CredsspSequence<'a> {
         creds: &'a AuthIdentity,
         client_computer_name: ServerName,
         public_key: Vec<u8>,
-        kerberos_config: Option<KerberosConfig>,
+        krb_config: Option<KerberosServerConfig>,
     ) -> ConnectorResult<Self> {
         let client_computer_name = client_computer_name.into_inner();
         let credentials = CredentialsProxyImpl::new(creds);
-        let credssp_config: Box<dyn ProtocolConfig>;
-        if let Some(ref krb_config) = kerberos_config {
-            credssp_config = Box::new(Into::<sspi::KerberosConfig>::into(krb_config.clone()));
-        } else {
-            credssp_config = Box::<sspi::ntlm::NtlmConfig>::default();
-        }
 
-        debug!(?credssp_config);
+        let credssp_config: Box<dyn ProtocolConfig> = if let Some(krb_config) = krb_config {
+            Box::new(krb_config)
+        } else {
+            Box::<sspi::ntlm::NtlmConfig>::default()
+        };
+
         let server = CredSspServer::new(
             public_key,
             credentials,
-            ClientMode::Negotiate(sspi::NegotiateConfig {
+            ServerMode::Negotiate(NegotiateConfig {
                 protocol_config: credssp_config,
                 package_list: None,
                 client_computer_name,
@@ -122,8 +145,8 @@ impl<'a> CredsspSequence<'a> {
         }
     }
 
-    pub fn process_ts_request(&mut self, request: TsRequest) -> Result<ServerState, Box<ServerError>> {
-        Ok(self.server.process(request)?)
+    pub fn process_ts_request(&mut self, request: TsRequest) -> CredsspProcessGenerator<'_> {
+        self.server.process(request)
     }
 
     pub fn handle_process_result(

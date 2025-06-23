@@ -4,10 +4,9 @@
 #[macro_use]
 extern crate tracing;
 
-use ironrdp_async::{single_sequence_step, Framed, FramedRead, FramedWrite, StreamWrapper};
-use ironrdp_connector::credssp::KerberosConfig;
+use ironrdp_async::{single_sequence_step, AsyncNetworkClient, Framed, FramedRead, FramedWrite, StreamWrapper};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
-use ironrdp_connector::sspi::{AuthIdentity, Username};
+use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
 use ironrdp_connector::{custom_err, general_err, ConnectorResult, ServerName};
 use ironrdp_core::WriteBuf;
 
@@ -23,6 +22,7 @@ use ironrdp_pdu::nego;
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use self::connection::{Acceptor, AcceptorResult, AcceptorState};
 pub use self::finalization::{FinalizationSequence, FinalizationState};
+use crate::credssp::resolve_generator;
 
 pub enum BeginResult<S>
 where
@@ -58,7 +58,8 @@ pub async fn accept_credssp<S>(
     acceptor: &mut Acceptor,
     client_computer_name: ServerName,
     public_key: Vec<u8>,
-    kerberos_config: Option<KerberosConfig>,
+    kerberos_config: Option<KerberosServerConfig>,
+    network_client: Option<&mut dyn AsyncNetworkClient>,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
@@ -73,6 +74,7 @@ where
             client_computer_name,
             public_key,
             kerberos_config,
+            network_client,
         )
         .await
     } else {
@@ -104,7 +106,8 @@ async fn perform_credssp_step<S>(
     buf: &mut WriteBuf,
     client_computer_name: ServerName,
     public_key: Vec<u8>,
-    kerberos_config: Option<KerberosConfig>,
+    kerberos_config: Option<KerberosServerConfig>,
+    network_client: Option<&mut dyn AsyncNetworkClient>,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
@@ -120,7 +123,8 @@ where
         buf: &mut WriteBuf,
         client_computer_name: ServerName,
         public_key: Vec<u8>,
-        kerberos_config: Option<KerberosConfig>,
+        kerberos_config: Option<KerberosServerConfig>,
+        mut network_client: Option<&mut dyn AsyncNetworkClient>,
     ) -> ConnectorResult<()>
     where
         S: FramedRead + FramedWrite,
@@ -160,7 +164,16 @@ where
                 break;
             };
 
-            let result = sequence.process_ts_request(ts_request);
+            let result = {
+                let mut generator = sequence.process_ts_request(ts_request);
+
+                if let Some(network_client_ref) = network_client.as_deref_mut() {
+                    resolve_generator(&mut generator, network_client_ref).await
+                } else {
+                    generator.resolve_to_result()
+                }
+            }; // drop generator
+
             buf.clear();
             let written = sequence.handle_process_result(result, buf)?;
 
@@ -176,7 +189,16 @@ where
         Ok(())
     }
 
-    let result = credssp_loop(framed, acceptor, buf, client_computer_name, public_key, kerberos_config).await;
+    let result = credssp_loop(
+        framed,
+        acceptor,
+        buf,
+        client_computer_name,
+        public_key,
+        kerberos_config,
+        network_client,
+    )
+    .await;
 
     if protocol.intersects(nego::SecurityProtocol::HYBRID_EX) {
         trace!(?result, "HYBRID_EX");
