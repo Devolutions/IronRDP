@@ -23,11 +23,11 @@ reqwest-native-tls = ["reqwest", "reqwest?/native-tls"]
 
 [dependencies]
 bytes = "1"
-ironrdp-async = { path = "../ironrdp-async", version = "0.5" } # public
+ironrdp-async = { path = "../ironrdp-async", version = "0.5", default-features = false } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.5", optional = true }
 tokio = { version = "1", features = ["io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "system-proxy"], optional = true }
-sspi = { version = "0.15", features = ["network_client", "dns_resolver"], optional = true }
+sspi = { path = "../../../sspi-rs", features = ["network_client", "dns_resolver"], optional = true }
 url = { version = "2.5", optional = true }
 
 [lints]
