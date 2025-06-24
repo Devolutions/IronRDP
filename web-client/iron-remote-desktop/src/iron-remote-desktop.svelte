@@ -621,7 +621,7 @@
     }
 
     function setMouseIn(evt: MouseEvent) {
-        canvas.focus();
+        canvas.focus({ preventScroll: true });
         remoteDesktopService.mouseIn(evt);
     }
 
