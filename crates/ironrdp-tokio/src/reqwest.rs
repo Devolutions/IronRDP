@@ -20,15 +20,7 @@ impl AsyncNetworkClient for ReqwestNetworkClient {
         &'a mut self,
         request: &'a sspi::generator::NetworkRequest,
     ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
-        Box::pin(async move {
-            match &request.protocol {
-                sspi::network_client::NetworkProtocol::Tcp => self.send_tcp(&request.url, &request.data).await,
-                sspi::network_client::NetworkProtocol::Udp => self.send_udp(&request.url, &request.data).await,
-                sspi::network_client::NetworkProtocol::Http | sspi::network_client::NetworkProtocol::Https => {
-                    self.send_http(&request.url, &request.data).await
-                }
-            }
-        })
+        AsyncSendableNetworkClient::send(self, request)
     }
 }
 

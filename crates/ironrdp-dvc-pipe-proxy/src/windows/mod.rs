@@ -11,7 +11,6 @@ pub(crate) use error::WindowsError;
 pub(crate) use event::Event;
 pub(crate) use pipe::MessagePipeServer;
 pub(crate) use semaphore::Semaphore;
-
 use windows::Win32::Foundation::{
     ERROR_IO_PENDING, HANDLE, WAIT_ABANDONED_0, WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };

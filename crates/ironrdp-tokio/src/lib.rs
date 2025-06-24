@@ -11,15 +11,14 @@ use core::pin::Pin;
 use std::io;
 
 use bytes::BytesMut;
-use ironrdp_connector::ConnectorResult;
-use sspi::NetworkRequest;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 
+#[cfg(feature = "reqwest")]
 pub trait AsyncSendableNetworkClient: Send + Sync {
     fn send<'a>(
         &'a mut self,
-        network_request: &'a NetworkRequest,
-    ) -> Pin<Box<dyn core::future::Future<Output = ConnectorResult<Vec<u8>>> + Send + 'a>>;
+        network_request: &'a sspi::NetworkRequest,
+    ) -> Pin<Box<dyn core::future::Future<Output = ironrdp_connector::ConnectorResult<Vec<u8>>> + Send + 'a>>;
 }
 
 pub type TokioFramed<S> = Framed<TokioStream<S>>;

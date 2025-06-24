@@ -14,6 +14,7 @@ use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDiscon
 use ironrdp::svc::SvcMessage;
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_core::WriteBuf;
+use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 use ironrdp_rdpsnd_native::cpal;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed, FramedWrite};
@@ -25,7 +26,6 @@ use tokio::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
 
 use crate::config::{Config, RDCleanPathConfig};
-use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
