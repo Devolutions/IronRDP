@@ -728,7 +728,7 @@ impl iron_remote_desktop::Session for Session {
             }
         };
 
-        info!(%disconnect_reason, "RPD session terminated");
+        info!(%disconnect_reason, "RDP session terminated");
 
         Ok(SessionTerminationInfo {
             reason: disconnect_reason,
