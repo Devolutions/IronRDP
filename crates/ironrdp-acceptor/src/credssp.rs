@@ -77,13 +77,16 @@ pub(crate) async fn resolve_generator(
     loop {
         match state {
             GeneratorState::Suspended(request) => {
-                let response = network_client.send(&request).await.map_err(|err| {
-                    error!(?err, "Failed to send a Kerberos message");
-                    Box::new(ServerError {
-                        ts_request: None,
-                        error: sspi::Error::new(sspi::ErrorKind::InternalError, err),
-                    })
-                })?;
+                let response = network_client
+                    .send(&request)
+                    .await
+                    .inspect_err(|err| error!(?err, "Failed to send a Kerberos message"))
+                    .map_err(|err| {
+                        Box::new(ServerError {
+                            ts_request: None,
+                            error: sspi::Error::new(sspi::ErrorKind::InternalError, err),
+                        })
+                    })?;
                 state = generator.resume(Ok(response));
             }
             GeneratorState::Completed(client_state) => break client_state,
