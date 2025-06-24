@@ -189,12 +189,8 @@ export class RemoteDesktopService {
                 this.setVisibility(false);
 
                 this.raiseSessionEvent({
-                    type: SessionEventType.ERROR,
-                    data: err.backtrace(),
-                });
-                this.raiseSessionEvent({
                     type: SessionEventType.TERMINATED,
-                    data: 'Session was terminated.',
+                    data: 'Session was terminated with an error: ' + err.backtrace() + '.',
                 });
             });
     }
