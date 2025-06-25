@@ -28,9 +28,9 @@ sspi = { path = "../../../sspi-rs" } # public
 url = "2.5" # public
 rand_core = { version = "0.6", features = ["std"] } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }
-picky-asn1-der = { path = "../../../picky-rs/picky-asn1-der" }
-picky-asn1-x509 = { path = "../../../picky-rs/picky-asn1-x509" }
-picky = { path = "../../../picky-rs/picky" }
+picky-asn1-der = "0.5"
+picky-asn1-x509 = "0.14"
+picky = "7.0.0-rc.15"
 
 [lints]
 workspace = true
