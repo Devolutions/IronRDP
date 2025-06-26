@@ -34,7 +34,7 @@ impl PduHint for CredsspTsRequestHint {
 }
 
 pub type CredsspProcessGenerator<'a> =
-    Generator<'a, NetworkRequest, sspi::Result<Vec<u8>>, Result<ServerState, Box<ServerError>>>;
+    Generator<'a, NetworkRequest, sspi::Result<Vec<u8>>, Result<ServerState, ServerError>>;
 
 #[derive(Debug)]
 pub struct CredsspSequence<'a> {
@@ -71,7 +71,7 @@ impl CredentialsProxy for CredentialsProxyImpl<'_> {
 pub(crate) async fn resolve_generator(
     generator: &mut CredsspProcessGenerator<'_>,
     network_client: &mut dyn AsyncNetworkClient,
-) -> Result<ServerState, Box<ServerError>> {
+) -> Result<ServerState, ServerError> {
     let mut state = generator.start();
 
     loop {
@@ -81,11 +81,9 @@ pub(crate) async fn resolve_generator(
                     .send(&request)
                     .await
                     .inspect_err(|err| error!(?err, "Failed to send a Kerberos message"))
-                    .map_err(|err| {
-                        Box::new(ServerError {
-                            ts_request: None,
-                            error: sspi::Error::new(sspi::ErrorKind::InternalError, err),
-                        })
+                    .map_err(|err| ServerError {
+                        ts_request: None,
+                        error: sspi::Error::new(sspi::ErrorKind::InternalError, err),
                     })?;
                 state = generator.resume(Ok(response));
             }
@@ -157,11 +155,11 @@ impl<'a> CredsspSequence<'a> {
 
     pub fn handle_process_result(
         &mut self,
-        result: Result<ServerState, Box<ServerError>>,
+        result: Result<ServerState, ServerError>,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
         let (ts_request, next_state) = match result {
-            Ok(ServerState::ReplyNeeded(ts_request)) => (Some(ts_request), CredsspState::Ongoing),
+            Ok(ServerState::ReplyNeeded(ts_request)) => (Some(Box::new(ts_request)), CredsspState::Ongoing),
             Ok(ServerState::Finished(_id)) => (None, CredsspState::Finished),
             Err(err) => (err.ts_request, CredsspState::ServerError(err.error)),
         };
