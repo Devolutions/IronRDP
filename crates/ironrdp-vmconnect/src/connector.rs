@@ -170,7 +170,10 @@ impl VmClientConnector {
 
     pub fn hand_over(self) -> ClientConnector {
         let VmConnectorState::Handover { selected_protocol } = self.state else {
-            panic!("Invalid state for handover, expected Handover, got: {}", self.state.name());
+            panic!(
+                "Invalid state for handover, expected Handover, got: {}",
+                self.state.name()
+            );
         };
         let VmClientConnector {
             mut clinet_connector, ..

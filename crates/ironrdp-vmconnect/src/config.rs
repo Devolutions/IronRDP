@@ -1,4 +1,3 @@
-
 use ironrdp_connector::general_err;
 use ironrdp_pdu::nego::NegoRequestData;
 use sspi::Username;
