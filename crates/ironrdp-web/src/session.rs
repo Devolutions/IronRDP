@@ -205,7 +205,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
-    /// Not used in IronRDP.
+    /// The server never resizes the framebuffer in the RDP protocol, so this is not used by IronRDP.
     fn canvas_resized_callback(&self, _callback: js_sys::Function) -> Self {
         self.clone()
     }
