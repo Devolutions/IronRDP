@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 1 -->Features
 
-- Add `canvas_resized_callback` method to `SessionBuilder` trait (#842) ([f6285c5989](https://github.com/Devolutions/IronRDP/commit/f6285c598915c8afb07553c765648d85ac4140cb)) 
+- [**breaking**] Add `canvas_resized_callback` method to `SessionBuilder` trait (#842) ([f6285c5989](https://github.com/Devolutions/IronRDP/commit/f6285c598915c8afb07553c765648d85ac4140cb)) 
 
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.2.0...iron-remote-desktop-v0.3.0)] - 2025-06-03
 
