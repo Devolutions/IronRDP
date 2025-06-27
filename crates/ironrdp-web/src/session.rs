@@ -205,6 +205,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
+    /// Not used in IronRDP.
+    fn canvas_resized_callback(&self, _callback: js_sys::Function) -> Self {
+        self.clone()
+    }
+
     fn extension(&self, ext: Extension) -> Self {
         iron_remote_desktop::extension_match! {
             match ext;
