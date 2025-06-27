@@ -52,6 +52,9 @@ pub trait SessionBuilder {
     fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> Self;
 
     #[must_use]
+    fn canvas_resized_callback(&self, callback: js_sys::Function) -> Self;
+
+    #[must_use]
     fn extension(&self, ext: Extension) -> Self;
 
     #[expect(async_fn_in_trait)]

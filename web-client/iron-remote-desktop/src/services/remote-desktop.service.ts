@@ -23,6 +23,7 @@ import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInf
 type OnRemoteClipboardChanged = (data: ClipboardData) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
+type OnCanvasResized = () => void;
 
 export class RemoteDesktopService {
     private module: RemoteDesktopModule;
@@ -32,6 +33,7 @@ export class RemoteDesktopService {
     private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
     private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
+    private onCanvasResized?: OnCanvasResized;
     private cursorHasOverride: boolean = false;
     private lastCursorStyle: string = 'default';
     private enableClipboard: boolean = true;
@@ -72,6 +74,11 @@ export class RemoteDesktopService {
     /// clipboard initialization sequence)
     setOnForceClipboardUpdate(callback: OnForceClipboardUpdate) {
         this.onForceClipboardUpdate = callback;
+    }
+
+    /// Callback which is called when the canvas is resized.
+    setOnCanvasResized(callback: OnCanvasResized) {
+        this.onCanvasResized = callback;
     }
 
     mouseIn(event: MouseEvent) {
@@ -134,6 +141,9 @@ export class RemoteDesktopService {
         }
         if (this.onForceClipboardUpdate != null && this.enableClipboard) {
             sessionBuilder.forceClipboardUpdateCallback(this.onForceClipboardUpdate);
+        }
+        if (this.onCanvasResized != null) {
+            sessionBuilder.canvasResizedCallback(this.onCanvasResized);
         }
 
         if (config.desktopSize != null) {

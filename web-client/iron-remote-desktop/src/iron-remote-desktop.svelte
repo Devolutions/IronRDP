@@ -54,6 +54,8 @@
     let remoteDesktopService = new RemoteDesktopService(module);
     let publicAPI = new PublicAPI(remoteDesktopService);
 
+    let currentScreenScale = ScreenScale.Fit;
+
     // Firefox's clipboard API is very limited, and doesn't support reading from the clipboard
     // without changing browser settings via `about:config`.
     //
@@ -491,25 +493,32 @@
         });
     }
 
-    function scaleSession(currentSize: ScreenScale | string) {
+    function canvasResized() {
+        scaleSession(currentScreenScale);
+    }
+
+    function scaleSession(screenScale: ScreenScale | string) {
         resetHostStyle();
         if (isVisible) {
-            switch (currentSize) {
+            switch (screenScale) {
                 case 'fit':
                 case ScreenScale.Fit:
                     loggingService.info('Size to fit');
+                    currentScreenScale = ScreenScale.Fit;
                     scale = 'fit';
                     fitResize();
                     break;
                 case 'full':
                 case ScreenScale.Full:
                     loggingService.info('Size to full');
+                    currentScreenScale = ScreenScale.Full;
                     fullResize();
                     scale = 'full';
                     break;
                 case 'real':
                 case ScreenScale.Real:
                     loggingService.info('Size to real');
+                    currentScreenScale = ScreenScale.Real;
                     realResize();
                     scale = 'real';
                     break;
@@ -666,6 +675,7 @@
         canvas.height = 600;
 
         remoteDesktopService.setCanvas(canvas);
+        remoteDesktopService.setOnCanvasResized(canvasResized);
 
         initListeners();
 
