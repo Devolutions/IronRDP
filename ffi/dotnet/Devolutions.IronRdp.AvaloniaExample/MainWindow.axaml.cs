@@ -112,7 +112,10 @@ public partial class MainWindow : Window
             this._activeStage = ActiveStage.New(res);
             this._framed = framed;
             ReadPduAndProcessActiveStage();
-            HandleClipboardEvents();
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                HandleClipboardEvents();
+            }
         });
     }
 
