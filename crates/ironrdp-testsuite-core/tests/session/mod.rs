@@ -14,11 +14,23 @@ mod tests {
 
         let config = &["remotefx:on"];
         let capabilities = client_codecs_capabilities(config).unwrap();
-        assert_eq!(capabilities.0.len(), 1);
-        assert!(matches!(capabilities.0[0].property, CodecProperty::RemoteFx(_)));
+        assert!(capabilities
+            .0
+            .iter()
+            .any(|cap| matches!(cap.property, CodecProperty::RemoteFx(_))));
 
         let config = &["remotefx:off"];
         let capabilities = client_codecs_capabilities(config).unwrap();
-        assert_eq!(capabilities.0.len(), 0);
+        assert!(!capabilities
+            .0
+            .iter()
+            .any(|cap| matches!(cap.property, CodecProperty::RemoteFx(_))));
+
+        let config = &["qoi:on"];
+        let capabilities = client_codecs_capabilities(config).unwrap();
+        assert!(capabilities
+            .0
+            .iter()
+            .any(|cap| matches!(cap.property, CodecProperty::Qoi)));
     }
 }

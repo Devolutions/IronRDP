@@ -9,6 +9,11 @@ edition.workspace = true
 name = "perfenc"
 path = "src/perfenc.rs"
 
+[features]
+default = ["qoi", "qoiz"]
+qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
+
 [dependencies]
 anyhow = "1.0.98"
 async-trait = "0.1.88"

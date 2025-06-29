@@ -851,3 +851,8 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[patch.unused]]
+name = "qoi"
+version = "0.4.1"
+source = "git+https://github.com/elmarco/qoi-rust.git?branch=raw#9fc76e899f9421eb203930dd6a54600f1e6e4b1c"
