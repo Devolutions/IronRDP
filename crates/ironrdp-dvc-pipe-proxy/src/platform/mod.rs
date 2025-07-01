@@ -1,11 +1,9 @@
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "windows")]
+pub use self::windows::DvcNamedPipeProxy;
 
 #[cfg(not(target_os = "windows"))]
 mod unix;
-
-#[cfg(target_os = "windows")]
-pub use windows::DvcNamedPipeProxy;
-
 #[cfg(not(target_os = "windows"))]
-pub use unix::DvcNamedPipeProxy;
+pub use self::unix::DvcNamedPipeProxy;

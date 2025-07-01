@@ -2,20 +2,22 @@
 //!
 //! Some of the wrappers are based on `win-api-wrappers` code (simplified/reduced functionality).
 
-mod error;
-mod event;
-mod pipe;
-mod semaphore;
-
-pub(crate) use error::WindowsError;
-pub(crate) use event::Event;
-pub(crate) use pipe::MessagePipeServer;
-pub(crate) use semaphore::Semaphore;
-
 use windows::Win32::Foundation::{
     ERROR_IO_PENDING, HANDLE, WAIT_ABANDONED_0, WAIT_EVENT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::System::Threading::{WaitForMultipleObjects, INFINITE};
+
+mod error;
+pub(crate) use self::error::WindowsError;
+
+mod event;
+pub(crate) use self::event::Event;
+
+mod pipe;
+pub(crate) use self::pipe::MessagePipeServer;
+
+mod semaphore;
+pub(crate) use self::semaphore::Semaphore;
 
 /// Thin wrapper around borrowed `windows` crate `HANDLE` reference.
 /// This is used to ensure handle lifetime when passing it to FFI functions

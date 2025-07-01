@@ -8,5 +8,4 @@ extern crate tracing;
 mod windows;
 
 mod platform;
-
-pub use platform::DvcNamedPipeProxy;
+pub use self::platform::DvcNamedPipeProxy;
