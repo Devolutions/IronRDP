@@ -30,7 +30,7 @@ rand_core = { version = "0.6", features = ["std"] } # TODO: dependency injection
 tracing = { version = "0.1", features = ["log"] }
 picky-asn1-der = "0.5"
 picky-asn1-x509 = "0.14"
-picky = "7.0.0-rc.12"
+picky = "7.0.0-rc.15"
 
 [lints]
 workspace = true
