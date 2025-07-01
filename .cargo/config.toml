@@ -1,2 +1,5 @@
 [alias]
 xtask = "run --package xtask --"
+
+[patch.crates-io]
+qoi = { git = "https://github.com/elmarco/qoi-rust.git", branch = "raw" }

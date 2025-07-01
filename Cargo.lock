@@ -2698,6 +2698,7 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-svc",
  "ironrdp-tokio",
+ "qoi",
  "rayon",
  "rustls-pemfile",
  "tokio",
@@ -2705,6 +2706,7 @@ dependencies = [
  "tracing",
  "visibility",
  "x509-cert",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -2719,7 +2721,9 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "qoi",
  "tracing",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -4129,6 +4133,14 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "qoi"
+version = "0.4.1"
+source = "git+https://github.com/elmarco/qoi-rust.git?branch=raw#9fc76e899f9421eb203930dd6a54600f1e6e4b1c"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -6901,4 +6913,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.0.15+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb81183ddd97d0c74cedf1d50d85c8d08c1b8b68ee863bdee9e706eedba1a237"
+dependencies = [
+ "cc",
+ "pkg-config",
 ]
