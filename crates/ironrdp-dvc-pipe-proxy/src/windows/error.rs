@@ -21,7 +21,7 @@ impl core::fmt::Display for WindowsError {
             WindowsError::CreateNamedPipe(_) => write!(f, "failed to create named pipe"),
             WindowsError::CreateEvent(_) => write!(f, "failed to create event object"),
             WindowsError::SetEvent(_) => write!(f, "failed to set event to signaled state"),
-            WindowsError::InvalidSemaphoreParams(cause) => write!(f, "invalid semaphore parameters: {}", cause),
+            WindowsError::InvalidSemaphoreParams(cause) => write!(f, "invalid semaphore parameters: {cause}"),
             WindowsError::ReleaseSemaphore(_) => write!(f, "failed to release semaphore"),
             WindowsError::WaitForMultipleObjectsFailed(_) => write!(f, "failed to wait for multiple objects"),
             WindowsError::WaitForMultipleObjectsTimeout => write!(f, "timed out waiting for multiple objects"),
@@ -32,7 +32,7 @@ impl core::fmt::Display for WindowsError {
             WindowsError::OverlappedRead(_) => write!(f, "overlapped read failed"),
             WindowsError::OverlappedWrite(_) => write!(f, "overlapped write failed"),
             WindowsError::CreateSemaphore(_) => write!(f, "failed to create semaphore object"),
-            WindowsError::InvalidPipeName(cause) => write!(f, "invalid pipe name: `{}`", cause),
+            WindowsError::InvalidPipeName(cause) => write!(f, "invalid pipe name: `{cause}`"),
         }
     }
 }
