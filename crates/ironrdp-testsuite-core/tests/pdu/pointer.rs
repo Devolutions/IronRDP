@@ -23,7 +23,7 @@ fn expect_pointer_png(pointer: &DecodedPointer, expected_file_path: &str) {
     }
 
     if !std::path::Path::new(&path).exists() {
-        panic!("Test file {} does not exist", path);
+        panic!("Test file {path} does not exist");
     }
 
     let png_buffer = std::fs::read(path).unwrap();

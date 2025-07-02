@@ -111,6 +111,6 @@ impl From<PduError> for ChannelError {
 
 impl From<ChannelError> for io::Error {
     fn from(e: ChannelError) -> io::Error {
-        io::Error::new(io::ErrorKind::Other, format!("Virtual channel error: {e}"))
+        io::Error::other(format!("Virtual channel error: {e}"))
     }
 }

@@ -205,49 +205,49 @@ impl fmt::Debug for RdpdrPdu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::VersionAndIdPdu(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientNameRequest(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::CoreCapability(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDeviceListAnnounce(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::ServerDeviceAnnounceResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::DeviceIoRequest(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::DeviceControlResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::DeviceCreateResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDriveQueryInformationResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::DeviceCloseResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDriveQueryDirectoryResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDriveQueryVolumeInformationResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::DeviceReadResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::DeviceWriteResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDriveSetInformationResponse(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::UserLoggedon => {
                 write!(f, "RdpdrPdu(UserLoggedon)")

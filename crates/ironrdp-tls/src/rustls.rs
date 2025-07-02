@@ -41,7 +41,7 @@ where
             .1
             .peer_certificates()
             .and_then(|certificates| certificates.first())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "peer certificate is missing"))?;
+            .ok_or_else(|| io::Error::other("peer certificate is missing"))?;
         crate::extract_tls_server_public_key(cert)?
     };
 

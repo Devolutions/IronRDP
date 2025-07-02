@@ -24,7 +24,7 @@ bitflags! {
 ///
 /// * `flags` - virtual channel compression flags
 /// * `chunk_size` - when sent from server to client, this field contains the maximum allowed size of a virtual channel chunk and MUST be greater than or equal to 1600 and less than or equal to 16256.
-///    When sent from client to server, the value in this field is ignored by the server. This value is not verified in IronRDP and MUST be verified on the caller's side
+///   When sent from client to server, the value in this field is ignored by the server. This value is not verified in IronRDP and MUST be verified on the caller's side
 ///
 /// # MSDN
 ///

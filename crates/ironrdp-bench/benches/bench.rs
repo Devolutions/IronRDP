@@ -1,4 +1,4 @@
-use std::num::NonZero;
+use core::num::NonZero;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;

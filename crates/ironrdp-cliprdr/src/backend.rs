@@ -7,9 +7,9 @@ use crate::pdu::{
     FormatDataRequest, FormatDataResponse, LockDataId, OwnedFormatDataResponse,
 };
 
-pub trait ClipboardError: std::error::Error + Send + Sync + 'static {}
+pub trait ClipboardError: core::error::Error + Send + Sync + 'static {}
 
-impl<T> ClipboardError for T where T: std::error::Error + Send + Sync + 'static {}
+impl<T> ClipboardError for T where T: core::error::Error + Send + Sync + 'static {}
 
 /// Message sent by the OS clipboard backend event loop.
 #[derive(Debug)]

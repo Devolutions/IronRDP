@@ -48,7 +48,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
             // its size is rounded up to the nearest greater integer, to take into account odd image
             // size (e.g. if width is 3, then chroma plane width is 2, not 1, to take into account
             // the odd column which expands to 1 pixel instead of 2 during supersampling)
-            ((image_width + 1) / 2, (image_height + 1) / 2)
+            (image_width.div_ceil(2), image_height.div_ceil(2))
         } else {
             (image_width, image_height)
         };

@@ -34,7 +34,7 @@ impl fmt::Display for NotEnoughBytesError {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for NotEnoughBytesError {}
+impl core::error::Error for NotEnoughBytesError {}
 
 macro_rules! ensure_enough_bytes {
     (in: $buf:ident, size: $expected:expr) => {{

@@ -1,6 +1,6 @@
 use core::future::Future;
+use core::net::{IpAddr, Ipv4Addr};
 use core::pin::Pin;
-use std::net::{IpAddr, Ipv4Addr};
 
 use ironrdp_connector::{custom_err, ConnectorResult};
 use reqwest::Client;
@@ -50,19 +50,19 @@ impl ReqwestNetworkClient {
 
         let mut stream = TcpStream::connect(addr)
             .await
-            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{:?}", e)))
+            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
             .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
 
         stream
             .write(data)
             .await
-            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{:?}", e)))
+            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
             .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
 
         let len = stream
             .read_u32()
             .await
-            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{:?}", e)))
+            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
             .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
 
         let mut buf = vec![0; len as usize + 4];
@@ -71,7 +71,7 @@ impl ReqwestNetworkClient {
         stream
             .read_exact(&mut buf[4..])
             .await
-            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{:?}", e)))
+            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
             .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
 
         Ok(buf)

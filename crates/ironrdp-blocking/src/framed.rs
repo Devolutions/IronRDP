@@ -81,7 +81,7 @@ where
                         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "not enough bytes"));
                     }
                 }
-                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                Err(e) => return Err(io::Error::other(e)),
             };
         }
     }
@@ -89,10 +89,7 @@ where
     /// Reads a frame using the provided PduHint.
     pub fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
         loop {
-            match hint
-                .find_size(self.peek())
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-            {
+            match hint.find_size(self.peek()).map_err(io::Error::other)? {
                 Some((matched, length)) => {
                     let bytes = self.read_exact(length)?.freeze();
                     if matched {

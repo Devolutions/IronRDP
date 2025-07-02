@@ -48,7 +48,7 @@ impl CapabilitySet {
             CapabilitySet::V8 { .. } => CapabilityVersion::V8,
             CapabilitySet::V8_1 { .. } => CapabilityVersion::V8_1,
             CapabilitySet::V10 { .. } => CapabilityVersion::V10,
-            CapabilitySet::V10_1 { .. } => CapabilityVersion::V10_1,
+            CapabilitySet::V10_1 => CapabilityVersion::V10_1,
             CapabilitySet::V10_2 { .. } => CapabilityVersion::V10_2,
             CapabilitySet::V10_3 { .. } => CapabilityVersion::V10_3,
             CapabilitySet::V10_4 { .. } => CapabilityVersion::V10_4,
@@ -109,7 +109,7 @@ impl Encode for CapabilitySet {
                 | CapabilitySet::V10_6 { .. }
                 | CapabilitySet::V10_6Err { .. }
                 | CapabilitySet::V10_7 { .. } => 4,
-                CapabilitySet::V10_1 { .. } => 16,
+                CapabilitySet::V10_1 => 16,
                 CapabilitySet::Unknown(data) => data.len(),
             }
     }

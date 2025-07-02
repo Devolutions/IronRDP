@@ -68,7 +68,7 @@ pub enum EncodeErrorKind {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for EncodeErrorKind {}
+impl core::error::Error for EncodeErrorKind {}
 
 impl fmt::Display for EncodeErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -1,4 +1,4 @@
-use std::error::Error;
+use core::error::Error;
 use std::sync::Once;
 
 static INIT_LOG: Once = Once::new();

@@ -163,7 +163,7 @@ pub mod ffi {
     impl<'a> DynState<'a> {
         pub fn get_name(&'a self, writeable: &'a mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
             let name = self.0.name();
-            write!(writeable, "{}", name)?;
+            write!(writeable, "{name}")?;
             Ok(())
         }
 
