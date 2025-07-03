@@ -177,22 +177,22 @@ impl FromStr for DvcProxyInfo {
 #[clap(version, long_about = None)]
 struct Args {
     /// A file with IronRDP client logs
-    #[clap(short, long, value_parser)]
+    #[clap(short, long)]
     log_file: Option<String>,
 
     /// An address on which the client will connect.
     destination: Option<Destination>,
 
     /// A target RDP server user name
-    #[clap(short, long, value_parser)]
+    #[clap(short, long)]
     username: Option<String>,
 
     /// An optional target RDP server domain name
-    #[clap(short, long, value_parser)]
+    #[clap(short, long)]
     domain: Option<String>,
 
     /// A target RDP server user password
-    #[clap(short, long, value_parser)]
+    #[clap(short, long)]
     password: Option<String>,
 
     /// Proxy URL to connect to for the RDCleanPath
@@ -204,23 +204,23 @@ struct Args {
     rdcleanpath_token: Option<String>,
 
     /// The keyboard type
-    #[clap(long, value_enum, value_parser, default_value_t = KeyboardType::IbmEnhanced)]
+    #[clap(long, value_enum, default_value_t = KeyboardType::IbmEnhanced)]
     keyboard_type: KeyboardType,
 
     /// The keyboard subtype (an original equipment manufacturer-dependent value)
-    #[clap(long, value_parser, default_value_t = 0)]
+    #[clap(long, default_value_t = 0)]
     keyboard_subtype: u32,
 
     /// The number of function keys on the keyboard
-    #[clap(long, value_parser, default_value_t = 12)]
+    #[clap(long, default_value_t = 12)]
     keyboard_functional_keys_count: u32,
 
     /// The input method editor (IME) file name associated with the active input locale
-    #[clap(long, value_parser, default_value_t = String::from(""))]
+    #[clap(long, default_value_t = String::from(""))]
     ime_file_name: String,
 
     /// Contains a value that uniquely identifies the client
-    #[clap(long, value_parser, default_value_t = String::from(""))]
+    #[clap(long, default_value_t = String::from(""))]
     dig_product_id: String,
 
     /// Enable thin client
@@ -266,11 +266,11 @@ struct Args {
     no_credssp: bool,
 
     /// The clipboard type
-    #[clap(long, value_enum, value_parser, default_value_t = ClipboardType::Default)]
+    #[clap(long, value_enum, default_value_t = ClipboardType::Default)]
     clipboard_type: ClipboardType,
 
     /// The bitmap codecs to use (remotefx:on, ...)
-    #[clap(long, value_parser, num_args = 1.., value_delimiter = ',')]
+    #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
 
     /// Add DVC channel named pipe proxy.
@@ -278,7 +278,7 @@ struct Args {
     /// e.g. `ChannelName=PipeName` where `ChannelName` is the name of the channel,
     /// and `PipeName` is the name of the named pipe to connect to (without OS-specific prefix),
     /// e.g. PipeName will automatically be prefixed with `\\.\pipe\` on Windows.
-    #[clap(long, value_parser)]
+    #[clap(long)]
     dvc_proxy: Vec<DvcProxyInfo>,
 }
 
