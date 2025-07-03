@@ -59,7 +59,7 @@ impl Encode for BitmapStreamHeader {
         let mut header = ((self.enable_rle_compression as u8) << 4) | ((!self.use_alpha as u8) << 5);
 
         match self.color_plane_definition {
-            ColorPlaneDefinition::Argb { .. } => {
+            ColorPlaneDefinition::Argb => {
                 // ARGB color planes keep cll and cs flags set to 0
             }
             ColorPlaneDefinition::AYCoCg {
@@ -108,7 +108,7 @@ impl<'a> BitmapStream<'a> {
 
     pub fn has_subsampled_chroma(&self) -> bool {
         match self.header.color_plane_definition {
-            ColorPlaneDefinition::Argb { .. } => false,
+            ColorPlaneDefinition::Argb => false,
             ColorPlaneDefinition::AYCoCg {
                 use_chroma_subsampling, ..
             } => use_chroma_subsampling,

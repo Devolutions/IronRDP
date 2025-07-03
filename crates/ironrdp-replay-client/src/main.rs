@@ -16,7 +16,7 @@ use glutin::event_loop::ControlFlow;
 use ironrdp::pdu::dvc::gfx::{GraphicsPipelineError, ServerPdu};
 use ironrdp_glutin_renderer::renderer::Renderer;
 
-pub type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
+pub type Error = Box<dyn core::error::Error + Send + Sync + 'static>;
 
 /// Devolutions IronRDP client
 #[derive(Parser, Debug)]

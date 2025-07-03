@@ -47,8 +47,8 @@ impl fmt::Display for SessionErrorKind {
     }
 }
 
-impl std::error::Error for SessionErrorKind {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for SessionErrorKind {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match &self {
             SessionErrorKind::Pdu(e) => Some(e),
             SessionErrorKind::Encode(e) => Some(e),
@@ -70,7 +70,7 @@ pub trait SessionErrorExt {
     fn reason(context: &'static str, reason: impl Into<String>) -> Self;
     fn custom<E>(context: &'static str, e: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static;
+        E: core::error::Error + Sync + Send + 'static;
 }
 
 impl SessionErrorExt for SessionError {
@@ -96,7 +96,7 @@ impl SessionErrorExt for SessionError {
 
     fn custom<E>(context: &'static str, e: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static,
+        E: core::error::Error + Sync + Send + 'static,
     {
         Self::new(context, SessionErrorKind::Custom).with_source(e)
     }
@@ -108,7 +108,7 @@ pub trait SessionResultExt {
     #[must_use]
     fn with_source<E>(self, source: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static;
+        E: core::error::Error + Sync + Send + 'static;
 }
 
 impl<T> SessionResultExt for SessionResult<T> {
@@ -121,7 +121,7 @@ impl<T> SessionResultExt for SessionResult<T> {
 
     fn with_source<E>(self, source: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static,
+        E: core::error::Error + Sync + Send + 'static,
     {
         self.map_err(|e| e.with_source(source))
     }

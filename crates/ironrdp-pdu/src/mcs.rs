@@ -1180,7 +1180,7 @@ mod legacy {
 
     impl From<McsError> for io::Error {
         fn from(e: McsError) -> io::Error {
-            io::Error::new(io::ErrorKind::Other, format!("MCS Connection Sequence error: {e}"))
+            io::Error::other(format!("MCS Connection Sequence error: {e}"))
         }
     }
 }

@@ -86,7 +86,7 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
 
     println!("Past:\n{past_report}");
     println!("New:\n{report}");
-    println!("Diff: {:+}%", diff);
+    println!("Diff: {diff:+}%");
 
     // `GH_TOKEN` environment variable sanity checks
     match std::env::var_os("GH_TOKEN") {
@@ -122,7 +122,7 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
     writeln!(body, "{COMMENT_HEADER}")?;
     writeln!(body, "**Past**:\n{past_report}")?;
     writeln!(body, "**New**:\n{report}")?;
-    writeln!(body, "**Diff**: {:+.2}%", diff)?;
+    writeln!(body, "**Diff**: {diff:+.2}%")?;
     writeln!(body, "\n[this comment will be updated automatically]")?;
 
     let command = cmd!(sh, "gh api")

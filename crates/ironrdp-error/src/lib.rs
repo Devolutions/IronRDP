@@ -9,10 +9,10 @@ use alloc::boxed::Box;
 use core::fmt;
 
 #[cfg(feature = "std")]
-pub trait Source: std::error::Error + Sync + Send + 'static {}
+pub trait Source: core::error::Error + Sync + Send + 'static {}
 
 #[cfg(feature = "std")]
-impl<T> Source for T where T: std::error::Error + Sync + Send + 'static {}
+impl<T> Source for T where T: core::error::Error + Sync + Send + 'static {}
 
 #[cfg(not(feature = "std"))]
 pub trait Source: fmt::Display + fmt::Debug + Send + Sync + 'static {}
@@ -25,7 +25,7 @@ pub struct Error<Kind> {
     pub context: &'static str,
     pub kind: Kind,
     #[cfg(feature = "std")]
-    source: Option<Box<dyn std::error::Error + Sync + Send>>,
+    source: Option<Box<dyn core::error::Error + Sync + Send>>,
     #[cfg(all(not(feature = "std"), feature = "alloc"))]
     source: Option<Box<dyn Source>>,
 }
@@ -94,11 +94,11 @@ where
 }
 
 #[cfg(feature = "std")]
-impl<Kind> std::error::Error for Error<Kind>
+impl<Kind> core::error::Error for Error<Kind>
 where
-    Kind: std::error::Error,
+    Kind: core::error::Error,
 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         if let Some(source) = self.kind.source() {
             Some(source)
         } else {
@@ -115,10 +115,10 @@ where
 #[cfg(feature = "std")]
 impl<Kind> From<Error<Kind>> for std::io::Error
 where
-    Kind: std::error::Error + Send + Sync + 'static,
+    Kind: core::error::Error + Send + Sync + 'static,
 {
     fn from(error: Error<Kind>) -> Self {
-        Self::new(std::io::ErrorKind::Other, error)
+        Self::other(error)
     }
 }
 
@@ -127,10 +127,10 @@ pub struct ErrorReport<'a, Kind>(&'a Error<Kind>);
 #[cfg(feature = "std")]
 impl<Kind> fmt::Display for ErrorReport<'_, Kind>
 where
-    Kind: std::error::Error,
+    Kind: core::error::Error,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use std::error::Error;
+        use core::error::Error;
 
         write!(f, "{}", self.0)?;
 

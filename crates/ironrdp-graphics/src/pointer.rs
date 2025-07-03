@@ -372,11 +372,11 @@ impl ColorStrideReader {
 }
 
 fn bit_stride_size_align_u8(size_bits: usize) -> usize {
-    (size_bits + 7) / 8
+    size_bits.div_ceil(8)
 }
 
 fn bit_stride_size_align_u16(size_bits: usize) -> usize {
-    ((size_bits + 15) / 16) * 2
+    size_bits.div_ceil(16) * 2
 }
 
 /// Message-agnostic pointer data.

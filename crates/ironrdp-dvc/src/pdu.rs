@@ -272,7 +272,7 @@ impl fmt::Display for Cmd {
 
 impl From<Cmd> for String {
     fn from(cmd: Cmd) -> Self {
-        format!("{:?}", cmd)
+        format!("{cmd:?}")
     }
 }
 

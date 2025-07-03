@@ -128,10 +128,10 @@ pub fn plain_html_to_cf_html(fragment: &str) -> String {
 
     let end_html_pos = buffer.len();
 
-    let start_html_pos_value = format!("{:0>10}", start_html_pos);
-    let end_html_pos_value = format!("{:0>10}", end_html_pos);
-    let start_fragment_pos_value = format!("{:0>10}", start_fragment_pos);
-    let end_fragment_pos_value = format!("{:0>10}", end_fragment_pos);
+    let start_html_pos_value = format!("{start_html_pos:0>10}");
+    let end_html_pos_value = format!("{end_html_pos:0>10}");
+    let start_fragment_pos_value = format!("{start_fragment_pos:0>10}");
+    let end_fragment_pos_value = format!("{end_fragment_pos:0>10}");
 
     let mut replace_placeholder = |value_begin_idx: usize, header_value: &str| {
         // We know that: value_begin_idx + POS_PLACEHOLDER.len() < usize::MAX

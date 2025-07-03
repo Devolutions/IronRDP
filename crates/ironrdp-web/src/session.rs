@@ -1,8 +1,8 @@
 use core::cell::RefCell;
+use core::net::{Ipv4Addr, SocketAddrV4};
 use core::num::NonZeroU32;
 use core::time::Duration;
 use std::borrow::Cow;
-use std::net::{Ipv4Addr, SocketAddrV4};
 use std::rc::Rc;
 
 use anyhow::Context as _;
@@ -926,7 +926,7 @@ async fn connect(
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
     // In web browser environments, we do not have an easy access to the local address of the socket.
-    let dummy_client_addr = std::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899));
+    let dummy_client_addr = core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899));
 
     let mut connector = ClientConnector::new(config, dummy_client_addr);
 

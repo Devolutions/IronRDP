@@ -62,10 +62,8 @@ pub fn build(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
 
     // Modify the js file to get rid of the `URL` object.
     // Vite doesn't work properly with inlined urls in `new URL(url, import.meta.url)`.
-    let ironrdp_web_js_content = format!(
-        "import wasmUrl from './ironrdp_web_bg.wasm?url';\n\n{}",
-        ironrdp_web_js_content
-    );
+    let ironrdp_web_js_content =
+        format!("import wasmUrl from './ironrdp_web_bg.wasm?url';\n\n{ironrdp_web_js_content}");
     let ironrdp_web_js_content =
         ironrdp_web_js_content.replace("new URL('ironrdp_web_bg.wasm', import.meta.url)", "wasmUrl");
 

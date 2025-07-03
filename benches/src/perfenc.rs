@@ -41,7 +41,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let filename: String = args.free_from_str().context("missing RGBX input filename")?;
     let file = File::open(&filename)
         .await
-        .with_context(|| format!("Failed to open file: {}", filename))?;
+        .with_context(|| format!("Failed to open file: {filename}"))?;
 
     let mut flags = CmdFlags::all();
     let mut update_codecs = UpdateEncoderCodecs::new();
@@ -83,8 +83,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let ratio = total_enc as f64 / total_raw as f64;
     let percent = 100.0 - ratio * 100.0;
-    println!("Encoder: {:?}", encoder);
-    println!("Nb updates: {:?}", n_updates);
+    println!("Encoder: {encoder:?}");
+    println!("Nb updates: {n_updates:?}");
     println!(
         "Sum of bytes: {}/{} ({:.2}%)",
         bytesize::ByteSize(total_enc),

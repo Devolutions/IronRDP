@@ -85,12 +85,12 @@ impl Destination {
         let addr = addr.into();
 
         if let Some(idx) = addr.rfind(':') {
-            if let Ok(sock_addr) = addr.parse::<std::net::SocketAddr>() {
+            if let Ok(sock_addr) = addr.parse::<core::net::SocketAddr>() {
                 Ok(Self {
                     name: sock_addr.ip().to_string(),
                     port: sock_addr.port(),
                 })
-            } else if addr.parse::<std::net::Ipv6Addr>().is_ok() {
+            } else if addr.parse::<core::net::Ipv6Addr>().is_ok() {
                 Ok(Self {
                     name: addr,
                     port: RDP_DEFAULT_PORT,
@@ -314,7 +314,7 @@ impl Config {
         let codecs = match client_codecs_capabilities(&codecs) {
             Ok(codecs) => codecs,
             Err(help) => {
-                print!("{}", help);
+                print!("{help}");
                 std::process::exit(0);
             }
         };

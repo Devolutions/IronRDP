@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use core::net::SocketAddr;
 
 use anyhow::Result;
 use tokio_rustls::TlsAcceptor;
