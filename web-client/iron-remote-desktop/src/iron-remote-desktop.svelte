@@ -72,6 +72,7 @@
     let lastClipboardMonitorLoopError: Error | null = null;
 
     let componentDestroyed = false;
+    let runWhenFocusedQueue: (() => void)[] = [];
 
     /* Firefox-specific BEGIN */
 
@@ -173,13 +174,23 @@
         }
     }
 
+    function runWhenWindowFocused(fn: () => void) {
+        if (document.hasFocus()) {
+            fn();
+        } else {
+            runWhenFocusedQueue.push(fn);
+        }
+    }
+
     // This callback is required to update client clipboard state when remote side has changed.
     function onRemoteClipboardChanged(data: ClipboardData) {
         try {
             const mime_formats = clipboardDataToRecord(data);
             const clipboard_item = new ClipboardItem(mime_formats);
-            lastReceivedClipboardData = clipboardDataToClipboardItemsRecord(data);
-            navigator.clipboard.write([clipboard_item]);
+            runWhenWindowFocused(() => {
+                lastReceivedClipboardData = clipboardDataToClipboardItemsRecord(data);
+                navigator.clipboard.write([clipboard_item]);
+            });
         } catch (err) {
             console.error('Failed to set client clipboard: ' + err);
         }
@@ -445,6 +456,8 @@
 
         window.addEventListener('keydown', captureKeys, false);
         window.addEventListener('keyup', captureKeys, false);
+
+        window.addEventListener('focus', focusEventHandler);
     }
 
     function resetHostStyle() {
@@ -717,6 +730,13 @@
         inner.dispatchEvent(new CustomEvent('ready', { detail: result, bubbles: true, composed: true }));
     }
 
+    function focusEventHandler() {
+        while (runWhenFocusedQueue.length > 0) {
+            const fn = runWhenFocusedQueue.shift();
+            fn?.();
+        }
+    }
+
     onMount(async () => {
         loggingService.verbose = verbose === 'true';
         loggingService.info('Dom ready');
@@ -726,6 +746,7 @@
 
     onDestroy(() => {
         window.removeEventListener('resize', resizeHandler);
+        window.removeEventListener('focus', focusEventHandler);
         componentDestroyed = true;
     });
 </script>
