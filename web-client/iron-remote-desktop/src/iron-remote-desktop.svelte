@@ -66,8 +66,9 @@
     const CLIPBOARD_MONITORING_INTERVAL = 100; // ms
 
     let isClipboardApiSupported = false;
-    let lastClientClipboardItems = new Map<string, string | Uint8Array>();
-    let lastClientClipboardData: ClipboardData | null = null;
+    let lastClientClipboardItems: Record<string, string | Uint8Array> = {};
+    let lastReceivedClipboardData: Record<string, string | Uint8Array> = {};
+    let lastSentClipboardData: ClipboardData | null = null;
     let lastClipboardMonitorLoopError: Error | null = null;
 
     /* Firefox-specific BEGIN */
@@ -130,7 +131,7 @@
         return (evt.ctrlKey && evt.code === 'KeyV') || evt.code == 'Paste';
     }
 
-    // This function is required to convert `ClipboardData` to a object that can be used
+    // This function is required to convert `ClipboardData` to an object that can be used
     // with `ClipboardItem` API.
     function clipboardDataToRecord(data: ClipboardData): Record<string, Blob> {
         let result = {} as Record<string, Blob>;
@@ -145,11 +146,23 @@
         return result;
     }
 
+    function clipboardDataToClipboardItemsRecord(data: ClipboardData): Record<string, string | Uint8Array> {
+        let result = {} as Record<string, string | Uint8Array>;
+
+        for (const item of data.items()) {
+            let mime = item.mimeType();
+            result[mime] = item.value();
+        }
+
+        return result;
+    }
+
     // This callback is required to send initial clipboard state if available.
     function onForceClipboardUpdate() {
+        // TODO(Fix): lastSentClipboardData is nullptr.
         try {
-            if (lastClientClipboardData) {
-                remoteDesktopService.onClipboardChanged(lastClientClipboardData);
+            if (lastSentClipboardData) {
+                remoteDesktopService.onClipboardChanged(lastSentClipboardData);
             } else {
                 remoteDesktopService.onClipboardChangedEmpty();
             }
@@ -163,6 +176,7 @@
         try {
             const mime_formats = clipboardDataToRecord(data);
             const clipboard_item = new ClipboardItem(mime_formats);
+            lastReceivedClipboardData = clipboardDataToClipboardItemsRecord(data);
             navigator.clipboard.write([clipboard_item]);
         } catch (err) {
             console.error('Failed to set client clipboard: ' + err);
@@ -192,7 +206,7 @@
                 return;
             }
 
-            var values = new Map<string, string | Uint8Array>();
+            var values: Record<string, string | Uint8Array> = {};
             var sameValue = true;
 
             // Sadly, browsers build new `ClipboardItem` object for each `read` call,
@@ -221,14 +235,22 @@
                           );
                       };
 
-                const previousValue = lastClientClipboardItems.get(kind);
+                const previousValue = lastClientClipboardItems[kind];
 
                 if (!is_equal(previousValue, value)) {
+                    // When the local clipboard updates, we need to compare it with the last data received from the server.
+                    // If it's identical, the clipboard was updated with the server's data, so we shouldn't send this data
+                    // to the server.
+                    if (is_equal(lastReceivedClipboardData[kind], value)) {
+                        lastClientClipboardItems[kind] = lastReceivedClipboardData[kind];
+                    }
                     // One of mime types has changed, we need to update the clipboard cache
-                    sameValue = false;
+                    else {
+                        sameValue = false;
+                    }
                 }
 
-                values.set(kind, value);
+                values[kind] = value;
             }
 
             // Clipboard has changed, we need to acknowledge remote side about it.
@@ -238,7 +260,7 @@
                 let clipboardData = new module.ClipboardData();
 
                 // Iterate over `Record` type
-                values.forEach((value: string | Uint8Array, key: string) => {
+                Object.entries(values).forEach(([key, value]: [string, string | Uint8Array]) => {
                     // skip null/undefined values
                     if (value == null || value == undefined) {
                         return;
@@ -252,8 +274,9 @@
                 });
 
                 if (!clipboardData.isEmpty()) {
-                    lastClientClipboardData = clipboardData;
-                    remoteDesktopService.onClipboardChanged(clipboardData);
+                    lastSentClipboardData = clipboardData;
+                    // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
+                    await remoteDesktopService.onClipboardChanged(clipboardData);
                 }
             }
         } catch (err) {
