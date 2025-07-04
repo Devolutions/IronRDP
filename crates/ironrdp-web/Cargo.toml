@@ -38,6 +38,7 @@ ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-futures.path = "../ironrdp-futures"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 iron-remote-desktop.path = "../iron-remote-desktop"
+ironrdp-vmconnect.path = "../ironrdp-vmconnect"
 
 # WASM
 wasm-bindgen = "0.2"

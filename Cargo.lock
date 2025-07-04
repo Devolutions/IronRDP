@@ -1525,7 +1525,7 @@ dependencies = [
  "ironrdp",
  "ironrdp-cliprdr-native",
  "ironrdp-core",
- "sspi",
+ "sspi 0.16.0",
  "thiserror 1.0.69",
  "tracing",
  "tracing-subscriber",
@@ -2360,7 +2360,7 @@ dependencies = [
  "opus",
  "pico-args",
  "rand 0.8.5",
- "sspi",
+ "sspi 0.16.0",
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
@@ -2398,6 +2398,7 @@ dependencies = [
  "ironrdp-connector",
  "ironrdp-core",
  "ironrdp-pdu",
+ "ironrdp-vmconnect",
  "tracing",
 ]
 
@@ -2448,6 +2449,7 @@ dependencies = [
  "ironrdp-rdpsnd-native",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-vmconnect",
  "proc-exit",
  "raw-window-handle",
  "semver",
@@ -2512,7 +2514,7 @@ dependencies = [
  "picky-asn1-der",
  "picky-asn1-x509",
  "rand_core 0.6.4",
- "sspi",
+ "sspi 0.16.0",
  "tracing",
  "url",
 ]
@@ -2836,9 +2838,21 @@ dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
  "reqwest",
- "sspi",
+ "sspi 0.16.0",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "ironrdp-vmconnect"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "ironrdp-connector",
+ "ironrdp-core",
+ "ironrdp-pdu",
+ "sspi 0.15.14",
+ "tracing",
 ]
 
 [[package]]
@@ -2859,6 +2873,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-futures",
  "ironrdp-rdcleanpath",
+ "ironrdp-vmconnect",
  "js-sys",
  "png",
  "resize",
@@ -5073,6 +5088,50 @@ checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
  "der",
+]
+
+[[package]]
+name = "sspi"
+version = "0.15.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "214ee905dcdd4b7ab11404b616e58dc6944d80fe8592fbdc13abc87d7e2bff0a"
+dependencies = [
+ "async-dnssd",
+ "async-recursion",
+ "bitflags 2.9.1",
+ "byteorder",
+ "cfg-if",
+ "crypto-mac",
+ "futures",
+ "hmac",
+ "lazy_static",
+ "md-5",
+ "md4",
+ "num-bigint-dig",
+ "num-derive",
+ "num-traits",
+ "oid",
+ "picky",
+ "picky-asn1",
+ "picky-asn1-der",
+ "picky-asn1-x509",
+ "picky-krb",
+ "rand 0.8.5",
+ "rsa",
+ "rustls",
+ "serde",
+ "serde_derive",
+ "sha1",
+ "sha2",
+ "time",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "windows 0.61.3",
+ "windows-registry",
+ "windows-sys 0.60.2",
+ "zeroize",
 ]
 
 [[package]]
