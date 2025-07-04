@@ -747,7 +747,7 @@
     onDestroy(() => {
         window.removeEventListener('resize', resizeHandler);
         window.removeEventListener('focus', focusEventHandler);
-	componentDestroyed = true;
+        componentDestroyed = true;
     });
 </script>
 
