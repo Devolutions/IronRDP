@@ -71,6 +71,8 @@
     let lastSentClipboardData: ClipboardData | null = null;
     let lastClipboardMonitorLoopError: Error | null = null;
 
+    let componentDestroyed = false;
+
     /* Firefox-specific BEGIN */
 
     // See `ffRemoteClipboardData` variable docs below
@@ -185,12 +187,11 @@
 
     // Called periodically to monitor clipboard changes
     async function onMonitorClipboard() {
-        if (!document.hasFocus()) {
-            setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
-            return;
-        }
-
         try {
+            if (!document.hasFocus()) {
+                return;
+            }
+
             var value = await navigator.clipboard.read();
 
             // Clipboard is empty
@@ -291,7 +292,9 @@
                 lastClipboardMonitorLoopError = err;
             }
         } finally {
-            setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
+            if (!componentDestroyed) {
+                setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
+            }
         }
     }
 
@@ -723,6 +726,7 @@
 
     onDestroy(() => {
         window.removeEventListener('resize', resizeHandler);
+        componentDestroyed = true;
     });
 </script>
 
