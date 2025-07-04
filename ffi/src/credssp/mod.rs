@@ -4,6 +4,7 @@ pub mod network;
 #[diplomat::bridge]
 pub mod ffi {
 
+    use ironrdp::connector::credssp::CredsspSequenceTrait;
     use ironrdp::connector::ClientConnectorState;
 
     use super::network::ffi::{ClientState, CredsspProcessGenerator};
