@@ -55,7 +55,6 @@ impl CredsspSequenceTrait for VmCredsspSequence {
     }
 }
 
-
 /// The main difference between this and the `credssp::CredsspSequence` is that this sequence uses NTLM only
 /// No Kerberos or Negotiate, as Hyper-V does not support it
 impl VmCredsspSequence {
