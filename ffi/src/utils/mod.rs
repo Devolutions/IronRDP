@@ -4,9 +4,9 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
 
     #[diplomat::opaque]
-    pub struct VecVecU8(pub Vec<Vec<u8>>);
+    pub struct ServerCertChain(pub Vec<Vec<u8>>);
 
-    impl VecVecU8 {
+    impl ServerCertChain {
         pub fn get_len(&self) -> usize {
             self.0.len()
         }

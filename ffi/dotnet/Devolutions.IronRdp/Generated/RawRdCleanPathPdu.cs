@@ -16,9 +16,6 @@ public partial struct RdCleanPathPdu
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RdCleanPathPdu_new_request", ExactSpelling = true)]
-    public static unsafe extern RdcleanpathFfiResultBoxRdCleanPathPduBoxIronRdpError NewRequest(VecU8* x224Pdu, byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, OptionalString* pcb);
-
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RdCleanPathPdu_to_der", ExactSpelling = true)]
     public static unsafe extern RdcleanpathFfiResultBoxVecU8BoxIronRdpError ToDer(RdCleanPathPdu* self);
 
@@ -28,8 +25,14 @@ public partial struct RdCleanPathPdu
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RdCleanPathPdu_from_der", ExactSpelling = true)]
     public static unsafe extern RdcleanpathFfiResultBoxRdCleanPathPduBoxIronRdpError FromDer(byte* der, nuint derSz);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RdCleanPathPdu_into_enum", ExactSpelling = true)]
-    public static unsafe extern RdcleanpathFfiResultBoxRdCleanPathBoxIronRdpError IntoEnum(RdCleanPathPdu* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RdCleanPathPdu_get_x224_connection_pdu", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultBoxVecU8BoxIronRdpError GetX224ConnectionPdu(RdCleanPathPdu* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RdCleanPathPdu_get_server_cert_chain", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultBoxServerCertChainBoxIronRdpError GetServerCertChain(RdCleanPathPdu* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RdCleanPathPdu_get_server_addr", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultVoidBoxIronRdpError GetServerAddr(RdCleanPathPdu* self, DiplomatWriteable* serverAddr);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RdCleanPathPdu_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(RdCleanPathPdu* self);

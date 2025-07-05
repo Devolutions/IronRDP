@@ -11,20 +11,20 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class RdCleanPath: IDisposable
+public partial class ServerCertChain: IDisposable
 {
-    private unsafe Raw.RdCleanPath* _inner;
+    private unsafe Raw.ServerCertChain* _inner;
 
-    public RdCleanPathType Type
+    public nuint Len
     {
         get
         {
-            return GetType();
+            return GetLen();
         }
     }
 
     /// <summary>
-    /// Creates a managed <c>RdCleanPath</c> from a raw handle.
+    /// Creates a managed <c>ServerCertChain</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -32,59 +32,72 @@ public partial class RdCleanPath: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe RdCleanPath(Raw.RdCleanPath* handle)
+    public unsafe ServerCertChain(Raw.ServerCertChain* handle)
     {
         _inner = handle;
     }
 
-    /// <exception cref="IronRdpException"></exception>
-    /// <returns>
-    /// A <c>RdCleanPathType</c> allocated on C# side.
-    /// </returns>
-    public RdCleanPathType GetType()
+    public nuint GetLen()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("RdCleanPath");
+                throw new ObjectDisposedException("ServerCertChain");
             }
-            Raw.RdcleanpathFfiResultRdCleanPathTypeBoxIronRdpError result = Raw.RdCleanPath.GetType(_inner);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
-            }
-            Raw.RdCleanPathType retVal = result.Ok;
-            return (RdCleanPathType)retVal;
+            nuint retVal = Raw.ServerCertChain.GetLen(_inner);
+            return retVal;
         }
     }
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
-    /// A <c>RdCleanPathResponse</c> allocated on Rust side.
+    /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
-    public RdCleanPathResponse ToResponse()
+    public VecU8 GetVecu8(nuint index)
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("RdCleanPath");
+                throw new ObjectDisposedException("ServerCertChain");
             }
-            Raw.RdcleanpathFfiResultBoxRdCleanPathResponseBoxIronRdpError result = Raw.RdCleanPath.ToResponse(_inner);
+            Raw.UtilsFfiResultBoxVecU8BoxIronRdpError result = Raw.ServerCertChain.GetVecu8(_inner, index);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.RdCleanPathResponse* retVal = result.Ok;
-            return new RdCleanPathResponse(retVal);
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>BytesSlice</c> allocated on Rust side.
+    /// </returns>
+    public BytesSlice GetSlice(nuint index)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ServerCertChain");
+            }
+            Raw.UtilsFfiResultBoxBytesSliceBoxIronRdpError result = Raw.ServerCertChain.GetSlice(_inner, index);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.BytesSlice* retVal = result.Ok;
+            return new BytesSlice(retVal);
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.RdCleanPath* AsFFI()
+    public unsafe Raw.ServerCertChain* AsFFI()
     {
         return _inner;
     }
@@ -101,14 +114,14 @@ public partial class RdCleanPath: IDisposable
                 return;
             }
 
-            Raw.RdCleanPath.Destroy(_inner);
+            Raw.ServerCertChain.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~RdCleanPath()
+    ~ServerCertChain()
     {
         Dispose();
     }
