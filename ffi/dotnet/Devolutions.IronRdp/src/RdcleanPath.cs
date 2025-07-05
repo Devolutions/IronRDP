@@ -2,13 +2,13 @@ using System;
 
 public class RdcleanPathConfig
 {
-    public Uri Uri { get; private set; }
+    public Uri GatewayUri { get; private set; }
 
     public string  AuthToken { get; private set; }
 
     public RdcleanPathConfig(Uri url, string authToken)
     {
-        Uri = url;
+        GatewayUri = url;
         AuthToken = authToken;
     }
 }
