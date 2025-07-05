@@ -2,7 +2,13 @@
     import { currentSession, userInteractionService } from '../../services/session.service';
     import type { UserInteraction } from '../../../static/iron-remote-desktop';
     import type { Session } from '../../models/session';
-    import { preConnectionBlob, displayControl, kdcProxyUrl, init, vmConnect } from '../../../static/iron-remote-desktop-rdp';
+    import {
+        preConnectionBlob,
+        displayControl,
+        kdcProxyUrl,
+        init,
+        vmConnect,
+    } from '../../../static/iron-remote-desktop-rdp';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
     import { onMount } from 'svelte';
