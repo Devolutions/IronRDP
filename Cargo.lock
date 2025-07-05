@@ -2398,6 +2398,7 @@ dependencies = [
  "ironrdp-connector",
  "ironrdp-core",
  "ironrdp-pdu",
+ "ironrdp-vmconnect",
  "tracing",
 ]
 
@@ -2438,6 +2439,7 @@ dependencies = [
  "ironrdp-rdpsnd-native",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-vmconnect",
  "proc-exit",
  "raw-window-handle",
  "semver",
@@ -2816,6 +2818,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-vmconnect"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "ironrdp-connector",
+ "ironrdp-core",
+ "ironrdp-pdu",
+ "sspi",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-web"
 version = "0.0.0"
 dependencies = [
@@ -2833,6 +2847,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-futures",
  "ironrdp-rdcleanpath",
+ "ironrdp-vmconnect",
  "js-sys",
  "png",
  "resize",
