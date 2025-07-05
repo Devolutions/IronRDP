@@ -102,27 +102,4 @@ pub mod ffi {
             self.0.ok_or_else(|| "value is None".into())
         }
     }
-
-    #[diplomat::opaque]
-    pub struct OptionalString(pub(crate) Option<String>);
-
-    impl OptionalString {
-        pub fn is_some(&self) -> bool {
-            self.0.is_some()
-        }
-
-        pub fn new(value: &str) -> Box<OptionalString> {
-            Box::new(OptionalString(Some(value.to_owned())))
-        }
-
-        pub fn new_empty() -> Box<OptionalString> {
-            Box::new(OptionalString(None))
-        }
-    }
-}
-
-impl From<&ffi::OptionalString> for Option<String> {
-    fn from(value: &ffi::OptionalString) -> Self {
-        value.0.clone()
-    }
 }
