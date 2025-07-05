@@ -53,6 +53,9 @@ namespace Devolutions.IronRdp.src
 
         public override void Flush()
         {
+            // No need. the third parameter of SendAsync is set to true, which means the frame is sent immediately.
+            // Also, this method is not called in practice ever somehow. 
+            // However, since it's not blocking any functionality, we can leave it empty.
         }
 
         // Not supported
