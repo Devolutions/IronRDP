@@ -24,4 +24,5 @@ public enum IronRdpErrorKind
     IncorrectEnumType = 8,
     Clipboard = 9,
     WrongOS = 10,
+    MissingRequiredField = 11,
 }
