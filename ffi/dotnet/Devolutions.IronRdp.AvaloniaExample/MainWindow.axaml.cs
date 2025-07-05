@@ -120,7 +120,7 @@ public partial class MainWindow : Window
                     Debug.WriteLine("Connecting via WebSocket proxy");
                     (res, framed) = await Connection.ConnectWs(
                         config,
-                        new RdcleanPathConfig(new Uri(wsProxy), wsProxyToken),
+                        new RdCleanPathConfig(new Uri(wsProxy), wsProxyToken),
                         server,
                         factory);
                 }
