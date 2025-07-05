@@ -1,12 +1,12 @@
-using System;
+namespace Devolutions.IronRdp;
 
-public class RdcleanPathConfig
+public class RdCleanPathConfig
 {
     public Uri GatewayUri { get; private set; }
 
     public string  AuthToken { get; private set; }
 
-    public RdcleanPathConfig(Uri url, string authToken)
+    public RdCleanPathConfig(Uri url, string authToken)
     {
         GatewayUri = url;
         AuthToken = authToken;

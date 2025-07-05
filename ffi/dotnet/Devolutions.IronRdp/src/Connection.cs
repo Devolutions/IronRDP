@@ -35,11 +35,11 @@ public static class Connection
         return (result, framedSsl);
     }
 
-    public static async Task<(ConnectionResult, Framed<Stream>)> ConnectWs(Config config, RdcleanPathConfig rdcleanPathConfig, string serverName, CliprdrBackendFactory? factory, int port = 3389, CancellationToken token = default)
+    public static async Task<(ConnectionResult, Framed<Stream>)> ConnectWs(Config config, RdCleanPathConfig rdCleanPathConfig, string serverName, CliprdrBackendFactory? factory, int port = 3389, CancellationToken token = default)
     {
         var websocket = new ClientWebSocket();
 
-        await websocket.ConnectAsync(rdcleanPathConfig.Uri, token);
+        await websocket.ConnectAsync(rdCleanPathConfig.GatewayUri, token);
         var stream = new WebsocketStream(websocket);
         var framed = new Framed<Stream>(stream);
 
@@ -58,7 +58,7 @@ public static class Connection
 
         string destination = serverName + ":" + port;
 
-        var serverPublicKey = await ConnectRdCleanPath(framed, connector, destination, rdcleanPathConfig.AuthToken);
+        var serverPublicKey = await ConnectRdCleanPath(framed, connector, destination, rdCleanPathConfig.AuthToken);
 
         var result = await ConnectFinalize(serverName, connector, serverPublicKey, framed);
 

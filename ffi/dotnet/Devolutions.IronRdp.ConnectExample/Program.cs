@@ -32,7 +32,7 @@ namespace Devolutions.IronRdp.ConnectExample
                 {
                     (res, framed) = await Connection.ConnectWs(
                         buildConfig(serverName, username, password, domain, 1980, 1080),
-                        new RdcleanPathConfig(new Uri(wsProxy), wsProxyToken),
+                        new RdCleanPathConfig(new Uri(wsProxy), wsProxyToken),
                         serverName,
                         null);
                 }
