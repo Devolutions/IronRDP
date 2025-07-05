@@ -18,9 +18,9 @@ impl ironrdp::pdu::PduHint for RDCleanPathHint {
 
 #[diplomat::bridge]
 pub mod ffi {
+    use core::fmt::Write;
     use diplomat_runtime::DiplomatWriteable;
     use ironrdp::rdclean_path::der::asn1::OctetString;
-    use core::fmt::Write;
 
     use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::error::ValueConsumedError;
