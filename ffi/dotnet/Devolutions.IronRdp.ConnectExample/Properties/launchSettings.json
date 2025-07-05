@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "Devolutions.IronRdp.ConnectExample": {
+      "commandName": "Project",
+      "commandLineArgs": "--serverName 10.10.0.3 --username Administrator --password DevoLabs123! \\\r\n--proxy ws://localhost:7171/jet/rdp \\\r\n--proxyToken eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTAuMTAuMC4zOjMzODkiLCJkc3RfcHdkIjoiRGV2b0xhYnMxMjMhIiwiZHN0X3VzciI6IkFkbWluaXN0cmF0b3IiLCJleHAiOjE3NTEzMjcyOTAsImpldF9haWQiOiIyZjQyNmY2Yy01OThiLTRhYzktOTllNS00NzcxNzY4OWI2ZmUiLCJqZXRfYXAiOiJyZHAiLCJqZXRfY20iOiJmd2QiLCJqZXRfcmVjIjoibm9uZSIsImp0aSI6IjM2NjgzZTU5LWQ5NjUtNDkyNS1hMmNkLTBlNWNmZjUzNDhlZiIsIm5iZiI6MTc1MTMyNjM5MCwicHJ4X3B3ZCI6IkRldm9sYWJzMTIzISIsInByeF91c3IiOiJBZG1pbmlzdHJhdG9yQGFkLml0LWhlbHAubmluamEifQ.mfTBuXqFlqpL6zm6L798s7Q-aowPtC1HRtQt_IiXLiY3ToWLEckMRctr5dO_IZKxOMxI5bcK6dW3PgEL5XXksPesDHT8Ykt1rAmFtivCqL-iy68sGfUIkk8IDlbV5aRTrYXVXGPI7Ofj1XrKN3snvEUq95w8CYXRP3b5Yp-3vauM64oxGyGK9rlVmg3xoIuIthGGkMFWvRGYwLbzdNs8DcW2h_0Q4Yt2ZeXURPmO0SRTy1Kt7WOcNTsq6auXA1Hu6nTmVYTE0zERTUnWJF_W7iKQ4ggWY7KerAr03_SVxuxr9sI8Ah-Vx4FTv9VI9b5soo2vE8MLL6kMLpfABbHv_A\r\n",
+      "environmentVariables": {
+        "IRONRDP_LOG": "trace",
+        "IRONRDP_LOG_PATH": "C:\\\\dev\\\\IronRDP\\\\ironrdp-dotnet-ws.log"
+      }
+    }
+  }
+}
