@@ -1026,7 +1026,7 @@ where
     };
 
     debug_assert!(connector.next_pdu_hint().is_none());
-    let (rdcleanpath_req, mut connector): (ironrdp_rdcleanpath::RDCleanPathPdu, Box<dyn ConnectorCore>) =
+    let (rdcleanpath_request, mut connector): (ironrdp_rdcleanpath::RDCleanPathPdu, Box<dyn ConnectorCore>) =
         if let Some(PreconnectionBlobPayload::VmConnect(vm_id)) = pcb {
             let rdcleanpath_req = ironrdp_rdcleanpath::RDCleanPathPdu::new_request(
                 None,
@@ -1059,26 +1059,26 @@ where
             (rdcleanpath_req, Box::new(connector) as Box<dyn ConnectorCore>)
         };
 
-    let rdcleanpath_req = rdcleanpath_req
+    let rdcleanpath_request = rdcleanpath_request
         .to_der()
         .map_err(|e| connector::custom_err!("RDCleanPath request encode", e))?;
 
     framed
-        .write_all(&rdcleanpath_req)
+        .write_all(&rdcleanpath_request)
         .await
         .map_err(|e| connector::custom_err!("couldn’t write RDCleanPath request", e))?;
 
-    let rdcleanpath_res = framed
+    let rdcleanpath_result = framed
         .read_by_hint(&RDCLEANPATH_HINT)
         .await
         .map_err(|e| connector::custom_err!("read RDCleanPath request", e))?;
 
-    let rdcleanpath_res = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res)
+    let rdcleanpath_result = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_result)
         .map_err(|e| connector::custom_err!("RDCleanPath response decode", e))?;
 
-    debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
+    debug!(message = ?rdcleanpath_result, "Received RDCleanPath PDU");
 
-    let (x224_connection_response, server_cert_chain) = match rdcleanpath_res
+    let (x224_connection_response, server_cert_chain) = match rdcleanpath_result
         .into_enum()
         .map_err(|e| connector::custom_err!("invalid RDCleanPath PDU", e))?
     {
