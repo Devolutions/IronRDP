@@ -78,33 +78,30 @@ public static class Connection
         connector.StepNoInput(writeBuf);
         var x224Pdu = writeBuf.GetFilled();
 
-        var rdcleanPathReq = RdCleanPathPdu.NewRequest(
-            x224Pdu,
-            destination,
-            proxyAuth,
-            OptionalString.NewEmpty()
-        );
 
+        // Create RdCleanPathRequest
+        var rdCleanPathReqBuilder = RdCleanPathRequestBuilder.New();
+        rdCleanPathReqBuilder.WithX224Pdu(x224Pdu);
+        rdCleanPathReqBuilder.WithDestination(destination);
+        rdCleanPathReqBuilder.WithProxyAuth(proxyAuth);
+        var rdcleanPathReq = rdCleanPathReqBuilder.Build();
+
+        // Send RdCleanPathRequest
         var rdcleanPathPdu = rdcleanPathReq.ToDer();
         var bytes = Utils.VecU8ToByte(rdcleanPathPdu);
         await framed.Write(bytes);
 
+
+        // Read RdCleanPathResponse
         var pduHint = RdCleanPathPdu.GetHint();
 
         var pdu = await framed.ReadByHint(pduHint);
-        var rdcleanPathResponseDer = RdCleanPathPdu.FromDer(pdu);
-        var rdcleanPath = rdcleanPathResponseDer.IntoEnum();
-        if (rdcleanPath.GetType() != RdCleanPathType.Response)
-        {
-            throw new IronRdpLibException(IronRdpLibExceptionType.ConnectionFailed,
-                "RdCleanPath response is not a response type");
-        }
+        var rdCleanPathResponse = RdCleanPathPdu.FromDer(pdu);
 
-        var rdCleanPathResponse = rdcleanPath.ToResponse();
-
-        var x224ConnectionResponse = rdCleanPathResponse.GetX224ConnectionResponse();
+        var x224ConnectionResponse = rdCleanPathResponse.GetX224ConnectionPdu();
         var serverCertChain = rdCleanPathResponse.GetServerCertChain();
 
+        // Handle X224 connection response
         writeBuf.Clear();
         connector.Step(Utils.VecU8ToByte(x224ConnectionResponse), writeBuf);
 

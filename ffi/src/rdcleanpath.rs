@@ -18,45 +18,72 @@ impl ironrdp::pdu::PduHint for RDCleanPathHint {
 
 #[diplomat::bridge]
 pub mod ffi {
-    use core::fmt::Write;
-    use diplomat_runtime::DiplomatWriteable;
-    use ironrdp::rdclean_path::der::asn1::OctetString;
 
     use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::error::ValueConsumedError;
-    use crate::utils::ffi::{OptionalString, VecU8, VecVecU8};
+    use crate::utils::ffi::{ServerCertChain, VecU8};
+    use core::fmt::Write;
 
     #[diplomat::opaque]
-    pub struct RdCleanPathPdu(pub Option<ironrdp::rdclean_path::RDCleanPathPdu>);
+    pub struct RdCleanPathPdu(pub ironrdp::rdclean_path::RDCleanPathPdu);
 
-    impl RdCleanPathPdu {
-        pub fn new_request(
-            x224_pdu: &VecU8,
-            destination: &str,
-            proxy_auth: &str,
-            pcb: &OptionalString,
-        ) -> Result<Box<RdCleanPathPdu>, Box<IronRdpError>> {
-            let x224_pdu = &x224_pdu.0;
-            let destination = destination.to_owned();
-            let proxy_auth = proxy_auth.to_owned();
+    #[diplomat::opaque]
+    pub struct RdCleanPathRequestBuilder {
+        x224_pdu: Option<Vec<u8>>,
+        destination: Option<String>,
+        proxy_auth: Option<String>,
+        pcb: Option<String>,
+    }
 
-            let cleanpath_pdu = ironrdp::rdclean_path::RDCleanPathPdu::new_request(
-                x224_pdu.to_owned(),
+    impl RdCleanPathRequestBuilder {
+        pub fn new() -> Box<RdCleanPathRequestBuilder> {
+            Box::new(RdCleanPathRequestBuilder {
+                x224_pdu: None,
+                destination: None,
+                proxy_auth: None,
+                pcb: None,
+            })
+        }
+
+        pub fn with_x224_pdu(&mut self, x224_pdu: &VecU8) {
+            self.x224_pdu = Some(x224_pdu.0.clone());
+        }
+
+        pub fn with_destination(&mut self, destination: &str) {
+            self.destination = Some(destination.to_owned());
+        }
+
+        pub fn with_proxy_auth(&mut self, proxy_auth: &str) {
+            self.proxy_auth = Some(proxy_auth.to_owned());
+        }
+
+        pub fn with_pcb(&mut self, pcb: &str) {
+            self.pcb = Some(pcb.to_owned());
+        }
+
+        pub fn build(&self) -> Result<Box<RdCleanPathPdu>, Box<IronRdpError>> {
+            let RdCleanPathRequestBuilder {
+                x224_pdu,
                 destination,
                 proxy_auth,
-                pcb.into(),
+                pcb,
+            } = self;
+
+            let request = ironrdp::rdclean_path::RDCleanPathPdu::new_request(
+                x224_pdu.to_owned().ok_or(IronRdpErrorKind::MissingRequiredField)?,
+                destination.to_owned().ok_or(IronRdpErrorKind::MissingRequiredField)?,
+                proxy_auth.to_owned().ok_or(IronRdpErrorKind::MissingRequiredField)?,
+                pcb.to_owned(),
             )
             .map_err(|_| IronRdpErrorKind::EncodeError)?;
 
-            Ok(Box::new(RdCleanPathPdu(Some(cleanpath_pdu))))
+            Ok(Box::new(RdCleanPathPdu(request)))
         }
+    }
 
+    impl RdCleanPathPdu {
         pub fn to_der(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
-            let Some(pdu) = self.0.as_ref() else {
-                return Err(ValueConsumedError::for_item("RdCleanPathPdu").into());
-            };
-
-            let der = pdu.to_der().map_err(|_| IronRdpErrorKind::EncodeError)?;
+            let der = self.0.to_der().map_err(|_| IronRdpErrorKind::EncodeError)?;
             Ok(Box::new(VecU8(der)))
         }
 
@@ -67,93 +94,43 @@ pub mod ffi {
         pub fn from_der(der: &[u8]) -> Result<Box<RdCleanPathPdu>, Box<IronRdpError>> {
             let pdu =
                 ironrdp::rdclean_path::RDCleanPathPdu::from_der(der).map_err(|_| IronRdpErrorKind::DecodeError)?;
-            Ok(Box::new(RdCleanPathPdu(Some(pdu))))
+            Ok(Box::new(RdCleanPathPdu(pdu)))
         }
 
-        pub fn into_enum(&mut self) -> Result<Box<RdCleanPath>, Box<IronRdpError>> {
-            let Some(pdu) = self.0.take() else {
+        pub fn get_x224_connection_pdu(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let Some(x224_pdu_response) = self.0.x224_connection_pdu.as_ref() else {
                 return Err(ValueConsumedError::for_item("RdCleanPathPdu").into());
             };
 
-            let rdclean_path = pdu
-                .into_enum()
-                .map(|rd_clean_path| Box::new(RdCleanPath(Some(rd_clean_path))))
-                .map_err(|_| IronRdpErrorKind::EncodeError)?;
+            let result = x224_pdu_response.as_bytes().to_vec();
 
-            Ok(rdclean_path)
-        }
-    }
-
-    #[diplomat::opaque]
-    pub struct RdCleanPath(pub Option<ironrdp::rdclean_path::RDCleanPath>);
-
-    #[diplomat::opaque]
-    pub struct RdCleanPathResponse {
-        x224_connection_response: OctetString,
-        server_cert_chain: Vec<OctetString>,
-        server_addr: String,
-    }
-
-    impl RdCleanPathResponse {
-        pub fn get_x224_connection_response(&self) -> Box<VecU8> {
-            VecU8::from_bytes(self.x224_connection_response.as_bytes())
+            Ok(Box::new(VecU8(result)))
         }
 
-        pub fn get_server_cert_chain(&self) -> Box<VecVecU8> {
-            let vecs = self
-                .server_cert_chain
+        pub fn get_server_cert_chain(&self) -> Result<Box<ServerCertChain>, Box<IronRdpError>> {
+            let Some(server_cert_chain) = self.0.server_cert_chain.as_ref() else {
+                return Err(ValueConsumedError::for_item("ServerCertChain").into());
+            };
+
+            let vecs = server_cert_chain
                 .iter()
                 .map(|cert| cert.as_bytes().to_vec())
                 .collect::<Vec<_>>();
 
-            Box::new(VecVecU8(vecs))
+            Ok(Box::new(ServerCertChain(vecs)))
         }
 
-        pub fn get_server_addr(&self, server_addr: &mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
-            write!(server_addr, "{}", self.server_addr).map_err(|_| IronRdpErrorKind::IO)?;
+        pub fn get_server_addr(
+            &self,
+            server_addr: &mut diplomat_runtime::DiplomatWriteable,
+        ) -> Result<(), Box<IronRdpError>> {
+            let Some(server_addr_str) = self.0.server_addr.as_ref() else {
+                return Err(ValueConsumedError::for_item("server_addr").into());
+            };
+
+            write!(server_addr, "{server_addr_str}").map_err(|_| IronRdpErrorKind::IO)?;
 
             Ok(())
-        }
-    }
-
-    pub enum RdCleanPathType {
-        Request,
-        Response,
-        Error,
-    }
-
-    impl RdCleanPath {
-        pub fn get_type(&self) -> Result<RdCleanPathType, Box<IronRdpError>> {
-            let value = self
-                .0
-                .as_ref()
-                .ok_or_else(|| ValueConsumedError::for_item("RdCleanPath"))?;
-
-            Ok(match value {
-                ironrdp::rdclean_path::RDCleanPath::Request { .. } => RdCleanPathType::Request,
-                ironrdp::rdclean_path::RDCleanPath::Response { .. } => RdCleanPathType::Response,
-                ironrdp::rdclean_path::RDCleanPath::Err(_) => RdCleanPathType::Error,
-            })
-        }
-
-        pub fn to_response(&mut self) -> Result<Box<RdCleanPathResponse>, Box<IronRdpError>> {
-            let value = self
-                .0
-                .take()
-                .ok_or_else(|| ValueConsumedError::for_item("RdCleanPath"))?;
-
-            match value {
-                ironrdp::rdclean_path::RDCleanPath::Response {
-                    x224_connection_response,
-                    server_cert_chain,
-                    server_addr,
-                } => Ok(Box::new(RdCleanPathResponse {
-                    x224_connection_response,
-                    server_cert_chain,
-                    server_addr,
-                })),
-                _ => Err(IronRdpErrorKind::IncorrectEnumType.into()),
-            }
         }
     }
 }

@@ -12,13 +12,13 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct RdcleanpathFfiResultRdCleanPathTypeBoxIronRdpError
+public partial struct RdcleanpathFfiResultBoxServerCertChainBoxIronRdpError
 {
     [StructLayout(LayoutKind.Explicit)]
     private unsafe struct InnerUnion
     {
         [FieldOffset(0)]
-        internal RdCleanPathType ok;
+        internal ServerCertChain* ok;
         [FieldOffset(0)]
         internal IronRdpError* err;
     }
@@ -28,7 +28,7 @@ public partial struct RdcleanpathFfiResultRdCleanPathTypeBoxIronRdpError
     [MarshalAs(UnmanagedType.U1)]
     public bool isOk;
 
-    public unsafe RdCleanPathType Ok
+    public unsafe ServerCertChain* Ok
     {
         get
         {

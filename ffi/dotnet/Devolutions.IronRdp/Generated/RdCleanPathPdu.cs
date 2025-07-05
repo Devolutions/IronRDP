@@ -15,6 +15,30 @@ public partial class RdCleanPathPdu: IDisposable
 {
     private unsafe Raw.RdCleanPathPdu* _inner;
 
+    public string ServerAddr
+    {
+        get
+        {
+            return GetServerAddr();
+        }
+    }
+
+    public ServerCertChain ServerCertChain
+    {
+        get
+        {
+            return GetServerCertChain();
+        }
+    }
+
+    public VecU8 X224ConnectionPdu
+    {
+        get
+        {
+            return GetX224ConnectionPdu();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>RdCleanPathPdu</c> from a raw handle.
     /// </summary>
@@ -27,46 +51,6 @@ public partial class RdCleanPathPdu: IDisposable
     public unsafe RdCleanPathPdu(Raw.RdCleanPathPdu* handle)
     {
         _inner = handle;
-    }
-
-    /// <exception cref="IronRdpException"></exception>
-    /// <returns>
-    /// A <c>RdCleanPathPdu</c> allocated on Rust side.
-    /// </returns>
-    public static RdCleanPathPdu NewRequest(VecU8 x224Pdu, string destination, string proxyAuth, OptionalString pcb)
-    {
-        unsafe
-        {
-            byte[] destinationBuf = DiplomatUtils.StringToUtf8(destination);
-            byte[] proxyAuthBuf = DiplomatUtils.StringToUtf8(proxyAuth);
-            nuint destinationBufLength = (nuint)destinationBuf.Length;
-            nuint proxyAuthBufLength = (nuint)proxyAuthBuf.Length;
-            Raw.VecU8* x224PduRaw;
-            x224PduRaw = x224Pdu.AsFFI();
-            if (x224PduRaw == null)
-            {
-                throw new ObjectDisposedException("VecU8");
-            }
-            Raw.OptionalString* pcbRaw;
-            pcbRaw = pcb.AsFFI();
-            if (pcbRaw == null)
-            {
-                throw new ObjectDisposedException("OptionalString");
-            }
-            fixed (byte* destinationBufPtr = destinationBuf)
-            {
-                fixed (byte* proxyAuthBufPtr = proxyAuthBuf)
-                {
-                    Raw.RdcleanpathFfiResultBoxRdCleanPathPduBoxIronRdpError result = Raw.RdCleanPathPdu.NewRequest(x224PduRaw, destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, pcbRaw);
-                    if (!result.isOk)
-                    {
-                        throw new IronRdpException(new IronRdpError(result.Err));
-                    }
-                    Raw.RdCleanPathPdu* retVal = result.Ok;
-                    return new RdCleanPathPdu(retVal);
-                }
-            }
-        }
     }
 
     /// <exception cref="IronRdpException"></exception>
@@ -127,9 +111,9 @@ public partial class RdCleanPathPdu: IDisposable
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
-    /// A <c>RdCleanPath</c> allocated on Rust side.
+    /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
-    public RdCleanPath IntoEnum()
+    public VecU8 GetX224ConnectionPdu()
     {
         unsafe
         {
@@ -137,13 +121,73 @@ public partial class RdCleanPathPdu: IDisposable
             {
                 throw new ObjectDisposedException("RdCleanPathPdu");
             }
-            Raw.RdcleanpathFfiResultBoxRdCleanPathBoxIronRdpError result = Raw.RdCleanPathPdu.IntoEnum(_inner);
+            Raw.RdcleanpathFfiResultBoxVecU8BoxIronRdpError result = Raw.RdCleanPathPdu.GetX224ConnectionPdu(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.RdCleanPath* retVal = result.Ok;
-            return new RdCleanPath(retVal);
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ServerCertChain</c> allocated on Rust side.
+    /// </returns>
+    public ServerCertChain GetServerCertChain()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RdCleanPathPdu");
+            }
+            Raw.RdcleanpathFfiResultBoxServerCertChainBoxIronRdpError result = Raw.RdCleanPathPdu.GetServerCertChain(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ServerCertChain* retVal = result.Ok;
+            return new ServerCertChain(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public void GetServerAddr(DiplomatWriteable serverAddr)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RdCleanPathPdu");
+            }
+            Raw.RdcleanpathFfiResultVoidBoxIronRdpError result = Raw.RdCleanPathPdu.GetServerAddr(_inner, &serverAddr);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public string GetServerAddr()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RdCleanPathPdu");
+            }
+            DiplomatWriteable writeable = new DiplomatWriteable();
+            Raw.RdcleanpathFfiResultVoidBoxIronRdpError result = Raw.RdCleanPathPdu.GetServerAddr(_inner, &writeable);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            string retVal = writeable.ToUnicode();
+            writeable.Dispose();
+            return retVal;
         }
     }
 
