@@ -13,14 +13,6 @@ use std::io;
 use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 
-#[cfg(feature = "reqwest")]
-pub trait AsyncSendableNetworkClient: Send + Sync {
-    fn send<'a>(
-        &'a mut self,
-        network_request: &'a sspi::NetworkRequest,
-    ) -> Pin<Box<dyn core::future::Future<Output = ironrdp_connector::ConnectorResult<Vec<u8>>> + Send + 'a>>;
-}
-
 pub type TokioFramed<S> = Framed<TokioStream<S>>;
 
 pub fn split_tokio_framed<S>(framed: TokioFramed<S>) -> (TokioFramed<ReadHalf<S>>, TokioFramed<WriteHalf<S>>)

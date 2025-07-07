@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use url::Url;
 
-use crate::{AsyncNetworkClient, AsyncSendableNetworkClient};
+use crate::AsyncNetworkClient;
 
 pub struct ReqwestNetworkClient {
     client: Option<Client>,
@@ -20,24 +20,7 @@ impl AsyncNetworkClient for ReqwestNetworkClient {
         &'a mut self,
         request: &'a sspi::generator::NetworkRequest,
     ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
-        AsyncSendableNetworkClient::send(self, request)
-    }
-}
-
-impl AsyncSendableNetworkClient for ReqwestNetworkClient {
-    fn send<'a>(
-        &'a mut self,
-        request: &'a sspi::generator::NetworkRequest,
-    ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + Send + 'a>> {
-        Box::pin(async move {
-            match &request.protocol {
-                sspi::network_client::NetworkProtocol::Tcp => self.send_tcp(&request.url, &request.data).await,
-                sspi::network_client::NetworkProtocol::Udp => self.send_udp(&request.url, &request.data).await,
-                sspi::network_client::NetworkProtocol::Http | sspi::network_client::NetworkProtocol::Https => {
-                    self.send_http(&request.url, &request.data).await
-                }
-            }
-        })
+        ReqwestNetworkClient::send(self, request)
     }
 }
 
@@ -54,6 +37,21 @@ impl Default for ReqwestNetworkClient {
 }
 
 impl ReqwestNetworkClient {
+    pub fn send<'a>(
+        &'a mut self,
+        request: &'a sspi::generator::NetworkRequest,
+    ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async move {
+            match &request.protocol {
+                sspi::network_client::NetworkProtocol::Tcp => self.send_tcp(&request.url, &request.data).await,
+                sspi::network_client::NetworkProtocol::Udp => self.send_udp(&request.url, &request.data).await,
+                sspi::network_client::NetworkProtocol::Http | sspi::network_client::NetworkProtocol::Https => {
+                    self.send_http(&request.url, &request.data).await
+                }
+            }
+        })
+    }
+
     async fn send_tcp(&self, url: &Url, data: &[u8]) -> ConnectorResult<Vec<u8>> {
         let addr = format!("{}:{}", url.host_str().unwrap_or_default(), url.port().unwrap_or(88));
 

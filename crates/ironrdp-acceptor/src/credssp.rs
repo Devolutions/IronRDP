@@ -159,9 +159,12 @@ impl<'a> CredsspSequence<'a> {
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
         let (ts_request, next_state) = match result {
-            Ok(ServerState::ReplyNeeded(ts_request)) => (Some(Box::new(ts_request)), CredsspState::Ongoing),
+            Ok(ServerState::ReplyNeeded(ts_request)) => (Some(ts_request), CredsspState::Ongoing),
             Ok(ServerState::Finished(_id)) => (None, CredsspState::Finished),
-            Err(err) => (err.ts_request, CredsspState::ServerError(err.error)),
+            Err(err) => (
+                err.ts_request.map(|ts_request| *ts_request),
+                CredsspState::ServerError(err.error),
+            ),
         };
 
         self.state = next_state;
