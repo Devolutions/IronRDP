@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.5.1...ironrdp-tokio-v0.6.0)] - 2025-07-08
+
+### <!-- 1 -->Features
+
+- [**breaking**] Update sspi dependency (#839) ([33530212c4](https://github.com/Devolutions/IronRDP/commit/33530212c42bf28c875ac078ed2408657831b417)) 
+
+  Newer version of sspi adds support for server-side Kerberos.
+  This is relevant for the ironrdp-acceptor crate.
+
+
+
 ## [[0.5.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.5.0...ironrdp-tokio-v0.5.1)] - 2025-07-08
 
 ### <!-- 1 -->Features
