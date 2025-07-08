@@ -5,10 +5,10 @@ const RDCLEANPATH_HINT: RDCleanPathHint = RDCleanPathHint;
 
 impl ironrdp::pdu::PduHint for RDCleanPathHint {
     fn find_size(&self, bytes: &[u8]) -> ironrdp::core::DecodeResult<Option<(bool, usize)>> {
-        match ironrdp::rdclean_path::RDCleanPathPdu::detect(bytes) {
-            ironrdp::rdclean_path::DetectionResult::Detected { total_length, .. } => Ok(Some((true, total_length))),
-            ironrdp::rdclean_path::DetectionResult::NotEnoughBytes => Ok(None),
-            ironrdp::rdclean_path::DetectionResult::Failed => Err(ironrdp::core::other_err!(
+        match ironrdp_rdcleanpath::RDCleanPathPdu::detect(bytes) {
+            ironrdp_rdcleanpath::DetectionResult::Detected { total_length, .. } => Ok(Some((true, total_length))),
+            ironrdp_rdcleanpath::DetectionResult::NotEnoughBytes => Ok(None),
+            ironrdp_rdcleanpath::DetectionResult::Failed => Err(ironrdp::core::other_err!(
                 "RDCleanPathHint",
                 "detection failed (invalid PDU)"
             )),
@@ -25,7 +25,7 @@ pub mod ffi {
     use core::fmt::Write;
 
     #[diplomat::opaque]
-    pub struct RdCleanPathPdu(pub ironrdp::rdclean_path::RDCleanPathPdu);
+    pub struct RdCleanPathPdu(pub ironrdp_rdcleanpath::RDCleanPathPdu);
 
     #[diplomat::opaque]
     pub struct RdCleanPathRequestBuilder {
@@ -69,7 +69,7 @@ pub mod ffi {
                 pcb,
             } = self;
 
-            let request = ironrdp::rdclean_path::RDCleanPathPdu::new_request(
+            let request = ironrdp_rdcleanpath::RDCleanPathPdu::new_request(
                 x224_pdu.to_owned().ok_or(IronRdpErrorKind::MissingRequiredField)?,
                 destination.to_owned().ok_or(IronRdpErrorKind::MissingRequiredField)?,
                 proxy_auth.to_owned().ok_or(IronRdpErrorKind::MissingRequiredField)?,
@@ -93,7 +93,7 @@ pub mod ffi {
 
         pub fn from_der(der: &[u8]) -> Result<Box<RdCleanPathPdu>, Box<IronRdpError>> {
             let pdu =
-                ironrdp::rdclean_path::RDCleanPathPdu::from_der(der).map_err(|_| IronRdpErrorKind::DecodeError)?;
+                ironrdp_rdcleanpath::RDCleanPathPdu::from_der(der).map_err(|_| IronRdpErrorKind::DecodeError)?;
             Ok(Box::new(RdCleanPathPdu(pdu)))
         }
 

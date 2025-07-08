@@ -14,9 +14,10 @@ doctest = false
 [dependencies]
 diplomat = "0.7"
 diplomat-runtime = "0.7"
-ironrdp = { path = "../crates/ironrdp", features = ["session", "connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol","rdcleanpath"] }
+ironrdp = { path = "../crates/ironrdp", features = ["session", "connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol"] }
 ironrdp-cliprdr-native.path = "../crates/ironrdp-cliprdr-native"
 ironrdp-core = { path = "../crates/ironrdp-core", features = ["alloc"] }
+ironrdp-rdcleanpath = { path = "../crates/ironrdp-rdcleanpath" }
 sspi = { version = "0.16", features = ["network_client"] }
 thiserror = "1"
 tracing = { version = "0.1", features = ["log"] }

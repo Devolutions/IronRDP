@@ -63,7 +63,3 @@ pub use ironrdp_session as session;
 #[cfg(feature = "svc")]
 #[doc(inline)]
 pub use ironrdp_svc as svc;
-
-#[cfg(feature = "rdcleanpath")]
-#[doc(inline)]  
-pub use ironrdp_rdcleanpath as rdclean_path;
