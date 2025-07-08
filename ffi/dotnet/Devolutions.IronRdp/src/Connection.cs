@@ -1,24 +1,21 @@
-using System.Diagnostics;
-using Devolutions.IronRdp.src;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
-using System.Net.WebSockets;
-using System.Security.Cryptography.X509Certificates;
 
 namespace Devolutions.IronRdp;
 
 public static class Connection
 {
-    public static async Task<(ConnectionResult, Framed<Stream>)> Connect(Config config, string serverName,
+    public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName,
         CliprdrBackendFactory? factory, int port = 3389)
     {
         var client = await CreateTcpConnection(serverName, port);
-        var clientAddr = client.Client.LocalEndPoint?.ToString();
+        string clientAddr = client.Client.LocalEndPoint.ToString();
+        Console.WriteLine(clientAddr);
 
         var framed = new Framed<NetworkStream>(client.GetStream());
 
-        var connector = ClientConnector.New(config, clientAddr!);
+        var connector = ClientConnector.New(config, clientAddr);
 
         connector.WithDynamicChannelDisplayControl();
 
@@ -29,93 +26,13 @@ public static class Connection
         }
 
         await ConnectBegin(framed, connector);
-        (var serverPublicKey,Framed<Stream> framedSsl) = await SecurityUpgrade(framed, connector);
+        var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector);
         var result = await ConnectFinalize(serverName, connector, serverPublicKey, framedSsl);
 
         return (result, framedSsl);
     }
 
-    public static async Task<(ConnectionResult, Framed<Stream>)> ConnectWs(Config config, RdCleanPathConfig rdCleanPathConfig, string serverName, CliprdrBackendFactory? factory, int port = 3389, CancellationToken token = default)
-    {
-        var websocket = new ClientWebSocket();
-
-        await websocket.ConnectAsync(rdCleanPathConfig.GatewayUri, token);
-        var stream = new WebsocketStream(websocket);
-        var framed = new Framed<Stream>(stream);
-
-        var client = await CreateTcpConnection(serverName, port);
-        var clientAddr = client.Client.LocalEndPoint?.ToString();
-
-        var connector = ClientConnector.New(config, clientAddr!);
-
-        connector.WithDynamicChannelDisplayControl();
-
-        if (factory != null)
-        {
-            var cliprdr = factory.BuildCliprdr();
-            connector.AttachStaticCliprdr(cliprdr);
-        }
-
-        string destination = serverName + ":" + port;
-
-        var serverPublicKey = await ConnectRdCleanPath(framed, connector, destination, rdCleanPathConfig.AuthToken);
-
-        var result = await ConnectFinalize(serverName, connector, serverPublicKey, framed);
-
-
-        return (result, framed);
-    }
-
-    private static async Task<byte[]> ConnectRdCleanPath<S>(
-        Framed<S> framed,
-        ClientConnector connector,
-        string destination,
-        string proxyAuth
-    ) 
-    where S : Stream
-    {
-        var writeBuf = WriteBuf.New();
-        connector.StepNoInput(writeBuf);
-        var x224Pdu = writeBuf.GetFilled();
-
-
-        // Create RdCleanPathRequest
-        var rdCleanPathReqBuilder = RdCleanPathRequestBuilder.New();
-        rdCleanPathReqBuilder.WithX224Pdu(x224Pdu);
-        rdCleanPathReqBuilder.WithDestination(destination);
-        rdCleanPathReqBuilder.WithProxyAuth(proxyAuth);
-        var rdcleanPathReq = rdCleanPathReqBuilder.Build();
-
-        // Send RdCleanPathRequest
-        var rdcleanPathPdu = rdcleanPathReq.ToDer();
-        var bytes = Utils.VecU8ToByte(rdcleanPathPdu);
-        await framed.Write(bytes);
-
-
-        // Read RdCleanPathResponse
-        var pduHint = RdCleanPathPdu.GetHint();
-
-        var pdu = await framed.ReadByHint(pduHint);
-        var rdCleanPathResponse = RdCleanPathPdu.FromDer(pdu);
-
-        var x224ConnectionResponse = rdCleanPathResponse.GetX224ConnectionPdu();
-        var serverCertChain = rdCleanPathResponse.GetServerCertChain();
-
-        // Handle X224 connection response
-        writeBuf.Clear();
-        connector.Step(Utils.VecU8ToByte(x224ConnectionResponse), writeBuf);
-
-        var serverCertVec = serverCertChain.GetVecu8(0);
-        var serverCertByte = Utils.VecU8ToByte(serverCertVec);
-        var serverCert = new X509Certificate2(serverCertByte);
-        var serverPublicKey = serverCert.GetPublicKey();
-
-        connector.MarkSecurityUpgradeAsDone();
-
-        return serverPublicKey;
-    }
-
-    private static async Task<(byte[], Framed<Stream>)> SecurityUpgrade(Framed<NetworkStream> framed,
+    private static async Task<(byte[], Framed<SslStream>)> SecurityUpgrade(Framed<NetworkStream> framed,
         ClientConnector connector)
     {
         var (streamRequireUpgrade, _) = framed.GetInner();
@@ -130,7 +47,7 @@ public static class Connection
             AllowTlsResume = false
         });
         var serverPublicKey = await promise.Task;
-        Framed<Stream> framedSsl = new(sslStream);
+        Framed<SslStream> framedSsl = new(sslStream);
         connector.MarkSecurityUpgradeAsDone();
 
         return (serverPublicKey, framedSsl);
@@ -146,18 +63,18 @@ public static class Connection
     }
 
 
-    private static async Task<ConnectionResult> ConnectFinalize<S>(string serverName, ClientConnector connector,
-        byte[] serverPubKey, Framed<S> upgradedFramed) where S : System.IO.Stream
+    private static async Task<ConnectionResult> ConnectFinalize(string serverName, ClientConnector connector,
+        byte[] serverPubKey, Framed<SslStream> framedSsl)
     {
         var writeBuf2 = WriteBuf.New();
         if (connector.ShouldPerformCredssp())
         {
-            await PerformCredsspSteps(connector, serverName, writeBuf2, upgradedFramed, serverPubKey);
+            await PerformCredsspSteps(connector, serverName, writeBuf2, framedSsl, serverPubKey);
         }
 
         while (!connector.GetDynState().IsTerminal())
         {
-            await SingleSequenceStep(connector, writeBuf2, upgradedFramed);
+            await SingleSequenceStep(connector, writeBuf2, framedSsl);
         }
 
         ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();
@@ -166,12 +83,14 @@ public static class Connection
         {
             return state.GetConnectedResult();
         }
-
-        throw new IronRdpLibException(IronRdpLibExceptionType.ConnectionFailed, "Connection failed");
+        else
+        {
+            throw new IronRdpLibException(IronRdpLibExceptionType.ConnectionFailed, "Connection failed");
+        }
     }
 
-    private static async Task PerformCredsspSteps<S>(ClientConnector connector, string serverName, WriteBuf writeBuf,
-        Framed<S> framedSsl, byte[] serverpubkey) where S : Stream
+    private static async Task PerformCredsspSteps(ClientConnector connector, string serverName, WriteBuf writeBuf,
+        Framed<SslStream> framedSsl, byte[] serverpubkey)
     {
         var credsspSequenceInitResult = CredsspSequence.Init(connector, serverName, serverpubkey, null);
         var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
@@ -308,7 +227,6 @@ public static class Connection
 
         return client;
     }
-
 }
 
 public static class Utils

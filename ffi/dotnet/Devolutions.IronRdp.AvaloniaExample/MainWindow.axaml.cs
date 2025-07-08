@@ -7,7 +7,6 @@ using Avalonia.Threading;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.IO;
 using System.Net.Security;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -23,7 +22,7 @@ public partial class MainWindow : Window
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
     ActiveStage? _activeStage;
     DecodedImage? _decodedImage;
-    Framed<Stream>? _framed;
+    Framed<SslStream>? _framed;
     WinCliprdr? _cliprdr;
     private readonly RendererModel _renderModel;
     private Image? _imageControl;
@@ -80,10 +79,8 @@ public partial class MainWindow : Window
         var password = Environment.GetEnvironmentVariable("IRONRDP_PASSWORD");
         var domain = Environment.GetEnvironmentVariable("IRONRDP_DOMAIN");
         var server = Environment.GetEnvironmentVariable("IRONRDP_SERVER");
-        var wsProxy = Environment.GetEnvironmentVariable("IRONRDP_PROXY");
-        var wsProxyToken = Environment.GetEnvironmentVariable("IRONRDP_PROXY_TOKEN");
 
-        if (username == null || password == null || server == null)
+        if (username == null || password == null || domain == null || server == null)
         {
             var errorMessage =
                 "Please set the IRONRDP_USERNAME, IRONRDP_PASSWORD, IRONRDP_DOMAIN, and RONRDP_SERVER environment variables";
@@ -109,41 +106,15 @@ public partial class MainWindow : Window
         BeforeConnectSetup();
         Task.Run(async () =>
         {
-            try
+            var (res, framed) = await Connection.Connect(config, server, factory);
+            this._decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(),
+                res.GetDesktopSize().GetHeight());
+            this._activeStage = ActiveStage.New(res);
+            this._framed = framed;
+            ReadPduAndProcessActiveStage();
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-
-                ConnectionResult res;
-                Framed<Stream> framed;
-                //wsProxy = null;
-                if (wsProxy != null && wsProxyToken != null)
-                {
-                    Debug.WriteLine("Connecting via WebSocket proxy");
-                    (res, framed) = await Connection.ConnectWs(
-                        config,
-                        new RdCleanPathConfig(new Uri(wsProxy), wsProxyToken),
-                        server,
-                        factory);
-                }
-                else
-                {
-                    Debug.WriteLine("Connecting directly to server");
-                    (res, framed) = await Connection.Connect(config, server, factory);
-                }
-                Debug.WriteLine("Connection success");
-                this._decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(),
-                    res.GetDesktopSize().GetHeight());
-                this._activeStage = ActiveStage.New(res);
-                this._framed = framed;
-                ReadPduAndProcessActiveStage();
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                {
-                    HandleClipboardEvents();
-                }
-            }
-            catch (Exception e)
-            {
-                Debug.WriteLine(e);
-                this.Close();
+                HandleClipboardEvents();
             }
         });
     }
@@ -289,17 +260,12 @@ public partial class MainWindow : Window
         });
     }
 
-    private static Config BuildConfig(string username, string password, string? domain, int width, int height)
+    private static Config BuildConfig(string username, string password, string domain, int width, int height)
     {
         ConfigBuilder configBuilder = ConfigBuilder.New();
 
         configBuilder.WithUsernameAndPassword(username, password);
-        if (domain != null)
-        {
-            configBuilder.SetDomain(domain);
-        }
-        configBuilder.SetEnableCredssp(true);
-        configBuilder.SetEnableTls(true);
+        configBuilder.SetDomain(domain);
         configBuilder.SetDesktopSize((ushort)height, (ushort)width);
         configBuilder.SetClientName("IronRdp");
         configBuilder.SetClientDir("C:\\");
@@ -429,7 +395,6 @@ public partial class MainWindow : Window
                 var output =
                     outputIterator
                         .Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
-                Debug.WriteLine($"Output type: {output.GetType()}, Output enum type : {output.GetEnumType()}");
                 if (output.GetEnumType() == ActiveStageOutputType.Terminate)
                 {
                     return false;
@@ -453,7 +418,7 @@ public partial class MainWindow : Window
                     var writeBuf = WriteBuf.New();
                     while (true)
                     {
-                        await Connection.SingleSequenceStep(activationSequence, writeBuf, _framed!);
+                        await Connection.SingleSequenceStep(activationSequence, writeBuf,_framed!);
 
                         if (activationSequence.GetState().GetType() != ConnectionActivationStateType.Finalized)
                             continue;
