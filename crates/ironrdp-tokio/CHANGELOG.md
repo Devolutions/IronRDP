@@ -12,8 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add async `ReqwestNetworkClient::send` method (#859) ([7e23a8bb97](https://github.com/Devolutions/IronRDP/commit/7e23a8bb97991d0e24e65d77a11d9854492ee024)) 
 
-
-
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.4.0...ironrdp-tokio-v0.5.0)] - 2025-06-06
 
 ### <!-- 4 -->Bug Fixes
