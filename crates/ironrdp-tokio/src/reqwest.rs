@@ -20,7 +20,15 @@ impl AsyncNetworkClient for ReqwestNetworkClient {
         &'a mut self,
         request: &'a sspi::generator::NetworkRequest,
     ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
-        Box::pin(ReqwestNetworkClient::send(self, request))
+        Box::pin(async move {
+            match &request.protocol {
+                sspi::network_client::NetworkProtocol::Tcp => self.send_tcp(&request.url, &request.data).await,
+                sspi::network_client::NetworkProtocol::Udp => self.send_udp(&request.url, &request.data).await,
+                sspi::network_client::NetworkProtocol::Http | sspi::network_client::NetworkProtocol::Https => {
+                    self.send_http(&request.url, &request.data).await
+                }
+            }
+        })
     }
 }
 
@@ -37,16 +45,6 @@ impl Default for ReqwestNetworkClient {
 }
 
 impl ReqwestNetworkClient {
-    pub async fn send<'a>(&'a mut self, request: &'a sspi::generator::NetworkRequest) -> ConnectorResult<Vec<u8>> {
-        match &request.protocol {
-            sspi::network_client::NetworkProtocol::Tcp => self.send_tcp(&request.url, &request.data).await,
-            sspi::network_client::NetworkProtocol::Udp => self.send_udp(&request.url, &request.data).await,
-            sspi::network_client::NetworkProtocol::Http | sspi::network_client::NetworkProtocol::Https => {
-                self.send_http(&request.url, &request.data).await
-            }
-        }
-    }
-
     async fn send_tcp(&self, url: &Url, data: &[u8]) -> ConnectorResult<Vec<u8>> {
         let addr = format!("{}:{}", url.host_str().unwrap_or_default(), url.port().unwrap_or(88));
 
