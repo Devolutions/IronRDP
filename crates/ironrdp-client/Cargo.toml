@@ -49,6 +49,9 @@ ironrdp-tls = { path = "../ironrdp-tls", version = "0.1" }
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.6", features = ["reqwest"] }
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
+ironrdp-propertyset.path = "../ironrdp-propertyset"
+ironrdp-rdpfile.path = "../ironrdp-rdpfile"
+ironrdp-cfg.path = "../ironrdp-cfg"
 
 # Windowing and rendering
 winit = { version = "0.30", features = ["rwh_06"] }

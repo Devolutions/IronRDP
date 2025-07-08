@@ -123,6 +123,14 @@ RDCleanPath PDU structure used by IronRDP web client and Devolutions Gateway.
 Lightweight and `no_std`-compatible generic `Error` and `Report` types.
 The `Error` type wraps a custom consumer-defined type for domain-specific details (such as `PduErrorKind`).
 
+#### [`crates/ironrdp-propertyset`](./crates/ironrdp-propertyset)
+
+The main type is `PropertySet`, a key-value store for configuration options.
+
+#### [`crates/ironrdp-rdpfile`](./crates/ironrdp-rdpfile)
+
+Loader and writer for the .RDP file format.
+
 ### Extra Tier
 
 Higher level libraries and binaries built on top of the core tier.
@@ -187,6 +195,10 @@ Web-based frontend using `Svelte` and `Material` frameworks.
 #### [`crates/ironrdp-cliprdr-native`](./crates/ironrdp-cliprdr-native)
 
 Native CLIPRDR backend implementations.
+
+#### [`crates/ironrdp-cfg`](./crates/ironrdp-cfg)
+
+IronRDP-related utilities for ironrdp-propertyset.
 
 ### Internal Tier
 

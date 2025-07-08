@@ -19,6 +19,7 @@ mod graphics;
 mod input;
 mod pcb;
 mod pdu;
+mod propertyset;
 mod rdcleanpath;
 mod rdpsnd;
 mod server;

@@ -8,6 +8,7 @@ use clap::Parser;
 use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+use std::path::PathBuf;
 use tap::prelude::*;
 use url::Url;
 
@@ -176,12 +177,16 @@ impl FromStr for DvcProxyInfo {
 #[clap(author = "Devolutions", about = "Devolutions-IronRDP client")]
 #[clap(version, long_about = None)]
 struct Args {
+    /// An address on which the client will connect.
+    destination: Option<Destination>,
+
+    /// Path to a .rdp file to read the configuration from.
+    #[clap(long)]
+    rdp_file: Option<PathBuf>,
+
     /// A file with IronRDP client logs
     #[clap(short, long)]
     log_file: Option<String>,
-
-    /// An address on which the client will connect.
-    destination: Option<Destination>,
 
     /// A target RDP server user name
     #[clap(short, long)]
@@ -273,21 +278,46 @@ struct Args {
     #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
 
-    /// Add DVC channel named pipe proxy.
-    /// the format is <name>=<pipe>
-    /// e.g. `ChannelName=PipeName` where `ChannelName` is the name of the channel,
-    /// and `PipeName` is the name of the named pipe to connect to (without OS-specific prefix),
-    /// e.g. PipeName will automatically be prefixed with `\\.\pipe\` on Windows.
+    /// Add DVC channel named pipe proxy
+    ///
+    /// The format is `<name>=<pipe>`, e.g., `ChannelName=PipeName` where `ChannelName` is the name of the channel,
+    /// and `PipeName` is the name of the named pipe to connect to (without OS-specific prefix).
+    /// `<pipe>` will automatically be prefixed with `\\.\pipe\` on Windows.
     #[clap(long)]
     dvc_proxy: Vec<DvcProxyInfo>,
 }
 
 impl Config {
     pub fn parse_args() -> anyhow::Result<Self> {
+        use ironrdp_cfg::PropertySetExt as _;
+
         let args = Args::parse();
+
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+
+        if let Some(rdp_file) = args.rdp_file {
+            let input =
+                std::fs::read_to_string(&rdp_file).with_context(|| format!("failed to read {}", rdp_file.display()))?;
+
+            if let Err(errors) = ironrdp_rdpfile::load(&mut properties, &input) {
+                for e in errors {
+                    #[expect(clippy::print_stderr)]
+                    {
+                        eprintln!("Error when reading {}: {e}", rdp_file.display())
+                    }
+                }
+            }
+        }
 
         let destination = if let Some(destination) = args.destination {
             destination
+        } else if let Some(destination) = properties.full_address() {
+            if let Some(port) = properties.server_port() {
+                format!("{destination}:{port}").parse()
+            } else {
+                destination.parse()
+            }
+            .context("invalid destination")?
         } else {
             inquire::Text::new("Server address:")
                 .prompt()
@@ -297,12 +327,16 @@ impl Config {
 
         let username = if let Some(username) = args.username {
             username
+        } else if let Some(username) = properties.username() {
+            username.to_owned()
         } else {
             inquire::Text::new("Username:").prompt().context("Username prompt")?
         };
 
         let password = if let Some(password) = args.password {
             password
+        } else if let Some(password) = properties.clear_text_password() {
+            password.to_owned()
         } else {
             inquire::Password::new("Password:")
                 .without_confirmation()
