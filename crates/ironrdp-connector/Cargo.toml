@@ -24,7 +24,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5", features = ["std"] } # public
 arbitrary = { version = "1", features = ["derive"], optional = true } # public
-sspi = { path = "../../../sspi-rs" } # public
+sspi = "0.16" # public
 url = "2.5" # public
 rand_core = { version = "0.6", features = ["std"] } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }
