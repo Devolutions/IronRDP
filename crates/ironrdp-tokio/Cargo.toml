@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-tokio"
-version = "0.5.2"
+version = "0.6.0"
 readme = "README.md"
 description = "`Framed*` traits implementation above Tokio’s traits"
 edition.workspace = true

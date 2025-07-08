@@ -2555,7 +2555,7 @@ version = "0.1.2"
 
 [[package]]
 name = "ironrdp-futures"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2692,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-server"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2804,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-tokio"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "ironrdp-async",
