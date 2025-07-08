@@ -6,16 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [[0.1.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-error-v0.1.2...ironrdp-error-v0.1.3)] - 2025-07-08
-
-### <!-- 1 -->Features
-
-- Inital support for .RDP files (#862) ([c710909a3c](https://github.com/Devolutions/IronRDP/commit/c710909a3cb64808bfc024bbe3f326565268871e)) 
-
-  This is paving the way for .rdp file support.
-
-
-
 ## [[0.1.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-error-v0.1.1...ironrdp-error-v0.1.2)] - 2025-01-28
 
 ### <!-- 6 -->Documentation
