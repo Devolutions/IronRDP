@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-acceptor"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
@@ -2392,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-async"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
@@ -2413,7 +2413,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-blocking"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
@@ -2491,7 +2491,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-connector"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "arbitrary",
  "ironrdp-core",
@@ -2555,7 +2555,7 @@ version = "0.1.2"
 
 [[package]]
 name = "ironrdp-futures"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2692,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-server"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2720,7 +2720,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-session"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ironrdp-connector",
  "ironrdp-core",
@@ -2804,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-tokio"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "ironrdp-async",
