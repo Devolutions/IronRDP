@@ -92,8 +92,7 @@ pub mod ffi {
         }
 
         pub fn from_der(der: &[u8]) -> Result<Box<RdCleanPathPdu>, Box<IronRdpError>> {
-            let pdu =
-                ironrdp_rdcleanpath::RDCleanPathPdu::from_der(der).map_err(|_| IronRdpErrorKind::DecodeError)?;
+            let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(der).map_err(|_| IronRdpErrorKind::DecodeError)?;
             Ok(Box::new(RdCleanPathPdu(pdu)))
         }
 
