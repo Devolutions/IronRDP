@@ -1099,9 +1099,6 @@ where
 
     buf.clear();
     if let Some(x224_connection_response) = x224_connection_response {
-        // let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state() else {
-        //     return Err(connector::general_err!("invalid connector state (wait confirm)"));
-        // };
         debug_assert!(connector.next_pdu_hint().is_some());
         // Write the X.224 connection response PDU
         let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;

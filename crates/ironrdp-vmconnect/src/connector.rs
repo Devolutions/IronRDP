@@ -235,7 +235,7 @@ impl CredsspSequenceFactory for VmClientConnector {
         server_public_key: Vec<u8>,
         _kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     ) -> ConnectorResult<(
-        Box<dyn ironrdp_connector::credssp::CredsspSequenceTrait>,
+        Box<(dyn ironrdp_connector::credssp::CredsspSequenceTrait + 'static)>,
         sspi::credssp::TsRequest,
     )> {
         let credentials = crate::config::Credentials::try_from(&credentials)?;

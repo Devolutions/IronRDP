@@ -22,7 +22,7 @@ use core::fmt;
 use std::sync::Arc;
 
 use ironrdp_core::{encode_buf, encode_vec, Encode, WriteBuf};
-use ironrdp_pdu::nego::{NegoRequestData, SecurityProtocol};
+use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::rdp::capability_sets::{self, BitmapCodecs};
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 use ironrdp_pdu::x224::X224;
@@ -177,7 +177,7 @@ pub struct Config {
     ///
     /// - A cookie containing the username for a username/password.
     /// - Nothing for a smart card.
-    pub request_data: Option<NegoRequestData>,
+    pub request_data: Option<ironrdp_pdu::nego::NegoRequestData>,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
     /// If true, the INFO_NOAUDIOPLAYBACK flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
