@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace Devolutions.IronRdp;
@@ -32,13 +33,11 @@ public class Framed<TS> where TS : Stream
                 var action = pduInfo.GetAction();
                 return (action, frame);
             }
-            else
+
+            var len = await this.Read();
+            if (len == 0)
             {
-                var len = await this.Read();
-                if (len == 0)
-                {
-                    throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
-                }
+                throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
             }
         }
     }

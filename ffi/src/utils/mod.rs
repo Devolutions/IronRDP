@@ -4,6 +4,29 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
 
     #[diplomat::opaque]
+    pub struct ServerCertChain(pub Vec<Vec<u8>>);
+
+    impl ServerCertChain {
+        pub fn get_len(&self) -> usize {
+            self.0.len()
+        }
+
+        pub fn get_vecu8(&self, index: usize) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            if index >= self.0.len() {
+                return Err("index out of bounds".into());
+            }
+            Ok(Box::new(VecU8(self.0[index].clone())))
+        }
+
+        pub fn get_slice<'a>(&'a self, index: usize) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
+            if index >= self.0.len() {
+                return Err("index out of bounds".into());
+            }
+            Ok(Box::new(BytesSlice(&self.0[index])))
+        }
+    }
+
+    #[diplomat::opaque]
     pub struct VecU8(pub Vec<u8>);
 
     impl VecU8 {

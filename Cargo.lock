@@ -2352,6 +2352,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
  "ironrdp-rdpsnd",
  "ironrdp-server",
