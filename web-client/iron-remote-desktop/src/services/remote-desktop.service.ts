@@ -1,6 +1,5 @@
 import { loggingService } from './logging.service';
 import { scanCode } from '../lib/scancodes';
-import { OS } from '../enums/OS';
 import { ModifierKey } from '../enums/ModifierKey';
 import { LockKey } from '../enums/LockKey';
 import { SessionEventType } from '../enums/SessionEventType';
@@ -329,7 +328,7 @@ export class RemoteDesktopService {
         }
 
         if (!evt.repeat || (!isModifierKey && !isLockKey)) {
-            const keyScanCode = scanCode(evt.code, OS.WINDOWS);
+            const keyScanCode = scanCode(evt.code);
             const unknownScanCode = Number.isNaN(keyScanCode);
 
             if (!this.keyboardUnicodeMode && keyEvent && !unknownScanCode) {
@@ -343,7 +342,7 @@ export class RemoteDesktopService {
                     return;
                 }
 
-                const keyCode = scanCode(evt.key, OS.WINDOWS);
+                const keyCode = scanCode(evt.key);
                 const isUnicodeCharacter = Number.isNaN(keyCode) && evt.key.length === 1;
 
                 if (isUnicodeCharacter && sendAsUnicode) {
