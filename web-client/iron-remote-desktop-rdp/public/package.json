@@ -6,7 +6,7 @@
     "Benoit Cortier"
   ],
   "description": "RDP backend for iron-remote-desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "main": "iron-remote-desktop-rdp.js",
   "types": "index.d.ts",
   "files": [
