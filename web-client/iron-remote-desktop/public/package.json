@@ -10,7 +10,7 @@
     "Alexandr Yusuk"
   ],
   "description": "Backend-agnostic Web Component for remote desktop protocols",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "main": "iron-remote-desktop.js",
   "types": "index.d.ts",
   "files": [
