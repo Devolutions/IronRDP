@@ -209,7 +209,7 @@ function invertCodesMapping(obj: CodeMap) {
  * - RDP requires Windows scancodes to transmit correct key events. Since the RDP server runs only on Windows,
  *   only Windows scancodes are relevant.
  * - VNC is cross-platform protocol, and it uses KeySym for key events. IronVNC module has mapping from
- *   Windows scancodes to the corresponding KeySyms for non-Unicode symbols to ensure compatability.
+ *   Windows scancodes to the corresponding KeySyms for non-Unicode symbols to ensure compatibility.
  */
 export const scanCode = function (code: string): number {
     const map = KeyCodeToScanCode[engine];
