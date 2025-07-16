@@ -114,7 +114,7 @@ impl<'a> OverlappedPipeConnectCtx<'a> {
     /// after returned event handle is signaled to complete the connection.
     pub(crate) fn overlapped_connect(&mut self) -> Result<bool, WindowsError> {
         // SAFETY: The handle is valid and we are the owner of the handle.
-        let result = unsafe { ConnectNamedPipe(self.pipe.raw(), Some(self.overlapped.deref_mut() as *mut _)) };
+        let result = unsafe { ConnectNamedPipe(self.pipe.raw(), Some(self.overlapped.deref_mut() as *mut OVERLAPPED)) };
 
         match result {
             Ok(()) => {
@@ -148,7 +148,7 @@ impl<'a> OverlappedPipeConnectCtx<'a> {
         unsafe {
             GetOverlappedResult(
                 self.pipe.raw(),
-                self.overlapped.deref_mut() as *mut _,
+                self.overlapped.deref_mut() as *mut OVERLAPPED,
                 &mut bytes_read as *mut u32,
                 false,
             )
@@ -195,7 +195,7 @@ impl<'a> OverlappedPipeReadCtx<'a> {
                 self.pipe.raw(),
                 Some(self.buffer.as_mut_slice()),
                 None,
-                Some(self.overlapped.deref_mut() as *mut _),
+                Some(self.overlapped.deref_mut() as *mut OVERLAPPED),
             )
         };
 
@@ -213,7 +213,7 @@ impl<'a> OverlappedPipeReadCtx<'a> {
         unsafe {
             GetOverlappedResult(
                 self.pipe.raw(),
-                self.overlapped.deref_mut() as *mut _,
+                self.overlapped.deref_mut() as *mut OVERLAPPED,
                 &mut bytes_read as *mut u32,
                 false,
             )
@@ -262,7 +262,7 @@ impl<'a> OverlappedWriteCtx<'a> {
                 self.pipe.raw(),
                 Some(&self.data),
                 None,
-                Some(self.overlapped.deref_mut() as *mut _),
+                Some(self.overlapped.deref_mut() as *mut OVERLAPPED),
             )
         };
 
@@ -279,7 +279,7 @@ impl<'a> OverlappedWriteCtx<'a> {
         unsafe {
             GetOverlappedResult(
                 self.pipe.raw(),
-                self.overlapped.deref_mut() as *const _,
+                self.overlapped.deref_mut() as *const OVERLAPPED,
                 &mut bytes_written as *mut u32,
                 true,
             )
