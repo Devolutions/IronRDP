@@ -68,6 +68,7 @@ unused_macro_rules = "warn"
 
 # == Safer unsafe == #
 undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
 multiple_unsafe_ops_per_block = "warn"
 transmute_ptr_to_ptr = "warn"
 as_ptr_cast_mut = "warn"
