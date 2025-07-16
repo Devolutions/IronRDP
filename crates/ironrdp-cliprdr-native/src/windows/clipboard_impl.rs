@@ -304,7 +304,9 @@ fn filter_format_ids(formats: &mut HashSet<ClipboardFormatId>) {
 
 /// WinAPI event loop for clipboard processing
 ///
-/// SAFETY: This function should only be used for windows subclassing api via `SetWindowSubclass`.
+/// # Safety
+///
+/// This function should only be used for windows subclassing api via `SetWindowSubclass`.
 pub(crate) unsafe extern "system" fn clipboard_subproc(
     hwnd: HWND,
     msg: u32,

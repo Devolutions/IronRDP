@@ -52,7 +52,9 @@ impl Drop for GlobalMemoryBuffer {
 
 /// Render data format into the clipboard.
 ///
-/// SAFETY: This function should only be called in the context of processing
+/// # Safety
+///
+/// This function should only be called in the context of processing
 /// `WM_RENDERFORMAT` or `WM_RENDERALLFORMATS` messages inside WinAPI message loop.
 pub(crate) unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> WinCliprdrResult<()> {
     // Allocate buffer and copy data into it
