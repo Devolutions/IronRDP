@@ -1,6 +1,7 @@
 #![allow(clippy::print_stdout)]
 use core::num::ParseIntError;
 use core::str::FromStr;
+use std::path::PathBuf;
 
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
@@ -8,7 +9,6 @@ use clap::Parser;
 use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
-use std::path::PathBuf;
 use tap::prelude::*;
 use url::Url;
 

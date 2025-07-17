@@ -7,11 +7,10 @@ extern crate alloc;
 #[macro_use]
 extern crate tracing;
 
-use core::fmt::{self, Display};
-
 use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use core::fmt::{self, Display};
 
 pub type Key = Cow<'static, str>;
 

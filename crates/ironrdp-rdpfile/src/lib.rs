@@ -4,11 +4,11 @@
 
 extern crate alloc;
 
-use core::fmt;
-
 use alloc::borrow::ToOwned;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::fmt;
+
 use ironrdp_propertyset::{PropertySet, Value};
 
 #[derive(Debug, Clone)]
