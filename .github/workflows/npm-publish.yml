@@ -144,7 +144,9 @@ jobs:
           }
 
       - name: Update Artifactory Cache
-        run: gh workflow run update-artifactory-cache.yml --repo Devolutions/scheduled-tasks --field package_name="iron-remote-desktop"
+        run: |
+          gh workflow run update-artifactory-cache.yml --repo Devolutions/scheduled-tasks --field package_name="iron-remote-desktop"
+          gh workflow run update-artifactory-cache.yml --repo Devolutions/scheduled-tasks --field package_name="iron-remote-desktop-rdp"
         env:
           GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
 
