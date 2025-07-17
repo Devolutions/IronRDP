@@ -285,11 +285,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         let clipboard = remote_clipboard_changed_callback.clone().map(|callback| {
             WasmClipboard::new(
                 clipboard::WasmClipboardMessageProxy::new(input_events_tx.clone()),
-                clipboard::JsClipboardCallbacks {
-                    on_remote_clipboard_changed: callback,
-                    on_remote_received_format_list: remote_received_format_list_callback,
-                    on_force_clipboard_update: force_clipboard_update_callback,
-                },
+                clipboard::JsClipboardCallbacks::new(
+                    callback,
+                    remote_received_format_list_callback,
+                    force_clipboard_update_callback,
+                ),
             )
         });
 

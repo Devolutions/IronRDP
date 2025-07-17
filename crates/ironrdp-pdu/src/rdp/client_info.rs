@@ -272,10 +272,7 @@ impl ExtendedClientOptionalInfo {
     /// Creates a new builder for [`ExtendedClientOptionalInfo`].
     pub fn builder(
     ) -> builder::ExtendedClientOptionalInfoBuilder<builder::ExtendedClientOptionalInfoBuilderStateSetTimeZone> {
-        builder::ExtendedClientOptionalInfoBuilder::<builder::ExtendedClientOptionalInfoBuilderStateSetTimeZone> {
-            inner: Self::default(),
-            _phantom_data: Default::default(),
-        }
+        builder::ExtendedClientOptionalInfoBuilder::<builder::ExtendedClientOptionalInfoBuilderStateSetTimeZone>::default()
     }
 
     pub fn timezone(&self) -> Option<&TimezoneInfo> {
@@ -731,8 +728,8 @@ pub mod builder {
     // setting the next one, therefore we use a state machine to enforce this during the compile time.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ExtendedClientOptionalInfoBuilder<State> {
-        pub(super) inner: ExtendedClientOptionalInfo,
-        pub(super) _phantom_data: PhantomData<State>,
+        inner: ExtendedClientOptionalInfo,
+        _phantom_data: PhantomData<State>,
     }
 
     impl<State> ExtendedClientOptionalInfoBuilder<State> {
@@ -742,6 +739,13 @@ pub mod builder {
     }
 
     impl ExtendedClientOptionalInfoBuilder<ExtendedClientOptionalInfoBuilderStateSetTimeZone> {
+        pub fn new() -> Self {
+            Self {
+                inner: ExtendedClientOptionalInfo::default(),
+                _phantom_data: Default::default(),
+            }
+        }
+
         pub fn timezone(
             mut self,
             timezone: TimezoneInfo,
@@ -751,6 +755,12 @@ pub mod builder {
                 inner: self.inner,
                 _phantom_data: Default::default(),
             }
+        }
+    }
+
+    impl Default for ExtendedClientOptionalInfoBuilder<ExtendedClientOptionalInfoBuilderStateSetTimeZone> {
+        fn default() -> Self {
+            Self::new()
         }
     }
 

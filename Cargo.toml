@@ -126,6 +126,7 @@ unnecessary_box_returns = "warn"
 # == Extra-pedantic clippy == #
 allow_attributes = "warn"
 disallowed_script_idents = "warn"
+field_scoped_visibility_modifiers = "warn"
 collection_is_never_read = "warn"
 copy_iterator = "warn"
 expl_impl_clone_on_copy = "warn"

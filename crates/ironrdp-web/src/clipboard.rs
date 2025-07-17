@@ -122,9 +122,23 @@ pub(crate) struct WasmClipboard {
 
 /// Callbacks, required to interact with JS code from within the backend.
 pub(crate) struct JsClipboardCallbacks {
-    pub(crate) on_remote_clipboard_changed: js_sys::Function,
-    pub(crate) on_remote_received_format_list: Option<js_sys::Function>,
-    pub(crate) on_force_clipboard_update: Option<js_sys::Function>,
+    on_remote_clipboard_changed: js_sys::Function,
+    on_remote_received_format_list: Option<js_sys::Function>,
+    on_force_clipboard_update: Option<js_sys::Function>,
+}
+
+impl JsClipboardCallbacks {
+    pub(crate) fn new(
+        on_remote_clipboard_changed: js_sys::Function,
+        on_remote_received_format_list: Option<js_sys::Function>,
+        on_force_clipboard_update: Option<js_sys::Function>,
+    ) -> Self {
+        JsClipboardCallbacks {
+            on_remote_clipboard_changed,
+            on_remote_received_format_list,
+            on_force_clipboard_update,
+        }
+    }
 }
 
 impl WasmClipboard {
@@ -656,8 +670,8 @@ pub(crate) enum ClipboardItemValue {
 /// Object which represents single clipboard format represented standard MIME type.
 #[derive(Debug, Clone)]
 pub(crate) struct ClipboardItem {
-    pub(crate) mime_type: String,
-    pub(crate) value: ClipboardItemValue,
+    mime_type: String,
+    value: ClipboardItemValue,
 }
 
 impl ClipboardItem {

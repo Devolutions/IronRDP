@@ -7,7 +7,7 @@ extern crate tracing;
 use ironrdp_async::{single_sequence_step, AsyncNetworkClient, Framed, FramedRead, FramedWrite, StreamWrapper};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
-use ironrdp_connector::{custom_err, general_err, ConnectorResult, ServerName};
+use ironrdp_connector::{custom_err, general_err, ConnectorResult, Sequence, ServerName};
 use ironrdp_core::WriteBuf;
 
 mod channel_connection;
@@ -16,13 +16,13 @@ pub mod credssp;
 mod finalization;
 mod util;
 
+pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
+pub use self::connection::{Acceptor, AcceptorResult};
+pub use self::finalization::{FinalizationSequence, FinalizationState};
+use crate::connection::AcceptorState;
+use crate::credssp::resolve_generator;
 pub use ironrdp_connector::DesktopSize;
 use ironrdp_pdu::nego;
-
-pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-pub use self::connection::{Acceptor, AcceptorResult, AcceptorState};
-pub use self::finalization::{FinalizationSequence, FinalizationState};
-use crate::credssp::resolve_generator;
 
 pub enum BeginResult<S>
 where
@@ -113,9 +113,11 @@ where
     S: FramedRead + FramedWrite,
 {
     assert!(acceptor.should_perform_credssp());
-    let AcceptorState::Credssp { protocol, .. } = acceptor.state else {
+    let Some(AcceptorState::Credssp { protocol, .. }) = acceptor.state().as_any().downcast_ref() else {
         unreachable!()
     };
+
+    let protocol = *protocol;
 
     async fn credssp_loop<S>(
         framed: &mut Framed<S>,
@@ -130,8 +132,7 @@ where
         S: FramedRead + FramedWrite,
     {
         let creds = acceptor
-            .creds
-            .as_ref()
+            .creds()
             .ok_or_else(|| general_err!("no credentials while doing credssp"))?;
         let username = Username::new(&creds.username, None).map_err(|e| custom_err!("invalid username", e))?;
         let identity = AuthIdentity {
@@ -148,7 +149,7 @@ where
             };
 
             debug!(
-                acceptor.state = ?acceptor.state,
+                acceptor.state = ?acceptor.state().name(),
                 hint = ?next_pdu_hint,
                 "Wait for PDU"
             );
