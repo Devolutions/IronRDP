@@ -48,6 +48,9 @@ num-traits = "0.2"
 # == Safer unsafe == #
 unsafe_op_in_unsafe_fn = "warn"
 invalid_reference_casting = "warn"
+unused_unsafe = "warn"
+missing_unsafe_on_extern = "warn"
+unsafe_attr_outside_unsafe = "warn"
 
 # == Style, readability == #
 elided_lifetimes_in_paths = "warn" # https://quinedot.github.io/rust-learning/dont-hide.html
