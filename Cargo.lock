@@ -1525,6 +1525,7 @@ dependencies = [
  "ironrdp",
  "ironrdp-cliprdr-native",
  "ironrdp-core",
+ "ironrdp-rdcleanpath",
  "sspi",
  "thiserror 1.0.69",
  "tracing",
