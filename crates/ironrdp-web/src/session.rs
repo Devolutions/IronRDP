@@ -68,6 +68,7 @@ struct SessionBuilderInner {
     force_clipboard_update_callback: Option<js_sys::Function>,
 
     use_display_control: bool,
+    enable_credssp: bool,
 }
 
 impl Default for SessionBuilderInner {
@@ -95,6 +96,7 @@ impl Default for SessionBuilderInner {
             force_clipboard_update_callback: None,
 
             use_display_control: false,
+            enable_credssp: true,
         }
     }
 }
@@ -216,6 +218,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |pcb: String| { self.0.borrow_mut().pcb = Some(pcb) };
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
+            |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
         }
 
         self.clone()
@@ -272,7 +275,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let config = build_config(username, password, server_domain, client_name, desktop_size);
+        let mut config = build_config(username, password, server_domain, client_name, desktop_size);
+
+        let enable_credssp = self.0.borrow().enable_credssp;
+        config.enable_credssp = enable_credssp;
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 

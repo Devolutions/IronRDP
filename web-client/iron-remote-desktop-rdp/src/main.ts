@@ -32,3 +32,7 @@ export function displayControl(enable: boolean): Extension {
 export function kdcProxyUrl(url: string): Extension {
     return new Extension('kdc_proxy_url', url);
 }
+
+export function enableCredssp(enable: boolean): Extension {
+    return new Extension('enable_credssp', enable);
+}
