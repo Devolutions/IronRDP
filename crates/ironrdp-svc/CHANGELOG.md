@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.4.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.4.0...ironrdp-svc-v0.4.1)] - 2025-06-27
+
+### <!-- 1 -->Features
+
+- Implement `fmt::Debug` of `SvcMessage` (#791) ([5482365655](https://github.com/Devolutions/IronRDP/commit/5482365655e5c171cd967eda401b01161a9f6602)) 
+
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.3.0...ironrdp-svc-v0.4.0)] - 2025-05-27
 
 ### <!-- 7 -->Build

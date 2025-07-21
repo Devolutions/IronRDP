@@ -1,0 +1,23 @@
+[package]
+name = "ironrdp-cfg"
+version = "0.1.0"
+readme = "README.md"
+description = "IronRDP utilities for ironrdp-cfgstore"
+publish = false # TODO: publish
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
+
+[lints]
+workspace = true

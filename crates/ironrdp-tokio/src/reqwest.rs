@@ -1,6 +1,6 @@
 use core::future::Future;
+use core::net::{IpAddr, Ipv4Addr};
 use core::pin::Pin;
-use std::net::{IpAddr, Ipv4Addr};
 
 use ironrdp_connector::{custom_err, ConnectorResult};
 use reqwest::Client;
@@ -20,15 +20,7 @@ impl AsyncNetworkClient for ReqwestNetworkClient {
         &'a mut self,
         request: &'a sspi::generator::NetworkRequest,
     ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
-        Box::pin(async move {
-            match &request.protocol {
-                sspi::network_client::NetworkProtocol::Tcp => self.send_tcp(&request.url, &request.data).await,
-                sspi::network_client::NetworkProtocol::Udp => self.send_udp(&request.url, &request.data).await,
-                sspi::network_client::NetworkProtocol::Http | sspi::network_client::NetworkProtocol::Https => {
-                    self.send_http(&request.url, &request.data).await
-                }
-            }
-        })
+        Box::pin(ReqwestNetworkClient::send(self, request))
     }
 }
 
@@ -45,24 +37,34 @@ impl Default for ReqwestNetworkClient {
 }
 
 impl ReqwestNetworkClient {
+    pub async fn send<'a>(&'a mut self, request: &'a sspi::generator::NetworkRequest) -> ConnectorResult<Vec<u8>> {
+        match &request.protocol {
+            sspi::network_client::NetworkProtocol::Tcp => self.send_tcp(&request.url, &request.data).await,
+            sspi::network_client::NetworkProtocol::Udp => self.send_udp(&request.url, &request.data).await,
+            sspi::network_client::NetworkProtocol::Http | sspi::network_client::NetworkProtocol::Https => {
+                self.send_http(&request.url, &request.data).await
+            }
+        }
+    }
+
     async fn send_tcp(&self, url: &Url, data: &[u8]) -> ConnectorResult<Vec<u8>> {
         let addr = format!("{}:{}", url.host_str().unwrap_or_default(), url.port().unwrap_or(88));
 
         let mut stream = TcpStream::connect(addr)
             .await
-            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{:?}", e)))
+            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
             .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
 
         stream
             .write(data)
             .await
-            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{:?}", e)))
+            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
             .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
 
         let len = stream
             .read_u32()
             .await
-            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{:?}", e)))
+            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
             .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
 
         let mut buf = vec![0; len as usize + 4];
@@ -71,7 +73,7 @@ impl ReqwestNetworkClient {
         stream
             .read_exact(&mut buf[4..])
             .await
-            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{:?}", e)))
+            .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
             .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
 
         Ok(buf)

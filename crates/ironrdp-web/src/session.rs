@@ -1,8 +1,8 @@
 use core::cell::RefCell;
+use core::net::{Ipv4Addr, SocketAddrV4};
 use core::num::NonZeroU32;
 use core::time::Duration;
 use std::borrow::Cow;
-use std::net::{Ipv4Addr, SocketAddrV4};
 use std::rc::Rc;
 
 use anyhow::Context as _;
@@ -202,6 +202,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     /// Optional
     fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> Self {
         self.0.borrow_mut().force_clipboard_update_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Because the server does not resize the framebuffer in the RDP protocol, this feature is unused in IronRDP.
+    fn canvas_resized_callback(&self, _callback: js_sys::Function) -> Self {
         self.clone()
     }
 
@@ -479,6 +484,8 @@ impl iron_remote_desktop::Session for Session {
             connection_result.desktop_size.height,
         );
 
+        let mut requested_resize = None;
+
         let mut active_stage = ActiveStage::new(connection_result);
 
         let disconnect_reason = 'outer: loop {
@@ -542,9 +549,7 @@ impl iron_remote_desktop::Session for Session {
                                 warn!("Resize event ignored: width or height is zero");
                                 Vec::new()
                             } else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
-                                self.render_canvas.set_width(width);
-                                self.render_canvas.set_height(height);
-                                gui.resize(NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap());
+                                requested_resize = Some((NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap()));
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                             } else {
                                 debug!("Resize event ignored");
@@ -675,6 +680,16 @@ impl iron_remote_desktop::Session for Session {
                         // Execute the Deactivation-Reactivation Sequence:
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
                         debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
+
+                        // We need to perform resize after receiving the Deactivate All PDU, because there may be frames
+                        // with the previous dimensions arriving between the resize request and this message.
+                        if let Some((width, height)) = requested_resize {
+                            self.render_canvas.set_width(width.get());
+                            self.render_canvas.set_height(height.get());
+                            gui.resize(width, height);
+                            requested_resize = None;
+                        }
+
                         let mut buf = WriteBuf::new();
                         'activation_seq: loop {
                             let written =
@@ -718,7 +733,7 @@ impl iron_remote_desktop::Session for Session {
             }
         };
 
-        info!(%disconnect_reason, "RPD session terminated");
+        info!(%disconnect_reason, "RDP session terminated");
 
         Ok(SessionTerminationInfo {
             reason: disconnect_reason,
@@ -911,7 +926,7 @@ async fn connect(
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
     // In web browser environments, we do not have an easy access to the local address of the socket.
-    let dummy_client_addr = std::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899));
+    let dummy_client_addr = core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899));
 
     let mut connector = ClientConnector::new(config, dummy_client_addr);
 

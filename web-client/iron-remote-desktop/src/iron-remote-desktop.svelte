@@ -14,7 +14,7 @@
 />
 
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onDestroy, onMount } from 'svelte';
     import { loggingService } from './services/logging.service';
     import { RemoteDesktopService } from './services/remote-desktop.service';
     import type { ResizeEvent } from './interfaces/ResizeEvent';
@@ -54,6 +54,8 @@
     let remoteDesktopService = new RemoteDesktopService(module);
     let publicAPI = new PublicAPI(remoteDesktopService);
 
+    let currentScreenScale = ScreenScale.Fit;
+
     // Firefox's clipboard API is very limited, and doesn't support reading from the clipboard
     // without changing browser settings via `about:config`.
     //
@@ -64,9 +66,13 @@
     const CLIPBOARD_MONITORING_INTERVAL = 100; // ms
 
     let isClipboardApiSupported = false;
-    let lastClientClipboardItems = new Map<string, string | Uint8Array>();
-    let lastClientClipboardData: ClipboardData | null = null;
+    let lastClientClipboardItems: Record<string, string | Uint8Array> = {};
+    let lastReceivedClipboardData: Record<string, string | Uint8Array> = {};
+    let lastSentClipboardData: ClipboardData | null = null;
     let lastClipboardMonitorLoopError: Error | null = null;
+
+    let componentDestroyed = false;
+    let runWhenFocusedQueue: (() => void)[] = [];
 
     /* Firefox-specific BEGIN */
 
@@ -128,7 +134,7 @@
         return (evt.ctrlKey && evt.code === 'KeyV') || evt.code == 'Paste';
     }
 
-    // This function is required to convert `ClipboardData` to a object that can be used
+    // This function is required to convert `ClipboardData` to an object that can be used
     // with `ClipboardItem` API.
     function clipboardDataToRecord(data: ClipboardData): Record<string, Blob> {
         let result = {} as Record<string, Blob>;
@@ -143,11 +149,23 @@
         return result;
     }
 
+    function clipboardDataToClipboardItemsRecord(data: ClipboardData): Record<string, string | Uint8Array> {
+        let result = {} as Record<string, string | Uint8Array>;
+
+        for (const item of data.items()) {
+            let mime = item.mimeType();
+            result[mime] = item.value();
+        }
+
+        return result;
+    }
+
     // This callback is required to send initial clipboard state if available.
     function onForceClipboardUpdate() {
+        // TODO(Fix): lastSentClipboardData is nullptr.
         try {
-            if (lastClientClipboardData) {
-                remoteDesktopService.onClipboardChanged(lastClientClipboardData);
+            if (lastSentClipboardData) {
+                remoteDesktopService.onClipboardChanged(lastSentClipboardData);
             } else {
                 remoteDesktopService.onClipboardChangedEmpty();
             }
@@ -156,12 +174,23 @@
         }
     }
 
+    function runWhenWindowFocused(fn: () => void) {
+        if (document.hasFocus()) {
+            fn();
+        } else {
+            runWhenFocusedQueue.push(fn);
+        }
+    }
+
     // This callback is required to update client clipboard state when remote side has changed.
     function onRemoteClipboardChanged(data: ClipboardData) {
         try {
             const mime_formats = clipboardDataToRecord(data);
             const clipboard_item = new ClipboardItem(mime_formats);
-            navigator.clipboard.write([clipboard_item]);
+            runWhenWindowFocused(() => {
+                lastReceivedClipboardData = clipboardDataToClipboardItemsRecord(data);
+                navigator.clipboard.write([clipboard_item]);
+            });
         } catch (err) {
             console.error('Failed to set client clipboard: ' + err);
         }
@@ -169,12 +198,11 @@
 
     // Called periodically to monitor clipboard changes
     async function onMonitorClipboard() {
-        if (!document.hasFocus()) {
-            setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
-            return;
-        }
-
         try {
+            if (!document.hasFocus()) {
+                return;
+            }
+
             var value = await navigator.clipboard.read();
 
             // Clipboard is empty
@@ -190,7 +218,7 @@
                 return;
             }
 
-            var values = new Map<string, string | Uint8Array>();
+            var values: Record<string, string | Uint8Array> = {};
             var sameValue = true;
 
             // Sadly, browsers build new `ClipboardItem` object for each `read` call,
@@ -219,14 +247,22 @@
                           );
                       };
 
-                const previousValue = lastClientClipboardItems.get(kind);
+                const previousValue = lastClientClipboardItems[kind];
 
                 if (!is_equal(previousValue, value)) {
+                    // When the local clipboard updates, we need to compare it with the last data received from the server.
+                    // If it's identical, the clipboard was updated with the server's data, so we shouldn't send this data
+                    // to the server.
+                    if (is_equal(lastReceivedClipboardData[kind], value)) {
+                        lastClientClipboardItems[kind] = lastReceivedClipboardData[kind];
+                    }
                     // One of mime types has changed, we need to update the clipboard cache
-                    sameValue = false;
+                    else {
+                        sameValue = false;
+                    }
                 }
 
-                values.set(kind, value);
+                values[kind] = value;
             }
 
             // Clipboard has changed, we need to acknowledge remote side about it.
@@ -236,7 +272,7 @@
                 let clipboardData = new module.ClipboardData();
 
                 // Iterate over `Record` type
-                values.forEach((value: string | Uint8Array, key: string) => {
+                Object.entries(values).forEach(([key, value]: [string, string | Uint8Array]) => {
                     // skip null/undefined values
                     if (value == null || value == undefined) {
                         return;
@@ -250,8 +286,9 @@
                 });
 
                 if (!clipboardData.isEmpty()) {
-                    lastClientClipboardData = clipboardData;
-                    remoteDesktopService.onClipboardChanged(clipboardData);
+                    lastSentClipboardData = clipboardData;
+                    // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
+                    await remoteDesktopService.onClipboardChanged(clipboardData);
                 }
             }
         } catch (err) {
@@ -266,7 +303,9 @@
                 lastClipboardMonitorLoopError = err;
             }
         } finally {
-            setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
+            if (!componentDestroyed) {
+                setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
+            }
         }
     }
 
@@ -417,6 +456,8 @@
 
         window.addEventListener('keydown', captureKeys, false);
         window.addEventListener('keyup', captureKeys, false);
+
+        window.addEventListener('focus', focusEventHandler);
     }
 
     function resetHostStyle() {
@@ -455,6 +496,10 @@
         wrapperStyle = `height: ${height}; width: ${width}; overflow: ${overflow}`;
     }
 
+    const resizeHandler = (_evt: UIEvent) => {
+        scaleSession(scale);
+    };
+
     function serverBridgeListeners() {
         remoteDesktopService.resizeObservable.subscribe((evt: ResizeEvent) => {
             loggingService.info(`Resize canvas to: ${evt.desktopSize.width}x${evt.desktopSize.height}`);
@@ -465,9 +510,7 @@
     }
 
     function userInteractionListeners() {
-        window.addEventListener('resize', (_evt) => {
-            scaleSession(scale);
-        });
+        window.addEventListener('resize', resizeHandler);
 
         remoteDesktopService.scaleObservable.subscribe((s) => {
             loggingService.info('Change scale!');
@@ -476,7 +519,7 @@
 
         remoteDesktopService.dynamicResizeObservable.subscribe((evt) => {
             loggingService.info(`Dynamic resize!, width: ${evt.width}, height: ${evt.height}`);
-            setViewerStyle(evt.height.toString(), evt.width.toString(), true);
+            setViewerStyle(evt.height.toString() + 'px', evt.width.toString() + 'px', true);
         });
 
         remoteDesktopService.changeVisibilityObservable.subscribe((val) => {
@@ -489,25 +532,32 @@
         });
     }
 
-    function scaleSession(currentSize: ScreenScale | string) {
+    function canvasResized() {
+        scaleSession(currentScreenScale);
+    }
+
+    function scaleSession(screenScale: ScreenScale | string) {
         resetHostStyle();
         if (isVisible) {
-            switch (currentSize) {
+            switch (screenScale) {
                 case 'fit':
                 case ScreenScale.Fit:
                     loggingService.info('Size to fit');
+                    currentScreenScale = ScreenScale.Fit;
                     scale = 'fit';
                     fitResize();
                     break;
                 case 'full':
                 case ScreenScale.Full:
                     loggingService.info('Size to full');
+                    currentScreenScale = ScreenScale.Full;
                     fullResize();
                     scale = 'full';
                     break;
                 case 'real':
                 case ScreenScale.Real:
                     loggingService.info('Size to real');
+                    currentScreenScale = ScreenScale.Real;
                     realResize();
                     scale = 'real';
                     break;
@@ -517,19 +567,18 @@
 
     function fullResize() {
         const windowSize = getWindowSize();
-        const wrapperBoundingBox = wrapper.getBoundingClientRect();
 
-        const containerWidth = windowSize.x - wrapperBoundingBox.x;
-        const containerHeight = windowSize.y - wrapperBoundingBox.y;
+        const containerWidth = windowSize.x;
+        const containerHeight = windowSize.y;
 
         let width = canvas.width;
         let height = canvas.height;
 
-        const ratio = Math.max(containerWidth / canvas.width, containerHeight / canvas.height);
+        const ratio = Math.min(containerWidth / canvas.width, containerHeight / canvas.height);
         width = width * ratio;
         height = height * ratio;
 
-        setWrapperStyle(`${containerHeight}px`, `${containerWidth}px`, 'auto');
+        setWrapperStyle(`${containerHeight}px`, `${containerWidth}px`, 'hidden');
 
         width = width > 0 ? width : 0;
         height = height > 0 ? height : 0;
@@ -602,7 +651,7 @@
                 // canvas first in order to receive paste events.
                 // wasmService.mouseButtonState(state, isDown, false);
                 // Focus `contenteditable` element to receive `on_paste` events
-                screenViewer.focus();
+                canvas.focus();
                 // Finish the focus sequence on Firefox
                 ffCnavasFocused = true;
             } else {
@@ -620,7 +669,7 @@
     }
 
     function setMouseIn(evt: MouseEvent) {
-        canvas.focus();
+        canvas.focus({ preventScroll: true });
         remoteDesktopService.mouseIn(evt);
     }
 
@@ -665,6 +714,7 @@
         canvas.height = 600;
 
         remoteDesktopService.setCanvas(canvas);
+        remoteDesktopService.setOnCanvasResized(canvasResized);
 
         initListeners();
 
@@ -680,11 +730,24 @@
         inner.dispatchEvent(new CustomEvent('ready', { detail: result, bubbles: true, composed: true }));
     }
 
+    function focusEventHandler() {
+        while (runWhenFocusedQueue.length > 0) {
+            const fn = runWhenFocusedQueue.shift();
+            fn?.();
+        }
+    }
+
     onMount(async () => {
         loggingService.verbose = verbose === 'true';
         loggingService.info('Dom ready');
         await initcanvas();
         initClipboard();
+    });
+
+    onDestroy(() => {
+        window.removeEventListener('resize', resizeHandler);
+        window.removeEventListener('focus', focusEventHandler);
+        componentDestroyed = true;
     });
 </script>
 

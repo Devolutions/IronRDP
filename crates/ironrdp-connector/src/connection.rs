@@ -1,6 +1,6 @@
 use core::mem;
+use core::net::SocketAddr;
 use std::borrow::Cow;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ironrdp_core::{decode, encode_vec, Encode, WriteBuf};
@@ -615,7 +615,7 @@ fn create_gcc_blocks<'a>(
         16 => SupportedColorDepths::BPP16,
         24 => SupportedColorDepths::BPP24,
         32 => SupportedColorDepths::BPP32 | SupportedColorDepths::BPP16,
-        _ => panic!("Unsupported color depth: {}", max_color_depth),
+        _ => panic!("Unsupported color depth: {max_color_depth}"),
     };
 
     let channels = static_channels

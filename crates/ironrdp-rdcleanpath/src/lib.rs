@@ -47,7 +47,7 @@ impl fmt::Display for RDCleanPathErr {
     }
 }
 
-impl std::error::Error for RDCleanPathErr {}
+impl core::error::Error for RDCleanPathErr {}
 
 #[derive(Clone, Debug, Eq, PartialEq, der::Sequence)]
 #[asn1(tag_mode = "EXPLICIT")]
@@ -296,7 +296,7 @@ impl fmt::Display for MissingRDCleanPathField {
     }
 }
 
-impl std::error::Error for MissingRDCleanPathField {}
+impl core::error::Error for MissingRDCleanPathField {}
 
 impl TryFrom<RDCleanPathPdu> for RDCleanPath {
     type Error = MissingRDCleanPathField;

@@ -184,8 +184,8 @@ pub mod ffi {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::ResponseFrame { .. } => ActiveStageOutputType::ResponseFrame,
                 ironrdp::session::ActiveStageOutput::GraphicsUpdate { .. } => ActiveStageOutputType::GraphicsUpdate,
-                ironrdp::session::ActiveStageOutput::PointerDefault { .. } => ActiveStageOutputType::PointerDefault,
-                ironrdp::session::ActiveStageOutput::PointerHidden { .. } => ActiveStageOutputType::PointerHidden,
+                ironrdp::session::ActiveStageOutput::PointerDefault => ActiveStageOutputType::PointerDefault,
+                ironrdp::session::ActiveStageOutput::PointerHidden => ActiveStageOutputType::PointerHidden,
                 ironrdp::session::ActiveStageOutput::PointerPosition { .. } => ActiveStageOutputType::PointerPosition,
                 ironrdp::session::ActiveStageOutput::PointerBitmap { .. } => ActiveStageOutputType::PointerBitmap,
                 ironrdp::session::ActiveStageOutput::Terminate { .. } => ActiveStageOutputType::Terminate,

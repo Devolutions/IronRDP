@@ -48,6 +48,9 @@ num-traits = "0.2"
 # == Safer unsafe == #
 unsafe_op_in_unsafe_fn = "warn"
 invalid_reference_casting = "warn"
+unused_unsafe = "warn"
+missing_unsafe_on_extern = "warn"
+unsafe_attr_outside_unsafe = "warn"
 
 # == Style, readability == #
 elided_lifetimes_in_paths = "warn" # https://quinedot.github.io/rust-learning/dont-hide.html
@@ -64,13 +67,19 @@ noop_method_call = "warn"
 unused_crate_dependencies = "warn"
 unused_macro_rules = "warn"
 
+# == Extra-pedantic rustc == #
+unit_bindings = "warn"
+
 [workspace.lints.clippy]
 
 # == Safer unsafe == #
 undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
 multiple_unsafe_ops_per_block = "warn"
+missing_safety_doc = "warn"
 transmute_ptr_to_ptr = "warn"
 as_ptr_cast_mut = "warn"
+as_pointer_underscore = "warn"
 cast_ptr_alignment = "warn"
 fn_to_numeric_cast_any = "warn"
 ptr_cast_constness = "warn"

@@ -23,7 +23,7 @@ pub(crate) enum PerError {
     NumericStringTooBig,
 }
 
-impl std::error::Error for PerError {}
+impl core::error::Error for PerError {}
 
 impl fmt::Display for PerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -276,7 +276,7 @@ pub(crate) fn write_octet_string(dst: &mut WriteCursor<'_>, octet_string: &[u8],
 
 pub(crate) fn read_numeric_string(src: &mut ReadCursor<'_>, min: u16) -> Result<(), PerError> {
     let (length, _) = read_length(src)?;
-    let length = usize::from((length + min + 1) / 2);
+    let length = usize::from((length + min).div_ceil(2));
 
     if src.len() < length {
         Err(PerError::NotEnoughBytes {
@@ -525,7 +525,7 @@ pub(crate) mod legacy {
     pub(crate) fn read_numeric_string(mut stream: impl io::Read, min: u16) -> io::Result<()> {
         let (read_length, _) = read_length(&mut stream)?;
 
-        let length = (read_length + min + 1) / 2;
+        let length = (read_length + min).div_ceil(2);
 
         let mut read_numeric_string = vec![0; length as usize];
         stream.read_exact(read_numeric_string.as_mut())?;

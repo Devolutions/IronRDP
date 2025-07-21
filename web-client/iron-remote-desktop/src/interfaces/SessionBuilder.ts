@@ -61,6 +61,10 @@ export interface SessionBuilder {
      * Optional
      */
     forceClipboardUpdateCallback(callback: ForceClipboardUpdateCallback): SessionBuilder;
+    /**
+     * Optional
+     */
+    canvasResizedCallback(callback: CanvasResizedCallback): SessionBuilder;
     extension(value: unknown): SessionBuilder;
     connect(): Promise<Session>;
 }
@@ -83,5 +87,9 @@ interface RemoteReceiveForwardListCallback {
 }
 
 interface ForceClipboardUpdateCallback {
+    (): void;
+}
+
+interface CanvasResizedCallback {
     (): void;
 }

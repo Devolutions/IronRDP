@@ -152,7 +152,7 @@ where
                         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "not enough bytes"));
                     }
                 }
-                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+                Err(e) => return Err(io::Error::other(e)),
             };
         }
     }
@@ -167,10 +167,7 @@ where
     /// Data may have been read, but it will be stored in the internal buffer.
     pub async fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
         loop {
-            match hint
-                .find_size(self.peek())
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-            {
+            match hint.find_size(self.peek()).map_err(io::Error::other)? {
                 Some((matched, length)) => {
                     let bytes = self.read_exact(length).await?.freeze();
                     if matched {

@@ -65,7 +65,7 @@ impl PduErrorExt for PduError {
     }
 }
 
-impl std::error::Error for PduErrorKind {}
+impl core::error::Error for PduErrorKind {}
 
 impl fmt::Display for PduErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -64,7 +64,7 @@ pub enum DecodeErrorKind {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for DecodeErrorKind {}
+impl core::error::Error for DecodeErrorKind {}
 
 impl fmt::Display for DecodeErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

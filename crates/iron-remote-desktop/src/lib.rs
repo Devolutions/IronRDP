@@ -287,6 +287,11 @@ macro_rules! make_bridge {
                 ))
             }
 
+            #[wasm_bindgen(js_name = canvasResizedCallback)]
+            pub fn canvas_resized_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
+                Self($crate::SessionBuilder::canvas_resized_callback(&self.0, callback))
+            }
+
             pub fn extension(&self, ext: $crate::Extension) -> Self {
                 Self($crate::SessionBuilder::extension(&self.0, ext))
             }

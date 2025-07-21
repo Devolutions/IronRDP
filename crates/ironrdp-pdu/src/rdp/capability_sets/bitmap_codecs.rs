@@ -627,7 +627,7 @@ impl Debug for CodecId {
             3 => "RemoteFx",
             _ => "unknown",
         };
-        write!(f, "CodecId({})", name)
+        write!(f, "CodecId({name})")
     }
 }
 
@@ -672,7 +672,7 @@ pub fn client_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, Strin
                 let state = match state_str {
                     "on" => true,
                     "off" => false,
-                    _ => return Err(format!("Unhandled configuration: {}", state_str)),
+                    _ => return Err(format!("Unhandled configuration: {state_str}")),
                 };
 
                 result.insert(codec_name, state);
@@ -710,7 +710,7 @@ List of codecs:
 
     let codec_names = config.keys().copied().collect::<Vec<_>>().join(", ");
     if !codec_names.is_empty() {
-        return Err(format!("Unknown codecs: {}", codec_names));
+        return Err(format!("Unknown codecs: {codec_names}"));
     }
 
     Ok(BitmapCodecs(codecs))

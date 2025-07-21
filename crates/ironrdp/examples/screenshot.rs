@@ -302,7 +302,7 @@ fn active_stage(
     Ok(())
 }
 
-fn lookup_addr(hostname: &str, port: u16) -> anyhow::Result<std::net::SocketAddr> {
+fn lookup_addr(hostname: &str, port: u16) -> anyhow::Result<core::net::SocketAddr> {
     use std::net::ToSocketAddrs as _;
     let addr = (hostname, port).to_socket_addrs()?.next().unwrap();
     Ok(addr)

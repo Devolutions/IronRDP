@@ -8,9 +8,9 @@ use crate::pdu::{self, ClientAudioFormatPdu, QualityMode};
 
 pub type RdpsndSvcMessages = SvcProcessorMessages<RdpsndServer>;
 
-pub trait RdpsndError: std::error::Error + Send + Sync + 'static {}
+pub trait RdpsndError: core::error::Error + Send + Sync + 'static {}
 
-impl<T> RdpsndError for T where T: std::error::Error + Send + Sync + 'static {}
+impl<T> RdpsndError for T where T: core::error::Error + Send + Sync + 'static {}
 
 /// Message sent by the event loop.
 #[derive(Debug)]

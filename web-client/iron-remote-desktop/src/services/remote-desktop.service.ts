@@ -1,6 +1,5 @@
 import { loggingService } from './logging.service';
 import { scanCode } from '../lib/scancodes';
-import { OS } from '../enums/OS';
 import { ModifierKey } from '../enums/ModifierKey';
 import { LockKey } from '../enums/LockKey';
 import { SessionEventType } from '../enums/SessionEventType';
@@ -23,6 +22,7 @@ import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInf
 type OnRemoteClipboardChanged = (data: ClipboardData) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
+type OnCanvasResized = () => void;
 
 export class RemoteDesktopService {
     private module: RemoteDesktopModule;
@@ -32,6 +32,7 @@ export class RemoteDesktopService {
     private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
     private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
+    private onCanvasResized?: OnCanvasResized;
     private cursorHasOverride: boolean = false;
     private lastCursorStyle: string = 'default';
     private enableClipboard: boolean = true;
@@ -72,6 +73,11 @@ export class RemoteDesktopService {
     /// clipboard initialization sequence)
     setOnForceClipboardUpdate(callback: OnForceClipboardUpdate) {
         this.onForceClipboardUpdate = callback;
+    }
+
+    /// Callback which is called when the canvas is resized.
+    setOnCanvasResized(callback: OnCanvasResized) {
+        this.onCanvasResized = callback;
     }
 
     mouseIn(event: MouseEvent) {
@@ -135,6 +141,9 @@ export class RemoteDesktopService {
         if (this.onForceClipboardUpdate != null && this.enableClipboard) {
             sessionBuilder.forceClipboardUpdateCallback(this.onForceClipboardUpdate);
         }
+        if (this.onCanvasResized != null) {
+            sessionBuilder.canvasResizedCallback(this.onCanvasResized);
+        }
 
         if (config.desktopSize != null) {
             sessionBuilder.desktopSize(
@@ -189,12 +198,8 @@ export class RemoteDesktopService {
                 this.setVisibility(false);
 
                 this.raiseSessionEvent({
-                    type: SessionEventType.ERROR,
-                    data: err.backtrace(),
-                });
-                this.raiseSessionEvent({
                     type: SessionEventType.TERMINATED,
-                    data: 'Session was terminated.',
+                    data: 'Session was terminated with an error: ' + err.backtrace() + '.',
                 });
             });
     }
@@ -323,7 +328,7 @@ export class RemoteDesktopService {
         }
 
         if (!evt.repeat || (!isModifierKey && !isLockKey)) {
-            const keyScanCode = scanCode(evt.code, OS.WINDOWS);
+            const keyScanCode = scanCode(evt.code);
             const unknownScanCode = Number.isNaN(keyScanCode);
 
             if (!this.keyboardUnicodeMode && keyEvent && !unknownScanCode) {
@@ -337,7 +342,7 @@ export class RemoteDesktopService {
                     return;
                 }
 
-                const keyCode = scanCode(evt.key, OS.WINDOWS);
+                const keyCode = scanCode(evt.key);
                 const isUnicodeCharacter = Number.isNaN(keyCode) && evt.key.length === 1;
 
                 if (isUnicodeCharacter && sendAsUnicode) {

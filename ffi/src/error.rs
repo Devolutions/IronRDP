@@ -257,7 +257,7 @@ impl WrongOSError {
 impl Display for WrongOSError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(custom_message) = &self.custom_message {
-            write!(f, "{}", custom_message)?;
+            write!(f, "{custom_message}")?;
         }
         write!(f, "expected platform {}", self.expected)
     }

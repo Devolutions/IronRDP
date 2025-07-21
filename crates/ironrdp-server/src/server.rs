@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use core::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -317,6 +317,7 @@ impl RdpServer {
                         &mut acceptor,
                         client_name.into(),
                         pub_key.clone(),
+                        None,
                         None,
                     )
                     .await?;

@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-connector"
-version = "0.5.0"
+version = "0.6.0"
 readme = "README.md"
 description = "State machines to drive an RDP connection sequence"
 edition.workspace = true
@@ -24,13 +24,13 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5", features = ["std"] } # public
 arbitrary = { version = "1", features = ["derive"], optional = true } # public
-sspi = "0.15" # public
+sspi = "0.16" # public
 url = "2.5" # public
 rand_core = { version = "0.6", features = ["std"] } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }
 picky-asn1-der = "0.5"
 picky-asn1-x509 = "0.14"
-picky = "7.0.0-rc.12"
+picky = "7.0.0-rc.15"
 
 [lints]
 workspace = true

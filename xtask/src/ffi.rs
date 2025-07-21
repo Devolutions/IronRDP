@@ -120,7 +120,7 @@ fn remove_cs_files(dir: &Path) -> anyhow::Result<()> {
             let entry = entry?;
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("cs") {
-                println!("Removing file: {:?}", path);
+                println!("Removing file: {path:?}");
                 fs::remove_file(path)?;
             }
         }

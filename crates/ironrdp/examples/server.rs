@@ -6,8 +6,8 @@
 #[macro_use]
 extern crate tracing;
 
+use core::net::SocketAddr;
 use core::num::NonZeroU16;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 

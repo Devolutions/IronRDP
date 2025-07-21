@@ -1,6 +1,8 @@
 #![allow(clippy::print_stdout)]
+
 use core::num::ParseIntError;
 use core::str::FromStr;
+use std::path::PathBuf;
 
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
@@ -87,12 +89,12 @@ impl Destination {
         let addr = addr.into();
 
         if let Some(idx) = addr.rfind(':') {
-            if let Ok(sock_addr) = addr.parse::<std::net::SocketAddr>() {
+            if let Ok(sock_addr) = addr.parse::<core::net::SocketAddr>() {
                 Ok(Self {
                     name: sock_addr.ip().to_string(),
                     port: sock_addr.port(),
                 })
-            } else if addr.parse::<std::net::Ipv6Addr>().is_ok() {
+            } else if addr.parse::<core::net::Ipv6Addr>().is_ok() {
                 Ok(Self {
                     name: addr,
                     port: RDP_DEFAULT_PORT,
@@ -192,16 +194,20 @@ struct Args {
     /// An address on which the client will connect.
     destination: Option<Destination>,
 
+    /// Path to a .rdp file to read the configuration from.
+    #[clap(long)]
+    rdp_file: Option<PathBuf>,
+
     /// A target RDP server user name
-    #[clap(short, long, value_parser)]
+    #[clap(short, long)]
     username: Option<String>,
 
     /// An optional target RDP server domain name
-    #[clap(short, long, value_parser)]
+    #[clap(short, long)]
     domain: Option<String>,
 
     /// A target RDP server user password
-    #[clap(short, long, value_parser)]
+    #[clap(short, long)]
     password: Option<String>,
 
     /// Proxy URL to connect to for the RDCleanPath
@@ -213,23 +219,23 @@ struct Args {
     rdcleanpath_token: Option<String>,
 
     /// The keyboard type
-    #[clap(long, value_enum, value_parser, default_value_t = KeyboardType::IbmEnhanced)]
+    #[clap(long, value_enum, default_value_t = KeyboardType::IbmEnhanced)]
     keyboard_type: KeyboardType,
 
     /// The keyboard subtype (an original equipment manufacturer-dependent value)
-    #[clap(long, value_parser, default_value_t = 0)]
+    #[clap(long, default_value_t = 0)]
     keyboard_subtype: u32,
 
     /// The number of function keys on the keyboard
-    #[clap(long, value_parser, default_value_t = 12)]
+    #[clap(long, default_value_t = 12)]
     keyboard_functional_keys_count: u32,
 
     /// The input method editor (IME) file name associated with the active input locale
-    #[clap(long, value_parser, default_value_t = String::from(""))]
+    #[clap(long, default_value_t = String::from(""))]
     ime_file_name: String,
 
     /// Contains a value that uniquely identifies the client
-    #[clap(long, value_parser, default_value_t = String::from(""))]
+    #[clap(long, default_value_t = String::from(""))]
     dig_product_id: String,
 
     /// Enable thin client
@@ -275,25 +281,44 @@ struct Args {
     no_credssp: bool,
 
     /// The clipboard type
-    #[clap(long, value_enum, value_parser, default_value_t = ClipboardType::Default)]
+    #[clap(long, value_enum, default_value_t = ClipboardType::Default)]
     clipboard_type: ClipboardType,
 
     /// The bitmap codecs to use (remotefx:on, ...)
-    #[clap(long, value_parser, num_args = 1.., value_delimiter = ',')]
+    #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
 
-    /// Add DVC channel named pipe proxy.
-    /// the format is <name>=<pipe>
-    /// e.g. `ChannelName=PipeName` where `ChannelName` is the name of the channel,
-    /// and `PipeName` is the name of the named pipe to connect to (without OS-specific prefix),
-    /// e.g. PipeName will automatically be prefixed with `\\.\pipe\` on Windows.
-    #[clap(long, value_parser)]
+    /// Add DVC channel named pipe proxy
+    ///
+    /// The format is `<name>=<pipe>`, e.g., `ChannelName=PipeName` where `ChannelName` is the name of the channel,
+    /// and `PipeName` is the name of the named pipe to connect to (without OS-specific prefix).
+    /// `<pipe>` will automatically be prefixed with `\\.\pipe\` on Windows.
+    #[clap(long)]
     dvc_proxy: Vec<DvcProxyInfo>,
 }
 
 impl Config {
     pub fn parse_args() -> anyhow::Result<Self> {
+        use ironrdp_cfg::PropertySetExt as _;
+
         let args = Args::parse();
+
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+
+        if let Some(rdp_file) = args.rdp_file {
+            let input =
+                std::fs::read_to_string(&rdp_file).with_context(|| format!("failed to read {}", rdp_file.display()))?;
+
+            if let Err(errors) = ironrdp_rdpfile::load(&mut properties, &input) {
+                for e in errors {
+                    #[expect(clippy::print_stderr)]
+                    {
+                        eprintln!("Error when reading {}: {e}", rdp_file.display())
+                    }
+                }
+            }
+        }
+
         let mut gw: Option<GwConnectTarget> = None;
 
         let gw_addr = if let Some(gw_addr) = args.gw_endpoint {
@@ -334,6 +359,13 @@ impl Config {
 
         let destination = if let Some(destination) = args.destination {
             destination
+        } else if let Some(destination) = properties.full_address() {
+            if let Some(port) = properties.server_port() {
+                format!("{destination}:{port}").parse()
+            } else {
+                destination.parse()
+            }
+            .context("invalid destination")?
         } else {
             inquire::Text::new("Server address:")
                 .prompt()
@@ -346,12 +378,16 @@ impl Config {
 
         let username = if let Some(username) = args.username {
             username
+        } else if let Some(username) = properties.username() {
+            username.to_owned()
         } else {
             inquire::Text::new("Username:").prompt().context("Username prompt")?
         };
 
         let password = if let Some(password) = args.password {
             password
+        } else if let Some(password) = properties.clear_text_password() {
+            password.to_owned()
         } else {
             inquire::Password::new("Password:")
                 .without_confirmation()
@@ -363,7 +399,7 @@ impl Config {
         let codecs = match client_codecs_capabilities(&codecs) {
             Ok(codecs) => codecs,
             Err(help) => {
-                print!("{}", help);
+                print!("{help}");
                 std::process::exit(0);
             }
         };

@@ -324,7 +324,7 @@ Several other concerns arise:
 
 - `Unknown(2)` and `ThirdValue` are conceptually the same thing, but are represented differently in memory.
 - The default `PartialEq` implementation that can be derived will return `false` when testing for
-    equality (i.e.: `Unknown(2) != ThirdValue`). Fixing this requires manual implementation of `PartialEq`.
+  equality (i.e.: `Unknown(2) != ThirdValue`). Fixing this requires manual implementation of `PartialEq`.
 - Even if `PartialEq` is fixed, the pattern matching issue can’t be fixed.
 - The size of this type is bigger than necessary.
 
@@ -414,11 +414,11 @@ The **TL;DR** is:
 
 - Use **both** `from_bits_retain` and `const _ = !0` when resilient parsing is required.
     - `const _ = !0` ensures we don’t accidentally have non resilient or destructive parsing. In
-        addition to that, generated methods such as `complement` (`!`) will consider additional bits
-        and follow the principle of least surprise (`!!flags == flags`).
+      addition to that, generated methods such as `complement` (`!`) will consider additional bits
+      and follow the principle of least surprise (`!!flags == flags`).
     - `from_bits_retain` makes it clear at the call site that preserving all the bits is intentional.
 - Use `from_bits` WITHOUT `const _ = !0` when strictness is required (almost never in IronRDP), and
-    document why with an in-source comment.
+  document why with an in-source comment.
 
 Bit flags are used quite pervasively in the RDP protocol.
 IronRDP is relying on the [`bitflags` crate][bitflags] to generate well-defined flags structures,
