@@ -5,6 +5,7 @@ use bytes::{Bytes, BytesMut};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_graphics::diff;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
+use tracing::{debug, warn};
 
 #[rustfmt::skip]
 pub use ironrdp_acceptor::DesktopSize;

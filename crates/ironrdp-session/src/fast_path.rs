@@ -12,10 +12,11 @@ use ironrdp_pdu::pointer::PointerUpdateData;
 use ironrdp_pdu::rdp::capability_sets::{CodecId, CODEC_ID_NONE, CODEC_ID_REMOTEFX};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
+use tracing::{debug, trace, warn};
 
 use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
-use crate::{rfx, SessionError, SessionErrorExt as _, SessionResult};
+use crate::{custom_err, reason_err, rfx, SessionError, SessionErrorExt, SessionResult};
 
 #[derive(Debug)]
 pub enum UpdateKind {

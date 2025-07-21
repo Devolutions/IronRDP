@@ -1,4 +1,6 @@
+use array_concat::concat_arrays;
 use ironrdp_pdu::gcc::{ClientSecurityData, EncryptionLevel, EncryptionMethod, ServerSecurityData};
+use lazy_static::lazy_static;
 
 pub const CLIENT_SECURITY_DATA_BUFFER: [u8; 8] = [
     0x1b, 0x00, 0x00, 0x00, // encryption methods

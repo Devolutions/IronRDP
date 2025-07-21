@@ -1,3 +1,4 @@
+#[macro_export]
 macro_rules! windows_skip {
     () => {
         if cfg!(target_os = "windows") {
@@ -7,6 +8,7 @@ macro_rules! windows_skip {
     };
 }
 
+#[macro_export]
 macro_rules! trace {
     ($($arg:tt)*) => {{
         if $crate::is_verbose() {
@@ -15,6 +17,7 @@ macro_rules! trace {
     }};
 }
 
+#[macro_export]
 macro_rules! run_cmd_in {
     ($sh:expr, $prefix:expr, $args:literal) => {{
         let _guard = $sh.push_dir($prefix);

@@ -11,6 +11,7 @@ use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_svc::SvcMessage;
 use nix::dir::{Dir, OwningIter};
+use tracing::{debug, warn};
 
 #[derive(Debug, Default)]
 pub struct NixRdpdrBackend {

@@ -8,6 +8,7 @@ use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, 
 use pdu::gcc::ChannelName;
 use pdu::PduResult;
 use slab::Slab;
+use tracing::debug;
 
 use crate::pdu::{
     CapabilitiesRequestPdu, CapsVersion, CreateRequestPdu, CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu,

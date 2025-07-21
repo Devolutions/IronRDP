@@ -11,6 +11,7 @@ use cpal::traits::{DeviceTrait as _, HostTrait as _};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use ironrdp_rdpsnd::client::RdpsndClientHandler;
 use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
 pub struct RdpsndBackend {

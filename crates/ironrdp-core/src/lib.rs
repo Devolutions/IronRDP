@@ -8,7 +8,6 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-#[macro_use]
 mod macros;
 
 mod as_any;

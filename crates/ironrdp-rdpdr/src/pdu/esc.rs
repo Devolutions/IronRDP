@@ -15,6 +15,7 @@ use ironrdp_core::{
 use ironrdp_pdu::utils::{
     encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet,
 };
+use tracing::{error, warn};
 
 use super::efs::IoCtlCode;
 use crate::pdu::esc::ndr::{Decode as _, Encode as _};

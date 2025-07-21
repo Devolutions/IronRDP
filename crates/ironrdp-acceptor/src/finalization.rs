@@ -3,6 +3,7 @@ use ironrdp_core::WriteBuf;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{self as pdu};
 use pdu::rdp;
+use tracing::debug;
 
 use crate::util::{self, wrap_share_data};
 

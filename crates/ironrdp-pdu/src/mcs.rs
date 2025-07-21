@@ -9,7 +9,7 @@ use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, Conferenc
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::{user_data_size, X224Pdu};
-use crate::{per, DecodeResult, EncodeResult, PduError};
+use crate::{impl_x224_pdu_borrowing, impl_x224_pdu_pod, per, DecodeResult, EncodeResult, PduError};
 
 // T.125 MCS is defined in:
 //

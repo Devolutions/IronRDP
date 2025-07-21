@@ -10,6 +10,7 @@ use ironrdp_connector::{
 };
 use ironrdp_core::{other_err, WriteBuf};
 use ironrdp_pdu::PduHint;
+use tracing::debug;
 
 #[derive(Debug)]
 pub(crate) enum CredsspState {

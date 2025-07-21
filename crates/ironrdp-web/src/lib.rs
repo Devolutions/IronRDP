@@ -14,9 +14,6 @@ extern crate getrandom as _;
 extern crate getrandom2 as _;
 extern crate time as _;
 
-#[macro_use]
-extern crate tracing;
-
 mod canvas;
 mod clipboard;
 mod error;
@@ -27,6 +24,8 @@ mod rdp_file;
 mod session;
 
 mod wasm_bridge {
+    use tracing::debug;
+
     struct Api;
 
     impl iron_remote_desktop::RemoteDesktopApi for Api {

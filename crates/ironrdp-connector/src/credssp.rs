@@ -6,8 +6,11 @@ use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
 use sspi::Username;
+use tracing::debug;
 
-use crate::{ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written};
+use crate::{
+    custom_err, general_err, ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct KerberosConfig {

@@ -3,8 +3,7 @@
 #![allow(clippy::unwrap_used)]
 #![allow(unreachable_pub)]
 
-#[macro_use]
-mod macros;
+pub mod macros;
 
 mod bin_install;
 mod bin_version;

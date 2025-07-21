@@ -1,4 +1,5 @@
 use ironrdp_pdu::gcc::{ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorOrientation};
+use lazy_static::lazy_static;
 
 pub const MONITOR_DATA_WITHOUT_MONITORS_BUFFER: [u8; 12] =
     [0x00, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];

@@ -13,6 +13,7 @@ use ironrdp_core::{
 };
 use ironrdp_pdu::utils::{decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{read_padding, write_padding, PduError};
+use tracing::error;
 
 use super::esc::rpce;
 use super::{PacketId, SharedHeader};

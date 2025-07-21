@@ -1,9 +1,11 @@
+use array_concat::{concat_arrays, concat_arrays_size};
 use ironrdp_pdu::gcc::{
     ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ColorDepth, ConnectionType, HighColorDepth,
     KeyboardType, RdpVersion, SecureAccessSequence, ServerCoreData, ServerCoreOptionalData, ServerEarlyCapabilityFlags,
     SupportedColorDepths,
 };
 use ironrdp_pdu::nego::SecurityProtocol;
+use lazy_static::lazy_static;
 
 pub const CLIENT_CORE_DATA_BUFFER: [u8; 128] = [
     0x04, 0x00, 0x08, 0x00, // version

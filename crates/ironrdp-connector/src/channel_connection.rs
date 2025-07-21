@@ -4,8 +4,11 @@ use std::collections::HashSet;
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{mcs, PduHint};
+use tracing::{debug, warn};
 
-use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written};
+use crate::{
+    general_err, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written,
+};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]

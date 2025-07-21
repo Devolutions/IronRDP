@@ -1,10 +1,12 @@
 use std::borrow::Cow;
 
+use array_concat::{concat_arrays, concat_arrays_size};
 use ironrdp_pdu::mcs::{
     AttachUserConfirm, AttachUserRequest, ChannelJoinConfirm, ChannelJoinRequest, ConnectInitial, ConnectResponse,
     DisconnectProviderUltimatum, DisconnectReason, DomainParameters, ErectDomainPdu, OwnedSendDataIndication,
     OwnedSendDataRequest, SendDataIndication, SendDataRequest,
 };
+use lazy_static::lazy_static;
 
 use crate::conference_create::{
     CONFERENCE_CREATE_REQUEST, CONFERENCE_CREATE_REQUEST_BUFFER, CONFERENCE_CREATE_RESPONSE,

@@ -1,13 +1,11 @@
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
 
-#[macro_use]
-extern crate tracing;
-
 use anyhow::Context as _;
 use ironrdp_client::app::App;
 use ironrdp_client::config::{ClipboardType, Config};
 use ironrdp_client::rdp::{DvcPipeProxyFactory, RdpClient, RdpInputEvent, RdpOutputEvent};
 use tokio::runtime;
+use tracing::debug;
 use winit::event_loop::EventLoop;
 
 fn main() -> anyhow::Result<()> {

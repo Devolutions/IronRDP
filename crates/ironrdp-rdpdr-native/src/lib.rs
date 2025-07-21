@@ -10,7 +10,6 @@
 #![warn(clippy::ptr_cast_constness)]
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-#[macro_use]
 extern crate tracing;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

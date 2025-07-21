@@ -9,7 +9,7 @@ use tap::prelude::*;
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::X224Pdu;
-use crate::{DecodeResult, EncodeResult, Pdu as _};
+use crate::{impl_x224_pdu_pod, DecodeResult, EncodeResult, Pdu as _};
 
 bitflags! {
     /// A 32-bit, unsigned integer that contains flags indicating the supported security protocols.

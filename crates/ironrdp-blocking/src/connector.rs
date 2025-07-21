@@ -9,6 +9,7 @@ use ironrdp_connector::{
     Sequence as _, ServerName, State as _,
 };
 use ironrdp_core::WriteBuf;
+use tracing::{debug, info, instrument, trace};
 
 use crate::framed::Framed;
 
