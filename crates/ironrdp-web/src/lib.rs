@@ -1,5 +1,10 @@
-#![doc = include_str!("../README.md")]
-#![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
+#![cfg_attr(doc, doc = include_str!("../README.md"))]
+#![cfg_attr(
+    doc,
+    doc(
+        html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg"
+    )
+)]
 #![allow(clippy::new_without_default)] // Default trait can’t be used by wasm consumer anyway.
 
 // Silence the unused_crate_dependencies lint.
