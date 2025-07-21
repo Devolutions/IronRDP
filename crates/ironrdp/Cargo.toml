@@ -31,6 +31,7 @@ dvc = ["dep:ironrdp-dvc"]
 rdpdr = ["dep:ironrdp-rdpdr"]
 rdpsnd = ["dep:ironrdp-rdpsnd"]
 displaycontrol = ["dep:ironrdp-displaycontrol"]
+rdcleanpath = ["dep:ironrdp-rdcleanpath"]
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
 __bench = ["ironrdp-server/__bench"]
@@ -50,6 +51,7 @@ ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.3", optional = true } # pu
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.3", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.5", optional = true } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.3", optional = true } # public
+ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.1", optional = true } # public
 
 [dev-dependencies]
 ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.6.0" }

@@ -1,4 +1,5 @@
-﻿using SixLabors.ImageSharp;
+﻿using System.Diagnostics;
+using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 
 namespace Devolutions.IronRdp.ConnectExample
@@ -19,11 +20,30 @@ namespace Devolutions.IronRdp.ConnectExample
             var serverName = arguments["--serverName"];
             var username = arguments["--username"];
             var password = arguments["--password"];
-            var domain = arguments["--domain"];
+            arguments.TryGetValue("--domain", out var domain);
+            arguments.TryGetValue("--proxy", out var wsProxy);
+            arguments.TryGetValue("--proxyToken", out var wsProxyToken);
 
             try
             {
-                var (res, framed) = await Connection.Connect(buildConfig(serverName, username, password, domain, 1980, 1080), serverName, null);
+                ConnectionResult res;
+                Framed<Stream> framed;
+                if (wsProxyToken != null && wsProxy != null)
+                {
+                    (res, framed) = await Connection.ConnectWs(
+                        buildConfig(serverName, username, password, domain, 1980, 1080),
+                        new RdCleanPathConfig(new Uri(wsProxy), wsProxyToken),
+                        serverName,
+                        null);
+                }
+                else
+                {
+                    (res, framed) = await Connection.Connect(
+                        buildConfig(serverName, username, password, domain, 1980, 1080),
+                        serverName,
+                        null);
+                }
+
                 var decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(), res.GetDesktopSize().GetHeight());
                 var activeState = ActiveStage.New(res);
                 var keepLooping = true;
@@ -37,11 +57,11 @@ namespace Devolutions.IronRdp.ConnectExample
                         var pduReadTask = await readPduTask;
                         action = pduReadTask.Item1;
                         payload = pduReadTask.Item2;
-                        Console.WriteLine($"Action: {action}");
+                        Debug.WriteLine($"Action: {action}");
                     }
                     else
                     {
-                        Console.WriteLine("Timeout");
+                        Debug.WriteLine("Timeout");
                         break;
                     }
                     var outputIterator = activeState.Process(decodedImage, action, payload);
@@ -49,10 +69,10 @@ namespace Devolutions.IronRdp.ConnectExample
                     while (!outputIterator.IsEmpty())
                     {
                         var output = outputIterator.Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
-                        Console.WriteLine($"Output type: {output.GetType()}");
+                        Debug.WriteLine($"Output type: {output.GetType()}, Output enum type : {output.GetEnumType()}");
                         if (output.GetEnumType() == ActiveStageOutputType.Terminate)
                         {
-                            Console.WriteLine("Connection terminated.");
+                            Debug.WriteLine("Connection terminated.");
                             keepLooping = false;
                         }
 
@@ -66,8 +86,7 @@ namespace Devolutions.IronRdp.ConnectExample
                     }
                 }
 
-                saveImage(decodedImage, "output.png");
-
+                saveImage(decodedImage, "C:\\dev\\IronRDP\\output.bmp");
             }
             catch (Exception e)
             {
@@ -104,7 +123,7 @@ namespace Devolutions.IronRdp.ConnectExample
             }
 
             // Save the image as bitmap.
-            image.Save("./output.bmp");
+            image.Save(v);
         }
 
         static Dictionary<string, string>? ParseArguments(string[] args)
@@ -135,6 +154,10 @@ namespace Devolutions.IronRdp.ConnectExample
                     }
                     lastKey = arg;
                 }
+                else if (arg == "\\" || arg == "//")
+                {
+
+                }
                 else
                 {
                     if (lastKey == null)
@@ -160,7 +183,15 @@ namespace Devolutions.IronRdp.ConnectExample
 
         static bool IsValidArgument(string argument)
         {
-            var validArguments = new List<string> { "--serverName", "--username", "--password", "--domain" };
+            var validArguments = new List<string>
+            {
+                "--serverName",
+                "--username",
+                "--password",
+                "--domain",
+                "--proxy",
+                "--proxyToken"
+            };
             return validArguments.Contains(argument);
         }
 
@@ -168,19 +199,26 @@ namespace Devolutions.IronRdp.ConnectExample
         {
             Console.WriteLine("Usage: dotnet run -- [OPTIONS]");
             Console.WriteLine("Options:");
-            Console.WriteLine("  --serverName <serverName>  The name of the server to connect to.");
-            Console.WriteLine("  --username <username>      The username for connection.");
-            Console.WriteLine("  --password <password>      The password for connection.");
-            Console.WriteLine("  --domain <domain>          The domain of the server.");
-            Console.WriteLine("  --help                     Show this message and exit.");
+            Console.WriteLine("  --serverName <serverName>   The name of the server to connect to.");
+            Console.WriteLine("  --username <username>       The username for connection.");
+            Console.WriteLine("  --password <password>       The password for connection.");
+            Console.WriteLine("  --domain <domain>           The domain of the server.");
+            Console.WriteLine("  --proxy <url>               WebSocket proxy URL.");
+            Console.WriteLine("  --proxyToken <token>        Authentication token for the proxy.");
+            Console.WriteLine("  --help                      Show this message and exit.");
         }
 
-        private static Config buildConfig(string servername, string username, string password, string domain, int width, int height)
+        private static Config buildConfig(string servername, string username, string password, string? domain, int width, int height)
         {
             ConfigBuilder configBuilder = ConfigBuilder.New();
 
             configBuilder.WithUsernameAndPassword(username, password);
-            configBuilder.SetDomain(domain);
+            if (domain != null)
+            {
+                configBuilder.SetDomain(domain);
+            }
+            configBuilder.SetEnableCredssp(true);
+            configBuilder.SetEnableTls(true);
             configBuilder.SetDesktopSize((ushort)height, (ushort)width);
             configBuilder.SetClientName("IronRdp");
             configBuilder.SetClientDir("C:\\");
@@ -188,6 +226,5 @@ namespace Devolutions.IronRdp.ConnectExample
 
             return configBuilder.Build();
         }
-
     }
 }
