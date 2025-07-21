@@ -115,8 +115,12 @@ range_plus_one = "warn"
 # TODO: partial_pub_fields = "warn" (should we enable only in pdu crates?)
 
 # == Compile-time / optimization == #
+doc_include_without_cfg = "warn"
 inline_always = "warn"
+large_include_file = "warn"
 or_fun_call = "warn"
+rc_buffer = "warn"
+string_lit_chars_any = "warn"
 unnecessary_box_returns = "warn"
 
 # == Extra-pedantic clippy == #

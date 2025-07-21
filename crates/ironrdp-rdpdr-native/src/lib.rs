@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![warn(unsafe_op_in_unsafe_fn)]
 #![warn(invalid_reference_casting)]
 #![warn(clippy::undocumented_unsafe_blocks)]
