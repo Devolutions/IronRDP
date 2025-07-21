@@ -56,6 +56,7 @@ unsafe_attr_outside_unsafe = "warn"
 ambiguous_negative_literals  = "warn"
 arithmetic_overflow = "warn"
 keyword_idents_2024 = "warn"
+refining_impl_trait = "warn"
 
 # == Style, readability == #
 elided_lifetimes_in_paths = "warn" # https://quinedot.github.io/rust-learning/dont-hide.html
