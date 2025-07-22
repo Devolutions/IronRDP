@@ -3,7 +3,6 @@ import type { DeviceEvent } from './DeviceEvent';
 import type { InputTransaction } from './InputTransaction';
 import type { SessionBuilder } from './SessionBuilder';
 import type { ClipboardData } from './ClipboardData';
-import type { ConfigParser } from './ConfigParser';
 
 export interface RemoteDesktopModule {
     DesktopSize: { new (width: number, height: number): DesktopSize };
@@ -20,5 +19,4 @@ export interface RemoteDesktopModule {
         unicodePressed(unicode: string): DeviceEvent;
         unicodeReleased(unicode: string): DeviceEvent;
     };
-    ConfigParser: { new (config: string): ConfigParser };
 }

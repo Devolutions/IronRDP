@@ -6,7 +6,7 @@ import wasm_init, {
     SessionBuilder,
     ClipboardData,
     Extension,
-    ConfigParser,
+    RdpConfigParser,
 } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
 
 export async function init(log_level: string) {
@@ -14,13 +14,14 @@ export async function init(log_level: string) {
     setup(log_level);
 }
 
+export { RdpConfigParser };
+
 export const Backend = {
     DesktopSize: DesktopSize,
     InputTransaction: InputTransaction,
     SessionBuilder: SessionBuilder,
     ClipboardData: ClipboardData,
     DeviceEvent: DeviceEvent,
-    ConfigParser: ConfigParser,
 };
 
 export function preConnectionBlob(pcb: string): Extension {

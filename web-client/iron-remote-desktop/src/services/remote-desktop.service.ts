@@ -18,7 +18,6 @@ import type { Config } from './Config';
 import type { Extension } from '../interfaces/Extension';
 import { Observable } from '../lib/Observable';
 import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
-import type { ConfigParser } from '../interfaces/ConfigParser';
 
 type OnRemoteClipboardChanged = (data: ClipboardData) => void;
 type OnRemoteReceivedFormatsList = () => void;
@@ -114,10 +113,6 @@ export class RemoteDesktopService {
 
     configBuilder(): ConfigBuilder {
         return new ConfigBuilder();
-    }
-
-    configParser(config: string): ConfigParser {
-        return new this.module.ConfigParser(config);
     }
 
     async connect(config: Config): Promise<NewSessionInfo> {

@@ -2,7 +2,6 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
 mod clipboard;
-mod config;
 mod cursor;
 mod desktop_size;
 mod error;
@@ -11,7 +10,6 @@ mod input;
 mod session;
 
 pub use clipboard::{ClipboardData, ClipboardItem};
-pub use config::ConfigParser;
 pub use cursor::CursorStyle;
 pub use desktop_size::DesktopSize;
 pub use error::{IronError, IronErrorKind};
@@ -27,7 +25,6 @@ pub trait RemoteDesktopApi {
     type InputTransaction: InputTransaction;
     type ClipboardData: ClipboardData;
     type ClipboardItem: ClipboardItem;
-    type ConfigParser: ConfigParser;
     type Error: IronError;
 
     /// Called before the logger is set.
@@ -60,9 +57,6 @@ macro_rules! make_bridge {
 
         #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
         pub struct ClipboardItem(<$api as $crate::RemoteDesktopApi>::ClipboardItem);
-
-        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
-        pub struct ConfigParser(<$api as $crate::RemoteDesktopApi>::ConfigParser);
 
         #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
         pub struct IronError(<$api as $crate::RemoteDesktopApi>::Error);
@@ -433,23 +427,6 @@ macro_rules! make_bridge {
 
             pub fn value(&self) -> $crate::internal::wasm_bindgen::JsValue {
                 $crate::ClipboardItem::value(&self.0).into()
-            }
-        }
-
-        #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
-        #[doc(hidden)]
-        impl ConfigParser {
-            #[wasm_bindgen(constructor)]
-            pub fn create(config: &str) -> Self {
-                Self(<<$api as $crate::RemoteDesktopApi>::ConfigParser as $crate::ConfigParser>::create(config))
-            }
-
-            pub fn get_str(&self, key: &str) -> Option<String> {
-                $crate::ConfigParser::get_str(&self.0, key)
-            }
-
-            pub fn get_int(&self, key: &str) -> Option<i32> {
-                $crate::ConfigParser::get_int(&self.0, key)
             }
         }
 

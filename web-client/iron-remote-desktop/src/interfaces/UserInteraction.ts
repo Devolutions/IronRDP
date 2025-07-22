@@ -5,7 +5,6 @@ import { ConfigBuilder } from '../services/ConfigBuilder';
 import type { Config } from '../services/Config';
 import type { Extension } from './Extension';
 import type { Callback } from '../lib/Observable';
-import type { ConfigParser } from './ConfigParser';
 
 export interface UserInteraction {
     setVisibility(state: boolean): void;
@@ -13,8 +12,6 @@ export interface UserInteraction {
     setScale(scale: ScreenScale): void;
 
     configBuilder(): ConfigBuilder;
-
-    configParser(config: string): ConfigParser;
 
     connect(config: Config): Promise<NewSessionInfo>;
 

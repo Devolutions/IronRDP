@@ -7,7 +7,6 @@ import type { ScreenScale } from '../enums/ScreenScale';
 import { ConfigBuilder } from './ConfigBuilder';
 import { Config } from './Config';
 import type { Extension } from '../interfaces/Extension';
-import type { ConfigParser } from '../interfaces/ConfigParser';
 
 export class PublicAPI {
     private remoteDesktopService: RemoteDesktopService;
@@ -18,10 +17,6 @@ export class PublicAPI {
 
     private configBuilder(): ConfigBuilder {
         return this.remoteDesktopService.configBuilder();
-    }
-
-    private configParser(config: string): ConfigParser {
-        return this.remoteDesktopService.configParser(config);
     }
 
     private connect(config: Config): Promise<NewSessionInfo> {
@@ -74,7 +69,6 @@ export class PublicAPI {
         return {
             setVisibility: this.setVisibility.bind(this),
             configBuilder: this.configBuilder.bind(this),
-            configParser: this.configParser.bind(this),
             connect: this.connect.bind(this),
             setScale: this.setScale.bind(this),
             onSessionEvent: (callback) => {
