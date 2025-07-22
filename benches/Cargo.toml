@@ -19,7 +19,7 @@ ironrdp = { path = "../crates/ironrdp", features = [
     "__bench",
 ] }
 pico-args = "0.5.0"
-tokio = { version = "1", features = ["sync", "fs"] }
+tokio = { version = "1", features = ["sync", "fs", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = { version = "0.1", features = ["log"] }
 
