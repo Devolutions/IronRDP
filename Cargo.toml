@@ -135,6 +135,7 @@ wildcard_dependencies = "warn"
 print_stderr = "warn"
 print_stdout = "warn"
 dbg_macro = "warn"
+todo = "warn"
 
 [profile.dev]
 opt-level = 1
