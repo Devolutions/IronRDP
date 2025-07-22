@@ -4,7 +4,7 @@ impl iron_remote_desktop::ConfigParser for ConfigParser {
     fn create(config: &str) -> Self {
         let mut properties = ironrdp_propertyset::PropertySet::new();
 
-        if let Err(errors) = ironrdp_rdpfile::load(&mut properties, &config) {
+        if let Err(errors) = ironrdp_rdpfile::load(&mut properties, config) {
             for e in errors {
                 error!("Error when reading configuration: {e}");
             }
@@ -14,18 +14,10 @@ impl iron_remote_desktop::ConfigParser for ConfigParser {
     }
 
     fn get_str(&self, key: &str) -> Option<String> {
-        if let Some(str) = self.0.get::<&str>(&key) {
-            Some(str.to_owned())
-        } else {
-            None
-        }
+        self.0.get::<&str>(key).map(|str| str.to_owned())
     }
 
     fn get_int(&self, key: &str) -> Option<i32> {
-        if let Some(num) = self.0.get::<i32>(&key) {
-            Some(num)
-        } else {
-            None
-        }
+        self.0.get::<i32>(key)
     }
 }
