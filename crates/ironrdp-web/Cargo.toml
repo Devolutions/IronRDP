@@ -37,6 +37,8 @@ ironrdp-core.path = "../ironrdp-core"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-futures.path = "../ironrdp-futures"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
+ironrdp-propertyset.path = "../ironrdp-propertyset"
+ironrdp-rdpfile.path = "../ironrdp-rdpfile"
 iron-remote-desktop.path = "../iron-remote-desktop"
 
 # WASM

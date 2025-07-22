@@ -13,6 +13,7 @@ extern crate tracing;
 
 mod canvas;
 mod clipboard;
+mod config;
 mod error;
 mod image;
 mod input;
@@ -30,6 +31,7 @@ mod wasm_bridge {
         type InputTransaction = crate::input::InputTransaction;
         type ClipboardData = crate::clipboard::ClipboardData;
         type ClipboardItem = crate::clipboard::ClipboardItem;
+        type ConfigParser = crate::config::ConfigParser;
         type Error = crate::error::IronError;
 
         fn post_setup() {
