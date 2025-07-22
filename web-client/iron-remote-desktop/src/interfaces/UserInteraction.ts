@@ -14,7 +14,7 @@ export interface UserInteraction {
 
     configBuilder(): ConfigBuilder;
 
-    configParser(config: String): ConfigParser;
+    configParser(config: string): ConfigParser;
 
     connect(config: Config): Promise<NewSessionInfo>;
 
