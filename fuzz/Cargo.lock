@@ -302,7 +302,6 @@ version = "0.1.3"
 dependencies = [
  "ironrdp-core",
  "png",
- "thiserror",
 ]
 
 [[package]]

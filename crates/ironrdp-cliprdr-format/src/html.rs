@@ -1,15 +1,43 @@
-use thiserror::Error;
-
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum HtmlError {
-    #[error("invalid CF_HTML format")]
     InvalidFormat,
-    #[error("invalid UTF-8")]
-    InvalidUtf8(#[from] core::str::Utf8Error),
-    #[error("failed to parse integer")]
-    InvalidInteger(#[from] core::num::ParseIntError),
-    #[error("invalid integer conversion")]
+    InvalidUtf8(core::str::Utf8Error),
+    InvalidInteger(core::num::ParseIntError),
     InvalidConversion,
+}
+
+impl core::fmt::Display for HtmlError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            HtmlError::InvalidFormat => write!(f, "invalid CF_HTML format"),
+            HtmlError::InvalidUtf8(_error) => write!(f, "invalid UTF-8"),
+            HtmlError::InvalidInteger(_error) => write!(f, "failed to parse integer"),
+            HtmlError::InvalidConversion => write!(f, "invalid integer conversion"),
+        }
+    }
+}
+
+impl core::error::Error for HtmlError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            HtmlError::InvalidFormat => None,
+            HtmlError::InvalidUtf8(utf8_error) => Some(utf8_error),
+            HtmlError::InvalidInteger(parse_int_error) => Some(parse_int_error),
+            HtmlError::InvalidConversion => None,
+        }
+    }
+}
+
+impl From<core::str::Utf8Error> for HtmlError {
+    fn from(error: core::str::Utf8Error) -> Self {
+        HtmlError::InvalidUtf8(error)
+    }
+}
+
+impl From<core::num::ParseIntError> for HtmlError {
+    fn from(error: core::num::ParseIntError) -> Self {
+        HtmlError::InvalidInteger(error)
+    }
 }
 
 /// Converts `CF_HTML` format to plain HTML text.
