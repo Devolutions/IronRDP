@@ -1515,7 +1515,7 @@ dependencies = [
  "ironrdp-cliprdr-native",
  "ironrdp-core",
  "sspi",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2622,7 +2622,7 @@ dependencies = [
  "pkcs1",
  "sha1",
  "tap",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "x509-cert",
 ]
 
