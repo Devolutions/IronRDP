@@ -312,7 +312,11 @@ pub(crate) fn query_volume_information(
                                         // blocks_available() may have different integer type on different platforms.
                                         // so we need to cast it to u32 uniformly. so if it is u32, it will emit 'useless conversion'
                                         // warning, i choose to mute it.
-                                        #[expect(clippy::useless_conversion)]
+                                        #[expect(
+                                            clippy::allow_attributes,
+                                            reason = "we have to use allow as the useless_conversion isn't triggered on some platforms"
+                                        )]
+                                        #[allow(clippy::useless_conversion)]
                                         volume_serial_number: u32::try_from(statvfs.blocks_available()).unwrap(),
                                         supports_objects: Boolean::False,
                                         volume_label: "IRON_RDP".to_owned(),
