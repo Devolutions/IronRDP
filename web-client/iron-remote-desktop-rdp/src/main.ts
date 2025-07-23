@@ -6,12 +6,15 @@ import wasm_init, {
     SessionBuilder,
     ClipboardData,
     Extension,
+    RdpFile,
 } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
 
 export async function init(log_level: string) {
     await wasm_init();
     setup(log_level);
 }
+
+export { RdpFile };
 
 export const Backend = {
     DesktopSize: DesktopSize,

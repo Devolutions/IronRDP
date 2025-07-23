@@ -18,6 +18,7 @@ extern crate tracing;
 
 mod canvas;
 mod clipboard;
+mod config_parser;
 mod error;
 mod image;
 mod input;
