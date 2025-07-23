@@ -1,18 +1,51 @@
 use ironrdp_core::{decode, DecodeError};
 use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlaneDefinition};
-use thiserror::Error;
 
 use crate::color_conversion::Rgb;
 use crate::rdp6::rle::{decompress_8bpp_plane, RleDecodeError};
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum BitmapDecodeError {
-    #[error("failed to decode RDP6 bitmap stream PDU: {0}")]
-    Decode(#[from] DecodeError),
-    #[error("failed to perform RLE decompression of RDP6 bitmap stream: {0}")]
-    Rle(#[from] RleDecodeError),
-    #[error("color plane data size provided in PDU is not sufficient to reconstruct the bitmap")]
+    Decode(DecodeError),
+    Rle(RleDecodeError),
     InvalidUncompressedDataSize,
+}
+
+impl core::fmt::Display for BitmapDecodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BitmapDecodeError::Decode(_error) => write!(f, "failed to decode RDP6 bitmap stream PDU"),
+            BitmapDecodeError::Rle(_error) => {
+                write!(f, "failed to perform RLE decompression of RDP6 bitmap stream")
+            }
+            BitmapDecodeError::InvalidUncompressedDataSize => write!(
+                f,
+                "color plane data size provided in PDU is not sufficient to reconstruct the bitmap"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for BitmapDecodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            BitmapDecodeError::Decode(err) => Some(err),
+            BitmapDecodeError::Rle(err) => Some(err),
+            BitmapDecodeError::InvalidUncompressedDataSize => None,
+        }
+    }
+}
+
+impl From<DecodeError> for BitmapDecodeError {
+    fn from(err: DecodeError) -> Self {
+        BitmapDecodeError::Decode(err)
+    }
+}
+
+impl From<RleDecodeError> for BitmapDecodeError {
+    fn from(err: RleDecodeError) -> Self {
+        BitmapDecodeError::Rle(err)
+    }
 }
 
 /// Implements decoding of RDP6 bitmap stream PDU (see [`BitmapStreamPdu`])

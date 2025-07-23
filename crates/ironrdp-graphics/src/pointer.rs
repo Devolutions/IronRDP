@@ -21,20 +21,55 @@
 
 use ironrdp_core::ReadCursor;
 use ironrdp_pdu::pointer::{ColorPointerAttribute, LargePointerAttribute, PointerAttribute};
-use thiserror::Error;
 
 use crate::color_conversion::rdp_16bit_to_rgb;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum PointerError {
-    #[error("invalid pointer xorMask size. Expected: {expected}, actual: {actual}")]
     InvalidXorMaskSize { expected: usize, actual: usize },
-    #[error("invalid pointer andMask size. Expected: {expected}, actual: {actual}")]
     InvalidAndMaskSize { expected: usize, actual: usize },
-    #[error("not supported pointer bpp: {bpp}")]
     NotSupportedBpp { bpp: u16 },
-    #[error(transparent)]
-    Pdu(#[from] ironrdp_pdu::PduError),
+    Pdu(ironrdp_pdu::PduError),
+}
+
+impl core::fmt::Display for PointerError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PointerError::InvalidXorMaskSize { expected, actual } => {
+                write!(
+                    f,
+                    "invalid pointer xorMask size. Expected: {expected}, actual: {actual}"
+                )
+            }
+            PointerError::InvalidAndMaskSize { expected, actual } => {
+                write!(
+                    f,
+                    "invalid pointer andMask size. Expected: {expected}, actual: {actual}"
+                )
+            }
+            PointerError::NotSupportedBpp { bpp } => {
+                write!(f, "not supported pointer bpp: {bpp}")
+            }
+            PointerError::Pdu(err) => err.fmt(f),
+        }
+    }
+}
+
+impl core::error::Error for PointerError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            PointerError::InvalidXorMaskSize { .. } => None,
+            PointerError::InvalidAndMaskSize { .. } => None,
+            PointerError::NotSupportedBpp { .. } => None,
+            PointerError::Pdu(error) => error.source(),
+        }
+    }
+}
+
+impl From<ironrdp_pdu::PduError> for PointerError {
+    fn from(error: ironrdp_pdu::PduError) -> Self {
+        PointerError::Pdu(error)
+    }
 }
 
 /// Represents RDP pointer in decoded form (color channels stored as RGBA pre-multiplied values)
