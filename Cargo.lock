@@ -2482,7 +2482,6 @@ version = "0.3.0"
 dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-core",
- "thiserror 1.0.69",
  "tracing",
  "windows 0.61.3",
 ]

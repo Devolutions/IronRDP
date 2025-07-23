@@ -11,7 +11,6 @@ use ironrdp_cliprdr::backend::{ClipboardMessageProxy, CliprdrBackend, CliprdrBac
 use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FormatDataRequest, FormatDataResponse,
 };
-use thiserror::Error;
 use tracing::error;
 use windows::core::{s, Error};
 pub use windows::Win32::Foundation::HWND;
@@ -31,46 +30,69 @@ const WM_CLIPRDR_BACKEND_EVENT: u32 = WM_USER;
 
 pub type WinCliprdrResult<T> = Result<T, WinCliprdrError>;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum WinCliprdrError {
-    #[error("failed to register clipboard format listener")]
     AddClipboardFormatListener,
-
-    #[error("failed to enumerate formats available in the current clipboard")]
     FormatsEnumeration,
-
-    #[error("clipboard is busy")]
     ClipboardAccessDenied,
-
-    #[error("failed to open the clipboard")]
     ClipboardOpen,
-
-    #[error("failed to empty the clipboard")]
     ClipboardEmpty,
-
-    #[error("failed to convert UTF-16 string to UTF-8")]
-    Uft16Conversion,
-
-    #[error("failed to get current clipboard data")]
+    Utf16Conversion,
     ClipboardData,
-
-    #[error("failed to set clipboard data")]
     SetClipboardData,
-
-    #[error("failed to subclass window")]
     WindowSubclass,
-
-    #[error("failed to allocate global memory")]
     Alloc,
-
-    #[error("failed to receive data from remote clipboard")]
     DataReceiveTimeout,
-
-    #[error("failed to render clipboard format")]
     RenderFormat,
+    WinAPI(Error),
+}
 
-    #[error("WinAPI error")]
-    WinAPI(#[from] Error),
+impl core::fmt::Display for WinCliprdrError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            WinCliprdrError::AddClipboardFormatListener => write!(f, "failed to register clipboard format listener"),
+            WinCliprdrError::FormatsEnumeration => {
+                write!(f, "failed to enumerate formats available in the current clipboard")
+            }
+            WinCliprdrError::ClipboardAccessDenied => write!(f, "clipboard is busy or denied"),
+            WinCliprdrError::ClipboardOpen => write!(f, "failed to open the clipboard"),
+            WinCliprdrError::ClipboardEmpty => write!(f, "failed to empty the clipboard"),
+            WinCliprdrError::Utf16Conversion => write!(f, "failed to convert UTF-16 string to UTF-8"),
+            WinCliprdrError::ClipboardData => write!(f, "failed to get current clipboard data"),
+            WinCliprdrError::SetClipboardData => write!(f, "failed to set clipboard data"),
+            WinCliprdrError::WindowSubclass => write!(f, "failed to subclass window"),
+            WinCliprdrError::Alloc => write!(f, "failed to allocate global memory"),
+            WinCliprdrError::DataReceiveTimeout => write!(f, "failed to receive data from remote clipboard"),
+            WinCliprdrError::RenderFormat => write!(f, "failed to render clipboard format"),
+            WinCliprdrError::WinAPI(_error) => write!(f, "WinAPI error"),
+        }
+    }
+}
+
+impl core::error::Error for WinCliprdrError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            WinCliprdrError::AddClipboardFormatListener => None,
+            WinCliprdrError::FormatsEnumeration => None,
+            WinCliprdrError::ClipboardAccessDenied => None,
+            WinCliprdrError::ClipboardOpen => None,
+            WinCliprdrError::ClipboardEmpty => None,
+            WinCliprdrError::Utf16Conversion => None,
+            WinCliprdrError::ClipboardData => None,
+            WinCliprdrError::SetClipboardData => None,
+            WinCliprdrError::WindowSubclass => None,
+            WinCliprdrError::Alloc => None,
+            WinCliprdrError::DataReceiveTimeout => None,
+            WinCliprdrError::RenderFormat => None,
+            WinCliprdrError::WinAPI(error) => Some(error),
+        }
+    }
+}
+
+impl From<Error> for WinCliprdrError {
+    fn from(err: Error) -> Self {
+        WinCliprdrError::WinAPI(err)
+    }
 }
 
 /// Sent from the clipboard backend shim to the actual WinAPI subproc event loop
