@@ -19,7 +19,7 @@ impl OwnedOsClipboard {
     }
 
     /// Enumerates all available formats in the current clipboard.
-    #[allow(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
+    #[expect(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
     pub(crate) fn enum_available_formats(&mut self) -> Result<Vec<ClipboardFormat>, WinCliprdrError> {
         const DEFAULT_FORMATS_CAPACITY: usize = 16;
         // Sane default for format name. If format name is longer than this,
@@ -74,7 +74,7 @@ impl OwnedOsClipboard {
     /// Empties the clipboard
     ///
     /// It is required to empty clipboard before setting any delay-rendered data.
-    #[allow(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
+    #[expect(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
     pub(crate) fn clear(&mut self) -> Result<(), WinCliprdrError> {
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `EmptyClipboard`.
@@ -83,7 +83,7 @@ impl OwnedOsClipboard {
         Ok(())
     }
 
-    #[allow(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
+    #[expect(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
     pub(crate) fn delay_render(&mut self, format: ClipboardFormatId) -> Result<(), WinCliprdrError> {
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `SetClipboardData`.

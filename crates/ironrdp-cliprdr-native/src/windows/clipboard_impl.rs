@@ -347,7 +347,7 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
         }
         // Sent by the OS when delay-rendered data is requested for rendering.
         WM_RENDERFORMAT => {
-            #[allow(clippy::cast_possible_truncation)] // should never truncate in practice
+            #[expect(clippy::cast_possible_truncation)] // should never truncate in practice
             ctx.handle_event(BackendEvent::RenderFormat(ClipboardFormatId::new(wparam.0 as u32)));
         }
         // Sent by the OS when all delay-rendered data is requested for rendering.

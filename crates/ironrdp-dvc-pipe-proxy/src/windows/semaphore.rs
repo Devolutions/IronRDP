@@ -55,7 +55,7 @@ impl Semaphore {
         Ok(Self {
             // See `unsafe impl Send` comment.
             // TODO(@CBenoit): Verify this comment.
-            #[allow(clippy::arc_with_non_send_sync)]
+            #[expect(clippy::arc_with_non_send_sync)]
             handle: Arc::new(handle),
         })
     }
