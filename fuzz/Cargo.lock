@@ -292,7 +292,6 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
- "thiserror",
  "tracing",
 ]
 
@@ -374,7 +373,6 @@ dependencies = [
  "lazy_static",
  "num-derive",
  "num-traits",
- "thiserror",
  "yuv",
 ]
 

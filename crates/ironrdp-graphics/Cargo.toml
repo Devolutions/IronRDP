@@ -25,7 +25,6 @@ byteorder = "1.5" # TODO: remove
 lazy_static.workspace = true # Legacy crate; prefer std::sync::LazyLock or LazyCell
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
-thiserror = "1" # FIXME: handwrite the Error trait implementations.
 yuv = { version = "0.8", features = ["rdp"] }
 
 [dev-dependencies]

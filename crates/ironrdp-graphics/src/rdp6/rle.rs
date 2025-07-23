@@ -3,35 +3,59 @@ use std::io::{Read, Write};
 
 use byteorder::ReadBytesExt;
 use ironrdp_core::WriteCursor;
-use thiserror::Error;
 
 /// Maximum possible segment size is 47 (run_length = 2, raw_bytes_count = 15), which is treated as
 /// special mode segment, which repeats last decoded byte in scanline 32 + raw_bytes_count times
 const MAX_DECODED_SEGMENT_SIZE: usize = 47;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum RleDecodeError {
-    #[error("failed to read RLE-compressed data: {0}")]
-    ReadCompressedData(#[source] std::io::Error),
-
-    #[error("failed to write decompressed data: {0}")]
-    WriteDecompressedData(#[source] std::io::Error),
-
-    #[error("invalid RLE segment header")]
+    ReadCompressedData(std::io::Error),
+    WriteDecompressedData(std::io::Error),
     InvalidSegmentHeader,
-
-    #[error("decoded scanline segments length exceeds scanline length")]
     SegmentDoNotFitScanline,
 }
 
-#[derive(Debug, Error)]
-pub enum RleEncodeError {
-    #[error("not enough data to compress")]
-    NotEnoughBytes,
+impl core::fmt::Display for RleDecodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RleDecodeError::ReadCompressedData(_error) => write!(f, "failed to read RLE-compressed data"),
+            RleDecodeError::WriteDecompressedData(_error) => write!(f, "failed to write decompressed data"),
+            RleDecodeError::InvalidSegmentHeader => write!(f, "invalid RLE segment header"),
+            RleDecodeError::SegmentDoNotFitScanline => {
+                write!(f, "decoded scanline segments length exceeds scanline length")
+            }
+        }
+    }
+}
 
-    #[error("destination buffer is too small")]
+impl core::error::Error for RleDecodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            RleDecodeError::ReadCompressedData(error) => Some(error),
+            RleDecodeError::WriteDecompressedData(error) => Some(error),
+            RleDecodeError::InvalidSegmentHeader => None,
+            RleDecodeError::SegmentDoNotFitScanline => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum RleEncodeError {
+    NotEnoughBytes,
     BufferTooSmall,
 }
+
+impl core::fmt::Display for RleEncodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RleEncodeError::NotEnoughBytes => write!(f, "not enough data to compress"),
+            RleEncodeError::BufferTooSmall => write!(f, "destination buffer is too small"),
+        }
+    }
+}
+
+impl core::error::Error for RleEncodeError {}
 
 /// RLE-encoded color plane decoder implementation for RDP6 bitmap stream
 #[derive(Debug)]
