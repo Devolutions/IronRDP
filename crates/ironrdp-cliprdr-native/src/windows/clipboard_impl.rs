@@ -261,7 +261,7 @@ impl WinClipboardImpl {
                 const MAX_PROCESSING_ATTEMPTS: u32 = 10;
                 const PROCESSING_TIMEOUT_MS: u32 = 100;
 
-                #[allow(clippy::arithmetic_side_effects)]
+                #[expect(clippy::arithmetic_side_effects)]
                 // self.attempt can’t be greater than MAX_PROCESSING_ATTEMPTS, so the arithmetic is safe here
                 if self.attempt < MAX_PROCESSING_ATTEMPTS {
                     self.attempt += 1;

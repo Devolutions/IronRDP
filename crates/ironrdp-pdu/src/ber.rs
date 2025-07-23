@@ -3,14 +3,13 @@ use ironrdp_core::{cast_length, ensure_size, invalid_field_err, ReadCursor, Writ
 use crate::{DecodeResult, EncodeResult};
 
 #[repr(u8)]
-#[allow(unused)]
 pub(crate) enum Pc {
     Primitive = 0x00,
     Construct = 0x20,
 }
 
 #[repr(u8)]
-#[allow(unused)]
+#[expect(unused)]
 enum Class {
     Universal = 0x00,
     Application = 0x40,
@@ -19,7 +18,7 @@ enum Class {
 }
 
 #[repr(u8)]
-#[allow(unused)]
+#[expect(unused)]
 enum Tag {
     Mask = 0x1F,
     Boolean = 0x01,

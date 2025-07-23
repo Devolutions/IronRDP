@@ -124,6 +124,7 @@ string_lit_chars_any = "warn"
 unnecessary_box_returns = "warn"
 
 # == Extra-pedantic clippy == #
+allow_attributes = "warn"
 collection_is_never_read = "warn"
 copy_iterator = "warn"
 expl_impl_clone_on_copy = "warn"

@@ -97,7 +97,7 @@ pub fn plain_html_to_cf_html(fragment: &str) -> String {
     let mut write_header = |key: &str, value: &str| {
         // This relation holds: key.len() + value.len() + ":\r\n".len() < usize::MAX
         // Rationale: we know all possible values (see code below), and they are much smaller than `usize::MAX`.
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(clippy::arithmetic_side_effects)]
         let size = key.len() + value.len() + ":\r\n".len();
         buffer.reserve(size);
 
@@ -136,7 +136,7 @@ pub fn plain_html_to_cf_html(fragment: &str) -> String {
     let mut replace_placeholder = |value_begin_idx: usize, header_value: &str| {
         // We know that: value_begin_idx + POS_PLACEHOLDER.len() < usize::MAX
         // Rationale: the headers are written at the beginning, and we’re not indexing outside of the string.
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(clippy::arithmetic_side_effects)]
         let value_end_idx = value_begin_idx + POS_PLACEHOLDER.len();
 
         buffer.replace_range(value_begin_idx..value_end_idx, header_value);

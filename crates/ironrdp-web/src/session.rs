@@ -616,7 +616,7 @@ impl iron_remote_desktop::Session for Session {
                             let hotspot_y = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale);
 
                             // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
-                            #[allow(clippy::arithmetic_side_effects)]
+                            #[expect(clippy::arithmetic_side_effects)]
                             let resized_rgba_buffer_size = usize::from(scaled_width * scaled_height * 4);
 
                             let mut rgba_resized = vec![0u8; resized_rgba_buffer_size];
@@ -856,7 +856,7 @@ fn build_config(
             lossy_compression: true,
             codecs: client_codecs_capabilities(&[]).unwrap(),
         }),
-        #[allow(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
+        #[expect(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0)
@@ -1095,8 +1095,8 @@ where
     }
 }
 
-#[allow(clippy::cast_sign_loss)]
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_sign_loss)]
+#[expect(clippy::cast_possible_truncation)]
 fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
 }

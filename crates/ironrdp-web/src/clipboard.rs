@@ -681,7 +681,7 @@ impl iron_remote_desktop::ClipboardItem for ClipboardItem {
         &self.mime_type
     }
 
-    #[allow(refining_impl_trait)]
+    #[expect(refining_impl_trait)]
     fn value(&self) -> JsValue {
         match &self.value {
             ClipboardItemValue::Text(text) => JsValue::from_str(text),

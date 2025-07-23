@@ -404,7 +404,7 @@ impl Sequence for Acceptor {
                     })
                     .unwrap_or_default();
 
-                #[allow(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing.
+                #[expect(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing.
                 let channels = joined
                     .into_iter()
                     .enumerate()

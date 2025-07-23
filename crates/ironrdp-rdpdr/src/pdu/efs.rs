@@ -593,7 +593,7 @@ struct GeneralCapabilitySet {
 }
 
 impl GeneralCapabilitySet {
-    #[allow(clippy::manual_bits)]
+    #[expect(clippy::manual_bits)]
     const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {

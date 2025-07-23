@@ -243,7 +243,7 @@ impl RxBuffer {
                 return;
             };
 
-            #[allow(clippy::arithmetic_side_effects)]
+            #[expect(clippy::arithmetic_side_effects)]
             while self.idx < last.len() && filled < data.len() {
                 data[filled] = last[self.idx];
                 assert!(filled < usize::MAX);

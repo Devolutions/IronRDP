@@ -70,8 +70,8 @@ struct PointerRenderingState {
     update_rectangle: InclusiveRectangle,
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::cast_lossless)] // FIXME
+#[expect(clippy::too_many_arguments)]
+#[expect(clippy::cast_lossless)] // FIXME
 fn copy_cursor_data(
     from: &[u8],
     from_pos: (usize, usize),
@@ -311,9 +311,7 @@ impl DecodedImage {
         }
     }
 
-    #[allow(clippy::cast_lossless)] // FIXME
-    #[allow(clippy::cast_possible_wrap)] // FIXME
-    #[allow(clippy::cast_possible_truncation)] // FIXME
+    #[expect(clippy::cast_possible_wrap)] // FIXME
     fn recalculate_pointer_geometry(&mut self) {
         let x = self.pointer_x;
         let y = self.pointer_y;
