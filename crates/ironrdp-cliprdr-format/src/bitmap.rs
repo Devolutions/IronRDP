@@ -2,31 +2,65 @@ use ironrdp_core::{
     cast_int, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
     WriteCursor,
 };
-use thiserror::Error;
 
 /// Maximum size of PNG image that could be placed on the clipboard.
 const MAX_BUFFER_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum BitmapError {
-    #[error("decoding error")]
     Decode(ironrdp_core::DecodeError),
-    #[error("encoding error")]
     Encode(ironrdp_core::EncodeError),
-    #[error("unsupported bitmap: {0}")]
     Unsupported(&'static str),
-    #[error("one of bitmap's dimensions is invalid")]
     InvalidSize,
-    #[error("buffer size required for allocation is too big")]
     BufferTooBig,
-    #[error("image width is too big")]
     WidthTooBig,
-    #[error("image height is too big")]
     HeightTooBig,
-    #[error("PNG encoding error")]
-    PngEncode(#[from] png::EncodingError),
-    #[error("PNG decoding error")]
-    PngDecode(#[from] png::DecodingError),
+    PngEncode(png::EncodingError),
+    PngDecode(png::DecodingError),
+}
+
+impl core::fmt::Display for BitmapError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BitmapError::Decode(_error) => write!(f, "decoding error"),
+            BitmapError::Encode(_error) => write!(f, "encoding error"),
+            BitmapError::Unsupported(s) => write!(f, "unsupported bitmap: {s}"),
+            BitmapError::InvalidSize => write!(f, "one of bitmap's dimensions is invalid"),
+            BitmapError::BufferTooBig => write!(f, "buffer size required for allocation is too big"),
+            BitmapError::WidthTooBig => write!(f, "image width is too big"),
+            BitmapError::HeightTooBig => write!(f, "image height is too big"),
+            BitmapError::PngEncode(_error) => write!(f, "PNG encoding error"),
+            BitmapError::PngDecode(_error) => write!(f, "PNG decoding error"),
+        }
+    }
+}
+
+impl core::error::Error for BitmapError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            BitmapError::Decode(error) => Some(error),
+            BitmapError::Encode(error) => Some(error),
+            BitmapError::Unsupported(_) => None,
+            BitmapError::InvalidSize => None,
+            BitmapError::BufferTooBig => None,
+            BitmapError::WidthTooBig => None,
+            BitmapError::HeightTooBig => None,
+            BitmapError::PngEncode(encoding_error) => Some(encoding_error),
+            BitmapError::PngDecode(decoding_error) => Some(decoding_error),
+        }
+    }
+}
+
+impl From<png::EncodingError> for BitmapError {
+    fn from(error: png::EncodingError) -> Self {
+        BitmapError::PngEncode(error)
+    }
+}
+
+impl From<png::DecodingError> for BitmapError {
+    fn from(error: png::DecodingError) -> Self {
+        BitmapError::PngDecode(error)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
