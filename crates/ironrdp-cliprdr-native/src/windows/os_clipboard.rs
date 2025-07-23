@@ -46,7 +46,7 @@ impl OwnedOsClipboard {
 
                 if read_chars != 0 {
                     let format_name = String::from_utf16(format_name_w[..read_chars].as_ref())
-                        .map_err(|_| WinCliprdrError::Uft16Conversion)?;
+                        .map_err(|_| WinCliprdrError::Utf16Conversion)?;
 
                     ClipboardFormat::new(format_id).with_name(ClipboardFormatName::new(format_name))
                 } else {
