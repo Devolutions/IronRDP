@@ -18,11 +18,11 @@ extern crate tracing;
 
 mod canvas;
 mod clipboard;
-mod config_parser;
 mod error;
 mod image;
 mod input;
 mod network_client;
+mod rdp_file;
 mod session;
 
 mod wasm_bridge {
