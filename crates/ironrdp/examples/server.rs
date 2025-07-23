@@ -157,12 +157,12 @@ struct DisplayUpdates;
 impl RdpServerDisplayUpdates for DisplayUpdates {
     async fn next_update(&mut self) -> Option<DisplayUpdate> {
         sleep(Duration::from_millis(100)).await;
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
 
-        let y: u16 = rng.gen_range(0..HEIGHT);
-        let height = NonZeroU16::new(rng.gen_range(1..=HEIGHT.checked_sub(y).unwrap())).unwrap();
-        let x: u16 = rng.gen_range(0..WIDTH);
-        let width = NonZeroU16::new(rng.gen_range(1..=WIDTH.checked_sub(x).unwrap())).unwrap();
+        let y: u16 = rng.random_range(0..HEIGHT);
+        let height = NonZeroU16::new(rng.random_range(1..=HEIGHT.checked_sub(y).unwrap())).unwrap();
+        let x: u16 = rng.random_range(0..WIDTH);
+        let width = NonZeroU16::new(rng.random_range(1..=WIDTH.checked_sub(x).unwrap())).unwrap();
         let capacity = usize::from(width.get())
             .checked_mul(usize::from(height.get()))
             .unwrap()
@@ -170,9 +170,9 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             .unwrap();
         let mut data = Vec::with_capacity(capacity);
         for _ in 0..(data.capacity() / 4) {
-            data.push(rng.r#gen());
-            data.push(rng.r#gen());
-            data.push(rng.r#gen());
+            data.push(rng.random());
+            data.push(rng.random());
+            data.push(rng.random());
             data.push(255);
         }
 

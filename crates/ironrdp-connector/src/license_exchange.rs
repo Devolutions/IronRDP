@@ -7,7 +7,7 @@ use std::sync::Arc;
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
 use ironrdp_pdu::PduHint;
-use rand_core::{OsRng, RngCore as _};
+use rand::prelude::*;
 
 use super::{legacy, ConnectorError, ConnectorErrorExt};
 use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
@@ -134,11 +134,12 @@ impl Sequence for LicenseExchangeSequence {
 
                 match license_pdu {
                     LicensePdu::ServerLicenseRequest(license_request) => {
+                        let mut rng = rand::rng();
                         let mut client_random = [0u8; server_license::RANDOM_NUMBER_SIZE];
-                        OsRng.fill_bytes(&mut client_random);
+                        rng.fill_bytes(&mut client_random);
 
                         let mut premaster_secret = [0u8; server_license::PREMASTER_SECRET_SIZE];
-                        OsRng.fill_bytes(&mut premaster_secret);
+                        rng.fill_bytes(&mut premaster_secret);
 
                         let license_info = license_request
                             .scope_list
