@@ -673,7 +673,6 @@ impl Encode for ChannelPduHeader {
         Self::NAME
     }
 
-    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE
     }

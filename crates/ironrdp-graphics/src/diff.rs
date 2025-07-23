@@ -184,7 +184,7 @@ fn find_different_rects<const BPP: usize>(
 ///     │                                           │
 ///     └───────────────────────────────────────────┘
 /// ```
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn find_different_rects_sub<const BPP: usize>(
     image1: &[u8],
     stride1: usize,

@@ -186,7 +186,7 @@ pub(crate) fn query_information(
                     .unwrap_or_default();
                 let name_index = match path.rfind('/') {
                     // in fact, index only needs to be different for existing requests
-                    #[allow(clippy::arithmetic_side_effects)]
+                    #[expect(clippy::arithmetic_side_effects)]
                     Some(index) => index + 1,
                     None => 0,
                 };
@@ -312,6 +312,10 @@ pub(crate) fn query_volume_information(
                                         // blocks_available() may have different integer type on different platforms.
                                         // so we need to cast it to u32 uniformly. so if it is u32, it will emit 'useless conversion'
                                         // warning, i choose to mute it.
+                                        #[expect(
+                                            clippy::allow_attributes,
+                                            reason = "we have to use allow as the useless_conversion isn't triggered on some platforms"
+                                        )]
                                         #[allow(clippy::useless_conversion)]
                                         volume_serial_number: u32::try_from(statvfs.blocks_available()).unwrap(),
                                         supports_objects: Boolean::False,
@@ -446,7 +450,7 @@ pub(crate) fn set_information(
 }
 
 // in fact, it is time in secs which is very small
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(clippy::arithmetic_side_effects)]
 pub(crate) fn transform_to_filetime(time_in_secs: i64) -> i64 {
     let mut time = time_in_secs * 10000000;
     time += 116444736000000000;
@@ -491,7 +495,7 @@ pub(crate) fn make_query_dir_resp(
         ))]),
         Some(file_full_path) => {
             // in fact, it represents file name, so it is not very large
-            #[allow(clippy::arithmetic_side_effects)]
+            #[expect(clippy::arithmetic_side_effects)]
             let file_last_slash = if let Some(index) = file_full_path.rfind('/') {
                 index + 1
             } else {
@@ -555,7 +559,7 @@ pub(crate) fn query_directory(
                     let query_path = req_inner.path.replace('\\', "/");
                     let len = query_path.len();
                     // path ends with *, so its len > 0
-                    #[allow(clippy::arithmetic_side_effects)]
+                    #[expect(clippy::arithmetic_side_effects)]
                     parent.push_str(&query_path[0..len - 1]);
                     if let Ok(dirp) = Dir::open(
                         parent.as_str(),
@@ -643,7 +647,7 @@ fn make_create_drive_resp(
     Ok(vec![SvcMessage::from(res)])
 }
 // in fact, index only needs to be different, so it is ok
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(clippy::arithmetic_side_effects)]
 pub(crate) fn create_drive(
     backend: &mut NixRdpdrBackend,
     req_inner: DeviceCreateRequest,

@@ -8,6 +8,10 @@ const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
 
 const FASTPATH_HEADER_SIZE: usize = 6;
 
+#[expect(
+    clippy::allow_attributes,
+    reason = "Unfortunately, expect attribute doesn't work when above or after visibility::make attribute"
+)]
 #[allow(unreachable_pub)]
 #[cfg_attr(feature = "__bench", visibility::make(pub))]
 pub(crate) struct UpdateFragmenter {

@@ -32,7 +32,7 @@ pub enum BitmapError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BitmapCompression(u32);
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl BitmapCompression {
     const RGB: Self = Self(0x0000);
     const RLE8: Self = Self(0x0001);
@@ -48,7 +48,7 @@ impl BitmapCompression {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ColorSpace(u32);
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl ColorSpace {
     const CALIBRATED_RGB: Self = Self(0x00000000);
     const SRGB: Self = Self(0x73524742);
@@ -60,7 +60,7 @@ impl ColorSpace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BitmapIntent(u32);
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl BitmapIntent {
     const LCS_GM_ABS_COLORIMETRIC: Self = Self(0x00000008);
     const LCS_GM_BUSINESS: Self = Self(0x00000001);
@@ -499,7 +499,7 @@ fn rgb_bmp_stride(width: u16, bit_count: u16) -> usize {
     debug_assert!(bit_count <= 32);
 
     // No side effects, because u16::MAX * 32 + 31 < u16::MAX * u16::MAX < u32::MAX
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     {
         (((usize::from(width) * usize::from(bit_count)) + 31) & !31) >> 3
     }
@@ -527,7 +527,7 @@ fn bgra_to_top_down_rgba(
     };
 
     // Per invariants: height * width * dst_n_samples <= 10_000 * 10_000 * 4 < u32::MAX
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     let dst_bitmap_len = usize::from(height) * usize::from(width) * dst_n_samples;
 
     // Prevent allocation of huge buffers.
@@ -569,7 +569,7 @@ fn bgra_to_top_down_rgba(
     };
 
     // Per invariants: width * dst_n_samples <= 10_000 * 4 < u32::MAX
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     let dst_stride = usize::from(width) * dst_n_samples;
 
     let mut dst_bitmap = vec![0u8; dst_bitmap_len];
@@ -647,13 +647,13 @@ fn top_down_rgba_to_bottom_up_bgra(
     let width = u16::try_from(info.width).map_err(|_| BitmapError::WidthTooBig)?;
     let height = u16::try_from(info.height).map_err(|_| BitmapError::HeightTooBig)?;
 
-    #[allow(clippy::arithmetic_side_effects)] // width * 4 <= 10_000 * 4 < u32::MAX
+    #[expect(clippy::arithmetic_side_effects)] // width * 4 <= 10_000 * 4 < u32::MAX
     let stride = usize::from(width) * 4;
 
     let src_rows = src_bitmap.chunks_exact(stride);
 
     // As per invariants: stride * height <= width * 4 * height <= 10_000 * 4 * 10_000 <= u32::MAX.
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     let dst_len = stride * usize::from(height);
     let dst_len = u32::try_from(dst_len).map_err(|_| BitmapError::InvalidSize)?;
 

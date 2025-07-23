@@ -139,7 +139,7 @@ macro_rules! try_write_optional {
         if let Some(ref val) = $val {
             // This is a workaround for clippy false positive because
             // of macro expansion.
-            #[allow(clippy::redundant_closure_call)]
+            #[expect(clippy::redundant_closure_call)]
             $f(val)?
         } else {
             return Ok(());

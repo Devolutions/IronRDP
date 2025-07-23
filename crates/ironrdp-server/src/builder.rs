@@ -49,7 +49,7 @@ impl Default for RdpServerBuilder<WantsAddr> {
 }
 
 impl RdpServerBuilder<WantsAddr> {
-    #[allow(clippy::unused_self)] // ensuring state transition from WantsAddr
+    #[expect(clippy::unused_self)] // ensuring state transition from WantsAddr
     pub fn with_addr(self, addr: impl Into<SocketAddr>) -> RdpServerBuilder<WantsSecurity> {
         RdpServerBuilder {
             state: WantsSecurity { addr: addr.into() },

@@ -30,7 +30,7 @@ impl Event {
         // CreateEventW returns a valid handle on success.
         Ok(Self {
             // See `unsafe impl Send` comment.
-            #[allow(clippy::arc_with_non_send_sync)]
+            #[expect(clippy::arc_with_non_send_sync)]
             handle: Arc::new(handle),
         })
     }

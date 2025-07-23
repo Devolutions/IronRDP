@@ -371,7 +371,7 @@ fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64, phase:
         // Wrap phase to maintain precision and avoid overflow
         *phase %= 2.0 * PI;
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation)]
         let sample_i16 = (sample * amplitude) as i16;
 
         // Write same sample to both channels (stereo)
