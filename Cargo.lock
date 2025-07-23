@@ -2464,7 +2464,6 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
- "thiserror 1.0.69",
  "tracing",
 ]
 

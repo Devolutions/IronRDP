@@ -22,7 +22,6 @@ use pdu::{
     ClipboardPdu, ClipboardProtocolVersion, FileContentsResponse, FormatDataRequest, FormatListResponse,
     OwnedFormatDataResponse,
 };
-use thiserror::Error;
 use tracing::{error, info};
 
 #[rustfmt::skip] // do not reorder
@@ -31,13 +30,21 @@ use crate::pdu::FormatList;
 /// PDUs for sending to the server on the CLIPRDR channel.
 pub type CliprdrSvcMessages<R> = SvcProcessorMessages<Cliprdr<R>>;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 enum ClipboardError {
-    #[error("received clipboard PDU is not implemented")]
     UnimplementedPdu { pdu: &'static str },
-
-    #[error("sent format list was rejected")]
     FormatListRejected,
+}
+
+impl core::fmt::Display for ClipboardError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ClipboardError::UnimplementedPdu { pdu } => {
+                write!(f, "received clipboard PDU `{pdu}` is not implemented")
+            }
+            ClipboardError::FormatListRejected => write!(f, "sent format list was rejected"),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
