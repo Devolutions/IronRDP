@@ -11,9 +11,8 @@
 // These crates are added just to enable additional WASM features.
 extern crate chrono as _;
 extern crate getrandom as _;
+extern crate getrandom2 as _;
 extern crate time as _;
-
-use getrandom2 as _;
 
 #[macro_use]
 extern crate tracing;
