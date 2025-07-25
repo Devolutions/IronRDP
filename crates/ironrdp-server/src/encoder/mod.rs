@@ -504,19 +504,24 @@ impl BitmapUpdateHandler for QoizHandler {
         let qoi = qoi_encode(bitmap)?;
         let mut inb = zstd_safe::InBuffer::around(&qoi);
         let mut data = vec![0; qoi.len()];
-        let mut outb = zstd_safe::OutBuffer::around(data.as_mut_slice());
+        let mut outb;
+        let mut pos = 0;
 
         let mut zctxt = self.zctxt.lock().unwrap();
-        let res = zctxt
-            .compress_stream2(
-                &mut outb,
-                &mut inb,
-                zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
-            )
-            .map_err(zstd_safe::get_error_name)
-            .unwrap();
-        if res != 0 {
-            return Err(anyhow!("Failed to zstd compress"));
+        loop {
+            outb = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
+            let res = zctxt
+                .compress_stream2(
+                    &mut outb,
+                    &mut inb,
+                    zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
+                )
+                .map_err(|code| anyhow!("Failed to zstd compress: {}", zstd_safe::get_error_name(code)))?;
+            if res == 0 {
+                break;
+            }
+            pos = outb.pos();
+            data.resize(data.len() + res, 0);
         }
 
         set_surface(bitmap, self.codec_id, outb.as_slice())
