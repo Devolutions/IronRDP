@@ -24,7 +24,7 @@ const IO_CHANNEL_ID: u16 = 1003;
 const USER_CHANNEL_ID: u16 = 1002;
 
 pub struct Acceptor {
-    pub(crate) state: AcceptorState,
+    state: AcceptorState,
     security: SecurityProtocol,
     io_channel_id: u16,
     user_channel_id: u16,
@@ -32,7 +32,7 @@ pub struct Acceptor {
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
-    pub(crate) creds: Option<Credentials>,
+    creds: Option<Credentials>,
     reactivation: bool,
 }
 
@@ -159,10 +159,14 @@ impl Acceptor {
             }
         }
     }
+
+    pub fn creds(&self) -> Option<&Credentials> {
+        self.creds.as_ref()
+    }
 }
 
 #[derive(Default, Debug)]
-pub enum AcceptorState {
+pub(crate) enum AcceptorState {
     #[default]
     Consumed,
 

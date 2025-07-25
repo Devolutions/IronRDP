@@ -100,7 +100,7 @@ where
     fn from(value: T) -> Self {
         let repr = value.to_string();
         let kind = value.into();
-        Box::new(ffi::IronRdpError(IronRdpErrorInner { repr, kind }))
+        Box::new(ffi::IronRdpError::new(IronRdpErrorInner { repr, kind }))
     }
 }
 
@@ -143,9 +143,13 @@ pub mod ffi {
 
     /// Stringified Picky error along with an error kind.
     #[diplomat::opaque]
-    pub struct IronRdpError(pub(super) super::IronRdpErrorInner);
+    pub struct IronRdpError(super::IronRdpErrorInner);
 
     impl IronRdpError {
+        pub(super) fn new(error: super::IronRdpErrorInner) -> Self {
+            Self(error)
+        }
+
         /// Returns the error as a string.
         pub fn to_display(&self, writeable: &mut DiplomatWriteable) {
             let _ = write!(writeable, "{}", self.0.repr);

@@ -46,8 +46,8 @@ impl<'a> SegmentedDataPdu<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BulkEncodedData<'a> {
-    pub(crate) compression_flags: CompressionFlags,
-    pub(crate) data: &'a [u8],
+    compression_flags: CompressionFlags,
+    data: &'a [u8],
 }
 
 impl<'a> BulkEncodedData<'a> {
@@ -61,6 +61,14 @@ impl<'a> BulkEncodedData<'a> {
             compression_flags,
             data: buffer,
         })
+    }
+
+    pub(crate) fn data(&self) -> &[u8] {
+        self.data
+    }
+
+    pub(crate) fn compression_flags(&self) -> CompressionFlags {
+        self.compression_flags
     }
 }
 

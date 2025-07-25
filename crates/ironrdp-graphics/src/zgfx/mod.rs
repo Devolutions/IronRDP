@@ -56,14 +56,15 @@ impl Decompressor {
     }
 
     fn handle_segment(&mut self, segment: &BulkEncodedData<'_>, output: &mut Vec<u8>) -> Result<usize, ZgfxError> {
-        if !segment.data.is_empty() {
-            if segment.compression_flags.contains(CompressionFlags::COMPRESSED) {
-                self.decompress_segment(segment.data, output)
+        let data = segment.data();
+        if !data.is_empty() {
+            if segment.compression_flags().contains(CompressionFlags::COMPRESSED) {
+                self.decompress_segment(data, output)
             } else {
-                self.history.write_all(segment.data)?;
-                output.extend_from_slice(segment.data);
+                self.history.write_all(data)?;
+                output.extend_from_slice(data);
 
-                Ok(segment.data.len())
+                Ok(data.len())
             }
         } else {
             Ok(0)
