@@ -516,7 +516,7 @@ impl BitmapUpdateHandler for QoizHandler {
                     &mut inb,
                     zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
                 )
-                .map_err(|code| anyhow!("Failed to zstd compress: {}", zstd_safe::get_error_name(code)))?;
+                .map_err(|code| anyhow!("failed to zstd compress: {}", zstd_safe::get_error_name(code)))?;
             if res == 0 {
                 break;
             }
