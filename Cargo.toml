@@ -54,7 +54,7 @@ unsafe_attr_outside_unsafe = "warn"
 
 # == Correctness == #
 ambiguous_negative_literals  = "warn"
-keyword_idents_2024 = "warn"
+keyword_idents_2024 = "warn" # FIXME: remove when switched to 2024 edition
 
 # == Style, readability == #
 elided_lifetimes_in_paths = "warn" # https://quinedot.github.io/rust-learning/dont-hide.html
