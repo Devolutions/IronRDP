@@ -36,6 +36,10 @@ export function kdcProxyUrl(url: string): Extension {
     return new Extension('kdc_proxy_url', url);
 }
 
+export function outboundMessageSizeLimit(limit: number): Extension {
+    return new Extension('outbound_message_size_limit', limit);
+}
+
 export function enableCredssp(enable: boolean): Extension {
     return new Extension('enable_credssp', enable);
 }
