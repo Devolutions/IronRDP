@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2484,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-connector"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "arbitrary",
  "ironrdp-core",
@@ -2601,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bit_field",
  "bitflags 2.9.1",
@@ -2655,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr-native"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -2685,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd-native"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2698,7 +2698,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-server"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2728,7 +2728,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-session"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ironrdp-connector",
  "ironrdp-core",
@@ -3722,9 +3722,9 @@ checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 
 [[package]]
 name = "owned_ttf_parser"
-version = "0.25.0"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22ec719bbf3b2a81c109a4e20b1f129b5566b7dce654bc3872f6a05abf82b2c4"
+checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
 ]
@@ -4104,9 +4104,9 @@ dependencies = [
 
 [[package]]
 name = "prettyplease"
-version = "0.2.35"
+version = "0.2.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "061c1221631e079b26479d25bbf2275bfe5917ae8419cd7e34f13bfc2aa7539a"
+checksum = "ff24dfcda44452b9816fff4cd4227e1bb73ff5a2f1bc1105aa92fb8565ce44d2"
 dependencies = [
  "proc-macro2",
  "syn",
