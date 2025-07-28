@@ -656,8 +656,8 @@ pub(crate) enum ClipboardItemValue {
 /// Object which represents single clipboard format represented standard MIME type.
 #[derive(Debug, Clone)]
 pub(crate) struct ClipboardItem {
-    pub(crate) mime_type: String,
-    pub(crate) value: ClipboardItemValue,
+    mime_type: String,
+    value: ClipboardItemValue,
 }
 
 impl ClipboardItem {
