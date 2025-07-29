@@ -166,10 +166,11 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
         let capacity = NonZeroUsize::from(width)
             .checked_mul(NonZeroUsize::from(height))
             .unwrap()
-            .checked_mul(NonZeroUsize::new(4).unwrap())
+            .get()
+            .checked_mul(4)
             .unwrap();
 
-        let mut data = Vec::with_capacity(capacity.get());
+        let mut data = Vec::with_capacity(capacity);
         for _ in 0..(data.capacity() / 4) {
             data.push(rng.random());
             data.push(rng.random());
@@ -186,7 +187,7 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             height,
             format: PixelFormat::BgrA32,
             data: data.into(),
-            stride: stride.get(),
+            stride,
         };
         Some(DisplayUpdate::Bitmap(bitmap))
     }

@@ -76,7 +76,7 @@ impl TryInto<Framebuffer> for BitmapUpdate {
             height: self.height,
             format: self.format,
             data: self.data.into(),
-            stride: self.stride,
+            stride: self.stride.get(),
         })
     }
 }
@@ -84,17 +84,17 @@ impl TryInto<Framebuffer> for BitmapUpdate {
 impl Framebuffer {
     pub fn new(width: NonZeroU16, height: NonZeroU16, format: PixelFormat) -> Self {
         let mut data = BytesMut::new();
-        let w = NonZeroUsize::from(width);
-        let h = NonZeroUsize::from(height);
+        let w = NonZeroUsize::from(width).get();
+        let h = NonZeroUsize::from(height).get();
         let bpp = usize::from(format.bytes_per_pixel());
-        data.resize(bpp * w.get() * h.get(), 0);
+        data.resize(bpp * w * h, 0);
 
         Self {
             width,
             height,
             format,
             data,
-            stride: bpp * w.get(),
+            stride: bpp * w,
         }
     }
 
@@ -106,21 +106,22 @@ impl Framebuffer {
         let bpp = usize::from(self.format.bytes_per_pixel());
         let x = usize::from(bitmap.x);
         let y = usize::from(bitmap.y);
-        let width = NonZeroUsize::from(bitmap.width);
-        let height = NonZeroUsize::from(bitmap.height);
+        let width = NonZeroUsize::from(bitmap.width).get();
+        let height = NonZeroUsize::from(bitmap.height).get();
 
         let data = &mut self.data;
         let start = y * self.stride + x * bpp;
-        let end = start + (height.get() - 1) * self.stride + width.get() * bpp;
+        let end = start + (height - 1) * self.stride + width * bpp;
         let dst = &mut data[start..end];
 
-        for y in 0..height.get() {
-            let start = y * bitmap.stride;
-            let end = start + width.get() * bpp;
+        for y in 0..height {
+            let start = y * bitmap.stride.get();
+            let end = start + width * bpp;
+
             let src = bitmap.data.slice(start..end);
 
             let start = y * self.stride;
-            let end = start + width.get() * bpp;
+            let end = start + width * bpp;
             let dst = &mut dst[start..end];
 
             dst.copy_from_slice(&src);
@@ -155,7 +156,7 @@ pub struct BitmapUpdate {
     pub height: NonZeroU16,
     pub format: PixelFormat,
     pub data: Bytes,
-    pub stride: usize,
+    pub stride: NonZeroUsize,
 }
 
 impl BitmapUpdate {
@@ -177,6 +178,7 @@ impl BitmapUpdate {
     ///
     /// ```
     /// # use core::num::NonZeroU16;
+    /// use std::num::NonZeroUsize;
     /// # use bytes::Bytes;
     /// # use ironrdp_graphics::image_processing::PixelFormat;
     /// # use ironrdp_server::BitmapUpdate;
@@ -187,7 +189,7 @@ impl BitmapUpdate {
     ///     height: NonZeroU16::new(100).unwrap(),
     ///     format: PixelFormat::ARgb32,
     ///     data: Bytes::from(vec![0; 40000]),
-    ///     stride: 400,
+    ///     stride: NonZeroUsize::new(400).unwrap(),
     /// };
     ///
     /// let sub_region = original.sub(10, 10, NonZeroU16::new(50).unwrap(), NonZeroU16::new(50).unwrap());
@@ -199,8 +201,8 @@ impl BitmapUpdate {
             None
         } else {
             let bpp = usize::from(self.format.bytes_per_pixel());
-            let start = usize::from(y) * self.stride + usize::from(x) * bpp;
-            let end = start + usize::from(height.get() - 1) * self.stride + usize::from(width.get()) * bpp;
+            let start = usize::from(y) * self.stride.get() + usize::from(x) * bpp;
+            let end = start + usize::from(height.get() - 1) * self.stride.get() + usize::from(width.get()) * bpp;
             Some(Self {
                 x: self.x + x,
                 y: self.y + y,
@@ -297,6 +299,7 @@ pub trait RdpServerDisplay: Send {
 #[cfg(test)]
 mod tests {
     use core::num::NonZeroU16;
+    use core::num::NonZeroUsize;
 
     use ironrdp_graphics::diff::Rect;
     use ironrdp_graphics::image_processing::PixelFormat;
@@ -312,9 +315,9 @@ mod tests {
         let mut fb = Framebuffer::new(width, height, fmt);
 
         let width = 15;
-        let stride = width * bpp;
+        let stride = NonZeroUsize::new(width * bpp).unwrap();
         let height = 20;
-        let data = vec![1u8; height * stride];
+        let data = vec![1u8; height * stride.get()];
         let update = BitmapUpdate {
             x: 1,
             y: 2,
