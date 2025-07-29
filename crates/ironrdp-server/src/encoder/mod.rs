@@ -203,7 +203,7 @@ impl UpdateEncoder {
                 width.get().into(),
                 height.get().into(),
                 &bitmap.data,
-                bitmap.stride.into(),
+                bitmap.stride.get(),
                 bitmap.width.get().into(),
                 bitmap.height.get().into(),
                 bitmap.x.into(),

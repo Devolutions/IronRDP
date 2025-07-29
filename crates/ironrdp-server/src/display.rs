@@ -298,8 +298,7 @@ pub trait RdpServerDisplay: Send {
 
 #[cfg(test)]
 mod tests {
-    use core::num::NonZeroU16;
-    use core::num::NonZeroUsize;
+    use core::num::{NonZeroU16, NonZeroUsize};
 
     use ironrdp_graphics::diff::Rect;
     use ironrdp_graphics::image_processing::PixelFormat;
