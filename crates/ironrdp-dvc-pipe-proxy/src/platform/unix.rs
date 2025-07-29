@@ -1,48 +1,66 @@
-use ironrdp_core::impl_as_any;
-use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
-use ironrdp_pdu::{pdu_other_err, PduResult};
-use ironrdp_svc::SvcMessage;
+use async_trait::async_trait;
+use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// A proxy DVC pipe client that forwards DVC messages to/from a named pipe server.
-pub struct DvcNamedPipeProxy {
-    channel_name: String,
+use crate::error::DvcPipeProxyError;
+use crate::os_pipe::OsPipe;
+
+/// Unix-specific implementation of the OS pipe trait.
+pub(crate) struct UnixPipe {
+    socket: tokio::net::UnixStream,
 }
 
-impl DvcNamedPipeProxy {
-    /// Creates a new DVC named pipe proxy.
-    /// `dvc_write_callback` is called when the proxy receives a DVC message from the
-    /// named pipe server and the SVC message is ready to be sent to the DVC channel in the main
-    /// IronRDP active session loop.
-    pub fn new<F>(channel_name: &str, _named_pipe_name: &str, _dvc_write_callback: F) -> Self
-    where
-        F: Fn(u32, Vec<SvcMessage>) -> PduResult<()> + Send + 'static,
-    {
-        error!("DvcNamedPipeProxy is not implemented on Unix-like systems, using a stub implementation");
+#[async_trait]
+impl OsPipe for UnixPipe {
+    async fn connect(pipe_name: &str) -> Result<Self, DvcPipeProxyError> {
+        // Domain socket file could already exist from a previous run.
+        match fs::metadata(&pipe_name).await {
+            Ok(metadata) => {
+                use std::os::unix::fs::FileTypeExt;
 
-        Self {
-            channel_name: channel_name.to_owned(),
+                info!(
+                    %pipe_name,
+                    "DVC pipe already exists, removing stale file."
+                );
+
+                // Just to be sure, check if it's indeed a socket -
+                // throw an error if calling code accidentally passed a regular file.
+                if !metadata.file_type().is_socket() {
+                    return Err(DvcPipeProxyError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Path {} is not a socket", pipe_name),
+                    )));
+                }
+
+                fs::remove_file(pipe_name).await.map_err(DvcPipeProxyError::Io)?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                trace!(
+                    %pipe_name,
+                    "DVC pipe does not exist, creating it."
+                );
+            }
+            Err(e) => {
+                return Err(DvcPipeProxyError::Io(e));
+            }
         }
+
+        let listener = tokio::net::UnixListener::bind(pipe_name).map_err(DvcPipeProxyError::Io)?;
+
+        let (socket, _) = listener.accept().await.map_err(DvcPipeProxyError::Io)?;
+
+        Ok(Self { socket })
+    }
+
+    async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, DvcPipeProxyError> {
+        self.socket.read(buffer).await.map_err(DvcPipeProxyError::Io)
+    }
+
+    async fn write_all(&mut self, buffer: &[u8]) -> Result<(), DvcPipeProxyError> {
+        self.socket
+            .write_all(buffer)
+            .await
+            .map_err(DvcPipeProxyError::Io)
+            .map(|_| ())
     }
 }
-
-impl_as_any!(DvcNamedPipeProxy);
-
-impl DvcProcessor for DvcNamedPipeProxy {
-    fn channel_name(&self) -> &str {
-        &self.channel_name
-    }
-
-    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        Err(pdu_other_err!(
-            "DvcNamedPipeProxy is not implemented on Unix-like systems"
-        ))
-    }
-
-    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        Err(pdu_other_err!(
-            "DvcNamedPipeProxy is not implemented on Unix-like systems"
-        ))
-    }
-}
-
-impl DvcClientProcessor for DvcNamedPipeProxy {}
