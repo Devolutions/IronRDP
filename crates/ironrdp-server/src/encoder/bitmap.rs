@@ -1,3 +1,5 @@
+use core::num::NonZeroUsize;
+
 use ironrdp_core::{invalid_field_err, Encode, EncodeResult, WriteCursor};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rdp6::{ABgrChannels, ARgbChannels, BgrAChannels, BitmapStreamEncoder, RgbAChannels};
@@ -42,7 +44,7 @@ impl BitmapEncoder {
             let height = chunk.len() / bitmap.stride;
             let top = usize::from(bitmap.y) + i * chunk_height;
 
-            let encoder = BitmapStreamEncoder::new(usize::from(bitmap.width.get()), height);
+            let encoder = BitmapStreamEncoder::new(NonZeroUsize::from(bitmap.width).into(), height);
 
             let len = {
                 let pixels = chunk

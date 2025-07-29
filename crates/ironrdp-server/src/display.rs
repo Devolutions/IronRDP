@@ -1,4 +1,4 @@
-use core::num::NonZeroU16;
+use core::num::{NonZeroU16, NonZeroUsize};
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
@@ -84,17 +84,17 @@ impl TryInto<Framebuffer> for BitmapUpdate {
 impl Framebuffer {
     pub fn new(width: NonZeroU16, height: NonZeroU16, format: PixelFormat) -> Self {
         let mut data = BytesMut::new();
-        let w = usize::from(width.get());
-        let h = usize::from(height.get());
+        let w = NonZeroUsize::from(width);
+        let h = NonZeroUsize::from(height);
         let bpp = usize::from(format.bytes_per_pixel());
-        data.resize(bpp * w * h, 0);
+        data.resize(bpp * w.get() * h.get(), 0);
 
         Self {
             width,
             height,
             format,
             data,
-            stride: bpp * w,
+            stride: bpp * w.get(),
         }
     }
 
@@ -106,21 +106,21 @@ impl Framebuffer {
         let bpp = usize::from(self.format.bytes_per_pixel());
         let x = usize::from(bitmap.x);
         let y = usize::from(bitmap.y);
-        let width = usize::from(bitmap.width.get());
-        let height = usize::from(bitmap.height.get());
+        let width = NonZeroUsize::from(bitmap.width);
+        let height = NonZeroUsize::from(bitmap.height);
 
         let data = &mut self.data;
         let start = y * self.stride + x * bpp;
-        let end = start + (height - 1) * self.stride + width * bpp;
+        let end = start + (height.get() - 1) * self.stride + width.get() * bpp;
         let dst = &mut data[start..end];
 
-        for y in 0..height {
+        for y in 0..height.get() {
             let start = y * bitmap.stride;
-            let end = start + width * bpp;
+            let end = start + width.get() * bpp;
             let src = bitmap.data.slice(start..end);
 
             let start = y * self.stride;
-            let end = start + width * bpp;
+            let end = start + width.get() * bpp;
             let dst = &mut dst[start..end];
 
             dst.copy_from_slice(&src);
