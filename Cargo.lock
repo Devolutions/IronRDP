@@ -2533,13 +2533,13 @@ dependencies = [
 name = "ironrdp-dvc-pipe-proxy"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "ironrdp-core",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "tokio",
  "tracing",
- "widestring",
- "windows 0.61.3",
 ]
 
 [[package]]

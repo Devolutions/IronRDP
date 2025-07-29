@@ -4,8 +4,11 @@
 #[macro_use]
 extern crate tracing;
 
-#[cfg(target_os = "windows")]
-mod windows;
-
+mod error;
+mod message;
+mod os_pipe;
 mod platform;
-pub use self::platform::DvcNamedPipeProxy;
+mod proxy;
+mod worker;
+
+pub use self::proxy::DvcNamedPipeProxy;
