@@ -28,7 +28,7 @@ impl OsPipe for UnixPipe {
                 if !metadata.file_type().is_socket() {
                     return Err(DvcPipeProxyError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("Path {} is not a socket", pipe_name),
+                        format!("Path {pipe_name} is not a socket"),
                     )));
                 }
 
