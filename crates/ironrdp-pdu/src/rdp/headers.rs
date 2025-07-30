@@ -4,7 +4,7 @@ use ironrdp_core::{
     write_padding, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use crate::codecs::rfx::FrameAcknowledgePdu;
 use crate::input::InputEventPdu;

@@ -1,7 +1,7 @@
 use core::{cmp, fmt};
 
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
-use ironrdp_pdu::{Encode, WriteCursor};
+use ironrdp_pdu::{Encode as _, WriteCursor};
 
 // this is the maximum amount of data (not including headers) we can send in a single TS_FP_UPDATE_PDU
 const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;

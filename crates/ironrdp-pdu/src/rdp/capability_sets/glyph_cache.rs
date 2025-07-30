@@ -6,7 +6,7 @@ use ironrdp_core::{
     WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 pub const GLYPH_CACHE_NUM: usize = 10;
 

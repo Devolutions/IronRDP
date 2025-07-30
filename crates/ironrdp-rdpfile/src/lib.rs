@@ -4,8 +4,8 @@
 
 extern crate alloc;
 
-use alloc::borrow::ToOwned;
-use alloc::string::{String, ToString};
+use alloc::borrow::ToOwned as _;
+use alloc::string::{String, ToString as _};
 use alloc::vec::Vec;
 use core::fmt;
 

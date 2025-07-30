@@ -3,13 +3,13 @@
 mod circular_buffer;
 mod control_messages;
 
-use std::io::{self, Write};
+use std::io::{self, Write as _};
 
 use bitvec::bits;
 use bitvec::field::BitField as _;
 use bitvec::order::Msb0;
 use bitvec::slice::BitSlice;
-use byteorder::WriteBytesExt;
+use byteorder::WriteBytesExt as _;
 
 use self::circular_buffer::FixedCircularBuffer;
 use self::control_messages::{BulkEncodedData, CompressionFlags, SegmentedDataPdu};

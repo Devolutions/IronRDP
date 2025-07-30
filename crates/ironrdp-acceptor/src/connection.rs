@@ -1,8 +1,8 @@
 use core::mem;
 
 use ironrdp_connector::{
-    encode_x224_packet, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State,
-    Written,
+    encode_x224_packet, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence,
+    State, Written,
 };
 use ironrdp_core::{decode, WriteBuf};
 use ironrdp_pdu as pdu;

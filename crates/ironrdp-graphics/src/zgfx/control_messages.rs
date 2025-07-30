@@ -1,4 +1,4 @@
-use bit_field::BitField;
+use bit_field::BitField as _;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt as _};
 use num_derive::FromPrimitive;

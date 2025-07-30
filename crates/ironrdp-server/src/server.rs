@@ -2,7 +2,7 @@ use core::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Context as _, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::{bytes, Framed};
 use ironrdp_cliprdr::backend::ClipboardMessage;

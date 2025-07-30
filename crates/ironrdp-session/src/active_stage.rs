@@ -14,7 +14,7 @@ use ironrdp_svc::{SvcMessage, SvcProcessor, SvcProcessorMessages};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
-use crate::{fast_path, x224, SessionError, SessionErrorExt, SessionResult};
+use crate::{fast_path, x224, SessionError, SessionErrorExt as _, SessionResult};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,

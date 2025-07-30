@@ -9,7 +9,7 @@ use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, Ser
 use ironrdp_pdu::PduHint;
 use rand::prelude::*;
 
-use super::{legacy, ConnectorError, ConnectorErrorExt};
+use super::{legacy, ConnectorError, ConnectorErrorExt as _};
 use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
 
 #[derive(Default, Debug)]

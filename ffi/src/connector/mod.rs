@@ -5,7 +5,7 @@ pub mod state;
 
 #[diplomat::bridge]
 pub mod ffi {
-    use core::fmt::Write;
+    use core::fmt::Write as _;
 
     use diplomat_runtime::DiplomatWriteable;
     use ironrdp::connector::Sequence as _;

@@ -6,7 +6,7 @@ use ironrdp_core::{
     ensure_fixed_part_size, read_padding, write_padding, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
     WriteCursor,
 };
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};
 use crate::utils;

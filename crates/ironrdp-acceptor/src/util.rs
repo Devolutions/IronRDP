@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult};
+use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 use ironrdp_core::{encode_vec, Encode, WriteBuf};
 use ironrdp_pdu::rdp;
 use ironrdp_pdu::x224::X224;

@@ -2,7 +2,7 @@ use core::fmt;
 use core::num::NonZeroU16;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context as _, Result};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{find_different_rects_sub, Rect};
 use ironrdp_pdu::encode_vec;

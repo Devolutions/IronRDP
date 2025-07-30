@@ -5,14 +5,14 @@ use core::time::Duration;
 use std::sync::Arc;
 use std::time::Instant;
 
-use raw_window_handle::{DisplayHandle, HasDisplayHandle};
+use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use tokio::sync::mpsc;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersKeyState;
-use winit::platform::scancode::PhysicalKeyExtScancode;
+use winit::platform::scancode::PhysicalKeyExtScancode as _;
 use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 
 use crate::rdp::{RdpInputEvent, RdpOutputEvent};

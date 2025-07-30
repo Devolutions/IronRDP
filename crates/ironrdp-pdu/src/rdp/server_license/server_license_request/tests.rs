@@ -1,4 +1,4 @@
-use ironrdp_core::{decode, encode_vec, Encode};
+use ironrdp_core::{decode, encode_vec, Encode as _};
 use lazy_static::lazy_static;
 
 use super::cert::{RsaPublicKey, PROP_CERT_BLOBS_HEADERS_SIZE, PROP_CERT_NO_BLOBS_SIZE, RSA_KEY_SIZE_WITHOUT_MODULUS};

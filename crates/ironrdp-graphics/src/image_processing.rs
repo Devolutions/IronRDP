@@ -1,7 +1,7 @@
 use core::{cmp, fmt};
 use std::io;
 
-use byteorder::WriteBytesExt;
+use byteorder::WriteBytesExt as _;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use num_derive::ToPrimitive;
 use num_traits::ToPrimitive as _;

@@ -1,5 +1,5 @@
 use ironrdp_acceptor::DesktopSize;
-use ironrdp_core::{cast_length, other_err, Encode, EncodeResult};
+use ironrdp_core::{cast_length, other_err, Encode as _, EncodeResult};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_graphics::rfx_encode_component;
 use ironrdp_graphics::rlgr::RlgrError;

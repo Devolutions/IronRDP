@@ -4,7 +4,7 @@ use ironrdp_core::{
     EncodeResult, ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 const LOGON_EX_LENGTH_FIELD_SIZE: usize = 2;
 const LOGON_EX_FLAGS_FIELD_SIZE: usize = 4;

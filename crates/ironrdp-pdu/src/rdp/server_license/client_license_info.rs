@@ -1,10 +1,10 @@
 use std::io;
 
-use byteorder::{LittleEndian, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt as _};
 use ironrdp_core::{
-    ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    ensure_size, invalid_field_err, Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor,
 };
-use md5::Digest;
+use md5::Digest as _;
 
 use crate::crypto::rc4::Rc4;
 use crate::crypto::rsa::encrypt_with_public_key;

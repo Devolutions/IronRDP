@@ -6,8 +6,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use anyhow::{bail, Context};
-use cpal::traits::{DeviceTrait, HostTrait};
+use anyhow::{bail, Context as _};
+use cpal::traits::{DeviceTrait as _, HostTrait as _};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use ironrdp_rdpsnd::client::RdpsndClientHandler;
 use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};

@@ -1,6 +1,6 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use ironrdp::connector::Sequence;
+    use ironrdp::connector::Sequence as _;
 
     use crate::connector::config::ffi::DesktopSize;
     use crate::connector::ffi::PduHint;

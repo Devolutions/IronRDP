@@ -10,7 +10,7 @@ use ironrdp_core::{
     Encode, EncodeResult, ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 const RFX_ICAP_VERSION: u16 = 0x0100;
 const RFX_ICAP_TILE_SIZE: u16 = 0x40;

@@ -14,7 +14,7 @@ use ironrdp::server::{
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageOutput};
-use ironrdp_async::{Framed, FramedWrite};
+use ironrdp_async::{Framed, FramedWrite as _};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
