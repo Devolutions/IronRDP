@@ -7,7 +7,7 @@
 extern crate tracing;
 
 use core::net::SocketAddr;
-use core::num::NonZeroU16;
+use core::num::{NonZero, NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -163,11 +163,13 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
         let height = NonZeroU16::new(rng.random_range(1..=HEIGHT.checked_sub(y).unwrap())).unwrap();
         let x: u16 = rng.random_range(0..WIDTH);
         let width = NonZeroU16::new(rng.random_range(1..=WIDTH.checked_sub(x).unwrap())).unwrap();
-        let capacity = usize::from(width.get())
-            .checked_mul(usize::from(height.get()))
+        let capacity = NonZeroUsize::from(width)
+            .checked_mul(NonZeroUsize::from(height))
             .unwrap()
+            .get()
             .checked_mul(4)
             .unwrap();
+
         let mut data = Vec::with_capacity(capacity);
         for _ in 0..(data.capacity() / 4) {
             data.push(rng.random());
@@ -177,6 +179,7 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
         }
 
         info!("get_update +{x}+{y} {width}x{height}");
+        let stride = NonZeroUsize::from(width).checked_mul(NonZero::new(4).unwrap()).unwrap();
         let bitmap = BitmapUpdate {
             x,
             y,
@@ -184,7 +187,7 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             height,
             format: PixelFormat::BgrA32,
             data: data.into(),
-            stride: usize::from(width.get()).checked_mul(4).unwrap(),
+            stride,
         };
         Some(DisplayUpdate::Bitmap(bitmap))
     }

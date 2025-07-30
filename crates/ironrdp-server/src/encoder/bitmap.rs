@@ -1,3 +1,5 @@
+use core::num::NonZeroUsize;
+
 use ironrdp_core::{invalid_field_err, Encode, EncodeResult, WriteCursor};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rdp6::{ABgrChannels, ARgbChannels, BgrAChannels, BitmapStreamEncoder, RgbAChannels};
@@ -33,20 +35,21 @@ impl BitmapEncoder {
         let chunk_height = usize::from(u16::MAX) / row_len;
 
         let mut cursor = WriteCursor::new(output);
-        let chunks = bitmap.data.chunks(bitmap.stride * chunk_height);
+        let stride = bitmap.stride.get();
+        let chunks = bitmap.data.chunks(stride * chunk_height);
 
         let total = u16::try_from(chunks.size_hint().0).unwrap();
         BitmapUpdateData::encode_header(total, &mut cursor)?;
 
         for (i, chunk) in chunks.enumerate() {
-            let height = chunk.len() / bitmap.stride;
+            let height = chunk.len() / stride;
             let top = usize::from(bitmap.y) + i * chunk_height;
 
-            let encoder = BitmapStreamEncoder::new(usize::from(bitmap.width.get()), height);
+            let encoder = BitmapStreamEncoder::new(NonZeroUsize::from(bitmap.width).get(), height);
 
             let len = {
                 let pixels = chunk
-                    .chunks(bitmap.stride)
+                    .chunks(stride)
                     .map(|row| &row[..row_len])
                     .rev()
                     .flat_map(|row| row.chunks(bytes_per_pixel));

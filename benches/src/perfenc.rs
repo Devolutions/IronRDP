@@ -2,6 +2,7 @@
 #![allow(clippy::print_stderr)]
 #![allow(clippy::print_stdout)]
 
+use core::num::NonZero;
 use core::time::Duration;
 use std::io::Write;
 use std::time::Instant;
@@ -145,7 +146,7 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             height: self.desktop_size.height.try_into().unwrap(),
             format: PixelFormat::RgbX32,
             data: buf.into(),
-            stride,
+            stride: NonZero::new(stride).unwrap(),
         });
         Some(up)
     }
