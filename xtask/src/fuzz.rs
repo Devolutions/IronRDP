@@ -17,9 +17,7 @@ pub fn corpus_minify(sh: &Shell, target: Option<String>) -> anyhow::Result<()> {
     };
 
     for target in targets {
-        cmd!(sh, "rustup run nightly cargo fuzz cmin {target}")
-            .env("RUSTUP_TOOLCHAIN", "nightly")
-            .run()?;
+        cmd!(sh, "rustup run {NIGHTLY_TOOLCHAIN} cargo fuzz cmin {target}").run()?;
     }
 
     Ok(())
@@ -63,7 +61,7 @@ pub fn install(sh: &Shell) -> anyhow::Result<()> {
 
     cargo_install(sh, &CARGO_FUZZ)?;
 
-    cmd!(sh, "rustup install nightly --profile=minimal").run()?;
+    cmd!(sh, "rustup install {NIGHTLY_TOOLCHAIN} --profile=minimal").run()?;
 
     Ok(())
 }
@@ -86,9 +84,8 @@ pub fn run(sh: &Shell, duration: Option<u32>, target: Option<String>) -> anyhow:
     for target in targets {
         cmd!(
             sh,
-            "rustup run nightly cargo fuzz run {target} -- -max_total_time={duration}"
+            "rustup run {NIGHTLY_TOOLCHAIN} cargo fuzz run {target} -- -max_total_time={duration}"
         )
-        .env("RUSTUP_TOOLCHAIN", "nightly")
         .run()?;
     }
 
