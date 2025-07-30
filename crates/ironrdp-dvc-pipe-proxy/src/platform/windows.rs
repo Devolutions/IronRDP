@@ -5,7 +5,7 @@ use tokio::net::windows::named_pipe;
 use crate::error::DvcPipeProxyError;
 use crate::os_pipe::OsPipe;
 
-const PIPE_BUFFER_SIZE: u32 = 64 * 1024; // 64KB
+const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
 
 /// Unix-specific implementation of the OS pipe trait.
 pub(crate) struct WindowsPipe {
