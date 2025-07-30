@@ -45,7 +45,7 @@ impl BitmapEncoder {
             let height = chunk.len() / stride;
             let top = usize::from(bitmap.y) + i * chunk_height;
 
-            let encoder = BitmapStreamEncoder::new(NonZeroUsize::from(bitmap.width).into(), height);
+            let encoder = BitmapStreamEncoder::new(NonZeroUsize::from(bitmap.width).get(), height);
 
             let len = {
                 let pixels = chunk

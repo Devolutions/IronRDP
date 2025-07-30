@@ -178,7 +178,7 @@ impl BitmapUpdate {
     ///
     /// ```
     /// # use core::num::NonZeroU16;
-    /// use std::num::NonZeroUsize;
+    /// # use std::num::NonZeroUsize;
     /// # use bytes::Bytes;
     /// # use ironrdp_graphics::image_processing::PixelFormat;
     /// # use ironrdp_server::BitmapUpdate;
