@@ -203,7 +203,7 @@ impl UpdateEncoder {
                 width.get().into(),
                 height.get().into(),
                 &bitmap.data,
-                bitmap.stride,
+                bitmap.stride.get(),
                 bitmap.width.get().into(),
                 bitmap.height.get().into(),
                 bitmap.x.into(),
@@ -356,7 +356,7 @@ impl BitmapUpdateHandler for NoneHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
         let stride = usize::from(bitmap.format.bytes_per_pixel()) * usize::from(bitmap.width.get());
         let mut data = Vec::with_capacity(stride * usize::from(bitmap.height.get()));
-        for row in bitmap.data.chunks(bitmap.stride).rev() {
+        for row in bitmap.data.chunks(bitmap.stride.get()).rev() {
             data.extend_from_slice(&row[..stride]);
         }
         set_surface(bitmap, CodecId::None as u8, &data)
@@ -542,7 +542,7 @@ fn qoi_encode(bitmap: &BitmapUpdate) -> Result<Vec<u8>> {
         RgbX32 => qoi::RawChannels::Rgbx,
     };
     let enc = qoi::EncoderBuilder::new(&bitmap.data, bitmap.width.get().into(), bitmap.height.get().into())
-        .stride(bitmap.stride)
+        .stride(bitmap.stride.get())
         .raw_channels(raw_channels)
         .build()?;
     Ok(enc.encode_to_vec()?)
