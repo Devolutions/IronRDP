@@ -190,8 +190,8 @@ impl SvcProcessor for Rdpdr {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
-    fn process(&mut self, src: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let mut src = ReadCursor::new(src);
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        let mut src = ReadCursor::new(payload);
         let pdu = decode_cursor::<RdpdrPdu>(&mut src).map_err(|e| decode_err!(e))?;
         debug!("Received {:?}", pdu);
 
