@@ -18,9 +18,9 @@ pub struct ReqwestNetworkClient {
 impl AsyncNetworkClient for ReqwestNetworkClient {
     fn send<'a>(
         &'a mut self,
-        request: &'a sspi::generator::NetworkRequest,
+        network_request: &'a sspi::generator::NetworkRequest,
     ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
-        Box::pin(ReqwestNetworkClient::send(self, request))
+        Box::pin(ReqwestNetworkClient::send(self, network_request))
     }
 }
 

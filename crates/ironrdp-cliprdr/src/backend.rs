@@ -111,7 +111,7 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// This method only signals the client that server requests data in the given format.
     /// Implementors should respond by compiling a [`FormatDataResponse`] and calling
     /// [`crate::Cliprdr::submit_format_data`]
-    fn on_format_data_request(&mut self, format: FormatDataRequest);
+    fn on_format_data_request(&mut self, request: FormatDataRequest);
 
     /// Called by [`crate::Cliprdr`] when server sends data to the client clipboard as a response to
     /// previously sent format data request.
