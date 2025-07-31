@@ -1,5 +1,7 @@
 use ironrdp_core::decode;
-use ironrdp_pdu::rdp::capability_sets::*;
+use ironrdp_pdu::rdp::capability_sets::{
+    CapabilitySet, ClientConfirmActive, DemandActive, ServerDemandActive, SERVER_CHANNEL_ID,
+};
 
 pub const SERVER_DEMAND_ACTIVE_BUFFER: [u8; 357] = [
     0x04, 0x00, // source descriptor length
