@@ -24,6 +24,7 @@ use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+use ironrdp::rdpsnd::client::Rdpsnd;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp_core::WriteBuf;
@@ -34,6 +35,7 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
+use crate::audio::WebAudioBackend;
 use crate::canvas::Canvas;
 use crate::clipboard;
 use crate::clipboard::{ClipboardData, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
@@ -70,6 +72,10 @@ struct SessionBuilderInner {
     use_display_control: bool,
     enable_credssp: bool,
     outbound_message_size_limit: Option<u32>,
+
+    // Audio configuration
+    enable_audio: bool,
+    audio_sample_rate: Option<f32>,
 }
 
 impl Default for SessionBuilderInner {
@@ -99,6 +105,10 @@ impl Default for SessionBuilderInner {
             use_display_control: false,
             enable_credssp: true,
             outbound_message_size_limit: None,
+
+            // Audio disabled by default
+            enable_audio: false,
+            audio_sample_rate: None,
         }
     }
 }
@@ -231,6 +241,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 };
                 self.0.borrow_mut().outbound_message_size_limit = if limit > 0 { Some(limit) } else { None };
             };
+            |enable_audio: bool| { self.0.borrow_mut().enable_audio = enable_audio };
+            |audio_sample_rate: f64| {
+                #[expect(clippy::cast_possible_truncation)] // JavaScript numbers are f64, audio uses f32
+                let sample_rate = audio_sample_rate as f32;
+                self.0.borrow_mut().audio_sample_rate = Some(sample_rate);
+            };
         }
 
         self.clone()
@@ -255,6 +271,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             remote_received_format_list_callback,
             force_clipboard_update_callback,
             outbound_message_size_limit,
+            enable_audio,
+            audio_sample_rate,
         );
 
         {
@@ -285,11 +303,22 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             remote_received_format_list_callback = inner.remote_received_format_list_callback.clone();
             force_clipboard_update_callback = inner.force_clipboard_update_callback.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
+
+            // Extract audio configuration
+            enable_audio = inner.enable_audio;
+            audio_sample_rate = inner.audio_sample_rate;
         }
 
         info!("Connect to RDP host");
 
-        let mut config = build_config(username, password, server_domain, client_name, desktop_size);
+        let mut config = build_config(
+            username,
+            password,
+            server_domain,
+            client_name,
+            desktop_size,
+            enable_audio,
+        );
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
@@ -344,6 +373,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             kdc_proxy_url,
             clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
             use_display_control,
+            enable_audio,
+            audio_sample_rate,
         })
         .await?;
 
@@ -854,6 +885,7 @@ fn build_config(
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
+    enable_audio: bool,
 ) -> connector::Config {
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
@@ -889,7 +921,7 @@ fn build_config(
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         no_server_pointer: false,
         autologon: false,
-        no_audio_playback: true,
+        no_audio_playback: !enable_audio,
         request_data: None,
         pointer_software_rendering: false,
         performance_flags: PerformanceFlags::default(),
@@ -946,6 +978,8 @@ struct ConnectParams {
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
     use_display_control: bool,
+    enable_audio: bool,
+    audio_sample_rate: Option<f32>,
 }
 
 async fn connect(
@@ -958,6 +992,8 @@ async fn connect(
         kdc_proxy_url,
         clipboard_backend,
         use_display_control,
+        enable_audio,
+        audio_sample_rate,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
@@ -975,6 +1011,13 @@ async fn connect(
         connector.attach_static_channel(
             DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
         );
+    }
+
+    if enable_audio {
+        debug!("Enabling audio with sample rate: {:?}", audio_sample_rate);
+        let audio_backend = WebAudioBackend::new(audio_sample_rate)
+            .map_err(|e| anyhow::Error::msg(format!("failed to initialize Web Audio backend: {e:?}")))?;
+        connector.attach_static_channel(Rdpsnd::new(Box::new(audio_backend)));
     }
 
     let (upgraded, server_public_key) =
