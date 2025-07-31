@@ -714,7 +714,7 @@ fn string_len(value: &str, character_set: CharacterSet) -> u16 {
 pub mod builder {
     use core::marker::PhantomData;
 
-    use super::*;
+    use super::{ExtendedClientOptionalInfo, PerformanceFlags, TimezoneInfo, RECONNECT_COOKIE_LEN};
 
     pub struct ExtendedClientOptionalInfoBuilderStateSetTimeZone;
     pub struct ExtendedClientOptionalInfoBuilderStateSetSessionId;
