@@ -224,8 +224,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |outbound_message_size_limit: f64| {
                 let limit = if outbound_message_size_limit >= 0.0 && outbound_message_size_limit <= f64::from(u32::MAX) {
                     #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let limit = { outbound_message_size_limit as u32 };
-                    limit
+                    { outbound_message_size_limit as u32 }
                 } else {
                     warn!("Invalid outbound message size limit; fallback to unlimited");
                     0 // Fallback to no limit for invalid values.
