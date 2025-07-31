@@ -9,7 +9,7 @@ use clap::clap_derive::ValueEnum;
 use clap::Parser;
 use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatformType};
-use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use tap::prelude::*;
 use url::Url;
 
@@ -421,6 +421,7 @@ impl Config {
             request_data: None,
             pointer_software_rendering: false,
             performance_flags: PerformanceFlags::default(),
+            timezone_info: TimezoneInfo::default(),
         };
 
         let rdcleanpath = args

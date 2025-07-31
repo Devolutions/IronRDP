@@ -42,6 +42,7 @@ pub mod ffi {
         pub no_audio_playback: Option<bool>,
         pub pointer_software_rendering: Option<bool>,
         pub performance_flags: Option<ironrdp::pdu::rdp::client_info::PerformanceFlags>,
+        pub timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>,
     }
 
     #[diplomat::enum_convert(ironrdp::pdu::gcc::KeyboardType)]
@@ -124,6 +125,10 @@ pub mod ffi {
             self.performance_flags = Some(performance_flags.0);
         }
 
+        pub fn set_timezone_info(&mut self, timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>) {
+            self.timezone_info = timezone_info;
+        }
+
         pub fn set_bitmap_config(&mut self, bitmap: &BitmapConfig) {
             self.bitmap = Some(bitmap.0.clone());
         }
@@ -200,6 +205,7 @@ pub mod ffi {
                 desktop_scale_factor: 0,
                 hardware_id: None,
                 license_cache: None,
+                timezone_info: self.timezone_info.clone().unwrap_or_default(),
             };
             tracing::debug!(config=?inner_config, "Built config");
             Ok(Box::new(Config(inner_config)))
