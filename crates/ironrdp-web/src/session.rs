@@ -307,7 +307,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             )
         });
 
-        let ws = WebSocket::open(&proxy_address).context("Couldn't open WebSocket")?;
+        let ws = WebSocket::open(&proxy_address).context("couldn't open WebSocket")?;
 
         // NOTE: ideally, when the WebSocket can't be opened, the above call should fail with details on why is that
         // (e.g., the proxy hostname could not be resolved, proxy service is not running), but errors are neved
