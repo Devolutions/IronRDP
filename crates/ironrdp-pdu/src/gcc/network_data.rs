@@ -6,7 +6,7 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding, Decode,
     DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_integer::Integer;
+use num_integer::Integer as _;
 use thiserror::Error;
 
 const CHANNELS_MAX: usize = 31;

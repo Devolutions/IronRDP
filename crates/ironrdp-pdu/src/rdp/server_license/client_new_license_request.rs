@@ -5,9 +5,9 @@ use std::io;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    ensure_size, invalid_field_err, Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor,
 };
-use md5::Digest;
+use md5::Digest as _;
 
 use super::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader,

@@ -15,7 +15,7 @@ use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand}
 
 use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
-use crate::{rfx, SessionError, SessionErrorExt, SessionResult};
+use crate::{rfx, SessionError, SessionErrorExt as _, SessionResult};
 
 #[derive(Debug)]
 pub enum UpdateKind {

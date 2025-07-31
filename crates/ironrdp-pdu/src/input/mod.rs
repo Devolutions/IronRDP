@@ -5,7 +5,7 @@ use ironrdp_core::{
     EncodeResult, ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
 pub mod fast_path;

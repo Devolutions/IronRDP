@@ -1,7 +1,7 @@
 use core::cmp;
-use std::io::{Read, Write};
+use std::io::{Read as _, Write as _};
 
-use byteorder::ReadBytesExt;
+use byteorder::ReadBytesExt as _;
 use ironrdp_core::WriteCursor;
 
 /// Maximum possible segment size is 47 (run_length = 2, raw_bytes_count = 15), which is treated as

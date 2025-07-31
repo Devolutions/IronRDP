@@ -1,11 +1,11 @@
-use bit_field::BitField;
+use bit_field::BitField as _;
 use bitflags::bitflags;
 use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use crate::codecs::rfx::Block;
 

@@ -1,4 +1,4 @@
-use ironrdp_core::{impl_as_any, Decode, ReadCursor};
+use ironrdp_core::{impl_as_any, Decode as _, ReadCursor};
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode_err, pdu_other_err, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcMessage, SvcProcessor, SvcProcessorMessages, SvcServerProcessor};

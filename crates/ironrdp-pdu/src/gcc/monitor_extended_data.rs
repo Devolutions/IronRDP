@@ -3,7 +3,7 @@ use ironrdp_core::{
     ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 const MONITOR_COUNT_MAX: usize = 16;
 const MONITOR_ATTRIBUTE_SIZE: u32 = 20;

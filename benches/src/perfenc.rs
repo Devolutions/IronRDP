@@ -4,15 +4,15 @@
 
 use core::num::NonZero;
 use core::time::Duration;
-use std::io::Write;
+use std::io::Write as _;
 use std::time::Instant;
 
-use anyhow::Context;
+use anyhow::Context as _;
 use ironrdp::pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
 use ironrdp::server::bench::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use ironrdp::server::{BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat, RdpServerDisplayUpdates};
 use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use tokio::io::AsyncReadExt as _;
 use tokio::time::sleep;
 
 #[tokio::main(flavor = "current_thread")]

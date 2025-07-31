@@ -5,7 +5,7 @@ use core::pin::Pin;
 use ironrdp_connector::{custom_err, ConnectorResult};
 use reqwest::Client;
 use sspi::{Error, ErrorKind};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpStream, UdpSocket};
 use url::Url;
 

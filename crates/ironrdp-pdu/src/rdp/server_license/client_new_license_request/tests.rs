@@ -1,4 +1,4 @@
-use byteorder::{LittleEndian, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt as _};
 use ironrdp_core::{decode, encode_vec};
 use lazy_static::lazy_static;
 

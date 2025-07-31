@@ -1,12 +1,12 @@
 use std::fmt;
 
-use bit_field::BitField;
+use bit_field::BitField as _;
 use ironrdp_core::{
     cast_length, decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding,
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use super::{CapabilitySet, Color, Point, RDP_GFX_HEADER_SIZE};
 use crate::gcc::Monitor;

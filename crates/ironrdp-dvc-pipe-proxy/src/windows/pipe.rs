@@ -1,4 +1,4 @@
-use core::ops::DerefMut;
+use core::ops::DerefMut as _;
 use core::pin::Pin;
 
 use windows::core::{Owned, PCWSTR};

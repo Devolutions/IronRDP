@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use ironrdp_connector::{reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
+use ironrdp_connector::{
+    reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written,
+};
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{self as pdu};

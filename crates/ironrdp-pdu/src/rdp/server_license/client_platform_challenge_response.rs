@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod test;
 
-use std::io::Write;
+use std::io::Write as _;
 
 use byteorder::{LittleEndian, WriteBytesExt as _};
 use ironrdp_core::{

@@ -4,7 +4,7 @@ use ironrdp_core::{
     ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use tap::Pipe as _;
 
 use super::{RdpVersion, VERSION_SIZE};

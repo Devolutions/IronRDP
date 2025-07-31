@@ -131,7 +131,7 @@ where
     Kind: core::error::Error,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use core::error::Error;
+        use core::error::Error as _;
 
         write!(f, "{}", self.0)?;
 

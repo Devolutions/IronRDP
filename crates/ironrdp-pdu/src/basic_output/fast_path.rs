@@ -1,14 +1,14 @@
 #[cfg(test)]
 mod tests;
 
-use bit_field::BitField;
+use bit_field::BitField as _;
 use bitflags::bitflags;
 use ironrdp_core::{
     decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeError, DecodeResult, Encode,
-    EncodeResult, InvalidFieldErr, ReadCursor, WriteCursor,
+    EncodeResult, InvalidFieldErr as _, ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use super::bitmap::BitmapUpdateData;
 use super::pointer::PointerUpdateData;
