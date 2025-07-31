@@ -17,6 +17,7 @@ extern crate time as _;
 #[macro_use]
 extern crate tracing;
 
+mod audio;
 mod canvas;
 mod clipboard;
 mod error;
