@@ -609,7 +609,11 @@ fn create_gcc_blocks<'a>(
     selected_protocol: nego::SecurityProtocol,
     static_channels: impl Iterator<Item = &'a StaticVirtualChannel>,
 ) -> gcc::ClientGccBlocks {
-    use ironrdp_pdu::gcc::*;
+    use ironrdp_pdu::gcc::{
+        ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks, ClientNetworkData,
+        ClientSecurityData, ColorDepth, ConnectionType, EncryptionMethod, HighColorDepth, MonitorOrientation,
+        RdpVersion, SecureAccessSequence, SupportedColorDepths,
+    };
 
     let max_color_depth = config.bitmap.as_ref().map(|bitmap| bitmap.color_depth).unwrap_or(32);
 

@@ -144,6 +144,7 @@ alloc_instead_of_core = "warn"
 empty_drop = "warn"
 return_self_not_must_use = "warn"
 wildcard_dependencies = "warn"
+wildcard_imports = "warn"
 
 # == Let’s not merge unintended eprint!/print! statements in libraries == #
 print_stderr = "warn"

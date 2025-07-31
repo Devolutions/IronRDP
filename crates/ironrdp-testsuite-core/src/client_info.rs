@@ -1,4 +1,8 @@
-use ironrdp_pdu::rdp::client_info::*;
+use ironrdp_pdu::rdp::client_info::{
+    AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, DayOfWeek, DayOfWeekOccurrence,
+    ExtendedClientInfo, ExtendedClientOptionalInfo, Month, OptionalSystemTime, PerformanceFlags, SystemTime,
+    TimezoneInfo,
+};
 
 pub const CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS_LEN: usize = 218;
 
