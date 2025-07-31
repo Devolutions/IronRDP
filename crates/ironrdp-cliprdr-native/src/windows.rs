@@ -14,7 +14,7 @@ use ironrdp_cliprdr::pdu::{
 use tracing::error;
 use windows::core::{s, Error};
 pub use windows::Win32::Foundation::HWND;
-use windows::Win32::Foundation::{WPARAM, LPARAM, LRESULT, FALSE};
+use windows::Win32::Foundation::{FALSE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
