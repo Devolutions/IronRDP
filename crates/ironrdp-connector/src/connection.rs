@@ -13,8 +13,8 @@ use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionStat
 use crate::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
-    encode_x224_packet, Config, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State,
-    Written,
+    encode_x224_packet, Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult,
+    DesktopSize, NegotiationFailure, Sequence, State, Written,
 };
 
 #[derive(Debug)]
@@ -274,7 +274,10 @@ impl Sequence for ClientConnector {
                     nego::ConnectionConfirm::Response { flags, protocol } => (flags, protocol),
                     nego::ConnectionConfirm::Failure { code } => {
                         error!(?code, "Received connection failure code");
-                        return Err(reason_err!("Initiation", "{code}"));
+                        return Err(ConnectorError::new(
+                            "negotiation failure",
+                            ConnectorErrorKind::Negotiation(NegotiationFailure::from(code)),
+                        ));
                     }
                 };
 

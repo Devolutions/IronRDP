@@ -7,6 +7,7 @@ export enum IronErrorKind {
     AccessDenied = 3,
     RDCleanPath = 4,
     ProxyConnect = 5,
+    NegotiationFailure = 6,
 }
 
 export interface IronError {
