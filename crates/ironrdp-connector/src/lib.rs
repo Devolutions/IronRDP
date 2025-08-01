@@ -276,6 +276,7 @@ pub enum ConnectorErrorKind {
     AccessDenied,
     General,
     Custom,
+    NegotiationFailure(ironrdp_pdu::nego::FailureCode),
 }
 
 impl fmt::Display for ConnectorErrorKind {
@@ -288,6 +289,7 @@ impl fmt::Display for ConnectorErrorKind {
             ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
             ConnectorErrorKind::General => write!(f, "general error"),
             ConnectorErrorKind::Custom => write!(f, "custom error"),
+            ConnectorErrorKind::NegotiationFailure(code) => write!(f, "negotiation failure: {code}"),
         }
     }
 }
@@ -302,6 +304,7 @@ impl core::error::Error for ConnectorErrorKind {
             ConnectorErrorKind::AccessDenied => None,
             ConnectorErrorKind::Custom => None,
             ConnectorErrorKind::General => None,
+            ConnectorErrorKind::NegotiationFailure(_) => None,
         }
     }
 }

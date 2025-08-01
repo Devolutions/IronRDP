@@ -1,5 +1,6 @@
 use iron_remote_desktop::IronErrorKind;
 use ironrdp::connector::{self, sspi, ConnectorErrorKind};
+use tracing::info;
 
 pub(crate) struct IronError {
     kind: IronErrorKind,
@@ -37,6 +38,21 @@ impl From<connector::ConnectorError> for IronError {
                 ..
             }) => IronErrorKind::LogonFailure,
             ConnectorErrorKind::AccessDenied => IronErrorKind::AccessDenied,
+            ConnectorErrorKind::NegotiationFailure(code) => {
+                use ironrdp::pdu::nego::FailureCode;
+                info!("RDP negotiation failure: {} (code: 0x{:08x})", code, u32::from(code));
+                match code {
+                    FailureCode::SSL_REQUIRED_BY_SERVER => IronErrorKind::SslRequiredByServer,
+                    FailureCode::SSL_NOT_ALLOWED_BY_SERVER => IronErrorKind::SslNotAllowedByServer,
+                    FailureCode::SSL_CERT_NOT_ON_SERVER => IronErrorKind::SslCertNotOnServer,
+                    FailureCode::INCONSISTENT_FLAGS => IronErrorKind::InconsistentFlags,
+                    FailureCode::HYBRID_REQUIRED_BY_SERVER => IronErrorKind::HybridRequiredByServer,
+                    FailureCode::SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER => {
+                        IronErrorKind::SslWithUserAuthRequiredByServer
+                    }
+                    _ => IronErrorKind::General,
+                }
+            }
             _ => IronErrorKind::General,
         };
 
