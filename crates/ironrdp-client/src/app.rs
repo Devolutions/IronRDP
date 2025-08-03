@@ -194,7 +194,6 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 add_operation(state.state().alt_key(), ALT_LEFT);
                 add_operation(state.state().super_key(), LOGO_LEFT);
 
-
                 let input_events = self.input_database.apply(operations);
 
                 send_fast_path_events(&self.input_event_sender, input_events);
