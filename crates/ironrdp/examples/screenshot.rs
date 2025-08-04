@@ -208,7 +208,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         enable_server_pointer: false, // Disable custom pointers (there is no user interaction anyway).
         request_data: None,
         autologon: false,
-        no_audio_playback: true,
+        enable_audio_playback: false,
         pointer_software_rendering: true,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,

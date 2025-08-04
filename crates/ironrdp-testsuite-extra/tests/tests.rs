@@ -297,7 +297,7 @@ fn default_client_config() -> connector::Config {
         hardware_id: None,
         request_data: None,
         autologon: false,
-        no_audio_playback: false,
+        enable_audio_playback: true,
         license_cache: None,
         enable_server_pointer: true,
         pointer_software_rendering: true,

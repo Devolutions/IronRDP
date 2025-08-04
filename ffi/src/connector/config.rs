@@ -193,7 +193,7 @@ pub mod ffi {
 
                 enable_server_pointer: self.enable_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
-                no_audio_playback: self.no_audio_playback.unwrap_or(false),
+                enable_audio_playback: self.no_audio_playback.unwrap_or(true),
                 request_data: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,

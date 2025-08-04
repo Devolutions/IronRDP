@@ -889,7 +889,7 @@ fn build_config(
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         enable_server_pointer: false,
         autologon: false,
-        no_audio_playback: true,
+        enable_audio_playback: false,
         request_data: None,
         pointer_software_rendering: false,
         performance_flags: PerformanceFlags::default(),

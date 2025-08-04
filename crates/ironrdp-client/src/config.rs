@@ -417,7 +417,7 @@ impl Config {
             license_cache: None,
             enable_server_pointer: !args.no_server_pointer,
             autologon: args.autologon,
-            no_audio_playback: false,
+            enable_audio_playback: true,
             request_data: None,
             pointer_software_rendering: false,
             performance_flags: PerformanceFlags::default(),
