@@ -725,7 +725,7 @@ fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::Cli
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
     }
 
-    if config.no_audio_playback {
+    if !config.enable_audio_playback {
         flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 
