@@ -65,59 +65,6 @@ async fn process_client<P: OsPipe>(ctx: &mut WorkerCtx) -> Result<NextWorkerStat
     let pipe_name = &ctx.pipe_name;
     let channel_name = &ctx.channel_name;
 
-    /*
-     match fs::metadata(&ctx.pipe_name).await
-     {
-         Ok(metadata) => {
-             use std::os::unix::fs::FileTypeExt;
-
-             info!(
-                 %channel_name,
-                 %pipe_name,
-                 "DVC pipe already exists, removing stale file."
-             );
-
-             // Just to be sure, check if it's indeed a socket -
-             // throw an error if calling code accidentally passed a regular file.
-             if !metadata.file_type().is_socket() {
-                 return Err(DvcPipeProxyError::Io(std::io::Error::new(
-                     std::io::ErrorKind::InvalidInput,
-                     format!("Path {} is not a socket", ctx.pipe_name),
-                 )));
-             }
-
-             fs::remove_file(&ctx.pipe_name).await.map_err(DvcPipeProxyError::Io)?;
-         }
-         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-             trace!(
-                 %pipe_name,
-                 %channel_name,
-                 "DVC pipe does not exist, creating it."
-             );
-         }
-         Err(e) => {
-             return Err(DvcPipeProxyError::Io(e));
-         }
-     }
-
-    let listener = tokio::net::UnixListener::bind(&ctx.pipe_name)
-         .map_err(DvcPipeProxyError::Io)?;
-
-     info!(%pipe_name, %pipe_name, "Waiting for DVC pipe connection...");
-
-     let mut pipe = tokio::select! {
-         stream = listener.accept() => {
-             let (pipe, _) = stream.map_err(DvcPipeProxyError::Io)?;
-             info!(%channel_name, %pipe_name,"DVC proxy worker thread has started.");
-             pipe
-         }
-         _ = ctx.abort_event.notified() => {
-             info!(%channel_name, %pipe_name, "DVC proxy worker thread has been aborted.");
-             return Ok(NextWorkerState::Abort);
-         }
-     };
-     */
-
     let mut pipe = tokio::select! {
         pipe = P::connect(pipe_name) => {
             info!(%channel_name, %pipe_name,"DVC proxy worker thread has started.");
