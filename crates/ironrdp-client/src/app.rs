@@ -11,7 +11,6 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::ModifiersKeyState;
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 
@@ -189,10 +188,10 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     operations.push(operation);
                 };
 
-                add_operation(state.lshift_state() == ModifiersKeyState::Pressed, SHIFT_LEFT);
-                add_operation(state.lcontrol_state() == ModifiersKeyState::Pressed, CONTROL_LEFT);
-                add_operation(state.lalt_state() == ModifiersKeyState::Pressed, ALT_LEFT);
-                add_operation(state.lsuper_state() == ModifiersKeyState::Pressed, LOGO_LEFT);
+                add_operation(state.state().shift_key(), SHIFT_LEFT);
+                add_operation(state.state().control_key(), CONTROL_LEFT);
+                add_operation(state.state().alt_key(), ALT_LEFT);
+                add_operation(state.state().super_key(), LOGO_LEFT);
 
                 let input_events = self.input_database.apply(operations);
 
