@@ -613,7 +613,7 @@ async fn active_session(
                             io_channel_id,
                             user_channel_id,
                             desktop_size,
-                            no_server_pointer,
+                            enable_server_pointer,
                             pointer_software_rendering,
                         } = connection_activation.state
                         {
@@ -625,12 +625,12 @@ async fn active_session(
                                 fast_path::ProcessorBuilder {
                                     io_channel_id,
                                     user_channel_id,
-                                    no_server_pointer,
+                                    enable_server_pointer,
                                     pointer_software_rendering,
                                 }
                                 .build(),
                             );
-                            active_stage.set_no_server_pointer(no_server_pointer);
+                            active_stage.set_enable_server_pointer(enable_server_pointer);
                             break 'activation_seq;
                         }
                     }

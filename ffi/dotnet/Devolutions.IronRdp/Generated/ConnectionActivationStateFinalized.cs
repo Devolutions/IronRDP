@@ -23,19 +23,19 @@ public partial class ConnectionActivationStateFinalized: IDisposable
         }
     }
 
+    public bool EnableServerPointer
+    {
+        get
+        {
+            return GetEnableServerPointer();
+        }
+    }
+
     public ushort IoChannelId
     {
         get
         {
             return GetIoChannelId();
-        }
-    }
-
-    public bool NoServerPointer
-    {
-        get
-        {
-            return GetNoServerPointer();
         }
     }
 
@@ -111,7 +111,7 @@ public partial class ConnectionActivationStateFinalized: IDisposable
         }
     }
 
-    public bool GetNoServerPointer()
+    public bool GetEnableServerPointer()
     {
         unsafe
         {
@@ -119,7 +119,7 @@ public partial class ConnectionActivationStateFinalized: IDisposable
             {
                 throw new ObjectDisposedException("ConnectionActivationStateFinalized");
             }
-            bool retVal = Raw.ConnectionActivationStateFinalized.GetNoServerPointer(_inner);
+            bool retVal = Raw.ConnectionActivationStateFinalized.GetEnableServerPointer(_inner);
             return retVal;
         }
     }

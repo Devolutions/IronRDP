@@ -205,8 +205,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         #[cfg(target_os = "netbsd")]
         platform: MajorPlatformType::UNIX,
 
-        // Disable custom pointers (there is no user interaction anyway)
-        no_server_pointer: true,
+        enable_server_pointer: false, // Disable custom pointers (there is no user interaction anyway).
         request_data: None,
         autologon: false,
         no_audio_playback: true,

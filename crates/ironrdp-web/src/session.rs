@@ -726,7 +726,7 @@ impl iron_remote_desktop::Session for Session {
                                 io_channel_id,
                                 user_channel_id,
                                 desktop_size,
-                                no_server_pointer,
+                                enable_server_pointer,
                                 pointer_software_rendering,
                             } = box_connection_activation.state
                             {
@@ -738,12 +738,12 @@ impl iron_remote_desktop::Session for Session {
                                     fast_path::ProcessorBuilder {
                                         io_channel_id,
                                         user_channel_id,
-                                        no_server_pointer,
+                                        enable_server_pointer,
                                         pointer_software_rendering,
                                     }
                                     .build(),
                                 );
-                                active_stage.set_no_server_pointer(no_server_pointer);
+                                active_stage.set_enable_server_pointer(enable_server_pointer);
                                 break 'activation_seq;
                             }
                         }
@@ -887,7 +887,7 @@ fn build_config(
         // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
-        no_server_pointer: false,
+        enable_server_pointer: false,
         autologon: false,
         no_audio_playback: true,
         request_data: None,

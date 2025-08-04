@@ -79,6 +79,14 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
+    public bool EnableServerPointer
+    {
+        set
+        {
+            SetEnableServerPointer(value);
+        }
+    }
+
     public bool EnableTls
     {
         set
@@ -124,14 +132,6 @@ public partial class ConfigBuilder: IDisposable
         set
         {
             SetKeyboardType(value);
-        }
-    }
-
-    public bool NoServerPointer
-    {
-        set
-        {
-            SetNoServerPointer(value);
         }
     }
 
@@ -418,7 +418,7 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
-    public void SetNoServerPointer(bool noServerPointer)
+    public void SetEnableServerPointer(bool enableServerPointer)
     {
         unsafe
         {
@@ -426,7 +426,7 @@ public partial class ConfigBuilder: IDisposable
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetNoServerPointer(_inner, noServerPointer);
+            Raw.ConfigBuilder.SetEnableServerPointer(_inner, enableServerPointer);
         }
     }
 

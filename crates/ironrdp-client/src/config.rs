@@ -415,7 +415,7 @@ impl Config {
             },
             hardware_id: None,
             license_cache: None,
-            no_server_pointer: args.no_server_pointer,
+            enable_server_pointer: !args.no_server_pointer,
             autologon: args.autologon,
             no_audio_playback: false,
             request_data: None,

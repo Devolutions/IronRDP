@@ -37,7 +37,7 @@ pub mod ffi {
         pub client_name: Option<String>,
         pub client_dir: Option<String>,
         pub platform: Option<MajorPlatformType>,
-        pub no_server_pointer: Option<bool>,
+        pub enable_server_pointer: Option<bool>,
         pub autologon: Option<bool>,
         pub no_audio_playback: Option<bool>,
         pub pointer_software_rendering: Option<bool>,
@@ -140,8 +140,8 @@ pub mod ffi {
             self.client_dir = Some(client_dir.to_owned());
         }
 
-        pub fn set_no_server_pointer(&mut self, no_server_pointer: bool) {
-            self.no_server_pointer = Some(no_server_pointer);
+        pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
+            self.enable_server_pointer = Some(enable_server_pointer);
         }
 
         pub fn set_autologon(&mut self, autologon: bool) {
@@ -191,7 +191,7 @@ pub mod ffi {
                 #[cfg(target_os = "netbsd")]
                 platform: MajorPlatformType::UNIX,
 
-                no_server_pointer: self.no_server_pointer.unwrap_or(false),
+                enable_server_pointer: self.enable_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
                 no_audio_playback: self.no_audio_playback.unwrap_or(false),
                 request_data: None,

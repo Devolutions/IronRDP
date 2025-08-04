@@ -41,10 +41,10 @@ public partial struct ActiveStage
     public static unsafe extern SessionFfiResultOptBoxActiveStageOutputIteratorBoxIronRdpError EncodedResize(ActiveStage* self, uint width, uint height);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_set_fastpath_processor", ExactSpelling = true)]
-    public static unsafe extern void SetFastpathProcessor(ActiveStage* self, ushort ioChannelId, ushort userChannelId, [MarshalAs(UnmanagedType.U1)] bool noServerPointer, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering);
+    public static unsafe extern void SetFastpathProcessor(ActiveStage* self, ushort ioChannelId, ushort userChannelId, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_set_no_server_pointer", ExactSpelling = true)]
-    public static unsafe extern void SetNoServerPointer(ActiveStage* self, [MarshalAs(UnmanagedType.U1)] bool noServerPointer);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_set_enable_server_pointer", ExactSpelling = true)]
+    public static unsafe extern void SetEnableServerPointer(ActiveStage* self, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ActiveStage* self);
