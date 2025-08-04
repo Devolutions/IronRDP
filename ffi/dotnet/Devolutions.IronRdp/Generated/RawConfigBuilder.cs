@@ -67,8 +67,8 @@ public partial struct ConfigBuilder
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_client_dir", ExactSpelling = true)]
     public static unsafe extern void SetClientDir(ConfigBuilder* self, byte* clientDir, nuint clientDirSz);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_no_server_pointer", ExactSpelling = true)]
-    public static unsafe extern void SetNoServerPointer(ConfigBuilder* self, [MarshalAs(UnmanagedType.U1)] bool noServerPointer);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_enable_server_pointer", ExactSpelling = true)]
+    public static unsafe extern void SetEnableServerPointer(ConfigBuilder* self, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_autologon", ExactSpelling = true)]
     public static unsafe extern void SetAutologon(ConfigBuilder* self, [MarshalAs(UnmanagedType.U1)] bool autologon);

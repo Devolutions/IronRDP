@@ -24,7 +24,7 @@ pub struct ConnectionResult {
     pub user_channel_id: u16,
     pub static_channels: StaticChannelSet,
     pub desktop_size: DesktopSize,
-    pub no_server_pointer: bool,
+    pub enable_server_pointer: bool,
     pub pointer_software_rendering: bool,
     pub connection_activation: ConnectionActivationSequence,
 }
@@ -550,7 +550,7 @@ impl Sequence for ClientConnector {
                             io_channel_id,
                             user_channel_id,
                             desktop_size,
-                            no_server_pointer,
+                            enable_server_pointer,
                             pointer_software_rendering,
                         } => ClientConnectorState::Connected {
                             result: ConnectionResult {
@@ -558,7 +558,7 @@ impl Sequence for ClientConnector {
                                 user_channel_id,
                                 static_channels: mem::take(&mut self.static_channels),
                                 desktop_size,
-                                no_server_pointer,
+                                enable_server_pointer,
                                 pointer_software_rendering,
                                 connection_activation,
                             },

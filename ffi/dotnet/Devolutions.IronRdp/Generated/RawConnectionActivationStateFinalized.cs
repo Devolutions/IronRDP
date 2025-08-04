@@ -25,9 +25,9 @@ public partial struct ConnectionActivationStateFinalized
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_desktop_size", ExactSpelling = true)]
     public static unsafe extern DesktopSize* GetDesktopSize(ConnectionActivationStateFinalized* self);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_no_server_pointer", ExactSpelling = true)]
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_enable_server_pointer", ExactSpelling = true)]
     [return: MarshalAs(UnmanagedType.U1)]
-    public static unsafe extern bool GetNoServerPointer(ConnectionActivationStateFinalized* self);
+    public static unsafe extern bool GetEnableServerPointer(ConnectionActivationStateFinalized* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_pointer_software_rendering", ExactSpelling = true)]
     [return: MarshalAs(UnmanagedType.U1)]

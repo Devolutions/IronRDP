@@ -180,13 +180,13 @@ pub struct Config {
     pub autologon: bool,
     /// If true, the INFO_NOAUDIOPLAYBACK flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub no_audio_playback: bool,
+    pub performance_flags: PerformanceFlags,
 
     pub license_cache: Option<Arc<dyn LicenseCache>>,
 
     // FIXME(@CBenoit): these are client-only options, not part of the connector.
-    pub no_server_pointer: bool,
+    pub enable_server_pointer: bool,
     pub pointer_software_rendering: bool,
-    pub performance_flags: PerformanceFlags,
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);

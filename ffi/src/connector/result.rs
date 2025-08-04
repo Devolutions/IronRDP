@@ -58,12 +58,12 @@ pub mod ffi {
             )))
         }
 
-        pub fn get_no_server_pointer(&self) -> Result<bool, Box<IronRdpError>> {
+        pub fn get_enable_server_pointer(&self) -> Result<bool, Box<IronRdpError>> {
             Ok(self
                 .0
                 .as_ref()
                 .ok_or_else(|| ValueConsumedError::for_item("ConnectionResult"))?
-                .no_server_pointer)
+                .enable_server_pointer)
         }
 
         pub fn get_pointer_software_rendering(&self) -> Result<bool, Box<IronRdpError>> {

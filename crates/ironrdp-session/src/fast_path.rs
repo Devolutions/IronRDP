@@ -35,7 +35,7 @@ pub struct Processor {
     pointer_cache: PointerCache,
     use_system_pointer: bool,
     mouse_pos_update: Option<(u16, u16)>,
-    no_server_pointer: bool,
+    enable_server_pointer: bool,
     pointer_software_rendering: bool,
     #[cfg(feature = "qoiz")]
     zdctx: zstd_safe::DCtx<'static>,
@@ -176,7 +176,7 @@ impl Processor {
                 processor_updates.push(update_kind);
             }
             Ok(FastPathUpdate::Pointer(update)) => {
-                if self.no_server_pointer {
+                if !self.enable_server_pointer {
                     return Ok(processor_updates);
                 }
 
@@ -442,7 +442,7 @@ pub struct ProcessorBuilder {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
     /// Ignore server pointer updates.
-    pub no_server_pointer: bool,
+    pub enable_server_pointer: bool,
     /// Use software rendering mode for pointer bitmap generation. When this option is active,
     /// `UpdateKind::PointerBitmap` will not be generated. Remote pointer will be drawn
     /// via software rendering on top of the output image.
@@ -459,7 +459,7 @@ impl ProcessorBuilder {
             pointer_cache: PointerCache::default(),
             use_system_pointer: true,
             mouse_pos_update: None,
-            no_server_pointer: self.no_server_pointer,
+            enable_server_pointer: self.enable_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
             #[cfg(feature = "qoiz")]
             zdctx: zstd_safe::DCtx::default(),
