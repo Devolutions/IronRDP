@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::error::DvcPipeProxyError;
 use crate::os_pipe::OsPipe;
@@ -16,7 +16,7 @@ impl OsPipe for UnixPipe {
         // Domain socket file could already exist from a previous run.
         match fs::metadata(&pipe_name).await {
             Ok(metadata) => {
-                use std::os::unix::fs::FileTypeExt;
+                use std::os::unix::fs::FileTypeExt as _;
 
                 info!(
                     %pipe_name,
