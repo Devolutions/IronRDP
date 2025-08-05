@@ -233,7 +233,7 @@ enum HttpTunnelResponseFields {
 /// 2.2.10.20 HTTP_TUNNEL_RESPONSE Structure
 #[derive(Debug, Default)]
 pub(crate) struct TunnelRespPkt {
-    pub server_version: u16,
+    pub _server_version: u16,
     pub status_code: u32,
     pub fields_present: u16,
     pub _reserved: u16,
@@ -255,7 +255,7 @@ impl Decode<'_> for TunnelRespPkt {
         ensure_fixed_part_size!(in: src);
 
         let mut pkt = TunnelRespPkt {
-            server_version: src.read_u16(),
+            _server_version: src.read_u16(),
             status_code: src.read_u32(),
             fields_present: src.read_u16(),
             _reserved: src.read_u16(),

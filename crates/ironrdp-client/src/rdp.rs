@@ -174,9 +174,9 @@ async fn connect(
     let mut server_addr =
         std::net::SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 1234));
     let stream = if let Some(ref gw_config) = config.gw {
-        let gw_stream = ironrdp_mstsgu::GwClient::connect(&gw_config).await.unwrap();
-        let gw = ironrdp_mstsgu::GwClient::connect_ws(gw_config.clone(), &config.connector.client_name, gw_stream).await;
-        tokio_util::either::Either::Left(gw.unwrap())
+        let gw = ironrdp_mstsgu::GwClient::connect(&gw_config, &config.connector.client_name).await
+            .map_err(|e| connector::custom_err!("GW Connect", e))?;
+        tokio_util::either::Either::Left(gw)
     } else {
         let stream = TcpStream::connect(dest)
             .await
