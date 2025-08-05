@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use ironrdp_core::{unsupported_value_err, Decode, Encode, ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ensure_size, unsupported_value_err, Decode, Encode, ReadCursor, WriteCursor};
 
 bitflags! {
     /// 2.2.5.3.2 HTTP_EXTENDED_AUTH Enumeration
@@ -66,8 +66,14 @@ pub(crate) struct PktHdr {
     pub length: u32,
 }
 
+impl PktHdr {
+    const FIXED_PART_SIZE: usize = 4 /* ty */ + 2/* _reserved */ + 2 /* length */;
+}
+
 impl Encode for PktHdr {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         dst.write_u16(self.ty as u16);
         dst.write_u16(self._reserved);
         dst.write_u32(self.length);
@@ -86,6 +92,8 @@ impl Encode for PktHdr {
 
 impl<'a> Decode<'a> for PktHdr {
     fn decode(src: &mut ReadCursor<'a>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
         let ty = src.read_u16();
         let mty = PktTy::try_from(ty).map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{:x}", ty)))?;
 
@@ -108,6 +116,8 @@ pub(crate) struct HandshakeReqPkt {
 
 impl Encode for HandshakeReqPkt {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let hdr = PktHdr {
             ty: PktTy::HandshakeReq,
             length: self.size() as u32,
@@ -142,8 +152,14 @@ pub(crate) struct HandshakeRespPkt {
     pub extended_auth: HttpExtendedAuth,
 }
 
+impl HandshakeRespPkt {
+    const FIXED_PART_SIZE: usize = 4 /* error_code */ + 1 /* ver_major */ + 1 /* ver_minor */ + 2 /* server_auth */ + 1 /*extended_auth*/;
+}
+
 impl Decode<'_> for HandshakeRespPkt {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
         Ok(HandshakeRespPkt {
             error_code: src.read_u32(),
             ver_major: src.read_u8(),
@@ -168,6 +184,8 @@ pub(crate) struct TunnelReqPkt {
 
 impl Encode for TunnelReqPkt {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let hdr = PktHdr {
             ty: PktTy::TunnelCreate,
             length: self.size() as u32,
@@ -192,7 +210,8 @@ impl Encode for TunnelReqPkt {
 
 /// 2.2.5.3.9 HTTP_CAPABILITY_TYPE Enumeration
 #[repr(u32)]
-enum HttpCapsTy {
+#[allow(dead_code)]
+pub(crate) enum HttpCapsTy {
     QuarSOH = 1,
     IdleTimeout = 2,
     MessagingConsentSign = 4,
@@ -227,8 +246,14 @@ pub(crate) struct TunnelRespPkt {
     pub consent_msg: Vec<u8>,
 }
 
+impl TunnelRespPkt {
+    const FIXED_PART_SIZE: usize = 2 /* server_version */ + 4 /* status_code */ + 2 /* fields_present */ + 2 /* reserved */;
+}
+
 impl Decode<'_> for TunnelRespPkt {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
         let mut pkt = TunnelRespPkt {
             server_version: src.read_u16(),
             status_code: src.read_u32(),
@@ -238,18 +263,24 @@ impl Decode<'_> for TunnelRespPkt {
         };
 
         if pkt.fields_present & (HttpTunnelResponseFields::TunnelID as u16) != 0 {
+            ensure_size!(in: src, size: 4);
             pkt.tunnel_id = Some(src.read_u32());
         }
         if pkt.fields_present & (HttpTunnelResponseFields::Caps as u16) != 0 {
+            ensure_size!(in: src, size: 4);
             pkt.caps_flags = Some(src.read_u32());
         }
         if pkt.fields_present & (HttpTunnelResponseFields::SOH as u16) != 0 {
+            ensure_size!(in: src, size: 2 + 2);
             pkt.nonce = Some(src.read_u16());
             let len = src.read_u16();
+            ensure_size!(in: src, size: len as usize);
             pkt.server_cert = src.read_slice(len as usize).to_vec();
         }
         if pkt.fields_present & (HttpTunnelResponseFields::Consent as u16) != 0 {
+            ensure_size!(in: src, size: 2);
             let len = src.read_u16();
+            ensure_size!(in: src, size: len as usize);
             pkt.consent_msg = src.read_slice(len as usize).to_vec();
         }
 
@@ -265,6 +296,8 @@ pub(crate) struct ExtendedAuthPkt {
 
 impl Encode for ExtendedAuthPkt {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let hdr = PktHdr {
             ty: PktTy::ExtendedAuth,
             length: self.size() as u32,
@@ -289,8 +322,10 @@ impl Encode for ExtendedAuthPkt {
 
 impl Decode<'_> for ExtendedAuthPkt {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_size!(in: src, size: 4 + 2);
         let error_code = src.read_u32();
         let len = src.read_u16();
+        ensure_size!(in: src, size: len as usize);
 
         Ok(ExtendedAuthPkt {
             error_code,
@@ -307,6 +342,8 @@ pub(crate) struct TunnelAuthPkt {
 
 impl Encode for TunnelAuthPkt {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let hdr = PktHdr {
             ty: PktTy::TunnelAuth,
             length: self.size() as u32,
@@ -340,8 +377,14 @@ pub(crate) struct TunnelAuthRespPkt {
     _reserved: u16,
 }
 
+impl TunnelAuthRespPkt {
+    const FIXED_PART_SIZE: usize = 4 /* error_code */ + 2 /* fields_present */ + 2 /* _reserved */;
+}
+
 impl Decode<'_> for TunnelAuthRespPkt {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
         Ok(TunnelAuthRespPkt {
             error_code: src.read_u32(),
             fields_present: src.read_u16(),
@@ -359,6 +402,8 @@ pub(crate) struct ChannelPkt {
 
 impl Encode for ChannelPkt {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let hdr = PktHdr {
             ty: PktTy::ChannelCreate,
             length: self.size() as u32,
@@ -406,8 +451,14 @@ pub(crate) struct ChannelResp {
     authn_cookie: Vec<u8>,
 }
 
+impl ChannelResp {
+    const FIXED_PART_SIZE: usize = 4 /* error_code */ + 2 /* fields_present */ + 2 /* _reserved */;
+}
+
 impl Decode<'_> for ChannelResp {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
         let mut resp = ChannelResp {
             error_code: src.read_u32(),
             fields_present: src.read_u16(),
@@ -415,13 +466,17 @@ impl Decode<'_> for ChannelResp {
             ..ChannelResp::default()
         };
         if resp.fields_present & 1 != 0 {
+            ensure_size!(in: src, size: 4);
             resp.chan_id = Some(src.read_u32());
         }
         if resp.fields_present & 2 != 0 {
+            ensure_size!(in: src, size: 2);
             resp.udp_port = src.read_u16();
         }
         if resp.fields_present & 4 != 0 {
+            ensure_size!(in: src, size: 2);
             let len = src.read_u16();
+            ensure_size!(in: src, size: len as usize);
             resp.authn_cookie = src.read_slice(len as usize).to_vec();
         }
         Ok(resp)
@@ -435,6 +490,8 @@ pub(crate) struct DataPkt<'a> {
 
 impl Encode for DataPkt<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let hdr = PktHdr {
             ty: PktTy::Data,
             length: self.size() as u32,
@@ -457,7 +514,9 @@ impl Encode for DataPkt<'_> {
 
 impl<'a> Decode<'a> for DataPkt<'a> {
     fn decode(src: &mut ReadCursor<'a>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_size!(in: src, size: 2);
         let len = src.read_u16();
+        ensure_size!(in: src, size: len as usize);
         Ok(DataPkt {
             data: src.read_slice(len as usize),
         })

@@ -96,7 +96,6 @@ pub struct RdpClient {
 
 impl RdpClient {
     pub async fn run(mut self) {
-        println!("RdpClient::run");
         loop {
             let (connection_result, framed) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
                 match connect_ws(
@@ -114,7 +113,6 @@ impl RdpClient {
                     }
                 }
             } else {
-                println!("RdpClient::run connect");
                 match connect(
                     &self.config,
                     self.cliprdr_factory.as_deref(),
@@ -124,7 +122,6 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        println!("RdpClient::run loop err");
                         let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
                         break;
                     }
@@ -142,7 +139,6 @@ impl RdpClient {
                 Ok(RdpControlFlow::ReconnectWithNewSize { width, height }) => {
                     self.config.connector.desktop_size.width = width;
                     self.config.connector.desktop_size.height = height;
-                    println!("ReconnectWithNewSize");
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
                     let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Ok(reason)));
@@ -153,7 +149,6 @@ impl RdpClient {
                     break;
                 }
             }
-            println!("END OF LOOP");
         }
     }
 }
@@ -180,7 +175,7 @@ async fn connect(
         std::net::SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 1234));
     let stream = if let Some(ref gw_config) = config.gw {
         let gw_stream = ironrdp_mstsgu::GwClient::connect(&gw_config).await.unwrap();
-        let gw = ironrdp_mstsgu::GwClient::connect_ws(gw_config.clone(), gw_stream).await;
+        let gw = ironrdp_mstsgu::GwClient::connect_ws(gw_config.clone(), &config.connector.client_name, gw_stream).await;
         tokio_util::either::Either::Left(gw.unwrap())
     } else {
         let stream = TcpStream::connect(dest)
