@@ -14,8 +14,9 @@ bitflags! {
 
 /// 2.2.5.3.3 HTTP_PACKET_TYPE Enumeration
 #[repr(u16)]
-#[derive(Eq, PartialEq, Copy, Clone, Debug)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug, Default)]
 pub(crate) enum PktTy {
+    #[default]
     Invalid,
     HandshakeReq = 0x01,
     HandshakeResp = 0x02,
@@ -28,12 +29,6 @@ pub(crate) enum PktTy {
     ChannelResp = 0x09,
     ChannelClose = 0x10,
     Data = 0x0A,
-}
-
-impl Default for PktTy {
-    fn default() -> Self {
-        PktTy::Invalid
-    }
 }
 
 impl TryFrom<u16> for PktTy {
@@ -54,7 +49,7 @@ impl TryFrom<u16> for PktTy {
             0x10 => PktTy::ChannelClose,
             _ => return Err(()),
         };
-        return Ok(mapped);
+        Ok(mapped)
     }
 }
 
@@ -95,7 +90,7 @@ impl<'a> Decode<'a> for PktHdr {
         ensure_fixed_part_size!(in: src);
 
         let ty = src.read_u16();
-        let mty = PktTy::try_from(ty).map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{:x}", ty)))?;
+        let mty = PktTy::try_from(ty).map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{ty:x}")))?;
 
         Ok(PktHdr {
             ty: mty,
@@ -120,7 +115,7 @@ impl Encode for HandshakeReqPkt {
 
         let hdr = PktHdr {
             ty: PktTy::HandshakeReq,
-            length: self.size() as u32,
+            length: u32::try_from(self.size()).unwrap(),
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
@@ -149,7 +144,7 @@ pub(crate) struct HandshakeRespPkt {
     pub ver_major: u8,
     pub ver_minor: u8,
     pub server_version: u16,
-    pub extended_auth: HttpExtendedAuth,
+    pub _extended_auth: HttpExtendedAuth,
 }
 
 impl HandshakeRespPkt {
@@ -165,10 +160,10 @@ impl Decode<'_> for HandshakeRespPkt {
             ver_major: src.read_u8(),
             ver_minor: src.read_u8(),
             server_version: src.read_u16(),
-            extended_auth: {
+            _extended_auth: {
                 let raw = src.read_u16();
                 HttpExtendedAuth::from_bits(raw)
-                    .ok_or_else(|| unsupported_value_err("HandshakeResp", "extended_auth", format!("0x{:x}", raw)))?
+                    .ok_or_else(|| unsupported_value_err("HandshakeResp", "extended_auth", format!("0x{raw:x}")))?
             },
         })
     }
@@ -188,7 +183,7 @@ impl Encode for TunnelReqPkt {
 
         let hdr = PktHdr {
             ty: PktTy::TunnelCreate,
-            length: self.size() as u32,
+            length: u32::try_from(self.size()).unwrap(),
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
@@ -210,7 +205,7 @@ impl Encode for TunnelReqPkt {
 
 /// 2.2.5.3.9 HTTP_CAPABILITY_TYPE Enumeration
 #[repr(u32)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 pub(crate) enum HttpCapsTy {
     QuarSOH = 1,
     IdleTimeout = 2,
@@ -226,7 +221,7 @@ enum HttpTunnelResponseFields {
     TunnelID = 1,
     Caps = 2,
     /// nonce & server_cert
-    SOH = 4,
+    Soh = 4,
     Consent = 0x10,
 }
 
@@ -270,7 +265,7 @@ impl Decode<'_> for TunnelRespPkt {
             ensure_size!(in: src, size: 4);
             pkt.caps_flags = Some(src.read_u32());
         }
-        if pkt.fields_present & (HttpTunnelResponseFields::SOH as u16) != 0 {
+        if pkt.fields_present & (HttpTunnelResponseFields::Soh as u16) != 0 {
             ensure_size!(in: src, size: 2 + 2);
             pkt.nonce = Some(src.read_u16());
             let len = src.read_u16();
@@ -300,13 +295,13 @@ impl Encode for ExtendedAuthPkt {
 
         let hdr = PktHdr {
             ty: PktTy::ExtendedAuth,
-            length: self.size() as u32,
+            length: u32::try_from(self.size()).unwrap(),
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
         dst.write_u32(self.error_code);
-        dst.write_u16(self.blob.len() as u16);
+        dst.write_u16(u16::try_from(self.blob.len()).unwrap());
         dst.write_slice(&self.blob);
         Ok(())
     }
@@ -346,13 +341,13 @@ impl Encode for TunnelAuthPkt {
 
         let hdr = PktHdr {
             ty: PktTy::TunnelAuth,
-            length: self.size() as u32,
+            length: u32::try_from(self.size()).unwrap(),
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
         dst.write_u16(self.fields_present);
-        dst.write_u16(2 * (self.client_name.len() as u16 + 1));
+        dst.write_u16(u16::try_from(2 * (self.client_name.len() + 1)).unwrap());
         for c in self.client_name.encode_utf16() {
             dst.write_u16(c);
         }
@@ -373,7 +368,7 @@ impl Encode for TunnelAuthPkt {
 #[derive(Debug)]
 pub(crate) struct TunnelAuthRespPkt {
     pub error_code: u32,
-    fields_present: u16,
+    _fields_present: u16,
     _reserved: u16,
 }
 
@@ -387,7 +382,7 @@ impl Decode<'_> for TunnelAuthRespPkt {
 
         Ok(TunnelAuthRespPkt {
             error_code: src.read_u32(),
-            fields_present: src.read_u16(),
+            _fields_present: src.read_u16(),
             _reserved: src.read_u16(),
         })
     }
@@ -406,20 +401,19 @@ impl Encode for ChannelPkt {
 
         let hdr = PktHdr {
             ty: PktTy::ChannelCreate,
-            length: self.size() as u32,
+            length: u32::try_from(self.size()).unwrap(),
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
-        dst.write_u8(self.resources.len() as u8);
+        dst.write_u8(u8::try_from(self.resources.len()).unwrap());
         dst.write_u8(0); // alt_names
         dst.write_u16(self.port);
         dst.write_u16(self.protocol);
 
         // 2.2.10.3 HTTP_CHANNEL_PACKET_VARIABLE
         for res in &self.resources {
-            dst.write_u16(2 * (res.len() + 1) as u16);
-            // dst.write_slice(res.as_bytes());
+            dst.write_u16(u16::try_from(2 * (res.len() + 1)).unwrap());
             for b in res.encode_utf16() {
                 dst.write_u16(b);
             }
@@ -494,11 +488,11 @@ impl Encode for DataPkt<'_> {
 
         let hdr = PktHdr {
             ty: PktTy::Data,
-            length: self.size() as u32,
+            length: u32::try_from(self.size()).unwrap(),
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
-        dst.write_u16(self.data.len() as u16);
+        dst.write_u16(u16::try_from(self.data.len()).unwrap());
         dst.write_slice(self.data);
         Ok(())
     }

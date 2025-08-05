@@ -171,10 +171,11 @@ async fn connect(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
+    // TODO
     let mut server_addr =
-        std::net::SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 1234));
+        core::net::SocketAddr::V4(core::net::SocketAddrV4::new(core::net::Ipv4Addr::new(127, 0, 0, 1), 1234));
     let stream = if let Some(ref gw_config) = config.gw {
-        let gw = ironrdp_mstsgu::GwClient::connect(&gw_config, &config.connector.client_name).await
+        let gw = ironrdp_mstsgu::GwClient::connect(gw_config, &config.connector.client_name).await
             .map_err(|e| connector::custom_err!("GW Connect", e))?;
         tokio_util::either::Either::Left(gw)
     } else {

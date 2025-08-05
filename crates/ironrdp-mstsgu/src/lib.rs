@@ -3,15 +3,17 @@
 //! * This only supports the HTTPS protocol with Websocket (and not the legacy HTTP, HTTP-RPC or UDP protocols).
 //! * This does not implement reconnection/reauthentication.
 //! * This only supports basic auth.
-use std::{fmt::Display, io, task::Poll};
+use core::pin::Pin;
+use core::{fmt, fmt::Display, task::Poll};
+use std::io;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{
     stream::{SplitSink, SplitStream},
-    FutureExt, SinkExt, StreamExt,
+    FutureExt as _, SinkExt as _, StreamExt as _,
 };
 use hyper::body::Bytes;
-use ironrdp_core::{Decode, DecodeError, DecodeErrorKind, Encode, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor};
 use log::error;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -58,20 +60,20 @@ pub enum GwErrorKind {
 trait GwErrorExt {
     fn custom<E>(context: &'static str, e: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static;
+        E: core::error::Error + Sync + Send + 'static;
 }
 
 impl GwErrorExt for ironrdp_error::Error<GwErrorKind> {
     fn custom<E>(context: &'static str, e: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static,
+        E: core::error::Error + Sync + Send + 'static,
     {
         Self::new(context, GwErrorKind::Custom).with_source(e)
     }
 }
 
 impl Display for GwErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let x = match self {
             GwErrorKind::InvalidGwTarget => "Invalid GW Target",
             GwErrorKind::Connect => "Connection error",
@@ -84,7 +86,7 @@ impl Display for GwErrorKind {
     }
 }
 
-impl std::error::Error for GwErrorKind {}
+impl core::error::Error for GwErrorKind {}
 
 /// Creates a `ConnectorError` with `Custom` kind and a source error attached to it
 #[macro_export]
@@ -117,7 +119,7 @@ impl Drop for GwClient {
 impl GwClient {
     pub async fn connect(target: &GwConnectTarget, client_name: &str) -> Result<GwClient, Error> {
         let gw_host = target.gw_endpoint.split(":").nth(0)
-            .ok_or(Error::new("Connect", GwErrorKind::InvalidGwTarget))?;
+            .ok_or_else(|| Error::new("Connect", GwErrorKind::InvalidGwTarget))?;
 
         let stream = TcpStream::connect(&target.gw_endpoint)
             .await
@@ -134,7 +136,7 @@ impl GwClient {
             .header(hyper::header::HOST, gw_host)
             .header("Rdg-Connection-Id", format!("{{{}}}", uuid::Uuid::new_v4()))
             .uri("/remoteDesktopGateway/")
-            .header(hyper::header::AUTHORIZATION, format!("Basic {}", ba))
+            .header(hyper::header::AUTHORIZATION, format!("Basic {ba}"))
             .header(hyper::header::CONNECTION, "Upgrade")
             .header(hyper::header::UPGRADE, "websocket")
             .header(hyper::header::SEC_WEBSOCKET_VERSION, "13")
@@ -148,12 +150,12 @@ impl GwClient {
             .map_err(|e| custom_err!("H1 Handshake", e))?;
         let (tx, rx) = oneshot::channel();
 
-        let res = tokio::task::spawn(async move {
+        let jh = tokio::task::spawn(async move {
             tokio::select! {
                 Err(e) = &mut conn => error!("Handshake error: {:?}", e),
                 _ = rx => (),
             }
-            return conn.into_parts();
+            conn.into_parts()
         });
         let resp = sender
             .send_request(req)
@@ -165,7 +167,7 @@ impl GwClient {
         }
 
         let _ = tx.send(()); // TODO: Not needed since it doesnt keep alive conn?
-        let stream = res.await.map_err(|e| custom_err!("WS join", e))?.io.into_inner();
+        let stream = jh.await.map_err(|e| custom_err!("WS join", e))?.io.into_inner();
         
         Self::connect_ws(target.clone(), client_name, stream).await
     }
@@ -210,7 +212,7 @@ impl GwClient {
                         let pos = {
                             let mut cur = WriteCursor::new(&mut wsbuf);
                             pkt.encode(&mut cur).map_err(|e| custom_err!("PktEncode", e))?;
-                            cur.pos() as usize
+                            cur.pos()
                         };
                         gw.ws_sink.send(Message::Binary(Bytes::copy_from_slice(&wsbuf[..pos]))).await.map_err(|e| custom_err!("ws send", e))?;
                     }
@@ -219,7 +221,7 @@ impl GwClient {
         });
 
         Ok(GwClient {
-            work: work,
+            work,
             rx: in_rx,
             rx_bufs: vec![],
             tx: PollSender::new(out_tx),
@@ -233,7 +235,7 @@ impl GwConn {
         let pos = {
             let mut cur = WriteCursor::new(&mut buf);
             payload.encode(&mut cur).unwrap();
-            cur.pos() as usize
+            cur.pos()
         };
         self.ws_sink
             .send(Message::Binary(Bytes::copy_from_slice(&buf[..pos])))
@@ -321,7 +323,7 @@ impl GwConn {
 
     async fn channel(&mut self) -> Result<ChannelResp, Error> {
         let req = ChannelPkt {
-            resources: vec![self.target.server.to_string()],
+            resources: vec![self.target.server.clone()],
             port: 3389,
             protocol: 3,
         };
@@ -342,16 +344,16 @@ impl GwConn {
 
 impl AsyncRead for GwClient {
     fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        mut self: Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         // Propagate error or premature exit (?)
         match self.work.poll_unpin(cx) {
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
-            Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
+            Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(_) => {
-                return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "Premature Work Task end?")))
+                return Poll::Ready(Err(io::Error::other("Premature Work Task end?")))
             }
             _ => (),
         }
@@ -368,7 +370,7 @@ impl AsyncRead for GwClient {
             if rem == 0 {
                 return true;
             }
-            let max = std::cmp::min(rem, rx_buf.len());
+            let max = core::cmp::min(rem, rx_buf.len());
             buf.put_slice(&rx_buf[..max]);
             n += max;
             let _ = rx_buf.split_to(max);
@@ -386,29 +388,29 @@ impl AsyncRead for GwClient {
 
 impl AsyncWrite for GwClient {
     fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        mut self: Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
         // Propagate error or premature exit (?)
         match self.work.poll_unpin(cx) {
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
-            Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e))),
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
+            Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(_) => {
-                return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "Premature Work Task end?")))
+                return Poll::Ready(Err(io::Error::other("Premature Work Task end?")))
             }
             Poll::Pending => (),
         }
 
         match self.tx.poll_reserve(cx) {
             Poll::Ready(Ok(())) => {
-                if let Err(_) = self.tx.send_item(Bytes::from(buf.to_vec())) {
-                    return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "Sender closed")));
+                if self.tx.send_item(Bytes::from(buf.to_vec())).is_err() {
+                    return Poll::Ready(Err(io::Error::other("Sender closed")));
                 }
                 return Poll::Ready(Ok(buf.len()));
             }
             Poll::Ready(Err(err)) => {
-                return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, err)));
+                return Poll::Ready(Err(io::Error::other(err)));
             }
             Poll::Pending => (),
         }
@@ -416,12 +418,12 @@ impl AsyncWrite for GwClient {
         Poll::Pending
     }
 
-    fn poll_flush(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut core::task::Context<'_>) -> Poll<Result<(), io::Error>> {
         // TODO: call flush on the backing sink (e.g. websocket, but atleast for that backend doesnt seem to matter)?
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut core::task::Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
 }

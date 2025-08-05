@@ -329,7 +329,7 @@ impl Config {
                 .context("Address prompt")?
         };
 
-        if gw_addr != "" {
+        if !gw_addr.is_empty() {
             gw = Some(GwConnectTarget {
                 gw_endpoint: gw_addr,
                 gw_user: String::new(),
