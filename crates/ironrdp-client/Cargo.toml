@@ -49,7 +49,6 @@ ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.3" }
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.3" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.1" }
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
-sspi = { version = "0.15", features = ["network_client", "dns_resolver"] } # TODO: enable additional features
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.6", features = ["reqwest"] }
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
