@@ -1,8 +1,7 @@
 use core::fmt;
 use core::num::NonZeroU16;
-use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{Context as _, Result};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{find_different_rects_sub, Rect};
 use ironrdp_pdu::encode_vec;
@@ -80,7 +79,7 @@ impl Default for UpdateEncoderCodecs {
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
-    bitmap_updater: BitmapUpdater,
+    bitmap_updater: Option<BitmapUpdater>,
 }
 
 impl fmt::Debug for UpdateEncoder {
@@ -118,7 +117,7 @@ impl UpdateEncoder {
         Self {
             desktop_size,
             framebuffer: None,
-            bitmap_updater,
+            bitmap_updater: Some(bitmap_updater),
         }
     }
 
@@ -132,7 +131,10 @@ impl UpdateEncoder {
 
     pub(crate) fn set_desktop_size(&mut self, size: DesktopSize) {
         self.desktop_size = size;
-        self.bitmap_updater.set_desktop_size(size);
+        self.bitmap_updater
+            .as_mut()
+            .expect("bitmap updater always Some")
+            .set_desktop_size(size);
     }
 
     fn rgba_pointer(ptr: RGBAPointer) -> Result<UpdateFragmenter> {
@@ -235,12 +237,20 @@ impl UpdateEncoder {
     }
 
     async fn bitmap(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter> {
-        // Clone to satisfy spawn_blocking 'static requirement
-        // this should be cheap, even if using bitmap, since vec![] will be empty
-        let mut updater = self.bitmap_updater.clone();
-        tokio::task::spawn_blocking(move || time_warn!("Encoding bitmap", 10, updater.handle(&bitmap)))
-            .await
-            .unwrap()
+        // Move the bitmap updater to satisfy spawn_blocking 'static requirement.
+        // It is restored after the blocking operation completes.
+        let mut updater = self.bitmap_updater.take().expect("bitmap updater always Some");
+
+        let (result, updater) = tokio::task::spawn_blocking(move || {
+            let result = time_warn!("Encoding bitmap", 10, updater.handle(&bitmap));
+            (result, updater)
+        })
+        .await
+        .unwrap();
+
+        self.bitmap_updater = Some(updater);
+
+        result
     }
 }
 
@@ -314,7 +324,7 @@ impl EncoderIter<'_> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum BitmapUpdater {
     None(NoneHandler),
     Bitmap(BitmapHandler),
@@ -470,10 +480,9 @@ impl BitmapUpdateHandler for QoiHandler {
 }
 
 #[cfg(feature = "qoiz")]
-#[derive(Clone)]
 struct QoizHandler {
     codec_id: u8,
-    zctxt: Arc<Mutex<zstd_safe::CCtx<'static>>>,
+    zctxt: zstd_safe::CCtx<'static>,
 }
 
 #[cfg(feature = "qoiz")]
@@ -492,7 +501,6 @@ impl QoizHandler {
         zctxt
             .set_parameter(zstd_safe::CParameter::EnableLongDistanceMatching(true))
             .unwrap();
-        let zctxt = Arc::new(Mutex::new(zctxt));
 
         Self { codec_id, zctxt }
     }
@@ -507,16 +515,16 @@ impl BitmapUpdateHandler for QoizHandler {
         let mut outb;
         let mut pos = 0;
 
-        let mut zctxt = self.zctxt.lock().unwrap();
         loop {
             outb = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
-            let res = zctxt
+            let res = self
+                .zctxt
                 .compress_stream2(
                     &mut outb,
                     &mut inb,
                     zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
                 )
-                .map_err(|code| anyhow!("failed to zstd compress: {}", zstd_safe::get_error_name(code)))?;
+                .map_err(|code| anyhow::anyhow!("failed to zstd compress: {}", zstd_safe::get_error_name(code)))?;
             if res == 0 {
                 break;
             }
