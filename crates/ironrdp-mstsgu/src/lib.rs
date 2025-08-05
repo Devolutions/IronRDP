@@ -21,7 +21,7 @@ use tokio::{
     net::TcpStream,
     sync::oneshot,
 };
-use tokio_native_tls::TlsStream;
+use ironrdp_tls::TlsStream;
 use tokio_tungstenite::{
     tungstenite::{
         handshake::client::generate_key,
@@ -129,9 +129,7 @@ impl GwClient {
             .local_addr()
             .map_err(|e| custom_err!("get socket local address", e))?;
 
-        let conn = tokio_native_tls::native_tls::TlsConnector::new().map_err(|e| custom_err!("TLS", e))?;
-        let stream = tokio_native_tls::TlsConnector::from(conn)
-            .connect(gw_host, stream)
+        let (stream, _) = ironrdp_tls::upgrade(stream, gw_host)
             .await
             .map_err(|e| custom_err!("TLS connect", e))?;
 

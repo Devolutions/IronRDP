@@ -25,8 +25,8 @@ test = false
 
 [features]
 default = ["rustls"]
-rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
-native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls"]
+rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots", "ironrdp-mstsgu/rustls"]
+native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls", "ironrdp-mstsgu/native-tls"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
 
