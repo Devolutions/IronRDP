@@ -171,21 +171,18 @@ async fn connect(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
-    // TODO
-    let mut server_addr =
-        core::net::SocketAddr::V4(core::net::SocketAddrV4::new(core::net::Ipv4Addr::new(127, 0, 0, 1), 1234));
-    let stream = if let Some(ref gw_config) = config.gw {
-        let gw = ironrdp_mstsgu::GwClient::connect(gw_config, &config.connector.client_name).await
+    let (client_addr, stream) = if let Some(ref gw_config) = config.gw {
+        let (gw, client_addr) = ironrdp_mstsgu::GwClient::connect(gw_config, &config.connector.client_name).await
             .map_err(|e| connector::custom_err!("GW Connect", e))?;
-        tokio_util::either::Either::Left(gw)
+        (client_addr, tokio_util::either::Either::Left(gw))
     } else {
         let stream = TcpStream::connect(dest)
             .await
             .map_err(|e| connector::custom_err!("TCP connect", e))?;
-        server_addr = stream
-            .peer_addr()
-            .map_err(|e| connector::custom_err!("Peer address", e))?;
-        tokio_util::either::Either::Right(stream)
+        let client_addr = stream
+            .local_addr()
+            .map_err(|e| connector::custom_err!("get socket local address", e))?;
+        (client_addr, tokio_util::either::Either::Right(stream))
     };
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
@@ -202,7 +199,7 @@ async fn connect(
         drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
     }
 
-    let mut connector = connector::ClientConnector::new(config.connector.clone(), server_addr)
+    let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
         .with_static_channel(drdynvc)
         .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));

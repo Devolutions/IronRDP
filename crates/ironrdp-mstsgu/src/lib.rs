@@ -117,13 +117,17 @@ impl Drop for GwClient {
 }
 
 impl GwClient {
-    pub async fn connect(target: &GwConnectTarget, client_name: &str) -> Result<GwClient, Error> {
+    pub async fn connect(target: &GwConnectTarget, client_name: &str) -> Result<(GwClient, core::net::SocketAddr), Error> {
         let gw_host = target.gw_endpoint.split(":").nth(0)
             .ok_or_else(|| Error::new("Connect", GwErrorKind::InvalidGwTarget))?;
 
         let stream = TcpStream::connect(&target.gw_endpoint)
             .await
             .map_err(|e| custom_err!("TCP connect", e))?;
+        let client_addr = stream
+            .local_addr()
+            .map_err(|e| custom_err!("get socket local address", e))?;
+
         let conn = tokio_native_tls::native_tls::TlsConnector::new().map_err(|e| custom_err!("TLS", e))?;
         let stream = tokio_native_tls::TlsConnector::from(conn)
             .connect(gw_host, stream)
@@ -168,8 +172,8 @@ impl GwClient {
 
         let _ = tx.send(()); // TODO: Not needed since it doesnt keep alive conn?
         let stream = jh.await.map_err(|e| custom_err!("WS join", e))?.io.into_inner();
-        
-        Self::connect_ws(target.clone(), client_name, stream).await
+
+        Self::connect_ws(target.clone(), client_name, stream).await.map(|x| (x, client_addr))
     }
 
     async fn connect_ws(target: GwConnectTarget, client_name: &str, tls_stream: TlsStream<TcpStream>) -> Result<GwClient, Error> {
