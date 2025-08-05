@@ -3,14 +3,13 @@
 mod circular_buffer;
 mod control_messages;
 
-use std::io::{self, Write};
+use std::io::{self, Write as _};
 
 use bitvec::bits;
 use bitvec::field::BitField as _;
 use bitvec::order::Msb0;
 use bitvec::slice::BitSlice;
-use byteorder::WriteBytesExt;
-use thiserror::Error;
+use byteorder::WriteBytesExt as _;
 
 use self::circular_buffer::FixedCircularBuffer;
 use self::control_messages::{BulkEncodedData, CompressionFlags, SegmentedDataPdu};
@@ -426,25 +425,52 @@ lazy_static::lazy_static! {
     ];
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum ZgfxError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid compression type")]
+    IOError(io::Error),
     InvalidCompressionType,
-    #[error("invalid segmented descriptor")]
     InvalidSegmentedDescriptor,
-    #[error(
-        "decompressed size of segments ({}) does not equal to uncompressed size ({})",
-        decompressed_size,
-        uncompressed_size
-    )]
     InvalidDecompressedSize {
         decompressed_size: usize,
         uncompressed_size: usize,
     },
-    #[error("token bits not found")]
     TokenBitsNotFound,
+}
+
+impl core::fmt::Display for ZgfxError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::IOError(_error) => write!(f, "IO error"),
+            Self::InvalidCompressionType => write!(f, "invalid compression type"),
+            Self::InvalidSegmentedDescriptor => write!(f, "invalid segmented descriptor"),
+            Self::InvalidDecompressedSize {
+                decompressed_size,
+                uncompressed_size,
+            } => write!(
+                f,
+                "decompressed size of segments ({decompressed_size}) does not equal to uncompressed size ({uncompressed_size})",
+            ),
+            Self::TokenBitsNotFound => write!(f, "token bits not found"),
+        }
+    }
+}
+
+impl core::error::Error for ZgfxError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(error) => Some(error),
+            Self::InvalidCompressionType => None,
+            Self::InvalidSegmentedDescriptor => None,
+            Self::InvalidDecompressedSize { .. } => None,
+            Self::TokenBitsNotFound => None,
+        }
+    }
+}
+
+impl From<io::Error> for ZgfxError {
+    fn from(err: io::Error) -> Self {
+        Self::IOError(err)
+    }
 }
 
 #[cfg(test)]

@@ -21,7 +21,7 @@ use ironrdp::cliprdr::pdu::{
 };
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html};
-use ironrdp_core::{impl_as_any, IntoOwned};
+use ironrdp_core::{impl_as_any, IntoOwned as _};
 use wasm_bindgen::prelude::*;
 
 use crate::session::RdpInputEvent;
@@ -656,8 +656,8 @@ pub(crate) enum ClipboardItemValue {
 /// Object which represents single clipboard format represented standard MIME type.
 #[derive(Debug, Clone)]
 pub(crate) struct ClipboardItem {
-    pub(crate) mime_type: String,
-    pub(crate) value: ClipboardItemValue,
+    mime_type: String,
+    value: ClipboardItemValue,
 }
 
 impl ClipboardItem {
@@ -681,7 +681,7 @@ impl iron_remote_desktop::ClipboardItem for ClipboardItem {
         &self.mime_type
     }
 
-    #[allow(refining_impl_trait)]
+    #[expect(refining_impl_trait)]
     fn value(&self) -> JsValue {
         match &self.value {
             ClipboardItemValue::Text(text) => JsValue::from_str(text),

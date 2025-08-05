@@ -11,3 +11,4 @@ pub const TYPOS_CLI: CargoPackage = CargoPackage::new("typos-cli", "1.29.5").wit
 pub const DIPLOMAT_TOOL: CargoPackage = CargoPackage::new("diplomat-tool", "0.7.1");
 
 pub const WABT_VERSION: &str = "1.0.36";
+pub const NIGHTLY_TOOLCHAIN: &str = "nightly-2025-07-28";

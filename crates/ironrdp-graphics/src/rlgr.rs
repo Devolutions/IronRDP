@@ -6,7 +6,6 @@ use bitvec::order::Msb0;
 use bitvec::prelude::*;
 use bitvec::slice::BitSlice;
 use ironrdp_pdu::codecs::rfx::EntropyAlgorithm;
-use thiserror::Error;
 
 use crate::utils::Bits;
 
@@ -355,10 +354,32 @@ impl From<u32> for CompressionMode {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum RlgrError {
-    #[error("IO error: {0}")]
-    IoError(#[from] io::Error),
-    #[error("the input tile is empty")]
+    IoError(io::Error),
     EmptyTile,
+}
+
+impl core::fmt::Display for RlgrError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::IoError(_error) => write!(f, "IO error"),
+            Self::EmptyTile => write!(f, "the input tile is empty"),
+        }
+    }
+}
+
+impl core::error::Error for RlgrError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IoError(error) => Some(error),
+            Self::EmptyTile => None,
+        }
+    }
+}
+
+impl From<io::Error> for RlgrError {
+    fn from(err: io::Error) -> Self {
+        Self::IoError(err)
+    }
 }

@@ -12,7 +12,7 @@ pub(crate) fn capabilities(opts: &RdpServerOptions, size: DesktopSize) -> Vec<ca
         capability_sets::CapabilitySet::Input(input_capabilities()),
         capability_sets::CapabilitySet::VirtualChannel(virtual_channel_capabilities()),
         capability_sets::CapabilitySet::MultiFragmentUpdate(multifragment_update()),
-        capability_sets::CapabilitySet::BitmapCodecs(bitmap_codecs(opts.with_remote_fx)),
+        capability_sets::CapabilitySet::BitmapCodecs(opts.codecs.clone()),
     ]
 }
 
@@ -86,21 +86,4 @@ fn multifragment_update() -> capability_sets::MultifragmentUpdate {
         // What is the actual server max size?
         max_request_size: 16_777_215,
     }
-}
-
-fn bitmap_codecs(with_remote_fx: bool) -> capability_sets::BitmapCodecs {
-    let mut codecs = Vec::new();
-    if with_remote_fx {
-        codecs.push(capability_sets::Codec {
-            id: 0,
-            property: capability_sets::CodecProperty::RemoteFx(capability_sets::RemoteFxContainer::ServerContainer(1)),
-        });
-        codecs.push(capability_sets::Codec {
-            id: 0,
-            property: capability_sets::CodecProperty::ImageRemoteFx(
-                capability_sets::RemoteFxContainer::ServerContainer(1),
-            ),
-        });
-    }
-    capability_sets::BitmapCodecs(codecs)
 }

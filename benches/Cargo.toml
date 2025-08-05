@@ -9,6 +9,11 @@ edition.workspace = true
 name = "perfenc"
 path = "src/perfenc.rs"
 
+[features]
+default = ["qoi", "qoiz"]
+qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
+
 [dependencies]
 anyhow = "1.0.98"
 async-trait = "0.1.88"
@@ -19,7 +24,7 @@ ironrdp = { path = "../crates/ironrdp", features = [
     "__bench",
 ] }
 pico-args = "0.5.0"
-tokio = { version = "1", features = ["sync", "fs"] }
+tokio = { version = "1", features = ["sync", "fs", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = { version = "0.1", features = ["log"] }
 

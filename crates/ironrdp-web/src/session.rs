@@ -68,6 +68,8 @@ struct SessionBuilderInner {
     force_clipboard_update_callback: Option<js_sys::Function>,
 
     use_display_control: bool,
+    enable_credssp: bool,
+    outbound_message_size_limit: Option<u32>,
 }
 
 impl Default for SessionBuilderInner {
@@ -95,6 +97,8 @@ impl Default for SessionBuilderInner {
             force_clipboard_update_callback: None,
 
             use_display_control: false,
+            enable_credssp: true,
+            outbound_message_size_limit: None,
         }
     }
 }
@@ -216,6 +220,17 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |pcb: String| { self.0.borrow_mut().pcb = Some(pcb) };
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
+            |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
+            |outbound_message_size_limit: f64| {
+                let limit = if outbound_message_size_limit >= 0.0 && outbound_message_size_limit <= f64::from(u32::MAX) {
+                    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    { outbound_message_size_limit as u32 }
+                } else {
+                    warn!(outbound_message_size_limit, "Invalid outbound message size limit; fallback to unlimited");
+                    0 // Fallback to no limit for invalid values.
+                };
+                self.0.borrow_mut().outbound_message_size_limit = if limit > 0 { Some(limit) } else { None };
+            };
         }
 
         self.clone()
@@ -239,6 +254,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             remote_clipboard_changed_callback,
             remote_received_format_list_callback,
             force_clipboard_update_callback,
+            outbound_message_size_limit,
         );
 
         {
@@ -268,11 +284,15 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             remote_clipboard_changed_callback = inner.remote_clipboard_changed_callback.clone();
             remote_received_format_list_callback = inner.remote_received_format_list_callback.clone();
             force_clipboard_update_callback = inner.force_clipboard_update_callback.clone();
+            outbound_message_size_limit = inner.outbound_message_size_limit;
         }
 
         info!("Connect to RDP host");
 
-        let config = build_config(username, password, server_domain, client_name, desktop_size);
+        let mut config = build_config(username, password, server_domain, client_name, desktop_size);
+
+        let enable_credssp = self.0.borrow().enable_credssp;
+        config.enable_credssp = enable_credssp;
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
@@ -287,9 +307,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             )
         });
 
-        let ws = WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?;
+        let ws = WebSocket::open(&proxy_address).context("couldn't open WebSocket")?;
 
-        // NOTE: ideally, when the WebSocket can’t be opened, the above call should fail with details on why is that
+        // NOTE: ideally, when the WebSocket can't be opened, the above call should fail with details on why is that
         // (e.g., the proxy hostname could not be resolved, proxy service is not running), but errors are neved
         // bubbled up in practice, so instead we poll the WebSocket state until we know its connected (i.e., the
         // WebSocket handshake is a success and user data can be exchanged).
@@ -333,7 +353,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let (writer_tx, writer_rx) = mpsc::unbounded();
 
-        spawn_local(writer_task(writer_rx, rdp_writer));
+        spawn_local(writer_task(writer_rx, rdp_writer, outbound_message_size_limit));
 
         Ok(Session {
             desktop_size: connection_result.desktop_size,
@@ -616,7 +636,7 @@ impl iron_remote_desktop::Session for Session {
                             let hotspot_y = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale);
 
                             // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
-                            #[allow(clippy::arithmetic_side_effects)]
+                            #[expect(clippy::arithmetic_side_effects)]
                             let resized_rgba_buffer_size = usize::from(scaled_width * scaled_height * 4);
 
                             let mut rgba_resized = vec![0u8; resized_rgba_buffer_size];
@@ -706,7 +726,7 @@ impl iron_remote_desktop::Session for Session {
                                 io_channel_id,
                                 user_channel_id,
                                 desktop_size,
-                                no_server_pointer,
+                                enable_server_pointer,
                                 pointer_software_rendering,
                             } = box_connection_activation.state
                             {
@@ -718,12 +738,12 @@ impl iron_remote_desktop::Session for Session {
                                     fast_path::ProcessorBuilder {
                                         io_channel_id,
                                         user_channel_id,
-                                        no_server_pointer,
+                                        enable_server_pointer,
                                         pointer_software_rendering,
                                     }
                                     .build(),
                                 );
-                                active_stage.set_no_server_pointer(no_server_pointer);
+                                active_stage.set_enable_server_pointer(enable_server_pointer);
                                 break 'activation_seq;
                             }
                         }
@@ -856,7 +876,7 @@ fn build_config(
             lossy_compression: true,
             codecs: client_codecs_capabilities(&[]).unwrap(),
         }),
-        #[allow(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
+        #[expect(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0)
@@ -867,9 +887,9 @@ fn build_config(
         // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
-        no_server_pointer: false,
+        enable_server_pointer: false,
         autologon: false,
-        no_audio_playback: true,
+        enable_audio_playback: false,
         request_data: None,
         pointer_software_rendering: false,
         performance_flags: PerformanceFlags::default(),
@@ -879,22 +899,39 @@ fn build_config(
     }
 }
 
-async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: WriteHalf<WebSocket>) {
+async fn writer_task(
+    rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    rdp_writer: WriteHalf<WebSocket>,
+    outbound_limit: Option<u32>,
+) {
     debug!("writer task started");
 
     async fn inner(
         mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
         mut rdp_writer: WriteHalf<WebSocket>,
+        outbound_limit: Option<u32>,
     ) -> anyhow::Result<()> {
         while let Some(frame) = rx.next().await {
-            rdp_writer.write_all(&frame).await.context("Couldn’t write frame")?;
-            rdp_writer.flush().await.context("Couldn’t flush")?;
+            match outbound_limit {
+                Some(max_size) if frame.len() > max_size as usize => {
+                    // Send in chunks.
+                    for chunk in frame.chunks(max_size as usize) {
+                        rdp_writer.write_all(chunk).await.context("couldn't write chunk")?;
+                        rdp_writer.flush().await.context("couldn't flush chunk")?;
+                    }
+                }
+                _ => {
+                    // Send complete frame (default case).
+                    rdp_writer.write_all(&frame).await.context("couldn't write frame")?;
+                    rdp_writer.flush().await.context("couldn't flush frame")?;
+                }
+            }
         }
 
         Ok(())
     }
 
-    match inner(rx, rdp_writer).await {
+    match inner(rx, rdp_writer, outbound_limit).await {
         Ok(()) => debug!("writer task ended gracefully"),
         Err(e) => error!("writer task ended unexpectedly: {e:#}"),
     }
@@ -954,7 +991,7 @@ async fn connect(
             .ok()
             .map(|url| KerberosConfig {
                 kdc_proxy_url: Some(url),
-                // HACK: It’s supposed to be the computer name of the client, but since it’s not easy to retrieve this information in the browser,
+                // HACK: It's supposed to be the computer name of the client, but since it's not easy to retrieve this information in the browser,
                 // we set the destination hostname instead because it happens to work.
                 hostname: Some(destination),
             }),
@@ -1024,7 +1061,7 @@ where
         framed
             .write_all(&rdcleanpath_req)
             .await
-            .context("couldn’t write RDCleanPath request")?;
+            .context("couldn't write RDCleanPath request")?;
     }
 
     {
@@ -1095,8 +1132,8 @@ where
     }
 }
 
-#[allow(clippy::cast_sign_loss)]
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_sign_loss)]
+#[expect(clippy::cast_possible_truncation)]
 fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
 }

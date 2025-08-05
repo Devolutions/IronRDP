@@ -40,8 +40,8 @@ pub const FORMAT_NAME_FILE_LIST: &str = "FileGroupDescriptorW";
 
 /// Header without message type included
 struct PartialHeader {
-    pub(crate) message_flags: ClipboardPduFlags,
-    pub(crate) data_length: u32,
+    message_flags: ClipboardPduFlags,
+    data_length: u32,
 }
 
 impl PartialHeader {

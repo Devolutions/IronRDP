@@ -7,7 +7,7 @@
 extern crate tracing;
 
 use core::net::SocketAddr;
-use core::num::NonZeroU16;
+use core::num::{NonZero, NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -157,26 +157,29 @@ struct DisplayUpdates;
 impl RdpServerDisplayUpdates for DisplayUpdates {
     async fn next_update(&mut self) -> Option<DisplayUpdate> {
         sleep(Duration::from_millis(100)).await;
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
 
-        let y: u16 = rng.gen_range(0..HEIGHT);
-        let height = NonZeroU16::new(rng.gen_range(1..=HEIGHT.checked_sub(y).unwrap())).unwrap();
-        let x: u16 = rng.gen_range(0..WIDTH);
-        let width = NonZeroU16::new(rng.gen_range(1..=WIDTH.checked_sub(x).unwrap())).unwrap();
-        let capacity = usize::from(width.get())
-            .checked_mul(usize::from(height.get()))
+        let y: u16 = rng.random_range(0..HEIGHT);
+        let height = NonZeroU16::new(rng.random_range(1..=HEIGHT.checked_sub(y).unwrap())).unwrap();
+        let x: u16 = rng.random_range(0..WIDTH);
+        let width = NonZeroU16::new(rng.random_range(1..=WIDTH.checked_sub(x).unwrap())).unwrap();
+        let capacity = NonZeroUsize::from(width)
+            .checked_mul(NonZeroUsize::from(height))
             .unwrap()
+            .get()
             .checked_mul(4)
             .unwrap();
+
         let mut data = Vec::with_capacity(capacity);
         for _ in 0..(data.capacity() / 4) {
-            data.push(rng.r#gen());
-            data.push(rng.r#gen());
-            data.push(rng.r#gen());
+            data.push(rng.random());
+            data.push(rng.random());
+            data.push(rng.random());
             data.push(255);
         }
 
         info!("get_update +{x}+{y} {width}x{height}");
+        let stride = NonZeroUsize::from(width).checked_mul(NonZero::new(4).unwrap()).unwrap();
         let bitmap = BitmapUpdate {
             x,
             y,
@@ -184,7 +187,7 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             height,
             format: PixelFormat::BgrA32,
             data: data.into(),
-            stride: usize::from(width.get()).checked_mul(4).unwrap(),
+            stride,
         };
         Some(DisplayUpdate::Bitmap(bitmap))
     }
@@ -371,7 +374,7 @@ fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64, phase:
         // Wrap phase to maintain precision and avoid overflow
         *phase %= 2.0 * PI;
 
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation)]
         let sample_i16 = (sample * amplitude) as i16;
 
         // Write same sample to both channels (stereo)

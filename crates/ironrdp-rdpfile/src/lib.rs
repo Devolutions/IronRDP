@@ -1,11 +1,11 @@
-#![doc = include_str!("../README.md")]
+#![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![no_std]
 
 extern crate alloc;
 
-use alloc::borrow::ToOwned;
-use alloc::string::{String, ToString};
+use alloc::borrow::ToOwned as _;
+use alloc::string::{String, ToString as _};
 use alloc::vec::Vec;
 use core::fmt;
 

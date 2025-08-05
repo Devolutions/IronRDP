@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use ironrdp_core::{cast_length, impl_as_any, Decode, EncodeResult, ReadCursor};
+use ironrdp_core::{cast_length, impl_as_any, Decode as _, EncodeResult, ReadCursor};
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode_err, encode_err, pdu_other_err, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};

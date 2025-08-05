@@ -16,7 +16,10 @@ doctest = false
 test = false
 
 [features]
+default = []
 arbitrary = ["dep:arbitrary"]
+qoi = ["ironrdp-pdu/qoi"]
+qoiz = ["ironrdp-pdu/qoiz"]
 
 [dependencies]
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.4" } # public
@@ -26,7 +29,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5", features = ["std"] } #
 arbitrary = { version = "1", features = ["derive"], optional = true } # public
 sspi = "0.16" # public
 url = "2.5" # public
-rand_core = { version = "0.6", features = ["std"] } # TODO: dependency injection?
+rand = { version = "0.9", features = ["std"] } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }
 picky-asn1-der = "0.5"
 picky-asn1-x509 = "0.14"

@@ -2,37 +2,71 @@ use ironrdp_core::{
     cast_int, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
     WriteCursor,
 };
-use thiserror::Error;
 
 /// Maximum size of PNG image that could be placed on the clipboard.
 const MAX_BUFFER_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum BitmapError {
-    #[error("decoding error")]
     Decode(ironrdp_core::DecodeError),
-    #[error("encoding error")]
     Encode(ironrdp_core::EncodeError),
-    #[error("unsupported bitmap: {0}")]
     Unsupported(&'static str),
-    #[error("one of bitmap's dimensions is invalid")]
     InvalidSize,
-    #[error("buffer size required for allocation is too big")]
     BufferTooBig,
-    #[error("image width is too big")]
     WidthTooBig,
-    #[error("image height is too big")]
     HeightTooBig,
-    #[error("PNG encoding error")]
-    PngEncode(#[from] png::EncodingError),
-    #[error("PNG decoding error")]
-    PngDecode(#[from] png::DecodingError),
+    PngEncode(png::EncodingError),
+    PngDecode(png::DecodingError),
+}
+
+impl core::fmt::Display for BitmapError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BitmapError::Decode(_error) => write!(f, "decoding error"),
+            BitmapError::Encode(_error) => write!(f, "encoding error"),
+            BitmapError::Unsupported(s) => write!(f, "unsupported bitmap: {s}"),
+            BitmapError::InvalidSize => write!(f, "one of bitmap's dimensions is invalid"),
+            BitmapError::BufferTooBig => write!(f, "buffer size required for allocation is too big"),
+            BitmapError::WidthTooBig => write!(f, "image width is too big"),
+            BitmapError::HeightTooBig => write!(f, "image height is too big"),
+            BitmapError::PngEncode(_error) => write!(f, "PNG encoding error"),
+            BitmapError::PngDecode(_error) => write!(f, "PNG decoding error"),
+        }
+    }
+}
+
+impl core::error::Error for BitmapError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            BitmapError::Decode(error) => Some(error),
+            BitmapError::Encode(error) => Some(error),
+            BitmapError::Unsupported(_) => None,
+            BitmapError::InvalidSize => None,
+            BitmapError::BufferTooBig => None,
+            BitmapError::WidthTooBig => None,
+            BitmapError::HeightTooBig => None,
+            BitmapError::PngEncode(encoding_error) => Some(encoding_error),
+            BitmapError::PngDecode(decoding_error) => Some(decoding_error),
+        }
+    }
+}
+
+impl From<png::EncodingError> for BitmapError {
+    fn from(error: png::EncodingError) -> Self {
+        BitmapError::PngEncode(error)
+    }
+}
+
+impl From<png::DecodingError> for BitmapError {
+    fn from(error: png::DecodingError) -> Self {
+        BitmapError::PngDecode(error)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BitmapCompression(u32);
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl BitmapCompression {
     const RGB: Self = Self(0x0000);
     const RLE8: Self = Self(0x0001);
@@ -48,7 +82,7 @@ impl BitmapCompression {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ColorSpace(u32);
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl ColorSpace {
     const CALIBRATED_RGB: Self = Self(0x00000000);
     const SRGB: Self = Self(0x73524742);
@@ -60,7 +94,7 @@ impl ColorSpace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BitmapIntent(u32);
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl BitmapIntent {
     const LCS_GM_ABS_COLORIMETRIC: Self = Self(0x00000008);
     const LCS_GM_BUSINESS: Self = Self(0x00000001);
@@ -499,7 +533,7 @@ fn rgb_bmp_stride(width: u16, bit_count: u16) -> usize {
     debug_assert!(bit_count <= 32);
 
     // No side effects, because u16::MAX * 32 + 31 < u16::MAX * u16::MAX < u32::MAX
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     {
         (((usize::from(width) * usize::from(bit_count)) + 31) & !31) >> 3
     }
@@ -527,7 +561,7 @@ fn bgra_to_top_down_rgba(
     };
 
     // Per invariants: height * width * dst_n_samples <= 10_000 * 10_000 * 4 < u32::MAX
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     let dst_bitmap_len = usize::from(height) * usize::from(width) * dst_n_samples;
 
     // Prevent allocation of huge buffers.
@@ -569,7 +603,7 @@ fn bgra_to_top_down_rgba(
     };
 
     // Per invariants: width * dst_n_samples <= 10_000 * 4 < u32::MAX
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     let dst_stride = usize::from(width) * dst_n_samples;
 
     let mut dst_bitmap = vec![0u8; dst_bitmap_len];
@@ -647,13 +681,13 @@ fn top_down_rgba_to_bottom_up_bgra(
     let width = u16::try_from(info.width).map_err(|_| BitmapError::WidthTooBig)?;
     let height = u16::try_from(info.height).map_err(|_| BitmapError::HeightTooBig)?;
 
-    #[allow(clippy::arithmetic_side_effects)] // width * 4 <= 10_000 * 4 < u32::MAX
+    #[expect(clippy::arithmetic_side_effects)] // width * 4 <= 10_000 * 4 < u32::MAX
     let stride = usize::from(width) * 4;
 
     let src_rows = src_bitmap.chunks_exact(stride);
 
     // As per invariants: stride * height <= width * 4 * height <= 10_000 * 4 * 10_000 <= u32::MAX.
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     let dst_len = stride * usize::from(height);
     let dst_len = u32::try_from(dst_len).map_err(|_| BitmapError::InvalidSize)?;
 

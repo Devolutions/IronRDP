@@ -15,7 +15,7 @@ use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand}
 
 use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
-use crate::{rfx, SessionError, SessionErrorExt, SessionResult};
+use crate::{rfx, SessionError, SessionErrorExt as _, SessionResult};
 
 #[derive(Debug)]
 pub enum UpdateKind {
@@ -35,8 +35,10 @@ pub struct Processor {
     pointer_cache: PointerCache,
     use_system_pointer: bool,
     mouse_pos_update: Option<(u16, u16)>,
-    no_server_pointer: bool,
+    enable_server_pointer: bool,
     pointer_software_rendering: bool,
+    #[cfg(feature = "qoiz")]
+    zdctx: zstd_safe::DCtx<'static>,
 }
 
 impl Processor {
@@ -114,7 +116,7 @@ impl Processor {
                                 usize::from(update.width),
                                 usize::from(update.height),
                             ) {
-                                Ok(()) => image.apply_rgb24_bitmap(&buf, &update.rectangle)?,
+                                Ok(()) => image.apply_rgb24(&buf, &update.rectangle, true)?,
                                 Err(err) => {
                                     warn!("Invalid RDP6_BITMAP_STREAM: {err}");
                                     update.rectangle.clone()
@@ -174,7 +176,7 @@ impl Processor {
                 processor_updates.push(update_kind);
             }
             Ok(FastPathUpdate::Pointer(update)) => {
-                if self.no_server_pointer {
+                if !self.enable_server_pointer {
                     return Ok(processor_updates);
                 }
 
@@ -361,6 +363,37 @@ impl Processor {
                                     .or(Some(rectangle));
                             }
                         }
+                        #[cfg(feature = "qoi")]
+                        ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOI => {
+                            qoi_apply(
+                                image,
+                                destination,
+                                bits.extended_bitmap_data.data,
+                                &mut update_rectangle,
+                            )?;
+                        }
+                        #[cfg(feature = "qoiz")]
+                        ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOIZ => {
+                            let compressed = &bits.extended_bitmap_data.data;
+                            let mut input = zstd_safe::InBuffer::around(compressed);
+                            let mut data = vec![0; compressed.len() * 4];
+                            let mut pos = 0;
+                            loop {
+                                let mut output = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
+                                self.zdctx
+                                    .decompress_stream(&mut output, &mut input)
+                                    .map_err(zstd_safe::get_error_name)
+                                    .map_err(|e| reason_err!("zstd", "{}", e))?;
+                                pos = output.pos();
+                                if pos == output.capacity() {
+                                    data.resize(data.capacity() * 2, 0);
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            qoi_apply(image, destination, &data, &mut update_rectangle)?;
+                        }
                         _ => {
                             warn!("Unsupported codec ID: {}", bits.extended_bitmap_data.codec_id);
                         }
@@ -381,11 +414,35 @@ impl Processor {
     }
 }
 
+#[cfg(feature = "qoi")]
+fn qoi_apply(
+    image: &mut DecodedImage,
+    destination: InclusiveRectangle,
+    data: &[u8],
+    update_rectangle: &mut Option<InclusiveRectangle>,
+) -> SessionResult<()> {
+    let (header, decoded) = qoi::decode_to_vec(data).map_err(|e| reason_err!("QOI decode", "{}", e))?;
+    match header.channels {
+        qoi::Channels::Rgb => {
+            let rectangle = image.apply_rgb24(&decoded, &destination, false)?;
+
+            *update_rectangle = update_rectangle
+                .as_ref()
+                .map(|rect: &InclusiveRectangle| rect.union(&rectangle))
+                .or(Some(rectangle));
+        }
+        qoi::Channels::Rgba => {
+            warn!("Unsupported RGBA QOI data");
+        }
+    }
+    Ok(())
+}
+
 pub struct ProcessorBuilder {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
     /// Ignore server pointer updates.
-    pub no_server_pointer: bool,
+    pub enable_server_pointer: bool,
     /// Use software rendering mode for pointer bitmap generation. When this option is active,
     /// `UpdateKind::PointerBitmap` will not be generated. Remote pointer will be drawn
     /// via software rendering on top of the output image.
@@ -402,8 +459,10 @@ impl ProcessorBuilder {
             pointer_cache: PointerCache::default(),
             use_system_pointer: true,
             mouse_pos_update: None,
-            no_server_pointer: self.no_server_pointer,
+            enable_server_pointer: self.enable_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
+            #[cfg(feature = "qoiz")]
+            zdctx: zstd_safe::DCtx::default(),
         }
     }
 }

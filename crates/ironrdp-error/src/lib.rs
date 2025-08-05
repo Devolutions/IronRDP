@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -131,7 +131,7 @@ where
     Kind: core::error::Error,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use core::error::Error;
+        use core::error::Error as _;
 
         write!(f, "{}", self.0)?;
 

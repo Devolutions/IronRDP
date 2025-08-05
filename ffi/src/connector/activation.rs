@@ -1,6 +1,6 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use ironrdp::connector::Sequence;
+    use ironrdp::connector::Sequence as _;
 
     use crate::connector::config::ffi::DesktopSize;
     use crate::connector::ffi::PduHint;
@@ -107,13 +107,13 @@ pub mod ffi {
                     io_channel_id,
                     user_channel_id,
                     desktop_size,
-                    no_server_pointer,
+                    enable_server_pointer,
                     pointer_software_rendering,
                 } => Ok(Box::new(ConnectionActivationStateFinalized {
                     io_channel_id: *io_channel_id,
                     user_channel_id: *user_channel_id,
                     desktop_size: *desktop_size,
-                    no_server_pointer: *no_server_pointer,
+                    enable_server_pointer: *enable_server_pointer,
                     pointer_software_rendering: *pointer_software_rendering,
                 })),
                 _ => Err(IncorrectEnumTypeError::on_variant("Finalized")
@@ -166,7 +166,7 @@ pub mod ffi {
         pub io_channel_id: u16,
         pub user_channel_id: u16,
         pub desktop_size: ironrdp::connector::DesktopSize,
-        pub no_server_pointer: bool,
+        pub enable_server_pointer: bool,
         pub pointer_software_rendering: bool,
     }
 
@@ -183,8 +183,8 @@ pub mod ffi {
             Box::new(DesktopSize(self.desktop_size))
         }
 
-        pub fn get_no_server_pointer(&self) -> bool {
-            self.no_server_pointer
+        pub fn get_enable_server_pointer(&self) -> bool {
+            self.enable_server_pointer
         }
 
         pub fn get_pointer_software_rendering(&self) -> bool {

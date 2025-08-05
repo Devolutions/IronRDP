@@ -14,7 +14,7 @@ use ironrdp::server::{
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageOutput};
-use ironrdp_async::{Framed, FramedWrite};
+use ironrdp_async::{Framed, FramedWrite as _};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
@@ -84,7 +84,7 @@ async fn test_deactivation_reactivation() {
                             io_channel_id,
                             user_channel_id,
                             desktop_size,
-                            no_server_pointer,
+                            enable_server_pointer,
                             pointer_software_rendering,
                         } = connection_activation.state
                         {
@@ -96,12 +96,12 @@ async fn test_deactivation_reactivation() {
                                 session::fast_path::ProcessorBuilder {
                                     io_channel_id,
                                     user_channel_id,
-                                    no_server_pointer,
+                                    enable_server_pointer,
                                     pointer_software_rendering,
                                 }
                                 .build(),
                             );
-                            stage.set_no_server_pointer(no_server_pointer);
+                            stage.set_enable_server_pointer(enable_server_pointer);
                             break 'activation_seq;
                         }
                     }
@@ -297,9 +297,9 @@ fn default_client_config() -> connector::Config {
         hardware_id: None,
         request_data: None,
         autologon: false,
-        no_audio_playback: false,
+        enable_audio_playback: true,
         license_cache: None,
-        no_server_pointer: true,
+        enable_server_pointer: true,
         pointer_software_rendering: true,
         performance_flags: Default::default(),
     }

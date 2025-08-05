@@ -1,8 +1,8 @@
 use core::mem;
 
 use ironrdp_connector::{
-    encode_x224_packet, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State,
-    Written,
+    encode_x224_packet, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence,
+    State, Written,
 };
 use ironrdp_core::{decode, WriteBuf};
 use ironrdp_pdu as pdu;
@@ -404,7 +404,7 @@ impl Sequence for Acceptor {
                     })
                     .unwrap_or_default();
 
-                #[allow(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing.
+                #[expect(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing.
                 let channels = joined
                     .into_iter()
                     .enumerate()

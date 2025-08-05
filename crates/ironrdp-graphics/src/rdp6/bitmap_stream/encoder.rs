@@ -1,15 +1,30 @@
 use ironrdp_core::{not_enough_bytes_err, EncodeError, WriteCursor};
 use ironrdp_pdu::bitmap::rdp6::{BitmapStreamHeader, ColorPlaneDefinition};
-use thiserror::Error;
 
 use crate::rdp6::rle::{compress_8bpp_plane, RleEncodeError};
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum BitmapEncodeError {
-    #[error("failed to rle compress")]
     Rle(RleEncodeError),
-    #[error("failed to encode pdu")]
     Encode(EncodeError),
+}
+
+impl core::fmt::Display for BitmapEncodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BitmapEncodeError::Rle(_error) => write!(f, "failed to rle compress"),
+            BitmapEncodeError::Encode(_error) => write!(f, "failed to encode pdu"),
+        }
+    }
+}
+
+impl core::error::Error for BitmapEncodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            BitmapEncodeError::Rle(error) => Some(error),
+            BitmapEncodeError::Encode(error) => Some(error),
+        }
+    }
 }
 
 pub trait ColorChannels {

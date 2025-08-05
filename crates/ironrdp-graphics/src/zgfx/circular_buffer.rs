@@ -83,7 +83,7 @@ impl io::Write for FixedCircularBuffer {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::Write as _;
 
     use super::*;
 

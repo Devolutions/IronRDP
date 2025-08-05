@@ -6,12 +6,15 @@ import wasm_init, {
     SessionBuilder,
     ClipboardData,
     Extension,
+    RdpFile,
 } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
 
 export async function init(log_level: string) {
     await wasm_init();
     setup(log_level);
 }
+
+export { RdpFile };
 
 export const Backend = {
     DesktopSize: DesktopSize,
@@ -31,4 +34,12 @@ export function displayControl(enable: boolean): Extension {
 
 export function kdcProxyUrl(url: string): Extension {
     return new Extension('kdc_proxy_url', url);
+}
+
+export function outboundMessageSizeLimit(limit: number): Extension {
+    return new Extension('outbound_message_size_limit', limit);
+}
+
+export function enableCredssp(enable: boolean): Extension {
+    return new Extension('enable_credssp', enable);
 }

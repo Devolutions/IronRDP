@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
 // TODO: #![warn(missing_docs)]
@@ -673,7 +673,6 @@ impl Encode for ChannelPduHeader {
         Self::NAME
     }
 
-    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE
     }

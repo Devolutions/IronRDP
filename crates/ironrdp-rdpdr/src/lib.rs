@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // FIXME: remove
 #![allow(clippy::cast_lossless)] // FIXME: remove
@@ -190,8 +190,8 @@ impl SvcProcessor for Rdpdr {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
-    fn process(&mut self, src: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let mut src = ReadCursor::new(src);
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        let mut src = ReadCursor::new(payload);
         let pdu = decode_cursor::<RdpdrPdu>(&mut src).map_err(|e| decode_err!(e))?;
         debug!("Received {:?}", pdu);
 

@@ -14,12 +14,12 @@ use ironrdp_svc::{SvcMessage, SvcProcessor, SvcProcessorMessages};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
-use crate::{fast_path, x224, SessionError, SessionErrorExt, SessionResult};
+use crate::{fast_path, x224, SessionError, SessionErrorExt as _, SessionResult};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,
     fast_path_processor: fast_path::Processor,
-    no_server_pointer: bool,
+    enable_server_pointer: bool,
 }
 
 impl ActiveStage {
@@ -34,7 +34,7 @@ impl ActiveStage {
         let fast_path_processor = fast_path::ProcessorBuilder {
             io_channel_id: connection_result.io_channel_id,
             user_channel_id: connection_result.user_channel_id,
-            no_server_pointer: connection_result.no_server_pointer,
+            enable_server_pointer: connection_result.enable_server_pointer,
             pointer_software_rendering: connection_result.pointer_software_rendering,
         }
         .build();
@@ -42,7 +42,7 @@ impl ActiveStage {
         Self {
             x224_processor,
             fast_path_processor,
-            no_server_pointer: connection_result.no_server_pointer,
+            enable_server_pointer: connection_result.enable_server_pointer,
         }
     }
 
@@ -72,7 +72,7 @@ impl ActiveStage {
         output.push(ActiveStageOutput::ResponseFrame(frame));
 
         // If pointer rendering is disabled - we can skip the rest
-        if self.no_server_pointer {
+        if !self.enable_server_pointer {
             return Ok(output);
         }
 
@@ -152,8 +152,8 @@ impl ActiveStage {
         self.fast_path_processor = processor;
     }
 
-    pub fn set_no_server_pointer(&mut self, no_server_pointer: bool) {
-        self.no_server_pointer = no_server_pointer;
+    pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
+        self.enable_server_pointer = enable_server_pointer;
     }
 
     /// Encodes client-side graceful shutdown request. Note that upon sending this request,

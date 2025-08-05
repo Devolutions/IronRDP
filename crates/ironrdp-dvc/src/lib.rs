@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -15,7 +15,7 @@ use core::any::TypeId;
 
 use pdu::DrdynvcDataPdu;
 
-use crate::alloc::borrow::ToOwned;
+use crate::alloc::borrow::ToOwned as _;
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;

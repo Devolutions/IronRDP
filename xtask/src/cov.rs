@@ -160,8 +160,12 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
 pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("COV-GRCOV");
 
-    cmd!(sh, "rustup install nightly --profile=minimal").run()?;
-    cmd!(sh, "rustup component add --toolchain nightly llvm-tools-preview").run()?;
+    cmd!(sh, "rustup install {NIGHTLY_TOOLCHAIN} --profile=minimal").run()?;
+    cmd!(
+        sh,
+        "rustup component add --toolchain {NIGHTLY_TOOLCHAIN} llvm-tools-preview"
+    )
+    .run()?;
     cmd!(sh, "rustup component add llvm-tools-preview").run()?;
 
     cargo_install(sh, &CARGO_FUZZ)?;
@@ -181,7 +185,7 @@ pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
         cmd!(sh, "{CARGO} clean").run()?;
 
         for target in FUZZ_TARGETS {
-            cmd!(sh, "rustup run nightly cargo fuzz coverage {target}").run()?;
+            cmd!(sh, "rustup run {NIGHTLY_TOOLCHAIN} cargo fuzz coverage {target}").run()?;
         }
 
         cmd!(sh, "cp -r ./target ../coverage/binaries/").run()?;
@@ -192,7 +196,7 @@ pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
 
         cmd!(sh, "{CARGO} clean").run()?;
 
-        cmd!(sh, "rustup run nightly cargo test --workspace")
+        cmd!(sh, "rustup run {NIGHTLY_TOOLCHAIN} cargo test --workspace")
             .env("CARGO_INCREMENTAL", "0")
             .env("RUSTFLAGS", "-C instrument-coverage")
             .env("LLVM_PROFILE_FILE", "./coverage/default-%m-%p.profraw")
@@ -325,7 +329,7 @@ fn get_json_float(value: &tinyjson::JsonValue, key: &str) -> anyhow::Result<f64>
 
 fn get_json_int(value: &tinyjson::JsonValue, key: &str) -> anyhow::Result<u64> {
     // tinyjson does not expose any integers at all, so we need the f64 to u64 as casting
-    #[allow(clippy::cast_sign_loss)]
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_possible_truncation)]
     get_json_float(value, key).map(|value| value as u64)
 }

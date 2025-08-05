@@ -316,7 +316,7 @@ pub(crate) fn write_numeric_string(dst: &mut WriteCursor<'_>, num_str: &[u8], mi
 pub(crate) mod legacy {
     use std::io;
 
-    use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+    use byteorder::{BigEndian, ReadBytesExt as _, WriteBytesExt as _};
 
     use super::OBJECT_ID_SIZE;
 

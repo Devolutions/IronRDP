@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
 use std::collections::BTreeSet;
@@ -78,7 +78,7 @@ impl Scancode {
     pub const fn from_u16(scancode: u16) -> Self {
         let extended = scancode & 0xE000 == 0xE000;
 
-        #[allow(clippy::cast_possible_truncation)] // truncating on purpose
+        #[expect(clippy::cast_possible_truncation)] // truncating on purpose
         let code = scancode as u8;
 
         Self { code, extended }

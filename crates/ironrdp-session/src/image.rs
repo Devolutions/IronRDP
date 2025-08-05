@@ -70,8 +70,8 @@ struct PointerRenderingState {
     update_rectangle: InclusiveRectangle,
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::cast_lossless)] // FIXME
+#[expect(clippy::too_many_arguments)]
+#[expect(clippy::cast_lossless)] // FIXME
 fn copy_cursor_data(
     from: &[u8],
     from_pos: (usize, usize),
@@ -311,9 +311,7 @@ impl DecodedImage {
         }
     }
 
-    #[allow(clippy::cast_lossless)] // FIXME
-    #[allow(clippy::cast_possible_wrap)] // FIXME
-    #[allow(clippy::cast_possible_truncation)] // FIXME
+    #[expect(clippy::cast_possible_wrap)] // FIXME
     fn recalculate_pointer_geometry(&mut self) {
         let x = self.pointer_x;
         let y = self.pointer_y;
@@ -572,41 +570,55 @@ impl DecodedImage {
     }
 
     // FIXME: this assumes PixelFormat::RgbA32
-    pub(crate) fn apply_rgb24_bitmap(
+    fn apply_rgb24_iter<'a, I>(
         &mut self,
-        rgb24: &[u8],
+        rgb24: I,
         update_rectangle: &InclusiveRectangle,
-    ) -> SessionResult<InclusiveRectangle> {
+    ) -> SessionResult<InclusiveRectangle>
+    where
+        I: Iterator<Item = &'a [u8]>,
+    {
         const SRC_COLOR_DEPTH: usize = 3;
         const DST_COLOR_DEPTH: usize = 4;
 
         let image_width = self.width as usize;
-        let rectangle_width = usize::from(update_rectangle.width());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
-        rgb24
-            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
-            .rev()
-            .enumerate()
-            .for_each(|(row_idx, row)| {
-                row.chunks_exact(SRC_COLOR_DEPTH)
-                    .enumerate()
-                    .for_each(|(col_idx, src_pixel)| {
-                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+        rgb24.enumerate().for_each(|(row_idx, row)| {
+            row.chunks_exact(SRC_COLOR_DEPTH)
+                .enumerate()
+                .for_each(|(col_idx, src_pixel)| {
+                    let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                        // Copy RGB channels as is
-                        self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
-                        // Set alpha channel to opaque(0xFF)
-                        self.data[dst_idx + 3] = 0xFF;
-                    })
-            });
+                    // Copy RGB channels as is
+                    self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
+                    // Set alpha channel to opaque(0xFF)
+                    self.data[dst_idx + 3] = 0xFF;
+                })
+        });
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
 
         Ok(update_rectangle)
+    }
+
+    pub(crate) fn apply_rgb24(
+        &mut self,
+        rgb24: &[u8],
+        update_rectangle: &InclusiveRectangle,
+        flip: bool,
+    ) -> SessionResult<InclusiveRectangle> {
+        const SRC_COLOR_DEPTH: usize = 3;
+        let rectangle_width = usize::from(update_rectangle.width());
+        let lines = rgb24.chunks_exact(rectangle_width * SRC_COLOR_DEPTH);
+        if flip {
+            self.apply_rgb24_iter(lines.rev(), update_rectangle)
+        } else {
+            self.apply_rgb24_iter(lines, update_rectangle)
+        }
     }
 
     // FIXME: this assumes PixelFormat::RgbA32

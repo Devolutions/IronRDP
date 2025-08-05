@@ -22,17 +22,8 @@ ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.3" }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.4" } # public (SvcMessage type)
 
 tracing = { version = "0.1", features = ["log"] }
-
-[target.'cfg(windows)'.dependencies]
-widestring = "1"
-windows = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_System_Threading",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Pipes",
-    "Win32_System_IO",
-] }
+tokio = { version = "1", features = ["net", "rt", "sync", "macros", "io-util"]}
+async-trait = "0.1"
 
 [lints]
 workspace = true

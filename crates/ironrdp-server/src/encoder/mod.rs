@@ -1,7 +1,7 @@
 use core::fmt;
 use core::num::NonZeroU16;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{find_different_rects_sub, Rect};
 use ironrdp_pdu::encode_vec;
@@ -33,17 +33,39 @@ enum CodecId {
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
     remotefx: Option<(EntropyBits, u8)>,
+    #[cfg(feature = "qoi")]
+    qoi: Option<u8>,
+    #[cfg(feature = "qoiz")]
+    qoiz: Option<u8>,
 }
 
 impl UpdateEncoderCodecs {
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn new() -> Self {
-        Self { remotefx: None }
+        Self {
+            remotefx: None,
+            #[cfg(feature = "qoi")]
+            qoi: None,
+            #[cfg(feature = "qoiz")]
+            qoiz: None,
+        }
     }
 
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn set_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
         self.remotefx = remotefx
+    }
+
+    #[cfg(feature = "qoi")]
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    pub(crate) fn set_qoi(&mut self, qoi: Option<u8>) {
+        self.qoi = qoi
+    }
+
+    #[cfg(feature = "qoiz")]
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    pub(crate) fn set_qoiz(&mut self, qoiz: Option<u8>) {
+        self.qoiz = qoiz
     }
 }
 
@@ -57,7 +79,7 @@ impl Default for UpdateEncoderCodecs {
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
-    bitmap_updater: BitmapUpdater,
+    bitmap_updater: Option<BitmapUpdater>,
 }
 
 impl fmt::Debug for UpdateEncoder {
@@ -78,6 +100,15 @@ impl UpdateEncoder {
                 bitmap = BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size));
             }
 
+            #[cfg(feature = "qoi")]
+            if let Some(id) = codecs.qoi {
+                bitmap = BitmapUpdater::Qoi(QoiHandler::new(id));
+            }
+            #[cfg(feature = "qoiz")]
+            if let Some(id) = codecs.qoiz {
+                bitmap = BitmapUpdater::Qoiz(QoizHandler::new(id));
+            }
+
             bitmap
         } else {
             BitmapUpdater::Bitmap(BitmapHandler::new())
@@ -86,7 +117,7 @@ impl UpdateEncoder {
         Self {
             desktop_size,
             framebuffer: None,
-            bitmap_updater,
+            bitmap_updater: Some(bitmap_updater),
         }
     }
 
@@ -100,7 +131,10 @@ impl UpdateEncoder {
 
     pub(crate) fn set_desktop_size(&mut self, size: DesktopSize) {
         self.desktop_size = size;
-        self.bitmap_updater.set_desktop_size(size);
+        self.bitmap_updater
+            .as_mut()
+            .expect("bitmap updater always Some")
+            .set_desktop_size(size);
     }
 
     fn rgba_pointer(ptr: RGBAPointer) -> Result<UpdateFragmenter> {
@@ -171,7 +205,7 @@ impl UpdateEncoder {
                 width.get().into(),
                 height.get().into(),
                 &bitmap.data,
-                bitmap.stride,
+                bitmap.stride.get(),
                 bitmap.width.get().into(),
                 bitmap.height.get().into(),
                 bitmap.x.into(),
@@ -203,12 +237,20 @@ impl UpdateEncoder {
     }
 
     async fn bitmap(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter> {
-        // Clone to satisfy spawn_blocking 'static requirement
-        // this should be cheap, even if using bitmap, since vec![] will be empty
-        let mut updater = self.bitmap_updater.clone();
-        tokio::task::spawn_blocking(move || time_warn!("Encoding bitmap", 10, updater.handle(&bitmap)))
-            .await
-            .unwrap()
+        // Move the bitmap updater to satisfy spawn_blocking 'static requirement.
+        // It is restored after the blocking operation completes.
+        let mut updater = self.bitmap_updater.take().expect("bitmap updater always Some");
+
+        let (result, updater) = tokio::task::spawn_blocking(move || {
+            let result = time_warn!("Encoding bitmap", 10, updater.handle(&bitmap));
+            (result, updater)
+        })
+        .await
+        .unwrap();
+
+        self.bitmap_updater = Some(updater);
+
+        result
     }
 }
 
@@ -282,11 +324,15 @@ impl EncoderIter<'_> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum BitmapUpdater {
     None(NoneHandler),
     Bitmap(BitmapHandler),
     RemoteFx(RemoteFxHandler),
+    #[cfg(feature = "qoi")]
+    Qoi(QoiHandler),
+    #[cfg(feature = "qoiz")]
+    Qoiz(QoizHandler),
 }
 
 impl BitmapUpdater {
@@ -295,6 +341,10 @@ impl BitmapUpdater {
             Self::None(up) => up.handle(bitmap),
             Self::Bitmap(up) => up.handle(bitmap),
             Self::RemoteFx(up) => up.handle(bitmap),
+            #[cfg(feature = "qoi")]
+            Self::Qoi(up) => up.handle(bitmap),
+            #[cfg(feature = "qoiz")]
+            Self::Qoiz(up) => up.handle(bitmap),
         }
     }
 
@@ -316,7 +366,7 @@ impl BitmapUpdateHandler for NoneHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
         let stride = usize::from(bitmap.format.bytes_per_pixel()) * usize::from(bitmap.width.get());
         let mut data = Vec::with_capacity(stride * usize::from(bitmap.height.get()));
-        for row in bitmap.data.chunks(bitmap.stride).rev() {
+        for row in bitmap.data.chunks(bitmap.stride.get()).rev() {
             data.extend_from_slice(&row[..stride]);
         }
         set_surface(bitmap, CodecId::None as u8, &data)
@@ -406,6 +456,104 @@ impl BitmapUpdateHandler for RemoteFxHandler {
 
         set_surface(bitmap, self.codec_id, &buffer[..len])
     }
+}
+
+#[cfg(feature = "qoi")]
+#[derive(Clone, Debug)]
+struct QoiHandler {
+    codec_id: u8,
+}
+
+#[cfg(feature = "qoi")]
+impl QoiHandler {
+    fn new(codec_id: u8) -> Self {
+        Self { codec_id }
+    }
+}
+
+#[cfg(feature = "qoi")]
+impl BitmapUpdateHandler for QoiHandler {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+        let data = qoi_encode(bitmap)?;
+        set_surface(bitmap, self.codec_id, &data)
+    }
+}
+
+#[cfg(feature = "qoiz")]
+struct QoizHandler {
+    codec_id: u8,
+    zctxt: zstd_safe::CCtx<'static>,
+}
+
+#[cfg(feature = "qoiz")]
+impl fmt::Debug for QoizHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QoizHandler").field("codec_id", &self.codec_id).finish()
+    }
+}
+
+#[cfg(feature = "qoiz")]
+impl QoizHandler {
+    fn new(codec_id: u8) -> Self {
+        let mut zctxt = zstd_safe::CCtx::default();
+
+        zctxt.set_parameter(zstd_safe::CParameter::CompressionLevel(3)).unwrap();
+        zctxt
+            .set_parameter(zstd_safe::CParameter::EnableLongDistanceMatching(true))
+            .unwrap();
+
+        Self { codec_id, zctxt }
+    }
+}
+
+#[cfg(feature = "qoiz")]
+impl BitmapUpdateHandler for QoizHandler {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+        let qoi = qoi_encode(bitmap)?;
+        let mut inb = zstd_safe::InBuffer::around(&qoi);
+        let mut data = vec![0; qoi.len()];
+        let mut outb;
+        let mut pos = 0;
+
+        loop {
+            outb = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
+            let res = self
+                .zctxt
+                .compress_stream2(
+                    &mut outb,
+                    &mut inb,
+                    zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
+                )
+                .map_err(|code| anyhow::anyhow!("failed to zstd compress: {}", zstd_safe::get_error_name(code)))?;
+            if res == 0 {
+                break;
+            }
+            pos = outb.pos();
+            data.resize(data.len() + res, 0);
+        }
+
+        set_surface(bitmap, self.codec_id, outb.as_slice())
+    }
+}
+
+#[cfg(feature = "qoi")]
+fn qoi_encode(bitmap: &BitmapUpdate) -> Result<Vec<u8>> {
+    use ironrdp_graphics::image_processing::PixelFormat::*;
+    let raw_channels = match bitmap.format {
+        ARgb32 => qoi::RawChannels::Argb,
+        XRgb32 => qoi::RawChannels::Xrgb,
+        ABgr32 => qoi::RawChannels::Abgr,
+        XBgr32 => qoi::RawChannels::Xbgr,
+        BgrA32 => qoi::RawChannels::Bgra,
+        BgrX32 => qoi::RawChannels::Bgrx,
+        RgbA32 => qoi::RawChannels::Rgba,
+        RgbX32 => qoi::RawChannels::Rgbx,
+    };
+    let enc = qoi::EncoderBuilder::new(&bitmap.data, bitmap.width.get().into(), bitmap.height.get().into())
+        .stride(bitmap.stride.get())
+        .raw_channels(raw_channels)
+        .build()?;
+    Ok(enc.encode_to_vec()?)
 }
 
 fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> Result<UpdateFragmenter> {

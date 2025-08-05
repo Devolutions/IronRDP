@@ -261,7 +261,7 @@ impl WinClipboardImpl {
                 const MAX_PROCESSING_ATTEMPTS: u32 = 10;
                 const PROCESSING_TIMEOUT_MS: u32 = 100;
 
-                #[allow(clippy::arithmetic_side_effects)]
+                #[expect(clippy::arithmetic_side_effects)]
                 // self.attempt can’t be greater than MAX_PROCESSING_ATTEMPTS, so the arithmetic is safe here
                 if self.attempt < MAX_PROCESSING_ATTEMPTS {
                     self.attempt += 1;
@@ -347,7 +347,7 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
         }
         // Sent by the OS when delay-rendered data is requested for rendering.
         WM_RENDERFORMAT => {
-            #[allow(clippy::cast_possible_truncation)] // should never truncate in practice
+            #[expect(clippy::cast_possible_truncation)] // should never truncate in practice
             ctx.handle_event(BackendEvent::RenderFormat(ClipboardFormatId::new(wparam.0 as u32)));
         }
         // Sent by the OS when all delay-rendered data is requested for rendering.

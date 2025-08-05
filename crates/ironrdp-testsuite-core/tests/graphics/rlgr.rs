@@ -47,7 +47,6 @@ fn decode_works_with_rlgr3() {
 
 #[test]
 fn decode_correctly_decodes_rl_without_leading_zeros_and_ones() {
-    #[allow(clippy::inconsistent_digit_grouping)]
     let input = [0b1100_0000];
     let expected = [0, 1];
     let mode = EntropyAlgorithm::Rlgr3;
@@ -59,7 +58,6 @@ fn decode_correctly_decodes_rl_without_leading_zeros_and_ones() {
 
 #[test]
 fn decode_correctly_decodes_rl_with_not_null_sign_bit() {
-    #[allow(clippy::inconsistent_digit_grouping)]
     let input = [0b1110_0000];
     let expected = [0, -1];
     let mode = EntropyAlgorithm::Rlgr3;
@@ -71,7 +69,6 @@ fn decode_correctly_decodes_rl_with_not_null_sign_bit() {
 
 #[test]
 fn decode_correctly_decodes_rl_with_leading_zeros() {
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
     let input = [0b00000000, 0b10011001, 0b1100_0000];
     let expected = [[0; 66].as_ref(), [7].as_ref()].concat();
     let mode = EntropyAlgorithm::Rlgr3;
@@ -83,7 +80,6 @@ fn decode_correctly_decodes_rl_with_leading_zeros() {
 
 #[test]
 fn encode_correctly_encodes_rl_with_leading_zeros() {
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
     let expected = [0b00000000, 0b10011001, 0b1100_0000];
     let input = [[0; 66].as_ref(), [7].as_ref()].concat();
     let mode = EntropyAlgorithm::Rlgr3;
@@ -95,7 +91,6 @@ fn encode_correctly_encodes_rl_with_leading_zeros() {
 
 #[test]
 fn decode_correctly_decodes_rl_with_leading_ones() {
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
     let input = [0b11011111, 0b11111101];
     let expected = [0, 24];
     let mode = EntropyAlgorithm::Rlgr3;
@@ -107,7 +102,6 @@ fn decode_correctly_decodes_rl_with_leading_ones() {
 
 #[test]
 fn encode_correctly_encodes_rl_with_leading_ones() {
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
     let expected = [0b11011111, 0b11111101];
     let input = [0, 24];
     let mode = EntropyAlgorithm::Rlgr3;
@@ -119,7 +113,6 @@ fn encode_correctly_encodes_rl_with_leading_ones() {
 
 #[test]
 fn decode_correctly_decodes_rlgr3() {
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
     let input = [0b11000000];
     let expected = [0, 1, 0, 0];
     let mode = EntropyAlgorithm::Rlgr3;
@@ -131,7 +124,6 @@ fn decode_correctly_decodes_rlgr3() {
 
 #[test]
 fn encode_correctly_encodes_rlgr3() {
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
     let expected = [0b11000000];
     let input = [0, 1, 0, 0];
     let mode = EntropyAlgorithm::Rlgr3;
@@ -143,7 +135,6 @@ fn encode_correctly_encodes_rlgr3() {
 
 #[test]
 fn decode_correctly_decodes_rlgr1() {
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
     let input = [0b11000111, 0b11111000];
     let expected = [0, 1, 4, 0];
     let mode = EntropyAlgorithm::Rlgr1;
@@ -155,7 +146,6 @@ fn decode_correctly_decodes_rlgr1() {
 
 #[test]
 fn encode_correctly_encodes_rlgr1() {
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
     let expected = [0b11000111, 0b11111000];
     let input = [0, 1, 4, 0];
     let mode = EntropyAlgorithm::Rlgr1;

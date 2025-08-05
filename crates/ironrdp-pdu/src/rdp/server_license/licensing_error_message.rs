@@ -2,11 +2,11 @@
 mod test;
 
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
-    ReadCursor, WriteCursor,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode as _, DecodeResult, Encode as _,
+    EncodeResult, ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use super::{BlobHeader, BlobType, LicenseHeader, PreambleFlags, PreambleVersion, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE};
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};

@@ -1,5 +1,5 @@
 use expect_test::expect;
-use ironrdp_core::{decode, encode_vec, Encode};
+use ironrdp_core::{decode, encode_vec, Encode as _};
 use ironrdp_pdu::mcs::*;
 use ironrdp_testsuite_core::mcs::*;
 use ironrdp_testsuite_core::mcs_encode_decode_test;

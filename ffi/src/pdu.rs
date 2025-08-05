@@ -1,7 +1,7 @@
 #[diplomat::bridge]
 pub mod ffi {
 
-    use ironrdp::pdu::geometry::Rectangle;
+    use ironrdp::pdu::geometry::Rectangle as _;
 
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::VecU8;

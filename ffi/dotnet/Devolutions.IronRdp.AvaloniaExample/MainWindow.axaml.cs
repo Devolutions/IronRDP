@@ -427,7 +427,7 @@ public partial class MainWindow : Window
                         var desktopSize = finalized.GetDesktopSize();
                         var ioChannelId = finalized.GetIoChannelId();
                         var userChannelId = finalized.GetUserChannelId();
-                        var noServerPointer = finalized.GetNoServerPointer();
+                        var enableServerPointer = finalized.GetEnableServerPointer();
                         var pointerSoftwareRendering = finalized.GetPointerSoftwareRendering();
 
                         _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
@@ -436,11 +436,11 @@ public partial class MainWindow : Window
                         _activeStage!.SetFastpathProcessor(
                             ioChannelId,
                             userChannelId,
-                            noServerPointer,
+                            enableServerPointer,
                             pointerSoftwareRendering
                         );
 
-                        _activeStage.SetNoServerPointer(noServerPointer);
+                        _activeStage.SetEnableServerPointer(enableServerPointer);
 
                         break;
                     }

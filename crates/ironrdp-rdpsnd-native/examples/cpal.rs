@@ -4,8 +4,8 @@ use core::time::Duration;
 use std::sync::mpsc;
 use std::thread;
 
-use anyhow::Context;
-use cpal::traits::StreamTrait;
+use anyhow::Context as _;
+use cpal::traits::StreamTrait as _;
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp_rdpsnd_native::cpal::DecodeStream;
 use tracing::debug;

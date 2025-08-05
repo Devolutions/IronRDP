@@ -11,7 +11,7 @@ fn main() {
 mod win {
     use std::env;
     use std::fs::File;
-    use std::io::Write;
+    use std::io::Write as _;
 
     fn generate_version_rc() -> String {
         let output_name = "DevolutionsIronRdp";

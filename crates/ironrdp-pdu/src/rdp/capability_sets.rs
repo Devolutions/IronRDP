@@ -32,9 +32,9 @@ pub use self::bitmap_cache::{
     BitmapCache, BitmapCacheRev2, CacheEntry, CacheFlags, CellInfo, BITMAP_CACHE_ENTRIES_NUM,
 };
 pub use self::bitmap_codecs::{
-    client_codecs_capabilities, BitmapCodecs, CaptureFlags, Codec, CodecId, CodecProperty, EntropyBits, Guid, NsCodec,
-    RemoteFxContainer, RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags, CODEC_ID_NONE,
-    CODEC_ID_REMOTEFX,
+    client_codecs_capabilities, server_codecs_capabilities, BitmapCodecs, CaptureFlags, Codec, CodecId, CodecProperty,
+    EntropyBits, Guid, NsCodec, RemoteFxContainer, RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
+    CODEC_ID_NONE, CODEC_ID_QOI, CODEC_ID_QOIZ, CODEC_ID_REMOTEFX,
 };
 pub use self::brush::{Brush, SupportLevel};
 pub use self::frame_acknowledge::FrameAcknowledge;

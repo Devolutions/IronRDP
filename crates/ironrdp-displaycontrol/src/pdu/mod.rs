@@ -44,7 +44,7 @@ impl Encode for DisplayControlPdu {
         };
 
         // This will never overflow as per invariants.
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(clippy::arithmetic_side_effects)]
         let pdu_size = payload_length + Self::FIXED_PART_SIZE;
 
         // Write `DISPLAYCONTROL_HEADER` fields.
@@ -65,7 +65,7 @@ impl Encode for DisplayControlPdu {
 
     fn size(&self) -> usize {
         // As per invariants: This will never overflow.
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(clippy::arithmetic_side_effects)]
         let size = Self::FIXED_PART_SIZE
             + match self {
                 DisplayControlPdu::Caps(caps) => caps.size(),
@@ -310,7 +310,7 @@ impl Encode for DisplayControlMonitorLayout {
     fn size(&self) -> usize {
         // As per invariants: This will never overflow:
         // 0 <= Self::FIXED_PART_SIZE + MAX_SUPPORTED_MONITORS * MonitorLayoutEntry::FIXED_PART_SIZE < u16::MAX
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(clippy::arithmetic_side_effects)]
         let size = Self::FIXED_PART_SIZE + self.monitors.iter().map(|monitor| monitor.size()).sum::<usize>();
 
         size
@@ -751,6 +751,6 @@ fn calculate_monitor_area(
 
     // As per invariants: This multiplication would never overflow.
     // 0 <= MAX_MONITOR_AREA_FACTOR * MAX_MONITOR_AREA_FACTOR * MAX_SUPPORTED_MONITORS <= u64::MAX
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     Ok(u64::from(max_monitor_area_factor_a) * u64::from(max_monitor_area_factor_b) * u64::from(max_num_monitors))
 }

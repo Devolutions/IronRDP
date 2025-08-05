@@ -1,15 +1,43 @@
-use thiserror::Error;
-
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum HtmlError {
-    #[error("invalid CF_HTML format")]
     InvalidFormat,
-    #[error("invalid UTF-8")]
-    InvalidUtf8(#[from] core::str::Utf8Error),
-    #[error("failed to parse integer")]
-    InvalidInteger(#[from] core::num::ParseIntError),
-    #[error("invalid integer conversion")]
+    InvalidUtf8(core::str::Utf8Error),
+    InvalidInteger(core::num::ParseIntError),
     InvalidConversion,
+}
+
+impl core::fmt::Display for HtmlError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            HtmlError::InvalidFormat => write!(f, "invalid CF_HTML format"),
+            HtmlError::InvalidUtf8(_error) => write!(f, "invalid UTF-8"),
+            HtmlError::InvalidInteger(_error) => write!(f, "failed to parse integer"),
+            HtmlError::InvalidConversion => write!(f, "invalid integer conversion"),
+        }
+    }
+}
+
+impl core::error::Error for HtmlError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            HtmlError::InvalidFormat => None,
+            HtmlError::InvalidUtf8(utf8_error) => Some(utf8_error),
+            HtmlError::InvalidInteger(parse_int_error) => Some(parse_int_error),
+            HtmlError::InvalidConversion => None,
+        }
+    }
+}
+
+impl From<core::str::Utf8Error> for HtmlError {
+    fn from(error: core::str::Utf8Error) -> Self {
+        HtmlError::InvalidUtf8(error)
+    }
+}
+
+impl From<core::num::ParseIntError> for HtmlError {
+    fn from(error: core::num::ParseIntError) -> Self {
+        HtmlError::InvalidInteger(error)
+    }
 }
 
 /// Converts `CF_HTML` format to plain HTML text.
@@ -97,7 +125,7 @@ pub fn plain_html_to_cf_html(fragment: &str) -> String {
     let mut write_header = |key: &str, value: &str| {
         // This relation holds: key.len() + value.len() + ":\r\n".len() < usize::MAX
         // Rationale: we know all possible values (see code below), and they are much smaller than `usize::MAX`.
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(clippy::arithmetic_side_effects)]
         let size = key.len() + value.len() + ":\r\n".len();
         buffer.reserve(size);
 
@@ -136,7 +164,7 @@ pub fn plain_html_to_cf_html(fragment: &str) -> String {
     let mut replace_placeholder = |value_begin_idx: usize, header_value: &str| {
         // We know that: value_begin_idx + POS_PLACEHOLDER.len() < usize::MAX
         // Rationale: the headers are written at the beginning, and we’re not indexing outside of the string.
-        #[allow(clippy::arithmetic_side_effects)]
+        #[expect(clippy::arithmetic_side_effects)]
         let value_end_idx = value_begin_idx + POS_PLACEHOLDER.len();
 
         buffer.replace_range(value_begin_idx..value_end_idx, header_value);

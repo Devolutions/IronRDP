@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 
-use bit_field::BitField;
+use bit_field::BitField as _;
 use bitflags::bitflags;
 use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,

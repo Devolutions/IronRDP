@@ -25,8 +25,8 @@ public partial struct ConnectionResult
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_desktop_size", ExactSpelling = true)]
     public static unsafe extern ConnectorResultFfiResultBoxDesktopSizeBoxIronRdpError GetDesktopSize(ConnectionResult* self);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_no_server_pointer", ExactSpelling = true)]
-    public static unsafe extern ConnectorResultFfiResultBoolBoxIronRdpError GetNoServerPointer(ConnectionResult* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_enable_server_pointer", ExactSpelling = true)]
+    public static unsafe extern ConnectorResultFfiResultBoolBoxIronRdpError GetEnableServerPointer(ConnectionResult* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_pointer_software_rendering", ExactSpelling = true)]
     public static unsafe extern ConnectorResultFfiResultBoolBoxIronRdpError GetPointerSoftwareRendering(ConnectionResult* self);
