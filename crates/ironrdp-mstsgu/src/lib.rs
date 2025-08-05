@@ -6,6 +6,7 @@
 use core::pin::Pin;
 use core::{fmt, fmt::Display, task::Poll};
 use std::io;
+use core::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{
@@ -14,7 +15,7 @@ use futures_util::{
 };
 use hyper::body::Bytes;
 use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor};
-use log::error;
+use log::{error, warn};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -195,19 +196,41 @@ impl GwClient {
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Bytes>(4);
 
         let work = tokio::spawn(async move {
+            let iv = Duration::from_secs(15*60);
+            let mut keepalive_interval: tokio::time::Interval = tokio::time::interval_at(tokio::time::Instant::now() + iv, iv);
+
             loop {
                 let mut wsbuf = [0u8; 8192];
 
                 tokio::select!(
+                    _ = keepalive_interval.tick() => {
+                        let pos = {
+                            let mut cur = WriteCursor::new(&mut wsbuf);
+                            KeepalivePkt.encode(&mut cur).map_err(|e| custom_err!("PktEncode", e))?;
+                            cur.pos()
+                        };
+
+                        gw.ws_sink.send(Message::Binary(Bytes::copy_from_slice(&wsbuf[..pos]))).await.map_err(|e| custom_err!("ws send", e))?;
+                    },
                     next = gw.ws_stream.next() => {
                         let tmp = next.ok_or_else(|| Error::new("WS Stream Dead", GwErrorKind::Connect))?;
                         let msg = tmp.map_err(|e| custom_err!("Stream", e))?.into_data();
                         let mut cur = ReadCursor::new(&msg);
                         let hdr = PktHdr::decode(&mut cur).map_err(|e| custom_err!("Header Decode", e))?;
-                        assert!(cur.len() >= hdr.length as usize - hdr.size()); // TODO
-                        assert_eq!(hdr.ty, PktTy::Data); // TODO
-                        let p = DataPkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
-                        in_tx.send(Bytes::from(p.data.to_vec())).await.map_err(|e| custom_err!("in_tx dead", e))?;
+                        
+                        assert!(cur.len() >= hdr.length as usize - hdr.size());
+                        match hdr.ty {
+                            PktTy::Keepalive => {
+                                continue;
+                            },
+                            PktTy::Data => {
+                                let p = DataPkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
+                                in_tx.send(Bytes::from(p.data.to_vec())).await.map_err(|e| custom_err!("in_tx dead", e))?;
+                            },
+                            x => {
+                                warn!("Unhandled gw packet type {x:?}");
+                            }
+                        }
                     },
                     next = out_rx.recv() => {
                         let next = next.ok_or_else(|| Error::new("WS Sink Dead", GwErrorKind::Connect))?;

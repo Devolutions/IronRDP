@@ -29,6 +29,9 @@ pub(crate) enum PktTy {
     ChannelResp = 0x09,
     ChannelClose = 0x10,
     Data = 0x0A,
+    ServiceMessage = 0x0B,
+    ReauthMessage = 0x0C,
+    Keepalive = 0x0D
 }
 
 impl TryFrom<u16> for PktTy {
@@ -45,7 +48,10 @@ impl TryFrom<u16> for PktTy {
             0x07 => PktTy::TunnelAuthResponse,
             0x08 => PktTy::ChannelCreate,
             0x09 => PktTy::ChannelResp,
-            0x0a => PktTy::Data,
+            0x0A => PktTy::Data,
+            0x0B => PktTy::ServiceMessage,
+            0x0C => PktTy::ReauthMessage,
+            0x0D => PktTy::Keepalive,
             0x10 => PktTy::ChannelClose,
             _ => return Err(()),
         };
@@ -514,5 +520,26 @@ impl<'a> Decode<'a> for DataPkt<'a> {
         Ok(DataPkt {
             data: src.read_slice(len as usize),
         })
+    }
+}
+
+pub(crate) struct KeepalivePkt;
+
+impl Encode for KeepalivePkt {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        let hdr = PktHdr {
+            ty: PktTy::Keepalive,
+            length: u32::try_from(self.size()).unwrap(),
+            ..PktHdr::default()
+        };
+        hdr.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "KEEPALIVE"
+    }
+
+    fn size(&self) -> usize {
+        PktHdr::default().size()
     }
 }
