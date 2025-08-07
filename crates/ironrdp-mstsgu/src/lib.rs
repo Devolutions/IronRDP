@@ -139,13 +139,13 @@ impl GwClient {
             .await
             .map_err(|e| custom_err!("TLS connect", e))?;
 
-        let ba = STANDARD.encode(format!("{}:{}", target.gw_user, target.gw_pass));
+        let auth_val: String = STANDARD.encode(format!("{}:{}", target.gw_user, target.gw_pass));
         let req = http::Request::builder()
             .method("RDG_OUT_DATA")
             .header(hyper::header::HOST, gw_host)
             .header("Rdg-Connection-Id", format!("{{{}}}", uuid::Uuid::new_v4()))
             .uri("/remoteDesktopGateway/")
-            .header(hyper::header::AUTHORIZATION, format!("Basic {ba}"))
+            .header(hyper::header::AUTHORIZATION, format!("Basic {auth_val}"))
             .header(hyper::header::CONNECTION, "Upgrade")
             .header(hyper::header::UPGRADE, "websocket")
             .header(hyper::header::SEC_WEBSOCKET_VERSION, "13")

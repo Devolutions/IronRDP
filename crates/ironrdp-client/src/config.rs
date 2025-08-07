@@ -320,10 +320,7 @@ impl Config {
         }
 
         let mut gw: Option<GwConnectTarget> = None;
-
-        let gw_addr = args.gw_endpoint;
-
-        if !gw_addr.is_empty() {
+        if let Some(gw_addr) = args.gw_endpoint {
             gw = Some(GwConnectTarget {
                 gw_endpoint: gw_addr,
                 gw_user: String::new(),
