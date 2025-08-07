@@ -1,5 +1,7 @@
 use bitflags::bitflags;
-use ironrdp_core::{ensure_fixed_part_size, ensure_size, unsupported_value_err, Decode, Encode, ReadCursor, WriteCursor};
+use ironrdp_core::{
+    ensure_fixed_part_size, ensure_size, unsupported_value_err, Decode, Encode, ReadCursor, WriteCursor,
+};
 
 bitflags! {
     /// 2.2.5.3.2 HTTP_EXTENDED_AUTH Enumeration
@@ -31,7 +33,7 @@ pub(crate) enum PktTy {
     Data = 0x0A,
     ServiceMessage = 0x0B,
     ReauthMessage = 0x0C,
-    Keepalive = 0x0D
+    Keepalive = 0x0D,
 }
 
 impl TryFrom<u16> for PktTy {

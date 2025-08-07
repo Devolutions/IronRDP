@@ -4,9 +4,9 @@
 //! * This does not implement reconnection/reauthentication.
 //! * This only supports basic auth.
 use core::pin::Pin;
+use core::time::Duration;
 use core::{fmt, fmt::Display, task::Poll};
 use std::io;
-use core::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{
@@ -15,13 +15,13 @@ use futures_util::{
 };
 use hyper::body::Bytes;
 use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor};
+use ironrdp_tls::TlsStream;
 use log::{error, warn};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::oneshot,
 };
-use ironrdp_tls::TlsStream;
 use tokio_tungstenite::{
     tungstenite::{
         handshake::client::generate_key,
@@ -118,8 +118,14 @@ impl Drop for GwClient {
 }
 
 impl GwClient {
-    pub async fn connect(target: &GwConnectTarget, client_name: &str) -> Result<(GwClient, core::net::SocketAddr), Error> {
-        let gw_host = target.gw_endpoint.split(":").nth(0)
+    pub async fn connect(
+        target: &GwConnectTarget,
+        client_name: &str,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        let gw_host = target
+            .gw_endpoint
+            .split(":")
+            .nth(0)
             .ok_or_else(|| Error::new("Connect", GwErrorKind::InvalidGwTarget))?;
 
         let stream = TcpStream::connect(&target.gw_endpoint)
@@ -172,10 +178,16 @@ impl GwClient {
         let _ = tx.send(()); // TODO: Not needed since it doesnt keep alive conn?
         let stream = jh.await.map_err(|e| custom_err!("WS join", e))?.io.into_inner();
 
-        Self::connect_ws(target.clone(), client_name, stream).await.map(|x| (x, client_addr))
+        Self::connect_ws(target.clone(), client_name, stream)
+            .await
+            .map(|x| (x, client_addr))
     }
 
-    async fn connect_ws(target: GwConnectTarget, client_name: &str, tls_stream: TlsStream<TcpStream>) -> Result<GwClient, Error> {
+    async fn connect_ws(
+        target: GwConnectTarget,
+        client_name: &str,
+        tls_stream: TlsStream<TcpStream>,
+    ) -> Result<GwClient, Error> {
         let ws_stream: WebSocketStream<_> = WebSocketStream::from_raw_socket(tls_stream, Role::Client, None).await;
         let (ws_sink, ws_stream) = ws_stream.split();
         let mut gw = GwConn {
@@ -194,8 +206,9 @@ impl GwClient {
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Bytes>(4);
 
         let work = tokio::spawn(async move {
-            let iv = Duration::from_secs(15*60);
-            let mut keepalive_interval: tokio::time::Interval = tokio::time::interval_at(tokio::time::Instant::now() + iv, iv);
+            let iv = Duration::from_secs(15 * 60);
+            let mut keepalive_interval: tokio::time::Interval =
+                tokio::time::interval_at(tokio::time::Instant::now() + iv, iv);
 
             loop {
                 let mut wsbuf = [0u8; 8192];
@@ -215,7 +228,7 @@ impl GwClient {
                         let msg = tmp.map_err(|e| custom_err!("Stream", e))?.into_data();
                         let mut cur = ReadCursor::new(&msg);
                         let hdr = PktHdr::decode(&mut cur).map_err(|e| custom_err!("Header Decode", e))?;
-                        
+
                         assert!(cur.len() >= hdr.length as usize - hdr.size());
                         match hdr.ty {
                             PktTy::Keepalive => {
@@ -270,14 +283,16 @@ impl GwConn {
     }
 
     async fn read_packet(&mut self) -> Result<(PktHdr, Bytes), Error> {
-        let mut msg = self.ws_stream.next().await
+        let mut msg = self
+            .ws_stream
+            .next()
+            .await
             .ok_or_else(|| Error::new("Stream closed", GwErrorKind::Connect))?
             .map_err(|e| custom_err!("WS err", e))?
             .into_data();
         let mut cur = ReadCursor::new(&msg);
-        
-        let hdr = PktHdr::decode(&mut cur)
-            .map_err(|_| Error::new("PktHdr", GwErrorKind::Decode))?;
+
+        let hdr = PktHdr::decode(&mut cur).map_err(|_| Error::new("PktHdr", GwErrorKind::Decode))?;
         if cur.len() != hdr.length as usize - hdr.size() {
             return Err(Error::new("read_packet", GwErrorKind::PacketEOF));
         }
@@ -296,9 +311,8 @@ impl GwConn {
         let (_hdr, bytes) = self.read_packet().await?;
 
         let mut cur = ReadCursor::new(&bytes);
-        let resp = HandshakeRespPkt::decode(&mut cur)
-            .map_err(|_| Error::new("Handshake", GwErrorKind::Decode))?;
-        if resp.error_code != 0  || resp.ver_major != 1 || resp.ver_minor != 0 || resp.server_version != 0 {
+        let resp = HandshakeRespPkt::decode(&mut cur).map_err(|_| Error::new("Handshake", GwErrorKind::Decode))?;
+        if resp.error_code != 0 || resp.ver_major != 1 || resp.ver_minor != 0 || resp.server_version != 0 {
             return Err(Error::new("Handshake", GwErrorKind::Connect));
         }
         Ok(())
@@ -315,15 +329,17 @@ impl GwConn {
 
         let (_hdr, bytes) = self.read_packet().await?;
         let mut cur = ReadCursor::new(&bytes);
-        
-        let resp = TunnelRespPkt::decode(&mut cur)
-            .map_err(|_| Error::new("TunnelDecode", GwErrorKind::Decode))?;
+
+        let resp = TunnelRespPkt::decode(&mut cur).map_err(|_| Error::new("TunnelDecode", GwErrorKind::Decode))?;
         if resp.status_code != 0 {
             return Err(Error::new("Tunnel", GwErrorKind::Connect));
         }
         assert!(cur.eof());
         if !resp.consent_msg.is_empty() {
-            return Err(Error::new("Received consent message but showing it not implemented", GwErrorKind::UnsupportedFeature));
+            return Err(Error::new(
+                "Received consent message but showing it not implemented",
+                GwErrorKind::UnsupportedFeature,
+            ));
         }
         Ok(())
     }
@@ -337,8 +353,8 @@ impl GwConn {
 
         let (_hdr, bytes) = self.read_packet().await?;
         let mut cur = ReadCursor::new(&bytes);
-        let resp: TunnelAuthRespPkt = TunnelAuthRespPkt::decode(&mut cur)
-            .map_err(|_| Error::new("TunnelAuth", GwErrorKind::Decode))?;
+        let resp: TunnelAuthRespPkt =
+            TunnelAuthRespPkt::decode(&mut cur).map_err(|_| Error::new("TunnelAuth", GwErrorKind::Decode))?;
 
         if resp.error_code != 0 {
             return Err(Error::new("TunnelAuth", GwErrorKind::Connect));
@@ -357,8 +373,8 @@ impl GwConn {
         let (hdr, bytes) = self.read_packet().await?;
         assert!(hdr.ty == PktTy::ChannelResp);
         let mut cur: ReadCursor<'_> = ReadCursor::new(&bytes);
-        let resp: ChannelResp = ChannelResp::decode(&mut cur)
-            .map_err(|_| Error::new("ChannelResp", GwErrorKind::Decode))?;
+        let resp: ChannelResp =
+            ChannelResp::decode(&mut cur).map_err(|_| Error::new("ChannelResp", GwErrorKind::Decode))?;
         if resp.error_code != 0 {
             return Err(Error::new("ChannelCreate", GwErrorKind::Connect));
         }
@@ -377,9 +393,7 @@ impl AsyncRead for GwClient {
         match self.work.poll_unpin(cx) {
             Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(_) => {
-                return Poll::Ready(Err(io::Error::other("Premature Work Task end?")))
-            }
+            Poll::Ready(_) => return Poll::Ready(Err(io::Error::other("Premature Work Task end?"))),
             _ => (),
         }
 
@@ -421,9 +435,7 @@ impl AsyncWrite for GwClient {
         match self.work.poll_unpin(cx) {
             Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(_) => {
-                return Poll::Ready(Err(io::Error::other("Premature Work Task end?")))
-            }
+            Poll::Ready(_) => return Poll::Ready(Err(io::Error::other("Premature Work Task end?"))),
             Poll::Pending => (),
         }
 

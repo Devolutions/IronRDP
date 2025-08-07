@@ -172,7 +172,8 @@ async fn connect(
     let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
     let (client_addr, stream) = if let Some(ref gw_config) = config.gw {
-        let (gw, client_addr) = ironrdp_mstsgu::GwClient::connect(gw_config, &config.connector.client_name).await
+        let (gw, client_addr) = ironrdp_mstsgu::GwClient::connect(gw_config, &config.connector.client_name)
+            .await
             .map_err(|e| connector::custom_err!("GW Connect", e))?;
         (client_addr, tokio_util::either::Either::Left(gw))
     } else {
