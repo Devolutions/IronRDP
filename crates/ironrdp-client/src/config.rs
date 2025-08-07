@@ -321,13 +321,7 @@ impl Config {
 
         let mut gw: Option<GwConnectTarget> = None;
 
-        let gw_addr = if let Some(gw_addr) = args.gw_endpoint {
-            gw_addr
-        } else {
-            inquire::Text::new("Gateway address:")
-                .prompt()
-                .context("Address prompt")?
-        };
+        let gw_addr = args.gw_endpoint;
 
         if !gw_addr.is_empty() {
             gw = Some(GwConnectTarget {
