@@ -336,7 +336,7 @@ impl Config {
             gw.gw_user = if let Some(gw_user) = args.gw_user {
                 gw_user
             } else {
-                inquire::Text::new("Gateway Username:")
+                inquire::Text::new("Gateway username:")
                     .prompt()
                     .context("Username prompt")?
             };
@@ -344,7 +344,7 @@ impl Config {
             gw.gw_pass = if let Some(gw_pass) = args.gw_pass {
                 gw_pass
             } else {
-                inquire::Password::new("Gateway Password:")
+                inquire::Password::new("Gateway password:")
                     .without_confirmation()
                     .prompt()
                     .context("Password prompt")?
