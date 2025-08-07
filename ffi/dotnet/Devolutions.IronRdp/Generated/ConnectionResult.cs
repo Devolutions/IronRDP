@@ -23,19 +23,19 @@ public partial class ConnectionResult: IDisposable
         }
     }
 
+    public bool EnableServerPointer
+    {
+        get
+        {
+            return GetEnableServerPointer();
+        }
+    }
+
     public ushort IoChannelId
     {
         get
         {
             return GetIoChannelId();
-        }
-    }
-
-    public bool NoServerPointer
-    {
-        get
-        {
-            return GetNoServerPointer();
         }
     }
 
@@ -130,7 +130,7 @@ public partial class ConnectionResult: IDisposable
     }
 
     /// <exception cref="IronRdpException"></exception>
-    public bool GetNoServerPointer()
+    public bool GetEnableServerPointer()
     {
         unsafe
         {
@@ -138,7 +138,7 @@ public partial class ConnectionResult: IDisposable
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            Raw.ConnectorResultFfiResultBoolBoxIronRdpError result = Raw.ConnectionResult.GetNoServerPointer(_inner);
+            Raw.ConnectorResultFfiResultBoolBoxIronRdpError result = Raw.ConnectionResult.GetEnableServerPointer(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));

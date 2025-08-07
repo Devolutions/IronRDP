@@ -79,6 +79,8 @@ This is the convention adopted by the Rust project:
 - [Rust API Guidelines][api-guidelines-errors]
 - [std::error::Error][std-error-trait]
 
+Also, use proper abbreviation casing, e.g., IPv4 and IPv6 (not ipv4/ipv6).
+
 ```rust
 // GOOD
 "invalid X.509 certificate"
@@ -277,6 +279,8 @@ let artifact_name = format!("{}.wasm", package.replace('-', "_"));
 
 **Rationale:** writing a sentence (or maybe even a paragraph) rather just "a comment" creates a more appropriate frame of mind.
 It tricks you into writing down more of the context you keep in your head while coding.
+
+Exception: no period for brief comments (e.g., `// VER`, `// RSV`, `// ATYP`)
 
 ### "Sentence per line" style
 

@@ -11,7 +11,6 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::ModifiersKeyState;
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 
@@ -172,7 +171,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     send_fast_path_events(&self.input_event_sender, input_events);
                 }
             }
-            WindowEvent::ModifiersChanged(state) => {
+            WindowEvent::ModifiersChanged(modifiers) => {
                 const SHIFT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x2A);
                 const CONTROL_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x1D);
                 const ALT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x38);
@@ -189,10 +188,19 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     operations.push(operation);
                 };
 
-                add_operation(state.lshift_state() == ModifiersKeyState::Pressed, SHIFT_LEFT);
-                add_operation(state.lcontrol_state() == ModifiersKeyState::Pressed, CONTROL_LEFT);
-                add_operation(state.lalt_state() == ModifiersKeyState::Pressed, ALT_LEFT);
-                add_operation(state.lsuper_state() == ModifiersKeyState::Pressed, LOGO_LEFT);
+                // NOTE: https://docs.rs/winit/0.30.12/src/winit/keyboard.rs.html#1737-1744
+                //
+                // We can’t use state.lshift_state(), state.lcontrol_state(), etc, because on some platforms such as
+                // Linux, the modifiers change is hidden.
+                //
+                // > The exact modifier key is not used to represent modifiers state in the
+                // > first place due to a fact that modifiers state could be changed without any
+                // > key being pressed and on some platforms like Wayland/X11 which key resulted
+                // > in modifiers change is hidden, also, not that it really matters.
+                add_operation(modifiers.state().shift_key(), SHIFT_LEFT);
+                add_operation(modifiers.state().control_key(), CONTROL_LEFT);
+                add_operation(modifiers.state().alt_key(), ALT_LEFT);
+                add_operation(modifiers.state().super_key(), LOGO_LEFT);
 
                 let input_events = self.input_database.apply(operations);
 

@@ -149,22 +149,22 @@ pub mod ffi {
             &mut self,
             io_channel_id: u16,
             user_channel_id: u16,
-            no_server_pointer: bool,
+            enable_server_pointer: bool,
             pointer_software_rendering: bool,
         ) {
             self.0.set_fastpath_processor(
                 ironrdp::session::fast_path::ProcessorBuilder {
                     io_channel_id,
                     user_channel_id,
-                    no_server_pointer,
+                    enable_server_pointer,
                     pointer_software_rendering,
                 }
                 .build(),
             );
         }
 
-        pub fn set_no_server_pointer(&mut self, no_server_pointer: bool) {
-            self.0.set_no_server_pointer(no_server_pointer);
+        pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
+            self.0.set_enable_server_pointer(enable_server_pointer);
         }
     }
 

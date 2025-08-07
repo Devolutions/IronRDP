@@ -15,11 +15,11 @@ public partial class ActiveStage: IDisposable
 {
     private unsafe Raw.ActiveStage* _inner;
 
-    public bool NoServerPointer
+    public bool EnableServerPointer
     {
         set
         {
-            SetNoServerPointer(value);
+            SetEnableServerPointer(value);
         }
     }
 
@@ -265,7 +265,7 @@ public partial class ActiveStage: IDisposable
         }
     }
 
-    public void SetFastpathProcessor(ushort ioChannelId, ushort userChannelId, bool noServerPointer, bool pointerSoftwareRendering)
+    public void SetFastpathProcessor(ushort ioChannelId, ushort userChannelId, bool enableServerPointer, bool pointerSoftwareRendering)
     {
         unsafe
         {
@@ -273,11 +273,11 @@ public partial class ActiveStage: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStage");
             }
-            Raw.ActiveStage.SetFastpathProcessor(_inner, ioChannelId, userChannelId, noServerPointer, pointerSoftwareRendering);
+            Raw.ActiveStage.SetFastpathProcessor(_inner, ioChannelId, userChannelId, enableServerPointer, pointerSoftwareRendering);
         }
     }
 
-    public void SetNoServerPointer(bool noServerPointer)
+    public void SetEnableServerPointer(bool enableServerPointer)
     {
         unsafe
         {
@@ -285,7 +285,7 @@ public partial class ActiveStage: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStage");
             }
-            Raw.ActiveStage.SetNoServerPointer(_inner, noServerPointer);
+            Raw.ActiveStage.SetEnableServerPointer(_inner, enableServerPointer);
         }
     }
 
