@@ -21,4 +21,6 @@ pub enum IronErrorKind {
     RDCleanPath,
     /// Couldn’t connect to proxy
     ProxyConnect,
+    /// Protocol negotiation failed
+    NegotiationFailure,
 }
