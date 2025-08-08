@@ -363,6 +363,7 @@ impl Config {
                 .context("Address prompt")?
                 .pipe(Destination::new)?
         };
+
         if let Some(ref mut gw) = gw {
             gw.server = destination.name.clone(); // TODO
         }
