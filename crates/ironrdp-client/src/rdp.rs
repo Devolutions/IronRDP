@@ -171,15 +171,21 @@ async fn connect(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
-    let socket = TcpStream::connect(dest)
-        .await
-        .map_err(|e| connector::custom_err!("TCP connect", e))?;
-
-    let client_addr = socket
-        .local_addr()
-        .map_err(|e| connector::custom_err!("get socket local address", e))?;
-
-    let mut framed = ironrdp_tokio::TokioFramed::new(socket);
+    let (client_addr, stream) = if let Some(ref gw_config) = config.gw {
+        let (gw, client_addr) = ironrdp_mstsgu::GwClient::connect(gw_config, &config.connector.client_name)
+            .await
+            .map_err(|e| connector::custom_err!("GW Connect", e))?;
+        (client_addr, tokio_util::either::Either::Left(gw))
+    } else {
+        let stream = TcpStream::connect(dest)
+            .await
+            .map_err(|e| connector::custom_err!("TCP connect", e))?;
+        let client_addr = stream
+            .local_addr()
+            .map_err(|e| connector::custom_err!("get socket local address", e))?;
+        (client_addr, tokio_util::either::Either::Right(stream))
+    };
+    let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let mut drdynvc =
         ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
