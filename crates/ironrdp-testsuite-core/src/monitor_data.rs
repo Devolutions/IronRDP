@@ -1,4 +1,4 @@
-use ironrdp_pdu::gcc::*;
+use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
 
 pub const MONITOR_DATA_WITHOUT_MONITORS_BUFFER: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 

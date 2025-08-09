@@ -1,4 +1,8 @@
-use ironrdp_pdu::gcc::*;
+use ironrdp_pdu::gcc::{
+    ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ColorDepth, ConnectionType, HighColorDepth,
+    KeyboardType, RdpVersion, SecureAccessSequence, ServerCoreData, ServerCoreOptionalData, ServerEarlyCapabilityFlags,
+    SupportedColorDepths,
+};
 use ironrdp_pdu::nego::SecurityProtocol;
 
 pub const CLIENT_CORE_DATA_BUFFER: [u8; 128] = [

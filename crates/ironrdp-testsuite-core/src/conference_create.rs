@@ -1,4 +1,4 @@
-use ironrdp_pdu::gcc::*;
+use ironrdp_pdu::gcc::{ConferenceCreateRequest, ConferenceCreateResponse};
 
 use crate::gcc;
 
