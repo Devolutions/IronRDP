@@ -1,4 +1,4 @@
-use ironrdp_pdu::rdp::vc::dvc::gfx::*;
+use ironrdp_pdu::rdp::vc::dvc::gfx::{ClientPdu, ServerPdu};
 
 use crate::graphics_messages::{
     FRAME_ACKNOWLEDGE, FRAME_ACKNOWLEDGE_BUFFER, WIRE_TO_SURFACE_1, WIRE_TO_SURFACE_1_BUFFER,

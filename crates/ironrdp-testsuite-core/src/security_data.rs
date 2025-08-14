@@ -1,4 +1,4 @@
-use ironrdp_pdu::gcc::*;
+use ironrdp_pdu::gcc::{ClientSecurityData, EncryptionLevel, EncryptionMethod, ServerSecurityData};
 
 pub const CLIENT_SECURITY_DATA_BUFFER: [u8; 8] = [
     0x1b, 0x00, 0x00, 0x00, // encryption methods

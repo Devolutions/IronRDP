@@ -32,7 +32,7 @@ pub(crate) mod private {
     }
 }
 
-use private::*;
+use private::{BaseRectangle, RectangleImpl};
 
 pub trait Rectangle: RectangleImpl {
     fn width(&self) -> u16;

@@ -1,4 +1,4 @@
-use ironrdp_pdu::gcc::*;
+use ironrdp_pdu::gcc::{ChannelDef, ChannelName, ChannelOptions, ClientNetworkData, ServerNetworkData};
 
 pub const CLIENT_NETWORK_DATA_WITH_CHANNELS_BUFFER: [u8; 40] = [
     0x03, 0x00, 0x00, 0x00, // channels count
