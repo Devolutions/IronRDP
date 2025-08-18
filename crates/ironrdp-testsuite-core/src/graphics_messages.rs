@@ -1,6 +1,13 @@
 use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
 use ironrdp_pdu::geometry::InclusiveRectangle;
-use ironrdp_pdu::rdp::vc::dvc::gfx::*;
+use ironrdp_pdu::rdp::vc::dvc::gfx::{
+    Avc420BitmapStream, Avc444BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu,
+    CapabilitiesConfirmPdu, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
+    CapabilitiesV8Flags, CapabilitySet, Codec1Type, Codec2Type, Color, CreateSurfacePdu, DeleteEncodingContextPdu,
+    DeleteSurfacePdu, Encoding, EndFramePdu, EvictCacheEntryPdu, FrameAcknowledgePdu, MapSurfaceToOutputPdu,
+    PixelFormat, Point, QuantQuality, QueueDepth, ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu,
+    SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu, WireToSurface2Pdu,
+};
 
 pub const WIRE_TO_SURFACE_1_BUFFER: [u8; 218] = [
     0x00, 0x00, 0x08, 0x00, 0x20, 0xa5, 0x03, 0xde, 0x02, 0xab, 0x03, 0xe7, 0x02, 0xc9, 0x00, 0x00, 0x00, 0x01, 0x0e,

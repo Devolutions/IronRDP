@@ -1,4 +1,4 @@
-use ironrdp_pdu::gcc::*;
+use ironrdp_pdu::gcc::{ClientGccBlocks, ClientGccType, ServerGccBlocks, ServerGccType};
 
 use crate::cluster_data::{CLUSTER_DATA, CLUSTER_DATA_BUFFER};
 use crate::core_data::{

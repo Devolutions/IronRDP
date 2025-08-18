@@ -942,7 +942,10 @@ mod legacy {
     use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
     use thiserror::Error;
 
-    use super::*;
+    use super::{
+        cast_length, ensure_size, ConnectInitial, ConnectResponse, DomainParameters, PduError, ReadCursor, WriteCursor,
+        RESULT_ENUM_LENGTH,
+    };
     use crate::ber;
     use crate::gcc::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
     use crate::gcc::GccError;
