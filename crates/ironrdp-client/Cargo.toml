@@ -25,8 +25,8 @@ test = false
 
 [features]
 default = ["rustls"]
-rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
-native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls"]
+rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots", "ironrdp-mstsgu/rustls"]
+native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls", "ironrdp-mstsgu/native-tls"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
 
@@ -48,6 +48,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"]
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.3" }
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.3" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.1" }
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.6", features = ["reqwest"] }
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
@@ -70,6 +71,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async, futures
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7" }
 tokio-tungstenite = "0.27"
 transport = { git = "https://github.com/Devolutions/devolutions-gateway", rev = "06e91dfe82751a6502eaf74b6a99663f06f0236d" }
 futures-util = { version = "0.3", features = ["sink"] }

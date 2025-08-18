@@ -10,6 +10,7 @@ use clap::Parser;
 use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+use ironrdp_mstsgu::GwConnectTarget;
 use tap::prelude::*;
 use url::Url;
 
@@ -19,6 +20,7 @@ const DEFAULT_HEIGHT: u16 = 1080;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub log_file: Option<String>,
+    pub gw: Option<GwConnectTarget>,
     pub destination: Destination,
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
@@ -178,16 +180,23 @@ impl FromStr for DvcProxyInfo {
 #[clap(author = "Devolutions", about = "Devolutions-IronRDP client")]
 #[clap(version, long_about = None)]
 struct Args {
+    /// A file with IronRDP client logs
+    #[clap(short, long, value_parser)]
+    log_file: Option<String>,
+
+    #[clap(long, value_parser)]
+    gw_endpoint: Option<String>,
+    #[clap(long, value_parser)]
+    gw_user: Option<String>,
+    #[clap(long, value_parser)]
+    gw_pass: Option<String>,
+
     /// An address on which the client will connect.
     destination: Option<Destination>,
 
     /// Path to a .rdp file to read the configuration from.
     #[clap(long)]
     rdp_file: Option<PathBuf>,
-
-    /// A file with IronRDP client logs
-    #[clap(short, long)]
-    log_file: Option<String>,
 
     /// A target RDP server user name
     #[clap(short, long)]
@@ -310,6 +319,35 @@ impl Config {
             }
         }
 
+        let mut gw: Option<GwConnectTarget> = None;
+        if let Some(gw_addr) = args.gw_endpoint {
+            gw = Some(GwConnectTarget {
+                gw_endpoint: gw_addr,
+                gw_user: String::new(),
+                gw_pass: String::new(),
+                server: String::new(), // TODO non-standard port? also dont use here?
+            });
+        }
+
+        if let Some(ref mut gw) = gw {
+            gw.gw_user = if let Some(gw_user) = args.gw_user {
+                gw_user
+            } else {
+                inquire::Text::new("Gateway username:")
+                    .prompt()
+                    .context("Username prompt")?
+            };
+
+            gw.gw_pass = if let Some(gw_pass) = args.gw_pass {
+                gw_pass
+            } else {
+                inquire::Password::new("Gateway password:")
+                    .without_confirmation()
+                    .prompt()
+                    .context("Password prompt")?
+            };
+        };
+
         let destination = if let Some(destination) = args.destination {
             destination
         } else if let Some(destination) = properties.full_address() {
@@ -325,6 +363,10 @@ impl Config {
                 .context("Address prompt")?
                 .pipe(Destination::new)?
         };
+
+        if let Some(ref mut gw) = gw {
+            gw.server = destination.name.clone(); // TODO
+        }
 
         let username = if let Some(username) = args.username {
             username
@@ -430,6 +472,7 @@ impl Config {
 
         Ok(Self {
             log_file: args.log_file,
+            gw,
             destination,
             connector,
             clipboard_type,
