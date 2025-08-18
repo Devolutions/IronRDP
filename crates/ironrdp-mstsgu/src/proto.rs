@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, unsupported_value_err, Decode, Encode, ReadCursor, WriteCursor,
+    cast_int, cast_length, ensure_fixed_part_size, ensure_size, unsupported_value_err, Decode, Encode, ReadCursor,
+    WriteCursor,
 };
 
 bitflags! {
@@ -70,7 +71,7 @@ pub(crate) struct PktHdr {
 }
 
 impl PktHdr {
-    const FIXED_PART_SIZE: usize = 4 /* ty */ + 2/* _reserved */ + 2 /* length */;
+    const FIXED_PART_SIZE: usize = 4 /* ty */ + 2 /* _reserved */ + 2 /* length */;
 }
 
 impl Encode for PktHdr {
@@ -89,7 +90,7 @@ impl Encode for PktHdr {
     }
 
     fn size(&self) -> usize {
-        8
+        Self::FIXED_PART_SIZE
     }
 }
 
@@ -123,7 +124,7 @@ impl Encode for HandshakeReqPkt {
 
         let hdr = PktHdr {
             ty: PktTy::HandshakeReq,
-            length: u32::try_from(self.size()).unwrap(),
+            length: u32::try_from(self.size()).expect("handshake packet size fits in u32"),
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
@@ -141,7 +142,7 @@ impl Encode for HandshakeReqPkt {
     }
 
     fn size(&self) -> usize {
-        PktHdr::default().size() + 6
+        PktHdr::FIXED_PART_SIZE + 6
     }
 }
 
@@ -191,7 +192,7 @@ impl Encode for TunnelReqPkt {
 
         let hdr = PktHdr {
             ty: PktTy::TunnelCreate,
-            length: u32::try_from(self.size()).unwrap(),
+            length: u32::try_from(self.size()).expect("tunnel request packet size fits in u32"),
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
@@ -303,14 +304,16 @@ impl Encode for ExtendedAuthPkt {
 
         let hdr = PktHdr {
             ty: PktTy::ExtendedAuth,
-            length: u32::try_from(self.size()).unwrap(),
+            length: cast_int!("packet length", self.size())?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
         dst.write_u32(self.error_code);
-        dst.write_u16(u16::try_from(self.blob.len()).unwrap());
+        let blob_len: u16 = cast_int!("blob length", self.blob.len())?;
+        dst.write_u16(blob_len);
         dst.write_slice(&self.blob);
+
         Ok(())
     }
 
@@ -349,17 +352,23 @@ impl Encode for TunnelAuthPkt {
 
         let hdr = PktHdr {
             ty: PktTy::TunnelAuth,
-            length: u32::try_from(self.size()).unwrap(),
+            length: cast_int!("packet length", self.size())?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
         dst.write_u16(self.fields_present);
-        dst.write_u16(u16::try_from(2 * (self.client_name.len() + 1)).unwrap());
+
+        let client_name_len = self.client_name.encode_utf16().count() * 2 + 2; // Add 2 to account for a null terminator (0x0000).
+        let client_name_len: u16 = cast_int!("client name length", client_name_len)?;
+        dst.write_u16(client_name_len);
+
         for c in self.client_name.encode_utf16() {
             dst.write_u16(c);
         }
+
         dst.write_u16(0);
+
         Ok(())
     }
 
@@ -409,19 +418,22 @@ impl Encode for ChannelPkt {
 
         let hdr = PktHdr {
             ty: PktTy::ChannelCreate,
-            length: u32::try_from(self.size()).unwrap(),
+            length: cast_int!("packet length", self.size())?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
-        dst.write_u8(u8::try_from(self.resources.len()).unwrap());
+        let resources_count: u8 = cast_length!("resources count", self.resources.len())?;
+        dst.write_u8(resources_count);
         dst.write_u8(0); // alt_names
         dst.write_u16(self.port);
         dst.write_u16(self.protocol);
 
         // 2.2.10.3 HTTP_CHANNEL_PACKET_VARIABLE
         for res in &self.resources {
-            dst.write_u16(u16::try_from(2 * (res.len() + 1)).unwrap());
+            let res_utf16_len = res.encode_utf16().count() * 2 + 2; // Add 2 to account for a null terminator (0x0000).
+            let res_len: u16 = cast_int!("resource name UTF-16 length", res_utf16_len)?;
+            dst.write_u16(res_len);
             for b in res.encode_utf16() {
                 dst.write_u16(b);
             }
@@ -496,11 +508,12 @@ impl Encode for DataPkt<'_> {
 
         let hdr = PktHdr {
             ty: PktTy::Data,
-            length: u32::try_from(self.size()).unwrap(),
+            length: cast_int!("packet length", self.size())?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
-        dst.write_u16(u16::try_from(self.data.len()).unwrap());
+        let data_len: u16 = cast_int!("data payload length", self.data.len())?;
+        dst.write_u16(data_len);
         dst.write_slice(self.data);
         Ok(())
     }
@@ -531,7 +544,7 @@ impl Encode for KeepalivePkt {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
         let hdr = PktHdr {
             ty: PktTy::Keepalive,
-            length: u32::try_from(self.size()).unwrap(),
+            length: u32::try_from(self.size()).expect("keepalive packet size fits in u32"),
             ..PktHdr::default()
         };
         hdr.encode(dst)

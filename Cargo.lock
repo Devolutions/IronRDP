@@ -1510,7 +1510,7 @@ dependencies = [
  "embed-resource",
  "ironrdp",
  "ironrdp-cliprdr-native",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "sspi",
  "thiserror 2.0.14",
  "tracing",
@@ -2332,7 +2332,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-graphics",
@@ -2359,7 +2359,7 @@ version = "0.6.0"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2370,7 +2370,7 @@ name = "ironrdp-ainput"
 version = "0.3.0"
 dependencies = [
  "bitflags 2.9.1",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-dvc",
  "num-derive",
  "num-traits",
@@ -2382,7 +2382,7 @@ version = "0.6.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-pdu",
  "tracing",
 ]
@@ -2403,7 +2403,7 @@ version = "0.6.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-pdu",
  "tracing",
 ]
@@ -2426,14 +2426,14 @@ dependencies = [
  "ironrdp",
  "ironrdp-cfg",
  "ironrdp-cliprdr-native",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-mstsgu",
  "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd-native",
- "ironrdp-tls 0.1.3",
+ "ironrdp-tls",
  "ironrdp-tokio",
  "proc-exit",
  "raw-window-handle",
@@ -2442,7 +2442,7 @@ dependencies = [
  "softbuffer",
  "tap",
  "tokio",
- "tokio-tungstenite 0.27.0",
+ "tokio-tungstenite",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
@@ -2460,7 +2460,7 @@ name = "ironrdp-cliprdr"
 version = "0.3.0"
 dependencies = [
  "bitflags 2.9.1",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2470,7 +2470,7 @@ dependencies = [
 name = "ironrdp-cliprdr-format"
 version = "0.1.3"
 dependencies = [
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "png",
 ]
 
@@ -2479,7 +2479,7 @@ name = "ironrdp-cliprdr-native"
 version = "0.3.0"
 dependencies = [
  "ironrdp-cliprdr",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "tracing",
  "windows 0.61.3",
 ]
@@ -2489,8 +2489,8 @@ name = "ironrdp-connector"
 version = "0.6.0"
 dependencies = [
  "arbitrary",
- "ironrdp-core 0.1.5",
- "ironrdp-error 0.1.3",
+ "ironrdp-core",
+ "ironrdp-error",
  "ironrdp-pdu",
  "ironrdp-svc",
  "picky",
@@ -2506,23 +2506,14 @@ dependencies = [
 name = "ironrdp-core"
 version = "0.1.5"
 dependencies = [
- "ironrdp-error 0.1.3",
-]
-
-[[package]]
-name = "ironrdp-core"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2db60a59716a84d09040d29c9e75e81545842510fccb0934c09b28e78b46680"
-dependencies = [
- "ironrdp-error 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ironrdp-error",
 ]
 
 [[package]]
 name = "ironrdp-displaycontrol"
 version = "0.3.0"
 dependencies = [
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2533,7 +2524,7 @@ dependencies = [
 name = "ironrdp-dvc"
 version = "0.3.1"
 dependencies = [
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "slab",
@@ -2545,7 +2536,7 @@ name = "ironrdp-dvc-pipe-proxy"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2556,12 +2547,6 @@ dependencies = [
 [[package]]
 name = "ironrdp-error"
 version = "0.1.3"
-
-[[package]]
-name = "ironrdp-error"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a9d7794e854eef2f13fdf79c8502bcc567a75a15fd0522885f37739386a4cef"
 
 [[package]]
 name = "ironrdp-futures"
@@ -2579,7 +2564,7 @@ dependencies = [
  "arbitrary",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-graphics",
  "ironrdp-pdu",
@@ -2599,7 +2584,7 @@ dependencies = [
  "bytemuck",
  "byteorder",
  "expect-test",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-pdu",
  "lazy_static",
  "num-derive",
@@ -2626,12 +2611,12 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "ironrdp-core 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "ironrdp-error 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "ironrdp-tls 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ironrdp-core",
+ "ironrdp-error",
+ "ironrdp-tls",
  "log",
  "tokio",
- "tokio-tungstenite 0.26.2",
+ "tokio-tungstenite",
  "tokio-util",
  "uuid",
 ]
@@ -2645,8 +2630,8 @@ dependencies = [
  "byteorder",
  "der-parser",
  "expect-test",
- "ironrdp-core 0.1.5",
- "ironrdp-error 0.1.3",
+ "ironrdp-core",
+ "ironrdp-error",
  "lazy_static",
  "md-5",
  "num-bigint",
@@ -2683,8 +2668,8 @@ name = "ironrdp-rdpdr"
 version = "0.3.0"
 dependencies = [
  "bitflags 2.9.1",
- "ironrdp-core 0.1.5",
- "ironrdp-error 0.1.3",
+ "ironrdp-core",
+ "ironrdp-error",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2694,7 +2679,7 @@ dependencies = [
 name = "ironrdp-rdpdr-native"
 version = "0.3.0"
 dependencies = [
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
  "ironrdp-svc",
@@ -2714,7 +2699,7 @@ name = "ironrdp-rdpsnd"
 version = "0.5.0"
 dependencies = [
  "bitflags 2.9.1",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2744,7 +2729,7 @@ dependencies = [
  "ironrdp-ainput",
  "ironrdp-async",
  "ironrdp-cliprdr",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-graphics",
@@ -2768,10 +2753,10 @@ name = "ironrdp-session"
 version = "0.5.0"
 dependencies = [
  "ironrdp-connector",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
- "ironrdp-error 0.1.3",
+ "ironrdp-error",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2789,7 +2774,7 @@ name = "ironrdp-svc"
 version = "0.4.1"
 dependencies = [
  "bitflags 2.9.1",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-pdu",
 ]
 
@@ -2804,7 +2789,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
  "ironrdp-connector",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-fuzzing",
@@ -2833,7 +2818,7 @@ dependencies = [
  "async-trait",
  "ironrdp",
  "ironrdp-async",
- "ironrdp-tls 0.1.3",
+ "ironrdp-tls",
  "ironrdp-tokio",
  "semver",
  "tokio",
@@ -2844,18 +2829,6 @@ dependencies = [
 [[package]]
 name = "ironrdp-tls"
 version = "0.1.3"
-dependencies = [
- "tokio",
- "tokio-native-tls",
- "tokio-rustls",
- "x509-cert",
-]
-
-[[package]]
-name = "ironrdp-tls"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fc807c143533f41e19bf323e8c7f78995953ce8427d37220dde53906cbd48a3"
 dependencies = [
  "tokio",
  "tokio-native-tls",
@@ -2892,7 +2865,7 @@ dependencies = [
  "iron-remote-desktop",
  "ironrdp",
  "ironrdp-cliprdr-format",
- "ironrdp-core 0.1.5",
+ "ironrdp-core",
  "ironrdp-futures",
  "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
@@ -5525,24 +5498,6 @@ dependencies = [
 
 [[package]]
 name = "tokio-tungstenite"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
-dependencies = [
- "futures-util",
- "log",
- "native-tls",
- "rustls",
- "rustls-native-certs",
- "rustls-pki-types",
- "tokio",
- "tokio-native-tls",
- "tokio-rustls",
- "tungstenite 0.26.2",
-]
-
-[[package]]
-name = "tokio-tungstenite"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "489a59b6730eda1b0171fcfda8b121f4bee2b35cba8645ca35c5f7ba3eb736c1"
@@ -5556,7 +5511,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
- "tungstenite 0.27.0",
+ "tungstenite",
 ]
 
 [[package]]
@@ -5775,26 +5730,6 @@ name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
-
-[[package]]
-name = "tungstenite"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
-dependencies = [
- "bytes",
- "data-encoding",
- "http",
- "httparse",
- "log",
- "native-tls",
- "rand 0.9.2",
- "rustls",
- "rustls-pki-types",
- "sha1",
- "thiserror 2.0.14",
- "utf-8",
-]
 
 [[package]]
 name = "tungstenite"
