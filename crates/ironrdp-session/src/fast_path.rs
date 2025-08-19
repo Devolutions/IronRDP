@@ -16,7 +16,7 @@ use tracing::{debug, trace, warn};
 
 use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
-use crate::{custom_err, reason_err, rfx, SessionError, SessionErrorExt, SessionResult};
+use crate::{custom_err, reason_err, rfx, SessionError, SessionErrorExt as _, SessionResult};
 
 #[derive(Debug)]
 pub enum UpdateKind {

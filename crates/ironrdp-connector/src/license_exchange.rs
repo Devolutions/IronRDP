@@ -10,7 +10,7 @@ use ironrdp_pdu::PduHint;
 use rand::prelude::RngCore as _;
 use tracing::{debug, error, info, trace};
 
-use super::{custom_err, general_err, legacy, ConnectorError, ConnectorErrorExt};
+use super::{custom_err, general_err, legacy, ConnectorError, ConnectorErrorExt as _};
 use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
 
 #[derive(Default, Debug)]
