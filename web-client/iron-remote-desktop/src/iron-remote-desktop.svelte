@@ -763,7 +763,6 @@
             bind:this={screenViewer}
             class="screen-viewer"
             style={viewerStyle}
-            contenteditable={isFirefox}
             onpaste={ffOnPasteHandler}
         >
             <canvas
