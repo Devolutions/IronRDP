@@ -7,7 +7,7 @@ use std::sync::Arc;
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
 use ironrdp_pdu::PduHint;
-use rand::prelude::RngCore as _;
+use rand::RngCore as _;
 use tracing::{debug, error, info, trace};
 
 use super::{custom_err, general_err, legacy, ConnectorError, ConnectorErrorExt as _};
