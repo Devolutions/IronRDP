@@ -759,12 +759,7 @@
         class:capturing-inputs={capturingInputs}
         style={wrapperStyle}
     >
-        <div
-            bind:this={screenViewer}
-            class="screen-viewer"
-            style={viewerStyle}
-            onpaste={ffOnPasteHandler}
-        >
+        <div bind:this={screenViewer} class="screen-viewer" style={viewerStyle} onpaste={ffOnPasteHandler}>
             <canvas
                 bind:this={canvas}
                 onmousemove={getMousePos}
