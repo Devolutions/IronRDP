@@ -10,9 +10,6 @@
 #![warn(clippy::ptr_cast_constness)]
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-extern crate tracing;
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod nix;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use nix::backend;

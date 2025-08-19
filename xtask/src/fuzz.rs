@@ -1,5 +1,4 @@
 use crate::prelude::*;
-use crate::windows_skip;
 // NOTE: cargo-fuzz (libFuzzer) does not support Windows yet (coming soon?)
 
 pub fn corpus_minify(sh: &Shell, target: Option<String>) -> anyhow::Result<()> {

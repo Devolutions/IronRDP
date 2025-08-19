@@ -1,7 +1,6 @@
 use core::fmt;
 
 use crate::prelude::*;
-use crate::trace;
 
 const COV_IGNORE_REGEX: &str =
     r#"(crates/ironrdp-(session|.+generators|.+glutin.+|replay|client|fuzzing|tokio|web|futures|tls)|xtask|testsuite)"#;

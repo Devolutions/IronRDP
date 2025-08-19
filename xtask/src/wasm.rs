@@ -1,5 +1,5 @@
+use crate::local_bin;
 use crate::prelude::*;
-use crate::{local_bin, trace};
 
 pub fn check(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("WASM-CHECK");
