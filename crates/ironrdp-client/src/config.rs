@@ -325,7 +325,7 @@ impl Config {
                 gw_endpoint: gw_addr,
                 gw_user: String::new(),
                 gw_pass: String::new(),
-                server: String::new(), // TODO non-standard port? also dont use here?
+                server: String::new(), // TODO: non-standard port? also dont use here?
             });
         }
 

@@ -1,8 +1,11 @@
-//! [MS-TSGU] https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
-//! * This implements a MVP (in terms of recentness) state needed to connect through microsoft rdp gateway.
-//! * This only supports the HTTPS protocol with Websocket (and not the legacy HTTP, HTTP-RPC or UDP protocols).
-//! * This does not implement reconnection/reauthentication.
-//! * This only supports basic auth.
+#![cfg_attr(doc, doc = include_str!("../README.md"))]
+#![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
+
+#[macro_use]
+mod macros;
+
+mod proto;
+
 use core::fmt;
 use core::fmt::Display;
 use core::pin::Pin;
@@ -22,17 +25,16 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
-use tokio_tungstenite::tungstenite::http::{self};
+use tokio_tungstenite::tungstenite::http;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+use tokio_util::sync::PollSender;
 
-mod proto;
-use proto::{
+use self::proto::{
     ChannelPkt, ChannelResp, DataPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy, KeepalivePkt, PktHdr, PktTy,
     TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
 };
-use tokio_util::sync::PollSender;
 
 #[derive(Clone, Debug)]
 pub struct GwConnectTarget {
@@ -50,9 +52,10 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 pub enum GwErrorKind {
     InvalidGwTarget,
     Connect,
-    PacketEOF,
+    PacketEof,
     UnsupportedFeature,
     Custom,
+    Encode,
     Decode,
 }
 
@@ -74,26 +77,19 @@ impl GwErrorExt for ironrdp_error::Error<GwErrorKind> {
 impl Display for GwErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let x = match self {
-            GwErrorKind::InvalidGwTarget => "Invalid GW Target",
-            GwErrorKind::Connect => "Connection error",
-            GwErrorKind::PacketEOF => "PacketEOF",
-            GwErrorKind::UnsupportedFeature => "Unsupported feature",
-            GwErrorKind::Custom => "Custom",
-            GwErrorKind::Decode => "Decode",
+            GwErrorKind::InvalidGwTarget => "invalid GW Target",
+            GwErrorKind::Connect => "connection error",
+            GwErrorKind::PacketEof => "PacketEOF",
+            GwErrorKind::UnsupportedFeature => "unsupported feature",
+            GwErrorKind::Custom => "custom",
+            GwErrorKind::Encode => "encode",
+            GwErrorKind::Decode => "decode",
         };
         f.write_str(x)
     }
 }
 
 impl core::error::Error for GwErrorKind {}
-
-/// Creates a `ConnectorError` with `Custom` kind and a source error attached to it
-#[macro_export]
-macro_rules! custom_err {
-    ( $context:expr, $source:expr $(,)? ) => {{
-        <$crate::Error as $crate::GwErrorExt>::custom($context, $source)
-    }};
-}
 
 struct GwConn {
     client_name: String,
@@ -270,13 +266,15 @@ impl GwConn {
         let mut buf = [0u8; 4096];
         let pos = {
             let mut cur = WriteCursor::new(&mut buf);
-            payload.encode(&mut cur).unwrap();
+            payload
+                .encode(&mut cur)
+                .map_err(|e| Error::new("packet encode", GwErrorKind::Encode).with_source(e))?;
             cur.pos()
         };
         self.ws_sink
             .send(Message::Binary(Bytes::copy_from_slice(&buf[..pos])))
             .await
-            .map_err(|e| custom_err!("WS Send error", e))?;
+            .map_err(|e| custom_err!("WebSocket send error", e))?;
         Ok(())
     }
 
@@ -292,7 +290,7 @@ impl GwConn {
 
         let hdr = PktHdr::decode(&mut cur).map_err(|_| Error::new("PktHdr", GwErrorKind::Decode))?;
         if cur.len() != hdr.length as usize - hdr.size() {
-            return Err(Error::new("read_packet", GwErrorKind::PacketEOF));
+            return Err(Error::new("read_packet", GwErrorKind::PacketEof));
         }
 
         Ok((hdr, msg.split_off(cur.pos())))

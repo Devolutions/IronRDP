@@ -256,6 +256,10 @@ State machines to drive an RDP connection acceptance sequence
 
 Extendable skeleton for implementing custom RDP servers.
 
+#### [`crates/ironrdp-mstsgu`](./crates/ironrdp-mstsgu) (@steffengy)
+
+Terminal Services Gateway Server Protocol implementation.
+
 #### [`crates/ironrdp-glutin-renderer`](./crates/ironrdp-glutin-renderer) (no maintainer)
 
 `glutin` primitives for OpenGL rendering.
