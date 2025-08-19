@@ -6,12 +6,6 @@
 #![allow(clippy::cast_sign_loss)]
 #![allow(unused_crate_dependencies)]
 
-#[macro_use]
-extern crate array_concat;
-#[macro_use]
-extern crate lazy_static;
-
-#[macro_use]
 mod macros;
 
 pub mod capsets;

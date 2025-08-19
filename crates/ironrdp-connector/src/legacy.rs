@@ -5,7 +5,7 @@ use ironrdp_pdu::rdp;
 use ironrdp_pdu::rdp::headers::ServerDeactivateAll;
 use ironrdp_pdu::x224::X224;
 
-use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
+use crate::{general_err, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 
 pub fn encode_send_data_request<T>(
     initiator_id: u16,

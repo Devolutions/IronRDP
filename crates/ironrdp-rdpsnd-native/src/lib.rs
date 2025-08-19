@@ -4,7 +4,4 @@
 #[cfg(test)]
 use tracing_subscriber as _;
 
-#[macro_use]
-extern crate tracing;
-
 pub mod cpal;

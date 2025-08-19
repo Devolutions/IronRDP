@@ -8,6 +8,7 @@ use ironrdp_pdu::rdp::vc::dvc::gfx::{
     PixelFormat, Point, QuantQuality, QueueDepth, ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu,
     SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu, WireToSurface2Pdu,
 };
+use lazy_static::lazy_static;
 
 pub const WIRE_TO_SURFACE_1_BUFFER: [u8; 218] = [
     0x00, 0x00, 0x08, 0x00, 0x20, 0xa5, 0x03, 0xde, 0x02, 0xab, 0x03, 0xe7, 0x02, 0xc9, 0x00, 0x00, 0x00, 0x01, 0x0e,

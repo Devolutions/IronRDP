@@ -1,14 +1,12 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-#[macro_use]
-extern crate tracing;
-
 use ironrdp_async::{single_sequence_step, AsyncNetworkClient, Framed, FramedRead, FramedWrite, StreamWrapper};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
 use ironrdp_connector::{custom_err, general_err, ConnectorResult, ServerName};
 use ironrdp_core::WriteBuf;
+use tracing::{debug, instrument, trace};
 
 mod channel_connection;
 mod connection;

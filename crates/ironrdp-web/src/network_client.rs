@@ -5,6 +5,7 @@ use ironrdp::connector::sspi::generator::NetworkRequest;
 use ironrdp::connector::sspi::network_client::NetworkProtocol;
 use ironrdp::connector::{custom_err, reason_err, ConnectorResult};
 use ironrdp_futures::AsyncNetworkClient;
+use tracing::debug;
 
 #[derive(Debug)]
 pub(crate) struct WasmNetworkClient;

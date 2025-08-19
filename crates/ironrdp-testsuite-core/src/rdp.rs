@@ -1,3 +1,4 @@
+use array_concat::{concat_arrays, concat_arrays_size};
 use ironrdp_pdu::gcc;
 use ironrdp_pdu::rdp::finalization_messages::{
     ControlAction, ControlPdu, FontPdu, MonitorLayoutPdu, SequenceFlags, SynchronizePdu,
@@ -11,6 +12,7 @@ use ironrdp_pdu::rdp::server_license::{
     PreambleType, PreambleVersion,
 };
 use ironrdp_pdu::rdp::{client_info, ClientInfoPdu};
+use lazy_static::lazy_static;
 
 use crate::capsets::{
     CLIENT_DEMAND_ACTIVE, CLIENT_DEMAND_ACTIVE_BUFFER, SERVER_DEMAND_ACTIVE, SERVER_DEMAND_ACTIVE_BUFFER,

@@ -4,10 +4,6 @@
 
 pub use {tokio, tokio_rustls};
 
-#[macro_use]
-extern crate tracing;
-
-#[macro_use]
 mod macros;
 
 mod builder;

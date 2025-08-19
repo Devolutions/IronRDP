@@ -1,4 +1,5 @@
 use ironrdp_pdu::gcc::{MultiTransportChannelData, MultiTransportFlags};
+use lazy_static::lazy_static;
 
 pub const SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER: [u8; 4] = [0x01, 0x03, 0x00, 0x00];
 

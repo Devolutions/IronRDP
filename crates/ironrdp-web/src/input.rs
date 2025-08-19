@@ -1,5 +1,6 @@
 use ironrdp::input::{MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use smallvec::SmallVec;
+use tracing::warn;
 
 #[derive(Clone)]
 pub(crate) struct DeviceEvent(Operation);

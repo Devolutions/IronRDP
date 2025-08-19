@@ -3,7 +3,6 @@
 #![allow(clippy::unwrap_used)]
 #![allow(unreachable_pub)]
 
-#[macro_use]
 mod macros;
 
 mod bin_install;
@@ -24,6 +23,7 @@ use std::path::{Path, PathBuf};
 use xshell::Shell;
 
 use crate::cli::Action;
+use crate::macros::trace;
 
 #[cfg(target_os = "windows")]
 pub const LOCAL_CARGO_ROOT: &str = ".cargo\\local_root\\";

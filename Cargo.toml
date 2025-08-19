@@ -65,6 +65,7 @@ unused_lifetimes = "warn"
 unused_qualifications = "warn"
 keyword_idents = "warn"
 noop_method_call = "warn"
+macro_use_extern_crate = "warn"
 # missing_docs = "warn" # TODO: NOTE(@CBenoit): we probably want to ensure this in core tier crates only
 
 # == Compile-time / optimization == #

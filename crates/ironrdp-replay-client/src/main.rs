@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate tracing;
-
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::PathBuf;

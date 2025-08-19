@@ -7,6 +7,8 @@ macro_rules! windows_skip {
     };
 }
 
+pub(crate) use windows_skip;
+
 macro_rules! trace {
     ($($arg:tt)*) => {{
         if $crate::is_verbose() {
@@ -15,6 +17,8 @@ macro_rules! trace {
     }};
 }
 
+pub(crate) use trace;
+
 macro_rules! run_cmd_in {
     ($sh:expr, $prefix:expr, $args:literal) => {{
         let _guard = $sh.push_dir($prefix);
@@ -22,3 +26,5 @@ macro_rules! run_cmd_in {
         ::xshell::cmd!($sh, $args).run()
     }};
 }
+
+pub(crate) use run_cmd_in;

@@ -6,6 +6,7 @@ use ironrdp_connector::{
     ServerName, State as _,
 };
 use ironrdp_core::WriteBuf;
+use tracing::{debug, info, instrument, trace};
 
 use crate::framed::{Framed, FramedRead, FramedWrite};
 use crate::{single_sequence_step, AsyncNetworkClient};

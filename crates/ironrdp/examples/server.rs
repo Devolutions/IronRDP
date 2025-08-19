@@ -3,9 +3,6 @@
 #![allow(unused_crate_dependencies)] // False positives because there are both a library and a binary.
 #![allow(clippy::print_stdout)]
 
-#[macro_use]
-extern crate tracing;
-
 use core::net::SocketAddr;
 use core::num::{NonZero, NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
@@ -25,6 +22,7 @@ use ironrdp::server::{
 };
 use ironrdp_cliprdr_native::StubCliprdrBackend;
 use rand::prelude::*;
+use tracing::{debug, info, warn};
 
 const HELP: &str = "\
 USAGE:

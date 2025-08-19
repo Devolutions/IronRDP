@@ -1,4 +1,5 @@
 use ironrdp_pdu::gcc::{ClientClusterData, RedirectionFlags, RedirectionVersion};
+use lazy_static::lazy_static;
 
 pub const CLUSTER_DATA_BUFFER: [u8; 8] = [0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 

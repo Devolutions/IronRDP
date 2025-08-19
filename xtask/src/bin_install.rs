@@ -1,5 +1,6 @@
 use xshell::{cmd, Shell};
 
+use crate::macros::trace;
 use crate::{local_bin, CARGO, LOCAL_CARGO_ROOT};
 
 pub struct CargoPackage {

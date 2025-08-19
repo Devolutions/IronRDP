@@ -8,13 +8,14 @@ use ironrdp_pdu::rdp::client_info::{OptionalSystemTime, TimezoneInfo};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
+use tracing::{debug, error, info, warn};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
-    encode_x224_packet, Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult,
-    DesktopSize, NegotiationFailure, Sequence, State, Written,
+    encode_x224_packet, general_err, reason_err, Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind,
+    ConnectorResult, DesktopSize, NegotiationFailure, Sequence, State, Written,
 };
 
 #[derive(Debug)]

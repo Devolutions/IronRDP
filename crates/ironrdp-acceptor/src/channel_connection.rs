@@ -7,6 +7,7 @@ use ironrdp_core::WriteBuf;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{self as pdu};
 use pdu::mcs;
+use tracing::debug;
 
 #[derive(Debug)]
 pub struct ChannelConnectionSequence {

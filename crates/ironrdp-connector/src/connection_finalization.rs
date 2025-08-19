@@ -5,8 +5,9 @@ use ironrdp_pdu::rdp::capability_sets::SERVER_CHANNEL_ID;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::{finalization_messages, server_error_info};
 use ironrdp_pdu::PduHint;
+use tracing::{debug, warn};
 
-use crate::{legacy, ConnectorResult, Sequence, State, Written};
+use crate::{general_err, legacy, reason_err, ConnectorResult, Sequence, State, Written};
 
 #[derive(Default, Debug, Clone)]
 #[non_exhaustive]

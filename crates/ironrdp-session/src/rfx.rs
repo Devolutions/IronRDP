@@ -7,9 +7,10 @@ use ironrdp_graphics::{dwt, quantization, rlgr, subband_reconstruction};
 use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, Quant, RfxRectangle, Tile};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::{decode_cursor, Decode as _, ReadCursor};
+use tracing::{instrument, trace};
 
 use crate::image::DecodedImage;
-use crate::SessionResult;
+use crate::{custom_err, general_err, reason_err, SessionResult};
 
 const TILE_SIZE: u16 = 64;
 

@@ -11,6 +11,7 @@ use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::{mcs, Action};
 use ironrdp_svc::{SvcMessage, SvcProcessor, SvcProcessorMessages};
+use tracing::debug;
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;

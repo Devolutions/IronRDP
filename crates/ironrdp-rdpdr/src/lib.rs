@@ -6,9 +6,6 @@
 #![allow(clippy::cast_possible_wrap)] // FIXME: remove
 #![allow(clippy::cast_sign_loss)] // FIXME: remove
 
-#[macro_use]
-extern crate tracing;
-
 use ironrdp_core::{decode_cursor, impl_as_any, ReadCursor};
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode_err, pdu_other_err, PduResult};
@@ -20,6 +17,7 @@ use pdu::efs::{
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::RdpdrPdu;
+use tracing::{debug, trace, warn};
 
 pub mod backend;
 pub mod pdu;

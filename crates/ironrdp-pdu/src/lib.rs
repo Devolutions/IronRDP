@@ -12,7 +12,6 @@ use core::fmt;
 // use ironrdp_core::{unexpected_message_type_err, DecodeResult, EncodeResult, ReadCursor};
 use ironrdp_error::Source;
 
-#[macro_use]
 mod macros;
 
 pub mod codecs;

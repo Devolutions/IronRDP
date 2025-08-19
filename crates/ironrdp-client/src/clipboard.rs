@@ -1,5 +1,6 @@
 use ironrdp::cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use tokio::sync::mpsc;
+use tracing::error;
 
 use crate::rdp::RdpInputEvent;
 

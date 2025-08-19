@@ -6,8 +6,9 @@ use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelForma
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
+use tracing::trace;
 
-use crate::SessionResult;
+use crate::{custom_err, SessionResult};
 
 const TILE_SIZE: u16 = 64;
 

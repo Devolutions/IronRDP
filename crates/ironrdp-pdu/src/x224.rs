@@ -6,7 +6,7 @@ use ironrdp_core::{
 
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
-use crate::Pdu;
+use crate::{impl_x224_pdu_borrowing, Pdu};
 
 pub trait X224Pdu<'de>: Sized {
     const X224_NAME: &'static str;

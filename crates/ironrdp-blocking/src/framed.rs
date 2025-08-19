@@ -2,6 +2,7 @@ use std::io::{self, Read, Write};
 
 use bytes::{Bytes, BytesMut};
 use ironrdp_pdu::PduHint;
+use tracing::debug;
 
 pub struct Framed<S> {
     stream: S,

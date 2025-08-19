@@ -7,8 +7,9 @@ use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{client_encode_svc_messages, StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
+use tracing::debug;
 
-use crate::{SessionError, SessionErrorExt as _, SessionResult};
+use crate::{reason_err, SessionError, SessionErrorExt as _, SessionResult};
 
 /// X224 Processor output
 #[derive(Debug, Clone)]

@@ -2,10 +2,6 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // FIXME: remove
 
-#[macro_use]
-extern crate tracing;
-
-#[macro_use]
 mod macros;
 
 pub mod fast_path;

@@ -4,6 +4,7 @@ use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tokio::sync::{mpsc, Notify};
+use tracing::{error, info};
 
 use crate::error::DvcPipeProxyError;
 use crate::message::RawDataDvcMessage;

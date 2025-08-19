@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate tracing;
-
 mod config;
 
 use std::sync::mpsc::sync_channel;

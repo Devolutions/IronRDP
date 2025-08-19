@@ -5,8 +5,5 @@
 #![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::cast_sign_loss)]
 
-#[macro_use]
-extern crate arbitrary;
-
 pub mod generators;
 pub mod oracles;

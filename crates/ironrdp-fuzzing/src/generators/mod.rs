@@ -8,7 +8,7 @@
 //! wrapper over an external tool, such that the wrapper implements the
 //! `Arbitrary` trait for the wrapped external tool.
 
-#[derive(Arbitrary, Debug)]
+#[derive(arbitrary::Arbitrary, Debug)]
 pub struct BitmapInput<'a> {
     pub src: &'a [u8],
     pub width: u8,
