@@ -3,37 +3,35 @@
 //! * This only supports the HTTPS protocol with Websocket (and not the legacy HTTP, HTTP-RPC or UDP protocols).
 //! * This does not implement reconnection/reauthentication.
 //! * This only supports basic auth.
+use core::fmt;
+use core::fmt::Display;
 use core::pin::Pin;
+use core::task::Poll;
 use core::time::Duration;
-use core::{fmt, fmt::Display, task::Poll};
 use std::io;
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    FutureExt as _, SinkExt as _, StreamExt as _,
-};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{FutureExt as _, SinkExt as _, StreamExt as _};
 use hyper::body::Bytes;
 use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor};
 use ironrdp_tls::TlsStream;
 use log::{error, warn};
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::TcpStream,
-    sync::oneshot,
-};
-use tokio_tungstenite::{
-    tungstenite::{
-        handshake::client::generate_key,
-        http::{self},
-        protocol::Role,
-        Message,
-    },
-    WebSocketStream,
-};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
+use tokio::sync::oneshot;
+use tokio_tungstenite::tungstenite::handshake::client::generate_key;
+use tokio_tungstenite::tungstenite::http::{self};
+use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 
 mod proto;
-use proto::*;
+use proto::{
+    ChannelPkt, ChannelResp, DataPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy, KeepalivePkt, PktHdr, PktTy,
+    TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
+};
 use tokio_util::sync::PollSender;
 
 #[derive(Clone, Debug)]
