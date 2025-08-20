@@ -20,7 +20,7 @@ use std::sync::Arc;
 use ironrdp_core::{encode_buf, encode_vec, Encode, WriteBuf};
 use ironrdp_pdu::nego::NegoRequestData;
 use ironrdp_pdu::rdp::capability_sets::{self, BitmapCodecs};
-use ironrdp_pdu::rdp::client_info::PerformanceFlags;
+use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{gcc, x224, PduHint};
 pub use sspi;
@@ -228,6 +228,9 @@ pub struct Config {
     pub performance_flags: PerformanceFlags,
 
     pub license_cache: Option<Arc<dyn LicenseCache>>,
+
+    // For Timezone Redirection to sync the server's timezone with the client's.
+    pub timezone_info: TimezoneInfo,
 
     // FIXME(@CBenoit): these are client-only options, not part of the connector.
     pub enable_server_pointer: bool,

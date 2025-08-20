@@ -302,5 +302,6 @@ fn default_client_config() -> connector::Config {
         enable_server_pointer: true,
         pointer_software_rendering: true,
         performance_flags: Default::default(),
+        timezone_info: Default::default(),
     }
 }

@@ -30,7 +30,7 @@ use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
-use ironrdp_pdu::rdp::client_info::PerformanceFlags;
+use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
 use tracing::{debug, info, trace};
@@ -212,6 +212,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,
+        timezone_info: TimezoneInfo::default(),
     }
 }
 

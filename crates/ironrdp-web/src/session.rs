@@ -23,7 +23,7 @@ use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
-use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp_core::WriteBuf;
@@ -897,6 +897,7 @@ fn build_config(
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,
+        timezone_info: TimezoneInfo::default(),
     }
 }
 

@@ -4,7 +4,6 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use ironrdp_core::{decode, encode_vec, Encode, WriteBuf};
-use ironrdp_pdu::rdp::client_info::{OptionalSystemTime, TimezoneInfo};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
@@ -756,15 +755,7 @@ fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::Cli
             address: client_addr.ip().to_string(),
             dir: config.client_dir.clone(),
             optional_data: ExtendedClientOptionalInfo::builder()
-                .timezone(TimezoneInfo {
-                    bias: 0,
-                    standard_name: String::new(),
-                    standard_date: OptionalSystemTime(None),
-                    standard_bias: 0,
-                    daylight_name: String::new(),
-                    daylight_date: OptionalSystemTime(None),
-                    daylight_bias: 0,
-                })
+                .timezone(config.timezone_info.clone())
                 .session_id(0)
                 .performance_flags(config.performance_flags)
                 .build(),
