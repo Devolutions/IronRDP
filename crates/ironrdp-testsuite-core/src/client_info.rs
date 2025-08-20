@@ -105,7 +105,7 @@ lazy_static::lazy_static! {
             dir: String::from("C:\\depots\\w2k3_1\\termsrv\\newclient\\lib\\win32\\obj\\i386\\mstscax.dll"),
             optional_data: ExtendedClientOptionalInfo::builder()
                 .timezone(TimezoneInfo {
-                    bias: 0x01e0,
+                    bias: 480,
                     standard_name: String::from("Pacific Standard Time"),
                     standard_date: OptionalSystemTime(Some(SystemTime {
                         month: Month::October,
@@ -127,7 +127,7 @@ lazy_static::lazy_static! {
                         second: 0,
                         milliseconds: 0,
                     })),
-                    daylight_bias: 0xffff_ffc4,
+                    daylight_bias: -60,
                 })
                 .session_id(0)
                 .performance_flags(PerformanceFlags::DISABLE_WALLPAPER)

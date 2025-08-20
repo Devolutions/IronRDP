@@ -383,15 +383,20 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
     }
 }
 
+/// [2.2.1.11.1.1.1.1] Time Zone Information (TS_TIME_ZONE_INFORMATION)
+///
+/// The timezone info struct contains client time zone information.
+///
+/// [2.2.1.11.1.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/526ed635-d7a9-4d3c-bbe1-4e3fb17585f4
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimezoneInfo {
-    pub bias: u32,
+    pub bias: i32,
     pub standard_name: String,
     pub standard_date: OptionalSystemTime,
-    pub standard_bias: u32,
+    pub standard_bias: i32,
     pub daylight_name: String,
     pub daylight_date: OptionalSystemTime,
-    pub daylight_bias: u32,
+    pub daylight_bias: i32,
 }
 
 impl TimezoneInfo {
@@ -410,21 +415,21 @@ impl Encode for TimezoneInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(self.bias);
+        dst.write_i32(self.bias);
 
         let mut standard_name = utils::to_utf16_bytes(self.standard_name.as_str());
         standard_name.resize(TIMEZONE_INFO_NAME_LEN, 0);
         dst.write_slice(&standard_name);
 
         self.standard_date.encode(dst)?;
-        dst.write_u32(self.standard_bias);
+        dst.write_i32(self.standard_bias);
 
         let mut daylight_name = utils::to_utf16_bytes(self.daylight_name.as_str());
         daylight_name.resize(TIMEZONE_INFO_NAME_LEN, 0);
         dst.write_slice(&daylight_name);
 
         self.daylight_date.encode(dst)?;
-        dst.write_u32(self.daylight_bias);
+        dst.write_i32(self.daylight_bias);
 
         Ok(())
     }
@@ -442,14 +447,14 @@ impl<'de> Decode<'de> for TimezoneInfo {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let bias = src.read_u32();
+        let bias = src.read_i32();
         let standard_name = utils::decode_string(src.read_slice(TIMEZONE_INFO_NAME_LEN), CharacterSet::Unicode, false)?;
         let standard_date = OptionalSystemTime::decode(src)?;
-        let standard_bias = src.read_u32();
+        let standard_bias = src.read_i32();
 
         let daylight_name = utils::decode_string(src.read_slice(TIMEZONE_INFO_NAME_LEN), CharacterSet::Unicode, false)?;
         let daylight_date = OptionalSystemTime::decode(src)?;
-        let daylight_bias = src.read_u32();
+        let daylight_bias = src.read_i32();
 
         Ok(Self {
             bias,
@@ -460,6 +465,20 @@ impl<'de> Decode<'de> for TimezoneInfo {
             daylight_date,
             daylight_bias,
         })
+    }
+}
+
+impl Default for TimezoneInfo {
+    fn default() -> Self {
+        Self {
+            bias: 0,
+            standard_name: String::new(),
+            standard_date: OptionalSystemTime(None),
+            standard_bias: 0,
+            daylight_name: String::new(),
+            daylight_date: OptionalSystemTime(None),
+            daylight_bias: 0,
+        }
     }
 }
 
