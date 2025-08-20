@@ -2,7 +2,6 @@ use ironrdp_core::{decode, encode};
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::geometry::ExclusiveRectangle;
 
 const FRAME_MARKER_BUFFER: [u8; 8] = [0x4, 0x0, 0x0, 0x0, 0x5, 0x0, 0x0, 0x0];
 

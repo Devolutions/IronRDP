@@ -1,5 +1,4 @@
 use core::fmt::Debug;
-use core::mem::size_of;
 use core::ops::Add;
 
 use byteorder::{LittleEndian, ReadBytesExt as _};

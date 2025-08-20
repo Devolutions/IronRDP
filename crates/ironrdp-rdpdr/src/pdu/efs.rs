@@ -4,7 +4,6 @@
 
 use core::fmt;
 use core::fmt::{Debug, Display};
-use core::mem::size_of;
 
 use bitflags::bitflags;
 use ironrdp_core::{

@@ -18,7 +18,7 @@ pub fn pdu_decode(data: &[u8]) {
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::{capability_sets, headers, server_error_info, server_license, vc, ClientInfoPdu};
     use ironrdp_pdu::x224::X224;
-    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, ironrdp_core, pcb, surface_commands};
+    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
 
     let _ = decode::<X224<ConnectionRequest>>(data);
     let _ = decode::<X224<ConnectionConfirm>>(data);

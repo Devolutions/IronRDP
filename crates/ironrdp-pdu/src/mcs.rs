@@ -939,16 +939,15 @@ pub use legacy::McsError;
 mod legacy {
     use std::io;
 
-    use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
+    use ironrdp_core::{Decode, DecodeResult, Encode};
     use thiserror::Error;
 
     use super::{
         cast_length, ensure_size, ConnectInitial, ConnectResponse, DomainParameters, PduError, ReadCursor, WriteCursor,
         RESULT_ENUM_LENGTH,
     };
-    use crate::ber;
-    use crate::gcc::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
-    use crate::gcc::GccError;
+    use crate::gcc::{ConferenceCreateRequest, ConferenceCreateResponse, GccError};
+    use crate::{ber, EncodeResult};
 
     // impl<'de> McsPdu<'de> for ConnectInitial {
     //     const MCS_NAME: &'static str = "DisconnectProviderUltimatum";

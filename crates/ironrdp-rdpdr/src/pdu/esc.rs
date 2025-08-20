@@ -5,8 +5,6 @@
 pub mod ndr;
 pub mod rpce;
 
-use core::mem::size_of;
-
 use bitflags::bitflags;
 use ironrdp_core::{
     cast_length, ensure_size, invalid_field_err, other_err, DecodeError, DecodeResult, EncodeResult, ReadCursor,

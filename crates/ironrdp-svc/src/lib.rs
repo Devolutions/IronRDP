@@ -5,7 +5,6 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::any::TypeId;
 use core::fmt;

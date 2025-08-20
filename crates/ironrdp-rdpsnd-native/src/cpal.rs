@@ -1,4 +1,3 @@
-use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;

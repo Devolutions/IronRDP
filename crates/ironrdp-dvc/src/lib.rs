@@ -18,7 +18,7 @@ use crate::alloc::borrow::ToOwned as _;
 pub use ironrdp_pdu;
 use ironrdp_core::{assert_obj_safe, cast_length, encode_vec, other_err, AsAny, Encode, EncodeResult};
 use ironrdp_pdu::{decode_err, pdu_other_err, PduResult};
-use ironrdp_svc::{self, SvcMessage};
+use ironrdp_svc::SvcMessage;
 
 mod complete_data;
 use complete_data::CompleteData;

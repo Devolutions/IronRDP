@@ -2,8 +2,6 @@
 //!
 //! [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c15
 
-use core::mem::size_of;
-
 use ironrdp_core::{
     cast_length, ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
 };

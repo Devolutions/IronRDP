@@ -2,8 +2,7 @@ use ironrdp_core::{decode, encode_vec};
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
-use crate::rdp::server_license::{LicensePdu, PreambleFlags, PreambleVersion};
+use crate::rdp::server_license::LicensePdu;
 
 const HEADER_MESSAGE_BUFFER: [u8; 8] = [0x80, 0x00, 0x00, 0x00, 0xFF, 0x03, 0x14, 0x00];
 
