@@ -1,4 +1,4 @@
-use ironrdp_core::{decode, encode_vec, DecodeErrorKind, Encode as _};
+use ironrdp_core::{decode, encode_vec, DecodeErrorKind};
 use lazy_static::lazy_static;
 
 use super::*;

@@ -25,9 +25,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
-use tokio_tungstenite::tungstenite::http;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{http, Message};
 use tokio_tungstenite::WebSocketStream;
 use tokio_util::sync::PollSender;
 

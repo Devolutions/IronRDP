@@ -2,9 +2,7 @@ use core::cmp::min;
 use std::io;
 
 use bitvec::field::BitField as _;
-use bitvec::order::Msb0;
 use bitvec::prelude::*;
-use bitvec::slice::BitSlice;
 use ironrdp_pdu::codecs::rfx::EntropyAlgorithm;
 
 use crate::utils::Bits;
