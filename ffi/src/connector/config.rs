@@ -125,9 +125,9 @@ pub mod ffi {
             self.performance_flags = Some(performance_flags.0);
         }
 
-        pub fn set_timezone_info(&mut self, timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>) {
-            self.timezone_info = timezone_info;
-        }
+        // pub fn set_timezone_info(&mut self, timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>) {
+        //     self.timezone_info = timezone_info;
+        // }
 
         pub fn set_bitmap_config(&mut self, bitmap: &BitmapConfig) {
             self.bitmap = Some(bitmap.0.clone());
