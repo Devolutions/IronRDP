@@ -343,7 +343,7 @@ export class RemoteDesktopService {
                 }
 
                 const keyCode = scanCode(evt.key);
-                const isUnicodeCharacter = Number.isNaN(keyCode) && evt.key.length === 1;
+                const isUnicodeCharacter = Number.isNaN(keyCode) && evt.key.length === 1 && !isModifierKey;
 
                 if (isUnicodeCharacter && sendAsUnicode) {
                     this.doTransactionFromDeviceEvents([unicodeEvent(evt.key)]);
