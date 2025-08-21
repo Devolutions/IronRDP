@@ -69,6 +69,7 @@ pub(crate) unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> Wi
 
     // We successfully transferred ownership of the data to the clipboard, we don't need to
     // call drop on handle
+    #[expect(clippy::mem_forget)]
     core::mem::forget(global_data);
 
     Ok(())

@@ -102,6 +102,7 @@ lossy_float_literal = "warn"
 as_underscore = "warn"
 # TODO: unwrap_used = "warn" # Let’s either handle `None`, `Err` or use `expect` to give a reason.
 large_stack_frames = "warn"
+mem_forget = "warn"
 
 # == Style, readability == #
 semicolon_outside_block = "warn" # With semicolon-outside-block-ignore-multiline = true
