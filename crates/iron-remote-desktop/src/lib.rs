@@ -14,7 +14,7 @@ pub use cursor::CursorStyle;
 pub use desktop_size::DesktopSize;
 pub use error::{IronError, IronErrorKind};
 pub use extension::Extension;
-pub use input::{DeviceEvent, InputTransaction};
+pub use input::{DeviceEvent, InputTransaction, RotationUnit};
 pub use session::{Session, SessionBuilder, SessionTerminationInfo};
 
 pub trait RemoteDesktopApi {
@@ -329,11 +329,12 @@ macro_rules! make_bridge {
             }
 
             #[wasm_bindgen(js_name = wheelRotations)]
-            pub fn wheel_rotations(vertical: bool, rotation_units: i16) -> Self {
+            pub fn wheel_rotations(vertical: bool, rotation_amount: i16, rotation_unit: $crate::RotationUnit) -> Self {
                 Self(
                     <<$api as $crate::RemoteDesktopApi>::DeviceEvent as $crate::DeviceEvent>::wheel_rotations(
                         vertical,
-                        rotation_units,
+                        rotation_amount,
+                        rotation_unit,
                     ),
                 )
             }
