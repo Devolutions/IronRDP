@@ -1089,9 +1089,32 @@ where
                     server_cert_chain,
                     server_addr: _,
                 } => (x224_connection_response, server_cert_chain),
-                ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
+                ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error) => {
                     return Err(
                         IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
+                            .with_kind(IronErrorKind::RDCleanPath),
+                    );
+                }
+                ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
+                    x224_connection_response,
+                } => {
+                    // Try to decode as X.224 Connection Confirm to extract negotiation failure details.
+                    if let Ok(x224_confirm) = ironrdp_core::decode::<
+                        ironrdp::pdu::x224::X224<ironrdp::pdu::nego::ConnectionConfirm>,
+                    >(&x224_connection_response)
+                    {
+                        if let ironrdp::pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0 {
+                            // Convert to negotiation failure instead of generic RDCleanPath error.
+                            let negotiation_failure = connector::NegotiationFailure::from(code);
+                            return Err(IronError::from(
+                                anyhow::Error::new(negotiation_failure).context("RDP negotiation failed"),
+                            )
+                            .with_kind(IronErrorKind::NegotiationFailure));
+                        }
+                    }
+                    // Fallback to generic error if we can't decode the negotiation failure.
+                    return Err(
+                        IronError::from(anyhow::Error::msg("received an RDCleanPath negotiation error"))
                             .with_kind(IronErrorKind::RDCleanPath),
                     );
                 }

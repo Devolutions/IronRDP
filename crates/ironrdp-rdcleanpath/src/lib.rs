@@ -13,6 +13,7 @@ pub const BASE_VERSION: u64 = 3389;
 pub const VERSION_1: u64 = BASE_VERSION + 1;
 
 pub const GENERAL_ERROR_CODE: u16 = 1;
+pub const NEGOTIATION_ERROR_CODE: u16 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, der::Sequence)]
 #[asn1(tag_mode = "EXPLICIT")]
@@ -258,6 +259,34 @@ impl RDCleanPathPdu {
         }
     }
 
+    /// Create a negotiation error response that includes the server's X.224 negotiation response.
+    ///
+    /// This allows clients to extract specific negotiation failure details
+    /// (like "CredSSP required") from the server's original response.
+    ///
+    /// # Example
+    /// ```rust
+    /// use ironrdp_rdcleanpath::RDCleanPathPdu;
+    ///
+    /// // Server rejected connection with "CredSSP required" - preserve this info
+    /// let server_response = vec![/* X.224 Connection Confirm with failure code */];
+    /// let error_pdu = RDCleanPathPdu::new_negotiation_error(server_response)?;
+    /// # Ok::<(), der::Error>(())
+    /// ```
+    pub fn new_negotiation_error(server_x224_response: Vec<u8>) -> der::Result<Self> {
+        Ok(Self {
+            version: VERSION_1,
+            error: Some(RDCleanPathErr {
+                error_code: NEGOTIATION_ERROR_CODE,
+                http_status_code: None,
+                wsa_last_error: None,
+                tls_alert_code: None,
+            }),
+            x224_connection_pdu: Some(OctetString::new(server_x224_response)?),
+            ..Self::default()
+        })
+    }
+
     pub fn to_der(&self) -> der::Result<Vec<u8>> {
         der::Encode::to_der(self)
     }
@@ -278,7 +307,10 @@ pub enum RDCleanPath {
         server_cert_chain: Vec<OctetString>,
         server_addr: String,
     },
-    Err(RDCleanPathErr),
+    GeneralErr(RDCleanPathErr),
+    NegotiationErr {
+        x224_connection_response: Vec<u8>,
+    },
 }
 
 impl RDCleanPath {
@@ -323,7 +355,13 @@ impl TryFrom<RDCleanPathPdu> for RDCleanPath {
                 server_addr,
             }
         } else {
-            Self::Err(pdu.error.ok_or(MissingRDCleanPathField("error"))?)
+            let error = pdu.error.ok_or(MissingRDCleanPathField("error"))?;
+            match (error.error_code, pdu.x224_connection_pdu) {
+                (NEGOTIATION_ERROR_CODE, Some(x224_pdu)) => Self::NegotiationErr {
+                    x224_connection_response: x224_pdu.as_bytes().to_vec(),
+                },
+                _ => Self::GeneralErr(error),
+            }
         };
 
         Ok(rdcleanpath)
@@ -359,9 +397,22 @@ impl From<RDCleanPath> for RDCleanPathPdu {
                 server_addr: Some(server_addr),
                 ..Default::default()
             },
-            RDCleanPath::Err(error) => Self {
+            RDCleanPath::GeneralErr(error) => Self {
                 version: VERSION_1,
                 error: Some(error),
+                ..Default::default()
+            },
+            RDCleanPath::NegotiationErr {
+                x224_connection_response,
+            } => Self {
+                version: VERSION_1,
+                error: Some(RDCleanPathErr {
+                    error_code: NEGOTIATION_ERROR_CODE,
+                    http_status_code: None,
+                    wsa_last_error: None,
+                    tls_alert_code: None,
+                }),
+                x224_connection_pdu: Some(OctetString::new(x224_connection_response).unwrap()),
                 ..Default::default()
             },
         }
