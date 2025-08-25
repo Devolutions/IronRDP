@@ -354,7 +354,7 @@ impl Sequence for ClientConnector {
                 if client_gcc_blocks.security == gcc::ClientSecurityData::no_security()
                     && server_gcc_blocks.security != gcc::ServerSecurityData::no_security()
                 {
-                    return Err(general_err!("can’t satisfy server security settings"));
+                    return Err(general_err!("can't satisfy server security settings"));
                 }
 
                 if server_gcc_blocks.message_channel.is_some() {

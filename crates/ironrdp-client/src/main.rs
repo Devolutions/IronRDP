@@ -94,7 +94,7 @@ fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {
             .create(true)
             .append(true)
             .open(log_file)
-            .with_context(|| format!("couldn’t open {log_file}"))?;
+            .with_context(|| format!("couldn't open {log_file}"))?;
         let fmt_layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .with_writer(file)

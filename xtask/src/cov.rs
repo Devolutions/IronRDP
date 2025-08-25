@@ -92,7 +92,7 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
     match std::env::var_os("GH_TOKEN") {
         Some(value) if value.is_empty() => trace!("WARNING: `GH_TOKEN` environment variable is empty"),
         Some(value) if value.is_ascii() => trace!("`GH_TOKEN` environment variable appears to be set properly"),
-        Some(_) => trace!("WARNING: `GH_TOKEN` environment variable’s value is not an ASCII string"),
+        Some(_) => trace!("WARNING: `GH_TOKEN` environment variable's value is not an ASCII string"),
         None => trace!("WARNING: `GH_TOKEN` environment variable is not set"),
     }
 
@@ -151,7 +151,7 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
             .ignore_stdout()
             .run()?;
     } else {
-        println!("Coverage didn’t change, skip GitHub comment");
+        println!("Coverage didn't change, skip GitHub comment");
     }
 
     Ok(())

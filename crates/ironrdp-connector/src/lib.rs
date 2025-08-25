@@ -280,7 +280,7 @@ impl Written {
     pub fn from_size(value: usize) -> ConnectorResult<Self> {
         core::num::NonZeroUsize::new(value)
             .map(Self::Size)
-            .ok_or_else(|| ConnectorError::general("invalid written length (can’t be zero)"))
+            .ok_or_else(|| ConnectorError::general("invalid written length (can't be zero)"))
     }
 
     #[inline]
