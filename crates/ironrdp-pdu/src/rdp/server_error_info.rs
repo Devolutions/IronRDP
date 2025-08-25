@@ -149,7 +149,7 @@ impl ProtocolIndependentCode {
             Self::ServerDeniedConnection => "The server denied the connection",
             Self::ServerInsufficientPrivileges => "The user cannot connect to the server due to insufficient access privileges",
             Self::ServerFreshCredentialsRequired => "The server does not accept saved user credentials and requires that the user enter their credentials for each connection",
-            Self::RpcInitiatedDisconnectByuser => "The disconnection was initiated by an administrative tool on the server running in the user’s session",
+            Self::RpcInitiatedDisconnectByuser => "The disconnection was initiated by an administrative tool on the server running in the user's session",
             Self::LogoffByUser => "The disconnection was initiated by the user logging off his or her session on the server",
             Self::CloseStackOnDriverNotReady => "The display driver in the remote session did not report any status within the time allotted for startup",
             Self::ServerDwmCrash => "The DWM process running in the remote session terminated unexpectedly",
