@@ -555,6 +555,10 @@ pub(crate) mod legacy {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::needless_raw_strings,
+    reason = "the lint is disable to not interfere with expect! macro"
+)]
 mod tests {
     use expect_test::expect;
 

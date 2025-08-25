@@ -390,6 +390,10 @@ pub(crate) fn compress_8bpp_plane(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::needless_raw_strings,
+    reason = "the lint is disable to not interfere with expect! macro"
+)]
 mod tests {
     use expect_test::expect;
 
