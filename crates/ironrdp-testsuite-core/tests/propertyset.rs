@@ -1,7 +1,7 @@
 use expect_test::expect;
 use ironrdp_rdpfile::ParseResult;
 
-const RDP_FILE_SAMPLE: &str = r#"remoteapplicationmode:i:0
+const RDP_FILE_SAMPLE: &str = "remoteapplicationmode:i:0
 server port:i:3389
 promptcredentialonce:i:1
 full address:s:192.168.56.101
@@ -11,11 +11,11 @@ alternate full address:s:some.alternateaddress.ninja
 username:s:David
 ClearTextPassword:s:Devolutions123!
 MalformedLine:s
-UnknownType:z:10293"#;
+UnknownType:z:10293";
 
-const RDP_FILE_SAMPLE_2: &str = r#"remoteapplicationmode:i:50
+const RDP_FILE_SAMPLE_2: &str = "remoteapplicationmode:i:50
 server port:i:4000
-full address:s:192.168.56.2"#;
+full address:s:192.168.56.2";
 
 #[test]
 fn parse_file() {

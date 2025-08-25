@@ -166,6 +166,10 @@ impl Encode for BitmapStream<'_> {
 
 #[cfg(test)]
 #[cfg(feature = "alloc")]
+#[expect(
+    clippy::needless_raw_strings,
+    reason = "the lint is disable to not interfere with expect! macro"
+)]
 mod tests {
     use expect_test::{expect, Expect};
 

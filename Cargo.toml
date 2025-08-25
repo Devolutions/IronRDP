@@ -104,6 +104,7 @@ as_underscore = "warn"
 large_stack_frames = "warn"
 mem_forget = "warn"
 mixed_read_write_in_expression = "warn"
+needless_raw_strings = "warn"
 
 # == Style, readability == #
 semicolon_outside_block = "warn" # With semicolon-outside-block-ignore-multiline = true

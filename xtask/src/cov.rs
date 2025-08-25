@@ -3,7 +3,7 @@ use core::fmt;
 use crate::prelude::*;
 
 const COV_IGNORE_REGEX: &str =
-    r#"(crates/ironrdp-(session|.+generators|.+glutin.+|replay|client|fuzzing|tokio|web|futures|tls)|xtask|testsuite)"#;
+    "(crates/ironrdp-(session|.+generators|.+glutin.+|replay|client|fuzzing|tokio|web|futures|tls)|xtask|testsuite)";
 
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("COV-INSTALL");
