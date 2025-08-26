@@ -14,7 +14,7 @@ use ironrdp_cliprdr::pdu::{
 use tracing::error;
 use windows::core::{s, Error};
 pub use windows::Win32::Foundation::HWND;
-use windows::Win32::Foundation::{FALSE, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{E_ACCESSDENIED, FALSE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
@@ -91,7 +91,11 @@ impl core::error::Error for WinCliprdrError {
 
 impl From<Error> for WinCliprdrError {
     fn from(err: Error) -> Self {
-        WinCliprdrError::WinAPI(err)
+        if err.code() == E_ACCESSDENIED {
+            WinCliprdrError::ClipboardAccessDenied
+        } else {
+            WinCliprdrError::WinAPI(err)
+        }
     }
 }
 
