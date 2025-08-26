@@ -5,6 +5,7 @@ use ironrdp_pdu::pointer::{
     PointerPositionAttribute,
 };
 
+#[expect(clippy::panic, reason = "panic is acceptable in tests")]
 fn expect_pointer_png(pointer: &DecodedPointer, expected_file_path: &str) {
     let path = format!("{}/test_data/{}", env!("CARGO_MANIFEST_DIR"), expected_file_path);
 

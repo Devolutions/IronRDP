@@ -1,8 +1,8 @@
 use core::mem;
 
 use ironrdp_connector::{
-    encode_x224_packet, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence,
-    State, Written,
+    encode_x224_packet, general_err, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize,
+    Sequence, State, Written,
 };
 use ironrdp_core::{decode, WriteBuf};
 use ironrdp_pdu as pdu;
@@ -72,13 +72,13 @@ impl Acceptor {
         mut consumed: Acceptor,
         static_channels: StaticChannelSet,
         desktop_size: DesktopSize,
-    ) -> Self {
+    ) -> ConnectorResult<Self> {
         let AcceptorState::CapabilitiesSendServer {
             early_capability,
             channels,
         } = consumed.saved_for_reactivation
         else {
-            panic!("invalid acceptor state");
+            return Err(general_err!("invalid acceptor state"));
         };
 
         for cap in consumed.server_capabilities.iter_mut() {
@@ -95,7 +95,7 @@ impl Acceptor {
             early_capability,
             channels,
         };
-        Self {
+        Ok(Self {
             security: consumed.security,
             state,
             user_channel_id: consumed.user_channel_id,
@@ -106,7 +106,7 @@ impl Acceptor {
             saved_for_reactivation,
             creds: consumed.creds,
             reactivation: true,
-        }
+        })
     }
 
     pub fn attach_static_channel<T>(&mut self, channel: T)

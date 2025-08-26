@@ -969,7 +969,7 @@ impl RdpServer {
                         acceptor,
                         core::mem::take(&mut self.static_channels),
                         desktop_size,
-                    );
+                    )?;
                     framed = unsplit_tokio_framed(reader, writer);
                     continue;
                 }
