@@ -325,7 +325,7 @@ impl Sequence for ClientConnector {
                 debug!("Basic Settings Exchange");
 
                 let client_gcc_blocks =
-                    create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values());
+                    create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values())?;
 
                 let connect_initial = mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks);
 
@@ -608,7 +608,7 @@ fn create_gcc_blocks<'a>(
     config: &Config,
     selected_protocol: nego::SecurityProtocol,
     static_channels: impl Iterator<Item = &'a StaticVirtualChannel>,
-) -> gcc::ClientGccBlocks {
+) -> ConnectorResult<gcc::ClientGccBlocks> {
     use ironrdp_pdu::gcc::{
         ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks, ClientNetworkData,
         ClientSecurityData, ColorDepth, ConnectionType, EncryptionMethod, HighColorDepth, MonitorOrientation,
@@ -622,14 +622,19 @@ fn create_gcc_blocks<'a>(
         16 => SupportedColorDepths::BPP16,
         24 => SupportedColorDepths::BPP24,
         32 => SupportedColorDepths::BPP32 | SupportedColorDepths::BPP16,
-        _ => panic!("Unsupported color depth: {max_color_depth}"),
+        _ => {
+            return Err(reason_err!(
+                "create gcc blocks",
+                "unsupported color depth: {max_color_depth}"
+            ))
+        }
     };
 
     let channels = static_channels
         .map(ironrdp_svc::make_channel_definition)
         .collect::<Vec<_>>();
 
-    ClientGccBlocks {
+    Ok(ClientGccBlocks {
         core: ClientCoreData {
             version: RdpVersion::V5_PLUS,
             desktop_width: config.desktop_size.width,
@@ -698,7 +703,7 @@ fn create_gcc_blocks<'a>(
         // TODO(#140): support for Some(MultiTransportChannelData { flags: MultiTransportFlags::empty(), })
         multi_transport_channel: None,
         monitor_extended: None,
-    }
+    })
 }
 
 fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::ClientInfoPdu {
