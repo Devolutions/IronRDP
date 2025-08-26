@@ -11,20 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class Config: IDisposable
+public partial class DvcPipeProxyDescriptor: IDisposable
 {
-    private unsafe Raw.Config* _inner;
-
-    public DvcPipeProxyConfig? DvcPipeProxy
-    {
-        get
-        {
-            return GetDvcPipeProxy();
-        }
-    }
+    private unsafe Raw.DvcPipeProxyDescriptor* _inner;
 
     /// <summary>
-    /// Creates a managed <c>Config</c> from a raw handle.
+    /// Creates a managed <c>DvcPipeProxyDescriptor</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -32,47 +24,37 @@ public partial class Config: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe Config(Raw.Config* handle)
+    public unsafe DvcPipeProxyDescriptor(Raw.DvcPipeProxyDescriptor* handle)
     {
         _inner = handle;
     }
 
     /// <returns>
-    /// A <c>ConfigBuilder</c> allocated on Rust side.
+    /// A <c>DvcPipeProxyDescriptor</c> allocated on Rust side.
     /// </returns>
-    public static ConfigBuilder GetBuilder()
+    public static DvcPipeProxyDescriptor New(string channelName, string pipeName)
     {
         unsafe
         {
-            Raw.ConfigBuilder* retVal = Raw.Config.GetBuilder();
-            return new ConfigBuilder(retVal);
-        }
-    }
-
-    /// <returns>
-    /// A <c>DvcPipeProxyConfig</c> allocated on Rust side.
-    /// </returns>
-    public DvcPipeProxyConfig? GetDvcPipeProxy()
-    {
-        unsafe
-        {
-            if (_inner == null)
+            byte[] channelNameBuf = DiplomatUtils.StringToUtf8(channelName);
+            byte[] pipeNameBuf = DiplomatUtils.StringToUtf8(pipeName);
+            nuint channelNameBufLength = (nuint)channelNameBuf.Length;
+            nuint pipeNameBufLength = (nuint)pipeNameBuf.Length;
+            fixed (byte* channelNameBufPtr = channelNameBuf)
             {
-                throw new ObjectDisposedException("Config");
+                fixed (byte* pipeNameBufPtr = pipeNameBuf)
+                {
+                    Raw.DvcPipeProxyDescriptor* retVal = Raw.DvcPipeProxyDescriptor.New(channelNameBufPtr, channelNameBufLength, pipeNameBufPtr, pipeNameBufLength);
+                    return new DvcPipeProxyDescriptor(retVal);
+                }
             }
-            Raw.DvcPipeProxyConfig* retVal = Raw.Config.GetDvcPipeProxy(_inner);
-            if (retVal == null)
-            {
-                return null;
-            }
-            return new DvcPipeProxyConfig(retVal);
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.Config* AsFFI()
+    public unsafe Raw.DvcPipeProxyDescriptor* AsFFI()
     {
         return _inner;
     }
@@ -89,14 +71,14 @@ public partial class Config: IDisposable
                 return;
             }
 
-            Raw.Config.Destroy(_inner);
+            Raw.DvcPipeProxyDescriptor.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~Config()
+    ~DvcPipeProxyDescriptor()
     {
         Dispose();
     }

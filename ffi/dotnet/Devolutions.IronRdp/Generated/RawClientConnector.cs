@@ -34,6 +34,9 @@ public partial struct ClientConnector
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_with_dynamic_channel_display_control", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError WithDynamicChannelDisplayControl(ClientConnector* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_with_dynamic_channel_pipe_proxy", ExactSpelling = true)]
+    public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError WithDynamicChannelPipeProxy(ClientConnector* self, DvcPipeProxyConfig* config);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_should_perform_security_upgrade", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultBoolBoxIronRdpError ShouldPerformSecurityUpgrade(ClientConnector* self);
 

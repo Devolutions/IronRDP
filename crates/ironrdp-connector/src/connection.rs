@@ -154,6 +154,24 @@ impl ClientConnector {
         self.static_channels.insert(channel);
     }
 
+    pub fn get_static_channel_processor<T>(&mut self) -> Option<&T>
+    where
+        T: SvcClientProcessor + 'static,
+    {
+        self.static_channels
+            .get_by_type::<T>()
+            .and_then(|channel| channel.channel_processor_downcast_ref())
+    }
+
+    pub fn get_static_channel_processor_mut<T>(&mut self) -> Option<&mut T>
+    where
+        T: SvcClientProcessor + 'static,
+    {
+        self.static_channels
+            .get_by_type_mut::<T>()
+            .and_then(|channel| channel.channel_processor_downcast_mut())
+    }
+
     pub fn should_perform_security_upgrade(&self) -> bool {
         matches!(self.state, ClientConnectorState::EnhancedSecurityUpgrade { .. })
     }

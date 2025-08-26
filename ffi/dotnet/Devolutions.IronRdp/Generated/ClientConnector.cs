@@ -129,6 +129,29 @@ public partial class ClientConnector: IDisposable
     }
 
     /// <exception cref="IronRdpException"></exception>
+    public void WithDynamicChannelPipeProxy(DvcPipeProxyConfig config)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.DvcPipeProxyConfig* configRaw;
+            configRaw = config.AsFFI();
+            if (configRaw == null)
+            {
+                throw new ObjectDisposedException("DvcPipeProxyConfig");
+            }
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.WithDynamicChannelPipeProxy(_inner, configRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
     public bool ShouldPerformSecurityUpgrade()
     {
         unsafe

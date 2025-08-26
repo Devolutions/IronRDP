@@ -11,20 +11,20 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class Config: IDisposable
+public partial class DvcPipeProxyMessage: IDisposable
 {
-    private unsafe Raw.Config* _inner;
+    private unsafe Raw.DvcPipeProxyMessage* _inner;
 
-    public DvcPipeProxyConfig? DvcPipeProxy
+    public uint ChannelId
     {
         get
         {
-            return GetDvcPipeProxy();
+            return GetChannelId();
         }
     }
 
     /// <summary>
-    /// Creates a managed <c>Config</c> from a raw handle.
+    /// Creates a managed <c>DvcPipeProxyMessage</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -32,47 +32,28 @@ public partial class Config: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe Config(Raw.Config* handle)
+    public unsafe DvcPipeProxyMessage(Raw.DvcPipeProxyMessage* handle)
     {
         _inner = handle;
     }
 
-    /// <returns>
-    /// A <c>ConfigBuilder</c> allocated on Rust side.
-    /// </returns>
-    public static ConfigBuilder GetBuilder()
-    {
-        unsafe
-        {
-            Raw.ConfigBuilder* retVal = Raw.Config.GetBuilder();
-            return new ConfigBuilder(retVal);
-        }
-    }
-
-    /// <returns>
-    /// A <c>DvcPipeProxyConfig</c> allocated on Rust side.
-    /// </returns>
-    public DvcPipeProxyConfig? GetDvcPipeProxy()
+    public uint GetChannelId()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("Config");
+                throw new ObjectDisposedException("DvcPipeProxyMessage");
             }
-            Raw.DvcPipeProxyConfig* retVal = Raw.Config.GetDvcPipeProxy(_inner);
-            if (retVal == null)
-            {
-                return null;
-            }
-            return new DvcPipeProxyConfig(retVal);
+            uint retVal = Raw.DvcPipeProxyMessage.GetChannelId(_inner);
+            return retVal;
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.Config* AsFFI()
+    public unsafe Raw.DvcPipeProxyMessage* AsFFI()
     {
         return _inner;
     }
@@ -89,14 +70,14 @@ public partial class Config: IDisposable
                 return;
             }
 
-            Raw.Config.Destroy(_inner);
+            Raw.DvcPipeProxyMessage.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~Config()
+    ~DvcPipeProxyMessage()
     {
         Dispose();
     }

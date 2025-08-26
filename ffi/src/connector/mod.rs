@@ -10,12 +10,16 @@ pub mod ffi {
     use diplomat_runtime::DiplomatWriteable;
     use ironrdp::connector::Sequence as _;
     use ironrdp::displaycontrol::client::DisplayControlClient;
+    use ironrdp::dvc::DvcProcessor;
+    use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
     use tracing::info;
 
     use super::config::ffi::Config;
     use super::result::ffi::Written;
     use super::state::ffi::ClientConnectorState;
     use crate::clipboard::ffi::Cliprdr;
+    use crate::dvc::dvc_pipe_proxy_message_queue::DvcPipeProxyMessageInner;
+    use crate::dvc::ffi::DvcPipeProxyConfig;
     use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::error::ValueConsumedError;
     use crate::pdu::ffi::WriteBuf;
@@ -29,7 +33,7 @@ pub mod ffi {
             let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
 
             Ok(Box::new(ClientConnector(Some(
-                ironrdp::connector::ClientConnector::new(config.0.clone(), client_addr),
+                ironrdp::connector::ClientConnector::new(config.connector.clone(), client_addr),
             ))))
         }
 
@@ -68,19 +72,52 @@ pub mod ffi {
             Ok(())
         }
 
-        pub fn with_dynamic_channel_display_control(&mut self) -> Result<(), Box<IronRdpError>> {
-            let Some(connector) = self.0.take() else {
+        fn with_dvc<T>(&mut self, processor: T) -> Result<(), Box<IronRdpError>>
+        where
+            T: DvcProcessor + 'static,
+        {
+            let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            self.0 = Some(
-                connector.with_static_channel(ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(
-                    DisplayControlClient::new(|c| {
-                        info!(DisplayCountrolCapabilities = ?c, "DisplayControl capabilities received");
-                        Ok(Vec::new())
-                    }),
-                )),
-            );
 
+            let drdynvc = match connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
+                Some(processor) => processor,
+                None => {
+                    connector.attach_static_channel(ironrdp::dvc::DrdynvcClient::new());
+                    connector
+                        .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                        .expect("DrdynvcClient should be initialized above")
+                }
+            };
+
+            drdynvc.attach_dynamic_channel(processor);
+
+            Ok(())
+        }
+
+        pub fn with_dynamic_channel_display_control(&mut self) -> Result<(), Box<IronRdpError>> {
+            self.with_dvc(DisplayControlClient::new(|c| {
+                info!(DisplayCountrolCapabilities = ?c, "DisplayControl capabilities received");
+                Ok(Vec::new())
+            }))
+        }
+
+        pub fn with_dynamic_channel_pipe_proxy(
+            &mut self,
+            config: &DvcPipeProxyConfig,
+        ) -> Result<(), Box<IronRdpError>> {
+            for descriptor in &config.descriptors {
+                let sink = config.message_sink.0.clone();
+                let proxy = DvcNamedPipeProxy::new(
+                    &descriptor.channel_name,
+                    &descriptor.pipe_name,
+                    move |channel_id, svc_message| {
+                        let _ = sink.send(DvcPipeProxyMessageInner(channel_id, svc_message));
+                        Ok(())
+                    },
+                );
+                self.with_dvc(proxy)?;
+            }
             Ok(())
         }
 
