@@ -31,5 +31,11 @@ export interface UserInteraction {
 
     setEnableClipboard(enable: boolean): void;
 
+    setEnableAutoClipboard(enable: boolean): void;
+
+    saveRemoteClipboardData(): Promise<boolean>;
+
+    sendClipboardData(): Promise<boolean>;
+
     invokeExtension(ext: Extension): void;
 }

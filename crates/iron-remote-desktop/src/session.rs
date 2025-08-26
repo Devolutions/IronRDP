@@ -46,9 +46,6 @@ pub trait SessionBuilder {
     fn remote_clipboard_changed_callback(&self, callback: js_sys::Function) -> Self;
 
     #[must_use]
-    fn remote_received_format_list_callback(&self, callback: js_sys::Function) -> Self;
-
-    #[must_use]
     fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> Self;
 
     #[must_use]

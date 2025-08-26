@@ -20,8 +20,10 @@
     import type { ResizeEvent } from './interfaces/ResizeEvent';
     import { PublicAPI } from './services/PublicAPI';
     import { ScreenScale } from './enums/ScreenScale';
-    import type { ClipboardData } from './interfaces/ClipboardData';
     import type { RemoteDesktopModule } from './interfaces/RemoteDesktopModule';
+    import { isComponentDestroyed } from './lib/stores/componentLifecycleStore';
+    import { runWhenFocusedQueue } from './lib/stores/runWhenFocusedStore';
+    import { ClipboardService } from './services/clipboard.service';
 
     let {
         scale,
@@ -46,381 +48,15 @@
 
     let inner: HTMLDivElement;
     let wrapper: HTMLDivElement;
-    let screenViewer: HTMLDivElement;
     let canvas: HTMLCanvasElement;
 
     let viewerStyle = $state('');
     let wrapperStyle = $state('');
     let remoteDesktopService = new RemoteDesktopService(module);
-    let publicAPI = new PublicAPI(remoteDesktopService);
+    let clipboardService = new ClipboardService(remoteDesktopService, module);
+    let publicAPI = new PublicAPI(remoteDesktopService, clipboardService);
 
     let currentScreenScale = ScreenScale.Fit;
-
-    // Firefox's clipboard API is very limited, and doesn't support reading from the clipboard
-    // without changing browser settings via `about:config`.
-    //
-    // For firefox, we will use a different approach by marking `screen-wrapper` component
-    // as `contenteditable=true`, and then using the `onpaste`/`oncopy`/`oncut` events.
-    let isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
-
-    const CLIPBOARD_MONITORING_INTERVAL = 100; // ms
-
-    let isClipboardApiSupported = false;
-    let lastClientClipboardItems: Record<string, string | Uint8Array> = {};
-    let lastReceivedClipboardData: Record<string, string | Uint8Array> = {};
-    let lastSentClipboardData: ClipboardData | null = null;
-    let lastClipboardMonitorLoopError: Error | null = null;
-
-    let componentDestroyed = false;
-    let runWhenFocusedQueue: (() => void)[] = [];
-
-    /* Firefox-specific BEGIN */
-
-    // See `ffRemoteClipboardData` variable docs below
-    const FF_REMOTE_CLIPBOARD_DATA_SET_RETRY_INTERVAL = 100; // ms
-    const FF_REMOTE_CLIPBOARD_DATA_SET_MAX_RETRIES = 30; // 3 seconds (100ms * 30)
-    // On Firefox, this interval is used to stop delaying the keyboard events if the paste event has
-    // failed and we haven't received any clipboard data from the remote side.
-    const FF_LOCAL_CLIPBOARD_COPY_TIMEOUT = 1000; // 1s (For text-only data this should be enough)
-
-    // In Firefox, we need this variable due to fact that `clipboard.writeText()` should only be
-    // called in scope of user-initiated event processing (e.g. keyboard event), but we receive
-    // clipboard data from the remote side asynchronously in wasm service callback. therefore we
-    // set this variable in callback and use its value on the user-initiated copy event.
-    let ffRemoteClipboardData: ClipboardData | null = null;
-    // For Firefox we need this variable to perform wait loop for the remote side to finish sending
-    // clipboard content to the client.
-    let ffRemoteClipboardDataRetriesLeft = 0;
-    let ffPostponeKeyboardEvents = false;
-    let ffDelayedKeyboardEvents: KeyboardEvent[] = [];
-    let ffCnavasFocused = false;
-
-    /* Firefox-specific END */
-
-    /* Clipboard initialization BEGIN */
-    function initClipboard() {
-        // Detect if browser supports async Clipboard API
-        if (!isFirefox && navigator.clipboard != undefined) {
-            if (navigator.clipboard.read != undefined && navigator.clipboard.write != undefined) {
-                isClipboardApiSupported = true;
-            }
-        }
-
-        if (isFirefox) {
-            remoteDesktopService.setOnRemoteClipboardChanged(ffOnRemoteClipboardChanged);
-            remoteDesktopService.setOnRemoteReceivedFormatList(ffOnRemoteReceivedFormatList);
-            remoteDesktopService.setOnForceClipboardUpdate(onForceClipboardUpdate);
-        } else if (isClipboardApiSupported) {
-            remoteDesktopService.setOnRemoteClipboardChanged(onRemoteClipboardChanged);
-            remoteDesktopService.setOnForceClipboardUpdate(onForceClipboardUpdate);
-
-            // Start the clipboard monitoring loop
-            setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
-        }
-    }
-
-    /* Clipboard initialization END */
-
-    function isCopyKeyboardEvent(evt: KeyboardEvent) {
-        return (
-            (evt.ctrlKey && evt.code === 'KeyC') ||
-            (evt.ctrlKey && evt.code === 'KeyX') ||
-            evt.code == 'Copy' ||
-            evt.code == 'Cut'
-        );
-    }
-
-    function isPasteKeyboardEvent(evt: KeyboardEvent) {
-        return (evt.ctrlKey && evt.code === 'KeyV') || evt.code == 'Paste';
-    }
-
-    // This function is required to convert `ClipboardData` to an object that can be used
-    // with `ClipboardItem` API.
-    function clipboardDataToRecord(data: ClipboardData): Record<string, Blob> {
-        let result = {} as Record<string, Blob>;
-
-        for (const item of data.items()) {
-            let mime = item.mimeType();
-            let value = new Blob([item.value()], { type: mime });
-
-            result[mime] = value;
-        }
-
-        return result;
-    }
-
-    function clipboardDataToClipboardItemsRecord(data: ClipboardData): Record<string, string | Uint8Array> {
-        let result = {} as Record<string, string | Uint8Array>;
-
-        for (const item of data.items()) {
-            let mime = item.mimeType();
-            result[mime] = item.value();
-        }
-
-        return result;
-    }
-
-    // This callback is required to send initial clipboard state if available.
-    function onForceClipboardUpdate() {
-        // TODO(Fix): lastSentClipboardData is nullptr.
-        try {
-            if (lastSentClipboardData) {
-                remoteDesktopService.onClipboardChanged(lastSentClipboardData);
-            } else {
-                remoteDesktopService.onClipboardChangedEmpty();
-            }
-        } catch (err) {
-            console.error('Failed to send initial clipboard state: ' + err);
-        }
-    }
-
-    function runWhenWindowFocused(fn: () => void) {
-        if (document.hasFocus()) {
-            fn();
-        } else {
-            runWhenFocusedQueue.push(fn);
-        }
-    }
-
-    // This callback is required to update client clipboard state when remote side has changed.
-    function onRemoteClipboardChanged(data: ClipboardData) {
-        try {
-            const mime_formats = clipboardDataToRecord(data);
-            const clipboard_item = new ClipboardItem(mime_formats);
-            runWhenWindowFocused(() => {
-                lastReceivedClipboardData = clipboardDataToClipboardItemsRecord(data);
-                navigator.clipboard.write([clipboard_item]);
-            });
-        } catch (err) {
-            console.error('Failed to set client clipboard: ' + err);
-        }
-    }
-
-    // Called periodically to monitor clipboard changes
-    async function onMonitorClipboard() {
-        try {
-            if (!document.hasFocus()) {
-                return;
-            }
-
-            var value = await navigator.clipboard.read();
-
-            // Clipboard is empty
-            if (value.length == 0) {
-                return;
-            }
-
-            // We only support one item at a time
-            var item = value[0];
-
-            if (!item.types.some((type) => type.startsWith('text/') || type.startsWith('image/png'))) {
-                // Unsupported types
-                return;
-            }
-
-            var values: Record<string, string | Uint8Array> = {};
-            var sameValue = true;
-
-            // Sadly, browsers build new `ClipboardItem` object for each `read` call,
-            // so we can't do reference comparison here :(
-            //
-            // For monitoring loop approach we also can't drop this logic, as it will result in
-            // very frequent network activity.
-            for (const kind of item.types) {
-                // Get blob
-                const blobIsString = kind.startsWith('text/');
-
-                const blob = await item.getType(kind);
-                const value = blobIsString ? await blob.text() : new Uint8Array(await blob.arrayBuffer());
-
-                const is_equal = blobIsString
-                    ? function (a: string | Uint8Array | undefined, b: string | Uint8Array | undefined) {
-                          return a === b;
-                      }
-                    : function (a: string | Uint8Array | undefined, b: string | Uint8Array | undefined) {
-                          if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) {
-                              return false;
-                          }
-
-                          return (
-                              a != undefined && b != undefined && a.length === b.length && a.every((v, i) => v === b[i])
-                          );
-                      };
-
-                const previousValue = lastClientClipboardItems[kind];
-
-                if (!is_equal(previousValue, value)) {
-                    // When the local clipboard updates, we need to compare it with the last data received from the server.
-                    // If it's identical, the clipboard was updated with the server's data, so we shouldn't send this data
-                    // to the server.
-                    if (is_equal(lastReceivedClipboardData[kind], value)) {
-                        lastClientClipboardItems[kind] = lastReceivedClipboardData[kind];
-                    }
-                    // One of mime types has changed, we need to update the clipboard cache
-                    else {
-                        sameValue = false;
-                    }
-                }
-
-                values[kind] = value;
-            }
-
-            // Clipboard has changed, we need to acknowledge remote side about it.
-            if (!sameValue) {
-                lastClientClipboardItems = values;
-
-                let clipboardData = new module.ClipboardData();
-
-                // Iterate over `Record` type
-                Object.entries(values).forEach(([key, value]: [string, string | Uint8Array]) => {
-                    // skip null/undefined values
-                    if (value == null || value == undefined) {
-                        return;
-                    }
-
-                    if (key.startsWith('text/') && typeof value === 'string') {
-                        clipboardData.addText(key, value);
-                    } else if (key.startsWith('image/') && value instanceof Uint8Array) {
-                        clipboardData.addBinary(key, value);
-                    }
-                });
-
-                if (!clipboardData.isEmpty()) {
-                    lastSentClipboardData = clipboardData;
-                    // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
-                    await remoteDesktopService.onClipboardChanged(clipboardData);
-                }
-            }
-        } catch (err) {
-            if (err instanceof Error) {
-                const printError =
-                    lastClipboardMonitorLoopError === null ||
-                    lastClipboardMonitorLoopError.toString() !== err.toString();
-                // Prevent spamming the console with the same error
-                if (printError) {
-                    console.error('Clipboard monitoring error: ' + err);
-                }
-                lastClipboardMonitorLoopError = err;
-            }
-        } finally {
-            if (!componentDestroyed) {
-                setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
-            }
-        }
-    }
-
-    /* Firefox-specific BEGIN */
-
-    function ffOnRemoteReceivedFormatList() {
-        try {
-            // We are ready to send delayed Ctrl+V events
-            ffSimulateDelayedKeyEvents();
-        } catch (err) {
-            console.error('Failed to send delayed keyboard events: ' + err);
-        }
-    }
-
-    // Only set variable on callback, the real clipboard update will be performed in keyboard
-    // callback. (User-initiated event is required for Firefox to allow clipboard write)
-    function ffOnRemoteClipboardChanged(data: ClipboardData) {
-        ffRemoteClipboardData = data;
-    }
-
-    function ffWaitForRemoteClipboardDataSet() {
-        if (ffRemoteClipboardData) {
-            try {
-                let clipboard_data = ffRemoteClipboardData;
-                ffRemoteClipboardData = null;
-                for (const item of clipboard_data.items()) {
-                    // Firefox only supports text/plain mime type for clipboard writes :(
-                    if (item.mimeType() === 'text/plain') {
-                        const value = item.value();
-
-                        if (typeof value === 'string') {
-                            navigator.clipboard.writeText(value);
-                        } else {
-                            loggingService.error('Unexpected value for text/plain clipboard item');
-                        }
-
-                        break;
-                    }
-                }
-            } catch (err) {
-                console.error('Failed to set client clipboard: ' + err);
-            }
-        } else if (ffRemoteClipboardDataRetriesLeft > 0) {
-            ffRemoteClipboardDataRetriesLeft--;
-            setTimeout(ffWaitForRemoteClipboardDataSet, FF_REMOTE_CLIPBOARD_DATA_SET_RETRY_INTERVAL);
-        }
-    }
-
-    function ffSimulateDelayedKeyEvents() {
-        if (ffDelayedKeyboardEvents.length > 0) {
-            for (const evt of ffDelayedKeyboardEvents) {
-                // simulate consecutive key events
-                keyboardEvent(evt);
-            }
-            ffDelayedKeyboardEvents = [];
-        }
-        ffPostponeKeyboardEvents = false;
-    }
-
-    function ffOnPasteHandler(evt: ClipboardEvent) {
-        // We don't actually want to paste the clipboard data into the `contenteditable` div.
-        evt.preventDefault();
-
-        // `onpaste` events are handled only for Firefox, other browsers we use the clipboard API
-        // for reading the clipboard.
-        if (!isFirefox) {
-            // Prevent processing of the paste event by the browser.
-            return;
-        }
-
-        try {
-            let clipboardData = new module.ClipboardData();
-
-            if (evt.clipboardData == null) {
-                return;
-            }
-
-            for (var clipItem of evt.clipboardData.items) {
-                let mime = clipItem.type;
-
-                if (mime.startsWith('text/')) {
-                    clipItem.getAsString((str: string) => {
-                        clipboardData.addText(mime, str);
-
-                        if (!clipboardData.isEmpty()) {
-                            remoteDesktopService.onClipboardChanged(clipboardData);
-                        }
-                    });
-                    break;
-                }
-
-                if (mime.startsWith('image/')) {
-                    let file = clipItem.getAsFile();
-                    if (file == null) {
-                        continue;
-                    }
-
-                    file.arrayBuffer().then((buffer: ArrayBuffer) => {
-                        const strict_buffer = new Uint8Array(buffer);
-
-                        clipboardData.addBinary(mime, strict_buffer);
-
-                        if (!clipboardData.isEmpty()) {
-                            remoteDesktopService.onClipboardChanged(clipboardData);
-                        }
-                    });
-                    break;
-                }
-            }
-        } catch (err) {
-            console.error('Failed to update remote clipboard: ' + err);
-        }
-    }
-
-    /* Firefox-specific END */
 
     function initListeners() {
         serverBridgeListeners();
@@ -428,28 +64,6 @@
 
         function captureKeys(evt: KeyboardEvent) {
             if (capturingInputs()) {
-                if (ffPostponeKeyboardEvents) {
-                    evt.preventDefault();
-                    ffDelayedKeyboardEvents.push(evt);
-                    return;
-                }
-
-                // For Firefox we need to make `onpaste` event still fire even if
-                // keyboard is being captured. Not capturing `Ctrl + V` should not create any
-                // side effects, therefore is safe to skip capture for it.
-                let isFirefoxPaste = isFirefox && isPasteKeyboardEvent(evt);
-
-                if (isFirefoxPaste) {
-                    ffPostponeKeyboardEvents = true;
-                    ffDelayedKeyboardEvents = [];
-                    ffDelayedKeyboardEvents.push(evt);
-
-                    // If during the given timeout we weren't able to finish the copy sequence, we need to
-                    // simulate all queued keyboard events.
-                    setTimeout(ffSimulateDelayedKeyEvents, FF_LOCAL_CLIPBOARD_COPY_TIMEOUT);
-                    return;
-                }
-
                 keyboardEvent(evt);
             }
         }
@@ -645,22 +259,6 @@
     }
 
     function setMouseButtonState(state: MouseEvent, isDown: boolean) {
-        if (isFirefox) {
-            if (isDown && state.button == 0 && !ffCnavasFocused) {
-                // Do not capture first mouse down event on Firefox, as we need to transfer focus to the
-                // canvas first in order to receive paste events.
-                // wasmService.mouseButtonState(state, isDown, false);
-                // Focus `contenteditable` element to receive `on_paste` events
-                canvas.focus();
-                // Finish the focus sequence on Firefox
-                ffCnavasFocused = true;
-            } else {
-                // This is needed to prevent visible "double click" selection on
-                // `texteditable` element
-                screenViewer.blur();
-            }
-        }
-
         remoteDesktopService.mouseButtonState(state, isDown, true);
     }
 
@@ -678,18 +276,6 @@
     }
 
     function keyboardEvent(evt: KeyboardEvent) {
-        const browserHasClipboardAccess =
-            navigator.clipboard != undefined && navigator.clipboard.writeText != undefined;
-
-        if (isFirefox && browserHasClipboardAccess && isCopyKeyboardEvent(evt)) {
-            // Special processing for firefox, as the only way Firefox supports clipboard write is
-            // only after some user-initiated event (e.g. keyboard event).
-            // therefore we need to wait here for the clipboard data to be ready.
-
-            ffRemoteClipboardDataRetriesLeft = FF_REMOTE_CLIPBOARD_DATA_SET_MAX_RETRIES;
-            ffWaitForRemoteClipboardDataSet();
-        }
-
         remoteDesktopService.sendKeyboardEvent(evt);
 
         // Propagate further
@@ -731,23 +317,28 @@
     }
 
     function focusEventHandler() {
-        while (runWhenFocusedQueue.length > 0) {
-            const fn = runWhenFocusedQueue.shift();
-            fn?.();
+        try {
+            while (runWhenFocusedQueue.length() > 0) {
+                const fn = runWhenFocusedQueue.shift();
+                fn?.();
+            }
+        } catch (err) {
+            console.error('Failed to run the function queued for execution when the window received focus: ' + err);
         }
     }
 
     onMount(async () => {
+        isComponentDestroyed.set(false);
         loggingService.verbose = verbose === 'true';
         loggingService.info('Dom ready');
         await initcanvas();
-        initClipboard();
+        clipboardService.initClipboard();
     });
 
     onDestroy(() => {
         window.removeEventListener('resize', resizeHandler);
         window.removeEventListener('focus', focusEventHandler);
-        componentDestroyed = true;
+        isComponentDestroyed.set(true);
     });
 </script>
 
@@ -759,13 +350,7 @@
         class:capturing-inputs={capturingInputs}
         style={wrapperStyle}
     >
-        <div
-            bind:this={screenViewer}
-            class="screen-viewer"
-            style={viewerStyle}
-            contenteditable={isFirefox}
-            onpaste={ffOnPasteHandler}
-        >
+        <div class="screen-viewer" style={viewerStyle}>
             <canvas
                 bind:this={canvas}
                 onmousemove={getMousePos}
