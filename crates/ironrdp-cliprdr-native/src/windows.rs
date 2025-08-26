@@ -13,7 +13,7 @@ use ironrdp_cliprdr::pdu::{
 };
 use tracing::error;
 use windows::core::{s, Error};
-pub use windows::Win32::Foundation::HWND;
+pub use windows::Win32::Foundation::{E_ACCESSDENIED, HWND};
 use windows::Win32::Foundation::{FALSE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
