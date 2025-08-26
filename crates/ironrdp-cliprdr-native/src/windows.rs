@@ -91,7 +91,11 @@ impl core::error::Error for WinCliprdrError {
 
 impl From<Error> for WinCliprdrError {
     fn from(err: Error) -> Self {
-        WinCliprdrError::WinAPI(err)
+        if err.code() == E_ACCESSDENIED {
+            WinCliprdrError::ClipboardAccessDenied
+        } else {
+            WinCliprdrError::WinAPI(err)
+        }
     }
 }
 
