@@ -355,7 +355,7 @@ impl ColorStrideReader {
             1 => Self::Bitmask(BitmaskStrideReader::new(stride)),
             bpp => Self::Color {
                 bpp: {
-                    // INVARIANT: bpp == 16 || bpp == 24 || bpp == 32
+                    // Enforce the bpp == 16 || bpp == 24 || bpp == 32 invariant.
                     if !SUPPORTED_COLOR_BPP[1..].contains(&bpp) {
                         return Err(PointerError::NotSupportedBpp { bpp });
                     }
@@ -400,7 +400,7 @@ impl ColorStrideReader {
                         let color_32bit = cursor.read_array::<4>();
                         [color_32bit[2], color_32bit[1], color_32bit[0], color_32bit[3]]
                     }
-                    _ => unreachable!("Per the invariant on self.bpp, this path is unreachable"),
+                    _ => unreachable!("per the invariant on self.bpp, this path is unreachable"),
                 }
             }
             ColorStrideReader::Bitmask(bitask) => {

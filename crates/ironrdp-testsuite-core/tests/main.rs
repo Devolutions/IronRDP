@@ -1,5 +1,5 @@
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
-
+#![allow(clippy::panic, reason = "panic is acceptable in tests")]
 //! Integration Tests (IT)
 //!
 //! Integration tests are all contained in this single crate, and organized in modules.
