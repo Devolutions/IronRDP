@@ -108,6 +108,7 @@ mixed_read_write_in_expression = "warn"
 needless_raw_strings = "warn"
 non_ascii_literal = "warn"
 panic = "warn"
+precedence_bits = "warn"
 
 # == Style, readability == #
 semicolon_outside_block = "warn" # With semicolon-outside-block-ignore-multiline = true
