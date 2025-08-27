@@ -11,7 +11,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode_err, pdu_other_err, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::efs::{
-    Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
+    Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
     CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices, ServerDeviceAnnounceResponse,
     VersionAndIdPdu, VersionAndIdPduKind,
 };
@@ -92,6 +92,10 @@ impl Rdpdr {
     pub fn add_drive(&mut self, device_id: u32, name: String) -> ClientDeviceListAnnounce {
         self.device_list.add_drive(device_id, name.clone());
         ClientDeviceListAnnounce::new_drive(device_id, name)
+    }
+
+    pub fn remove_device(&mut self, device_id: u32) -> Option<ClientDeviceListRemove> {
+       Some(ClientDeviceListRemove::remove_device(self.device_list.remove_device(device_id)?))
     }
 
     pub fn downcast_backend<T: RdpdrBackend>(&self) -> Option<&T> {
@@ -210,6 +214,7 @@ impl SvcProcessor for Rdpdr {
             // to make sure we don't miss handling new RdpdrPdu variants here during active development.
             RdpdrPdu::ClientNameRequest(_)
             | RdpdrPdu::ClientDeviceListAnnounce(_)
+            | RdpdrPdu::ClientDeviceListRemove(_)
             | RdpdrPdu::VersionAndIdPdu(_)
             | RdpdrPdu::CoreCapability(_)
             | RdpdrPdu::DeviceControlResponse(_)
