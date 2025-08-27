@@ -101,6 +101,7 @@ filetype_is_file = "warn"
 float_cmp = "warn"
 lossy_float_literal = "warn"
 float_cmp_const = "warn"
+let_underscore_must_use = "warn"
 as_underscore = "warn"
 # TODO: unwrap_used = "warn" # Let’s either handle `None`, `Err` or use `expect` to give a reason.
 large_stack_frames = "warn"

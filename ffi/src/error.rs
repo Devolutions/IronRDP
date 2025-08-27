@@ -114,6 +114,7 @@ pub mod ffi {
     use core::fmt::Write as _;
 
     use diplomat_runtime::DiplomatWriteable;
+    use tracing::error;
 
     #[derive(Debug, Clone, Copy, thiserror::Error)]
     pub enum IronRdpErrorKind {
@@ -148,7 +149,9 @@ pub mod ffi {
     impl IronRdpError {
         /// Returns the error as a string.
         pub fn to_display(&self, writeable: &mut DiplomatWriteable) {
-            let _ = write!(writeable, "{}", self.0.repr);
+            if let Err(err) = write!(writeable, "{}", self.0.repr) {
+                error!("Failed to write error into a writable: {err}");
+            }
             writeable.flush();
         }
 

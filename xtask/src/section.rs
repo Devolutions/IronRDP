@@ -25,6 +25,10 @@ impl Drop for Section {
 fn flush_all() {
     use std::io::{self, Write as _};
 
-    let _ = io::stdout().flush();
-    let _ = io::stderr().flush();
+    if let Err(err) = io::stdout().flush() {
+        eprintln!("stdout flush error: {err}");
+    }
+    if let Err(err) = io::stderr().flush() {
+        eprintln!("stderr flush error: {err}");
+    }
 }

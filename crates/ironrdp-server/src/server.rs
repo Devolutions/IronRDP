@@ -385,7 +385,9 @@ impl RdpServer {
                             break;
                         }
                         ServerEvent::GetLocalAddr(tx) => {
-                            let _ = tx.send(self.local_addr);
+                            if tx.send(self.local_addr).is_err() {
+                                bail!("failed to send the local address");
+                            }
                         }
                         ServerEvent::SetCredentials(creds) => {
                             self.set_credentials(Some(creds));
@@ -504,7 +506,9 @@ impl RdpServer {
                     return Ok(RunState::Disconnect);
                 }
                 ServerEvent::GetLocalAddr(tx) => {
-                    let _ = tx.send(self.local_addr);
+                    if tx.send(self.local_addr).is_err() {
+                        bail!("failed to send the local address");
+                    }
                 }
                 ServerEvent::SetCredentials(creds) => {
                     self.set_credentials(Some(creds));
@@ -801,7 +805,7 @@ impl RdpServer {
                 }
 
                 Ok(Action::X224) => {
-                    let _ = self.handle_x224(writer, io_channel_id, user_channel_id, &frame).await;
+                    self.handle_x224(writer, io_channel_id, user_channel_id, &frame).await?;
                 }
 
                 // the frame here is always valid, because otherwise it would

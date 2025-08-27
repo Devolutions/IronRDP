@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()> {
 
     stream.stream.play()?;
     thread::sleep(Duration::from_secs(3));
-    let _ = producer.join();
+    producer.join().expect("thread failed");
 
     Ok(())
 }

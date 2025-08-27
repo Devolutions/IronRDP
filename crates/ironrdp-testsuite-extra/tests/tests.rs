@@ -160,7 +160,7 @@ where
     F: FnOnce(ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>, UnboundedSender<DisplayUpdate>) -> Fut + 'static,
     Fut: Future<Output = (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>)>,
 {
-    let _ = tracing_subscriber::fmt()
+    let _unused = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
 

@@ -168,7 +168,7 @@ impl GwClient {
             return Err(Error::new("WS Upgrade", GwErrorKind::Connect));
         }
 
-        let _ = tx.send(()); // TODO: Not needed since it doesnt keep alive conn?
+        let _unused = tx.send(()); // TODO: Not needed since it doesnt keep alive conn?
         let stream = jh.await.map_err(|e| custom_err!("WS join", e))?.io.into_inner();
 
         Self::connect_ws(target.clone(), client_name, stream)
@@ -407,7 +407,7 @@ impl AsyncRead for GwClient {
             let max = core::cmp::min(rem, rx_buf.len());
             buf.put_slice(&rx_buf[..max]);
             n += max;
-            let _ = rx_buf.split_to(max);
+            let _unused = rx_buf.split_to(max);
 
             !rx_buf.is_empty()
         });

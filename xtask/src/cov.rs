@@ -22,7 +22,7 @@ pub fn update(sh: &Shell) -> anyhow::Result<()> {
     let initial_branch = cmd!(sh, "git rev-parse --abbrev-ref HEAD").read()?;
 
     println!("Switch branch");
-    let _ = cmd!(sh, "git branch -D cov-data").run();
+    cmd!(sh, "git branch -D cov-data").run()?;
     cmd!(sh, "git checkout --orphan cov-data").run()?;
 
     let result = || -> anyhow::Result<()> {

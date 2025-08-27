@@ -5,6 +5,7 @@ use core::time::Duration;
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::bail;
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace};
@@ -56,25 +57,33 @@ impl App {
         })
     }
 
-    fn send_resize_event(&mut self) {
+    fn send_resize_event(&mut self) -> anyhow::Result<()> {
         let Some(size) = self.last_size.take() else {
-            return;
+            return Ok(());
         };
         let Some((window, _)) = self.window.as_mut() else {
-            return;
+            return Ok(());
         };
         let scale_factor = (window.scale_factor() * 100.0) as u32;
 
-        let _ = self.input_event_sender.send(RdpInputEvent::Resize {
-            width: u16::try_from(size.width).unwrap(),
-            height: u16::try_from(size.height).unwrap(),
-            scale_factor,
-            // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
-            // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
-            // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
-            // See also: https://github.com/rust-windowing/winit/issues/826
-            physical_size: None,
-        });
+        if self
+            .input_event_sender
+            .send(RdpInputEvent::Resize {
+                width: u16::try_from(size.width).unwrap(),
+                height: u16::try_from(size.height).unwrap(),
+                scale_factor,
+                // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
+                // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
+                // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
+                // See also: https://github.com/rust-windowing/winit/issues/826
+                physical_size: None,
+            })
+            .is_err()
+        {
+            bail!("failed to send resize event");
+        };
+
+        Ok(())
     }
 
     fn draw(&mut self) {
@@ -96,7 +105,9 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
                 event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
             } else {
-                self.send_resize_event();
+                if let Err(err) = self.send_resize_event() {
+                    error!("Failed to send a resize event: {err}");
+                }
                 self.resize_timeout = None;
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
@@ -391,7 +402,7 @@ fn send_fast_path_events(
     input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
     input_events: smallvec::SmallVec<[ironrdp::pdu::input::fast_path::FastPathInputEvent; 2]>,
 ) {
-    if !input_events.is_empty() {
-        let _ = input_event_sender.send(RdpInputEvent::FastPath(input_events));
-    }
+    if !input_events.is_empty() && input_event_sender.send(RdpInputEvent::FastPath(input_events)).is_err() {
+        error!("Failed to send FastPath event");
+    };
 }

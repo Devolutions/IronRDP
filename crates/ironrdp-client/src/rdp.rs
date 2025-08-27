@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
@@ -96,7 +97,7 @@ pub struct RdpClient {
 }
 
 impl RdpClient {
-    pub async fn run(mut self) {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         loop {
             let (connection_result, framed) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
                 match connect_ws(
@@ -109,7 +110,9 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
+                        self.event_loop_proxy
+                            .send_event(RdpOutputEvent::ConnectionFailure(e))
+                            .context("failed to send connection failure event")?;
                         break;
                     }
                 }
@@ -123,7 +126,9 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
+                        self.event_loop_proxy
+                            .send_event(RdpOutputEvent::ConnectionFailure(e))
+                            .context("failed to send connection failure event")?;
                         break;
                     }
                 }
@@ -142,15 +147,21 @@ impl RdpClient {
                     self.config.connector.desktop_size.height = height;
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
-                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Ok(reason)));
+                    self.event_loop_proxy
+                        .send_event(RdpOutputEvent::Terminated(Ok(reason)))
+                        .context("failed to send terminated event")?;
                     break;
                 }
                 Err(e) => {
-                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Err(e)));
+                    self.event_loop_proxy
+                        .send_event(RdpOutputEvent::Terminated(Err(e)))
+                        .context("failed to send terminated event")?;
                     break;
                 }
             }
         }
+
+        Ok(())
     }
 }
 

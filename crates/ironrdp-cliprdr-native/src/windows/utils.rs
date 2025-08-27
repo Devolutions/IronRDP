@@ -65,7 +65,7 @@ pub(crate) unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> Wi
 
     // SAFETY: If described above safety requirements of `render_format` call are met, then
     // `SetClipboardData` is safe to call.
-    let _ = unsafe { SetClipboardData(format.value(), Some(handle)) };
+    let _handle = unsafe { SetClipboardData(format.value(), Some(handle)) };
 
     // We successfully transferred ownership of the data to the clipboard, we don't need to
     // call drop on handle

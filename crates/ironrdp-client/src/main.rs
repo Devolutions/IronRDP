@@ -5,7 +5,7 @@ use ironrdp_client::app::App;
 use ironrdp_client::config::{ClipboardType, Config};
 use ironrdp_client::rdp::{DvcPipeProxyFactory, RdpClient, RdpInputEvent, RdpOutputEvent};
 use tokio::runtime;
-use tracing::debug;
+use tracing::{debug, error};
 use winit::event_loop::EventLoop;
 
 fn main() -> anyhow::Result<()> {
@@ -69,7 +69,9 @@ fn main() -> anyhow::Result<()> {
 
     debug!("Start RDP thread");
     std::thread::spawn(move || {
-        rt.block_on(client.run());
+        if let Err(err) = rt.block_on(client.run()) {
+            error!(?err, "An error occurred in RDP thread");
+        }
     });
 
     debug!("Run App");

@@ -22,7 +22,7 @@ use ironrdp::server::{
 };
 use ironrdp_cliprdr_native::StubCliprdrBackend;
 use rand::prelude::*;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 const HELP: &str = "\
 USAGE:
@@ -339,7 +339,9 @@ impl RdpsndServerHandler for SndHandler {
 
                 let inner = inner.lock().unwrap();
                 if let Some(sender) = inner.ev_sender.as_ref() {
-                    let _ = sender.send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(data, ts)));
+                    if let Err(err) = sender.send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(data, ts))) {
+                        error!(?err);
+                    }
                 }
                 ts = ts.wrapping_add(100);
             }

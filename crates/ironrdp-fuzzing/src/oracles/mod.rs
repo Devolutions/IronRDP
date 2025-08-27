@@ -10,6 +10,11 @@
 //! When an oracle finds a bug, it should report it to the fuzzing engine by
 //! panicking.
 
+#![allow(
+    clippy::let_underscore_must_use,
+    reason = "The result can be ignored, because we are only checking for panics in the fuzzing."
+)]
+
 use crate::generators::BitmapInput;
 
 pub fn pdu_decode(data: &[u8]) {
