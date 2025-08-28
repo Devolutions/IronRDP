@@ -37,7 +37,10 @@ impl Default for ReqwestNetworkClient {
 }
 
 impl ReqwestNetworkClient {
-    async fn send_impl<'a>(&'a mut self, request: &'a sspi::generator::NetworkRequest) -> ConnectorResult<Vec<u8>> {
+    pub async fn send_request<'a>(
+        &'a mut self,
+        request: &'a sspi::generator::NetworkRequest,
+    ) -> ConnectorResult<Vec<u8>> {
         match &request.protocol {
             sspi::network_client::NetworkProtocol::Tcp => self.send_tcp(&request.url, &request.data).await,
             sspi::network_client::NetworkProtocol::Udp => self.send_udp(&request.url, &request.data).await,
