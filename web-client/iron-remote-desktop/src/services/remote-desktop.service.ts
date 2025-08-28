@@ -161,13 +161,14 @@ export class RemoteDesktopService {
 
         const session = await sessionBuilder.connect().catch((err: IronError) => {
             this.raiseSessionEvent({
-                type: SessionEventType.ERROR,
+                type: SessionEventType.TERMINATED,
                 data: {
                     backtrace: () => err.backtrace(),
                     kind: () => err.kind() as number as IronErrorKind,
                 },
             });
-            throw new Error('could not connect to the session');
+            // The client must ignore this error and use session events for error handling.
+            throw new Error();
         });
 
         this.run(session);

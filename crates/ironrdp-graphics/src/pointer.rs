@@ -24,6 +24,8 @@ use ironrdp_pdu::pointer::{ColorPointerAttribute, LargePointerAttribute, Pointer
 
 use crate::color_conversion::rdp_16bit_to_rgb;
 
+const SUPPORTED_COLOR_BPP: [u16; 4] = [1, 16, 24, 32];
+
 #[derive(Debug)]
 pub enum PointerError {
     InvalidXorMaskSize { expected: usize, actual: usize },
@@ -179,8 +181,6 @@ impl DecodedPointer {
     }
 
     fn decode_pointer(data: PointerData<'_>, target: PointerBitmapTarget) -> Result<Self, PointerError> {
-        const SUPPORTED_COLOR_BPP: [u16; 4] = [1, 16, 24, 32];
-
         if data.width == 0 || data.height == 0 {
             return Ok(Self::new_invisible());
         }
@@ -230,7 +230,7 @@ impl DecodedPointer {
                 (xor_stride_cursor, and_stride_cursor)
             };
 
-            let mut color_reader = ColorStrideReader::new(data.xor_bpp, xor_stride);
+            let mut color_reader = ColorStrideReader::new(data.xor_bpp, xor_stride)?;
             let mut bitmask_reader = BitmaskStrideReader::new(and_stride);
 
             let compute_inverted_pixel = if target.should_invert_pixels_using_check_pattern() {
@@ -340,6 +340,7 @@ impl BitmaskStrideReader {
 
 enum ColorStrideReader {
     Color {
+        /// INVARIANT: `bpp == 16 || bpp == 24 || bpp == 32`
         bpp: u16,
         read_stide_bytes: usize,
         stride_data_bytes: usize,
@@ -349,16 +350,23 @@ enum ColorStrideReader {
 }
 
 impl ColorStrideReader {
-    fn new(bpp: u16, stride: Stride) -> Self {
-        match bpp {
+    fn new(bpp: u16, stride: Stride) -> Result<Self, PointerError> {
+        Ok(match bpp {
             1 => Self::Bitmask(BitmaskStrideReader::new(stride)),
             bpp => Self::Color {
-                bpp,
+                bpp: {
+                    // Enforce the bpp == 16 || bpp == 24 || bpp == 32 invariant.
+                    if !SUPPORTED_COLOR_BPP[1..].contains(&bpp) {
+                        return Err(PointerError::NotSupportedBpp { bpp });
+                    }
+
+                    bpp
+                },
                 read_stide_bytes: 0,
                 stride_data_bytes: stride.data_bytes,
                 stride_padding: stride.padding,
             },
-        }
+        })
     }
 
     fn next_pixel(&mut self, cursor: &mut ReadCursor<'_>) -> [u8; 4] {
@@ -392,7 +400,7 @@ impl ColorStrideReader {
                         let color_32bit = cursor.read_array::<4>();
                         [color_32bit[2], color_32bit[1], color_32bit[0], color_32bit[3]]
                     }
-                    _ => panic!("BUG: should be validated in the calling code"),
+                    _ => unreachable!("per the invariant on self.bpp, this path is unreachable"),
                 }
             }
             ColorStrideReader::Bitmask(bitask) => {

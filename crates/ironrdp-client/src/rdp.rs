@@ -394,7 +394,7 @@ where
         framed
             .write_all(&rdcleanpath_req)
             .await
-            .map_err(|e| connector::custom_err!("couldn’t write RDCleanPath request", e))?;
+            .map_err(|e| connector::custom_err!("couldn't write RDCleanPath request", e))?;
     }
 
     {
