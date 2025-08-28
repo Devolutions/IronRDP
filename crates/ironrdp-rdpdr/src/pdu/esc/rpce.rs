@@ -99,7 +99,7 @@ impl<T: HeaderlessDecode> Pdu<T> {
         // omit that check here.
         let _stream_header = StreamHeader::decode(src)?;
         let _type_header = TypeHeader::decode(src)?;
-        let pdu = T::decode(src, charset)?;
+        let pdu = T::decode_without_headers(src, charset)?;
         Ok(Self(pdu))
     }
 }
@@ -163,7 +163,7 @@ pub trait HeaderlessDecode: Sized {
     /// `charset` is an optional parameter that can be used to specify the character set
     /// when relevant. This is useful for accounting for the "A" vs "W" variants of certain
     /// opcodes e.g. [`ListReadersA`][`super::ScardIoCtlCode::ListReadersA`] vs [`ListReadersW`][`super::ScardIoCtlCode::ListReadersW`].
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self>;
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self>;
 }
 
 /// [2.2.6.1] Common Type Header for the Serialization Stream

@@ -598,7 +598,7 @@ impl EstablishContextCall {
 }
 
 impl rpce::HeaderlessDecode for EstablishContextCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         expect_no_charset(charset)?;
         ensure_size!(in: src, size: Self::size());
         let scope = Scope::try_from(src.read_u32())?;
@@ -693,7 +693,7 @@ impl ListReadersCall {
 }
 
 impl rpce::HeaderlessDecode for ListReadersCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         let charset = expect_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
@@ -809,7 +809,7 @@ impl GetStatusChangeCall {
 }
 
 impl rpce::HeaderlessDecode for GetStatusChangeCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
 
@@ -966,7 +966,7 @@ impl ConnectCall {
 }
 
 impl rpce::HeaderlessDecode for ConnectCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         let charset = expect_charset(charset)?;
         let mut index = 0;
         let _reader_ptr = ndr::decode_ptr(src, &mut index)?;
@@ -1164,7 +1164,7 @@ impl HCardAndDispositionCall {
 }
 
 impl rpce::HeaderlessDecode for HCardAndDispositionCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         expect_no_charset(charset)?;
         let mut index = 0;
         let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
@@ -1196,7 +1196,7 @@ impl TransmitCall {
 }
 
 impl rpce::HeaderlessDecode for TransmitCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         expect_no_charset(charset)?;
         let mut index = 0;
         let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
@@ -1374,7 +1374,7 @@ impl StatusCall {
 }
 
 impl rpce::HeaderlessDecode for StatusCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         expect_no_charset(charset)?;
         let mut index = 0;
         let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
@@ -1505,7 +1505,7 @@ impl ContextCall {
 }
 
 impl rpce::HeaderlessDecode for ContextCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         expect_no_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
@@ -1531,7 +1531,7 @@ impl GetDeviceTypeIdCall {
 }
 
 impl rpce::HeaderlessDecode for GetDeviceTypeIdCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         expect_no_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
@@ -1600,7 +1600,7 @@ impl ReadCacheCall {
 }
 
 impl rpce::HeaderlessDecode for ReadCacheCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         let charset = expect_charset(charset)?;
         let mut index = 0;
         let _lookup_name_ptr = ndr::decode_ptr(src, &mut index)?;
@@ -1710,7 +1710,7 @@ impl WriteCacheCall {
 }
 
 impl rpce::HeaderlessDecode for WriteCacheCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         let charset = expect_charset(charset)?;
         let mut index = 0;
         let _lookup_name_ptr = ndr::decode_ptr(src, &mut index)?;
@@ -1781,7 +1781,7 @@ impl GetReaderIconCall {
 }
 
 impl rpce::HeaderlessDecode for GetReaderIconCall {
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
+    fn decode_without_headers(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self> {
         expect_no_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;

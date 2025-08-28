@@ -111,6 +111,7 @@ non_ascii_literal = "warn"
 panic = "warn"
 precedence_bits = "warn"
 rc_mutex = "warn"
+same_name_method = "warn"
 
 # == Style, readability == #
 semicolon_outside_block = "warn" # With semicolon-outside-block-ignore-multiline = true

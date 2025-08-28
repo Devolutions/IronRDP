@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use futures_channel::mpsc;
+use iron_remote_desktop::ClipboardData as _;
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackend};
 use ironrdp::cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest,
@@ -599,14 +600,6 @@ impl ClipboardData {
 
     pub(crate) fn add(&mut self, item: ClipboardItem) {
         self.items.push(item);
-    }
-
-    pub(crate) fn items(&self) -> &[ClipboardItem] {
-        &self.items
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.items.is_empty()
     }
 
     pub(crate) fn clear(&mut self) {
