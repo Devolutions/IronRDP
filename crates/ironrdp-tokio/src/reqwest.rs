@@ -20,7 +20,7 @@ impl AsyncNetworkClient for ReqwestNetworkClient {
         &'a mut self,
         network_request: &'a sspi::generator::NetworkRequest,
     ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
-        Box::pin(ReqwestNetworkClient::send_impl(self, network_request))
+        Box::pin(ReqwestNetworkClient::send_request(self, network_request))
     }
 }
 
