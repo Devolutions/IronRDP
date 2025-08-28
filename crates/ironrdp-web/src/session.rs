@@ -1112,6 +1112,7 @@ where
                             .with_kind(IronErrorKind::NegotiationFailure));
                         }
                     }
+
                     // Fallback to generic error if we can't decode the negotiation failure.
                     return Err(
                         IronError::from(anyhow::Error::msg("received an RDCleanPath negotiation error"))

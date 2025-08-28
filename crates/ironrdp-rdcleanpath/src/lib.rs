@@ -259,7 +259,7 @@ impl RDCleanPathPdu {
         }
     }
 
-    /// Create a negotiation error response that includes the server's X.224 negotiation response.
+    /// Creates a negotiation error response that includes the server's X.224 negotiation response.
     ///
     /// This allows clients to extract specific negotiation failure details
     /// (like "CredSSP required") from the server's original response.

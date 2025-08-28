@@ -410,26 +410,6 @@ where
 
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
-        // Check for negotiation failure data before consuming the PDU
-        if let Some(x224_data) = &rdcleanpath_res.x224_connection_pdu {
-            if let Some(_error) = &rdcleanpath_res.error {
-                // Try to decode as X.224 Connection Confirm to extract negotiation failure details.
-                if let Ok(x224_confirm) = ironrdp_core::decode::<
-                    ironrdp::pdu::x224::X224<ironrdp::pdu::nego::ConnectionConfirm>,
-                >(x224_data.as_bytes())
-                {
-                    if let ironrdp::pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0 {
-                        // Convert to negotiation failure instead of generic RDCleanPath error.
-                        let negotiation_failure = connector::NegotiationFailure::from(code);
-                        return Err(connector::ConnectorError::new(
-                            "RDP negotiation failed",
-                            connector::ConnectorErrorKind::Negotiation(negotiation_failure),
-                        ));
-                    }
-                }
-            }
-        }
-
         let (x224_connection_response, server_cert_chain) = match rdcleanpath_res
             .into_enum()
             .map_err(|e| connector::custom_err!("invalid RDCleanPath PDU", e))?
@@ -445,7 +425,6 @@ where
                 server_addr: _,
             } => (x224_connection_response, server_cert_chain),
             ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error) => {
-                // Fallback to generic RDCleanPath error if no negotiation failure data found
                 return Err(connector::custom_err!("received an RDCleanPath error", error));
             }
             ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
@@ -465,6 +444,7 @@ where
                         ));
                     }
                 }
+
                 // Fallback to generic error if we can't decode the negotiation failure.
                 return Err(connector::general_err!("received an RDCleanPath negotiation error"));
             }
