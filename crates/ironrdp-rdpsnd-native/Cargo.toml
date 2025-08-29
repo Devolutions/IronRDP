@@ -22,7 +22,7 @@ opus = ["dep:opus", "dep:bytemuck"]
 anyhow = "1"
 bytemuck = { version = "1.23", optional = true }
 cpal = "0.16"
-ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.5" } # public
+ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.6" } # public
 opus = { version = "0.3", optional = true }
 tracing = { version = "0.1", features = ["log"] }
 

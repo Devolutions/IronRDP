@@ -17,7 +17,7 @@ test = false
 
 [dependencies]
 futures-util = { version = "0.3", features = ["io"] } # public
-ironrdp-async = { path = "../ironrdp-async", version = "0.6" } # public
+ironrdp-async = { path = "../ironrdp-async", version = "0.7" } # public
 bytes = "1" # public
 
 [lints]

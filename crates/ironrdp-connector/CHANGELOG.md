@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [[0.6.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.6.0...ironrdp-connector-v0.6.1)] - 2025-08-29
+## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.6.0...ironrdp-connector-v0.7.0)] - 2025-08-29
 
 ### <!-- 1 -->Features
 
@@ -45,8 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump rand to 0.9 ([de0877188c](https://github.com/Devolutions/IronRDP/commit/de0877188cbb3692c3ce0d9a72f6e96d515cde1f)) 
 
 - Bump picky from 7.0.0-rc.16 to 7.0.0-rc.17 (#941) ([fe31cf2c57](https://github.com/Devolutions/IronRDP/commit/fe31cf2c574e0b06177a931db4cac95ea9cfbe7e)) 
-
-
 
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.5.1...ironrdp-connector-v0.6.0)] - 2025-07-08
 

@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-cliprdr-native"
-version = "0.3.1"
+version = "0.4.0"
 readme = "README.md"
 description = "Native CLIPRDR static channel backend implementations for IronRDP"
 edition.workspace = true
