@@ -19,7 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add QOI image codec ([613fd51f26](https://github.com/Devolutions/IronRDP/commit/613fd51f26315d8212662c46f8e625c541e4bb59)) 
 
+  The Quite OK Image format ([1]) losslessly compresses images to a similar size
+  of PNG, while offering 20x-50x faster encoding and 3x-4x faster decoding.
+
 - Add QOIZ image codec ([87df67fdc7](https://github.com/Devolutions/IronRDP/commit/87df67fdc76ff4f39d4b83521e34bf3b5e2e73bb)) 
+
+  Add a new QOIZ codec for SetSurface command. The PDU data contains the same
+  data as the QOI codec, with zstd compression.
 
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.6.1...ironrdp-server-v0.7.0)] - 2025-07-08
 
