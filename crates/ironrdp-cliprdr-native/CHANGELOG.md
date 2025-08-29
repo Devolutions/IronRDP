@@ -10,16 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- Map `E_ACCESSDENIED` WinAPI error code to `ClipboarAccessDenied` error (#936) ([b0c145d0d9](https://github.com/Devolutions/IronRDP/commit/b0c145d0d9cf2f347e537c08ce9d6c35223823d5)) 
+- Map `E_ACCESSDENIED` WinAPI error code to `ClipboardAccessDenied` error (#936) ([b0c145d0d9](https://github.com/Devolutions/IronRDP/commit/b0c145d0d9cf2f347e537c08ce9d6c35223823d5)) 
 
   When the system clipboard updates, we receive an `Updated` event. Then
   we try to open it, but we can get `AccessDenied` error because the
   clipboard may still be locked for another window (like _Notepad_). To
   handle this, we have special logic that attempts to open the clipboard
   in the event of such errors.
-  The problem is that nothing in the code actually sets the
-  `ClipboardAccessDenied` error to be able to run the retrieval logic.
-  This PR fixes it.
+  The problem is that so far, the `ClipboardAccessDenied` error was not mapped.
 
 ## [[0.1.4](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.1.3...ironrdp-cliprdr-native-v0.1.4)] - 2025-03-12
 
@@ -35,15 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Previously, the function handled only `WM_ACTIVATE`.
 
-
-
 ## [[0.1.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.1.1...ironrdp-cliprdr-native-v0.1.2)] - 2025-01-28
 
 ### <!-- 6 -->Documentation
 
 - Use CDN URLs instead of the blob storage URLs for Devolutions logo ([#631](https://github.com/Devolutions/IronRDP/issues/631)) ([dd249909a8](https://github.com/Devolutions/IronRDP/commit/dd249909a894004d4f728d30b3a4aa77a0f8193b)) 
-
-
 
 ## [[0.1.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.1.0...ironrdp-cliprdr-native-v0.1.1)] - 2024-12-14
 

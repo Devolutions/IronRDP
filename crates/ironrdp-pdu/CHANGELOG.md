@@ -10,34 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 1 -->Features
 
-- [**breaking**] Add server_codecs_capabilities() ([d3aaa43c23](https://github.com/Devolutions/IronRDP/commit/d3aaa43c23b252077b8720bb8ecfeceaaf7b7a7f)) 
-
-  Teach the server to support customizable codecs set. Use the same
-  logic/parsing as the client codecs configuration.
-  
-  Replace "with_remote_fx" with "codecs".
-
-- Add QOI image codec ([613fd51f26](https://github.com/Devolutions/IronRDP/commit/613fd51f26315d8212662c46f8e625c541e4bb59)) 
-
-  The Quite OK Image format ([1]) losslessly compresses images to a
-  similar size of PNG, while offering 20x-50x faster encoding and 3x-4x
-  faster decoding.
-  
-  Add a new QOI codec (UUID 4dae9af8-b399-4df6-b43a-662fd9c0f5d6) for
-  SetSurface command. The PDU data contains the QOI header (14 bytes) +
-  data "chunks" and the end marker (8 bytes).
-  
-  Some benchmarks showing interesting results (using ironrdp/perfenc)
-
-- Add QOIZ image codec ([87df67fdc7](https://github.com/Devolutions/IronRDP/commit/87df67fdc76ff4f39d4b83521e34bf3b5e2e73bb)) 
-
-  Add a new QOIZ codec (UUID 229cc6dc-a860-4b52-b4d8-053a22b3892b) for
-  SetSurface command. The PDU data contains the same data as the QOI
-  codec, with zstd compression.
-  
-  Some benchmarks showing interesting results (using ironrdp/perfenc)
-
-- Improve `ExtendedClientOptionalInfoBuilder` API (#891) ([ae052ed835](https://github.com/Devolutions/IronRDP/commit/ae052ed83598ad1f4ad7038b153e3c5398d2a738)) 
+- Implement `Default` trait on `ExtendedClientOptionalInfoBuilder` (#891) ([ae052ed835](https://github.com/Devolutions/IronRDP/commit/ae052ed83598ad1f4ad7038b153e3c5398d2a738)) 
 
 ### <!-- 4 -->Bug Fixes
 
@@ -52,8 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Bump der-parser to 10.0 ([03cac54ada](https://github.com/Devolutions/IronRDP/commit/03cac54ada50fae13d085b855a9b8db37d615ba8)) 
 
-
-
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.4.0...ironrdp-pdu-v0.5.0)] - 2025-05-27
 
 ### <!-- 1 -->Features
@@ -67,7 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix possible out of bound indexing in RFX module (#724) ([9f4e6d410b](https://github.com/Devolutions/IronRDP/commit/9f4e6d410b631d8a6b0c09c2abc0817a83cf042b)) 
 
   An index bound check was missing in the RFX module. Found by fuzzer.
-
 
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.3.1...ironrdp-pdu-v0.4.0)] - 2025-03-12
 
@@ -103,8 +73,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   
   This fixes random error/disconnect in client.
 
-
-
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.1.2...ironrdp-pdu-v0.2.0)] - 2025-01-28
 
 ### <!-- 1 -->Features
@@ -114,8 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### <!-- 6 -->Documentation
 
 - Use CDN URLs instead of the blob storage URLs for Devolutions logo (#631) ([dd249909a8](https://github.com/Devolutions/IronRDP/commit/dd249909a894004d4f728d30b3a4aa77a0f8193b)) 
-
-
 
 ## [[0.1.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.1.1...ironrdp-pdu-v0.1.2)] - 2024-12-14
 

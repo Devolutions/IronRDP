@@ -10,9 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- [**breaking**] Replace current clipboard logic with auto and manual clipboard modes (#935) ([5b948e2161](https://github.com/Devolutions/IronRDP/commit/5b948e2161b08b13d32bdbb480b26c8fa44d42f7)) 
-
-
+- [**breaking**] Remove the `remote_received_format_list_callback` method from Session common API (#935) ([5b948e2161](https://github.com/Devolutions/IronRDP/commit/5b948e2161b08b13d32bdbb480b26c8fa44d42f7)) 
 
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.3.0...iron-remote-desktop-v0.4.0)] - 2025-06-27
 

@@ -12,16 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Make dvc named pipe proxy cross-platform (#896) ([166b76010c](https://github.com/Devolutions/IronRDP/commit/166b76010cbd8f8674e6e8d4801fee5cda1ad9e5)) 
 
-  ### Changes
   - Make dvc named pipe proxy cross-platform (Unix implementation via
   `tokio::net::unix::UnixStream`)
   - Removed unsafe code for Windows implementation, switched to
   `tokio::net::windows::named_pipe`
-  
-  ### Testing
-  This feature can be used in the [same
-  way](https://github.com/Devolutions/IronRDP/pull/791) as on Windows,
-  however instead of GUI test app there is new basic
-  [CLI](https://github.com/Devolutions/now-proto/pull/31) app
-
-
