@@ -22,7 +22,7 @@ ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.4" }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.5" } # public (SvcMessage type)
 
 tracing = { version = "0.1", features = ["log"] }
-tokio = { version = "1", features = ["net", "rt", "sync", "macros", "io-util"]}
+tokio = { version = "1", features = ["net", "rt", "sync", "macros", "io-util", "fs"]}
 async-trait = "0.1"
 
 [lints]
