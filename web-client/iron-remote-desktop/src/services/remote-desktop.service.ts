@@ -11,6 +11,7 @@ import type { MousePosition } from '../interfaces/MousePosition';
 import type { IronError, IronErrorKind, SessionEvent } from '../interfaces/session-event';
 import type { ClipboardData } from '../interfaces/ClipboardData';
 import type { Session } from '../interfaces/Session';
+import { RotationUnit } from '../interfaces/DeviceEvent';
 import type { DeviceEvent } from '../interfaces/DeviceEvent';
 import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
 import { ConfigBuilder } from './ConfigBuilder';
@@ -224,10 +225,27 @@ export class RemoteDesktopService {
         }
     }
 
+    rotation_unit_from_wheel_event(event: WheelEvent): RotationUnit {
+        switch (event.deltaMode) {
+            case event.DOM_DELTA_PIXEL:
+                return RotationUnit.Pixel;
+            case event.DOM_DELTA_LINE:
+                return RotationUnit.Line;
+            case event.DOM_DELTA_PAGE:
+                return RotationUnit.Page;
+            default:
+                return RotationUnit.Pixel;
+        }
+    }
+
     mouseWheel(event: WheelEvent) {
         const vertical = event.deltaY !== 0;
         const rotation = vertical ? event.deltaY : event.deltaX;
-        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.wheelRotations(vertical, -rotation)]);
+        const rotation_unit = this.rotation_unit_from_wheel_event(event);
+
+        this.doTransactionFromDeviceEvents([
+            this.module.DeviceEvent.wheelRotations(vertical, -rotation, rotation_unit),
+        ]);
     }
 
     setVisibility(state: boolean) {

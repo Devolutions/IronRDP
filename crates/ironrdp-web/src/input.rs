@@ -1,3 +1,4 @@
+use iron_remote_desktop::RotationUnit;
 use ironrdp::input::{MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use smallvec::SmallVec;
 use tracing::warn;
@@ -30,10 +31,23 @@ impl iron_remote_desktop::DeviceEvent for DeviceEvent {
         Self(Operation::MouseMove(MousePosition { x, y }))
     }
 
-    fn wheel_rotations(vertical: bool, rotation_units: i16) -> Self {
+    fn wheel_rotations(vertical: bool, rotation_amount: i16, rotation_unit: RotationUnit) -> Self {
+        const LINES_TO_PIXELS_SCALE: i16 = 50;
+        const PAGES_TO_LINES_SCALE: i16 = 38;
+
+        let lines_to_pixels = |lines: i16| lines * LINES_TO_PIXELS_SCALE;
+
+        let pages_to_pixels = |pages: i16| pages * PAGES_TO_LINES_SCALE * LINES_TO_PIXELS_SCALE;
+
+        let rotation_amount = match rotation_unit {
+            RotationUnit::Pixel => rotation_amount,
+            RotationUnit::Line => lines_to_pixels(rotation_amount),
+            RotationUnit::Page => pages_to_pixels(rotation_amount),
+        };
+
         Self(Operation::WheelRotations(WheelRotations {
             is_vertical: vertical,
-            rotation_units,
+            rotation_units: rotation_amount,
         }))
     }
 
