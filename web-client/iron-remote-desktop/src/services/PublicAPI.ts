@@ -7,12 +7,15 @@ import type { ScreenScale } from '../enums/ScreenScale';
 import { ConfigBuilder } from './ConfigBuilder';
 import { Config } from './Config';
 import type { Extension } from '../interfaces/Extension';
+import type { ClipboardService } from './clipboard.service';
 
 export class PublicAPI {
     private remoteDesktopService: RemoteDesktopService;
+    private clipboardService: ClipboardService;
 
-    constructor(remoteDesktopService: RemoteDesktopService) {
+    constructor(remoteDesktopService: RemoteDesktopService, clipboardService: ClipboardService) {
         this.remoteDesktopService = remoteDesktopService;
+        this.clipboardService = clipboardService;
     }
 
     private configBuilder(): ConfigBuilder {
@@ -61,6 +64,18 @@ export class PublicAPI {
         this.remoteDesktopService.setEnableClipboard(enable);
     }
 
+    private setEnableAutoClipboard(enable: boolean) {
+        this.remoteDesktopService.setEnableAutoClipboard(enable);
+    }
+
+    private async saveRemoteClipboardData(): Promise<boolean> {
+        return await this.clipboardService.saveRemoteClipboardData();
+    }
+
+    private async sendClipboardData(): Promise<boolean> {
+        return await this.clipboardService.sendClipboardData();
+    }
+
     private invokeExtension(ext: Extension) {
         this.remoteDesktopService.invokeExtension(ext);
     }
@@ -81,6 +96,9 @@ export class PublicAPI {
             setCursorStyleOverride: this.setCursorStyleOverride.bind(this),
             resize: this.resize.bind(this),
             setEnableClipboard: this.setEnableClipboard.bind(this),
+            setEnableAutoClipboard: this.setEnableAutoClipboard.bind(this),
+            saveRemoteClipboardData: this.saveRemoteClipboardData.bind(this),
+            sendClipboardData: this.sendClipboardData.bind(this),
             invokeExtension: this.invokeExtension.bind(this),
         };
     }

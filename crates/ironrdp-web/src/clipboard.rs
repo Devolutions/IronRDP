@@ -105,7 +105,6 @@ pub(crate) enum WasmClipboardBackendMessage {
     RemoteClipboardChanged(Vec<ClipboardFormat>),
     RemoteDataResponse(FormatDataResponse<'static>),
 
-    FormatListReceived,
     ForceClipboardUpdate,
 }
 
@@ -125,7 +124,6 @@ pub(crate) struct WasmClipboard {
 /// Callbacks, required to interact with JS code from within the backend.
 pub(crate) struct JsClipboardCallbacks {
     pub(crate) on_remote_clipboard_changed: js_sys::Function,
-    pub(crate) on_remote_received_format_list: Option<js_sys::Function>,
     pub(crate) on_force_clipboard_update: Option<js_sys::Function>,
 }
 
@@ -496,11 +494,6 @@ impl WasmClipboard {
                     }
                 }
             }
-            WasmClipboardBackendMessage::FormatListReceived => {
-                if let Some(callback) = self.js_callbacks.on_remote_received_format_list.as_mut() {
-                    callback.call0(&JsValue::NULL).expect("failed to call JS callback");
-                }
-            }
             WasmClipboardBackendMessage::ForceClipboardUpdate => {
                 if let Some(callback) = self.js_callbacks.on_force_clipboard_update.as_mut() {
                     callback.call0(&JsValue::NULL).expect("failed to call JS callback");
@@ -546,10 +539,6 @@ impl CliprdrBackend for WasmClipboardBackend {
     fn on_request_format_list(&mut self) {
         // Initial clipboard is assumed to be empty on WASM (TODO: This is only relevant for Firefox?)
         self.send_event(WasmClipboardBackendMessage::ForceClipboardUpdate);
-    }
-
-    fn on_format_list_received(&mut self) {
-        self.send_event(WasmClipboardBackendMessage::FormatListReceived);
     }
 
     fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {

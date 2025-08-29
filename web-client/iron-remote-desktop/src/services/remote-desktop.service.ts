@@ -36,6 +36,7 @@ export class RemoteDesktopService {
     private cursorHasOverride: boolean = false;
     private lastCursorStyle: string = 'default';
     private enableClipboard: boolean = true;
+    private _autoClipboard: boolean = true;
 
     resizeObservable: Observable<ResizeEvent> = new Observable();
 
@@ -54,19 +55,26 @@ export class RemoteDesktopService {
         loggingService.info('Web bridge initialized.');
     }
 
+    get autoClipboard(): boolean {
+        return this._autoClipboard;
+    }
+
     // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side
     setEnableClipboard(enable: boolean) {
         this.enableClipboard = enable;
     }
 
+    // If set to true, automatic clipboard synchronization with the server is enabled.
+    //
+    // If set to false, then the client must invoke `PublicAPI.saveRemoteClipboardData` and
+    // `PublicAPI.sendClipboardData` to write to clipboard and to send clipboard data to the server.
+    setEnableAutoClipboard(enable: boolean) {
+        this._autoClipboard = enable;
+    }
+
     /// Callback to set the local clipboard content to data received from the remote.
     setOnRemoteClipboardChanged(callback: OnRemoteClipboardChanged) {
         this.onRemoteClipboardChanged = callback;
-    }
-
-    /// Callback which is called when the remote sends a list of supported clipboard formats.
-    setOnRemoteReceivedFormatList(callback: OnRemoteReceivedFormatsList) {
-        this.onRemoteReceivedFormatList = callback;
     }
 
     /// Callback which is called when the remote requests a forced clipboard update (e.g. on
@@ -273,6 +281,10 @@ export class RemoteDesktopService {
         this.session?.invokeExtension(ext);
     }
 
+    raiseSessionEvent(event: SessionEvent) {
+        this.sessionEventObservable.publish(event);
+    }
+
     private releaseAllInputs() {
         this.session?.releaseAllInputs();
     }
@@ -417,10 +429,6 @@ export class RemoteDesktopService {
             syncCapsLockActive,
             syncKanaModeActive,
         );
-    }
-
-    private raiseSessionEvent(event: SessionEvent) {
-        this.sessionEventObservable.publish(event);
     }
 
     private updateModifierKeyState(evt: KeyboardEvent) {

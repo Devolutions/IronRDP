@@ -65,7 +65,6 @@ struct SessionBuilderInner {
     set_cursor_style_callback: Option<js_sys::Function>,
     set_cursor_style_callback_context: Option<JsValue>,
     remote_clipboard_changed_callback: Option<js_sys::Function>,
-    remote_received_format_list_callback: Option<js_sys::Function>,
     force_clipboard_update_callback: Option<js_sys::Function>,
 
     use_display_control: bool,
@@ -94,7 +93,6 @@ impl Default for SessionBuilderInner {
             set_cursor_style_callback: None,
             set_cursor_style_callback_context: None,
             remote_clipboard_changed_callback: None,
-            remote_received_format_list_callback: None,
             force_clipboard_update_callback: None,
 
             use_display_control: false,
@@ -199,12 +197,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     }
 
     /// Optional
-    fn remote_received_format_list_callback(&self, callback: js_sys::Function) -> Self {
-        self.0.borrow_mut().remote_received_format_list_callback = Some(callback);
-        self.clone()
-    }
-
-    /// Optional
     fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> Self {
         self.0.borrow_mut().force_clipboard_update_callback = Some(callback);
         self.clone()
@@ -253,7 +245,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             set_cursor_style_callback,
             set_cursor_style_callback_context,
             remote_clipboard_changed_callback,
-            remote_received_format_list_callback,
             force_clipboard_update_callback,
             outbound_message_size_limit,
         );
@@ -283,7 +274,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 .clone()
                 .context("set_cursor_style_callback_context missing")?;
             remote_clipboard_changed_callback = inner.remote_clipboard_changed_callback.clone();
-            remote_received_format_list_callback = inner.remote_received_format_list_callback.clone();
             force_clipboard_update_callback = inner.force_clipboard_update_callback.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
         }
@@ -302,7 +292,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 clipboard::WasmClipboardMessageProxy::new(input_events_tx.clone()),
                 clipboard::JsClipboardCallbacks {
                     on_remote_clipboard_changed: callback,
-                    on_remote_received_format_list: remote_received_format_list_callback,
                     on_force_clipboard_update: force_clipboard_update_callback,
                 },
             )

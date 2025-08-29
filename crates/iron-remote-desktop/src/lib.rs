@@ -267,16 +267,6 @@ macro_rules! make_bridge {
                 ))
             }
 
-            #[wasm_bindgen(js_name = remoteReceivedFormatListCallback)]
-            pub fn remote_received_format_list_callback(
-                &self,
-                callback: $crate::internal::web_sys::js_sys::Function,
-            ) -> Self {
-                Self($crate::SessionBuilder::remote_received_format_list_callback(
-                    &self.0, callback,
-                ))
-            }
-
             #[wasm_bindgen(js_name = forceClipboardUpdateCallback)]
             pub fn force_clipboard_update_callback(
                 &self,
