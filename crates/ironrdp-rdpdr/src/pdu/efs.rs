@@ -859,8 +859,16 @@ impl Devices {
         self.0.push(device);
     }
 
-    fn remove(&mut self, device: u32)->  Option<u32> {
-        Some(self.0.remove(self.0.iter().position(|d: &DeviceAnnounceHeader| d.device_id == device)?).device_id)
+    fn remove(&mut self, device: u32) -> Option<u32> {
+        Some(
+            self.0
+                .remove(
+                    self.0
+                        .iter()
+                        .position(|d: &DeviceAnnounceHeader| d.device_id == device)?,
+                )
+                .device_id,
+        )
     }
 
     pub fn clone_inner(&mut self) -> Vec<DeviceAnnounceHeader> {

@@ -7,10 +7,11 @@ use ironrdp_core::{
 use ironrdp_svc::SvcEncode;
 
 use self::efs::{
-    ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
-    ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse, ClientNameRequest, CoreCapability,
-    CoreCapabilityKind, DeviceCloseResponse, DeviceControlResponse, DeviceCreateResponse, DeviceIoRequest,
-    DeviceReadResponse, DeviceWriteResponse, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveQueryDirectoryResponse,
+    ClientDriveQueryInformationResponse, ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse,
+    ClientNameRequest, CoreCapability, CoreCapabilityKind, DeviceCloseResponse, DeviceControlResponse,
+    DeviceCreateResponse, DeviceIoRequest, DeviceReadResponse, DeviceWriteResponse, ServerDeviceAnnounceResponse,
+    VersionAndIdPdu, VersionAndIdPduKind,
 };
 
 pub mod efs;
@@ -74,7 +75,7 @@ impl RdpdrPdu {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDevicelistAnnounce,
             },
-             RdpdrPdu::ClientDeviceListRemove(_) => SharedHeader {
+            RdpdrPdu::ClientDeviceListRemove(_) => SharedHeader {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDevicelistRemove,
             },
@@ -223,7 +224,7 @@ impl fmt::Debug for RdpdrPdu {
             Self::ClientDeviceListAnnounce(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
-             Self::ClientDeviceListRemove(it) => {
+            Self::ClientDeviceListRemove(it) => {
                 write!(f, "RdpdrPdu({:?})", it)
             }
             Self::ServerDeviceAnnounceResponse(it) => {

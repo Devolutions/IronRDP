@@ -11,9 +11,9 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode_err, pdu_other_err, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::efs::{
-    Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
-    CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices, ServerDeviceAnnounceResponse,
-    VersionAndIdPdu, VersionAndIdPduKind,
+    Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest, ClientNameRequestUnicodeFlag,
+    CoreCapability, CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices,
+    ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::RdpdrPdu;
@@ -95,7 +95,9 @@ impl Rdpdr {
     }
 
     pub fn remove_device(&mut self, device_id: u32) -> Option<ClientDeviceListRemove> {
-       Some(ClientDeviceListRemove::remove_device(self.device_list.remove_device(device_id)?))
+        Some(ClientDeviceListRemove::remove_device(
+            self.device_list.remove_device(device_id)?,
+        ))
     }
 
     pub fn downcast_backend<T: RdpdrBackend>(&self) -> Option<&T> {
