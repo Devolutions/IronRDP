@@ -6,7 +6,7 @@ import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
 import { runWhenFocusedQueue } from '../lib/stores/runWhenFocusedStore';
 import { SessionEventType } from '../enums/SessionEventType';
 
-const CLIPBOARD_MONITORING_INTERVAL = 100; // ms
+const CLIPBOARD_MONITORING_INTERVAL_MS = 100;
 
 export class ClipboardService {
     private remoteDesktopService: RemoteDesktopService;
@@ -40,7 +40,7 @@ export class ClipboardService {
         if (this.remoteDesktopService.autoClipboard) {
             this.remoteDesktopService.setOnRemoteClipboardChanged(this.onRemoteClipboardChangedAutoMode.bind(this));
             // Start the clipboard monitoring loop
-            setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL);
+            setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL_MS);
         } else {
             this.remoteDesktopService.setOnRemoteClipboardChanged(this.onRemoteClipboardChangedManualMode.bind(this));
         }
@@ -305,7 +305,7 @@ export class ClipboardService {
             }
         } finally {
             if (!get(isComponentDestroyed)) {
-                setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL);
+                setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL_MS);
             }
         }
     }
