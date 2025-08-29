@@ -225,7 +225,7 @@ export class RemoteDesktopService {
         }
     }
 
-    rotation_unit_from_wheel_event(event: WheelEvent): RotationUnits {
+    rotation_unit_from_wheel_event(event: WheelEvent): RotationUnit {
         switch (event.deltaMode) {
             case event.DOM_DELTA_PIXEL:
                 return RotationUnit.Pixel;
