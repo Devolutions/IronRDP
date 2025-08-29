@@ -12,8 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [**breaking**] Extend `DeviceEvent.wheelRotations` event to support passing rotation units other than pixels (#952) ([23c0cc2c36](https://github.com/Devolutions/IronRDP/commit/23c0cc2c365159d24330a89ec4015121b67bccb6)) 
 
-
-
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.4.0...iron-remote-desktop-v0.5.0)] - 2025-08-29
 
 ### <!-- 4 -->Bug Fixes
