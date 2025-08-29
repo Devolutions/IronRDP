@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-cliprdr-native"
-version = "0.3.0"
+version = "0.3.1"
 readme = "README.md"
 description = "Native CLIPRDR static channel backend implementations for IronRDP"
 edition.workspace = true
@@ -16,7 +16,7 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.3" } # public
+ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.4" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
 tracing = { version = "0.1", features = ["log"] }
 

@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-session"
-version = "0.5.0"
+version = "0.5.1"
 readme = "README.md"
 description = "State machines to drive an RDP session"
 edition.workspace = true
@@ -27,7 +27,7 @@ ironrdp-svc = { path = "../ironrdp-svc", version = "0.4" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.3" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.4" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5", features = ["std"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", features = ["std"] } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.3" }
 tracing = { version = "0.1", features = ["log"] }
 qoicoubeh = { version = "0.5", optional = true }

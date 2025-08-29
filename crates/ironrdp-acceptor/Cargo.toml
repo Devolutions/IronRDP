@@ -17,7 +17,7 @@ test = false
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.4" } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.6" } # public
 ironrdp-async = { path = "../ironrdp-async", version = "0.6" } # public

@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.5.0...ironrdp-pdu-v0.6.0)] - 2025-08-29
+
+### <!-- 1 -->Features
+
+- [**breaking**] Add server_codecs_capabilities() ([d3aaa43c23](https://github.com/Devolutions/IronRDP/commit/d3aaa43c23b252077b8720bb8ecfeceaaf7b7a7f)) 
+
+  Teach the server to support customizable codecs set. Use the same
+  logic/parsing as the client codecs configuration.
+  
+  Replace "with_remote_fx" with "codecs".
+
+- Add QOI image codec ([613fd51f26](https://github.com/Devolutions/IronRDP/commit/613fd51f26315d8212662c46f8e625c541e4bb59)) 
+
+  The Quite OK Image format ([1]) losslessly compresses images to a
+  similar size of PNG, while offering 20x-50x faster encoding and 3x-4x
+  faster decoding.
+  
+  Add a new QOI codec (UUID 4dae9af8-b399-4df6-b43a-662fd9c0f5d6) for
+  SetSurface command. The PDU data contains the QOI header (14 bytes) +
+  data "chunks" and the end marker (8 bytes).
+  
+  Some benchmarks showing interesting results (using ironrdp/perfenc)
+
+- Add QOIZ image codec ([87df67fdc7](https://github.com/Devolutions/IronRDP/commit/87df67fdc76ff4f39d4b83521e34bf3b5e2e73bb)) 
+
+  Add a new QOIZ codec (UUID 229cc6dc-a860-4b52-b4d8-053a22b3892b) for
+  SetSurface command. The PDU data contains the same data as the QOI
+  codec, with zstd compression.
+  
+  Some benchmarks showing interesting results (using ironrdp/perfenc)
+
+- Improve `ExtendedClientOptionalInfoBuilder` API (#891) ([ae052ed835](https://github.com/Devolutions/IronRDP/commit/ae052ed83598ad1f4ad7038b153e3c5398d2a738)) 
+
+### <!-- 4 -->Bug Fixes
+
+- [**breaking**] Update timezone info to use i32 bias (#921) ([119c7077c9](https://github.com/Devolutions/IronRDP/commit/119c7077c98e4b43021619378c4f251c1f95ae17)) 
+
+  Switches `bias` from an unsigned to a signed integer.
+  This matches the updated specification from Microsoft.
+
+### <!-- 7 -->Build
+
+- Bump thiserror to 2.0 ([b4fb0aa0c7](https://github.com/Devolutions/IronRDP/commit/b4fb0aa0c79aa409d1b6a5f43ab23448eede4e51)) 
+
+- Bump der-parser to 10.0 ([03cac54ada](https://github.com/Devolutions/IronRDP/commit/03cac54ada50fae13d085b855a9b8db37d615ba8)) 
+
+
+
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.4.0...ironrdp-pdu-v0.5.0)] - 2025-05-27
 
 ### <!-- 1 -->Features

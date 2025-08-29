@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.7.0...ironrdp-server-v0.8.0)] - 2025-08-29
+
+### <!-- 1 -->Features
+
+- [**breaking**] Add server_codecs_capabilities() ([d3aaa43c23](https://github.com/Devolutions/IronRDP/commit/d3aaa43c23b252077b8720bb8ecfeceaaf7b7a7f)) 
+
+  Teach the server to support customizable codecs set. Use the same
+  logic/parsing as the client codecs configuration.
+  
+  Replace "with_remote_fx" with "codecs".
+
+- Add QOI image codec ([613fd51f26](https://github.com/Devolutions/IronRDP/commit/613fd51f26315d8212662c46f8e625c541e4bb59)) 
+
+  The Quite OK Image format ([1]) losslessly compresses images to a
+  similar size of PNG, while offering 20x-50x faster encoding and 3x-4x
+  faster decoding.
+  
+  Add a new QOI codec (UUID 4dae9af8-b399-4df6-b43a-662fd9c0f5d6) for
+  SetSurface command. The PDU data contains the QOI header (14 bytes) +
+  data "chunks" and the end marker (8 bytes).
+  
+  Some benchmarks showing interesting results (using ironrdp/perfenc)
+
+- Add QOIZ image codec ([87df67fdc7](https://github.com/Devolutions/IronRDP/commit/87df67fdc76ff4f39d4b83521e34bf3b5e2e73bb)) 
+
+  Add a new QOIZ codec (UUID 229cc6dc-a860-4b52-b4d8-053a22b3892b) for
+  SetSurface command. The PDU data contains the same data as the QOI
+  codec, with zstd compression.
+  
+  Some benchmarks showing interesting results (using ironrdp/perfenc)
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.6.1...ironrdp-server-v0.7.0)] - 2025-07-08
 
 ### Build
