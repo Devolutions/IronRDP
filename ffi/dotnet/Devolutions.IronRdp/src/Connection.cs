@@ -18,6 +18,11 @@ public static class Connection
         var connector = ClientConnector.New(config, clientAddr);
 
         connector.WithDynamicChannelDisplayControl();
+        var dvcPipeProxy = config.DvcPipeProxy;
+        if (dvcPipeProxy != null)
+        {
+            connector.WithDynamicChannelPipeProxy(dvcPipeProxy);
+        }
 
         if (factory != null)
         {

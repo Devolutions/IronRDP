@@ -71,6 +71,14 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
+    public DvcPipeProxyConfig DvcPipeProxy
+    {
+        set
+        {
+            SetDvcPipeProxy(value);
+        }
+    }
+
     public bool EnableCredssp
     {
         set
@@ -451,6 +459,24 @@ public partial class ConfigBuilder: IDisposable
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             Raw.ConfigBuilder.SetPointerSoftwareRendering(_inner, pointerSoftwareRendering);
+        }
+    }
+
+    public void SetDvcPipeProxy(DvcPipeProxyConfig dvcPipeProxy)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConfigBuilder");
+            }
+            Raw.DvcPipeProxyConfig* dvcPipeProxyRaw;
+            dvcPipeProxyRaw = dvcPipeProxy.AsFFI();
+            if (dvcPipeProxyRaw == null)
+            {
+                throw new ObjectDisposedException("DvcPipeProxyConfig");
+            }
+            Raw.ConfigBuilder.SetDvcPipeProxy(_inner, dvcPipeProxyRaw);
         }
     }
 

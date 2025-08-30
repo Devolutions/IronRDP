@@ -219,6 +219,34 @@ public partial class ActiveStage: IDisposable
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 SendDvcPipeProxyMessage(DvcPipeProxyMessage message)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.DvcPipeProxyMessage* messageRaw;
+            messageRaw = message.AsFFI();
+            if (messageRaw == null)
+            {
+                throw new ObjectDisposedException("DvcPipeProxyMessage");
+            }
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.SendDvcPipeProxyMessage(_inner, messageRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
     /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
     /// </returns>
     public ActiveStageOutputIterator GracefulShutdown()
