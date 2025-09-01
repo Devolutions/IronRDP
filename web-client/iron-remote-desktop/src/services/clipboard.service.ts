@@ -62,7 +62,7 @@ export class ClipboardService {
             if (this.remoteDesktopService.autoClipboard) {
                 this.remoteDesktopService.setOnRemoteClipboardChanged(this.onRemoteClipboardChangedAutoMode.bind(this));
                 // Start the clipboard monitoring loop
-                setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL);
+                setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL_MS);
             } else {
                 this.remoteDesktopService.setOnRemoteClipboardChanged(
                     this.onRemoteClipboardChangedManualMode.bind(this),
