@@ -295,6 +295,9 @@ impl Processor {
                 };
             }
             Err(e) => {
+                // FIXME: This seems to be a way of special-handling the error case in FastPathUpdate::decode_cursor_with_code
+                // to ignore the unsupported update PDUs, but this is a fragile logic and the rationale behind it is not
+                // obvious.
                 if let DecodeErrorKind::InvalidField { field, reason } = e.kind {
                     warn!(field, reason, "Received invalid Fast-Path update");
                     processor_updates.push(UpdateKind::None);
