@@ -1,3 +1,12 @@
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub enum RotationUnit {
+    Pixel,
+    Line,
+    Page,
+}
+
 pub trait DeviceEvent {
     fn mouse_button_pressed(button: u8) -> Self;
 
@@ -5,7 +14,7 @@ pub trait DeviceEvent {
 
     fn mouse_move(x: u16, y: u16) -> Self;
 
-    fn wheel_rotations(vertical: bool, rotation_units: i16) -> Self;
+    fn wheel_rotations(vertical: bool, rotation_amount: i16, rotation_unit: RotationUnit) -> Self;
 
     fn key_pressed(scancode: u16) -> Self;
 

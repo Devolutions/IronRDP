@@ -1,6 +1,6 @@
 [package]
 name = "iron-remote-desktop"
-version = "0.4.0"
+version = "0.6.0"
 readme = "README.md"
 description = "Helper crate for building WASM modules compatible with iron-remote-desktop WebComponent"
 edition.workspace = true

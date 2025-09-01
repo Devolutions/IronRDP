@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.1.3...ironrdp-rdcleanpath-v0.2.0)] - 2025-08-29
+
+### <!-- 1 -->Features
+
+- [**breaking**] Extend helper API for handling negotiation errors (#930) ([ca11e338d7](https://github.com/Devolutions/IronRDP/commit/ca11e338d7231c86f60a110627a5d864377d8594)) 
+
+  - Helper for proxies creating an RDCleanPath error with server response.
+  - Helper for clients to handle these.
+
 ## [[0.1.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.1.2...ironrdp-rdcleanpath-v0.1.3)] - 2025-03-12
 
 ### <!-- 7 -->Build

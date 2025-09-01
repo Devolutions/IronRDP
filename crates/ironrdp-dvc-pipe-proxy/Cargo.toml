@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-dvc-pipe-proxy"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 description = "DVC named pipe proxy for IronRDP"
 edition.workspace = true
@@ -17,12 +17,12 @@ test = false
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5" } # public (PduResult type)
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.3" }
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.4" } # public (SvcMessage type)
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6" } # public (PduResult type)
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.4" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.5" } # public (SvcMessage type)
 
 tracing = { version = "0.1", features = ["log"] }
-tokio = { version = "1", features = ["net", "rt", "sync", "macros", "io-util"]}
+tokio = { version = "1", features = ["net", "rt", "sync", "macros", "io-util", "fs"]}
 async-trait = "0.1"
 
 [lints]
