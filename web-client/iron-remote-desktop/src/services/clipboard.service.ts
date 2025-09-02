@@ -27,6 +27,15 @@ export class ClipboardService {
     }
 
     initClipboard() {
+        // Clipboard API is available only in secure contexts (HTTPS).
+        if (!window.isSecureContext) {
+            this.remoteDesktopService.raiseSessionEvent({
+                type: SessionEventType.WARNING,
+                data: 'Clipboard is available only in secure contexts (HTTPS).',
+            });
+            return;
+        }
+
         // Detect if browser supports async Clipboard API
         if (navigator.clipboard != undefined) {
             if (navigator.clipboard.read != undefined && navigator.clipboard.write != undefined) {
