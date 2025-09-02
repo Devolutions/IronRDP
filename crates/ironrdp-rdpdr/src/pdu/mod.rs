@@ -225,7 +225,7 @@ impl fmt::Debug for RdpdrPdu {
                 write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDeviceListRemove(it) => {
-                write!(f, "RdpdrPdu({:?})", it)
+                write!(f, "RdpdrPdu({it:?})")
             }
             Self::ServerDeviceAnnounceResponse(it) => {
                 write!(f, "RdpdrPdu({it:?})")
