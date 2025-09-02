@@ -7,10 +7,11 @@ use ironrdp_core::{
 use ironrdp_svc::SvcEncode;
 
 use self::efs::{
-    ClientDeviceListAnnounce, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
-    ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse, ClientNameRequest, CoreCapability,
-    CoreCapabilityKind, DeviceCloseResponse, DeviceControlResponse, DeviceCreateResponse, DeviceIoRequest,
-    DeviceReadResponse, DeviceWriteResponse, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveQueryDirectoryResponse,
+    ClientDriveQueryInformationResponse, ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse,
+    ClientNameRequest, CoreCapability, CoreCapabilityKind, DeviceCloseResponse, DeviceControlResponse,
+    DeviceCreateResponse, DeviceIoRequest, DeviceReadResponse, DeviceWriteResponse, ServerDeviceAnnounceResponse,
+    VersionAndIdPdu, VersionAndIdPduKind,
 };
 
 pub mod efs;
@@ -22,6 +23,7 @@ pub enum RdpdrPdu {
     ClientNameRequest(ClientNameRequest),
     CoreCapability(CoreCapability),
     ClientDeviceListAnnounce(ClientDeviceListAnnounce),
+    ClientDeviceListRemove(ClientDeviceListRemove),
     ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse),
     DeviceIoRequest(DeviceIoRequest),
     DeviceControlResponse(DeviceControlResponse),
@@ -72,6 +74,10 @@ impl RdpdrPdu {
             RdpdrPdu::ClientDeviceListAnnounce(_) => SharedHeader {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDevicelistAnnounce,
+            },
+            RdpdrPdu::ClientDeviceListRemove(_) => SharedHeader {
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreDevicelistRemove,
             },
             RdpdrPdu::ServerDeviceAnnounceResponse(_) => SharedHeader {
                 component: Component::RdpdrCtypCore,
@@ -132,6 +138,7 @@ impl Encode for RdpdrPdu {
             RdpdrPdu::ClientNameRequest(pdu) => pdu.encode(dst),
             RdpdrPdu::CoreCapability(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.encode(dst),
+            RdpdrPdu::ClientDeviceListRemove(pdu) => pdu.encode(dst),
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceIoRequest(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceControlResponse(pdu) => pdu.encode(dst),
@@ -158,6 +165,7 @@ impl Encode for RdpdrPdu {
             RdpdrPdu::ClientNameRequest(pdu) => pdu.name(),
             RdpdrPdu::CoreCapability(pdu) => pdu.name(),
             RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.name(),
+            RdpdrPdu::ClientDeviceListRemove(pdu) => pdu.name(),
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceIoRequest(pdu) => pdu.name(),
             RdpdrPdu::DeviceControlResponse(pdu) => pdu.name(),
@@ -181,6 +189,7 @@ impl Encode for RdpdrPdu {
                 RdpdrPdu::ClientNameRequest(pdu) => pdu.size(),
                 RdpdrPdu::CoreCapability(pdu) => pdu.size(),
                 RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.size(),
+                RdpdrPdu::ClientDeviceListRemove(pdu) => pdu.size(),
                 RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceIoRequest(pdu) => pdu.size(),
                 RdpdrPdu::DeviceControlResponse(pdu) => pdu.size(),
@@ -213,6 +222,9 @@ impl fmt::Debug for RdpdrPdu {
                 write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDeviceListAnnounce(it) => {
+                write!(f, "RdpdrPdu({it:?})")
+            }
+            Self::ClientDeviceListRemove(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
             Self::ServerDeviceAnnounceResponse(it) => {

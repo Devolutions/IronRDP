@@ -782,6 +782,46 @@ impl ClientDeviceListAnnounce {
     }
 }
 
+/// [2.2.3.2] Client Device List Remove (DR_DEVICELIST_REMOVE)
+///
+/// [2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/13bd4c0a-e674-47a5-b317-50a835defb55
+#[derive(Debug, PartialEq, Clone)]
+pub struct ClientDeviceListRemove {
+    pub device_list: Vec<u32>,
+}
+
+impl ClientDeviceListRemove {
+    const FIXED_PART_SIZE: usize = size_of::<u32>(); // DeviceCount
+
+    pub(crate) fn remove_device(device_id: u32) -> Self {
+        Self {
+            device_list: vec![device_id],
+        }
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        dst.write_u32(cast_length!(
+            "ClientDeviceListRemove",
+            "DeviceCount",
+            self.device_list.len()
+        )?);
+
+        for dev in self.device_list.iter() {
+            dst.write_u32(*dev)
+        }
+
+        Ok(())
+    }
+
+    pub fn name(&self) -> &'static str {
+        "DR_DEVICELIST_REMOVE"
+    }
+
+    pub fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.device_list.len() * size_of::<u32>()
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Devices(Vec<DeviceAnnounceHeader>);
 
@@ -796,6 +836,10 @@ impl Devices {
 
     pub fn add_drive(&mut self, device_id: u32, name: String) {
         self.push(DeviceAnnounceHeader::new_drive(device_id, name));
+    }
+
+    pub fn remove_device(&mut self, device_id: u32) -> Option<u32> {
+        self.remove(device_id)
     }
 
     /// Returns the [`DeviceType`] for the given device ID.
@@ -813,6 +857,18 @@ impl Devices {
 
     fn push(&mut self, device: DeviceAnnounceHeader) {
         self.0.push(device);
+    }
+
+    fn remove(&mut self, device: u32) -> Option<u32> {
+        Some(
+            self.0
+                .remove(
+                    self.0
+                        .iter()
+                        .position(|d: &DeviceAnnounceHeader| d.device_id == device)?,
+                )
+                .device_id,
+        )
     }
 
     pub fn clone_inner(&mut self) -> Vec<DeviceAnnounceHeader> {
