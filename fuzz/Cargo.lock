@@ -75,12 +75,6 @@ checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
 name = "bitflags"
-version = "1.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
-
-[[package]]
-name = "bitflags"
 version = "2.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34efbcccd345379ca2868b2b2c9d3782e9cc58ba87bc7d79d5b53d9c9ae6f25d"
@@ -288,7 +282,7 @@ dependencies = [
 name = "ironrdp-cliprdr"
 version = "0.4.0"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags",
  "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -365,7 +359,7 @@ name = "ironrdp-graphics"
 version = "0.5.0"
 dependencies = [
  "bit_field",
- "bitflags 2.9.3",
+ "bitflags",
  "bitvec",
  "byteorder",
  "ironrdp-core",
@@ -381,7 +375,7 @@ name = "ironrdp-pdu"
 version = "0.6.0"
 dependencies = [
  "bit_field",
- "bitflags 2.9.3",
+ "bitflags",
  "byteorder",
  "der-parser",
  "ironrdp-core",
@@ -402,7 +396,7 @@ dependencies = [
 name = "ironrdp-rdpdr"
 version = "0.4.0"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags",
  "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
@@ -414,7 +408,7 @@ dependencies = [
 name = "ironrdp-rdpsnd"
 version = "0.6.0"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags",
  "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -425,7 +419,7 @@ dependencies = [
 name = "ironrdp-svc"
 version = "0.5.0"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags",
  "ironrdp-core",
  "ironrdp-pdu",
 ]
@@ -573,11 +567,11 @@ dependencies = [
 
 [[package]]
 name = "png"
-version = "0.17.16"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
+checksum = "97baced388464909d42d89643fe4361939af9b7ce7a31ee32a168f832a70f2a0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags",
  "crc32fast",
  "fdeflate",
  "flate2",

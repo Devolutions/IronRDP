@@ -17,7 +17,7 @@ test = false
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
-png = "0.17"
+png = "0.18"
 
 [lints]
 workspace = true
