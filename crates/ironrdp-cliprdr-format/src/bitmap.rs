@@ -1,3 +1,5 @@
+use std::io::Cursor;
+
 use ironrdp_core::{
     cast_int, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
     WriteCursor,
@@ -735,13 +737,15 @@ fn top_down_rgba_to_bottom_up_bgra(
 }
 
 fn decode_png(mut input: &[u8]) -> Result<(png::OutputInfo, Vec<u8>), BitmapError> {
-    let mut decoder = png::Decoder::new(&mut input);
+    let mut decoder = png::Decoder::new(Cursor::new(&mut input));
 
     // We need to produce 32-bit DIB, so we should expand the palette to 32-bit RGBA.
     decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::EXPAND);
 
     let mut reader = decoder.read_info()?;
-    let output_buffer_len = reader.output_buffer_size();
+    let Some(output_buffer_len) = reader.output_buffer_size() else {
+        return Err(BitmapError::BufferTooBig);
+    };
 
     // Prevent allocation of huge buffers.
     ensure(output_buffer_len <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
