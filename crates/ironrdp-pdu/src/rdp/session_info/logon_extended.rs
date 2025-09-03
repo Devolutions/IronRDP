@@ -3,8 +3,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, Decode, DecodeResult, Encode,
     EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 const LOGON_EX_LENGTH_FIELD_SIZE: usize = 2;
 const LOGON_EX_FLAGS_FIELD_SIZE: usize = 4;
@@ -172,7 +172,7 @@ impl Encode for LogonErrorsInfo {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(LOGON_ERRORS_INFO_SIZE as u32);
-        dst.write_u32(self.error_type.to_u32().unwrap());
+        dst.write_u32(self.error_type.as_u32());
         dst.write_u32(self.error_data.to_u32());
 
         Ok(())
@@ -213,7 +213,7 @@ bitflags! {
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum LogonErrorNotificationType {
     SessionBusyOptions = 0xFFFF_FFF8,
     DisconnectRefused = 0xFFFF_FFF9,
@@ -225,13 +225,39 @@ pub enum LogonErrorNotificationType {
     AccessDenied = 0xFFFF_FFFF,
 }
 
+impl LogonErrorNotificationType {
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::SessionBusyOptions => 0xFFFF_FFF8,
+            Self::DisconnectRefused => 0xFFFF_FFF9,
+            Self::NoPermission => 0xFFFF_FFFA,
+            Self::BumpOptions => 0xFFFF_FFFB,
+            Self::ReconnectOptions => 0xFFFF_FFFC,
+            Self::SessionTerminate => 0xFFFF_FFFD,
+            Self::SessionContinue => 0xFFFF_FFFE,
+            Self::AccessDenied => 0xFFFF_FFFF,
+        }
+    }
+}
+
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum LogonErrorNotificationDataErrorCode {
     FailedBadPassword = 0x0000_0000,
     FailedUpdatePassword = 0x0000_0001,
     FailedOther = 0x0000_0002,
     Warning = 0x0000_0003,
+}
+
+impl LogonErrorNotificationDataErrorCode {
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::FailedBadPassword => 0x0000_0000,
+            Self::FailedUpdatePassword => 0x0000_0001,
+            Self::FailedOther => 0x0000_0002,
+            Self::Warning => 0x0000_0003,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,7 +269,7 @@ pub enum LogonErrorNotificationData {
 impl LogonErrorNotificationData {
     pub fn to_u32(&self) -> u32 {
         match self {
-            LogonErrorNotificationData::ErrorCode(code) => code.to_u32().unwrap(),
+            LogonErrorNotificationData::ErrorCode(code) => code.as_u32(),
             LogonErrorNotificationData::SessionId(id) => *id,
         }
     }

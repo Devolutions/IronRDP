@@ -4,8 +4,8 @@ use bitflags::bitflags;
 use ironrdp_core::{
     ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
 const REDIRECTION_VERSION_MASK: u32 = 0x0000_003C;
@@ -30,7 +30,7 @@ impl Encode for ClientClusterData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        let flags_with_version = self.flags.bits() | (self.redirection_version.to_u32().unwrap() << 2);
+        let flags_with_version = self.flags.bits() | (self.redirection_version.as_u32() << 2);
 
         dst.write_u32(flags_with_version);
         dst.write_u32(self.redirected_session_id);
@@ -77,7 +77,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum RedirectionVersion {
     V1 = 0,
     V2 = 1,
@@ -85,6 +85,19 @@ pub enum RedirectionVersion {
     V4 = 3,
     V5 = 4,
     V6 = 5,
+}
+
+impl RedirectionVersion {
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::V1 => 0,
+            Self::V2 => 1,
+            Self::V3 => 2,
+            Self::V4 => 3,
+            Self::V5 => 4,
+            Self::V6 => 5,
+        }
+    }
 }
 
 #[derive(Debug, Error)]

@@ -4,8 +4,8 @@ use ironrdp_core::{
     cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeErrorKind, DecodeResult,
     Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
 use thiserror::Error;
 
 use crate::PduError;
@@ -265,7 +265,7 @@ impl<'de> Decode<'de> for ServerGccBlocks {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, FromPrimitive)]
 pub enum ClientGccType {
     CoreData = 0xC001,
     SecurityData = 0xC002,
@@ -277,14 +277,41 @@ pub enum ClientGccType {
     MultiTransportChannelData = 0xC00A,
 }
 
+impl From<ClientGccType> for u16 {
+    fn from(value: ClientGccType) -> Self {
+        match value {
+            ClientGccType::CoreData => 0xC001,
+            ClientGccType::SecurityData => 0xC002,
+            ClientGccType::NetworkData => 0xC003,
+            ClientGccType::ClusterData => 0xC004,
+            ClientGccType::MonitorData => 0xC005,
+            ClientGccType::MessageChannelData => 0xC006,
+            ClientGccType::MonitorExtendedData => 0xC008,
+            ClientGccType::MultiTransportChannelData => 0xC00A,
+        }
+    }
+}
+
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, FromPrimitive)]
 pub enum ServerGccType {
     CoreData = 0x0C01,
     SecurityData = 0x0C02,
     NetworkData = 0x0C03,
     MessageChannelData = 0x0C04,
     MultiTransportChannelData = 0x0C08,
+}
+
+impl From<ServerGccType> for u16 {
+    fn from(value: ServerGccType) -> Self {
+        match value {
+            ServerGccType::CoreData => 0x0C01,
+            ServerGccType::SecurityData => 0x0C02,
+            ServerGccType::NetworkData => 0x0C03,
+            ServerGccType::MessageChannelData => 0x0C04,
+            ServerGccType::MultiTransportChannelData => 0x0C08,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -295,12 +322,12 @@ impl UserDataHeader {
 
     pub fn encode<T, B>(dst: &mut WriteCursor<'_>, block_type: T, block: &B) -> EncodeResult<()>
     where
-        T: ToPrimitive,
+        T: Into<u16>,
         B: Encode,
     {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u16(block_type.to_u16().unwrap());
+        dst.write_u16(block_type.into());
         dst.write_u16(cast_length!("blockLen", block.size() + USER_DATA_HEADER_SIZE)?);
         block.encode(dst)?;
 

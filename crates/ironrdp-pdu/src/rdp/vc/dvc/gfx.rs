@@ -14,7 +14,7 @@ use ironrdp_core::{
     ReadCursor, WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_traits::FromPrimitive as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerPdu {
@@ -52,7 +52,7 @@ impl Encode for ServerPdu {
 
         let buffer_length = self.size();
 
-        dst.write_u16(ServerPduType::from(self).to_u16().unwrap());
+        dst.write_u16(ServerPduType::from(self).as_u16());
         dst.write_u16(0); // flags
         dst.write_u32(cast_length!("bufferLen", buffer_length)?);
 
@@ -175,7 +175,7 @@ impl Encode for ClientPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u16(ClientPduType::from(self).to_u16().unwrap());
+        dst.write_u16(ClientPduType::from(self).as_u16());
         dst.write_u16(0); // flags
         dst.write_u32(cast_length!("bufferLen", self.size())?);
 
@@ -229,6 +229,17 @@ pub enum ClientPduType {
     QoeFrameAcknowledge = 0x16,
 }
 
+impl ClientPduType {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::FrameAcknowledge => 0x0d,
+            Self::CacheImportOffer => 0x10,
+            Self::CapabilitiesAdvertise => 0x12,
+            Self::QoeFrameAcknowledge => 0x16,
+        }
+    }
+}
+
 impl<'a> From<&'a ClientPdu> for ClientPduType {
     fn from(c: &'a ClientPdu) -> Self {
         match c {
@@ -238,7 +249,7 @@ impl<'a> From<&'a ClientPdu> for ClientPduType {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ServerPduType {
     WireToSurface1 = 0x01,
     WireToSurface2 = 0x02,
@@ -259,6 +270,32 @@ pub enum ServerPduType {
     MapSurfaceToWindow = 0x15,
     MapSurfaceToScaledOutput = 0x17,
     MapSurfaceToScaledWindow = 0x18,
+}
+
+impl ServerPduType {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::WireToSurface1 => 0x01,
+            Self::WireToSurface2 => 0x02,
+            Self::DeleteEncodingContext => 0x03,
+            Self::SolidFill => 0x04,
+            Self::SurfaceToSurface => 0x05,
+            Self::SurfaceToCache => 0x06,
+            Self::CacheToSurface => 0x07,
+            Self::EvictCacheEntry => 0x08,
+            Self::CreateSurface => 0x09,
+            Self::DeleteSurface => 0x0a,
+            Self::StartFrame => 0x0b,
+            Self::EndFrame => 0x0c,
+            Self::ResetGraphics => 0x0e,
+            Self::MapSurfaceToOutput => 0x0f,
+            Self::CacheImportReply => 0x11,
+            Self::CapabilitiesConfirm => 0x13,
+            Self::MapSurfaceToWindow => 0x15,
+            Self::MapSurfaceToScaledOutput => 0x17,
+            Self::MapSurfaceToScaledWindow => 0x18,
+        }
+    }
 }
 
 impl<'a> From<&'a ServerPdu> for ServerPduType {

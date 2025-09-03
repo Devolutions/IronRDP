@@ -4,16 +4,26 @@ mod tests;
 use ironrdp_core::{
     ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 const BRUSH_LENGTH: usize = 4;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum SupportLevel {
     Default = 0,
     Color8x8 = 1,
     ColorFull = 2,
+}
+
+impl SupportLevel {
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::Default => 0,
+            Self::Color8x8 => 1,
+            Self::ColorFull => 2,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -31,7 +41,7 @@ impl Encode for Brush {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(self.support_level.to_u32().unwrap());
+        dst.write_u32(self.support_level.as_u32());
 
         Ok(())
     }

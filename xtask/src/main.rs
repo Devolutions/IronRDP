@@ -1,6 +1,5 @@
 #![allow(clippy::print_stdout)]
 #![allow(clippy::print_stderr)]
-#![allow(clippy::unwrap_used)]
 #![allow(unreachable_pub)]
 
 mod macros;
@@ -135,7 +134,7 @@ fn project_root() -> PathBuf {
     Path::new(&env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(1)
-        .unwrap()
+        .expect("failed to retrieve project root path")
         .to_path_buf()
 }
 

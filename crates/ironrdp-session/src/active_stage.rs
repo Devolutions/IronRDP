@@ -224,9 +224,8 @@ impl ActiveStage {
         physical_dims: Option<(u32, u32)>,
     ) -> Option<SessionResult<Vec<u8>>> {
         if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
-            if dvc.is_open() {
+            if let Some(channel_id) = dvc.channel_id() {
                 let display_control = dvc.channel_processor_downcast_ref::<DisplayControlClient>()?;
-                let channel_id = dvc.channel_id().unwrap(); // Safe to unwrap, as we checked if the channel is open
                 let svc_messages = match display_control.encode_single_primary_monitor(
                     channel_id,
                     width,

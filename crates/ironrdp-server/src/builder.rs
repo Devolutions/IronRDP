@@ -1,6 +1,6 @@
 use core::net::SocketAddr;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ironrdp_pdu::rdp::capability_sets::{server_codecs_capabilities, BitmapCodecs};
 use tokio_rustls::TlsAcceptor;
 
@@ -113,11 +113,11 @@ impl RdpServerBuilder<WantsHandler> {
 }
 
 impl RdpServerBuilder<WantsDisplay> {
-    pub fn with_display_handler<D>(self, display: D) -> RdpServerBuilder<BuilderDone>
+    pub fn with_display_handler<D>(self, display: D) -> Result<RdpServerBuilder<BuilderDone>>
     where
         D: RdpServerDisplay + 'static,
     {
-        RdpServerBuilder {
+        Ok(RdpServerBuilder {
             state: BuilderDone {
                 addr: self.state.addr,
                 security: self.state.security,
@@ -125,13 +125,14 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(display),
                 sound_factory: None,
                 cliprdr_factory: None,
-                codecs: server_codecs_capabilities(&[]).unwrap(),
+                codecs: server_codecs_capabilities(&[])
+                    .map_err(|e| anyhow!("failed to generate server codecs capabilities: {e}"))?,
             },
-        }
+        })
     }
 
-    pub fn with_no_display(self) -> RdpServerBuilder<BuilderDone> {
-        RdpServerBuilder {
+    pub fn with_no_display(self) -> Result<RdpServerBuilder<BuilderDone>> {
+        Ok(RdpServerBuilder {
             state: BuilderDone {
                 addr: self.state.addr,
                 security: self.state.security,
@@ -139,9 +140,10 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(NoopDisplay),
                 sound_factory: None,
                 cliprdr_factory: None,
-                codecs: server_codecs_capabilities(&[]).unwrap(),
+                codecs: server_codecs_capabilities(&[])
+                    .map_err(|e| anyhow!("failed to generate server codecs capabilities: {e}"))?,
             },
-        }
+        })
     }
 }
 
@@ -187,7 +189,7 @@ struct NoopDisplayUpdates;
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for NoopDisplayUpdates {
-    async fn next_update(&mut self) -> Option<DisplayUpdate> {
+    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
         let () = core::future::pending().await;
         unreachable!()
     }

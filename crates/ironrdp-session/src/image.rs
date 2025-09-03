@@ -554,7 +554,11 @@ impl DecodedImage {
                 row.chunks_exact(SRC_COLOR_DEPTH)
                     .enumerate()
                     .for_each(|(col_idx, src_pixel)| {
-                        let rgb16_value = u16::from_le_bytes(src_pixel.try_into().unwrap());
+                        let rgb16_value = u16::from_le_bytes(
+                            src_pixel
+                                .try_into()
+                                .expect("src_pixel contains exactly two u8 elements"),
+                        );
                         let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
                         let [r, g, b] = rdp_16bit_to_rgb(rgb16_value);
@@ -658,16 +662,22 @@ impl DecodedImage {
                 .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
                 .rev()
                 .enumerate()
-                .for_each(|(row_idx, row)| {
+                .try_for_each(|(row_idx, row)| {
                     row.chunks_exact(SRC_COLOR_DEPTH)
                         .enumerate()
-                        .for_each(|(col_idx, src_pixel)| {
+                        .try_for_each(|(col_idx, src_pixel)| {
                             let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                            let c = format.read_color(src_pixel).unwrap();
+                            let c = format
+                                .read_color(src_pixel)
+                                .map_err(|err| custom_err!("read color", err))?;
                             self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(&[c.r, c.g, c.b, c.a]);
-                        })
-                });
+
+                            Ok(())
+                        })?;
+
+                    Ok(())
+                })?;
         }
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;

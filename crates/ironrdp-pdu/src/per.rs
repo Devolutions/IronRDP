@@ -105,7 +105,7 @@ pub(crate) fn write_length(dst: &mut WriteCursor<'_>, length: u16) {
     if length > 0x7f {
         write_long_length(dst, length);
     } else {
-        dst.write_u8(u8::try_from(length).unwrap());
+        dst.write_u8(u8::try_from(length).expect("length is guaranteed to fit into u8 due to the prior check"));
     }
 }
 
@@ -187,10 +187,10 @@ pub(crate) fn read_u32(src: &mut ReadCursor<'_>) -> Result<u32, PerError> {
 pub(crate) fn write_u32(dst: &mut WriteCursor<'_>, value: u32) {
     if value <= 0xff {
         write_length(dst, 1);
-        dst.write_u8(u8::try_from(value).unwrap());
+        dst.write_u8(u8::try_from(value).expect("value is guaranteed to fit into u8 due to the prior check"));
     } else if value <= 0xffff {
         write_length(dst, 2);
-        dst.write_u16_be(u16::try_from(value).unwrap());
+        dst.write_u16_be(u16::try_from(value).expect("value is guaranteed to fit into u16 due to the prior check"));
     } else {
         write_length(dst, 4);
         dst.write_u32_be(value);

@@ -4,8 +4,8 @@ use ironrdp_core::{
     ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding, Decode, DecodeResult, Encode,
     EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
 use crate::PduError;
@@ -41,7 +41,7 @@ impl Encode for SaveSessionInfoPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(self.info_type.to_u32().unwrap());
+        dst.write_u32(self.info_type.as_u32());
         match self.info_data {
             InfoData::LogonInfoV1(ref info_v1) => {
                 info_v1.encode(dst)?;
@@ -101,12 +101,23 @@ impl<'de> Decode<'de> for SaveSessionInfoPdu {
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum InfoType {
     Logon = 0x0000_0000,
     LogonLong = 0x0000_0001,
     PlainNotify = 0x0000_0002,
     LogonExtended = 0x0000_0003,
+}
+
+impl InfoType {
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::Logon => 0x0000_0000,
+            Self::LogonLong => 0x0000_0001,
+            Self::PlainNotify => 0x0000_0002,
+            Self::LogonExtended => 0x0000_0003,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

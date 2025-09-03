@@ -6,8 +6,8 @@ use ironrdp_core::{
     EncodeResult, ReadCursor, WriteCursor,
 };
 use md5::Digest as _;
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
@@ -78,9 +78,9 @@ impl Encode for LicenseHeader {
 
         self.security_header.encode(dst)?;
 
-        let flags_with_version = self.preamble_flags.bits() | self.preamble_version.to_u8().unwrap();
+        let flags_with_version = self.preamble_flags.bits() | self.preamble_version.as_u8();
 
-        dst.write_u8(self.preamble_message_type.to_u8().unwrap());
+        dst.write_u8(self.preamble_message_type.as_u8());
         dst.write_u8(flags_with_version);
         dst.write_u16(self.preamble_message_size); // msg size
 
@@ -135,7 +135,7 @@ impl<'de> Decode<'de> for LicenseHeader {
 ///
 /// [2.2.1.12.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/73170ca2-5f82-4a2d-9d1b-b439f3d8dadc
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive)]
 pub enum PreambleType {
     LicenseRequest = 0x01,
     PlatformChallenge = 0x02,
@@ -147,6 +147,21 @@ pub enum PreambleType {
     ErrorAlert = 0xff,
 }
 
+impl PreambleType {
+    fn as_u8(&self) -> u8 {
+        match self {
+            Self::LicenseRequest => 0x01,
+            Self::PlatformChallenge => 0x02,
+            Self::NewLicense => 0x03,
+            Self::UpgradeLicense => 0x04,
+            Self::LicenseInfo => 0x12,
+            Self::NewLicenseRequest => 0x13,
+            Self::PlatformChallengeResponse => 0x15,
+            Self::ErrorAlert => 0xff,
+        }
+    }
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PreambleFlags: u8 {
@@ -154,10 +169,19 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive)]
 pub enum PreambleVersion {
     V2 = 2, // RDP 4.0
     V3 = 3, // RDP 5.0, 5.1, 5.2, 6.0, 6.1, 7.0, 7.1, 8.0, 8.1, 10.0, 10.1, 10.2, 10.3, 10.4, and 10.5
+}
+
+impl PreambleVersion {
+    fn as_u8(&self) -> u8 {
+        match self {
+            Self::V2 => 2,
+            Self::V3 => 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +208,8 @@ pub enum ServerLicenseError {
     IOError(#[from] io::Error),
     #[error("UTF-8 error: {0}")]
     Utf8Error(#[from] std::string::FromUtf8Error),
+    #[error("DER error: {0}")]
+    DerError(#[from] pkcs1::der::Error),
     #[error("invalid preamble field: {0}")]
     InvalidPreamble(String),
     #[error("invalid preamble message type field")]

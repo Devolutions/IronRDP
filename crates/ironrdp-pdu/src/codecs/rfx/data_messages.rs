@@ -4,8 +4,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 use crate::codecs::rfx::Block;
 
@@ -48,7 +48,7 @@ impl Encode for ContextPdu {
         properties.set_bits(0..3, self.flags.bits());
         properties.set_bits(3..5, COLOR_CONVERSION_ICT);
         properties.set_bits(5..9, CLW_XFORM_DWT_53_A);
-        properties.set_bits(9..13, self.entropy_algorithm.to_u16().unwrap());
+        properties.set_bits(9..13, self.entropy_algorithm.as_u16());
         properties.set_bits(13..15, SCALAR_QUANTIZATION);
         properties.set_bit(15, false); // reserved
         dst.write_u16(properties);
@@ -297,7 +297,7 @@ impl Encode for TileSetPdu<'_> {
         properties.set_bits(1..4, OperatingMode::empty().bits()); // The decoder MUST ignore this flag
         properties.set_bits(4..6, COLOR_CONVERSION_ICT);
         properties.set_bits(6..10, CLW_XFORM_DWT_53_A);
-        properties.set_bits(10..14, self.entropy_algorithm.to_u16().unwrap());
+        properties.set_bits(10..14, self.entropy_algorithm.as_u16());
         properties.set_bits(14..16, SCALAR_QUANTIZATION);
         dst.write_u16(properties);
 
@@ -666,11 +666,20 @@ impl<'de> Decode<'de> for Tile<'de> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 #[repr(u16)]
 pub enum EntropyAlgorithm {
     Rlgr1 = 0x01,
     Rlgr3 = 0x04,
+}
+
+impl EntropyAlgorithm {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::Rlgr1 => 0x01,
+            Self::Rlgr3 => 0x04,
+        }
+    }
 }
 
 bitflags! {

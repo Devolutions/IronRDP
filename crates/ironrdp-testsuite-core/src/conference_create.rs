@@ -15,13 +15,11 @@ pub const CONFERENCE_CREATE_RESPONSE_PREFIX_BUFFER: [u8; 24] = [
 ];
 
 lazy_static! {
-    pub static ref CONFERENCE_CREATE_REQUEST: ConferenceCreateRequest = ConferenceCreateRequest {
-        gcc_blocks: gcc::CLIENT_GCC_WITH_CLUSTER_OPTIONAL_FIELD.clone(),
-    };
-    pub static ref CONFERENCE_CREATE_RESPONSE: ConferenceCreateResponse = ConferenceCreateResponse {
-        user_id: 0x79f3,
-        gcc_blocks: gcc::SERVER_GCC_WITHOUT_OPTIONAL_FIELDS.clone(),
-    };
+    pub static ref CONFERENCE_CREATE_REQUEST: ConferenceCreateRequest =
+        ConferenceCreateRequest::new(gcc::CLIENT_GCC_WITH_CLUSTER_OPTIONAL_FIELD.clone()).expect("should not fail");
+    pub static ref CONFERENCE_CREATE_RESPONSE: ConferenceCreateResponse =
+        ConferenceCreateResponse::new(0x79f3, gcc::SERVER_GCC_WITHOUT_OPTIONAL_FIELDS.clone(),)
+            .expect("should not fail");
 }
 
 pub const CONFERENCE_CREATE_REQUEST_BUFFER: [u8; concat_arrays_size!(

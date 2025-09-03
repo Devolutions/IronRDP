@@ -126,7 +126,10 @@ impl SvcProcessor for DrdynvcClient {
                     // and get any start messages.
                     self.dynamic_channels
                         .attach_channel_id(channel_name.clone(), channel_id);
-                    let dynamic_channel = self.dynamic_channels.get_by_channel_name_mut(&channel_name).unwrap();
+                    let dynamic_channel = self
+                        .dynamic_channels
+                        .get_by_channel_name_mut(&channel_name)
+                        .expect("channel exists");
                     (CreationStatus::OK, dynamic_channel.start()?)
                 } else {
                     (CreationStatus::NO_LISTENER, Vec::new())

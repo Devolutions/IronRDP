@@ -50,7 +50,7 @@ pub fn to_64x64_ycbcr_tile(
     y: &mut [i16; 64 * 64],
     cb: &mut [i16; 64 * 64],
     cr: &mut [i16; 64 * 64],
-) {
+) -> io::Result<()> {
     assert!(width <= 64);
     assert!(height <= 64);
 
@@ -64,17 +64,21 @@ pub fn to_64x64_ycbcr_tile(
         u_stride: 64,
         v_plane,
         v_stride: 64,
-        width: width.try_into().unwrap(),
-        height: height.try_into().unwrap(),
+        width: width.try_into().map_err(io::Error::other)?,
+        height: height.try_into().map_err(io::Error::other)?,
     };
 
-    let res = match format {
-        PixelFormat::RgbA32 | PixelFormat::RgbX32 => rdp_rgba_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
-        PixelFormat::ARgb32 | PixelFormat::XRgb32 => rdp_argb_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
-        PixelFormat::BgrA32 | PixelFormat::BgrX32 => rdp_bgra_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
-        PixelFormat::ABgr32 | PixelFormat::XBgr32 => rdp_abgr_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
-    };
-    res.unwrap();
+    let stride = u32::try_from(stride).map_err(io::Error::other)?;
+
+    match format {
+        PixelFormat::RgbA32 | PixelFormat::RgbX32 => rdp_rgba_to_yuv444(&mut plane, input, stride),
+        PixelFormat::ARgb32 | PixelFormat::XRgb32 => rdp_argb_to_yuv444(&mut plane, input, stride),
+        PixelFormat::BgrA32 | PixelFormat::BgrX32 => rdp_bgra_to_yuv444(&mut plane, input, stride),
+        PixelFormat::ABgr32 | PixelFormat::XBgr32 => rdp_abgr_to_yuv444(&mut plane, input, stride),
+    }
+    .map_err(io::Error::other)?;
+
+    Ok(())
 }
 
 /// Convert a 16-bit RDP color to RGB representation. Input value should be represented in

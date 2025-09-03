@@ -4,7 +4,7 @@
 #![allow(clippy::print_stdout)]
 
 use core::net::SocketAddr;
-use core::num::{NonZero, NonZeroU16, NonZeroUsize};
+use core::num::{NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -153,21 +153,24 @@ struct DisplayUpdates;
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for DisplayUpdates {
-    async fn next_update(&mut self) -> Option<DisplayUpdate> {
+    async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
         sleep(Duration::from_millis(100)).await;
         let mut rng = rand::rng();
 
         let y: u16 = rng.random_range(0..HEIGHT);
-        let height = NonZeroU16::new(rng.random_range(1..=HEIGHT.checked_sub(y).unwrap())).unwrap();
+        let height = rng.random_range(1..=HEIGHT.checked_sub(y).expect("never underflow"));
+        let height = NonZeroU16::new(height).expect("never zero");
+
         let x: u16 = rng.random_range(0..WIDTH);
-        let width = NonZeroU16::new(rng.random_range(1..=WIDTH.checked_sub(x).unwrap())).unwrap();
+        let width = rng.random_range(1..=WIDTH.checked_sub(x).expect("never underflow"));
+        let width = NonZeroU16::new(width).expect("never zero");
+
         let capacity = NonZeroUsize::from(width)
             .checked_mul(NonZeroUsize::from(height))
-            .unwrap()
+            .expect("never overflow")
             .get()
             .checked_mul(4)
-            .unwrap();
-
+            .expect("never overflow");
         let mut data = Vec::with_capacity(capacity);
         for _ in 0..(data.capacity() / 4) {
             data.push(rng.random());
@@ -177,7 +180,9 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
         }
 
         info!("get_update +{x}+{y} {width}x{height}");
-        let stride = NonZeroUsize::from(width).checked_mul(NonZero::new(4).unwrap()).unwrap();
+        let stride = NonZeroUsize::from(width)
+            .checked_mul(NonZeroUsize::new(4).expect("never zero"))
+            .expect("never overflow");
         let bitmap = BitmapUpdate {
             x,
             y,
@@ -187,7 +192,7 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             data: data.into(),
             stride,
         };
-        Some(DisplayUpdate::Bitmap(bitmap))
+        Ok(Some(DisplayUpdate::Bitmap(bitmap)))
     }
 }
 
@@ -230,7 +235,13 @@ struct StubSoundServerFactory {
 
 impl ServerEventSender for StubSoundServerFactory {
     fn set_sender(&mut self, sender: UnboundedSender<ServerEvent>) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(e) => {
+                warn!("Failed to acquire the mutex: {e:?}");
+                return;
+            }
+        };
 
         inner.ev_sender = Some(sender);
     }
@@ -337,7 +348,13 @@ impl RdpsndServerHandler for SndHandler {
                     wave.into_iter().flat_map(|value| value.to_le_bytes()).collect()
                 };
 
-                let inner = inner.lock().unwrap();
+                let inner = match inner.lock() {
+                    Ok(inner) => inner,
+                    Err(e) => {
+                        warn!("Failed to acquire the mutex: {e:?}");
+                        return;
+                    }
+                };
                 if let Some(sender) = inner.ev_sender.as_ref() {
                     let _ = sender.send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(data, ts)));
                 }
@@ -418,7 +435,7 @@ async fn run(
 
     let mut server = server_builder
         .with_input_handler(handler.clone())
-        .with_display_handler(handler.clone())
+        .with_display_handler(handler.clone())?
         .with_cliprdr_factory(Some(cliprdr))
         .with_sound_factory(Some(sound))
         .build();

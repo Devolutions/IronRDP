@@ -26,11 +26,26 @@ const CONFERENCE_NAME: &[u8] = b"1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConferenceCreateRequest {
-    pub gcc_blocks: ClientGccBlocks,
+    /// INVARIANT: `gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE <= u16::MAX`
+    gcc_blocks: ClientGccBlocks,
 }
 
 impl ConferenceCreateRequest {
     const NAME: &'static str = "ConferenceCreateRequest";
+
+    pub fn new(gcc_blocks: ClientGccBlocks) -> DecodeResult<Self> {
+        // INVARIANT: gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE <= u16::MAX
+        let _: usize = cast_length!(
+            "gcc blocks length",
+            gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE
+        )?;
+
+        Ok(Self { gcc_blocks })
+    }
+
+    pub fn gcc_blocks(&self) -> &ClientGccBlocks {
+        &self.gcc_blocks
+    }
 }
 
 impl Encode for ConferenceCreateRequest {
@@ -84,16 +99,16 @@ impl Encode for ConferenceCreateRequest {
 
     fn size(&self) -> usize {
         let gcc_blocks_buffer_length = self.gcc_blocks.size();
-        let req_length: DecodeResult<u16> = cast_length!(
-            "gccBlocksLen",
-            CONFERENCE_REQUEST_CONNECT_PDU_SIZE + gcc_blocks_buffer_length
-        );
-        let length: DecodeResult<u16> = cast_length!("gccBlocksLen", gcc_blocks_buffer_length);
+        let req_length = u16::try_from(CONFERENCE_REQUEST_CONNECT_PDU_SIZE + gcc_blocks_buffer_length)
+            .expect("Per the invariant on self.gcc_blocks, this cast is infallible");
+        let length = u16::try_from(gcc_blocks_buffer_length)
+            .expect("Per the invariant on self.gcc_blocks, this cast is infallible");
+
         per::CHOICE_SIZE
             + CONFERENCE_REQUEST_OBJECT_ID.len()
-            + per::sizeof_length(req_length.unwrap())
+            + per::sizeof_length(req_length)
             + CONFERENCE_REQUEST_CONNECT_PDU_SIZE
-            + per::sizeof_length(length.unwrap())
+            + per::sizeof_length(length)
             + gcc_blocks_buffer_length
     }
 }
@@ -169,18 +184,33 @@ impl<'de> Decode<'de> for ConferenceCreateRequest {
         let (_gcc_blocks_buffer_length, _) = per::read_length(src).map_err(|e| other_err!("len", source: e))?;
         let gcc_blocks = ClientGccBlocks::decode(src)?;
 
-        Ok(Self { gcc_blocks })
+        Self::new(gcc_blocks)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConferenceCreateResponse {
-    pub user_id: u16,
-    pub gcc_blocks: ServerGccBlocks,
+    user_id: u16,
+    /// INVARIANT: `gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE <= u16::MAX`
+    gcc_blocks: ServerGccBlocks,
 }
 
 impl ConferenceCreateResponse {
     const NAME: &'static str = "ConferenceCreateResponse";
+
+    pub fn new(user_id: u16, gcc_blocks: ServerGccBlocks) -> DecodeResult<Self> {
+        // INVARIANT: gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE <= u16::MAX
+        let _: usize = cast_length!(
+            "gcc blocks length",
+            gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE
+        )?;
+
+        Ok(Self { user_id, gcc_blocks })
+    }
+
+    pub fn gcc_blocks(&self) -> &ServerGccBlocks {
+        &self.gcc_blocks
+    }
 }
 
 impl Encode for ConferenceCreateResponse {
@@ -197,6 +227,8 @@ impl Encode for ConferenceCreateResponse {
             dst,
             cast_length!(
                 "gccBlocksLen",
+                // QUESTION: It seems that the addition of 1 here is a bug.
+                // The fuzzing is not failing because this length is ignored.
                 gcc_blocks_buffer_length + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE + 1
             )?,
         );
@@ -219,7 +251,7 @@ impl Encode for ConferenceCreateResponse {
         )
         .map_err(|e| other_err!("server-to-client", source: e))?;
         // H221NonStandardIdentifier (octet string)
-        per::write_length(dst, gcc_blocks_buffer_length as u16);
+        per::write_length(dst, cast_length!("gccBlocksLen", gcc_blocks_buffer_length)?);
         self.gcc_blocks.encode(dst)?;
 
         Ok(())
@@ -231,16 +263,16 @@ impl Encode for ConferenceCreateResponse {
 
     fn size(&self) -> usize {
         let gcc_blocks_buffer_length = self.gcc_blocks.size();
-        let req_length: DecodeResult<u16> = cast_length!(
-            "gccBlocksLen",
-            CONFERENCE_RESPONSE_CONNECT_PDU_SIZE + gcc_blocks_buffer_length
-        );
-        let length: DecodeResult<u16> = cast_length!("gccBlocksLen", gcc_blocks_buffer_length);
+        let req_length = u16::try_from(CONFERENCE_RESPONSE_CONNECT_PDU_SIZE + gcc_blocks_buffer_length)
+            .expect("Per the invariant on self.gcc_blocks, this cast is infallible");
+        let length = u16::try_from(gcc_blocks_buffer_length)
+            .expect("Per the invariant on self.gcc_blocks, this cast is infallible");
+
         per::CHOICE_SIZE
             + CONFERENCE_REQUEST_OBJECT_ID.len()
-            + per::sizeof_length(req_length.unwrap())
+            + per::sizeof_length(req_length)
             + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE
-            + per::sizeof_length(length.unwrap())
+            + per::sizeof_length(length)
             + gcc_blocks_buffer_length
     }
 }
@@ -315,6 +347,6 @@ impl<'de> Decode<'de> for ConferenceCreateResponse {
         let (_gcc_blocks_buffer_length, _) = per::read_length(src).map_err(|e| other_err!("len", source: e))?;
         let gcc_blocks = ServerGccBlocks::decode(src)?;
 
-        Ok(Self { user_id, gcc_blocks })
+        Self::new(user_id, gcc_blocks)
     }
 }

@@ -3,8 +3,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
     WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 use crate::gcc;
 
@@ -76,7 +76,7 @@ impl Encode for ControlPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u16(self.action.to_u16().unwrap());
+        dst.write_u16(self.action.as_u16());
         dst.write_u16(self.grant_id);
         dst.write_u32(self.control_id);
 
@@ -230,12 +230,23 @@ impl<'de> Decode<'de> for MonitorLayoutPdu {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ControlAction {
     RequestControl = 1,
     GrantedControl = 2,
     Detach = 3,
     Cooperate = 4,
+}
+
+impl ControlAction {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::RequestControl => 1,
+            Self::GrantedControl => 2,
+            Self::Detach => 3,
+            Self::Cooperate => 4,
+        }
+    }
 }
 
 bitflags! {

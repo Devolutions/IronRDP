@@ -6,7 +6,7 @@ use ironrdp_core::{
     ensure_fixed_part_size, read_padding, write_padding, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
     WriteCursor,
 };
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_traits::FromPrimitive as _;
 
 use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};
 use crate::utils;
@@ -53,7 +53,7 @@ impl Encode for Input {
         dst.write_u32(self.keyboard_layout);
 
         let type_buffer = match self.keyboard_type.as_ref() {
-            Some(value) => value.to_u32().unwrap_or(0),
+            Some(value) => value.as_u32(),
             None => 0,
         };
         dst.write_u32(type_buffer);

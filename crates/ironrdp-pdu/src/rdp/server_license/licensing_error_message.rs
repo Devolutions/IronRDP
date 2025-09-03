@@ -5,8 +5,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode as _, DecodeResult, Encode as _,
     EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 use super::{BlobHeader, BlobType, LicenseHeader, PreambleFlags, PreambleVersion, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE};
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
@@ -61,8 +61,8 @@ impl LicensingErrorMessage {
 
         self.license_header.encode(dst)?;
 
-        dst.write_u32(self.error_code.to_u32().unwrap());
-        dst.write_u32(self.state_transition.to_u32().unwrap());
+        dst.write_u32(self.error_code.as_u32());
+        dst.write_u32(self.state_transition.as_u32());
 
         BlobHeader::new(BlobType::ERROR, self.error_info.len()).encode(dst)?;
         dst.write_slice(&self.error_info);
@@ -107,7 +107,7 @@ impl LicensingErrorMessage {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive)]
 pub enum LicenseErrorCode {
     InvalidServerCertificate = 0x01,
     NoLicense = 0x02,
@@ -120,10 +120,37 @@ pub enum LicenseErrorCode {
     InvalidFieldLen = 0x0c,
 }
 
-#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+impl LicenseErrorCode {
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::InvalidServerCertificate => 0x01,
+            Self::NoLicense => 0x02,
+            Self::InvalidMac => 0x03,
+            Self::InvalidScope => 0x04,
+            Self::NoLicenseServer => 0x06,
+            Self::StatusValidClient => 0x07,
+            Self::InvalidClient => 0x08,
+            Self::InvalidProductId => 0x0b,
+            Self::InvalidFieldLen => 0x0c,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, FromPrimitive)]
 pub enum LicensingStateTransition {
     TotalAbort = 1,
     NoTransition = 2,
     ResetPhaseToStart = 3,
     ResendLastMessage = 4,
+}
+
+impl LicensingStateTransition {
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::TotalAbort => 1,
+            Self::NoTransition => 2,
+            Self::ResetPhaseToStart => 3,
+            Self::ResendLastMessage => 4,
+        }
+    }
 }

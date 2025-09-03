@@ -202,7 +202,7 @@ impl DisplayControlHandler for DisplayControlBackend {
 ///     .with_addr(([127, 0, 0, 1], 3389))
 ///     .with_tls(tls_acceptor)
 ///     .with_input_handler(input_handler)
-///     .with_display_handler(display_handler)
+///     .with_display_handler(display_handler)?
 ///     .build();
 ///
 /// server.run().await;
@@ -602,7 +602,7 @@ impl RdpServer {
         let dispatch_display = async move {
             let mut buffer = vec![0u8; 4096];
             loop {
-                if let Some(update) = display_updates.next_update().await {
+                if let Some(update) = display_updates.next_update().await? {
                     match Self::dispatch_display_update(
                         update,
                         &mut display_writer,
@@ -776,7 +776,8 @@ impl RdpServer {
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs);
+        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs)
+            .context("failed to initialize update encoder")?;
 
         let state = self
             .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)
