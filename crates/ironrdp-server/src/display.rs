@@ -260,8 +260,8 @@ pub trait RdpServerDisplayUpdates {
 ///
 /// #[async_trait::async_trait]
 /// impl RdpServerDisplayUpdates for DisplayUpdates {
-///     async fn next_update(&mut self) -> Option<DisplayUpdate> {
-///         self.receiver.recv().await
+///     async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+///         Ok(self.receiver.recv().await)
 ///     }
 /// }
 ///

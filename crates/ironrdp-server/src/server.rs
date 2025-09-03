@@ -178,7 +178,7 @@ impl DisplayControlHandler for DisplayControlBackend {
 ///#         todo!()
 ///#     }
 ///# }
-///# async fn stub() {
+///# async fn stub() -> Result<()> {
 /// fn make_tls_acceptor() -> TlsAcceptor {
 ///    /* snip */
 ///#    todo!()
@@ -206,6 +206,7 @@ impl DisplayControlHandler for DisplayControlBackend {
 ///     .build();
 ///
 /// server.run().await;
+/// Ok(())
 ///# }
 /// ```
 pub struct RdpServer {
