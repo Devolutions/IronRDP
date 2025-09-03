@@ -4,8 +4,8 @@ use ironrdp_core::{
     cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, unsupported_value_err, write_padding,
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
 use crate::{utils, PduError};
@@ -293,7 +293,7 @@ impl Encode for CapabilitySet {
 
         match self {
             CapabilitySet::General(capset) => {
-                dst.write_u16(CapabilitySetType::General.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::General.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -301,7 +301,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::Bitmap(capset) => {
-                dst.write_u16(CapabilitySetType::Bitmap.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::Bitmap.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -309,7 +309,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::Order(capset) => {
-                dst.write_u16(CapabilitySetType::Order.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::Order.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -317,7 +317,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::BitmapCache(capset) => {
-                dst.write_u16(CapabilitySetType::BitmapCache.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::BitmapCache.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -325,7 +325,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::BitmapCacheRev2(capset) => {
-                dst.write_u16(CapabilitySetType::BitmapCacheRev2.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::BitmapCacheRev2.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -333,7 +333,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::Pointer(capset) => {
-                dst.write_u16(CapabilitySetType::Pointer.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::Pointer.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -341,7 +341,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::Sound(capset) => {
-                dst.write_u16(CapabilitySetType::Sound.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::Sound.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -349,7 +349,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::Input(capset) => {
-                dst.write_u16(CapabilitySetType::Input.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::Input.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -357,7 +357,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::Brush(capset) => {
-                dst.write_u16(CapabilitySetType::Brush.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::Brush.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -365,7 +365,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::GlyphCache(capset) => {
-                dst.write_u16(CapabilitySetType::GlyphCache.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::GlyphCache.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -373,7 +373,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::OffscreenBitmapCache(capset) => {
-                dst.write_u16(CapabilitySetType::OffscreenBitmapCache.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::OffscreenBitmapCache.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -381,7 +381,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::VirtualChannel(capset) => {
-                dst.write_u16(CapabilitySetType::VirtualChannel.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::VirtualChannel.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -389,7 +389,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::SurfaceCommands(capset) => {
-                dst.write_u16(CapabilitySetType::SurfaceCommands.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::SurfaceCommands.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -397,7 +397,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::BitmapCodecs(capset) => {
-                dst.write_u16(CapabilitySetType::BitmapCodecs.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::BitmapCodecs.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -405,7 +405,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::MultiFragmentUpdate(capset) => {
-                dst.write_u16(CapabilitySetType::MultiFragmentUpdate.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::MultiFragmentUpdate.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -413,7 +413,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::LargePointer(capset) => {
-                dst.write_u16(CapabilitySetType::LargePointer.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::LargePointer.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -421,7 +421,7 @@ impl Encode for CapabilitySet {
                 capset.encode(dst)?;
             }
             CapabilitySet::FrameAcknowledge(capset) => {
-                dst.write_u16(CapabilitySetType::FrameAcknowledge.to_u16().unwrap());
+                dst.write_u16(CapabilitySetType::FrameAcknowledge.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -446,7 +446,7 @@ impl Encode for CapabilitySet {
                     _ => unreachable!(),
                 };
 
-                dst.write_u16(capability_set_type.to_u16().unwrap());
+                dst.write_u16(capability_set_type.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
                     capability_set_buffer.len() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
@@ -562,7 +562,7 @@ impl<'de> Decode<'de> for CapabilitySet {
     }
 }
 
-#[derive(Copy, Clone, Debug, FromPrimitive, ToPrimitive)]
+#[derive(Copy, Clone, Debug, FromPrimitive)]
 enum CapabilitySetType {
     General = 0x01,
     Bitmap = 0x02,
@@ -593,6 +593,42 @@ enum CapabilitySetType {
     SurfaceCommands = 0x1c,
     BitmapCodecs = 0x1d,
     FrameAcknowledge = 0x1e,
+}
+
+impl CapabilitySetType {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::General => 0x01,
+            Self::Bitmap => 0x02,
+            Self::Order => 0x03,
+            Self::BitmapCache => 0x04,
+            Self::Control => 0x05,
+            Self::BitmapCacheV3CodecID => 0x06,
+            Self::WindowActivation => 0x07,
+            Self::Pointer => 0x08,
+            Self::Share => 0x09,
+            Self::ColorCache => 0x0a,
+            Self::Sound => 0x0c,
+            Self::Input => 0x0d,
+            Self::Font => 0x0e,
+            Self::Brush => 0x0f,
+            Self::GlyphCache => 0x10,
+            Self::OffscreenBitmapCache => 0x11,
+            Self::BitmapCacheHostSupport => 0x12,
+            Self::BitmapCacheRev2 => 0x13,
+            Self::VirtualChannel => 0x14,
+            Self::DrawNineGridCache => 0x15,
+            Self::DrawGdiPlus => 0x16,
+            Self::Rail => 0x17,
+            Self::WindowList => 0x18,
+            Self::DesktopComposition => 0x19,
+            Self::MultiFragmentUpdate => 0x1a,
+            Self::LargePointer => 0x1b,
+            Self::SurfaceCommands => 0x1c,
+            Self::BitmapCodecs => 0x1d,
+            Self::FrameAcknowledge => 0x1e,
+        }
+    }
 }
 
 #[derive(Debug, Error)]

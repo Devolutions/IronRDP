@@ -3,8 +3,8 @@ use ironrdp_core::{
     ensure_fixed_part_size, ensure_size, invalid_field_err, write_padding, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 use tap::Pipe as _;
 
 use super::{RdpVersion, VERSION_SIZE};
@@ -108,13 +108,13 @@ impl Encode for ClientCoreData {
         dst.write_u32(self.version.0);
         dst.write_u16(self.desktop_width);
         dst.write_u16(self.desktop_height);
-        dst.write_u16(self.color_depth.to_u16().unwrap());
-        dst.write_u16(self.sec_access_sequence.to_u16().unwrap());
+        dst.write_u16(self.color_depth.as_u16());
+        dst.write_u16(self.sec_access_sequence.as_u16());
         dst.write_u32(self.keyboard_layout);
         dst.write_u32(self.client_build);
         dst.write_slice(client_name_dst.as_ref());
         dst.write_u16(0); // client name UTF-16 null terminator
-        dst.write_u32(self.keyboard_type.to_u32().unwrap());
+        dst.write_u32(self.keyboard_type.as_u32());
         dst.write_u32(self.keyboard_subtype);
         dst.write_u32(self.keyboard_functional_keys_count);
         dst.write_slice(ime_file_name_dst.as_ref());
@@ -223,7 +223,7 @@ impl Encode for ClientCoreOptionalData {
         ensure_size!(in: dst, size: self.size());
 
         if let Some(value) = self.post_beta2_color_depth {
-            dst.write_u16(value.to_u16().unwrap());
+            dst.write_u16(value.as_u16());
         }
 
         if let Some(value) = self.client_product_id {
@@ -247,7 +247,7 @@ impl Encode for ClientCoreOptionalData {
             if self.serial_number.is_none() {
                 return Err(invalid_field_err!("serialNumber", "serialNumber must be present"));
             }
-            dst.write_u16(value.to_u16().unwrap());
+            dst.write_u16(value.as_u16());
         }
 
         if let Some(value) = self.supported_color_depths {
@@ -285,7 +285,7 @@ impl Encode for ClientCoreOptionalData {
             if self.dig_product_id.is_none() {
                 return Err(invalid_field_err!("digProductId", "digProductId must be present"));
             }
-            dst.write_u8(value.to_u8().unwrap());
+            dst.write_u8(value.as_u8());
             write_padding!(dst, 1);
         }
 
@@ -506,7 +506,7 @@ impl From<HighColorDepth> for ClientColorDepth {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ColorDepth {
     Bpp4 = 0xCA00,
     Bpp8 = 0xCA01,
@@ -515,8 +515,20 @@ pub enum ColorDepth {
     Bpp24 = 0xCA04,
 }
 
+impl ColorDepth {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::Bpp4 => 0xCA00,
+            Self::Bpp8 => 0xCA01,
+            Self::Rgb555Bpp16 => 0xCA02,
+            Self::Rgb565Bpp16 => 0xCA03,
+            Self::Bpp24 => 0xCA04,
+        }
+    }
+}
+
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, FromPrimitive, ToPrimitive, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Debug, Copy, Clone, FromPrimitive, Eq, Ord, PartialEq, PartialOrd)]
 pub enum HighColorDepth {
     Bpp4 = 0x0004,
     Bpp8 = 0x0008,
@@ -525,13 +537,33 @@ pub enum HighColorDepth {
     Bpp24 = 0x0018,
 }
 
+impl HighColorDepth {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::Bpp4 => 0x0004,
+            Self::Bpp8 => 0x0008,
+            Self::Rgb555Bpp16 => 0x000F,
+            Self::Rgb565Bpp16 => 0x0010,
+            Self::Bpp24 => 0x0018,
+        }
+    }
+}
+
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum SecureAccessSequence {
     Del = 0xAA03,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+impl SecureAccessSequence {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::Del => 0xAA03,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum KeyboardType {
     IbmPcXt = 1,
     OlivettiIco = 2,
@@ -542,8 +574,22 @@ pub enum KeyboardType {
     Japanese = 7,
 }
 
+impl KeyboardType {
+    pub fn as_u32(&self) -> u32 {
+        match self {
+            Self::IbmPcXt => 1,
+            Self::OlivettiIco => 2,
+            Self::IbmPcAt => 3,
+            Self::IbmEnhanced => 4,
+            Self::Nokia1050 => 5,
+            Self::Nokia9140 => 6,
+            Self::Japanese => 7,
+        }
+    }
+}
+
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ConnectionType {
     NotUsed = 0, // not used as ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE not set
     Modem = 1,
@@ -553,6 +599,21 @@ pub enum ConnectionType {
     Wan = 5,
     Lan = 6,
     Autodetect = 7,
+}
+
+impl ConnectionType {
+    fn as_u8(&self) -> u8 {
+        match self {
+            Self::NotUsed => 0,
+            Self::Modem => 1,
+            Self::BroadbandLow => 2,
+            Self::Satellite => 3,
+            Self::BroadbandHigh => 4,
+            Self::Wan => 5,
+            Self::Lan => 6,
+            Self::Autodetect => 7,
+        }
+    }
 }
 
 bitflags! {

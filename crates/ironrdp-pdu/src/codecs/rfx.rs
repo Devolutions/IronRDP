@@ -5,8 +5,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 use crate::rdp::capability_sets::{RfxCaps, RfxCapset};
 
@@ -187,7 +187,7 @@ impl Encode for BlockHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u16(self.ty.to_u16().unwrap());
+        dst.write_u16(self.ty.as_u16());
         dst.write_u32(cast_length!("data len", self.data_length)?);
 
         Ok(())
@@ -307,7 +307,7 @@ impl<'de> Decode<'de> for FrameAcknowledgePdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 #[repr(u16)]
 pub enum BlockType {
     Tile = 0xCAC3,
@@ -329,5 +329,21 @@ impl BlockType {
             self,
             BlockType::Context | BlockType::FrameBegin | BlockType::FrameEnd | BlockType::Region | BlockType::Extension
         )
+    }
+
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::Tile => 0xCAC3,
+            Self::Capabilities => 0xCBC0,
+            Self::CapabilitySet => 0xCBC1,
+            Self::Sync => 0xCCC0,
+            Self::CodecVersions => 0xCCC1,
+            Self::Channels => 0xCCC2,
+            Self::Context => 0xCCC3,
+            Self::FrameBegin => 0xCCC4,
+            Self::FrameEnd => 0xCCC5,
+            Self::Region => 0xCCC6,
+            Self::Extension => 0xCCC7,
+        }
     }
 }

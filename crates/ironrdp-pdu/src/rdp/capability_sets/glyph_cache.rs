@@ -5,20 +5,31 @@ use ironrdp_core::{
     ensure_fixed_part_size, invalid_field_err, write_padding, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
     WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 pub const GLYPH_CACHE_NUM: usize = 10;
 
 const GLYPH_CACHE_LENGTH: usize = 48;
 const CACHE_DEFINITION_LENGTH: usize = 4;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum GlyphSupportLevel {
     None = 0,
     Partial = 1,
     Full = 2,
     Encode = 3,
+}
+
+impl GlyphSupportLevel {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::None => 0,
+            Self::Partial => 1,
+            Self::Full => 2,
+            Self::Encode => 3,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
@@ -86,7 +97,7 @@ impl Encode for GlyphCache {
 
         self.frag_cache.encode(dst)?;
 
-        dst.write_u16(self.glyph_support_level.to_u16().unwrap());
+        dst.write_u16(self.glyph_support_level.as_u16());
         write_padding!(dst, 2);
 
         Ok(())

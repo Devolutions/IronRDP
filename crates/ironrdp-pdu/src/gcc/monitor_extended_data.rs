@@ -2,8 +2,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 const MONITOR_COUNT_MAX: usize = 16;
 const MONITOR_ATTRIBUTE_SIZE: u32 = 20;
@@ -95,7 +95,7 @@ impl Encode for ExtendedMonitorInfo {
 
         dst.write_u32(self.physical_width);
         dst.write_u32(self.physical_height);
-        dst.write_u32(self.orientation.to_u32().unwrap());
+        dst.write_u32(self.orientation.as_u32());
         dst.write_u32(self.desktop_scale_factor);
         dst.write_u32(self.device_scale_factor);
 
@@ -132,10 +132,21 @@ impl<'de> Decode<'de> for ExtendedMonitorInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum MonitorOrientation {
     Landscape = 0,
     Portrait = 90,
     LandscapeFlipped = 180,
     PortraitFlipped = 270,
+}
+
+impl MonitorOrientation {
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::Landscape => 0,
+            Self::Portrait => 90,
+            Self::LandscapeFlipped => 180,
+            Self::PortraitFlipped => 270,
+        }
+    }
 }

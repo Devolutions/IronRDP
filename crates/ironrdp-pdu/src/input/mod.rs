@@ -4,8 +4,8 @@ use ironrdp_core::{
     ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding, Decode, DecodeResult, Encode,
     EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
 pub mod fast_path;
@@ -94,7 +94,7 @@ impl Encode for InputEvent {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(0); // event time is ignored by a server
-        dst.write_u16(InputEventType::from(self).to_u16().unwrap());
+        dst.write_u16(InputEventType::from(self).as_u16());
 
         match self {
             Self::Sync(pdu) => pdu.encode(dst),
@@ -146,7 +146,7 @@ impl<'de> Decode<'de> for InputEvent {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
 #[repr(u16)]
 enum InputEventType {
     Sync = 0x0000,
@@ -156,6 +156,20 @@ enum InputEventType {
     Mouse = 0x8001,
     MouseX = 0x8002,
     MouseRel = 0x8004,
+}
+
+impl InputEventType {
+    fn as_u16(&self) -> u16 {
+        match self {
+            Self::Sync => 0x0000,
+            Self::Unused => 0x0002,
+            Self::ScanCode => 0x0004,
+            Self::Unicode => 0x0005,
+            Self::Mouse => 0x8001,
+            Self::MouseX => 0x8002,
+            Self::MouseRel => 0x8004,
+        }
+    }
 }
 
 impl From<&InputEvent> for InputEventType {
