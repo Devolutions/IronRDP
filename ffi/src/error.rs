@@ -139,6 +139,8 @@ pub mod ffi {
         Clipboard,
         #[error("wrong platform error")]
         WrongOS,
+        #[error("Missing required field")]
+        MissingRequiredField,
     }
 
     /// Stringified Picky error along with an error kind.
