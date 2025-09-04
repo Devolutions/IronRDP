@@ -50,8 +50,8 @@ impl CharacterSet {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    pub fn as_u16(&self) -> u16 {
-        *self as u16
+    pub fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 

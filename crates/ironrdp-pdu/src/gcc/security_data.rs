@@ -211,8 +211,8 @@ impl EncryptionLevel {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u32(&self) -> u32 {
-        *self as u32
+    fn as_u32(self) -> u32 {
+        self as u32
     }
 }
 

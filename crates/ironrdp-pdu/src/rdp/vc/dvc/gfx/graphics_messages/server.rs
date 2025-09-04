@@ -948,8 +948,8 @@ impl Codec1Type {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u16(&self) -> u16 {
-        *self as u16
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 
@@ -964,8 +964,8 @@ impl Codec2Type {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u16(&self) -> u16 {
-        *self as u16
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 
@@ -977,8 +977,8 @@ pub enum PixelFormat {
 }
 
 impl PixelFormat {
-    fn as_u8(&self) -> u8 {
-        *self as u8
+    fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 

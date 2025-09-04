@@ -67,7 +67,7 @@ impl ErrorInfo {
         }
     }
 
-    fn as_u32(&self) -> u32 {
+    fn as_u32(self) -> u32 {
         match self {
             Self::ProtocolIndependentCode(c) => c.as_u32(),
             Self::ProtocolIndependentLicensingCode(c) => c.as_u32(),
@@ -154,8 +154,8 @@ impl ProtocolIndependentCode {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    pub fn as_u32(&self) -> u32 {
-        *self as u32
+    pub fn as_u32(self) -> u32 {
+        self as u32
     }
 }
 
@@ -198,8 +198,8 @@ impl ProtocolIndependentLicensingCode {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u32(&self) -> u32 {
-        *self as u32
+    fn as_u32(self) -> u32 {
+        self as u32
     }
 }
 
@@ -240,8 +240,8 @@ impl ProtocolIndependentConnectionBrokerCode {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u32(&self) -> u32 {
-        *self as u32
+    fn as_u32(self) -> u32 {
+        self as u32
     }
 }
 
@@ -412,8 +412,8 @@ impl RdpSpecificCode {
         }
     }
 
-    fn as_u32(&self) -> u32 {
-        *self as u32
+    fn as_u32(self) -> u32 {
+        self as u32
     }
 }
 

@@ -603,8 +603,8 @@ impl Month {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u16(&self) -> u16 {
-        *self as u16
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 
@@ -625,8 +625,8 @@ impl DayOfWeek {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u16(&self) -> u16 {
-        *self as u16
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 
@@ -645,8 +645,8 @@ impl DayOfWeekOccurrence {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u16(&self) -> u16 {
-        *self as u16
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 
@@ -753,8 +753,8 @@ impl CompressionType {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    pub fn as_u8(&self) -> u8 {
-        *self as u8
+    pub fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 

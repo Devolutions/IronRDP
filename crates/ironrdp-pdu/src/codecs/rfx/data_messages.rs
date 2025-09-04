@@ -678,8 +678,8 @@ impl EntropyAlgorithm {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u16(&self) -> u16 {
-        *self as u16
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 

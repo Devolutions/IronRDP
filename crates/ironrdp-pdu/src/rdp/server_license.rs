@@ -152,8 +152,8 @@ impl PreambleType {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u8(&self) -> u8 {
-        *self as u8
+    fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 
@@ -176,8 +176,8 @@ impl PreambleVersion {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u8(&self) -> u8 {
-        *self as u8
+    fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 

@@ -520,8 +520,8 @@ impl ColorDepth {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u16(&self) -> u16 {
-        *self as u16
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 
@@ -540,8 +540,8 @@ impl HighColorDepth {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u16(&self) -> u16 {
-        *self as u16
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 
@@ -556,8 +556,8 @@ impl SecureAccessSequence {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u16(&self) -> u16 {
-        *self as u16
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 
@@ -578,8 +578,8 @@ impl KeyboardType {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    pub fn as_u32(&self) -> u32 {
-        *self as u32
+    pub fn as_u32(self) -> u32 {
+        self as u32
     }
 }
 
@@ -601,8 +601,8 @@ impl ConnectionType {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u8(&self) -> u8 {
-        *self as u8
+    fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 

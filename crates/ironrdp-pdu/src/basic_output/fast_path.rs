@@ -334,8 +334,8 @@ impl UpdateCode {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    pub fn as_u8(&self) -> u8 {
-        *self as u8
+    pub fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 
@@ -371,8 +371,8 @@ impl Fragmentation {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    pub fn as_u8(&self) -> u8 {
-        *self as u8
+    pub fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 

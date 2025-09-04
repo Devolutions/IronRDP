@@ -637,8 +637,8 @@ pub enum EntropyBits {
 }
 
 impl EntropyBits {
-    fn as_u8(&self) -> u8 {
-        *self as u8
+    fn as_u8(self) -> u8 {
+        self as u8
     }
 }
 
