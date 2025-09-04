@@ -1,3 +1,4 @@
+use core::num::NonZeroU16;
 use std::sync::Arc;
 
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
@@ -30,11 +31,18 @@ use crate::config::{Config, RDCleanPathConfig};
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
-    Image { buffer: Vec<u32>, width: u16, height: u16 },
+    Image {
+        buffer: Vec<u32>,
+        width: NonZeroU16,
+        height: NonZeroU16,
+    },
     ConnectionFailure(connector::ConnectorError),
     PointerDefault,
     PointerHidden,
-    PointerPosition { x: u16, y: u16 },
+    PointerPosition {
+        x: u16,
+        y: u16,
+    },
     PointerBitmap(Arc<DecodedPointer>),
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
@@ -516,14 +524,21 @@ async fn active_session(
                 match input_event {
                     RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
                         trace!(width, height, "Resize event");
-                        let (width, height) = MonitorLayoutEntry::adjust_display_size(width.into(), height.into());
+                        let width = u32::from(width);
+                        let height = u32::from(height);
+                        // TODO: Make adjust_display_size take and return width and height as u16.
+                        // From the function's doc comment, the width and height values must be less than or equal to 8192 pixels.
+                        // Therefore, we can remove unnecessary casts from u16 to u32 and back.
+                        let (width, height) = MonitorLayoutEntry::adjust_display_size(width, height);
                         debug!(width, height, "Adjusted display size");
                         if let Some(response_frame) = active_stage.encode_resize(width, height, Some(scale_factor), physical_size) {
                             vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                         } else {
                             // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
                             debug!("Reconnecting with new size");
-                            return Ok(RdpControlFlow::ReconnectWithNewSize { width: width.try_into().unwrap(), height: height.try_into().unwrap() })
+                            let width = u16::try_from(width).expect("always in the range");
+                            let height = u16::try_from(height).expect("always in the range");
+                            return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
                         }
                     },
                     RdpInputEvent::FastPath(events) => {
@@ -596,8 +611,10 @@ async fn active_session(
                     event_loop_proxy
                         .send_event(RdpOutputEvent::Image {
                             buffer,
-                            width: image.width(),
-                            height: image.height(),
+                            width: NonZeroU16::new(image.width())
+                                .ok_or_else(|| session::general_err!("width is zero"))?,
+                            height: NonZeroU16::new(image.height())
+                                .ok_or_else(|| session::general_err!("height is zero"))?,
                         })
                         .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
                 }

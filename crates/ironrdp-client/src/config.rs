@@ -439,10 +439,9 @@ impl Config {
             desktop_scale_factor: 0, // Default to 0 per FreeRDP
             bitmap: Some(bitmap),
             client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
-                .map(|version| version.major * 100 + version.minor * 10 + version.patch)
-                .unwrap_or(0)
+                .map_or(0, |version| version.major * 100 + version.minor * 10 + version.patch)
                 .pipe(u32::try_from)
-                .unwrap(),
+                .context("cargo package version")?,
             client_name: whoami::fallible::hostname().unwrap_or_else(|_| "ironrdp".to_owned()),
             // NOTE: hardcode this value like in freerdp
             // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70

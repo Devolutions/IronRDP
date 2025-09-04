@@ -5,9 +5,10 @@ use core::time::Duration;
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::{bail, Context as _};
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use tokio::sync::mpsc;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
@@ -38,7 +39,9 @@ impl App {
         // SAFETY: We drop the softbuffer context right before the event loop is stopped, thus making this safe.
         // FIXME: This is not a sufficient proof and the API is actually unsound as-is.
         let display_handle = unsafe {
-            core::mem::transmute::<DisplayHandle<'_>, DisplayHandle<'static>>(event_loop.display_handle().unwrap())
+            core::mem::transmute::<DisplayHandle<'_>, DisplayHandle<'static>>(
+                event_loop.display_handle().context("get display handle")?,
+            )
         };
         let context = softbuffer::Context::new(display_handle)
             .map_err(|e| anyhow::anyhow!("unable to initialize softbuffer context: {e}"))?;
@@ -56,25 +59,36 @@ impl App {
         })
     }
 
-    fn send_resize_event(&mut self) {
+    fn send_resize_event(&mut self) -> anyhow::Result<()> {
         let Some(size) = self.last_size.take() else {
-            return;
+            return Ok(());
         };
         let Some((window, _)) = self.window.as_mut() else {
-            return;
+            return Ok(());
         };
         let scale_factor = (window.scale_factor() * 100.0) as u32;
 
-        let _ = self.input_event_sender.send(RdpInputEvent::Resize {
-            width: u16::try_from(size.width).unwrap(),
-            height: u16::try_from(size.height).unwrap(),
-            scale_factor,
-            // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
-            // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
-            // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
-            // See also: https://github.com/rust-windowing/winit/issues/826
-            physical_size: None,
-        });
+        let width = u16::try_from(size.width).context("invalid `width`: out of range integral conversion")?;
+        let height = u16::try_from(size.height).context("invalid `height`: out of range integral conversion")?;
+
+        if self
+            .input_event_sender
+            .send(RdpInputEvent::Resize {
+                width,
+                height,
+                scale_factor,
+                // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
+                // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
+                // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
+                // See also: https://github.com/rust-windowing/winit/issues/826
+                physical_size: None,
+            })
+            .is_err()
+        {
+            bail!("failed to send resize event");
+        };
+
+        Ok(())
     }
 
     fn draw(&mut self) {
@@ -96,7 +110,9 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
                 event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
             } else {
-                self.send_resize_event();
+                if let Err(err) = self.send_resize_event() {
+                    error!(?err, "Failed to send resize event");
+                };
                 self.resize_timeout = None;
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
@@ -160,7 +176,14 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             // }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(scancode) = event.physical_key.to_scancode() {
-                    let scancode = ironrdp::input::Scancode::from_u16(u16::try_from(scancode).unwrap());
+                    let scancode = match u16::try_from(scancode) {
+                        Ok(scancode) => scancode,
+                        Err(_) => {
+                            warn!("Unsupported scancode: `{scancode:#X}`. Keyboard event will be ignored.");
+                            return;
+                        }
+                    };
+                    let scancode = ironrdp::input::Scancode::from_u16(scancode);
 
                     let operation = match event.state {
                         event::ElementState::Pressed => ironrdp::input::Operation::KeyPressed(scancode),
@@ -325,13 +348,10 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             RdpOutputEvent::Image { buffer, width, height } => {
                 trace!(width = ?width, height = ?height, "Received image with size");
                 trace!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");
-                self.buffer_size = (width, height);
+                self.buffer_size = (width.get(), height.get());
                 self.buffer = buffer;
                 surface
-                    .resize(
-                        NonZeroU32::new(u32::from(width)).unwrap(),
-                        NonZeroU32::new(u32::from(height)).unwrap(),
-                    )
+                    .resize(NonZeroU32::from(width), NonZeroU32::from(height))
                     .expect("surface resize");
 
                 window.request_redraw();

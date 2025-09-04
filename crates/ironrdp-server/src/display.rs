@@ -243,7 +243,7 @@ pub trait RdpServerDisplayUpdates {
     /// This method MUST be cancellation safe because it is used in a
     /// `tokio::select!` statement. If some other branch completes first, it
     /// MUST be guaranteed that no data is lost.
-    async fn next_update(&mut self) -> Option<DisplayUpdate>;
+    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>>;
 }
 
 /// Display for an RDP server
@@ -260,8 +260,8 @@ pub trait RdpServerDisplayUpdates {
 ///
 /// #[async_trait::async_trait]
 /// impl RdpServerDisplayUpdates for DisplayUpdates {
-///     async fn next_update(&mut self) -> Option<DisplayUpdate> {
-///         self.receiver.recv().await
+///     async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+///         Ok(self.receiver.recv().await)
 ///     }
 /// }
 ///

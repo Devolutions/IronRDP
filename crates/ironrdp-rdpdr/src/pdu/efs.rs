@@ -1329,47 +1329,6 @@ pub struct DeviceControlResponse {
     pub output_buffer: Option<Box<dyn rpce::Encode>>,
 }
 
-impl PartialEq for DeviceControlResponse {
-    fn eq(&self, other: &Self) -> bool {
-        if (self.device_io_reply != other.device_io_reply)
-            || (self.output_buffer.is_some() != other.output_buffer.is_some())
-        {
-            return false;
-        }
-
-        // If both are `None`, they are equal.
-        if self.output_buffer.is_none() && other.output_buffer.is_none() {
-            return true;
-        }
-
-        // device_io_reply is equal and both output_buffers are Some
-
-        // If the sizes are different, the buffers are not equal.
-        let self_size = self.output_buffer.as_ref().unwrap().size();
-        let other_size = other.output_buffer.as_ref().unwrap().size();
-        if self_size != other_size {
-            return false;
-        }
-
-        // Sizes are the same. Last check is to encode the output buffers and compare the encoded bytes directly.
-        let mut self_buf = vec![0u8; self_size];
-        let mut other_buf = vec![0u8; other_size];
-        self.output_buffer
-            .as_ref()
-            .unwrap()
-            .encode(&mut WriteCursor::new(self_buf.as_mut_slice()))
-            .unwrap();
-        other
-            .output_buffer
-            .as_ref()
-            .unwrap()
-            .encode(&mut WriteCursor::new(other_buf.as_mut_slice()))
-            .unwrap();
-
-        self_buf == other_buf
-    }
-}
-
 impl DeviceControlResponse {
     const NAME: &'static str = "DR_CONTROL_RSP";
 
@@ -2736,11 +2695,7 @@ impl ClientDriveQueryDirectoryResponse {
         dst.write_u32(cast_length!(
             "ClientDriveQueryDirectoryResponse",
             "length",
-            if self.buffer.is_some() {
-                self.buffer.as_ref().unwrap().size()
-            } else {
-                0
-            }
+            self.buffer.as_ref().map_or(0, |buf| buf.size())
         )?);
         if let Some(buffer) = &self.buffer {
             buffer.encode(dst)?;
@@ -3153,11 +3108,7 @@ impl ClientDriveQueryVolumeInformationResponse {
         dst.write_u32(cast_length!(
             "ClientDriveQueryVolumeInformationResponse",
             "length",
-            if self.buffer.is_some() {
-                self.buffer.as_ref().unwrap().size()
-            } else {
-                0
-            }
+            self.buffer.as_ref().map_or(0, |buf| buf.size())
         )?);
         if let Some(buffer) = &self.buffer {
             buffer.encode(dst)?;

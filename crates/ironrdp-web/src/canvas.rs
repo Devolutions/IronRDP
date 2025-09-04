@@ -5,14 +5,14 @@ use softbuffer::{NoDisplayHandle, NoWindowHandle};
 use web_sys::HtmlCanvasElement;
 
 pub(crate) struct Canvas {
-    width: u32,
+    width: NonZeroU32,
     surface: softbuffer::Surface<NoDisplayHandle, NoWindowHandle>,
 }
 
 impl Canvas {
-    pub(crate) fn new(render_canvas: HtmlCanvasElement, width: u32, height: u32) -> anyhow::Result<Self> {
-        render_canvas.set_width(width);
-        render_canvas.set_height(height);
+    pub(crate) fn new(render_canvas: HtmlCanvasElement, width: NonZeroU32, height: NonZeroU32) -> anyhow::Result<Self> {
+        render_canvas.set_width(width.get());
+        render_canvas.set_height(height.get());
 
         #[cfg(target_arch = "wasm32")]
         let mut surface = {
@@ -29,16 +29,14 @@ impl Canvas {
             stub(render_canvas)
         };
 
-        surface
-            .resize(NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap())
-            .expect("surface resize");
+        surface.resize(width, height).expect("surface resize");
 
         Ok(Self { width, surface })
     }
 
     pub(crate) fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) {
         self.surface.resize(width, height).expect("surface resize");
-        self.width = width.get();
+        self.width = width;
     }
 
     pub(crate) fn draw(&mut self, buffer: &[u8], region: InclusiveRectangle) -> anyhow::Result<()> {
@@ -63,7 +61,7 @@ impl Canvas {
             let region_width_usize = usize::from(region_width);
 
             for dst_row in dst
-                .chunks_exact_mut(self.width as usize)
+                .chunks_exact_mut(self.width.get() as usize)
                 .skip(region_top_usize)
                 .take(region_height_usize)
             {
@@ -81,8 +79,8 @@ impl Canvas {
         let damage_rect = softbuffer::Rect {
             x: u32::from(region.left),
             y: u32::from(region.top),
-            width: NonZeroU32::new(u32::from(region_width)).unwrap(),
-            height: NonZeroU32::new(u32::from(region_height)).unwrap(),
+            width: NonZeroU32::new(u32::from(region_width)).expect("Per invariants: 0 < region_width"),
+            height: NonZeroU32::new(u32::from(region_height)).expect("Per invariants: 0 < region_height"),
         };
 
         dst.present_with_damage(&[damage_rect]).expect("buffer present");

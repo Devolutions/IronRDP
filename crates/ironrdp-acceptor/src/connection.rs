@@ -404,7 +404,7 @@ impl Sequence for Acceptor {
                     .into_iter()
                     .enumerate()
                     .map(|(i, channel)| {
-                        let channel_id = u16::try_from(i).unwrap() + self.io_channel_id + 1;
+                        let channel_id = u16::try_from(i).expect("always in the range") + self.io_channel_id + 1;
                         if let Some((type_id, c)) = channel {
                             self.static_channels.attach_channel_id(type_id, channel_id);
                             (channel_id, Some(c))

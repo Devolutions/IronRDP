@@ -5,7 +5,7 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::rc::Rc;
 
-use anyhow::Context as _;
+use anyhow::{anyhow, Context as _};
 use base64::Engine as _;
 use futures_channel::mpsc;
 use futures_util::io::{ReadHalf, WriteHalf};
@@ -280,7 +280,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let mut config = build_config(username, password, server_domain, client_name, desktop_size);
+        let mut config =
+            build_config(username, password, server_domain, client_name, desktop_size).context("build config")?;
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
@@ -477,12 +478,13 @@ impl iron_remote_desktop::Session for Session {
 
         debug!("Initialize canvas");
 
-        let mut gui = Canvas::new(
-            self.render_canvas.clone(),
-            u32::from(connection_result.desktop_size.width),
-            u32::from(connection_result.desktop_size.height),
-        )
-        .context("canvas initialization")?;
+        let desktop_width = NonZeroU32::new(u32::from(connection_result.desktop_size.width))
+            .ok_or_else(|| anyhow!("desktop width is zero"))?;
+        let desktop_height = NonZeroU32::new(u32::from(connection_result.desktop_size.height))
+            .ok_or_else(|| anyhow!("desktop height is zero"))?;
+
+        let mut gui =
+            Canvas::new(self.render_canvas.clone(), desktop_width, desktop_height).context("canvas initialization")?;
 
         debug!("Canvas initialized");
 
@@ -559,7 +561,10 @@ impl iron_remote_desktop::Session for Session {
                                 warn!("Resize event ignored: width or height is zero");
                                 Vec::new()
                             } else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
-                                requested_resize = Some((NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap()));
+                                let width = NonZeroU32::new(width).expect("width is guaranteed to be non-zero due to the prior check");
+                                let height = NonZeroU32::new(height).expect("height is guaranteed to be non-zero due to the prior check");
+
+                                requested_resize = Some((width, height));
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                             } else {
                                 debug!("Resize event ignored");
@@ -844,8 +849,8 @@ fn build_config(
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
-) -> connector::Config {
-    connector::Config {
+) -> anyhow::Result<connector::Config> {
+    Ok(connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
         // TODO(#327): expose these options from the WASM module.
@@ -864,14 +869,12 @@ fn build_config(
         bitmap: Some(connector::BitmapConfig {
             color_depth: 16,
             lossy_compression: true,
-            codecs: client_codecs_capabilities(&[]).unwrap(),
+            codecs: client_codecs_capabilities(&[]).map_err(|err| anyhow::anyhow!("client codecs capabilities error: {err}"))?,
         }),
         #[expect(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
-            .map(|version| version.major * 100 + version.minor * 10 + version.patch)
-            .unwrap_or(0)
-            .pipe(u32::try_from)
-            .unwrap(),
+            .map_or(0, |version| version.major * 100 + version.minor * 10 + version.patch)
+            .pipe(u32::try_from).context("cargo package version")?,
         client_name,
         // NOTE: hardcode this value like in freerdp
         // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
@@ -887,7 +890,7 @@ fn build_config(
         hardware_id: None,
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
-    }
+    })
 }
 
 async fn writer_task(

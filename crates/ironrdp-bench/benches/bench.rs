@@ -1,4 +1,4 @@
-use core::num::NonZero;
+use core::num::{NonZeroU16, NonZeroUsize};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
@@ -9,14 +9,19 @@ use ironrdp_server::BitmapUpdate;
 pub fn rfx_enc_tile_bench(c: &mut Criterion) {
     let quant = rfx::Quant::default();
     let algo = rfx::EntropyAlgorithm::Rlgr3;
+
+    const WIDTH: NonZeroU16 = NonZeroU16::new(64).expect("value is guaranteed to be non-zero");
+    const HEIGHT: NonZeroU16 = NonZeroU16::new(64).expect("value is guaranteed to be non-zero");
+    const STRIDE: NonZeroUsize = NonZeroUsize::new(64 * 4).expect("value is guaranteed to be non-zero");
+
     let bitmap = BitmapUpdate {
         x: 0,
         y: 0,
-        width: NonZero::new(64).unwrap(),
-        height: NonZero::new(64).unwrap(),
+        width: WIDTH,
+        height: HEIGHT,
         format: ironrdp_server::PixelFormat::ARgb32,
         data: vec![0; 64 * 64 * 4].into(),
-        stride: NonZero::new(64 * 4).unwrap(),
+        stride: STRIDE,
     };
     c.bench_function("rfx_enc_tile", |b| b.iter(|| rfx_enc_tile(&bitmap, &quant, algo, 0, 0)));
 }
@@ -24,14 +29,20 @@ pub fn rfx_enc_tile_bench(c: &mut Criterion) {
 pub fn rfx_enc_bench(c: &mut Criterion) {
     let quant = rfx::Quant::default();
     let algo = rfx::EntropyAlgorithm::Rlgr3;
+
+    const WIDTH: NonZeroU16 = NonZeroU16::new(2048).expect("value is guaranteed to be non-zero");
+    const HEIGHT: NonZeroU16 = NonZeroU16::new(2048).expect("value is guaranteed to be non-zero");
+    // QUESTION: It looks like we have a bug here, don't we? The stride value should be 2048 * 4.
+    const STRIDE: NonZeroUsize = NonZeroUsize::new(64 * 4).expect("value is guaranteed to be non-zero");
+
     let bitmap = BitmapUpdate {
         x: 0,
         y: 0,
-        width: NonZero::new(2048).unwrap(),
-        height: NonZero::new(2048).unwrap(),
+        width: WIDTH,
+        height: HEIGHT,
         format: ironrdp_server::PixelFormat::ARgb32,
         data: vec![0; 2048 * 2048 * 4].into(),
-        stride: NonZero::new(64 * 4).unwrap(),
+        stride: STRIDE,
     };
     c.bench_function("rfx_enc", |b| b.iter(|| rfx_enc(&bitmap, &quant, algo)));
 }

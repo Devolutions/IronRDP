@@ -73,7 +73,7 @@ pub fn encode_dvc_messages(
 
         while off < total_length {
             let first = off == 0;
-            let remaining_length = total_length.checked_sub(off).unwrap();
+            let remaining_length = total_length.checked_sub(off).expect("never overflow");
             let size = core::cmp::min(remaining_length, DrdynvcDataPdu::MAX_DATA_SIZE);
             let end = off
                 .checked_add(size)

@@ -283,16 +283,14 @@ impl BitmapInfoHeader {
     fn width(&self) -> u16 {
         let abs = self.width.abs();
         debug_assert!(abs <= 10_000);
-        // Per the invariant on self.width, this cast is infallible.
-        u16::try_from(abs).unwrap()
+        u16::try_from(abs).expect("Per the invariant on self.width, this cast is infallible")
     }
 
     // INVARIANT: output (height) <= 10_000
     fn height(&self) -> u16 {
         let abs = self.height.abs();
         debug_assert!(abs <= 10_000);
-        // Per the invariant on self.height, this cast is infallible.
-        u16::try_from(abs).unwrap()
+        u16::try_from(abs).expect("Per the invariant on self.height, this cast is infallible")
     }
 
     fn is_bottom_up(&self) -> bool {

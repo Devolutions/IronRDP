@@ -100,7 +100,9 @@ fn resolve_generator(
     loop {
         match state {
             GeneratorState::Suspended(request) => {
-                let response = network_client.send(&request).unwrap();
+                let response = network_client.send(&request).map_err(|e| {
+                    ConnectorError::new("network client send", ironrdp_connector::ConnectorErrorKind::Credssp(e))
+                })?;
                 state = generator.resume(Ok(response));
             }
             GeneratorState::Completed(client_state) => {

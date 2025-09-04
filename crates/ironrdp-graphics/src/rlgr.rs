@@ -104,37 +104,42 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                 kp = kp.saturating_sub(DN_GR);
                 k = kp >> LS_GR;
             }
-            CompressionMode::GolombRice => match mode {
-                EntropyAlgorithm::Rlgr1 => {
-                    let two_ms = get_2magsign(*input.next().unwrap());
-                    code_gr(&mut bits, &mut krp, two_ms);
-                    if two_ms == 0 {
-                        kp = min(kp + UP_GR, KP_MAX);
-                    } else {
-                        kp = kp.saturating_sub(DQ_GR);
-                    }
-                    k = kp >> LS_GR;
-                }
-                EntropyAlgorithm::Rlgr3 => {
-                    let two_ms1 = input.next().map(|&n| get_2magsign(n)).unwrap();
-                    let two_ms2 = input.next().map(|&n| get_2magsign(n)).unwrap_or(1);
-                    let sum2ms = two_ms1 + two_ms2;
-                    code_gr(&mut bits, &mut krp, sum2ms);
-
-                    let m = 32 - sum2ms.leading_zeros() as usize;
-                    if m != 0 {
-                        bits.output_bits(m, two_ms1);
-                    }
-
-                    if two_ms1 != 0 && two_ms2 != 0 {
-                        kp = kp.saturating_sub(2 * DQ_GR);
-                        k = kp >> LS_GR;
-                    } else if two_ms1 == 0 && two_ms2 == 0 {
-                        kp = min(kp + 2 * UQ_GR, KP_MAX);
+            CompressionMode::GolombRice => {
+                let input_first = *input
+                    .next()
+                    .expect("value is guaranteed to be `Some` due to the prior check");
+                match mode {
+                    EntropyAlgorithm::Rlgr1 => {
+                        let two_ms = get_2magsign(input_first);
+                        code_gr(&mut bits, &mut krp, two_ms);
+                        if two_ms == 0 {
+                            kp = min(kp + UP_GR, KP_MAX);
+                        } else {
+                            kp = kp.saturating_sub(DQ_GR);
+                        }
                         k = kp >> LS_GR;
                     }
+                    EntropyAlgorithm::Rlgr3 => {
+                        let two_ms1 = get_2magsign(input_first);
+                        let two_ms2 = input.next().map(|&n| get_2magsign(n)).unwrap_or(1);
+                        let sum2ms = two_ms1 + two_ms2;
+                        code_gr(&mut bits, &mut krp, sum2ms);
+
+                        let m = 32 - sum2ms.leading_zeros() as usize;
+                        if m != 0 {
+                            bits.output_bits(m, two_ms1);
+                        }
+
+                        if two_ms1 != 0 && two_ms2 != 0 {
+                            kp = kp.saturating_sub(2 * DQ_GR);
+                            k = kp >> LS_GR;
+                        } else if two_ms1 == 0 && two_ms2 == 0 {
+                            kp = min(kp + 2 * UQ_GR, KP_MAX);
+                            k = kp >> LS_GR;
+                        }
+                    }
                 }
-            },
+            }
         }
     }
 

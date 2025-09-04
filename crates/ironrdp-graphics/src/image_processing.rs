@@ -3,8 +3,6 @@ use std::io;
 
 use byteorder::WriteBytesExt as _;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
-use num_derive::ToPrimitive;
-use num_traits::ToPrimitive as _;
 
 const ALPHA_OPAQUE: u8 = 0xff;
 
@@ -99,7 +97,7 @@ impl ImageRegion<'_> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PixelFormat {
     ARgb32 = 536_971_400,
     XRgb32 = 536_938_632,
@@ -130,6 +128,19 @@ impl TryFrom<u32> for PixelFormat {
 }
 
 impl PixelFormat {
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::ARgb32 => 536_971_400,
+            Self::XRgb32 => 536_938_632,
+            Self::ABgr32 => 537_036_936,
+            Self::XBgr32 => 537_004_168,
+            Self::BgrA32 => 537_168_008,
+            Self::BgrX32 => 537_135_240,
+            Self::RgbA32 => 537_102_472,
+            Self::RgbX32 => 537_069_704,
+        }
+    }
+
     pub const fn bytes_per_pixel(self) -> u8 {
         match self {
             Self::ARgb32
@@ -146,7 +157,7 @@ impl PixelFormat {
     pub fn eq_no_alpha(self, other: Self) -> bool {
         let mask = !(8 << 12);
 
-        (self.to_u32().unwrap() & mask) == (other.to_u32().unwrap() & mask)
+        (self.as_u32() & mask) == (other.as_u32() & mask)
     }
 
     pub fn read_color(self, buffer: &[u8]) -> io::Result<Rgba> {
