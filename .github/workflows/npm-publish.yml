@@ -169,14 +169,6 @@ jobs:
             Invoke-Expression $publishCmd
           }
 
-      - name: Update Artifactory Cache
-        if: ${{ needs.preflight.outputs.dry-run == 'false' }}
-        run: |
-          gh workflow run update-artifactory-cache.yml --repo Devolutions/scheduled-tasks --field package_name="iron-remote-desktop"
-          gh workflow run update-artifactory-cache.yml --repo Devolutions/scheduled-tasks --field package_name="iron-remote-desktop-rdp"
-        env:
-          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
-
       - name: Create version tags
         if: ${{ needs.preflight.outputs.dry-run == 'false' }}
         shell: bash
@@ -210,6 +202,14 @@ jobs:
             git tag "$tag" "$GITHUB_SHA"
             git push origin "$tag"
           done
+
+      - name: Update Artifactory Cache
+        if: ${{ needs.preflight.outputs.dry-run == 'false' }}
+        run: |
+          gh workflow run update-artifactory-cache.yml --repo Devolutions/scheduled-tasks --field package_name="iron-remote-desktop"
+          gh workflow run update-artifactory-cache.yml --repo Devolutions/scheduled-tasks --field package_name="iron-remote-desktop-rdp"
+        env:
+          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
 
   notify:
     name: Notify failure
