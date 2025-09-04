@@ -10,9 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 1 -->Features
 
-- Add support for DVC pipe proxy in FFI (#938) ([17833fe009](https://github.com/Devolutions/IronRDP/commit/17833fe009279823c4076d3e2e0c7d063fd24a43)) 
-
-
+- Add API to retrieve registered SVC processors (#938) ([17833fe009](https://github.com/Devolutions/IronRDP/commit/17833fe009279823c4076d3e2e0c7d063fd24a43)) 
 
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.6.0...ironrdp-connector-v0.7.0)] - 2025-08-29
 
