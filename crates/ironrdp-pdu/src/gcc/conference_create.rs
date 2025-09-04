@@ -34,8 +34,8 @@ impl ConferenceCreateRequest {
     const NAME: &'static str = "ConferenceCreateRequest";
 
     pub fn new(gcc_blocks: ClientGccBlocks) -> DecodeResult<Self> {
-        // Ensure the invariant on gcc_blocks.size() is respected
-        if gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE > usize::from(u16::MAX) {
+        // Ensure the invariant on gcc_blocks.size() is respected.
+        if !(gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE <= usize::from(u16::MAX)) {
             return Err(invalid_field_err!(
                 "gcc_blocks",
                 "gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE > u16::MAX"
