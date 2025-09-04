@@ -213,7 +213,7 @@ bitflags! {
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum LogonErrorNotificationType {
     SessionBusyOptions = 0xFFFF_FFF8,
     DisconnectRefused = 0xFFFF_FFF9,
@@ -226,22 +226,17 @@ pub enum LogonErrorNotificationType {
 }
 
 impl LogonErrorNotificationType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::SessionBusyOptions => 0xFFFF_FFF8,
-            Self::DisconnectRefused => 0xFFFF_FFF9,
-            Self::NoPermission => 0xFFFF_FFFA,
-            Self::BumpOptions => 0xFFFF_FFFB,
-            Self::ReconnectOptions => 0xFFFF_FFFC,
-            Self::SessionTerminate => 0xFFFF_FFFD,
-            Self::SessionContinue => 0xFFFF_FFFE,
-            Self::AccessDenied => 0xFFFF_FFFF,
-        }
+        *self as u32
     }
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum LogonErrorNotificationDataErrorCode {
     FailedBadPassword = 0x0000_0000,
     FailedUpdatePassword = 0x0000_0001,
@@ -250,13 +245,12 @@ pub enum LogonErrorNotificationDataErrorCode {
 }
 
 impl LogonErrorNotificationDataErrorCode {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::FailedBadPassword => 0x0000_0000,
-            Self::FailedUpdatePassword => 0x0000_0001,
-            Self::FailedOther => 0x0000_0002,
-            Self::Warning => 0x0000_0003,
-        }
+        *self as u32
     }
 }
 

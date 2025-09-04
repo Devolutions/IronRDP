@@ -38,6 +38,7 @@ pub fn from_utf16_bytes(mut value: &[u8]) -> String {
     String::from_utf16_lossy(value_u16.as_ref())
 }
 
+#[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum CharacterSet {
     Ansi = 1,
@@ -45,11 +46,12 @@ pub enum CharacterSet {
 }
 
 impl CharacterSet {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     pub fn as_u16(&self) -> u16 {
-        match self {
-            Self::Ansi => 1,
-            Self::Unicode => 2,
-        }
+        *self as u16
     }
 }
 

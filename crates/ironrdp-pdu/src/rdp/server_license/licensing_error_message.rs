@@ -107,7 +107,8 @@ impl LicensingErrorMessage {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, FromPrimitive)]
+#[repr(u32)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
 pub enum LicenseErrorCode {
     InvalidServerCertificate = 0x01,
     NoLicense = 0x02,
@@ -121,22 +122,17 @@ pub enum LicenseErrorCode {
 }
 
 impl LicenseErrorCode {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::InvalidServerCertificate => 0x01,
-            Self::NoLicense => 0x02,
-            Self::InvalidMac => 0x03,
-            Self::InvalidScope => 0x04,
-            Self::NoLicenseServer => 0x06,
-            Self::StatusValidClient => 0x07,
-            Self::InvalidClient => 0x08,
-            Self::InvalidProductId => 0x0b,
-            Self::InvalidFieldLen => 0x0c,
-        }
+        *self as u32
     }
 }
 
-#[derive(Debug, PartialEq, Eq, FromPrimitive)]
+#[repr(u32)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
 pub enum LicensingStateTransition {
     TotalAbort = 1,
     NoTransition = 2,
@@ -145,12 +141,11 @@ pub enum LicensingStateTransition {
 }
 
 impl LicensingStateTransition {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::TotalAbort => 1,
-            Self::NoTransition => 2,
-            Self::ResetPhaseToStart => 3,
-            Self::ResendLastMessage => 4,
-        }
+        *self as u32
     }
 }

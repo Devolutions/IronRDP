@@ -132,6 +132,7 @@ impl<'de> Decode<'de> for ExtendedMonitorInfo {
     }
 }
 
+#[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum MonitorOrientation {
     Landscape = 0,
@@ -141,12 +142,11 @@ pub enum MonitorOrientation {
 }
 
 impl MonitorOrientation {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::Landscape => 0,
-            Self::Portrait => 90,
-            Self::LandscapeFlipped => 180,
-            Self::PortraitFlipped => 270,
-        }
+        *self as u32
     }
 }

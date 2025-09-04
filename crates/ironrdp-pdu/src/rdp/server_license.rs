@@ -135,7 +135,7 @@ impl<'de> Decode<'de> for LicenseHeader {
 ///
 /// [2.2.1.12.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/73170ca2-5f82-4a2d-9d1b-b439f3d8dadc
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
 pub enum PreambleType {
     LicenseRequest = 0x01,
     PlatformChallenge = 0x02,
@@ -148,17 +148,12 @@ pub enum PreambleType {
 }
 
 impl PreambleType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u8(&self) -> u8 {
-        match self {
-            Self::LicenseRequest => 0x01,
-            Self::PlatformChallenge => 0x02,
-            Self::NewLicense => 0x03,
-            Self::UpgradeLicense => 0x04,
-            Self::LicenseInfo => 0x12,
-            Self::NewLicenseRequest => 0x13,
-            Self::PlatformChallengeResponse => 0x15,
-            Self::ErrorAlert => 0xff,
-        }
+        *self as u8
     }
 }
 
@@ -169,18 +164,20 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, FromPrimitive)]
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
 pub enum PreambleVersion {
     V2 = 2, // RDP 4.0
     V3 = 3, // RDP 5.0, 5.1, 5.2, 6.0, 6.1, 7.0, 7.1, 8.0, 8.1, 10.0, 10.1, 10.2, 10.3, 10.4, and 10.5
 }
 
 impl PreambleVersion {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u8(&self) -> u8 {
-        match self {
-            Self::V2 => 2,
-            Self::V3 => 3,
-        }
+        *self as u8
     }
 }
 

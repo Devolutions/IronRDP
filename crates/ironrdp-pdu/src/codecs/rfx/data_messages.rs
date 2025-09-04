@@ -674,11 +674,12 @@ pub enum EntropyAlgorithm {
 }
 
 impl EntropyAlgorithm {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Rlgr1 => 0x01,
-            Self::Rlgr3 => 0x04,
-        }
+        *self as u16
     }
 }
 

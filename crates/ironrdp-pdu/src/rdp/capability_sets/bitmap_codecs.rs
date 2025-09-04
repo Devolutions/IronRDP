@@ -629,6 +629,7 @@ impl<'de> Decode<'de> for RfxICap {
     }
 }
 
+#[repr(u8)]
 #[derive(PartialEq, Eq, Debug, FromPrimitive, Copy, Clone)]
 pub enum EntropyBits {
     Rlgr1 = 1,
@@ -637,10 +638,7 @@ pub enum EntropyBits {
 
 impl EntropyBits {
     fn as_u8(&self) -> u8 {
-        match self {
-            Self::Rlgr1 => 1,
-            Self::Rlgr3 => 4,
-        }
+        *self as u8
     }
 }
 

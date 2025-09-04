@@ -348,7 +348,7 @@ impl Sequence for ClientConnector {
 
                 debug!(message = ?connect_response, "Received");
 
-                let client_gcc_blocks = &connect_initial.conference_create_request.gcc_blocks();
+                let client_gcc_blocks = connect_initial.conference_create_request.gcc_blocks();
 
                 let server_gcc_blocks = connect_response.conference_create_response.gcc_blocks();
 

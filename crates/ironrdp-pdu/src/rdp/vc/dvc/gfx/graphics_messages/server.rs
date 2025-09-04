@@ -944,17 +944,12 @@ pub enum Codec1Type {
 }
 
 impl Codec1Type {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Uncompressed => 0x0,
-            Self::RemoteFx => 0x3,
-            Self::ClearCodec => 0x8,
-            Self::Planar => 0xa,
-            Self::Avc420 => 0xb,
-            Self::Alpha => 0xc,
-            Self::Avc444 => 0xe,
-            Self::Avc444v2 => 0xf,
-        }
+        *self as u16
     }
 }
 
@@ -965,10 +960,12 @@ pub enum Codec2Type {
 }
 
 impl Codec2Type {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::RemoteFxProgressive => 0x9,
-        }
+        *self as u16
     }
 }
 
@@ -981,10 +978,7 @@ pub enum PixelFormat {
 
 impl PixelFormat {
     fn as_u8(&self) -> u8 {
-        match self {
-            Self::XRgb => 0x20,
-            Self::ARgb => 0x21,
-        }
+        *self as u8
     }
 }
 

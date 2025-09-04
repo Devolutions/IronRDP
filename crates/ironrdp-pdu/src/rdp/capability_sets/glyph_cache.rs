@@ -13,6 +13,7 @@ pub const GLYPH_CACHE_NUM: usize = 10;
 const GLYPH_CACHE_LENGTH: usize = 48;
 const CACHE_DEFINITION_LENGTH: usize = 4;
 
+#[repr(u16)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum GlyphSupportLevel {
     None = 0,
@@ -22,13 +23,12 @@ pub enum GlyphSupportLevel {
 }
 
 impl GlyphSupportLevel {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::None => 0,
-            Self::Partial => 1,
-            Self::Full => 2,
-            Self::Encode => 3,
-        }
+        *self as u16
     }
 }
 

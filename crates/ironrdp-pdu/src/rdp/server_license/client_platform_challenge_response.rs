@@ -162,7 +162,8 @@ impl ClientPlatformChallengeResponse {
     }
 }
 
-#[derive(Debug, PartialEq, FromPrimitive)]
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
 pub enum ClientType {
     Win32 = 0x0100,
     Win16 = 0x0200,
@@ -171,17 +172,17 @@ pub enum ClientType {
 }
 
 impl ClientType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Win32 => 0x0100,
-            Self::Win16 => 0x0200,
-            Self::WinCe => 0x0300,
-            Self::Other => 0xff00,
-        }
+        *self as u16
     }
 }
 
-#[derive(Debug, PartialEq, FromPrimitive)]
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
 pub enum LicenseDetailLevel {
     Simple = 1,
     Moderate = 2,
@@ -189,12 +190,12 @@ pub enum LicenseDetailLevel {
 }
 
 impl LicenseDetailLevel {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Simple => 1,
-            Self::Moderate => 2,
-            Self::Detail => 3,
-        }
+        *self as u16
     }
 }
 

@@ -333,12 +333,12 @@ enum SurfaceCommandType {
 }
 
 impl SurfaceCommandType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::SetSurfaceBits => 0x01,
-            Self::FrameMarker => 0x04,
-            Self::StreamSurfaceBits => 0x06,
-        }
+        *self as u16
     }
 }
 

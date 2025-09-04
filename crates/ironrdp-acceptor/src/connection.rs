@@ -381,26 +381,19 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?settings_initial, "Received");
 
-                let early_capability = settings_initial
-                    .conference_create_request
-                    .gcc_blocks()
-                    .core
-                    .optional_data
-                    .early_capability_flags;
+                let gcc_blocks = settings_initial.conference_create_request.into_gcc_blocks();
+                let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
 
-                let joined: Vec<_> = settings_initial
-                    .conference_create_request
-                    .gcc_blocks()
+                let joined: Vec<_> = gcc_blocks
                     .network
-                    .as_ref()
                     .map(|network| {
                         network
                             .channels
-                            .iter()
+                            .into_iter()
                             .map(|c| {
                                 self.static_channels
                                     .get_by_channel_name(&c.name)
-                                    .map(|(type_id, _)| (type_id, c.clone()))
+                                    .map(|(type_id, _)| (type_id, c))
                             })
                             .collect()
                     })

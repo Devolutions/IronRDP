@@ -515,6 +515,7 @@ bitflags! {
     }
 }
 
+#[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum StreamPriority {
     Undefined = 0,
@@ -524,16 +525,16 @@ pub enum StreamPriority {
 }
 
 impl StreamPriority {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u8(&self) -> u8 {
-        match self {
-            Self::Undefined => 0,
-            Self::Low => 1,
-            Self::Medium => 2,
-            Self::High => 4,
-        }
+        *self as u8
     }
 }
 
+#[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ShareControlPduType {
     DemandActivePdu = 0x1,
@@ -544,14 +545,12 @@ pub enum ShareControlPduType {
 }
 
 impl ShareControlPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::DemandActivePdu => 0x1,
-            Self::ConfirmActivePdu => 0x3,
-            Self::DeactivateAllPdu => 0x6,
-            Self::DataPdu => 0x7,
-            Self::ServerRedirect => 0xa,
-        }
+        *self as u16
     }
 }
 
@@ -586,34 +585,12 @@ pub enum ShareDataPduType {
 }
 
 impl ShareDataPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u8(&self) -> u8 {
-        match self {
-            Self::Update => 0x02,
-            Self::Control => 0x14,
-            Self::Pointer => 0x1b,
-            Self::Input => 0x1c,
-            Self::Synchronize => 0x1f,
-            Self::RefreshRectangle => 0x21,
-            Self::PlaySound => 0x22,
-            Self::SuppressOutput => 0x23,
-            Self::ShutdownRequest => 0x24,
-            Self::ShutdownDenied => 0x25,
-            Self::SaveSessionInfo => 0x26,
-            Self::FontList => 0x27,
-            Self::FontMap => 0x28,
-            Self::SetKeyboardIndicators => 0x29,
-            Self::BitmapCachePersistentList => 0x2b,
-            Self::BitmapCacheErrorPdu => 0x2c,
-            Self::SetKeyboardImeStatus => 0x2d,
-            Self::OffscreenCacheErrorPdu => 0x2e,
-            Self::SetErrorInfoPdu => 0x2f,
-            Self::DrawNineGridErrorPdu => 0x30,
-            Self::DrawGdiPusErrorPdu => 0x31,
-            Self::ArcStatusPdu => 0x32,
-            Self::StatusInfoPdu => 0x36,
-            Self::MonitorLayoutPdu => 0x37,
-            Self::FrameAcknowledgePdu => 0x38,
-        }
+        *self as u8
     }
 }
 

@@ -101,16 +101,12 @@ pub enum FastpathInputEventType {
 }
 
 impl FastpathInputEventType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u8(&self) -> u8 {
-        match self {
-            Self::ScanCode => 0x0000,
-            Self::Mouse => 0x0001,
-            Self::MouseX => 0x0002,
-            Self::Sync => 0x0003,
-            Self::Unicode => 0x0004,
-            Self::MouseRel => 0x0005,
-            Self::QoeTimestamp => 0x0006,
-        }
+        *self as u8
     }
 }
 

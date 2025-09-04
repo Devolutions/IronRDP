@@ -9,6 +9,7 @@ use num_traits::FromPrimitive as _;
 
 const BRUSH_LENGTH: usize = 4;
 
+#[repr(u32)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum SupportLevel {
     Default = 0,
@@ -17,12 +18,12 @@ pub enum SupportLevel {
 }
 
 impl SupportLevel {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::Default => 0,
-            Self::Color8x8 => 1,
-            Self::ColorFull => 2,
-        }
+        *self as u32
     }
 }
 

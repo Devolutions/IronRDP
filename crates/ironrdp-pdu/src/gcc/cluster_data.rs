@@ -77,6 +77,7 @@ bitflags! {
     }
 }
 
+#[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum RedirectionVersion {
     V1 = 0,
@@ -88,15 +89,12 @@ pub enum RedirectionVersion {
 }
 
 impl RedirectionVersion {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::V1 => 0,
-            Self::V2 => 1,
-            Self::V3 => 2,
-            Self::V4 => 3,
-            Self::V5 => 4,
-            Self::V6 => 5,
-        }
+        *self as u32
     }
 }
 

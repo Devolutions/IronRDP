@@ -230,7 +230,7 @@ impl<'de> Decode<'de> for MonitorLayoutPdu {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ControlAction {
     RequestControl = 1,
     GrantedControl = 2,
@@ -239,13 +239,12 @@ pub enum ControlAction {
 }
 
 impl ControlAction {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::RequestControl => 1,
-            Self::GrantedControl => 2,
-            Self::Detach => 3,
-            Self::Cooperate => 4,
-        }
+        *self as u16
     }
 }
 

@@ -331,19 +331,11 @@ impl BlockType {
         )
     }
 
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Tile => 0xCAC3,
-            Self::Capabilities => 0xCBC0,
-            Self::CapabilitySet => 0xCBC1,
-            Self::Sync => 0xCCC0,
-            Self::CodecVersions => 0xCCC1,
-            Self::Channels => 0xCCC2,
-            Self::Context => 0xCCC3,
-            Self::FrameBegin => 0xCCC4,
-            Self::FrameEnd => 0xCCC5,
-            Self::Region => 0xCCC6,
-            Self::Extension => 0xCCC7,
-        }
+        *self as u16
     }
 }

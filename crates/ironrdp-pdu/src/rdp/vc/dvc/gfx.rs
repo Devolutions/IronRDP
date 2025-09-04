@@ -13,7 +13,7 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
+use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,7 +221,8 @@ impl<'a> Decode<'a> for ClientPdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ClientPduType {
     FrameAcknowledge = 0x0d,
     CacheImportOffer = 0x10,
@@ -230,13 +231,12 @@ pub enum ClientPduType {
 }
 
 impl ClientPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::FrameAcknowledge => 0x0d,
-            Self::CacheImportOffer => 0x10,
-            Self::CapabilitiesAdvertise => 0x12,
-            Self::QoeFrameAcknowledge => 0x16,
-        }
+        *self as u16
     }
 }
 
@@ -249,6 +249,7 @@ impl<'a> From<&'a ClientPdu> for ClientPduType {
     }
 }
 
+#[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ServerPduType {
     WireToSurface1 = 0x01,
@@ -273,28 +274,12 @@ pub enum ServerPduType {
 }
 
 impl ServerPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::WireToSurface1 => 0x01,
-            Self::WireToSurface2 => 0x02,
-            Self::DeleteEncodingContext => 0x03,
-            Self::SolidFill => 0x04,
-            Self::SurfaceToSurface => 0x05,
-            Self::SurfaceToCache => 0x06,
-            Self::CacheToSurface => 0x07,
-            Self::EvictCacheEntry => 0x08,
-            Self::CreateSurface => 0x09,
-            Self::DeleteSurface => 0x0a,
-            Self::StartFrame => 0x0b,
-            Self::EndFrame => 0x0c,
-            Self::ResetGraphics => 0x0e,
-            Self::MapSurfaceToOutput => 0x0f,
-            Self::CacheImportReply => 0x11,
-            Self::CapabilitiesConfirm => 0x13,
-            Self::MapSurfaceToWindow => 0x15,
-            Self::MapSurfaceToScaledOutput => 0x17,
-            Self::MapSurfaceToScaledWindow => 0x18,
-        }
+        *self as u16
     }
 }
 

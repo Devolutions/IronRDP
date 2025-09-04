@@ -312,6 +312,7 @@ impl Encode for FastPathUpdate<'_> {
     }
 }
 
+#[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum UpdateCode {
     Orders = 0x0,
@@ -329,21 +330,12 @@ pub enum UpdateCode {
 }
 
 impl UpdateCode {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     pub fn as_u8(&self) -> u8 {
-        match self {
-            Self::Orders => 0x0,
-            Self::Bitmap => 0x1,
-            Self::Palette => 0x2,
-            Self::Synchronize => 0x3,
-            Self::SurfaceCommands => 0x4,
-            Self::HiddenPointer => 0x5,
-            Self::DefaultPointer => 0x6,
-            Self::PositionPointer => 0x8,
-            Self::ColorPointer => 0x9,
-            Self::CachedPointer => 0xa,
-            Self::NewPointer => 0xb,
-            Self::LargePointer => 0xc,
-        }
+        *self as u8
     }
 }
 
@@ -365,6 +357,7 @@ impl From<&FastPathUpdate<'_>> for UpdateCode {
     }
 }
 
+#[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum Fragmentation {
     Single = 0x0,
@@ -374,13 +367,12 @@ pub enum Fragmentation {
 }
 
 impl Fragmentation {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     pub fn as_u8(&self) -> u8 {
-        match self {
-            Self::Single => 0x0,
-            Self::Last => 0x1,
-            Self::First => 0x2,
-            Self::Next => 0x3,
-        }
+        *self as u8
     }
 }
 

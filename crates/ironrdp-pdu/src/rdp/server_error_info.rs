@@ -103,6 +103,7 @@ impl FromPrimitive for ErrorInfo {
     }
 }
 
+#[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ProtocolIndependentCode {
     None = 0x0000_0000,
@@ -149,30 +150,16 @@ impl ProtocolIndependentCode {
         }
     }
 
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     pub fn as_u32(&self) -> u32 {
-        match self {
-            Self::None => 0x0000_0000,
-            Self::RpcInitiatedDisconnect => 0x0000_0001,
-            Self::RpcInitiatedLogoff => 0x0000_0002,
-            Self::IdleTimeout => 0x0000_0003,
-            Self::LogonTimeout => 0x0000_0004,
-            Self::DisconnectedByOtherconnection => 0x0000_0005,
-            Self::OutOfMemory => 0x0000_0006,
-            Self::ServerDeniedConnection => 0x0000_0007,
-            Self::ServerInsufficientPrivileges => 0x0000_0009,
-            Self::ServerFreshCredentialsRequired => 0x0000_000A,
-            Self::RpcInitiatedDisconnectByuser => 0x0000_000B,
-            Self::LogoffByUser => 0x0000_000C,
-            Self::CloseStackOnDriverNotReady => 0x0000_000F,
-            Self::ServerDwmCrash => 0x0000_0010,
-            Self::CloseStackOnDriverFailure => 0x0000_0011,
-            Self::CloseStackOnDriverIfaceFailure => 0x0000_0012,
-            Self::ServerWinlogonCrash => 0x0000_0017,
-            Self::ServerCsrssCrash => 0x0000_0018,
-        }
+        *self as u32
     }
 }
 
+#[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ProtocolIndependentLicensingCode {
     Internal = 0x0000_0100,
@@ -207,23 +194,16 @@ impl ProtocolIndependentLicensingCode {
         }
     }
 
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::Internal => 0x0000_0100,
-            Self::NoLicenseServer => 0x0000_0101,
-            Self::NoLicense => 0x0000_0102,
-            Self::BadClientMsg => 0x0000_0103,
-            Self::HwidDoesntMatchLicense => 0x0000_0104,
-            Self::BadClientLicense => 0x0000_0105,
-            Self::CantFinishProtocol => 0x0000_0106,
-            Self::ClientEndedProtocol => 0x0000_0107,
-            Self::BadClientEncryption => 0x0000_0108,
-            Self::CantUpgradeLicense => 0x0000_0109,
-            Self::NoRemoteConnections => 0x0000_010A,
-        }
+        *self as u32
     }
 }
 
+#[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ProtocolIndependentConnectionBrokerCode {
     DestinationNotFound = 0x0000_0400,
@@ -256,23 +236,16 @@ impl ProtocolIndependentConnectionBrokerCode {
         }
     }
 
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::DestinationNotFound => 0x0000_0400,
-            Self::LoadingDestination => 0x0000_0402,
-            Self::RedirectingToDestination => 0x0000_0404,
-            Self::SessionOnlineVmWake => 0x0000_0405,
-            Self::SessionOnlineVmBoot => 0x0000_0406,
-            Self::SessionOnlineVmNoDns => 0x0000_0407,
-            Self::DestinationPoolNotFree => 0x0000_0408,
-            Self::ConnectionCancelled => 0x0000_0409,
-            Self::ConnectionErrorInvalidSettings => 0x0000_0410,
-            Self::SessionOnlineVmBootTimeout => 0x0000_0411,
-            Self::SessionOnlineVmSessmonFailed => 0x0000_0412,
-        }
+        *self as u32
     }
 }
 
+#[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum RdpSpecificCode {
     UnknownPduType2 = 0x0000_10C9,
@@ -440,86 +413,7 @@ impl RdpSpecificCode {
     }
 
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::UnknownPduType2 => 0x0000_10C9,
-            Self::UnknownPduType => 0x0000_10CA,
-            Self::DataPdusEquence => 0x0000_10CB,
-            Self::ControlPduSequence => 0x0000_10CD,
-            Self::InvalidControlPduAction => 0x0000_10CE,
-            Self::InvalidInputPduType => 0x0000_10CF,
-            Self::InvalidInputPduMouse => 0x0000_10D0,
-            Self::InvalidRefreshRectPdu => 0x0000_10D1,
-            Self::CreateUserDataFailed => 0x0000_10D2,
-            Self::ConnectFailed => 0x0000_10D3,
-            Self::ConfirmActiveWrongShareId => 0x0000_10D4,
-            Self::ConfirmActiveWrongOriginator => 0x0000_10D5,
-            Self::PersistentKeyPduBadLength => 0x0000_10DA,
-            Self::PersistentKeyPduIllegalFirst => 0x0000_10DB,
-            Self::PersistentKeyPduTooManyTotalKeys => 0x0000_10DC,
-            Self::PersistentKeyPduTooManyCacheKeys => 0x0000_10DD,
-            Self::InputPduBadLength => 0x0000_10DE,
-            Self::BitmapCacheErrorPduBadLength => 0x0000_10DF,
-            Self::SecurityDataTooShort => 0x0000_10E0,
-            Self::VcHannelDataTooShort => 0x0000_10E1,
-            Self::ShareDataTooShort => 0x0000_10E2,
-            Self::BadSuppressOutputPdu => 0x0000_10E3,
-            Self::ConfirmActivePduTooShort => 0x0000_10E5,
-            Self::CapabilitySetTooSmall => 0x0000_10E7,
-            Self::CapabilitySetTooLarge => 0x0000_10E8,
-            Self::NoCursorCache => 0x0000_10E9,
-            Self::BadCapabilities => 0x0000_10EA,
-            Self::VirtualChannelDecompressionError => 0x0000_10EC,
-            Self::InvalidVcCompressionType => 0x0000_10ED,
-            Self::InvalidChannelId => 0x0000_10EF,
-            Self::VirtualChannelsTooMany => 0x0000_10F0,
-            Self::RemoteAppsNotEnabled => 0x0000_10F3,
-            Self::CacheCapabilityNotSet => 0x0000_10F4,
-            Self::BitmapCacheErrorPduBadLength2 => 0x0000_10F5,
-            Self::OffscrCacheErrorPduBadLength => 0x0000_10F6,
-            Self::DngCacheErrorPduBadLength => 0x0000_10F7,
-            Self::GdiPlusPduBadLength => 0x0000_10F8,
-            Self::SecurityDataTooShort2 => 0x0000_1111,
-            Self::SecurityDataTooShort3 => 0x0000_1112,
-            Self::SecurityDataTooShort4 => 0x0000_1113,
-            Self::SecurityDataTooShort5 => 0x0000_1114,
-            Self::SecurityDataTooShort6 => 0x0000_1115,
-            Self::SecurityDataTooShort7 => 0x0000_1116,
-            Self::SecurityDataTooShort8 => 0x0000_1117,
-            Self::SecurityDataTooShort9 => 0x0000_1118,
-            Self::SecurityDataTooShort10 => 0x0000_1119,
-            Self::SecurityDataTooShort11 => 0x0000_111A,
-            Self::SecurityDataTooShort12 => 0x0000_111B,
-            Self::SecurityDataTooShort13 => 0x0000_111C,
-            Self::SecurityDataTooShort14 => 0x0000_111D,
-            Self::SecurityDataTooShort15 => 0x0000_111E,
-            Self::SecurityDataTooShort16 => 0x0000_111F,
-            Self::SecurityDataTooShort17 => 0x0000_1120,
-            Self::SecurityDataTooShort18 => 0x0000_1121,
-            Self::SecurityDataTooShort19 => 0x0000_1122,
-            Self::SecurityDataTooShort20 => 0x0000_1123,
-            Self::SecurityDataTooShort21 => 0x0000_1124,
-            Self::SecurityDataTooShort22 => 0x0000_1125,
-            Self::SecurityDataTooShort23 => 0x0000_1126,
-            Self::BadMonitorData => 0x0000_1129,
-            Self::VcDecompressedReassembleFailed => 0x0000_112A,
-            Self::VcDataTooLong => 0x0000_112B,
-            Self::BadFrameAckData => 0x0000_112C,
-            Self::GraphicsModeNotSupported => 0x0000_112D,
-            Self::GraphicsSubsystemResetFailed => 0x0000_112E,
-            Self::GraphicsSubsystemFailed => 0x0000_112F,
-            Self::TimezoneKeyNameLengthTooShort => 0x0000_1130,
-            Self::TimezoneKeyNameLengthTooLong => 0x0000_1131,
-            Self::DynamicDstDisabledFieldMissing => 0x0000_1132,
-            Self::VcDecodingError => 0x0000_1133,
-            Self::VirtualDesktopTooLarge => 0x0000_1134,
-            Self::MonitorGeometryValidationFailed => 0x0000_1135,
-            Self::InvalidMonitorCount => 0x0000_1136,
-            Self::UpdateSessionKeyFailed => 0x0000_1191,
-            Self::DecryptFailed => 0x0000_1192,
-            Self::EncryptFailed => 0x0000_1193,
-            Self::EncPkgMismatch => 0x0000_1194,
-            Self::DecryptFailed2 => 0x0000_1195,
-        }
+        *self as u32
     }
 }
 

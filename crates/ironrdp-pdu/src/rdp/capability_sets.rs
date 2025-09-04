@@ -562,6 +562,7 @@ impl<'de> Decode<'de> for CapabilitySet {
     }
 }
 
+#[repr(u16)]
 #[derive(Copy, Clone, Debug, FromPrimitive)]
 enum CapabilitySetType {
     General = 0x01,
@@ -596,38 +597,12 @@ enum CapabilitySetType {
 }
 
 impl CapabilitySetType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::General => 0x01,
-            Self::Bitmap => 0x02,
-            Self::Order => 0x03,
-            Self::BitmapCache => 0x04,
-            Self::Control => 0x05,
-            Self::BitmapCacheV3CodecID => 0x06,
-            Self::WindowActivation => 0x07,
-            Self::Pointer => 0x08,
-            Self::Share => 0x09,
-            Self::ColorCache => 0x0a,
-            Self::Sound => 0x0c,
-            Self::Input => 0x0d,
-            Self::Font => 0x0e,
-            Self::Brush => 0x0f,
-            Self::GlyphCache => 0x10,
-            Self::OffscreenBitmapCache => 0x11,
-            Self::BitmapCacheHostSupport => 0x12,
-            Self::BitmapCacheRev2 => 0x13,
-            Self::VirtualChannel => 0x14,
-            Self::DrawNineGridCache => 0x15,
-            Self::DrawGdiPlus => 0x16,
-            Self::Rail => 0x17,
-            Self::WindowList => 0x18,
-            Self::DesktopComposition => 0x19,
-            Self::MultiFragmentUpdate => 0x1a,
-            Self::LargePointer => 0x1b,
-            Self::SurfaceCommands => 0x1c,
-            Self::BitmapCodecs => 0x1d,
-            Self::FrameAcknowledge => 0x1e,
-        }
+        *self as u16
     }
 }
 

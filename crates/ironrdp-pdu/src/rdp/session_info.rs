@@ -101,7 +101,7 @@ impl<'de> Decode<'de> for SaveSessionInfoPdu {
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum InfoType {
     Logon = 0x0000_0000,
     LogonLong = 0x0000_0001,
@@ -110,13 +110,12 @@ pub enum InfoType {
 }
 
 impl InfoType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::Logon => 0x0000_0000,
-            Self::LogonLong => 0x0000_0001,
-            Self::PlainNotify => 0x0000_0002,
-            Self::LogonExtended => 0x0000_0003,
-        }
+        *self as u32
     }
 }
 

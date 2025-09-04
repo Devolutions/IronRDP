@@ -292,21 +292,12 @@ pub(crate) enum CapabilityVersion {
 }
 
 impl CapabilityVersion {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::V8 => 0x8_0004,
-            Self::V8_1 => 0x8_0105,
-            Self::V10 => 0xa_0002,
-            Self::V10_1 => 0xa_0100,
-            Self::V10_2 => 0xa_0200,
-            Self::V10_3 => 0xa_0301,
-            Self::V10_4 => 0xa_0400,
-            Self::V10_5 => 0xa_0502,
-            Self::V10_6 => 0xa_0600,
-            Self::V10_6Err => 0xa_0601,
-            Self::V10_7 => 0xa_0701,
-            Self::Unknown => 0xa_0702,
-        }
+        *self as u32
     }
 }
 

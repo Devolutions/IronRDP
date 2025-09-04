@@ -207,14 +207,12 @@ pub enum EncryptionLevel {
 }
 
 impl EncryptionLevel {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u32(&self) -> u32 {
-        match self {
-            Self::None => 0,
-            Self::Low => 1,
-            Self::ClientCompatible => 2,
-            Self::High => 3,
-            Self::Fips => 4,
-        }
+        *self as u32
     }
 }
 

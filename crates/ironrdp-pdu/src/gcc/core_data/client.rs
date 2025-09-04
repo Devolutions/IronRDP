@@ -516,14 +516,12 @@ pub enum ColorDepth {
 }
 
 impl ColorDepth {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Bpp4 => 0xCA00,
-            Self::Bpp8 => 0xCA01,
-            Self::Rgb555Bpp16 => 0xCA02,
-            Self::Rgb565Bpp16 => 0xCA03,
-            Self::Bpp24 => 0xCA04,
-        }
+        *self as u16
     }
 }
 
@@ -538,14 +536,12 @@ pub enum HighColorDepth {
 }
 
 impl HighColorDepth {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Bpp4 => 0x0004,
-            Self::Bpp8 => 0x0008,
-            Self::Rgb555Bpp16 => 0x000F,
-            Self::Rgb565Bpp16 => 0x0010,
-            Self::Bpp24 => 0x0018,
-        }
+        *self as u16
     }
 }
 
@@ -556,13 +552,16 @@ pub enum SecureAccessSequence {
 }
 
 impl SecureAccessSequence {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Del => 0xAA03,
-        }
+        *self as u16
     }
 }
 
+#[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum KeyboardType {
     IbmPcXt = 1,
@@ -575,16 +574,12 @@ pub enum KeyboardType {
 }
 
 impl KeyboardType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     pub fn as_u32(&self) -> u32 {
-        match self {
-            Self::IbmPcXt => 1,
-            Self::OlivettiIco => 2,
-            Self::IbmPcAt => 3,
-            Self::IbmEnhanced => 4,
-            Self::Nokia1050 => 5,
-            Self::Nokia9140 => 6,
-            Self::Japanese => 7,
-        }
+        *self as u32
     }
 }
 
@@ -602,17 +597,12 @@ pub enum ConnectionType {
 }
 
 impl ConnectionType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u8(&self) -> u8 {
-        match self {
-            Self::NotUsed => 0,
-            Self::Modem => 1,
-            Self::BroadbandLow => 2,
-            Self::Satellite => 3,
-            Self::BroadbandHigh => 4,
-            Self::Wan => 5,
-            Self::Lan => 6,
-            Self::Autodetect => 7,
-        }
+        *self as u8
     }
 }
 

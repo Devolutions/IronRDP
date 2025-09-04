@@ -599,21 +599,12 @@ pub enum Month {
 }
 
 impl Month {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::January => 1,
-            Self::February => 2,
-            Self::March => 3,
-            Self::April => 4,
-            Self::May => 5,
-            Self::June => 6,
-            Self::July => 7,
-            Self::August => 8,
-            Self::September => 9,
-            Self::October => 10,
-            Self::November => 11,
-            Self::December => 12,
-        }
+        *self as u16
     }
 }
 
@@ -630,16 +621,12 @@ pub enum DayOfWeek {
 }
 
 impl DayOfWeek {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Sunday => 0,
-            Self::Monday => 1,
-            Self::Tuesday => 2,
-            Self::Wednesday => 3,
-            Self::Thursday => 4,
-            Self::Friday => 5,
-            Self::Saturday => 6,
-        }
+        *self as u16
     }
 }
 
@@ -654,14 +641,12 @@ pub enum DayOfWeekOccurrence {
 }
 
 impl DayOfWeekOccurrence {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::First => 1,
-            Self::Second => 2,
-            Self::Third => 3,
-            Self::Fourth => 4,
-            Self::Last => 5,
-        }
+        *self as u16
     }
 }
 
@@ -754,6 +739,7 @@ bitflags! {
     }
 }
 
+#[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum CompressionType {
     K8 = 0,
@@ -763,13 +749,12 @@ pub enum CompressionType {
 }
 
 impl CompressionType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     pub fn as_u8(&self) -> u8 {
-        match self {
-            Self::K8 => 0,
-            Self::K64 => 1,
-            Self::Rdp6 => 2,
-            Self::Rdp61 => 3,
-        }
+        *self as u8
     }
 }
 
@@ -800,6 +785,7 @@ impl From<PduError> for ClientInfoError {
 fn string_len(value: &str, character_set: CharacterSet) -> usize {
     match character_set {
         CharacterSet::Ansi => value.len(),
+        // TODO: Use UTF-16 helper.
         CharacterSet::Unicode => value.encode_utf16().count() * 2,
     }
 }

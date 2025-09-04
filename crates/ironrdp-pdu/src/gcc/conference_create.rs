@@ -34,17 +34,23 @@ impl ConferenceCreateRequest {
     const NAME: &'static str = "ConferenceCreateRequest";
 
     pub fn new(gcc_blocks: ClientGccBlocks) -> DecodeResult<Self> {
-        // INVARIANT: gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE <= u16::MAX
-        let _: usize = cast_length!(
-            "gcc blocks length",
-            gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE
-        )?;
+        // Ensure the invariant on gcc_blocks.size() is respected
+        if gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE > usize::from(u16::MAX) {
+            return Err(invalid_field_err!(
+                "gcc_blocks",
+                "gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE > u16::MAX"
+            ));
+        }
 
         Ok(Self { gcc_blocks })
     }
 
     pub fn gcc_blocks(&self) -> &ClientGccBlocks {
         &self.gcc_blocks
+    }
+
+    pub fn into_gcc_blocks(self) -> ClientGccBlocks {
+        self.gcc_blocks
     }
 }
 
@@ -100,9 +106,9 @@ impl Encode for ConferenceCreateRequest {
     fn size(&self) -> usize {
         let gcc_blocks_buffer_length = self.gcc_blocks.size();
         let req_length = u16::try_from(CONFERENCE_REQUEST_CONNECT_PDU_SIZE + gcc_blocks_buffer_length)
-            .expect("Per the invariant on self.gcc_blocks, this cast is infallible");
+            .expect("per the invariant on self.gcc_blocks, this cast is infallible");
         let length = u16::try_from(gcc_blocks_buffer_length)
-            .expect("Per the invariant on self.gcc_blocks, this cast is infallible");
+            .expect("per the invariant on self.gcc_blocks, this cast is infallible");
 
         per::CHOICE_SIZE
             + CONFERENCE_REQUEST_OBJECT_ID.len()
@@ -227,7 +233,7 @@ impl Encode for ConferenceCreateResponse {
             dst,
             cast_length!(
                 "gccBlocksLen",
-                // QUESTION: It seems that the addition of 1 here is a bug.
+                // FIXME: It seems that the addition of 1 here is a bug.
                 // The fuzzing is not failing because this length is ignored.
                 gcc_blocks_buffer_length + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE + 1
             )?,
@@ -264,9 +270,9 @@ impl Encode for ConferenceCreateResponse {
     fn size(&self) -> usize {
         let gcc_blocks_buffer_length = self.gcc_blocks.size();
         let req_length = u16::try_from(CONFERENCE_RESPONSE_CONNECT_PDU_SIZE + gcc_blocks_buffer_length)
-            .expect("Per the invariant on self.gcc_blocks, this cast is infallible");
+            .expect("per the invariant on self.gcc_blocks, this cast is infallible");
         let length = u16::try_from(gcc_blocks_buffer_length)
-            .expect("Per the invariant on self.gcc_blocks, this cast is infallible");
+            .expect("per the invariant on self.gcc_blocks, this cast is infallible");
 
         per::CHOICE_SIZE
             + CONFERENCE_REQUEST_OBJECT_ID.len()
