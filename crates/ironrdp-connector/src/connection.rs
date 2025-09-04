@@ -350,7 +350,7 @@ impl Sequence for ClientConnector {
 
                 let client_gcc_blocks = connect_initial.conference_create_request.gcc_blocks();
 
-                let server_gcc_blocks = connect_response.conference_create_response.gcc_blocks();
+                let server_gcc_blocks = connect_response.conference_create_response.into_gcc_blocks();
 
                 if client_gcc_blocks.security == gcc::ClientSecurityData::no_security()
                     && server_gcc_blocks.security != gcc::ServerSecurityData::no_security()
