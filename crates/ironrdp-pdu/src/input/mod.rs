@@ -159,16 +159,12 @@ enum InputEventType {
 }
 
 impl InputEventType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Sync => 0x0000,
-            Self::Unused => 0x0002,
-            Self::ScanCode => 0x0004,
-            Self::Unicode => 0x0005,
-            Self::Mouse => 0x8001,
-            Self::MouseX => 0x8002,
-            Self::MouseRel => 0x8004,
-        }
+        *self as u16
     }
 }
 

@@ -86,26 +86,30 @@ impl Encode for ClientGccBlocks {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        UserDataHeader::encode(dst, ClientGccType::CoreData, &self.core)?;
-        UserDataHeader::encode(dst, ClientGccType::SecurityData, &self.security)?;
+        UserDataHeader::encode(dst, ClientGccType::CoreData.as_u16(), &self.core)?;
+        UserDataHeader::encode(dst, ClientGccType::SecurityData.as_u16(), &self.security)?;
 
         if let Some(ref network) = self.network {
-            UserDataHeader::encode(dst, ClientGccType::NetworkData, network)?;
+            UserDataHeader::encode(dst, ClientGccType::NetworkData.as_u16(), network)?;
         }
         if let Some(ref cluster) = self.cluster {
-            UserDataHeader::encode(dst, ClientGccType::ClusterData, cluster)?;
+            UserDataHeader::encode(dst, ClientGccType::ClusterData.as_u16(), cluster)?;
         }
         if let Some(ref monitor) = self.monitor {
-            UserDataHeader::encode(dst, ClientGccType::MonitorData, monitor)?;
+            UserDataHeader::encode(dst, ClientGccType::MonitorData.as_u16(), monitor)?;
         }
         if let Some(ref message_channel) = self.message_channel {
-            UserDataHeader::encode(dst, ClientGccType::MessageChannelData, message_channel)?;
+            UserDataHeader::encode(dst, ClientGccType::MessageChannelData.as_u16(), message_channel)?;
         }
         if let Some(ref multi_transport_channel) = self.multi_transport_channel {
-            UserDataHeader::encode(dst, ClientGccType::MultiTransportChannelData, multi_transport_channel)?;
+            UserDataHeader::encode(
+                dst,
+                ClientGccType::MultiTransportChannelData.as_u16(),
+                multi_transport_channel,
+            )?;
         }
         if let Some(ref monitor_extended) = self.monitor_extended {
-            UserDataHeader::encode(dst, ClientGccType::MonitorExtendedData, monitor_extended)?;
+            UserDataHeader::encode(dst, ClientGccType::MonitorExtendedData.as_u16(), monitor_extended)?;
         }
 
         Ok(())
@@ -202,15 +206,19 @@ impl ServerGccBlocks {
 
 impl Encode for ServerGccBlocks {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        UserDataHeader::encode(dst, ServerGccType::CoreData, &self.core)?;
-        UserDataHeader::encode(dst, ServerGccType::NetworkData, &self.network)?;
-        UserDataHeader::encode(dst, ServerGccType::SecurityData, &self.security)?;
+        UserDataHeader::encode(dst, ServerGccType::CoreData.as_u16(), &self.core)?;
+        UserDataHeader::encode(dst, ServerGccType::NetworkData.as_u16(), &self.network)?;
+        UserDataHeader::encode(dst, ServerGccType::SecurityData.as_u16(), &self.security)?;
 
         if let Some(ref message_channel) = self.message_channel {
-            UserDataHeader::encode(dst, ServerGccType::MessageChannelData, message_channel)?;
+            UserDataHeader::encode(dst, ServerGccType::MessageChannelData.as_u16(), message_channel)?;
         }
         if let Some(ref multi_transport_channel) = self.multi_transport_channel {
-            UserDataHeader::encode(dst, ServerGccType::MultiTransportChannelData, multi_transport_channel)?;
+            UserDataHeader::encode(
+                dst,
+                ServerGccType::MultiTransportChannelData.as_u16(),
+                multi_transport_channel,
+            )?;
         }
 
         Ok(())
@@ -277,18 +285,13 @@ pub enum ClientGccType {
     MultiTransportChannelData = 0xC00A,
 }
 
-impl From<ClientGccType> for u16 {
-    fn from(value: ClientGccType) -> Self {
-        match value {
-            ClientGccType::CoreData => 0xC001,
-            ClientGccType::SecurityData => 0xC002,
-            ClientGccType::NetworkData => 0xC003,
-            ClientGccType::ClusterData => 0xC004,
-            ClientGccType::MonitorData => 0xC005,
-            ClientGccType::MessageChannelData => 0xC006,
-            ClientGccType::MonitorExtendedData => 0xC008,
-            ClientGccType::MultiTransportChannelData => 0xC00A,
-        }
+impl ClientGccType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    pub fn as_u16(&self) -> u16 {
+        *self as u16
     }
 }
 
@@ -302,15 +305,13 @@ pub enum ServerGccType {
     MultiTransportChannelData = 0x0C08,
 }
 
-impl From<ServerGccType> for u16 {
-    fn from(value: ServerGccType) -> Self {
-        match value {
-            ServerGccType::CoreData => 0x0C01,
-            ServerGccType::SecurityData => 0x0C02,
-            ServerGccType::NetworkData => 0x0C03,
-            ServerGccType::MessageChannelData => 0x0C04,
-            ServerGccType::MultiTransportChannelData => 0x0C08,
-        }
+impl ServerGccType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    pub fn as_u16(&self) -> u16 {
+        *self as u16
     }
 }
 
