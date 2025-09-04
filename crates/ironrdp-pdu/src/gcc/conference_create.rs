@@ -26,7 +26,7 @@ const CONFERENCE_NAME: &[u8] = b"1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConferenceCreateRequest {
-    /// INVARIANT: `gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE <= u16::MAX`
+    /// INVARIANT: `gcc_blocks.size() <= u16::MAX - CONFERENCE_REQUEST_CONNECT_PDU_SIZE`
     gcc_blocks: ClientGccBlocks,
 }
 
@@ -35,7 +35,7 @@ impl ConferenceCreateRequest {
 
     pub fn new(gcc_blocks: ClientGccBlocks) -> DecodeResult<Self> {
         // Ensure the invariant on gcc_blocks.size() is respected.
-        check_invariant(gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE <= usize::from(u16::MAX)).ok_or_else(
+        check_invariant(gcc_blocks.size() <= usize::from(u16::MAX) - CONFERENCE_REQUEST_CONNECT_PDU_SIZE).ok_or_else(
             || {
                 invalid_field_err!(
                     "gcc_blocks",
@@ -199,7 +199,7 @@ impl<'de> Decode<'de> for ConferenceCreateRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConferenceCreateResponse {
     user_id: u16,
-    /// INVARIANT: `gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE <= u16::MAX`
+    /// INVARIANT: `gcc_blocks.size() <= u16::MAX - CONFERENCE_RESPONSE_CONNECT_PDU_SIZE`
     gcc_blocks: ServerGccBlocks,
 }
 
@@ -208,7 +208,7 @@ impl ConferenceCreateResponse {
 
     pub fn new(user_id: u16, gcc_blocks: ServerGccBlocks) -> DecodeResult<Self> {
         // Ensure the invariant on gcc_blocks.size() is respected.
-        check_invariant(gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE <= usize::from(u16::MAX)).ok_or_else(
+        check_invariant(gcc_blocks.size() <= usize::from(u16::MAX) - CONFERENCE_RESPONSE_CONNECT_PDU_SIZE).ok_or_else(
             || {
                 invalid_field_err!(
                     "gcc_blocks",
