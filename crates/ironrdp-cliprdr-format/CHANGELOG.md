@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.1.4](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-format-v0.1.3...ironrdp-cliprdr-format-v0.1.4)] - 2025-09-04
+
+### <!-- 7 -->Build
+
+- Bump png from 0.17.16 to 0.18.0 (#961) ([21fa028dff](https://github.com/Devolutions/IronRDP/commit/21fa028dffa5f9bb1498b4d48d063ea42929faf5)) 
+
+
+
 ## [[0.1.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-format-v0.1.2...ironrdp-cliprdr-format-v0.1.3)] - 2025-03-12
 
 ### <!-- 7 -->Build
