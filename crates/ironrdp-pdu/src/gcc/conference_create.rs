@@ -35,12 +35,14 @@ impl ConferenceCreateRequest {
 
     pub fn new(gcc_blocks: ClientGccBlocks) -> DecodeResult<Self> {
         // Ensure the invariant on gcc_blocks.size() is respected.
-        if !(gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE <= usize::from(u16::MAX)) {
-            return Err(invalid_field_err!(
-                "gcc_blocks",
-                "gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE > u16::MAX"
-            ));
-        }
+        check_invariant(gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE <= usize::from(u16::MAX)).ok_or_else(
+            || {
+                invalid_field_err!(
+                    "gcc_blocks",
+                    "gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE > u16::MAX"
+                )
+            },
+        )?;
 
         Ok(Self { gcc_blocks })
     }
@@ -206,12 +208,14 @@ impl ConferenceCreateResponse {
 
     pub fn new(user_id: u16, gcc_blocks: ServerGccBlocks) -> DecodeResult<Self> {
         // Ensure the invariant on gcc_blocks.size() is respected.
-        if !(gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE <= usize::from(u16::MAX)) {
-            return Err(invalid_field_err!(
-                "gcc_blocks",
-                "gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE > u16::MAX"
-            ));
-        }
+        check_invariant(gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE <= usize::from(u16::MAX)).ok_or_else(
+            || {
+                invalid_field_err!(
+                    "gcc_blocks",
+                    "gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE > u16::MAX"
+                )
+            },
+        )?;
 
         Ok(Self { user_id, gcc_blocks })
     }
@@ -219,7 +223,7 @@ impl ConferenceCreateResponse {
     pub fn gcc_blocks(&self) -> &ServerGccBlocks {
         &self.gcc_blocks
     }
-    
+
     pub fn into_gcc_blocks(self) -> ServerGccBlocks {
         self.gcc_blocks
     }
@@ -361,4 +365,11 @@ impl<'de> Decode<'de> for ConferenceCreateResponse {
 
         Self::new(user_id, gcc_blocks)
     }
+}
+
+/// Use this when establishing invariants.
+#[inline]
+#[must_use]
+fn check_invariant(condition: bool) -> Option<()> {
+    condition.then_some(())
 }
