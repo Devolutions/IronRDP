@@ -113,12 +113,14 @@ impl Encode for ShareControlHeader {
 
 impl<'de> Decode<'de> for ShareControlHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
-
+        ensure_size!(in: src, size: 6);
         let total_length = src.read_u16() as usize;
         let pdu_type_with_version = src.read_u16();
         let pdu_source = src.read_u16();
-        let share_id = src.read_u32();
+        let mut share_id = 0u32;
+        if src.len() > 6 {
+            share_id = src.read_u32();
+        }
 
         let pdu_type = ShareControlPduType::from_u16(pdu_type_with_version & SHARE_CONTROL_HEADER_MASK)
             .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type"))?;
@@ -583,6 +585,9 @@ impl ServerDeactivateAll {
 
 impl Decode<'_> for ServerDeactivateAll {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        if src.len() == 0 {
+            return Ok(ServerDeactivateAll)
+        }
         ensure_fixed_part_size!(in: src);
         let length_source_descriptor = src.read_u16();
         ensure_size!(in: src, size: length_source_descriptor.into());
