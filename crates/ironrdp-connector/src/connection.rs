@@ -366,7 +366,7 @@ impl Sequence for ClientConnector {
                     warn!("Unexpected MultiTransportChannelData GCC block (not supported)");
                 }
 
-                let static_channel_ids = server_gcc_blocks.network.channel_ids.clone();
+                let static_channel_ids = server_gcc_blocks.network.channel_ids;
                 let io_channel_id = server_gcc_blocks.network.io_channel;
 
                 debug!(?static_channel_ids, io_channel_id);
