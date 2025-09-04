@@ -6,7 +6,7 @@ use ironrdp_core::{
 use crate::geometry::InclusiveRectangle;
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum AllowDisplayUpdatesType {
     SuppressDisplayUpdates = 0x00,
     AllowDisplayUpdates = 0x01,
@@ -21,6 +21,10 @@ impl AllowDisplayUpdatesType {
         }
     }
 
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     pub fn as_u8(self) -> u8 {
         self as u8
     }

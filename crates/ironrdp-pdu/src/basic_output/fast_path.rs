@@ -7,8 +7,8 @@ use ironrdp_core::{
     decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeError, DecodeResult, Encode,
     EncodeResult, InvalidFieldErr as _, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 use super::bitmap::BitmapUpdateData;
 use super::pointer::PointerUpdateData;
@@ -136,15 +136,15 @@ impl Encode for FastPathUpdatePdu<'_> {
         }
 
         let mut header = 0u8;
-        header.set_bits(0..4, self.update_code.to_u8().unwrap());
-        header.set_bits(4..6, self.fragmentation.to_u8().unwrap());
+        header.set_bits(0..4, self.update_code.as_u8());
+        header.set_bits(4..6, self.fragmentation.as_u8());
 
         dst.write_u8(header);
 
         if self.compression_flags.is_some() {
             header.set_bits(6..8, Compression::COMPRESSION_USED.bits());
-            let compression_flags_with_type = self.compression_flags.map(|f| f.bits()).unwrap_or(0)
-                | self.compression_type.and_then(|f| f.to_u8()).unwrap_or(0);
+            let compression_flags_with_type =
+                self.compression_flags.map(|f| f.bits()).unwrap_or(0) | self.compression_type.map_or(0, |f| f.as_u8());
             dst.write_u8(compression_flags_with_type);
         }
 
@@ -312,7 +312,8 @@ impl Encode for FastPathUpdate<'_> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum UpdateCode {
     Orders = 0x0,
     Bitmap = 0x1,
@@ -326,6 +327,16 @@ pub enum UpdateCode {
     CachedPointer = 0xa,
     NewPointer = 0xb,
     LargePointer = 0xc,
+}
+
+impl UpdateCode {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 impl From<&FastPathUpdate<'_>> for UpdateCode {
@@ -346,12 +357,23 @@ impl From<&FastPathUpdate<'_>> for UpdateCode {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum Fragmentation {
     Single = 0x0,
     Last = 0x1,
     First = 0x2,
     Next = 0x3,
+}
+
+impl Fragmentation {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 bitflags! {

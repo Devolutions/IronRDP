@@ -345,7 +345,8 @@ impl Sequence for ClientConnector {
                 let client_gcc_blocks =
                     create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values())?;
 
-                let connect_initial = mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks);
+                let connect_initial =
+                    mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?connect_initial, "Send");
 
@@ -365,9 +366,9 @@ impl Sequence for ClientConnector {
 
                 debug!(message = ?connect_response, "Received");
 
-                let client_gcc_blocks = &connect_initial.conference_create_request.gcc_blocks;
+                let client_gcc_blocks = connect_initial.conference_create_request.gcc_blocks();
 
-                let server_gcc_blocks = connect_response.conference_create_response.gcc_blocks;
+                let server_gcc_blocks = connect_response.conference_create_response.into_gcc_blocks();
 
                 if client_gcc_blocks.security == gcc::ClientSecurityData::no_security()
                     && server_gcc_blocks.security != gcc::ServerSecurityData::no_security()

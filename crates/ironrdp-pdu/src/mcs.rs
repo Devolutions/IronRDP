@@ -847,20 +847,20 @@ pub struct ConnectInitial {
 }
 
 impl ConnectInitial {
-    pub fn with_gcc_blocks(gcc_blocks: ClientGccBlocks) -> Self {
-        Self {
-            conference_create_request: ConferenceCreateRequest { gcc_blocks },
+    pub fn with_gcc_blocks(gcc_blocks: ClientGccBlocks) -> DecodeResult<Self> {
+        Ok(Self {
+            conference_create_request: ConferenceCreateRequest::new(gcc_blocks)?,
             calling_domain_selector: vec![0x01],
             called_domain_selector: vec![0x01],
             upward_flag: true,
             target_parameters: DomainParameters::target(),
             min_parameters: DomainParameters::min(),
             max_parameters: DomainParameters::max(),
-        }
+        })
     }
 
     pub fn channel_names(&self) -> Option<Vec<ChannelDef>> {
-        self.conference_create_request.gcc_blocks.channel_names()
+        self.conference_create_request.gcc_blocks().channel_names()
     }
 }
 
@@ -873,11 +873,11 @@ pub struct ConnectResponse {
 
 impl ConnectResponse {
     pub fn channel_ids(&self) -> Vec<u16> {
-        self.conference_create_response.gcc_blocks.channel_ids()
+        self.conference_create_response.gcc_blocks().channel_ids()
     }
 
     pub fn global_channel_id(&self) -> u16 {
-        self.conference_create_response.gcc_blocks.global_channel_id()
+        self.conference_create_response.gcc_blocks().global_channel_id()
     }
 }
 

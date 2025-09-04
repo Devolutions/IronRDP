@@ -3,8 +3,8 @@ mod server;
 
 mod avc_messages;
 use bitflags::bitflags;
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 #[rustfmt::skip] // do not re-order this
 pub use avc_messages::{Avc420BitmapStream, Avc444BitmapStream, Encoding, QuantQuality};
@@ -71,7 +71,7 @@ impl Encode for CapabilitySet {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u32(self.version().to_u32().unwrap());
+        dst.write_u32(self.version().as_u32());
         dst.write_u32(cast_length!("dataLength", self.size() - CAPABILITY_SET_HEADER_SIZE)?);
 
         match self {
@@ -275,7 +275,7 @@ impl<'de> Decode<'de> for Point {
 }
 
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub(crate) enum CapabilityVersion {
     V8 = 0x8_0004,
     V8_1 = 0x8_0105,
@@ -289,6 +289,16 @@ pub(crate) enum CapabilityVersion {
     V10_6Err = 0xa_0601, // defined similar to FreeRDP to maintain best compatibility
     V10_7 = 0xa_0701,
     Unknown = 0xa_0702,
+}
+
+impl CapabilityVersion {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
 bitflags! {

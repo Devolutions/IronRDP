@@ -381,16 +381,10 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?settings_initial, "Received");
 
-                let early_capability = settings_initial
-                    .conference_create_request
-                    .gcc_blocks
-                    .core
-                    .optional_data
-                    .early_capability_flags;
+                let gcc_blocks = settings_initial.conference_create_request.into_gcc_blocks();
+                let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
 
-                let joined: Vec<_> = settings_initial
-                    .conference_create_request
-                    .gcc_blocks
+                let joined: Vec<_> = gcc_blocks
                     .network
                     .map(|network| {
                         network
@@ -450,10 +444,8 @@ impl Sequence for Acceptor {
                 );
 
                 let settings_response = mcs::ConnectResponse {
-                    conference_create_response: gcc::ConferenceCreateResponse {
-                        user_id: self.user_channel_id,
-                        gcc_blocks: server_blocks,
-                    },
+                    conference_create_response: gcc::ConferenceCreateResponse::new(self.user_channel_id, server_blocks)
+                        .map_err(ConnectorError::decode)?,
                     called_connect_id: 1,
                     domain_parameters: mcs::DomainParameters::target(),
                 };

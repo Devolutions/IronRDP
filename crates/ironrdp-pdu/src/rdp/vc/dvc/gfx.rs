@@ -13,8 +13,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerPdu {
@@ -52,7 +52,7 @@ impl Encode for ServerPdu {
 
         let buffer_length = self.size();
 
-        dst.write_u16(ServerPduType::from(self).to_u16().unwrap());
+        dst.write_u16(ServerPduType::from(self).as_u16());
         dst.write_u16(0); // flags
         dst.write_u32(cast_length!("bufferLen", buffer_length)?);
 
@@ -175,7 +175,7 @@ impl Encode for ClientPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u16(ClientPduType::from(self).to_u16().unwrap());
+        dst.write_u16(ClientPduType::from(self).as_u16());
         dst.write_u16(0); // flags
         dst.write_u32(cast_length!("bufferLen", self.size())?);
 
@@ -221,12 +221,23 @@ impl<'a> Decode<'a> for ClientPdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ClientPduType {
     FrameAcknowledge = 0x0d,
     CacheImportOffer = 0x10,
     CapabilitiesAdvertise = 0x12,
     QoeFrameAcknowledge = 0x16,
+}
+
+impl ClientPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
 }
 
 impl<'a> From<&'a ClientPdu> for ClientPduType {
@@ -238,7 +249,8 @@ impl<'a> From<&'a ClientPdu> for ClientPduType {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ServerPduType {
     WireToSurface1 = 0x01,
     WireToSurface2 = 0x02,
@@ -259,6 +271,16 @@ pub enum ServerPduType {
     MapSurfaceToWindow = 0x15,
     MapSurfaceToScaledOutput = 0x17,
     MapSurfaceToScaledWindow = 0x18,
+}
+
+impl ServerPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
 }
 
 impl<'a> From<&'a ServerPdu> for ServerPduType {

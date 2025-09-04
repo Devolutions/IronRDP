@@ -3,8 +3,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, not_enough_bytes_err, other_err, read_padding,
     write_padding, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 use crate::codecs::rfx::FrameAcknowledgePdu;
 use crate::input::InputEventPdu;
@@ -89,7 +89,7 @@ impl Encode for ShareControlHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let pdu_type_with_version = PROTOCOL_VERSION | self.share_control_pdu.share_header_type().to_u16().unwrap();
+        let pdu_type_with_version = PROTOCOL_VERSION | self.share_control_pdu.share_header_type().as_u16();
 
         dst.write_u16(cast_length!(
             "len",
@@ -249,10 +249,10 @@ impl Encode for ShareDataHeader {
         ensure_size!(in: dst, size: self.size());
 
         if self.compression_flags.is_empty() {
-            let compression_flags_with_type = self.compression_flags.bits() | self.compression_type.to_u8().unwrap();
+            let compression_flags_with_type = self.compression_flags.bits() | self.compression_type.as_u8();
 
             write_padding!(dst, 1);
-            dst.write_u8(self.stream_priority.to_u8().unwrap());
+            dst.write_u8(self.stream_priority.as_u8());
             dst.write_u16(cast_length!(
                 "uncompressedLength",
                 self.share_data_pdu.size()
@@ -260,7 +260,7 @@ impl Encode for ShareDataHeader {
                     + COMPRESSION_TYPE_FIELD_SIZE
                     + COMPRESSED_LENGTH_FIELD_SIZE
             )?);
-            dst.write_u8(self.share_data_pdu.share_header_type().to_u8().unwrap());
+            dst.write_u8(self.share_data_pdu.share_header_type().as_u8());
             dst.write_u8(compression_flags_with_type);
             dst.write_u16(0); // compressed length
 
@@ -515,7 +515,8 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum StreamPriority {
     Undefined = 0,
     Low = 1,
@@ -523,7 +524,18 @@ pub enum StreamPriority {
     High = 4,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+impl StreamPriority {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ShareControlPduType {
     DemandActivePdu = 0x1,
     ConfirmActivePdu = 0x3,
@@ -532,7 +544,17 @@ pub enum ShareControlPduType {
     ServerRedirect = 0xa,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+impl ShareControlPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 #[repr(u8)]
 pub enum ShareDataPduType {
     Update = 0x02,
@@ -560,6 +582,16 @@ pub enum ShareDataPduType {
     StatusInfoPdu = 0x36,
     MonitorLayoutPdu = 0x37,
     FrameAcknowledgePdu = 0x38,
+}
+
+impl ShareDataPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 bitflags! {

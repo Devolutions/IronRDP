@@ -7,7 +7,7 @@ use ironrdp_core::{
     WriteCursor,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_traits::FromPrimitive as _;
 
 use crate::geometry::ExclusiveRectangle;
 
@@ -31,7 +31,7 @@ impl Encode for SurfaceCommand<'_> {
         ensure_size!(in: dst, size: self.size());
 
         let cmd_type = SurfaceCommandType::from(self);
-        dst.write_u16(cmd_type.to_u16().unwrap());
+        dst.write_u16(cmd_type.as_u16());
 
         match self {
             Self::SetSurfaceBits(pdu) | Self::StreamSurfaceBits(pdu) => pdu.encode(dst),
@@ -324,12 +324,22 @@ impl Decode<'_> for BitmapDataHeader {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
 #[repr(u16)]
 enum SurfaceCommandType {
     SetSurfaceBits = 0x01,
     FrameMarker = 0x04,
     StreamSurfaceBits = 0x06,
+}
+
+impl SurfaceCommandType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
 }
 
 impl From<&SurfaceCommand<'_>> for SurfaceCommandType {

@@ -3,11 +3,11 @@ use std::io;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, invalid_field_err, write_padding, Decode, DecodeResult, Encode, EncodeResult,
-    ReadCursor, WriteCursor,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, write_padding, Decode, DecodeResult, Encode,
+    EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
 use crate::utils::CharacterSet;
@@ -71,15 +71,30 @@ impl Encode for ClientInfo {
 
         dst.write_u32(self.code_page);
 
-        let flags_with_compression_type = self.flags.bits() | (self.compression_type.to_u32().unwrap() << 9);
+        let flags_with_compression_type = self.flags.bits() | (u32::from(self.compression_type.as_u8()) << 9);
         dst.write_u32(flags_with_compression_type);
 
         let domain = self.credentials.domain.clone().unwrap_or_default();
-        dst.write_u16(string_len(domain.as_str(), character_set));
-        dst.write_u16(string_len(self.credentials.username.as_str(), character_set));
-        dst.write_u16(string_len(self.credentials.password.as_str(), character_set));
-        dst.write_u16(string_len(self.alternate_shell.as_str(), character_set));
-        dst.write_u16(string_len(self.work_dir.as_str(), character_set));
+        dst.write_u16(cast_length!(
+            "domain length",
+            string_len(domain.as_str(), character_set)
+        )?);
+        dst.write_u16(cast_length!(
+            "username length",
+            string_len(self.credentials.username.as_str(), character_set)
+        )?);
+        dst.write_u16(cast_length!(
+            "password length",
+            string_len(self.credentials.password.as_str(), character_set)
+        )?);
+        dst.write_u16(cast_length!(
+            "alternate shell length",
+            string_len(self.alternate_shell.as_str(), character_set)
+        )?);
+        dst.write_u16(cast_length!(
+            "work dir length",
+            string_len(self.work_dir.as_str(), character_set)
+        )?);
 
         utils::write_string_to_cursor(dst, domain.as_str(), character_set, true)?;
         utils::write_string_to_cursor(dst, self.credentials.username.as_str(), character_set, true)?;
@@ -111,12 +126,12 @@ impl Encode for ClientInfo {
             + PASSWORD_LENGTH_SIZE
             + ALTERNATE_SHELL_LENGTH_SIZE
             + WORK_DIR_LENGTH_SIZE
-            + (string_len(domain.as_str(), character_set)
+            + string_len(domain.as_str(), character_set)
                 + string_len(self.credentials.username.as_str(), character_set)
                 + string_len(self.credentials.password.as_str(), character_set)
                 + string_len(self.alternate_shell.as_str(), character_set)
-                + string_len(self.work_dir.as_str(), character_set)) as usize
-            + character_set.to_usize().unwrap() * 5 // null terminator
+                + string_len(self.work_dir.as_str(), character_set)
+            + usize::from(character_set.as_u16()) * 5 // null terminator
             + self.extra_info.size(character_set)
     }
 }
@@ -141,7 +156,7 @@ impl<'de> Decode<'de> for ClientInfo {
         };
 
         // Sizes exclude the length of the mandatory null terminator
-        let nt = character_set.to_usize().unwrap();
+        let nt = usize::from(character_set.as_u16());
         let domain_size = src.read_u16() as usize + nt;
         let user_name_size = src.read_u16() as usize + nt;
         let password_size = src.read_u16() as usize + nt;
@@ -234,11 +249,14 @@ impl ExtendedClientInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>, character_set: CharacterSet) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size(character_set));
 
+        let address_string_len: u16 = cast_length!("address length", string_len(self.address.as_str(), character_set))?;
+        let dir_string_len: u16 = cast_length!("dir length", string_len(self.dir.as_str(), character_set))?;
+
         dst.write_u16(self.address_family.as_u16());
         // // + size of null terminator, which will write in the write_string function
-        dst.write_u16(string_len(self.address.as_str(), character_set) + character_set.to_u16().unwrap());
+        dst.write_u16(address_string_len + character_set.as_u16());
         utils::write_string_to_cursor(dst, self.address.as_str(), character_set, true)?;
-        dst.write_u16(string_len(self.dir.as_str(), character_set) + character_set.to_u16().unwrap());
+        dst.write_u16(dir_string_len + character_set.as_u16());
         utils::write_string_to_cursor(dst, self.dir.as_str(), character_set, true)?;
         self.optional_data.encode(dst)?;
 
@@ -248,11 +266,11 @@ impl ExtendedClientInfo {
     fn size(&self, character_set: CharacterSet) -> usize {
         CLIENT_ADDRESS_FAMILY_SIZE
             + CLIENT_ADDRESS_LENGTH_SIZE
-            + string_len(self.address.as_str(), character_set) as usize
-            + character_set.to_usize().unwrap() // null terminator
+            + string_len(self.address.as_str(), character_set)
+            + usize::from(character_set.as_u16()) // null terminator
         + CLIENT_DIR_LENGTH_SIZE
-        + string_len(self.dir.as_str(), character_set) as usize
-            + character_set.to_usize().unwrap() // null terminator
+        + string_len(self.dir.as_str(), character_set)
+            + usize::from(character_set.as_u16()) // null terminator
         + self.optional_data.size()
     }
 }
@@ -508,9 +526,9 @@ impl Encode for OptionalSystemTime {
 
         dst.write_u16(0); // year
         if let Some(st) = &self.0 {
-            dst.write_u16(st.month.to_u16().unwrap());
-            dst.write_u16(st.day_of_week.to_u16().unwrap());
-            dst.write_u16(st.day.to_u16().unwrap());
+            dst.write_u16(st.month.as_u16());
+            dst.write_u16(st.day_of_week.as_u16());
+            dst.write_u16(st.day.as_u16());
             dst.write_u16(st.hour);
             dst.write_u16(st.minute);
             dst.write_u16(st.second);
@@ -564,7 +582,7 @@ impl<'de> Decode<'de> for OptionalSystemTime {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum Month {
     January = 1,
     February = 2,
@@ -580,8 +598,18 @@ pub enum Month {
     December = 12,
 }
 
+impl Month {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
+}
+
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum DayOfWeek {
     Sunday = 0,
     Monday = 1,
@@ -592,14 +620,34 @@ pub enum DayOfWeek {
     Saturday = 6,
 }
 
+impl DayOfWeek {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
+}
+
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum DayOfWeekOccurrence {
     First = 1,
     Second = 2,
     Third = 3,
     Fourth = 4,
     Last = 5,
+}
+
+impl DayOfWeekOccurrence {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
 }
 
 bitflags! {
@@ -691,12 +739,23 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum CompressionType {
     K8 = 0,
     K64 = 1,
     Rdp6 = 2,
     Rdp61 = 3,
+}
+
+impl CompressionType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 #[derive(Debug, Error)]
@@ -723,10 +782,11 @@ impl From<PduError> for ClientInfoError {
     }
 }
 
-fn string_len(value: &str, character_set: CharacterSet) -> u16 {
+fn string_len(value: &str, character_set: CharacterSet) -> usize {
     match character_set {
-        CharacterSet::Ansi => u16::try_from(value.len()).unwrap(),
-        CharacterSet::Unicode => u16::try_from(value.encode_utf16().count() * 2).unwrap(),
+        CharacterSet::Ansi => value.len(),
+        // TODO: Use UTF-16 helper.
+        CharacterSet::Unicode => value.encode_utf16().count() * 2,
     }
 }
 
