@@ -205,11 +205,13 @@ impl ConferenceCreateResponse {
     const NAME: &'static str = "ConferenceCreateResponse";
 
     pub fn new(user_id: u16, gcc_blocks: ServerGccBlocks) -> DecodeResult<Self> {
-        // INVARIANT: gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE <= u16::MAX
-        let _: usize = cast_length!(
-            "gcc blocks length",
-            gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE
-        )?;
+        // Ensure the invariant on gcc_blocks.size() is respected.
+        if !(gcc_blocks.size() + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE <= usize::from(u16::MAX)) {
+            return Err(invalid_field_err!(
+                "gcc_blocks",
+                "gcc_blocks.size() + CONFERENCE_REQUEST_CONNECT_PDU_SIZE > u16::MAX"
+            ));
+        }
 
         Ok(Self { user_id, gcc_blocks })
     }
