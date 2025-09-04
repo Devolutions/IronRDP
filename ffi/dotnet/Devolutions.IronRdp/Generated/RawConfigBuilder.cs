@@ -76,6 +76,9 @@ public partial struct ConfigBuilder
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_pointer_software_rendering", ExactSpelling = true)]
     public static unsafe extern void SetPointerSoftwareRendering(ConfigBuilder* self, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_dvc_pipe_proxy", ExactSpelling = true)]
+    public static unsafe extern void SetDvcPipeProxy(ConfigBuilder* self, DvcPipeProxyConfig* dvcPipeProxy);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_build", ExactSpelling = true)]
     public static unsafe extern ConnectorConfigFfiResultBoxConfigBoxIronRdpError Build(ConfigBuilder* self);
 

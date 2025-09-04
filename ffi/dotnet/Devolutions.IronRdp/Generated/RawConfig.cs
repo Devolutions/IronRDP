@@ -19,6 +19,9 @@ public partial struct Config
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Config_get_builder", ExactSpelling = true)]
     public static unsafe extern ConfigBuilder* GetBuilder();
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Config_get_dvc_pipe_proxy", ExactSpelling = true)]
+    public static unsafe extern DvcPipeProxyConfig* GetDvcPipeProxy(Config* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Config_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(Config* self);
 }

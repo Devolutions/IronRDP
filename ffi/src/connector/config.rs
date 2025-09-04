@@ -7,14 +7,22 @@ pub mod ffi {
     use ironrdp::connector::Credentials;
     use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 
+    use crate::dvc::ffi::DvcPipeProxyConfig;
     use crate::error::ffi::IronRdpError;
 
     #[diplomat::opaque]
-    pub struct Config(pub ironrdp::connector::Config);
+    pub struct Config {
+        pub connector: ironrdp::connector::Config,
+        pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
+    }
 
     impl Config {
         pub fn get_builder() -> Box<ConfigBuilder> {
             Box::<ConfigBuilder>::default()
+        }
+
+        pub fn get_dvc_pipe_proxy(&self) -> Option<Box<DvcPipeProxyConfig>> {
+            self.dvc_pipe_proxy.as_ref().map(|dvc| Box::new(dvc.clone()))
         }
     }
 
@@ -43,6 +51,7 @@ pub mod ffi {
         pub pointer_software_rendering: Option<bool>,
         pub performance_flags: Option<ironrdp::pdu::rdp::client_info::PerformanceFlags>,
         pub timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>,
+        pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
     }
 
     #[diplomat::enum_convert(ironrdp::pdu::gcc::KeyboardType)]
@@ -157,8 +166,12 @@ pub mod ffi {
             self.pointer_software_rendering = Some(pointer_software_rendering);
         }
 
+        pub fn set_dvc_pipe_proxy(&mut self, dvc_pipe_proxy: &DvcPipeProxyConfig) {
+            self.dvc_pipe_proxy = Some(dvc_pipe_proxy.clone());
+        }
+
         pub fn build(&self) -> Result<Box<Config>, Box<IronRdpError>> {
-            let inner_config = ironrdp::connector::Config {
+            let connector = ironrdp::connector::Config {
                 credentials: self.credentials.clone().ok_or("credentials not set")?,
                 domain: self.domain.clone(),
                 enable_tls: self.enable_tls.unwrap_or(false),
@@ -207,8 +220,14 @@ pub mod ffi {
                 license_cache: None,
                 timezone_info: self.timezone_info.clone().unwrap_or_default(),
             };
-            tracing::debug!(config=?inner_config, "Built config");
-            Ok(Box::new(Config(inner_config)))
+            let dvc_pipe_proxy = self.dvc_pipe_proxy.clone();
+
+            tracing::debug!(config=?connector, "Built config");
+
+            Ok(Box::new(Config {
+                connector,
+                dvc_pipe_proxy,
+            }))
         }
     }
 
