@@ -217,6 +217,10 @@ impl ConferenceCreateResponse {
     pub fn gcc_blocks(&self) -> &ServerGccBlocks {
         &self.gcc_blocks
     }
+    
+    pub fn into_gcc_blocks(self) -> ServerGccBlocks {
+        self.gcc_blocks
+    }
 }
 
 impl Encode for ConferenceCreateResponse {
