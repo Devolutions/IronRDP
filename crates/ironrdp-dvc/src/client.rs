@@ -62,6 +62,13 @@ impl DrdynvcClient {
         self
     }
 
+    pub fn attach_dynamic_channel<T>(&mut self, channel: T)
+    where
+        T: DvcProcessor + 'static,
+    {
+        self.dynamic_channels.insert(channel);
+    }
+
     pub fn get_dvc_by_type_id<T>(&self) -> Option<&DynamicVirtualChannel>
     where
         T: DvcProcessor,

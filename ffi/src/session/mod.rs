@@ -7,6 +7,7 @@ pub mod ffi {
     use crate::clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse};
     use crate::connector::activation::ffi::ConnectionActivationSequence;
     use crate::connector::result::ffi::ConnectionResult;
+    use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessage;
     use crate::error::ffi::IronRdpError;
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::graphics::ffi::DecodedPointer;
@@ -118,6 +119,20 @@ pub mod ffi {
 
             let frame = self.0.process_svc_processor_messages(result)?;
 
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        pub fn send_dvc_pipe_proxy_message(
+            &mut self,
+            message: &mut DvcPipeProxyMessage,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let messages = core::mem::take(&mut message.0 .1);
+
+            if messages.is_empty() {
+                return Err("no dvc messages to send (message sent twice?)".into());
+            }
+
+            let frame = self.0.encode_dvc_messages(messages)?;
             Ok(Box::new(VecU8(frame)))
         }
 
