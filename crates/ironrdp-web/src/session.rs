@@ -478,10 +478,10 @@ impl iron_remote_desktop::Session for Session {
 
         debug!("Initialize canvas");
 
-        let desktop_width = NonZeroU32::new(u32::from(connection_result.desktop_size.width))
-            .ok_or_else(|| anyhow!("desktop width is zero"))?;
-        let desktop_height = NonZeroU32::new(u32::from(connection_result.desktop_size.height))
-            .ok_or_else(|| anyhow!("desktop height is zero"))?;
+        let desktop_width =
+            NonZeroU32::new(u32::from(connection_result.desktop_size.width)).context("desktop width is zero")?;
+        let desktop_height =
+            NonZeroU32::new(u32::from(connection_result.desktop_size.height)).context("desktop height is zero")?;
 
         let mut gui =
             Canvas::new(self.render_canvas.clone(), desktop_width, desktop_height).context("canvas initialization")?;

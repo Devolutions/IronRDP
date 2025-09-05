@@ -99,10 +99,12 @@ pub enum ServerPduType {
 }
 
 impl ServerPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u16(&self) -> u16 {
-        match self {
-            Self::Version => 0x01,
-        }
+        *self as u16
     }
 }
 
@@ -268,10 +270,12 @@ pub enum ClientPduType {
 }
 
 impl ClientPduType {
-    fn as_u16(&self) -> u16 {
-        match self {
-            Self::Mouse => 0x02,
-        }
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
     }
 }
 

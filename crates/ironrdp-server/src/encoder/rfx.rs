@@ -1,3 +1,5 @@
+use std::io;
+
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_core::{cast_int, cast_length, other_err, Encode as _, EncodeResult};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
@@ -186,14 +188,16 @@ impl<'a> UpdateEncoder<'a> {
 
         let x = tile_x * 64;
         let y = tile_y * 64;
-        let tile_width = core::cmp::min(width - x, 64);
-        let tile_height = core::cmp::min(height - y, 64);
+        let tile_width = u32::try_from(core::cmp::min(width - x, 64)).expect("can always fit in u32");
+        let tile_height = u32::try_from(core::cmp::min(height - y, 64)).expect("can always fit in u32");
         let stride = self.bitmap.stride.get();
         let input = &self.bitmap.data[y * stride + x * bpp..];
 
+        let stride = u32::try_from(stride).map_err(io::Error::other)?;
         let y = &mut [0i16; 4096];
         let cb = &mut [0i16; 4096];
         let cr = &mut [0i16; 4096];
+
         to_64x64_ycbcr_tile(input, tile_width, tile_height, stride, self.bitmap.format, y, cb, cr)?;
 
         let (y_data, buf) = buf.split_at_mut(4096);

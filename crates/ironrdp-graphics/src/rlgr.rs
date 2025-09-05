@@ -4,6 +4,7 @@ use std::io;
 use bitvec::field::BitField as _;
 use bitvec::prelude::*;
 use ironrdp_pdu::codecs::rfx::EntropyAlgorithm;
+use yuv::YuvError;
 
 use crate::utils::Bits;
 
@@ -360,6 +361,7 @@ impl From<u32> for CompressionMode {
 #[derive(Debug)]
 pub enum RlgrError {
     IoError(io::Error),
+    YuvError(YuvError),
     EmptyTile,
 }
 
@@ -368,6 +370,7 @@ impl core::fmt::Display for RlgrError {
         match self {
             Self::IoError(_error) => write!(f, "IO error"),
             Self::EmptyTile => write!(f, "the input tile is empty"),
+            Self::YuvError(error) => write!(f, "YUV error: {error}"),
         }
     }
 }
@@ -376,6 +379,7 @@ impl core::error::Error for RlgrError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::IoError(error) => Some(error),
+            Self::YuvError(error) => Some(error),
             Self::EmptyTile => None,
         }
     }

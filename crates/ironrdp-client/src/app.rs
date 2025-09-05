@@ -5,7 +5,7 @@ use core::time::Duration;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{bail, Context as _};
+use anyhow::Context as _;
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
@@ -59,36 +59,28 @@ impl App {
         })
     }
 
-    fn send_resize_event(&mut self) -> anyhow::Result<()> {
+    fn send_resize_event(&mut self) {
         let Some(size) = self.last_size.take() else {
-            return Ok(());
+            return;
         };
         let Some((window, _)) = self.window.as_mut() else {
-            return Ok(());
+            return;
         };
         let scale_factor = (window.scale_factor() * 100.0) as u32;
 
-        let width = u16::try_from(size.width).context("invalid `width`: out of range integral conversion")?;
-        let height = u16::try_from(size.height).context("invalid `height`: out of range integral conversion")?;
+        let width = u16::try_from(size.width).expect("width is too big(more than u16::MAX)");
+        let height = u16::try_from(size.height).expect("height is too big(more than u16::MAX)");
 
-        if self
-            .input_event_sender
-            .send(RdpInputEvent::Resize {
-                width,
-                height,
-                scale_factor,
-                // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
-                // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
-                // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
-                // See also: https://github.com/rust-windowing/winit/issues/826
-                physical_size: None,
-            })
-            .is_err()
-        {
-            bail!("failed to send resize event");
-        };
-
-        Ok(())
+        let _ = self.input_event_sender.send(RdpInputEvent::Resize {
+            width,
+            height,
+            scale_factor,
+            // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
+            // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
+            // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
+            // See also: https://github.com/rust-windowing/winit/issues/826
+            physical_size: None,
+        });
     }
 
     fn draw(&mut self) {
@@ -110,9 +102,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
                 event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
             } else {
-                if let Err(err) = self.send_resize_event() {
-                    error!(?err, "Failed to send resize event");
-                };
+                self.send_resize_event();
                 self.resize_timeout = None;
                 event_loop.set_control_flow(ControlFlow::Wait);
             }

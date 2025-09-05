@@ -235,14 +235,7 @@ struct StubSoundServerFactory {
 
 impl ServerEventSender for StubSoundServerFactory {
     fn set_sender(&mut self, sender: UnboundedSender<ServerEvent>) {
-        let mut inner = match self.inner.lock() {
-            Ok(inner) => inner,
-            Err(e) => {
-                warn!("Failed to acquire the mutex: {e:?}");
-                return;
-            }
-        };
-
+        let mut inner = self.inner.lock().expect("poisoned");
         inner.ev_sender = Some(sender);
     }
 }

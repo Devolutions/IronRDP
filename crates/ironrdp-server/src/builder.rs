@@ -1,6 +1,6 @@
 use core::net::SocketAddr;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use ironrdp_pdu::rdp::capability_sets::{server_codecs_capabilities, BitmapCodecs};
 use tokio_rustls::TlsAcceptor;
 
@@ -125,8 +125,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(display),
                 sound_factory: None,
                 cliprdr_factory: None,
-                codecs: server_codecs_capabilities(&[])
-                    .map_err(|e| anyhow!("failed to generate server codecs capabilities: {e}"))?,
+                codecs: server_codecs_capabilities(&[]).expect("can't panic"),
             },
         })
     }
@@ -140,8 +139,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(NoopDisplay),
                 sound_factory: None,
                 cliprdr_factory: None,
-                codecs: server_codecs_capabilities(&[])
-                    .map_err(|e| anyhow!("failed to generate server codecs capabilities: {e}"))?,
+                codecs: server_codecs_capabilities(&[]).expect("can't panic"),
             },
         })
     }

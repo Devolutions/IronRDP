@@ -249,7 +249,7 @@ macro_rules! ensure_size {
     (dst: $buf:ident, size: $expected:expr) => {{
         let available = $buf.len();
         let needed = $expected;
-        if !(available >= needed) {
+        if !(needed <= available) {
             return Err(RleEncodeError::BufferTooSmall);
         }
     }};
