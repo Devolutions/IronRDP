@@ -5,7 +5,7 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::rc::Rc;
 
-use anyhow::{anyhow, Context as _};
+use anyhow::Context as _;
 use base64::Engine as _;
 use futures_channel::mpsc;
 use futures_util::io::{ReadHalf, WriteHalf};

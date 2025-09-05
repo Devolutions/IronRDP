@@ -57,7 +57,18 @@ pub fn to_ycbcr_bench(c: &mut Criterion) {
     let mut cr = [0i16; WIDTH * HEIGHT];
     let format = ironrdp_graphics::image_processing::PixelFormat::ARgb32;
     c.bench_function("to_ycbcr", |b| {
-        b.iter(|| to_64x64_ycbcr_tile(&input, WIDTH, HEIGHT, stride, format, &mut y, &mut cb, &mut cr))
+        b.iter(|| {
+            to_64x64_ycbcr_tile(
+                &input,
+                WIDTH.try_into().expect("can't panic"),
+                HEIGHT.try_into().expect("can't panic"),
+                stride.try_into().expect("can't panic"),
+                format,
+                &mut y,
+                &mut cb,
+                &mut cr,
+            )
+        })
     });
 }
 

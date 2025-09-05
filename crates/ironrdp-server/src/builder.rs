@@ -1,6 +1,6 @@
 use core::net::SocketAddr;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use ironrdp_pdu::rdp::capability_sets::{server_codecs_capabilities, BitmapCodecs};
 use tokio_rustls::TlsAcceptor;
 

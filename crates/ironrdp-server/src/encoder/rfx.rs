@@ -198,7 +198,8 @@ impl<'a> UpdateEncoder<'a> {
         let cb = &mut [0i16; 4096];
         let cr = &mut [0i16; 4096];
 
-        to_64x64_ycbcr_tile(input, tile_width, tile_height, stride, self.bitmap.format, y, cb, cr)?;
+        to_64x64_ycbcr_tile(input, tile_width, tile_height, stride, self.bitmap.format, y, cb, cr)
+            .map_err(RlgrError::YuvError)?;
 
         let (y_data, buf) = buf.split_at_mut(4096);
         let (cb_data, cr_data) = buf.split_at_mut(4096);
