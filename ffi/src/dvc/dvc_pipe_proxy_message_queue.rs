@@ -1,12 +1,13 @@
-use ironrdp::svc::SvcMessage;
 use std::sync::mpsc;
+
+use ironrdp::svc::SvcMessage;
 
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::error::ffi::IronRdpError;
     use std::sync::mpsc;
 
     use super::{DvcPipeProxyMessageInner, DvcPipeProxyMessageQueueInner};
+    use crate::error::ffi::IronRdpError;
 
     #[diplomat::opaque]
     pub struct DvcPipeProxyMessage(pub DvcPipeProxyMessageInner);

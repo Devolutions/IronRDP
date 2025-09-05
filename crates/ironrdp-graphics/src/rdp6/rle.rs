@@ -249,8 +249,8 @@ macro_rules! ensure_size {
     (dst: $buf:ident, size: $expected:expr) => {{
         let available = $buf.len();
         let needed = $expected;
-        if !(available >= needed) {
-            return None;
+        if !(needed <= available) {
+            return Err(RleEncodeError::BufferTooSmall);
         }
     }};
 }
@@ -289,9 +289,7 @@ impl RlePlaneEncoder {
             } else {
                 match count {
                     3.. => {
-                        written += self
-                            .encode_segment(&raw, count, dst)
-                            .ok_or(RleEncodeError::BufferTooSmall)?;
+                        written += self.encode_segment(&raw, count, dst)?;
                         raw.clear();
                     }
                     2 => raw.extend_from_slice(&[last, last]),
@@ -311,14 +309,16 @@ impl RlePlaneEncoder {
             count = 0;
         }
 
-        written += self
-            .encode_segment(&raw, count, dst)
-            .ok_or(RleEncodeError::BufferTooSmall)?;
+        written += self.encode_segment(&raw, count, dst)?;
 
         Ok(written)
     }
 
-    fn encode_segment(&self, mut raw: &[u8], run: usize, dst: &mut WriteCursor<'_>) -> Option<usize> {
+    fn encode_segment(&self, mut raw: &[u8], run: usize, dst: &mut WriteCursor<'_>) -> Result<usize, RleEncodeError> {
+        if raw.is_empty() {
+            return Err(RleEncodeError::NotEnoughBytes);
+        }
+
         let mut extra_bytes = 0;
 
         while raw.len() > 15 {
@@ -334,14 +334,19 @@ impl RlePlaneEncoder {
         dst.write_slice(raw);
 
         if run > 15 {
-            let last = raw.last().unwrap();
+            let last = raw.last().expect("buffer cannot be empty");
             extra_bytes += self.encode_long_sequence(run - 15, *last, dst)?;
         }
 
-        Some(1 + raw.len() + extra_bytes)
+        Ok(1 + raw.len() + extra_bytes)
     }
 
-    fn encode_long_sequence(&self, mut run: usize, last: u8, dst: &mut WriteCursor<'_>) -> Option<usize> {
+    fn encode_long_sequence(
+        &self,
+        mut run: usize,
+        last: u8,
+        dst: &mut WriteCursor<'_>,
+    ) -> Result<usize, RleEncodeError> {
         let mut written = 0;
 
         while run >= 16 {
@@ -370,7 +375,7 @@ impl RlePlaneEncoder {
             }
         }
 
-        Some(written)
+        Ok(written)
     }
 }
 

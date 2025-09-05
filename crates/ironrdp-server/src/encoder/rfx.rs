@@ -1,5 +1,7 @@
+use std::io;
+
 use ironrdp_acceptor::DesktopSize;
-use ironrdp_core::{cast_length, other_err, Encode as _, EncodeResult};
+use ironrdp_core::{cast_int, cast_length, other_err, Encode as _, EncodeResult};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_graphics::rfx_encode_component;
 use ironrdp_graphics::rlgr::RlgrError;
@@ -164,8 +166,8 @@ impl<'a> UpdateEncoder<'a> {
                     y_quant_index: 0,
                     cb_quant_index: 0,
                     cr_quant_index: 0,
-                    x: u16::try_from(tile_x).unwrap(),
-                    y: u16::try_from(tile_y).unwrap(),
+                    x: cast_int!("tile_x", tile_x)?,
+                    y: cast_int!("tile_y", tile_y)?,
                     y_data,
                     cb_data,
                     cr_data,
@@ -186,15 +188,18 @@ impl<'a> UpdateEncoder<'a> {
 
         let x = tile_x * 64;
         let y = tile_y * 64;
-        let tile_width = core::cmp::min(width - x, 64);
-        let tile_height = core::cmp::min(height - y, 64);
+        let tile_width = u32::try_from(core::cmp::min(width - x, 64)).expect("can always fit in u32");
+        let tile_height = u32::try_from(core::cmp::min(height - y, 64)).expect("can always fit in u32");
         let stride = self.bitmap.stride.get();
         let input = &self.bitmap.data[y * stride + x * bpp..];
 
+        let stride = u32::try_from(stride).map_err(io::Error::other)?;
         let y = &mut [0i16; 4096];
         let cb = &mut [0i16; 4096];
         let cr = &mut [0i16; 4096];
-        to_64x64_ycbcr_tile(input, tile_width, tile_height, stride, self.bitmap.format, y, cb, cr);
+
+        to_64x64_ycbcr_tile(input, tile_width, tile_height, stride, self.bitmap.format, y, cb, cr)
+            .map_err(RlgrError::YuvError)?;
 
         let (y_data, buf) = buf.split_at_mut(4096);
         let (cb_data, cr_data) = buf.split_at_mut(4096);
@@ -227,12 +232,13 @@ pub(crate) mod bench {
     ) {
         let (enc, mut data) = UpdateEncoder::new(bitmap, quant.clone(), algo);
 
-        enc.encode_tile(tile_x, tile_y, &mut data.0).unwrap();
+        enc.encode_tile(tile_x, tile_y, &mut data.0)
+            .expect("cannot propagate error in benchmark");
     }
 
     pub fn rfx_enc(bitmap: &BitmapUpdate, quant: &Quant, algo: rfx::EntropyAlgorithm) {
         let (enc, mut data) = UpdateEncoder::new(bitmap, quant.clone(), algo);
 
-        enc.encode(&mut data).unwrap();
+        enc.encode(&mut data).expect("cannot propagate error in benchmark");
     }
 }

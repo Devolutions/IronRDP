@@ -2,7 +2,7 @@
 #![allow(clippy::print_stderr)]
 #![allow(clippy::print_stdout)]
 
-use core::num::NonZero;
+use core::num::{NonZeroU16, NonZeroUsize};
 use core::time::Duration;
 use std::io::Write as _;
 use std::time::Instant;
@@ -59,13 +59,14 @@ async fn main() -> Result<(), anyhow::Error> {
         OptCodec::QoiZ => update_codecs.set_qoiz(Some(0)),
     };
 
-    let mut encoder = UpdateEncoder::new(DesktopSize { width, height }, flags, update_codecs);
+    let mut encoder = UpdateEncoder::new(DesktopSize { width, height }, flags, update_codecs)
+        .context("failed to initialize update encoder")?;
 
     let mut total_raw = 0u64;
     let mut total_enc = 0u64;
     let mut n_updates = 0u64;
     let mut updates = DisplayUpdates::new(file, DesktopSize { width, height }, fps);
-    while let Some(up) = updates.next_update().await {
+    while let Some(up) = updates.next_update().await? {
         if let DisplayUpdate::Bitmap(ref up) = up {
             total_raw += up.data.len() as u64;
         } else {
@@ -82,7 +83,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }
         n_updates += 1;
         print!(".");
-        std::io::stdout().flush().unwrap();
+        std::io::stdout().flush()?;
     }
     println!();
 
@@ -119,20 +120,21 @@ impl DisplayUpdates {
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for DisplayUpdates {
-    async fn next_update(&mut self) -> Option<DisplayUpdate> {
+    async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
         let stride = self.desktop_size.width as usize * 4;
         let frame_size = stride * self.desktop_size.height as usize;
         let mut buf = vec![0u8; frame_size];
-        if self.file.read_exact(&mut buf).await.is_err() {
-            return None;
-        }
+        // FIXME: AsyncReadExt::read_exact is not cancellation safe.
+        self.file.read_exact(&mut buf).await.context("read exact")?;
 
         let now = Instant::now();
         if let Some(last_update_time) = self.last_update_time {
             let elapsed = now - last_update_time;
             if self.fps > 0 && elapsed < Duration::from_millis(1000 / self.fps) {
                 sleep(Duration::from_millis(
-                    1000 / self.fps - u64::try_from(elapsed.as_millis()).unwrap(),
+                    1000 / self.fps
+                        - u64::try_from(elapsed.as_millis())
+                            .context("invalid `elapsed millis`: out of range integral conversion")?,
                 ))
                 .await;
             }
@@ -142,13 +144,13 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
         let up = DisplayUpdate::Bitmap(BitmapUpdate {
             x: 0,
             y: 0,
-            width: self.desktop_size.width.try_into().unwrap(),
-            height: self.desktop_size.height.try_into().unwrap(),
+            width: NonZeroU16::new(self.desktop_size.width).context("width cannot be zero")?,
+            height: NonZeroU16::new(self.desktop_size.height).context("height cannot be zero")?,
             format: PixelFormat::RgbX32,
             data: buf.into(),
-            stride: NonZero::new(stride).unwrap(),
+            stride: NonZeroUsize::new(stride).context("stride cannot be zero")?,
         });
-        Some(up)
+        Ok(Some(up))
     }
 }
 
