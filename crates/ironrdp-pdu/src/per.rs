@@ -542,7 +542,7 @@ pub(crate) mod legacy {
         };
 
         let length = u16::try_from(length)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid octect string length"))?;
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid octet string length"))?;
         let size = write_length(&mut stream, length)?;
         stream.write_all(octet_string)?;
 
