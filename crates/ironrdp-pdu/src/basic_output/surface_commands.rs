@@ -3,10 +3,10 @@ mod tests;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
-    WriteCursor,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
+    ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
+use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
 use crate::geometry::ExclusiveRectangle;
@@ -126,7 +126,7 @@ impl Encode for FrameMarkerPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u16(self.frame_action as u16);
+        dst.write_u16(self.frame_action.as_u16());
         dst.write_u32(self.frame_id.unwrap_or(0));
 
         Ok(())
@@ -197,9 +197,7 @@ impl Encode for ExtendedBitmapDataPdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        if self.data.len() > u32::MAX as usize {
-            return Err(invalid_field_err!("bitmapDataLength", "bitmap data is too big"));
-        }
+        let data_len = cast_length!("bitmap data length", self.data.len())?;
 
         dst.write_u8(self.bpp);
         let flags = if self.header.is_some() {
@@ -212,7 +210,7 @@ impl Encode for ExtendedBitmapDataPdu<'_> {
         dst.write_u8(self.codec_id);
         dst.write_u16(self.width);
         dst.write_u16(self.height);
-        dst.write_u32(self.data.len() as u32);
+        dst.write_u32(data_len);
         if let Some(header) = &self.header {
             header.encode(dst)?;
         }
@@ -240,7 +238,7 @@ impl<'de> Decode<'de> for ExtendedBitmapDataPdu<'de> {
         let codec_id = src.read_u8();
         let width = src.read_u16();
         let height = src.read_u16();
-        let data_length = src.read_u32() as usize;
+        let data_length = cast_length!("bitmap data length", src.read_u32())?;
 
         let expected_remaining_size = if flags.contains(BitmapDataFlags::COMPRESSED_BITMAP_HEADER_PRESENT) {
             data_length + BitmapDataHeader::ENCODED_SIZE
@@ -352,11 +350,21 @@ impl From<&SurfaceCommand<'_>> for SurfaceCommandType {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 #[repr(u16)]
 pub enum FrameAction {
     Begin = 0x00,
     End = 0x01,
+}
+
+impl FrameAction {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    pub fn as_u16(self) -> u16 {
+        self as u16
+    }
 }
 
 bitflags! {

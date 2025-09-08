@@ -145,9 +145,8 @@ impl<'de> Decode<'de> for ClientInfo {
 
         let flags = ClientInfoFlags::from_bits(flags_with_compression_type & !COMPRESSION_TYPE_MASK)
             .ok_or_else(|| invalid_field_err!("flags", "invalid ClientInfoFlags"))?;
-        let compression_type =
-            CompressionType::from_u8(((flags_with_compression_type & COMPRESSION_TYPE_MASK) >> 9) as u8)
-                .ok_or_else(|| invalid_field_err!("flags", "invalid CompressionType"))?;
+        let compression_type = CompressionType::from_u32((flags_with_compression_type & COMPRESSION_TYPE_MASK) >> 9)
+            .ok_or_else(|| invalid_field_err!("flags", "invalid CompressionType"))?;
 
         let character_set = if flags.contains(ClientInfoFlags::UNICODE) {
             CharacterSet::Unicode
@@ -157,11 +156,11 @@ impl<'de> Decode<'de> for ClientInfo {
 
         // Sizes exclude the length of the mandatory null terminator
         let nt = usize::from(character_set.as_u16());
-        let domain_size = src.read_u16() as usize + nt;
-        let user_name_size = src.read_u16() as usize + nt;
-        let password_size = src.read_u16() as usize + nt;
-        let alternate_shell_size = src.read_u16() as usize + nt;
-        let work_dir_size = src.read_u16() as usize + nt;
+        let domain_size = usize::from(src.read_u16()) + nt;
+        let user_name_size = usize::from(src.read_u16()) + nt;
+        let password_size = usize::from(src.read_u16()) + nt;
+        let alternate_shell_size = usize::from(src.read_u16()) + nt;
+        let work_dir_size = usize::from(src.read_u16()) + nt;
         ensure_size!(in: src, size: domain_size + user_name_size + password_size + alternate_shell_size + work_dir_size);
 
         let domain = utils::decode_string(src.read_slice(domain_size), character_set, true)?;
@@ -226,12 +225,12 @@ impl ExtendedClientInfo {
         let address_family = AddressFamily::from_u16(src.read_u16());
 
         // This size includes the length of the mandatory null terminator.
-        let address_size = src.read_u16() as usize;
+        let address_size = usize::from(src.read_u16());
         ensure_size!(in: src, size: address_size + CLIENT_DIR_LENGTH_SIZE);
 
         let address = utils::decode_string(src.read_slice(address_size), character_set, false)?;
         // This size includes the length of the mandatory null terminator.
-        let dir_size = src.read_u16() as usize;
+        let dir_size = usize::from(src.read_u16());
         ensure_size!(in: src, size: dir_size);
 
         let dir = utils::decode_string(src.read_slice(dir_size), character_set, false)?;
@@ -324,7 +323,7 @@ impl Encode for ExtendedClientOptionalInfo {
             dst.write_u32(performance_flags.bits());
         }
         if let Some(reconnect_cookie) = self.reconnect_cookie {
-            dst.write_u16(RECONNECT_COOKIE_LEN as u16);
+            dst.write_u16(u16::try_from(RECONNECT_COOKIE_LEN).expect("RECONNECT_COOKIE_LEN fit into u16"));
             dst.write_array(reconnect_cookie);
         }
 
@@ -381,7 +380,9 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
             return Ok(optional_data);
         }
         let reconnect_cookie_size = src.read_u16();
-        if reconnect_cookie_size != RECONNECT_COOKIE_LEN as u16 && reconnect_cookie_size != 0 {
+        if reconnect_cookie_size != u16::try_from(RECONNECT_COOKIE_LEN).expect("RECONNECT_COOKIE_LEN fit into u16")
+            && reconnect_cookie_size != 0
+        {
             return Err(invalid_field_err!("cbAutoReconnectCookie", "invalid cookie size"));
         }
         if reconnect_cookie_size != 0 {

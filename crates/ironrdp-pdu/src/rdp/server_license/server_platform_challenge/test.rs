@@ -35,7 +35,8 @@ lazy_static! {
             preamble_message_type: PreambleType::PlatformChallenge,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (PLATFORM_CHALLENGE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE) as u16,
+            preamble_message_size: u16::try_from(PLATFORM_CHALLENGE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE)
+                .expect("can't panic"),
         },
         encrypted_platform_challenge: Vec::from(CHALLENGE_BUFFER.as_ref()),
         mac_data: Vec::from(MAC_DATA_BUFFER.as_ref()),

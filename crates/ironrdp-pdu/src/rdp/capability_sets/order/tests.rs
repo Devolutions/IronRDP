@@ -30,27 +30,27 @@ lazy_static! {
         order_support: {
             let mut array = [0u8; 32];
 
-            array[OrderSupportIndex::DstBlt as usize] = 1;
-            array[OrderSupportIndex::PatBlt as usize] = 1;
-            array[OrderSupportIndex::ScrBlt as usize] = 1;
-            array[OrderSupportIndex::MemBlt as usize] = 1;
-            array[OrderSupportIndex::Mem3Blt as usize] = 1;
-            array[OrderSupportIndex::DrawnInEGrid as usize] = 1;
-            array[OrderSupportIndex::LineTo as usize] = 1;
-            array[OrderSupportIndex::MultiDrawnInEGrid as usize] = 1;
-            array[OrderSupportIndex::SaveBitmap as usize] = 1;
-            array[OrderSupportIndex::MultiDstBlt as usize] = 1;
-            array[OrderSupportIndex::MultiPatBlt as usize] = 1;
-            array[OrderSupportIndex::MultiScrBlt as usize] = 1;
-            array[OrderSupportIndex::MultiOpaqueRect as usize] = 1;
-            array[OrderSupportIndex::Fast as usize] = 1;
-            array[OrderSupportIndex::PolygonSC as usize] = 1;
-            array[OrderSupportIndex::PolygonCB as usize] = 1;
-            array[OrderSupportIndex::Polyline as usize] = 1;
-            array[OrderSupportIndex::FastGlyph as usize] = 1;
-            array[OrderSupportIndex::EllipseSC as usize] = 1;
-            array[OrderSupportIndex::EllipseCB as usize] = 1;
-            array[OrderSupportIndex::Index as usize] = 1;
+            array[usize::from(OrderSupportIndex::DstBlt)] = 1;
+            array[usize::from(OrderSupportIndex::PatBlt)] = 1;
+            array[usize::from(OrderSupportIndex::ScrBlt)] = 1;
+            array[usize::from(OrderSupportIndex::MemBlt)] = 1;
+            array[usize::from(OrderSupportIndex::Mem3Blt)] = 1;
+            array[usize::from(OrderSupportIndex::DrawnInEGrid)] = 1;
+            array[usize::from(OrderSupportIndex::LineTo)] = 1;
+            array[usize::from(OrderSupportIndex::MultiDrawnInEGrid)] = 1;
+            array[usize::from(OrderSupportIndex::SaveBitmap)] = 1;
+            array[usize::from(OrderSupportIndex::MultiDstBlt)] = 1;
+            array[usize::from(OrderSupportIndex::MultiPatBlt)] = 1;
+            array[usize::from(OrderSupportIndex::MultiScrBlt)] = 1;
+            array[usize::from(OrderSupportIndex::MultiOpaqueRect)] = 1;
+            array[usize::from(OrderSupportIndex::Fast)] = 1;
+            array[usize::from(OrderSupportIndex::PolygonSC)] = 1;
+            array[usize::from(OrderSupportIndex::PolygonCB)] = 1;
+            array[usize::from(OrderSupportIndex::Polyline)] = 1;
+            array[usize::from(OrderSupportIndex::FastGlyph)] = 1;
+            array[usize::from(OrderSupportIndex::EllipseSC)] = 1;
+            array[usize::from(OrderSupportIndex::EllipseCB)] = 1;
+            array[usize::from(OrderSupportIndex::Index)] = 1;
 
             array
         },
