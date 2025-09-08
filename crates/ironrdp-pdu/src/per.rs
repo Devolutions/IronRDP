@@ -114,7 +114,7 @@ pub(crate) fn write_long_length(dst: &mut WriteCursor<'_>, length: u16) {
     dst.write_u16_be(length | 0x8000)
 }
 
-pub(crate) fn sizeof_length(length: u16) -> usize {
+pub(crate) fn sizeof_length(length: usize) -> usize {
     if length > 0x7f {
         2
     } else {
@@ -243,7 +243,10 @@ pub(crate) fn read_object_id(src: &mut ReadCursor<'_>) -> Result<[u8; OBJECT_ID_
 }
 
 pub(crate) fn write_object_id(dst: &mut WriteCursor<'_>, object_ids: [u8; OBJECT_ID_SIZE]) {
-    write_length(dst, OBJECT_ID_SIZE as u16 - 1);
+    write_length(
+        dst,
+        u16::try_from(OBJECT_ID_SIZE).expect("OBJECT_ID_SIZE fits into u16") - 1,
+    );
 
     let first_two_tuples = object_ids[0] * 40 + object_ids[1];
     dst.write_u8(first_two_tuples);
@@ -338,8 +341,8 @@ pub(crate) mod legacy {
         Ok(2)
     }
 
-    pub(crate) fn write_short_length(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
-        stream.write_u8(length as u8)?;
+    pub(crate) fn write_short_length(mut stream: impl io::Write, length: u8) -> io::Result<usize> {
+        stream.write_u8(length)?;
         Ok(1)
     }
 
@@ -347,6 +350,12 @@ pub(crate) mod legacy {
         if length > 0x7f {
             write_long_length(stream, length)
         } else {
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                reason = "cast is valid due to prior check"
+            )]
+            let length = length as u8;
             write_short_length(stream, length)
         }
     }
@@ -413,12 +422,25 @@ pub(crate) mod legacy {
     pub(crate) fn write_u32(mut stream: impl io::Write, value: u32) -> io::Result<usize> {
         if value <= 0xff {
             let size = write_length(&mut stream, 1)?;
-            stream.write_u8(value as u8)?;
+
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                reason = "cast is valid due to prior check"
+            )]
+            let value = value as u8;
+            stream.write_u8(value)?;
 
             Ok(size + 1)
         } else if value <= 0xffff {
             let size = write_length(&mut stream, 2)?;
-            stream.write_u16::<BigEndian>(value as u16)?;
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                reason = "cast is valid due to prior check"
+            )]
+            let value = value as u16;
+            stream.write_u16::<BigEndian>(value)?;
 
             Ok(size + 2)
         } else {
@@ -488,7 +510,10 @@ pub(crate) mod legacy {
     }
 
     pub(crate) fn write_object_id(mut stream: impl io::Write, object_ids: [u8; OBJECT_ID_SIZE]) -> io::Result<usize> {
-        let size = write_length(&mut stream, OBJECT_ID_SIZE as u16 - 1)?;
+        let object_oid_size: u16 = OBJECT_ID_SIZE
+            .try_into()
+            .expect("OBJECT_ID_SIZE is known to fit into u16");
+        let size = write_length(&mut stream, object_oid_size - 1)?;
 
         let first_two_tuples = object_ids[0] * 40 + object_ids[1];
         stream.write_u8(first_two_tuples)?;
@@ -503,7 +528,7 @@ pub(crate) mod legacy {
     pub(crate) fn read_octet_string(mut stream: impl io::Read, min: usize) -> io::Result<Vec<u8>> {
         let (read_length, _) = read_length(&mut stream)?;
 
-        let mut read_octet_string = vec![0; min + read_length as usize];
+        let mut read_octet_string = vec![0; min + usize::from(read_length)];
         stream.read_exact(read_octet_string.as_mut())?;
 
         Ok(read_octet_string)
@@ -516,7 +541,9 @@ pub(crate) mod legacy {
             min
         };
 
-        let size = write_length(&mut stream, length as u16)?;
+        let length = u16::try_from(length)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid octect string length"))?;
+        let size = write_length(&mut stream, length)?;
         stream.write_all(octet_string)?;
 
         Ok(size + octet_string.len())
@@ -527,7 +554,7 @@ pub(crate) mod legacy {
 
         let length = (read_length + min).div_ceil(2);
 
-        let mut read_numeric_string = vec![0; length as usize];
+        let mut read_numeric_string = vec![0; usize::from(length)];
         stream.read_exact(read_numeric_string.as_mut())?;
 
         Ok(())
@@ -536,7 +563,9 @@ pub(crate) mod legacy {
     pub(crate) fn write_numeric_string(mut stream: impl io::Write, num_str: &[u8], min: usize) -> io::Result<usize> {
         let length = if num_str.len() >= min { num_str.len() - min } else { min };
 
-        let mut size = write_length(&mut stream, length as u16)?;
+        let length = u16::try_from(length)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid numeric string length"))?;
+        let mut size = write_length(&mut stream, length)?;
 
         let magic_transform = |elem| (elem - 0x30) % 10;
 

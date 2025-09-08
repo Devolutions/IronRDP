@@ -68,7 +68,7 @@ impl ActiveStage {
 
         // Encoding fastpath response frame
         // PERF: unnecessary copy
-        let fastpath_input = FastPathInput(events.to_vec());
+        let fastpath_input = FastPathInput::new(events.to_vec()).map_err(SessionError::decode)?;
         let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
         output.push(ActiveStageOutput::ResponseFrame(frame));
 
