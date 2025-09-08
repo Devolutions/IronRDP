@@ -4,10 +4,18 @@ import { get } from 'svelte/store';
 import type { ClipboardData } from '../interfaces/ClipboardData';
 import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
 import { runWhenFocusedQueue } from '../lib/stores/runWhenFocusedStore';
-import { SessionEventType } from '../enums/SessionEventType';
 import { ClipboardApiSupported } from '../enums/ClipboardApiSupported';
+import { IronErrorKind } from '../interfaces/Error';
 
 const CLIPBOARD_MONITORING_INTERVAL_MS = 100;
+
+// Helper function to conveniently throw an `IronError`.
+function throwIronError(message: string): never {
+    throw {
+        kind: () => IronErrorKind.General,
+        backtrace: () => message,
+    };
+}
 
 export class ClipboardService {
     private remoteDesktopService: RemoteDesktopService;
@@ -29,10 +37,7 @@ export class ClipboardService {
     initClipboard() {
         // Clipboard API is available only in secure contexts (HTTPS).
         if (!window.isSecureContext) {
-            this.remoteDesktopService.raiseSessionEvent({
-                type: SessionEventType.WARNING,
-                data: 'Clipboard is available only in secure contexts (HTTPS).',
-            });
+            this.remoteDesktopService.emitWarningEvent('Clipboard is available only in secure contexts (HTTPS).');
             return;
         }
 
@@ -42,26 +47,23 @@ export class ClipboardService {
                 this.ClipboardApiSupported = ClipboardApiSupported.Full;
             } else if (navigator.clipboard.readText != undefined) {
                 this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
-                this.remoteDesktopService.raiseSessionEvent({
-                    type: SessionEventType.WARNING,
-                    data: 'Clipboard is limited to text-only data types due to an outdated browser version!',
-                });
+                this.remoteDesktopService.emitWarningEvent(
+                    'Clipboard is limited to text-only data types due to an outdated browser version!',
+                );
             } else if (navigator.clipboard.writeText != undefined) {
                 this.ClipboardApiSupported = ClipboardApiSupported.TextOnlyServerOnly;
-                this.remoteDesktopService.raiseSessionEvent({
-                    type: SessionEventType.WARNING,
-                    data: 'Clipboard reading is not supported and writing is limited to text-only data types due to an outdated browser version!',
-                });
+                this.remoteDesktopService.emitWarningEvent(
+                    'Clipboard reading is not supported and writing is limited to text-only data types due to an outdated browser version!',
+                );
             }
         }
 
         // The basic Clipboard API is widely supported in modern browsers,
         // so this condition should never be true in practice.
         if (this.ClipboardApiSupported === ClipboardApiSupported.None) {
-            this.remoteDesktopService.raiseSessionEvent({
-                type: SessionEventType.WARNING,
-                data: 'Clipboard is not supported due to an outdated browser version!',
-            });
+            this.remoteDesktopService.emitWarningEvent(
+                'Clipboard is not supported due to an outdated browser version!',
+            );
             return;
         }
 
@@ -84,17 +86,13 @@ export class ClipboardService {
 
     // Copies clipboard content received from the server to the local clipboard.
     // Returns the result of the operation. On failure, it additionally raises an error session event.
-    async saveRemoteClipboardData(): Promise<boolean> {
+    async saveRemoteClipboardData(): Promise<void> {
         if (this.ClipboardApiSupported !== ClipboardApiSupported.Full) {
             return await this.ffSaveRemoteClipboardData();
         }
 
         if (this.clipboardDataToSave == null) {
-            this.remoteDesktopService.raiseSessionEvent({
-                type: SessionEventType.ERROR,
-                data: 'The server did not send the clipboard data.',
-            });
-            return false;
+            throwIronError('The server did not send the clipboard data.');
         }
 
         try {
@@ -103,74 +101,53 @@ export class ClipboardService {
             await navigator.clipboard.write([clipboard_item]);
 
             this.clipboardDataToSave = null;
-            return true;
         } catch (err) {
-            this.remoteDesktopService.raiseSessionEvent({
-                type: SessionEventType.ERROR,
-                data: 'Failed to write to the clipboard: ' + err,
-            });
-            return false;
+            throwIronError('Failed to write to the clipboard: ' + err);
         }
     }
 
     // Sends local clipboard's content to the server.
     // Returns the result of the operation. On failure, it additionally raises an error session event.
-    async sendClipboardData(): Promise<boolean> {
+    async sendClipboardData(): Promise<void> {
         if (this.ClipboardApiSupported !== ClipboardApiSupported.Full) {
             return await this.ffSendClipboardData();
         }
 
-        try {
-            const value = await navigator.clipboard.read();
+        const value = await navigator.clipboard.read().catch((err) => {
+            throwIronError('Failed to read from the clipboard: ' + err);
+        });
 
-            // Clipboard is empty
-            if (value.length == 0) {
-                this.remoteDesktopService.raiseSessionEvent({
-                    type: SessionEventType.ERROR,
-                    data: 'The clipboard has no data.',
-                });
-                return false;
+        // Clipboard is empty
+        if (value.length == 0) {
+            throwIronError('The clipboard has no data.');
+        }
+
+        // We only support one item at a time
+        const item = value[0];
+
+        if (!item.types.some((type) => type.startsWith('text/') || type.startsWith('image/png'))) {
+            // Unsupported types
+            throwIronError('The clipboard has no data of supported type (text or image).');
+        }
+
+        const clipboardData = new this.module.ClipboardData();
+
+        for (const kind of item.types) {
+            // Get blob
+            const blobIsString = kind.startsWith('text/');
+            const blob = await item.getType(kind);
+
+            if (blobIsString) {
+                clipboardData.addText(kind, await blob.text());
+            } else {
+                clipboardData.addBinary(kind, new Uint8Array(await blob.arrayBuffer()));
             }
+        }
 
-            // We only support one item at a time
-            const item = value[0];
-
-            if (!item.types.some((type) => type.startsWith('text/') || type.startsWith('image/png'))) {
-                // Unsupported types
-                this.remoteDesktopService.raiseSessionEvent({
-                    type: SessionEventType.ERROR,
-                    data: 'The clipboard has no data of supported type (text or image).',
-                });
-                return false;
-            }
-
-            const clipboardData = new this.module.ClipboardData();
-
-            for (const kind of item.types) {
-                // Get blob
-                const blobIsString = kind.startsWith('text/');
-                const blob = await item.getType(kind);
-
-                if (blobIsString) {
-                    clipboardData.addText(kind, await blob.text());
-                } else {
-                    clipboardData.addBinary(kind, new Uint8Array(await blob.arrayBuffer()));
-                }
-            }
-
-            if (!clipboardData.isEmpty()) {
-                this.lastSentClipboardData = clipboardData;
-                // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
-                await this.remoteDesktopService.onClipboardChanged(clipboardData);
-            }
-
-            return true;
-        } catch (err) {
-            this.remoteDesktopService.raiseSessionEvent({
-                type: SessionEventType.ERROR,
-                data: 'Failed to read from the clipboard: ' + err,
-            });
-            return false;
+        if (!clipboardData.isEmpty()) {
+            this.lastSentClipboardData = clipboardData;
+            // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
+            await this.remoteDesktopService.onClipboardChanged(clipboardData);
         }
     }
 
@@ -223,10 +200,7 @@ export class ClipboardService {
     // This callback is required to update client clipboard state when remote side has changed.
     private onRemoteClipboardChangedManualMode(data: ClipboardData) {
         this.clipboardDataToSave = data;
-        this.remoteDesktopService.raiseSessionEvent({
-            type: SessionEventType.CLIPBOARD_REMOTE_UPDATE,
-            data: '',
-        });
+        this.remoteDesktopService.emitClipboardRemoteUpdateEvent();
     }
 
     // This callback is required to update client clipboard state when remote side has changed.
@@ -244,7 +218,7 @@ export class ClipboardService {
     }
 
     // Called periodically to monitor clipboard changes
-    private async onMonitorClipboard() {
+    private async onMonitorClipboard(): Promise<void> {
         try {
             if (!document.hasFocus()) {
                 return;
@@ -382,35 +356,23 @@ export class ClipboardService {
         if (value === '') return;
 
         this.ffClipboardDataToSave = value;
-        this.remoteDesktopService.raiseSessionEvent({
-            type: SessionEventType.CLIPBOARD_REMOTE_UPDATE,
-            data: '',
-        });
+        this.remoteDesktopService.emitClipboardRemoteUpdateEvent();
     }
 
     // Firefox specific function. We are using text-only clipboard API here.
     //
     // Copies clipboard content received from the server to the local clipboard.
     // Returns the result of the operation. On failure, it additionally raises an error session event.
-    private async ffSaveRemoteClipboardData(): Promise<boolean> {
+    private async ffSaveRemoteClipboardData(): Promise<void> {
         if (this.ffClipboardDataToSave == null) {
-            this.remoteDesktopService.raiseSessionEvent({
-                type: SessionEventType.ERROR,
-                data: 'The server did not send the clipboard data.',
-            });
-            return false;
+            throwIronError('The server did not send the clipboard data.');
         }
 
         try {
             await navigator.clipboard.writeText(this.ffClipboardDataToSave);
             this.ffClipboardDataToSave = null;
-            return true;
         } catch (err) {
-            this.remoteDesktopService.raiseSessionEvent({
-                type: SessionEventType.ERROR,
-                data: 'Failed to write to the clipboard: ' + err,
-            });
-            return false;
+            throwIronError('Failed to write to the clipboard: ' + err);
         }
     }
 
@@ -418,43 +380,27 @@ export class ClipboardService {
     //
     // Sends local clipboard's content to the server.
     // Returns the result of the operation. On failure, it additionally raises an error session event.
-    private async ffSendClipboardData(): Promise<boolean> {
+    private async ffSendClipboardData(): Promise<void> {
         if (this.ClipboardApiSupported !== ClipboardApiSupported.TextOnly) {
-            this.remoteDesktopService.raiseSessionEvent({
-                type: SessionEventType.ERROR,
-                data: 'The browser does not support clipboard read.',
-            });
-            return false;
+            throwIronError('The browser does not support clipboard read.');
         }
 
-        try {
-            const value = await navigator.clipboard.readText();
+        const value = await navigator.clipboard.readText().catch((err) => {
+            throwIronError('Failed to read from the clipboard: ' + err);
+        });
 
-            // Clipboard is empty
-            if (value.length == 0) {
-                this.remoteDesktopService.raiseSessionEvent({
-                    type: SessionEventType.ERROR,
-                    data: 'The clipboard has no data.',
-                });
-                return false;
-            }
+        // Clipboard is empty
+        if (value.length == 0) {
+            throwIronError('The clipboard has no data.');
+        }
 
-            const clipboardData = new this.module.ClipboardData();
-            clipboardData.addText('text/plain', value);
+        const clipboardData = new this.module.ClipboardData();
+        clipboardData.addText('text/plain', value);
 
-            if (!clipboardData.isEmpty()) {
-                this.lastSentClipboardData = clipboardData;
-                // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
-                await this.remoteDesktopService.onClipboardChanged(clipboardData);
-            }
-
-            return true;
-        } catch (err) {
-            this.remoteDesktopService.raiseSessionEvent({
-                type: SessionEventType.ERROR,
-                data: 'Failed to read from the clipboard: ' + err,
-            });
-            return false;
+        if (!clipboardData.isEmpty()) {
+            this.lastSentClipboardData = clipboardData;
+            // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
+            await this.remoteDesktopService.onClipboardChanged(clipboardData);
         }
     }
 }

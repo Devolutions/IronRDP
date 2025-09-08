@@ -2,13 +2,11 @@ import { loggingService } from './logging.service';
 import { scanCode } from '../lib/scancodes';
 import { ModifierKey } from '../enums/ModifierKey';
 import { LockKey } from '../enums/LockKey';
-import { SessionEventType } from '../enums/SessionEventType';
 import type { NewSessionInfo } from '../interfaces/NewSessionInfo';
 import { SpecialCombination } from '../enums/SpecialCombination';
 import type { ResizeEvent } from '../interfaces/ResizeEvent';
 import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
-import type { IronError, IronErrorKind, SessionEvent } from '../interfaces/session-event';
 import type { ClipboardData } from '../interfaces/ClipboardData';
 import type { Session } from '../interfaces/Session';
 import { RotationUnit } from '../interfaces/DeviceEvent';
@@ -24,6 +22,8 @@ type OnRemoteClipboardChanged = (data: ClipboardData) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
 type OnCanvasResized = () => void;
+type OnWarning = (data: string) => void;
+type OnClipboardRemoteUpdate = () => void;
 
 export class RemoteDesktopService {
     private module: RemoteDesktopModule;
@@ -34,6 +34,8 @@ export class RemoteDesktopService {
     private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
     private onCanvasResized?: OnCanvasResized;
+    private onWarningCallback?: OnWarning;
+    private onClipboardRemoteUpdate?: OnClipboardRemoteUpdate;
     private cursorHasOverride: boolean = false;
     private lastCursorStyle: string = 'default';
     private enableClipboard: boolean = true;
@@ -46,7 +48,6 @@ export class RemoteDesktopService {
 
     mousePositionObservable: Observable<MousePosition> = new Observable();
     changeVisibilityObservable: Observable<boolean> = new Observable();
-    sessionEventObservable: Observable<SessionEvent> = new Observable();
     scaleObservable: Observable<ScreenScale> = new Observable();
 
     dynamicResizeObservable: Observable<{ width: number; height: number }> = new Observable();
@@ -87,6 +88,16 @@ export class RemoteDesktopService {
     /// Callback which is called when the canvas is resized.
     setOnCanvasResized(callback: OnCanvasResized) {
         this.onCanvasResized = callback;
+    }
+
+    /// Callback which is called when the warning event is emitted.
+    setOnWarningCallback(callback: OnWarning) {
+        this.onWarningCallback = callback;
+    }
+
+    /// Callback which is called when the clipboard remote update event is emitted.
+    setOnClipboardRemoteUpdate(callback: OnClipboardRemoteUpdate) {
+        this.onClipboardRemoteUpdate = callback;
     }
 
     mouseIn(event: MouseEvent) {
@@ -160,21 +171,7 @@ export class RemoteDesktopService {
             );
         }
 
-        const session = await sessionBuilder.connect().catch((err: IronError) => {
-            this.raiseSessionEvent({
-                type: SessionEventType.TERMINATED,
-                data: {
-                    backtrace: () => err.backtrace(),
-                    kind: () => err.kind() as number as IronErrorKind,
-                },
-            });
-            // The client must ignore this error and use session events for error handling.
-            throw new Error();
-        });
-
-        this.run(session);
-
-        loggingService.info('Session started.');
+        const session = await sessionBuilder.connect();
 
         this.session = session;
 
@@ -182,36 +179,22 @@ export class RemoteDesktopService {
             desktopSize: session.desktopSize(),
             sessionId: 0,
         });
-        this.raiseSessionEvent({
-            type: SessionEventType.STARTED,
-            data: 'Session started',
-        });
+
+        const run = async (): Promise<SessionTerminationInfo> => {
+            try {
+                loggingService.info('Starting the session.');
+                return await session.run();
+            } finally {
+                this.setVisibility(false);
+            }
+        };
 
         return {
             sessionId: 0,
             initialDesktopSize: session.desktopSize(),
             websocketPort: 0,
+            run,
         };
-    }
-
-    run(session: Session) {
-        session
-            .run()
-            .then((terminationInfo: SessionTerminationInfo) => {
-                this.setVisibility(false);
-                this.raiseSessionEvent({
-                    type: SessionEventType.TERMINATED,
-                    data: 'Session was terminated: ' + terminationInfo.reason() + '.',
-                });
-            })
-            .catch((err: IronError) => {
-                this.setVisibility(false);
-
-                this.raiseSessionEvent({
-                    type: SessionEventType.TERMINATED,
-                    data: 'Session was terminated with an error: ' + err.backtrace() + '.',
-                });
-            });
     }
 
     sendSpecialCombination(specialCombination: SpecialCombination): void {
@@ -246,6 +229,14 @@ export class RemoteDesktopService {
         this.doTransactionFromDeviceEvents([
             this.module.DeviceEvent.wheelRotations(vertical, -rotation, rotation_unit),
         ]);
+    }
+
+    emitWarningEvent(data: string): void {
+        this.onWarningCallback?.(data);
+    }
+
+    emitClipboardRemoteUpdateEvent(): void {
+        this.onClipboardRemoteUpdate?.();
     }
 
     setVisibility(state: boolean) {
@@ -297,10 +288,6 @@ export class RemoteDesktopService {
 
     invokeExtension(ext: Extension) {
         this.session?.invokeExtension(ext);
-    }
-
-    raiseSessionEvent(event: SessionEvent) {
-        this.sessionEventObservable.publish(event);
     }
 
     private releaseAllInputs() {
