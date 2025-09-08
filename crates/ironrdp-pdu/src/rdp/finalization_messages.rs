@@ -220,7 +220,10 @@ impl<'de> Decode<'de> for MonitorLayoutPdu {
             return Err(invalid_field_err!("nMonitors", "invalid monitor count"));
         }
 
-        let mut monitors = Vec::with_capacity(monitor_count as usize);
+        let mut monitors = Vec::with_capacity(
+            usize::try_from(monitor_count)
+                .expect("monitor_count is guaranteed to fit into usize due to the prior check"),
+        );
         for _ in 0..monitor_count {
             monitors.push(gcc::Monitor::decode(src)?);
         }

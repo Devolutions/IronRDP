@@ -111,7 +111,7 @@ impl Encode for LogonInfoVersion2 {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(SAVE_SESSION_PDU_VERSION_ONE);
-        dst.write_u32(LOGON_INFO_V2_SIZE as u32);
+        dst.write_u32(u32::try_from(LOGON_INFO_V2_SIZE).expect("LOGON_INFO_V2_SIZE fits into u32"));
         dst.write_u32(self.logon_info.session_id);
         dst.write_u32(cast_length!(
             "domainNameSize",

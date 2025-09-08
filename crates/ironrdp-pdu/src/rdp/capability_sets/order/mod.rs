@@ -34,6 +34,34 @@ pub enum OrderSupportIndex {
     Index = 0x1B,
 }
 
+impl From<OrderSupportIndex> for usize {
+    fn from(value: OrderSupportIndex) -> Self {
+        match value {
+            OrderSupportIndex::DstBlt => 0x00,
+            OrderSupportIndex::PatBlt => 0x01,
+            OrderSupportIndex::ScrBlt => 0x02,
+            OrderSupportIndex::MemBlt => 0x03,
+            OrderSupportIndex::Mem3Blt => 0x04,
+            OrderSupportIndex::DrawnInEGrid => 0x07,
+            OrderSupportIndex::LineTo => 0x08,
+            OrderSupportIndex::MultiDrawnInEGrid => 0x09,
+            OrderSupportIndex::SaveBitmap => 0x0B,
+            OrderSupportIndex::MultiDstBlt => 0x0F,
+            OrderSupportIndex::MultiPatBlt => 0x10,
+            OrderSupportIndex::MultiScrBlt => 0x11,
+            OrderSupportIndex::MultiOpaqueRect => 0x12,
+            OrderSupportIndex::Fast => 0x13,
+            OrderSupportIndex::PolygonSC => 0x14,
+            OrderSupportIndex::PolygonCB => 0x15,
+            OrderSupportIndex::Polyline => 0x16,
+            OrderSupportIndex::FastGlyph => 0x18,
+            OrderSupportIndex::EllipseSC => 0x19,
+            OrderSupportIndex::EllipseCB => 0x1A,
+            OrderSupportIndex::Index => 0x1B,
+        }
+    }
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct OrderFlags: u16 {
@@ -83,11 +111,11 @@ impl Order {
     }
 
     pub fn set_support_flag(&mut self, flag: OrderSupportIndex, value: bool) {
-        self.order_support[flag as usize] = u8::from(value)
+        self.order_support[usize::from(flag)] = u8::from(value)
     }
 
     pub fn get_support_flag(&mut self, flag: OrderSupportIndex) -> bool {
-        self.order_support[flag as usize] == 1
+        self.order_support[usize::from(flag)] == 1
     }
 }
 

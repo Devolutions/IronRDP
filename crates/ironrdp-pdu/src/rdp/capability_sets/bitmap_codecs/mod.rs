@@ -143,7 +143,7 @@ impl<'de> Decode<'de> for BitmapCodecs {
 
         let codecs_count = src.read_u8();
 
-        let mut codecs = Vec::with_capacity(codecs_count as usize);
+        let mut codecs = Vec::with_capacity(usize::from(codecs_count));
         for _ in 0..codecs_count {
             codecs.push(Codec::decode(src)?);
         }
@@ -552,7 +552,7 @@ impl<'de> Decode<'de> for RfxCapset {
         let num_icaps = src.read_u16();
         let _icaps_len = src.read_u16();
 
-        let mut icaps_data = Vec::with_capacity(num_icaps as usize);
+        let mut icaps_data = Vec::with_capacity(usize::from(num_icaps));
         for _ in 0..num_icaps {
             icaps_data.push(RfxICap::decode(src)?);
         }

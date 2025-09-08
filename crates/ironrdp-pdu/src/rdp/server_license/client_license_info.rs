@@ -80,7 +80,7 @@ impl ClientLicenseInfo {
         let mut rc4 = Rc4::new(&license_key);
         let encrypted_hwid = rc4.process(&hardware_id);
 
-        let mac_data = compute_mac_data(mac_salt_key, &hardware_id);
+        let mac_data = compute_mac_data(mac_salt_key, &hardware_id)?;
 
         let size = RANDOM_NUMBER_SIZE
             + PREAMBLE_SIZE
@@ -97,7 +97,8 @@ impl ClientLicenseInfo {
             preamble_message_type: PreambleType::LicenseInfo,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (size) as u16,
+            preamble_message_size: u16::try_from(size)
+                .map_err(|_| ServerLicenseError::InvalidField("preamble message size"))?,
         };
 
         Ok((

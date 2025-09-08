@@ -781,7 +781,7 @@ impl iron_remote_desktop::Session for Session {
         use ironrdp::pdu::input::fast_path::FastPathInput;
 
         let event = ironrdp::input::synchronize_event(scroll_lock, num_lock, caps_lock, kana_lock);
-        let fastpath_input = FastPathInput(vec![event]);
+        let fastpath_input = FastPathInput::new(vec![event]).context("FastPathInput construction")?;
 
         let frame = ironrdp::core::encode_vec(&fastpath_input).context("FastPathInput encoding")?;
 

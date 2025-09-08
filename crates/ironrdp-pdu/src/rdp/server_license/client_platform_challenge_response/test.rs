@@ -63,8 +63,10 @@ lazy_static! {
                 preamble_message_type: PreambleType::PlatformChallengeResponse,
                 preamble_flags: PreambleFlags::empty(),
                 preamble_version: PreambleVersion::V3,
-                preamble_message_size: (CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE)
-                    as u16,
+                preamble_message_size: u16::try_from(
+                    CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE
+                )
+                .expect("can't panic"),
             },
             encrypted_challenge_response_data: Vec::from(&CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER[12..30]),
             encrypted_hwid: Vec::from(&CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER[34..54]),
@@ -165,7 +167,8 @@ fn challenge_response_creates_from_server_challenge_and_encryption_data_correctl
             preamble_message_type: PreambleType::PlatformChallenge,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (encrypted_platform_challenge.len() + mac_data.len() + PREAMBLE_SIZE) as u16,
+            preamble_message_size: u16::try_from(encrypted_platform_challenge.len() + mac_data.len() + PREAMBLE_SIZE)
+                .expect("can't panic"),
         },
         encrypted_platform_challenge,
         mac_data,
@@ -200,7 +203,8 @@ fn challenge_response_creates_from_server_challenge_and_encryption_data_correctl
     let mac_data = crate::rdp::server_license::compute_mac_data(
         encryption_data.mac_salt_key.as_slice(),
         [response_data.as_ref(), hardware_id.as_slice()].concat().as_slice(),
-    );
+    )
+    .expect("can't panic");
 
     let correct_challenge_response = ClientPlatformChallengeResponse {
         license_header: LicenseHeader {
@@ -210,10 +214,12 @@ fn challenge_response_creates_from_server_challenge_and_encryption_data_correctl
             preamble_message_type: PreambleType::PlatformChallengeResponse,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (PREAMBLE_SIZE
+            preamble_message_size: u16::try_from(
+                PREAMBLE_SIZE
                 + (BLOB_TYPE_SIZE + BLOB_LENGTH_SIZE) * 2 // 2 blobs in this structure
-                + MAC_SIZE + encrypted_challenge_response_data.len() + encrypted_hwid.len())
-                as u16,
+                + MAC_SIZE + encrypted_challenge_response_data.len() + encrypted_hwid.len(),
+            )
+            .expect("can't panic"),
         },
         encrypted_challenge_response_data,
         encrypted_hwid,

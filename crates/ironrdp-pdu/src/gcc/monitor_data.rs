@@ -49,13 +49,13 @@ impl<'de> Decode<'de> for ClientMonitorData {
         ensure_fixed_part_size!(in: src);
 
         let _flags = src.read_u32(); // is unused
-        let monitor_count = src.read_u32();
+        let monitor_count = cast_length!("number of monitors", src.read_u32())?;
 
-        if monitor_count > MONITOR_COUNT_MAX as u32 {
+        if monitor_count > MONITOR_COUNT_MAX {
             return Err(invalid_field_err!("nMonitors", "too many monitors"));
         }
 
-        let mut monitors = Vec::with_capacity(monitor_count as usize);
+        let mut monitors = Vec::with_capacity(monitor_count);
         for _ in 0..monitor_count {
             monitors.push(Monitor::decode(src)?);
         }

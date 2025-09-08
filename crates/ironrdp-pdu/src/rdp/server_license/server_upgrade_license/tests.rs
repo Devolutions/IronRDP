@@ -260,7 +260,8 @@ lazy_static! {
             preamble_message_type: PreambleType::NewLicense,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (SERVER_UPGRADE_LICENSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE) as u16,
+            preamble_message_size: u16::try_from(SERVER_UPGRADE_LICENSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE)
+                .expect("buffer size is too large"),
         },
         encrypted_license_info: Vec::from(
             &SERVER_UPGRADE_LICENSE_BUFFER[12..SERVER_UPGRADE_LICENSE_BUFFER.len() - MAC_SIZE]
@@ -618,11 +619,10 @@ fn upgrade_license_verifies_correctly() {
             preamble_message_type: PreambleType::NewLicense,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (PREAMBLE_SIZE
-                + BLOB_LENGTH_SIZE
-                + BLOB_TYPE_SIZE
-                + encrypted_license_info.len()
-                + MAC_SIZE) as u16,
+            preamble_message_size: u16::try_from(
+                PREAMBLE_SIZE + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE + encrypted_license_info.len() + MAC_SIZE,
+            )
+            .expect("can't panic"),
         },
         encrypted_license_info,
         mac_data,
