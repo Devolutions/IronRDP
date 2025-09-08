@@ -98,14 +98,17 @@ impl ClientNewLicenseRequest {
             preamble_message_type: PreambleType::NewLicenseRequest,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (RANDOM_NUMBER_SIZE
-                + PREAMBLE_SIZE
-                + LICENSE_REQUEST_STATIC_FIELDS_SIZE
-                + encrypted_premaster_secret.len()
-                + client_machine_name.len()
-                + UTF8_NULL_TERMINATOR_SIZE
-                + client_username.len()
-                + UTF8_NULL_TERMINATOR_SIZE) as u16,
+            preamble_message_size: u16::try_from(
+                RANDOM_NUMBER_SIZE
+                    + PREAMBLE_SIZE
+                    + LICENSE_REQUEST_STATIC_FIELDS_SIZE
+                    + encrypted_premaster_secret.len()
+                    + client_machine_name.len()
+                    + UTF8_NULL_TERMINATOR_SIZE
+                    + client_username.len()
+                    + UTF8_NULL_TERMINATOR_SIZE,
+            )
+            .map_err(|_| ServerLicenseError::InvalidField("preamble message size"))?,
         };
 
         Ok((

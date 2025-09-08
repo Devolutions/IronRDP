@@ -215,9 +215,9 @@ impl<'de> Decode<'de> for DemandActive {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let source_descriptor_length = src.read_u16() as usize;
+        let source_descriptor_length = usize::from(src.read_u16());
         // The combined size in bytes of the numberCapabilities, pad2Octets, and capabilitySets fields.
-        let _combined_capabilities_length = src.read_u16() as usize;
+        let _combined_capabilities_length = usize::from(src.read_u16());
 
         ensure_size!(in: src, size: source_descriptor_length);
         let source_descriptor = utils::decode_string(
@@ -227,7 +227,7 @@ impl<'de> Decode<'de> for DemandActive {
         )?;
 
         ensure_size!(in: src, size: 2 + 2);
-        let capability_sets_count = src.read_u16() as usize;
+        let capability_sets_count = usize::from(src.read_u16());
         let _padding = src.read_u16();
 
         let mut capability_sets = Vec::with_capacity(capability_sets_count);
@@ -509,7 +509,7 @@ impl<'de> Decode<'de> for CapabilitySet {
             )
         })?;
 
-        let length = src.read_u16() as usize;
+        let length = usize::from(src.read_u16());
 
         if length < CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE {
             return Err(invalid_field_err!("len", "invalid capability set length"));

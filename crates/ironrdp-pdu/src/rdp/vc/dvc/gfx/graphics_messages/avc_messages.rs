@@ -112,9 +112,9 @@ impl<'de> Decode<'de> for Avc420BitmapStream<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let num_regions = src.read_u32();
-        let mut rectangles = Vec::with_capacity(num_regions as usize);
-        let mut quant_qual_vals = Vec::with_capacity(num_regions as usize);
+        let num_regions = cast_length!("number of regions", src.read_u32())?;
+        let mut rectangles = Vec::with_capacity(num_regions);
+        let mut quant_qual_vals = Vec::with_capacity(num_regions);
         for _ in 0..num_regions {
             rectangles.push(InclusiveRectangle::decode(src)?);
         }
@@ -158,7 +158,7 @@ impl Encode for Avc444BitmapStream<'_> {
 
         let mut stream_info = 0u32;
         stream_info.set_bits(0..30, cast_length!("stream1size", self.stream1.size())?);
-        stream_info.set_bits(30..32, self.encoding.bits() as u32);
+        stream_info.set_bits(30..32, u32::from(self.encoding.bits()));
         dst.write_u32(stream_info);
         self.stream1.encode(dst)?;
         if let Some(stream) = self.stream2.as_ref() {
@@ -188,7 +188,8 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
 
         let stream_info = src.read_u32();
         let stream_len = stream_info.get_bits(0..30);
-        let encoding = Encoding::from_bits_truncate(stream_info.get_bits(30..32) as u8);
+        let encoding =
+            Encoding::from_bits_truncate(u8::try_from(stream_info.get_bits(30..32)).expect("value fits into u8"));
 
         if stream_len == 0 {
             if encoding == Encoding::LUMA_AND_CHROMA {
@@ -202,7 +203,7 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
                 stream2: None,
             })
         } else {
-            let (mut stream1, mut stream2) = src.split_at(stream_len as usize);
+            let (mut stream1, mut stream2) = src.split_at(cast_length!("first stream length", stream_len)?);
             let stream1 = Avc420BitmapStream::decode(&mut stream1)?;
             let stream2 = if encoding == Encoding::LUMA_AND_CHROMA {
                 Some(Avc420BitmapStream::decode(&mut stream2)?)

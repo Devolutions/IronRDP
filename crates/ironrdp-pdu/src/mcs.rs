@@ -232,6 +232,10 @@ impl DomainMcsPdu {
         }
     }
 
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn as_u8(self) -> u8 {
         self as u8
     }
@@ -622,11 +626,7 @@ impl<'de> McsPdu<'de> for SendDataRequest<'de> {
     }
 
     fn mcs_size(&self) -> usize {
-        per::CHOICE_SIZE
-            + per::U16_SIZE * 2
-            + 1
-            + per::sizeof_length(u16::try_from(self.user_data.len()).unwrap_or(u16::MAX))
-            + self.user_data.len()
+        per::CHOICE_SIZE + per::U16_SIZE * 2 + 1 + per::sizeof_length(self.user_data.len()) + self.user_data.len()
     }
 }
 
@@ -703,11 +703,7 @@ impl<'de> McsPdu<'de> for SendDataIndication<'de> {
     }
 
     fn mcs_size(&self) -> usize {
-        per::CHOICE_SIZE
-            + per::U16_SIZE * 2
-            + 1
-            + per::sizeof_length(u16::try_from(self.user_data.len()).unwrap_or(u16::MAX))
-            + self.user_data.len()
+        per::CHOICE_SIZE + per::U16_SIZE * 2 + 1 + per::sizeof_length(self.user_data.len()) + self.user_data.len()
     }
 }
 
@@ -723,7 +719,11 @@ pub enum DisconnectReason {
 }
 
 impl DisconnectReason {
-    pub fn as_u8(self) -> u8 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
         self as u8
     }
 
@@ -939,7 +939,7 @@ pub use legacy::McsError;
 mod legacy {
     use std::io;
 
-    use ironrdp_core::{Decode, DecodeResult, Encode};
+    use ironrdp_core::{cast_int, Decode, DecodeResult, Encode};
     use thiserror::Error;
 
     use super::{
@@ -972,11 +972,15 @@ mod legacy {
         const NAME: &'static str = "ConnectInitial";
 
         fn fields_buffer_ber_length(&self) -> usize {
-            ber::sizeof_octet_string(self.calling_domain_selector.len() as u16)
-                + ber::sizeof_octet_string(self.called_domain_selector.len() as u16)
-                + ber::SIZEOF_BOOL
-                + (self.target_parameters.size() + self.min_parameters.size() + self.max_parameters.size())
-                + ber::sizeof_octet_string(self.conference_create_request.size() as u16)
+            // Can't rewrite in `as`-less way, because it's used in `Encode::size` which doesn't return an error.
+            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+            {
+                ber::sizeof_octet_string(self.calling_domain_selector.len() as u16)
+                    + ber::sizeof_octet_string(self.called_domain_selector.len() as u16)
+                    + ber::SIZEOF_BOOL
+                    + (self.target_parameters.size() + self.min_parameters.size() + self.max_parameters.size())
+                    + ber::sizeof_octet_string(self.conference_create_request.size() as u16)
+            }
         }
     }
 
@@ -984,7 +988,8 @@ mod legacy {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
             ensure_size!(in: dst, size: self.size());
 
-            ber::write_application_tag(dst, MCS_TYPE_CONNECT_INITIAL, self.fields_buffer_ber_length() as u16)?;
+            let field_buffer_ber_length = cast_length!("field_buffer_ber_length", self.fields_buffer_ber_length())?;
+            ber::write_application_tag(dst, MCS_TYPE_CONNECT_INITIAL, field_buffer_ber_length)?;
             ber::write_octet_string(dst, self.calling_domain_selector.as_ref())?;
             ber::write_octet_string(dst, self.called_domain_selector.as_ref())?;
             ber::write_bool(dst, self.upward_flag)?;
@@ -1003,9 +1008,12 @@ mod legacy {
 
         fn size(&self) -> usize {
             let fields_buffer_ber_length = self.fields_buffer_ber_length();
+            // Can't rewrite in `as`-less way, because it's used in `Encode::size` which doesn't return an error.
+            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let fields_buffer_ber_length_u16 = fields_buffer_ber_length as u16;
 
             fields_buffer_ber_length
-                + ber::sizeof_application_tag(MCS_TYPE_CONNECT_INITIAL, fields_buffer_ber_length as u16)
+                + ber::sizeof_application_tag(MCS_TYPE_CONNECT_INITIAL, fields_buffer_ber_length_u16)
         }
     }
 
@@ -1037,10 +1045,14 @@ mod legacy {
         const NAME: &'static str = "ConnectResponse";
 
         fn fields_buffer_ber_length(&self) -> usize {
-            ber::SIZEOF_ENUMERATED
-                + ber::sizeof_integer(self.called_connect_id)
-                + self.domain_parameters.size()
-                + ber::sizeof_octet_string(self.conference_create_response.size() as u16)
+            // Can't rewrite in `as`-less way, because it's used in `Encode::size` which doesn't return an error.
+            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+            {
+                ber::SIZEOF_ENUMERATED
+                    + ber::sizeof_integer(self.called_connect_id)
+                    + self.domain_parameters.size()
+                    + ber::sizeof_octet_string(self.conference_create_response.size() as u16)
+            }
         }
     }
 
@@ -1048,7 +1060,8 @@ mod legacy {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
             ensure_size!(in: dst, size: self.size());
 
-            ber::write_application_tag(dst, MCS_TYPE_CONNECT_RESPONSE, self.fields_buffer_ber_length() as u16)?;
+            let field_buffer_ber_length = cast_length!("field_buffer_ber_length", self.fields_buffer_ber_length())?;
+            ber::write_application_tag(dst, MCS_TYPE_CONNECT_RESPONSE, field_buffer_ber_length)?;
             ber::write_enumerated(dst, 0)?;
             ber::write_integer(dst, self.called_connect_id)?;
             self.domain_parameters.encode(dst)?;
@@ -1064,9 +1077,11 @@ mod legacy {
 
         fn size(&self) -> usize {
             let fields_buffer_ber_length = self.fields_buffer_ber_length();
-
+            // Can't rewrite in `as`-less way, because it's used in `Encode::size` which doesn't return an error.
+            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let fields_buffer_ber_length_u16 = fields_buffer_ber_length as u16;
             fields_buffer_ber_length
-                + ber::sizeof_application_tag(MCS_TYPE_CONNECT_RESPONSE, fields_buffer_ber_length as u16)
+                + ber::sizeof_application_tag(MCS_TYPE_CONNECT_RESPONSE, fields_buffer_ber_length_u16)
         }
     }
 
@@ -1074,7 +1089,7 @@ mod legacy {
         fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
             ber::read_application_tag(src, MCS_TYPE_CONNECT_RESPONSE)?;
             ber::read_enumerated(src, RESULT_ENUM_LENGTH)?;
-            let called_connect_id = ber::read_integer(src)? as u32;
+            let called_connect_id = cast_int!("called_connect_id", ber::read_integer(src)?)?;
             let domain_parameters = DomainParameters::decode(src)?;
             let _user_data_buffer_length = ber::read_octet_string_tag(src)?;
             let conference_create_response = ConferenceCreateResponse::decode(src)?;
@@ -1126,22 +1141,25 @@ mod legacy {
         fn size(&self) -> usize {
             let fields_buffer_ber_length = self.fields_buffer_ber_length();
 
+            // Can't rewrite in `as`-less way, because it's used in `Encode::size` which doesn't return an error.
+            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let fields_buffer_ber_length_u16 = fields_buffer_ber_length as u16;
             // FIXME: maybe size should return PduResult...
-            fields_buffer_ber_length + ber::sizeof_sequence_tag(fields_buffer_ber_length as u16)
+            fields_buffer_ber_length + ber::sizeof_sequence_tag(fields_buffer_ber_length_u16)
         }
     }
 
     impl<'de> Decode<'de> for DomainParameters {
         fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
             ber::read_sequence_tag(src)?;
-            let max_channel_ids = ber::read_integer(src)? as u32;
-            let max_user_ids = ber::read_integer(src)? as u32;
-            let max_token_ids = ber::read_integer(src)? as u32;
-            let num_priorities = ber::read_integer(src)? as u32;
-            let min_throughput = ber::read_integer(src)? as u32;
-            let max_height = ber::read_integer(src)? as u32;
-            let max_mcs_pdu_size = ber::read_integer(src)? as u32;
-            let protocol_version = ber::read_integer(src)? as u32;
+            let max_channel_ids = cast_int!("max_channel_ids", ber::read_integer(src)?)?;
+            let max_user_ids = cast_int!("max_user_ids", ber::read_integer(src)?)?;
+            let max_token_ids = cast_int!("max_token_ids", ber::read_integer(src)?)?;
+            let num_priorities = cast_int!("num_priorities", ber::read_integer(src)?)?;
+            let min_throughput = cast_int!("min_throughput", ber::read_integer(src)?)?;
+            let max_height = cast_int!("max_height", ber::read_integer(src)?)?;
+            let max_mcs_pdu_size = cast_int!("max_mcs_pdu_size", ber::read_integer(src)?)?;
+            let protocol_version = cast_int!("protocol_version", ber::read_integer(src)?)?;
 
             Ok(Self {
                 max_channel_ids,

@@ -56,7 +56,7 @@ impl Encode for BitmapStreamHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let mut header = ((self.enable_rle_compression as u8) << 4) | ((!self.use_alpha as u8) << 5);
+        let mut header = (u8::from(self.enable_rle_compression) << 4) | (u8::from(!self.use_alpha) << 5);
 
         match self.color_plane_definition {
             ColorPlaneDefinition::Argb => {
@@ -68,7 +68,7 @@ impl Encode for BitmapStreamHeader {
                 ..
             } => {
                 // Add cll and cs flags to header
-                header |= (color_loss_level & 0x07) | ((use_chroma_subsampling as u8) << 3);
+                header |= (color_loss_level & 0x07) | (u8::from(use_chroma_subsampling) << 3);
             }
         }
 
