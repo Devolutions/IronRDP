@@ -178,7 +178,6 @@ where
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
         })
-        .unwrap()
         .build();
     server.set_credentials(Some(server::Credentials {
         username: USERNAME.into(),
