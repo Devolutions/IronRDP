@@ -280,8 +280,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let mut config =
-            build_config(username, password, server_domain, client_name, desktop_size).context("build config")?;
+        let mut config = build_config(username, password, server_domain, client_name, desktop_size);
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
@@ -849,8 +848,8 @@ fn build_config(
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
-) -> anyhow::Result<connector::Config> {
-    Ok(connector::Config {
+) -> connector::Config {
+    connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
         // TODO(#327): expose these options from the WASM module.
@@ -869,12 +868,16 @@ fn build_config(
         bitmap: Some(connector::BitmapConfig {
             color_depth: 16,
             lossy_compression: true,
-            codecs: client_codecs_capabilities(&[]).map_err(|err| anyhow::anyhow!("client codecs capabilities error: {err}"))?,
+            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
         }),
-        #[expect(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "fine unless we end up with an insanely big version"
+        )]
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map_or(0, |version| version.major * 100 + version.minor * 10 + version.patch)
-            .pipe(u32::try_from).context("cargo package version")?,
+            .pipe(u32::try_from)
+            .expect("fine until major ~42949672"),
         client_name,
         // NOTE: hardcode this value like in freerdp
         // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
@@ -890,7 +893,7 @@ fn build_config(
         hardware_id: None,
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
-    })
+    }
 }
 
 async fn writer_task(

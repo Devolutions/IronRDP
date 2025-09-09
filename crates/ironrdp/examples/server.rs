@@ -341,13 +341,7 @@ impl RdpsndServerHandler for SndHandler {
                     wave.into_iter().flat_map(|value| value.to_le_bytes()).collect()
                 };
 
-                let inner = match inner.lock() {
-                    Ok(inner) => inner,
-                    Err(e) => {
-                        warn!("Failed to acquire the mutex: {e:?}");
-                        return;
-                    }
-                };
+                let inner = inner.lock().expect("poisoned");
                 if let Some(sender) = inner.ev_sender.as_ref() {
                     let _ = sender.send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(data, ts)));
                 }
@@ -428,7 +422,7 @@ async fn run(
 
     let mut server = server_builder
         .with_input_handler(handler.clone())
-        .with_display_handler(handler.clone())?
+        .with_display_handler(handler.clone())
         .with_cliprdr_factory(Some(cliprdr))
         .with_sound_factory(Some(sound))
         .build();

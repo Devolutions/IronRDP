@@ -368,7 +368,7 @@ fn create_client_confirm_active(
         }),
         CapabilitySet::BitmapCodecs(match config.bitmap.as_ref().map(|b| b.codecs.clone()) {
             Some(codecs) => codecs,
-            None => client_codecs_capabilities(&[]).map_err(|e| reason_err!("client codecs capabilities", "{e}"))?,
+            None => client_codecs_capabilities(&[]).expect("can't panic for &[]"),
         }),
         CapabilitySet::FrameAcknowledge(FrameAcknowledge {
             // FIXME(#447): Revert this to 2 per FreeRDP.

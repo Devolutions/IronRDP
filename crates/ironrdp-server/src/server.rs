@@ -602,28 +602,35 @@ impl RdpServer {
 
         let dispatch_display = async move {
             let mut buffer = vec![0u8; 4096];
+
             loop {
-                if let Some(update) = display_updates.next_update().await? {
-                    match Self::dispatch_display_update(
-                        update,
-                        &mut display_writer,
-                        user_channel_id,
-                        io_channel_id,
-                        &mut buffer,
-                        encoder,
-                    )
-                    .await?
-                    {
-                        (RunState::Continue, enc) => {
-                            encoder = enc;
-                            continue;
-                        }
-                        (state, _) => {
-                            break Ok(state);
+                match display_updates.next_update().await {
+                    Ok(Some(update)) => {
+                        match Self::dispatch_display_update(
+                            update,
+                            &mut display_writer,
+                            user_channel_id,
+                            io_channel_id,
+                            &mut buffer,
+                            encoder,
+                        )
+                        .await?
+                        {
+                            (RunState::Continue, enc) => {
+                                encoder = enc;
+                                continue;
+                            }
+                            (state, _) => {
+                                break Ok(state);
+                            }
                         }
                     }
-                } else {
-                    break Ok(RunState::Disconnect);
+                    Ok(None) => {
+                        break Ok(RunState::Disconnect);
+                    }
+                    Err(error) => {
+                        warn!(error = format!("{error:#}"), "next_updated failed");
+                    }
                 }
             }
         };

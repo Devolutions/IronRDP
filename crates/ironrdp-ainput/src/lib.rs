@@ -94,6 +94,7 @@ impl<'de> Decode<'de> for VersionPdu {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[repr(u16)]
 pub enum ServerPduType {
     Version = 0x01,
 }
@@ -265,6 +266,7 @@ impl<'de> Decode<'de> for ClientPdu {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[repr(u16)]
 pub enum ClientPduType {
     Mouse = 0x02,
 }

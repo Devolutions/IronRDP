@@ -68,8 +68,8 @@ impl App {
         };
         let scale_factor = (window.scale_factor() * 100.0) as u32;
 
-        let width = u16::try_from(size.width).expect("width is too big(more than u16::MAX)");
-        let height = u16::try_from(size.height).expect("height is too big(more than u16::MAX)");
+        let width = u16::try_from(size.width).expect("reasonable width");
+        let height = u16::try_from(size.height).expect("reasonable height");
 
         let _ = self.input_event_sender.send(RdpInputEvent::Resize {
             width,
@@ -169,7 +169,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     let scancode = match u16::try_from(scancode) {
                         Ok(scancode) => scancode,
                         Err(_) => {
-                            warn!("Unsupported scancode: `{scancode:#X}`. Keyboard event will be ignored.");
+                            warn!("Unsupported scancode: `{scancode:#X}`; ignored");
                             return;
                         }
                     };
