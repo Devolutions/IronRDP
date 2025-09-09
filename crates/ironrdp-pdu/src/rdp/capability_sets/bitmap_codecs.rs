@@ -695,10 +695,7 @@ fn parse_codecs_config<'a>(codecs: &'a [&'a str]) -> Result<HashMap<&'a str, boo
     let mut result = HashMap::new();
 
     for &codec_str in codecs {
-        if let Some(colon_index) = codec_str.find(':') {
-            let codec_name = &codec_str[0..colon_index];
-            let state_str = &codec_str[colon_index + 1..];
-
+        if let Some((codec_name, state_str)) = codec_str.split_once(':') {
             let state = match state_str {
                 "on" => true,
                 "off" => false,

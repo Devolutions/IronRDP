@@ -34,7 +34,7 @@ impl From<&str> for ServerName {
 }
 
 fn sanitize_server_name(name: String) -> String {
-    if let Some(idx) = name.rfind(':') {
+    if let Some(addr_split) = name.rsplit_once(':') {
         if let Ok(sock_addr) = name.parse::<core::net::SocketAddr>() {
             // A socket address, including a port
             sock_addr.ip().to_string()
@@ -43,7 +43,7 @@ fn sanitize_server_name(name: String) -> String {
             name
         } else {
             // An IPv4 address or server hostname including a port after the `:` token
-            name[..idx].to_owned()
+            addr_split.0.to_owned()
         }
     } else {
         // An IPv4 address or server hostname which does not include a port, already sane
