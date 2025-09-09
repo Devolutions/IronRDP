@@ -175,6 +175,12 @@ opt-level = 1
 inherits = "release"
 lto = true
 
+[profile.production-ffi]
+inherits = "release"
+strip = "symbols"
+codegen-units = 1
+lto = true
+
 [profile.production-wasm]
 inherits = "release"
 opt-level = "s"
