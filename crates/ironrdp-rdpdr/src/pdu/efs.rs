@@ -966,7 +966,9 @@ impl PreferredDosName {
     fn format(&self) -> String {
         let mut name: &str = &self.0;
         if name.len() > 7 {
-            name = &name[..7];
+            name = name
+                .get(..7)
+                .expect("index is guaranteed to be on a UTF-8 boundary for a string of ASCII characters");
         }
         format!("{name:\x00<8}")
     }

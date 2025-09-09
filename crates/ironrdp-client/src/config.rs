@@ -88,7 +88,7 @@ impl Destination {
 
         let addr = addr.into();
 
-        if let Some(idx) = addr.rfind(':') {
+        if let Some(addr_split) = addr.rsplit_once(':') {
             if let Ok(sock_addr) = addr.parse::<core::net::SocketAddr>() {
                 Ok(Self {
                     name: sock_addr.ip().to_string(),
@@ -101,8 +101,8 @@ impl Destination {
                 })
             } else {
                 Ok(Self {
-                    name: addr[..idx].to_owned(),
-                    port: addr[idx + 1..].parse().context("invalid port")?,
+                    name: addr_split.0.to_owned(),
+                    port: addr_split.1.parse().context("invalid port")?,
                 })
             }
         } else {
