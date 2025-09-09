@@ -16,9 +16,8 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] } # public
 png = "0.18"
 
 [lints]
 workspace = true
-
