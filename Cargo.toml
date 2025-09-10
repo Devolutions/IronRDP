@@ -114,6 +114,7 @@ rc_mutex = "warn"
 same_name_method = "warn"
 string_slice = "warn"
 suspicious_xor_used_as_pow = "warn"
+unused_result_ok = "warn"
 
 # == Style, readability == #
 semicolon_outside_block = "warn" # With semicolon-outside-block-ignore-multiline = true
