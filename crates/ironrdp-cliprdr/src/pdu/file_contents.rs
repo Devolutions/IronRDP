@@ -101,7 +101,12 @@ impl<'a> FileContentsResponse<'a> {
             ));
         }
 
-        Ok(u64::from_le_bytes(self.data.as_ref().try_into().unwrap()))
+        Ok(u64::from_le_bytes(
+            self.data
+                .as_ref()
+                .try_into()
+                .expect("data contains exactly eight u8 elements"),
+        ))
     }
 }
 

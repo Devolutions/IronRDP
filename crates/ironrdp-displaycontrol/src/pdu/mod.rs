@@ -3,7 +3,8 @@
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
 
 use ironrdp_core::{
-    ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    cast_length, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
 };
 use ironrdp_dvc::DvcEncode;
 use tracing::warn;
@@ -45,11 +46,11 @@ impl Encode for DisplayControlPdu {
 
         // This will never overflow as per invariants.
         #[expect(clippy::arithmetic_side_effects)]
-        let pdu_size = payload_length + Self::FIXED_PART_SIZE;
+        let pdu_size = cast_length!("pdu size", payload_length + Self::FIXED_PART_SIZE)?;
 
         // Write `DISPLAYCONTROL_HEADER` fields.
         dst.write_u32(kind);
-        dst.write_u32(pdu_size.try_into().unwrap());
+        dst.write_u32(pdu_size);
 
         match self {
             DisplayControlPdu::Caps(caps) => caps.encode(dst),
@@ -87,7 +88,7 @@ impl<'de> Decode<'de> for DisplayControlPdu {
         let pdu_length = src.read_u32();
 
         let _payload_length = pdu_length
-            .checked_sub(Self::FIXED_PART_SIZE.try_into().unwrap())
+            .checked_sub(Self::FIXED_PART_SIZE.try_into().expect("always in range"))
             .ok_or_else(|| invalid_field_err!("Length", "Display control PDU length is too small"))?;
 
         match kind {
@@ -274,7 +275,7 @@ impl DisplayControlMonitorLayout {
             entry
         };
 
-        Ok(DisplayControlMonitorLayout::new(&[entry]).unwrap())
+        DisplayControlMonitorLayout::new(&[entry])
     }
 
     pub fn monitors(&self) -> &[MonitorLayoutEntry] {
@@ -286,7 +287,7 @@ impl Encode for DisplayControlMonitorLayout {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(MonitorLayoutEntry::FIXED_PART_SIZE.try_into().unwrap());
+        dst.write_u32(MonitorLayoutEntry::FIXED_PART_SIZE.try_into().expect("always in range"));
 
         let monitors_count: u32 = self
             .monitors
@@ -323,20 +324,20 @@ impl<'de> Decode<'de> for DisplayControlMonitorLayout {
 
         let monitor_layout_size = src.read_u32();
 
-        if monitor_layout_size != MonitorLayoutEntry::FIXED_PART_SIZE.try_into().unwrap() {
+        if monitor_layout_size != MonitorLayoutEntry::FIXED_PART_SIZE.try_into().expect("always in range") {
             return Err(invalid_field_err!(
                 "MonitorLayoutSize",
                 "Monitor layout size is invalid"
             ));
         }
 
-        let num_monitors = src.read_u32();
+        let num_monitors = cast_length!("number of monitors", src.read_u32())?;
 
         if num_monitors > MAX_SUPPORTED_MONITORS.into() {
             return Err(invalid_field_err!("NumMonitors", "Too many monitors"));
         }
 
-        let mut monitors = Vec::with_capacity(usize::try_from(num_monitors).unwrap());
+        let mut monitors = Vec::with_capacity(num_monitors);
         for _ in 0..num_monitors {
             let monitor = MonitorLayoutEntry::decode(src)?;
             monitors.push(monitor);

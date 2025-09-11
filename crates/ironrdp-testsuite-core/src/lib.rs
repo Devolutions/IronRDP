@@ -5,6 +5,7 @@
 #![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(unused_crate_dependencies)]
+#![allow(clippy::unwrap_used, reason = "unwrap is fine in tests")]
 
 mod macros;
 

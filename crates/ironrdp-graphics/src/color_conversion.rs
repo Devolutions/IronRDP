@@ -2,7 +2,7 @@ use std::io;
 
 use yuv::{
     rdp_abgr_to_yuv444, rdp_argb_to_yuv444, rdp_bgra_to_yuv444, rdp_rgba_to_yuv444, rdp_yuv444_to_argb,
-    rdp_yuv444_to_rgba, BufferStoreMut, YuvPlanarImage, YuvPlanarImageMut,
+    rdp_yuv444_to_rgba, BufferStoreMut, YuvError, YuvPlanarImage, YuvPlanarImageMut,
 };
 
 use crate::image_processing::PixelFormat;
@@ -43,14 +43,14 @@ pub fn ycbcr_to_rgba(input: YCbCrBuffer<'_>, output: &mut [u8]) -> io::Result<()
 #[expect(clippy::too_many_arguments)]
 pub fn to_64x64_ycbcr_tile(
     input: &[u8],
-    width: usize,
-    height: usize,
-    stride: usize,
+    width: u32,
+    height: u32,
+    stride: u32,
     format: PixelFormat,
     y: &mut [i16; 64 * 64],
     cb: &mut [i16; 64 * 64],
     cr: &mut [i16; 64 * 64],
-) {
+) -> Result<(), YuvError> {
     assert!(width <= 64);
     assert!(height <= 64);
 
@@ -64,17 +64,16 @@ pub fn to_64x64_ycbcr_tile(
         u_stride: 64,
         v_plane,
         v_stride: 64,
-        width: width.try_into().unwrap(),
-        height: height.try_into().unwrap(),
+        width,
+        height,
     };
 
-    let res = match format {
-        PixelFormat::RgbA32 | PixelFormat::RgbX32 => rdp_rgba_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
-        PixelFormat::ARgb32 | PixelFormat::XRgb32 => rdp_argb_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
-        PixelFormat::BgrA32 | PixelFormat::BgrX32 => rdp_bgra_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
-        PixelFormat::ABgr32 | PixelFormat::XBgr32 => rdp_abgr_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
-    };
-    res.unwrap();
+    match format {
+        PixelFormat::RgbA32 | PixelFormat::RgbX32 => rdp_rgba_to_yuv444(&mut plane, input, stride),
+        PixelFormat::ARgb32 | PixelFormat::XRgb32 => rdp_argb_to_yuv444(&mut plane, input, stride),
+        PixelFormat::BgrA32 | PixelFormat::BgrX32 => rdp_bgra_to_yuv444(&mut plane, input, stride),
+        PixelFormat::ABgr32 | PixelFormat::XBgr32 => rdp_abgr_to_yuv444(&mut plane, input, stride),
+    }
 }
 
 /// Convert a 16-bit RDP color to RGB representation. Input value should be represented in
