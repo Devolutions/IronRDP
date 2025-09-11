@@ -1,27 +1,13 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
-    import type { UserInteraction, SessionEvent } from '../../../static/iron-remote-desktop';
+    import { userInteractionService } from '../../services/session.service';
+    import type { UserInteraction } from '../../../static/iron-remote-desktop';
     import { Backend } from '../../../static/iron-remote-desktop-rdp';
     import { preConnectionBlob, displayControl, kdcProxyUrl } from '../../../static/iron-remote-desktop-rdp';
 
     let userInteraction: UserInteraction;
     let cursorOverrideActive = false;
     let showUtilityBar = false;
-
-    userInteractionService.subscribe((userInteraction) => {
-        if (userInteraction != null) {
-            const callback = (event: SessionEvent) => {
-                if (event.type === 0) {
-                    userInteraction.setVisibility(true);
-                } else if (event.type === 1) {
-                    setCurrentSessionActive(false);
-                }
-            };
-
-            userInteraction.onSessionEvent(callback);
-        }
-    });
 
     userInteractionService.subscribe((uis) => {
         if (uis != null) {

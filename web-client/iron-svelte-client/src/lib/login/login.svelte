@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { currentSession, userInteractionService } from '../../services/session.service';
-    import type { UserInteraction } from '../../../static/iron-remote-desktop';
+    import { currentSession, setCurrentSessionActive, userInteractionService } from '../../services/session.service';
+    import type { IronError, UserInteraction } from '../../../static/iron-remote-desktop';
     import type { Session } from '../../models/session';
     import { preConnectionBlob, displayControl, kdcProxyUrl, init } from '../../../static/iron-remote-desktop-rdp';
     import { toast } from '$lib/messages/message-store';
@@ -21,30 +21,18 @@
 
     let userInteraction: UserInteraction;
 
-    const initListeners = () => {
-        userInteraction.onSessionEvent((event) => {
-            if (event.type === 2) {
-                console.log('Error event', event.data);
-
-                toast.set({
-                    type: 'error',
-                    message: typeof event.data !== 'string' ? event.data.backtrace() : event.data,
-                });
-            } else {
-                toast.set({
-                    type: 'info',
-                    message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
-                });
-            }
-        });
-    };
-
     userInteractionService.subscribe((val) => {
         userInteraction = val;
-        if (val != null) {
-            initListeners();
-        }
     });
+
+    const isIronError = (error: unknown): error is IronError => {
+        return (
+            typeof error === 'object' &&
+            error !== null &&
+            typeof (error as IronError).backtrace === 'function' &&
+            typeof (error as IronError).kind === 'function'
+        );
+    };
 
     const StartSession = async () => {
         if (authtoken === '') {
@@ -155,8 +143,30 @@
             currentSession.update(updater);
 
             showLogin.set(false);
+
+            userInteraction.setVisibility(true);
+
+            const sessionTerminationInfo = await session_info.run();
+
+            toast.set({
+                type: 'info',
+                message: `Session terminated gracefully: ${sessionTerminationInfo.reason()}`,
+            });
         } catch (err) {
-            console.error(`Error occurred: ${err}`);
+            setCurrentSessionActive(false);
+            showLogin.set(true);
+
+            if (isIronError(err)) {
+                toast.set({
+                    type: 'error',
+                    message: err.backtrace(),
+                });
+            } else {
+                toast.set({
+                    type: 'error',
+                    message: `${err}`,
+                });
+            }
         }
     };
 
