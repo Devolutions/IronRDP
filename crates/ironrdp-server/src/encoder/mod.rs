@@ -1,7 +1,7 @@
 use core::fmt;
 use core::num::NonZeroU16;
 
-use anyhow::{Context as _, Result};
+use anyhow::{anyhow, Context as _, Result};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{find_different_rects_sub, Rect};
 use ironrdp_pdu::encode_vec;
@@ -23,6 +23,7 @@ mod fast_path;
 pub(crate) mod rfx;
 
 pub(crate) use fast_path::*;
+use ironrdp_graphics::rdp6::BitmapEncodeError;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -93,7 +94,7 @@ impl fmt::Debug for UpdateEncoder {
 
 impl UpdateEncoder {
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
-    pub(crate) fn new(desktop_size: DesktopSize, surface_flags: CmdFlags, codecs: UpdateEncoderCodecs) -> Self {
+    pub(crate) fn new(desktop_size: DesktopSize, surface_flags: CmdFlags, codecs: UpdateEncoderCodecs) -> Result<Self> {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             let mut bitmap = BitmapUpdater::None(NoneHandler);
 
@@ -107,7 +108,7 @@ impl UpdateEncoder {
             }
             #[cfg(feature = "qoiz")]
             if let Some(id) = codecs.qoiz {
-                bitmap = BitmapUpdater::Qoiz(QoizHandler::new(id));
+                bitmap = BitmapUpdater::Qoiz(QoizHandler::new(id).context("failed to initialize qoiz handler")?);
             }
 
             bitmap
@@ -115,11 +116,11 @@ impl UpdateEncoder {
             BitmapUpdater::Bitmap(BitmapHandler::new())
         };
 
-        Self {
+        Ok(Self {
             desktop_size,
             framebuffer: None,
             bitmap_updater: Some(bitmap_updater),
-        }
+        })
     }
 
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
@@ -246,8 +247,7 @@ impl UpdateEncoder {
             let result = time_warn!("Encoding bitmap", 10, updater.handle(&bitmap));
             (result, updater)
         })
-        .await
-        .unwrap();
+        .await?;
 
         self.bitmap_updater = Some(updater);
 
@@ -301,12 +301,31 @@ impl EncoderIter<'_> {
                         return None;
                     };
                     let Rect { x, y, width, height } = *rect;
-                    let Some(sub) = bitmap.sub(
-                        u16::try_from(x).unwrap(),
-                        u16::try_from(y).unwrap(),
-                        NonZeroU16::new(u16::try_from(width).unwrap()).unwrap(),
-                        NonZeroU16::new(u16::try_from(height).unwrap()).unwrap(),
-                    ) else {
+
+                    let x = match u16::try_from(x) {
+                        Ok(x) => x,
+                        Err(_) => return Some(Err(anyhow!("invalid `x`: out of range integral conversion"))),
+                    };
+                    let y = match u16::try_from(y) {
+                        Ok(y) => y,
+                        Err(_) => return Some(Err(anyhow!("invalid `y`: out of range integral conversion"))),
+                    };
+                    let width = match u16::try_from(width) {
+                        Ok(width) => match NonZeroU16::new(width) {
+                            Some(width) => width,
+                            None => return Some(Err(anyhow!("rectangle width cannot be zero"))),
+                        },
+                        Err(_) => return Some(Err(anyhow!("invalid `width`: out of range integral conversion"))),
+                    };
+                    let height = match u16::try_from(height) {
+                        Ok(height) => match NonZeroU16::new(height) {
+                            Some(height) => height,
+                            None => return Some(Err(anyhow!("rectangle height cannot be zero"))),
+                        },
+                        Err(_) => return Some(Err(anyhow!("invalid `height`: out of range integral conversion"))),
+                    };
+
+                    let Some(sub) = bitmap.sub(x, y, width, height) else {
                         warn!("Failed to extract bitmap subregion");
                         return None;
                     };
@@ -398,13 +417,15 @@ impl BitmapUpdateHandler for BitmapHandler {
         let mut buffer = vec![0; bitmap.data.len() * 2]; // TODO: estimate bitmap encoded size
         let len = loop {
             match self.bitmap.encode(bitmap, buffer.as_mut_slice()) {
-                Err(e) => match e.kind() {
-                    ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
-                        buffer.resize(buffer.len() * 2, 0);
-                        debug!("encoder buffer resized to: {}", buffer.len() * 2);
-                    }
-
-                    _ => Err(e).context("bitmap encode error")?,
+                Err(err) => match err {
+                    BitmapEncodeError::Encode(e) => match e.kind() {
+                        ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
+                            buffer.resize(buffer.len() * 2, 0);
+                            debug!("encoder buffer resized to: {}", buffer.len() * 2);
+                        }
+                        _ => Err(e).context("bitmap encode error")?,
+                    },
+                    BitmapEncodeError::Rle(e) => Err(e).context("bitmap RLE encode error")?,
                 },
                 Ok(len) => break len,
             }
@@ -495,15 +516,27 @@ impl fmt::Debug for QoizHandler {
 
 #[cfg(feature = "qoiz")]
 impl QoizHandler {
-    fn new(codec_id: u8) -> Self {
+    fn new(codec_id: u8) -> Result<Self> {
         let mut zctxt = zstd_safe::CCtx::default();
 
-        zctxt.set_parameter(zstd_safe::CParameter::CompressionLevel(3)).unwrap();
+        zctxt
+            .set_parameter(zstd_safe::CParameter::CompressionLevel(3))
+            .map_err(|code| {
+                anyhow!(
+                    "failed to set Zstd compression level: {}",
+                    zstd_safe::get_error_name(code)
+                )
+            })?;
         zctxt
             .set_parameter(zstd_safe::CParameter::EnableLongDistanceMatching(true))
-            .unwrap();
+            .map_err(|code| {
+                anyhow!(
+                    "failed to set Zstd enable long distance matching: {}",
+                    zstd_safe::get_error_name(code)
+                )
+            })?;
 
-        Self { codec_id, zctxt }
+        Ok(Self { codec_id, zctxt })
     }
 }
 
@@ -525,7 +558,7 @@ impl BitmapUpdateHandler for QoizHandler {
                     &mut inb,
                     zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
                 )
-                .map_err(|code| anyhow::anyhow!("failed to zstd compress: {}", zstd_safe::get_error_name(code)))?;
+                .map_err(|code| anyhow!("failed to Zstd compress: {}", zstd_safe::get_error_name(code)))?;
             if res == 0 {
                 break;
             }

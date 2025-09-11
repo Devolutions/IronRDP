@@ -950,7 +950,7 @@ impl Encode for WaveEncryptPdu {
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE
             .checked_add(self.signature.map_or(0, |_| 8))
-            .unwrap()
+            .expect("never overflow")
             .checked_add(self.data.len())
             .expect("never overflow")
     }

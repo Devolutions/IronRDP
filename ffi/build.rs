@@ -4,7 +4,7 @@ use other::main_stub;
 use win::main_stub;
 
 fn main() {
-    main_stub();
+    main_stub()
 }
 
 #[cfg(target_os = "windows")]
@@ -19,7 +19,8 @@ mod win {
         let company_name = "Devolutions Inc.";
         let legal_copyright = format!("Copyright 2019-2024 {company_name}");
 
-        let mut cargo_version = env::var("CARGO_PKG_VERSION").unwrap();
+        let mut cargo_version =
+            env::var("CARGO_PKG_VERSION").expect("failed to fetch `CARGO_PKG_VERSION` environment variable");
         cargo_version.push_str(".0");
 
         let version_number = cargo_version;
@@ -74,14 +75,15 @@ END
     }
 
     pub(crate) fn main_stub() {
-        let out_dir = env::var("OUT_DIR").unwrap();
+        let out_dir = env::var("OUT_DIR").expect("failed to fetch `OUT_DIR` environment variable");
         let version_rc_file = format!("{out_dir}/version.rc");
         let version_rc_data = generate_version_rc();
-        let mut file = File::create(&version_rc_file).expect("cannot create version.rc file");
-        file.write_all(version_rc_data.as_bytes()).unwrap();
+        let mut file = File::create(&version_rc_file).expect("failed to create version.rc file");
+        file.write_all(version_rc_data.as_bytes())
+            .expect("failed to write data to version.rc file");
         embed_resource::compile(&version_rc_file, embed_resource::NONE)
             .manifest_required()
-            .unwrap();
+            .expect("failed to compiler the Windows resource file");
     }
 }
 

@@ -178,7 +178,7 @@ impl DisplayControlHandler for DisplayControlBackend {
 ///#         todo!()
 ///#     }
 ///# }
-///# async fn stub() {
+///# async fn stub() -> Result<()> {
 /// fn make_tls_acceptor() -> TlsAcceptor {
 ///    /* snip */
 ///#    todo!()
@@ -206,6 +206,7 @@ impl DisplayControlHandler for DisplayControlBackend {
 ///     .build();
 ///
 /// server.run().await;
+/// Ok(())
 ///# }
 /// ```
 pub struct RdpServer {
@@ -601,28 +602,35 @@ impl RdpServer {
 
         let dispatch_display = async move {
             let mut buffer = vec![0u8; 4096];
+
             loop {
-                if let Some(update) = display_updates.next_update().await {
-                    match Self::dispatch_display_update(
-                        update,
-                        &mut display_writer,
-                        user_channel_id,
-                        io_channel_id,
-                        &mut buffer,
-                        encoder,
-                    )
-                    .await?
-                    {
-                        (RunState::Continue, enc) => {
-                            encoder = enc;
-                            continue;
-                        }
-                        (state, _) => {
-                            break Ok(state);
+                match display_updates.next_update().await {
+                    Ok(Some(update)) => {
+                        match Self::dispatch_display_update(
+                            update,
+                            &mut display_writer,
+                            user_channel_id,
+                            io_channel_id,
+                            &mut buffer,
+                            encoder,
+                        )
+                        .await?
+                        {
+                            (RunState::Continue, enc) => {
+                                encoder = enc;
+                                continue;
+                            }
+                            (state, _) => {
+                                break Ok(state);
+                            }
                         }
                     }
-                } else {
-                    break Ok(RunState::Disconnect);
+                    Ok(None) => {
+                        break Ok(RunState::Disconnect);
+                    }
+                    Err(error) => {
+                        warn!(error = format!("{error:#}"), "next_updated failed");
+                    }
                 }
             }
         };
@@ -776,7 +784,8 @@ impl RdpServer {
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs);
+        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs)
+            .context("failed to initialize update encoder")?;
 
         let state = self
             .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)

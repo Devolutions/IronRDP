@@ -362,12 +362,13 @@ impl Database {
             events.push(event)
         }
 
+        // The keyboard bit array size is 512.
         for idx in self.keyboard.iter_ones() {
             let (scancode, extended) = if idx >= 256 {
                 let extended_code = idx.checked_sub(256).expect("never underflow");
-                (u8::try_from(extended_code).unwrap(), true)
+                (u8::try_from(extended_code).expect("always in the range"), true)
             } else {
-                (u8::try_from(idx).unwrap(), false)
+                (u8::try_from(idx).expect("always in the range"), false)
             };
 
             let mut flags = KeyboardFlags::RELEASE;

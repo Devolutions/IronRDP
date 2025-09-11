@@ -8,7 +8,7 @@ fn to_64x64_ycbcr() {
     let mut y = [0; 64 * 64];
     let mut cb = [0; 64 * 64];
     let mut cr = [0; 64 * 64];
-    to_64x64_ycbcr_tile(&input, 1, 1, 4, PixelFormat::ABgr32, &mut y, &mut cb, &mut cr);
+    to_64x64_ycbcr_tile(&input, 1, 1, 4, PixelFormat::ABgr32, &mut y, &mut cb, &mut cr).unwrap();
 }
 
 #[ignore]
@@ -24,7 +24,7 @@ fn rgb_to_ycbcr_converts_large_buffer() {
     let mut y = [0; 4096];
     let mut cb = [0; 4096];
     let mut cr = [0; 4096];
-    to_64x64_ycbcr_tile(xrgb, 64, 64, 64 * 4, PixelFormat::XRgb32, &mut y, &mut cb, &mut cr);
+    to_64x64_ycbcr_tile(xrgb, 64, 64, 64 * 4, PixelFormat::XRgb32, &mut y, &mut cb, &mut cr).unwrap();
     assert_eq!(expected.y, y.as_slice());
 }
 

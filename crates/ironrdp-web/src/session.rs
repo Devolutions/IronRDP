@@ -477,12 +477,13 @@ impl iron_remote_desktop::Session for Session {
 
         debug!("Initialize canvas");
 
-        let mut gui = Canvas::new(
-            self.render_canvas.clone(),
-            u32::from(connection_result.desktop_size.width),
-            u32::from(connection_result.desktop_size.height),
-        )
-        .context("canvas initialization")?;
+        let desktop_width =
+            NonZeroU32::new(u32::from(connection_result.desktop_size.width)).context("desktop width is zero")?;
+        let desktop_height =
+            NonZeroU32::new(u32::from(connection_result.desktop_size.height)).context("desktop height is zero")?;
+
+        let mut gui =
+            Canvas::new(self.render_canvas.clone(), desktop_width, desktop_height).context("canvas initialization")?;
 
         debug!("Canvas initialized");
 
@@ -559,7 +560,10 @@ impl iron_remote_desktop::Session for Session {
                                 warn!("Resize event ignored: width or height is zero");
                                 Vec::new()
                             } else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
-                                requested_resize = Some((NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap()));
+                                let width = NonZeroU32::new(width).expect("width is guaranteed to be non-zero due to the prior check");
+                                let height = NonZeroU32::new(height).expect("height is guaranteed to be non-zero due to the prior check");
+
+                                requested_resize = Some((width, height));
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                             } else {
                                 debug!("Resize event ignored");
@@ -864,14 +868,16 @@ fn build_config(
         bitmap: Some(connector::BitmapConfig {
             color_depth: 16,
             lossy_compression: true,
-            codecs: client_codecs_capabilities(&[]).unwrap(),
+            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
         }),
-        #[expect(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "fine unless we end up with an insanely big version"
+        )]
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
-            .map(|version| version.major * 100 + version.minor * 10 + version.patch)
-            .unwrap_or(0)
+            .map_or(0, |version| version.major * 100 + version.minor * 10 + version.patch)
             .pipe(u32::try_from)
-            .unwrap(),
+            .expect("fine until major ~42949672"),
         client_name,
         // NOTE: hardcode this value like in freerdp
         // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70

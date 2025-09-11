@@ -302,7 +302,10 @@ fn active_stage(
 
 fn lookup_addr(hostname: &str, port: u16) -> anyhow::Result<core::net::SocketAddr> {
     use std::net::ToSocketAddrs as _;
-    let addr = (hostname, port).to_socket_addrs()?.next().unwrap();
+    let addr = (hostname, port)
+        .to_socket_addrs()?
+        .next()
+        .context("socket address not found")?;
     Ok(addr)
 }
 
@@ -327,7 +330,7 @@ fn tls_upgrade(
 
     let config = std::sync::Arc::new(config);
 
-    let server_name = server_name.try_into().unwrap();
+    let server_name = server_name.try_into()?;
 
     let client = rustls::ClientConnection::new(config, server_name)?;
 

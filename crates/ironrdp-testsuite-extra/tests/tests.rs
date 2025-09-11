@@ -1,4 +1,5 @@
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
+#![allow(clippy::unwrap_used, reason = "unwrap is fine in tests")]
 
 use core::future::Future;
 use std::path::Path;
@@ -122,10 +123,10 @@ struct TestDisplayUpdates {
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for TestDisplayUpdates {
-    async fn next_update(&mut self) -> Option<DisplayUpdate> {
+    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
         let mut rx = self.rx.lock().await;
 
-        rx.recv().await
+        Ok(rx.recv().await)
     }
 }
 

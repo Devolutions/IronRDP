@@ -124,7 +124,9 @@ impl RdpsndClientHandler for RdpsndBackend {
         if let Some(stream) = self.stream_handle.take() {
             self.stream_ended.store(true, Ordering::Relaxed);
             stream.thread().unpark();
-            stream.join().unwrap();
+            if let Err(err) = stream.join() {
+                error!(?err, "Failed to join a stream thread");
+            }
         }
     }
 }
@@ -150,11 +152,26 @@ impl DecodeStream {
                 let mut dec = opus::Decoder::new(rx_format.n_samples_per_sec, chan)?;
                 dec_thread = Some(thread::spawn(move || {
                     while let Ok(pkt) = rx.recv() {
-                        let nb_samples = dec.get_nb_samples(&pkt).unwrap();
+                        let nb_samples = match dec.get_nb_samples(&pkt) {
+                            Ok(nb_samples) => nb_samples,
+                            Err(err) => {
+                                error!(?err, "Failed to get the number of samples of an Opus packet");
+                                continue;
+                            }
+                        };
+
                         let mut pcm = vec![0u8; nb_samples * chan as usize * size_of::<i16>()];
-                        dec.decode(&pkt, bytemuck::cast_slice_mut(pcm.as_mut_slice()), false)
-                            .unwrap();
-                        dec_tx.send(pcm).unwrap();
+                        if let Err(err) = dec.decode(&pkt, bytemuck::cast_slice_mut(pcm.as_mut_slice()), false) {
+                            error!(?err, "Failed to decode an Opus packet");
+                            continue;
+                        }
+
+                        if dec_tx.send(pcm).is_err() {
+                            error!("Failed to send the decoded Opus packet over the channel");
+                            // If send has failed, it means that the receiver has been dropped.
+                            // There is no point in continuing the loop in this case.
+                            break;
+                        }
                     }
                 }));
                 rx = dec_rx;

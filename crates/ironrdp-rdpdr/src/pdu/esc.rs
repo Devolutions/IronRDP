@@ -1836,10 +1836,7 @@ impl rpce::HeaderlessEncode for GetReaderIconReturn {
 }
 
 fn expect_charset(charset: Option<CharacterSet>) -> DecodeResult<CharacterSet> {
-    if charset.is_none() {
-        return Err(other_err!("internal error: missing character set"));
-    }
-    Ok(charset.unwrap())
+    charset.ok_or_else(|| other_err!("internal error: missing character set"))
 }
 
 fn expect_no_charset(charset: Option<CharacterSet>) -> DecodeResult<()> {

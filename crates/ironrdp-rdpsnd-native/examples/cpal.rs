@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
         data: None,
     };
     let (tx, rx) = mpsc::channel();
-    let stream = DecodeStream::new(&rx_format, rx).unwrap();
+    let stream = DecodeStream::new(&rx_format, rx)?;
 
     let producer = thread::spawn(move || {
         let data_chunks = vec![vec![1u8, 2, 3], vec![4, 5, 6], vec![7, 8, 9]];
