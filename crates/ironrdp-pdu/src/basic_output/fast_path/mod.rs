@@ -19,6 +19,10 @@ use crate::rdp::headers::{CompressionFlags, SHARE_DATA_HEADER_COMPRESSION_MASK};
 
 /// Implements the Fast-Path RDP message header PDU.
 /// TS_FP_UPDATE_PDU
+#[expect(
+    clippy::partial_pub_fields,
+    reason = "this structure is used in the match expression in the integration tests"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FastPathHeader {
     pub flags: EncryptionFlags,

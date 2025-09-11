@@ -22,7 +22,7 @@ use crate::{
 /// [Server Deactivate All PDU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/8a29971a-df3c-48da-add2-8ed9a05edc89
 #[derive(Debug, Clone)]
 pub struct ConnectionActivationSequence {
-    pub state: ConnectionActivationState,
+    state: ConnectionActivationState,
     config: Config,
 }
 
@@ -35,6 +35,10 @@ impl ConnectionActivationSequence {
             },
             config,
         }
+    }
+
+    pub fn connection_activation_state(&self) -> ConnectionActivationState {
+        self.state
     }
 
     #[must_use]
@@ -215,7 +219,7 @@ impl Sequence for ConnectionActivationSequence {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 pub enum ConnectionActivationState {
     #[default]
     Consumed,

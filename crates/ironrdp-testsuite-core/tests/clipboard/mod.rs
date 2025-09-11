@@ -351,9 +351,9 @@ fn metafile_pdu_ms() {
     if let ClipboardPdu::FormatDataResponse(response) = &decoded_pdu {
         let metafile = response.to_metafile().unwrap();
 
-        assert_eq!(metafile.mapping_mode, PackedMetafileMappingMode::ANISOTROPIC);
-        assert_eq!(metafile.x_ext, 556);
-        assert_eq!(metafile.y_ext, 423);
+        assert_eq!(metafile.mapping_mode(), PackedMetafileMappingMode::ANISOTROPIC);
+        assert_eq!(metafile.x_ext(), 556);
+        assert_eq!(metafile.y_ext(), 423);
 
         // Just check some known arbitrary byte in raw metafile data
         assert_eq!(metafile.data()[metafile.data().len() - 6], 0x03);

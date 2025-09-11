@@ -350,7 +350,7 @@ impl GwConn {
         let resp: TunnelAuthRespPkt =
             TunnelAuthRespPkt::decode(&mut cur).map_err(|_| Error::new("TunnelAuth", GwErrorKind::Decode))?;
 
-        if resp.error_code != 0 {
+        if resp.error_code() != 0 {
             return Err(Error::new("TunnelAuth", GwErrorKind::Connect));
         }
         Ok(())
@@ -369,7 +369,7 @@ impl GwConn {
         let mut cur: ReadCursor<'_> = ReadCursor::new(&bytes);
         let resp: ChannelResp =
             ChannelResp::decode(&mut cur).map_err(|_| Error::new("ChannelResp", GwErrorKind::Decode))?;
-        if resp.error_code != 0 {
+        if resp.error_code() != 0 {
             return Err(Error::new("ChannelCreate", GwErrorKind::Connect));
         }
         assert!(cur.eof());
