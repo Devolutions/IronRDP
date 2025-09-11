@@ -5,7 +5,7 @@ use ironrdp_pdu::rdp::{self};
 use tracing::{debug, warn};
 
 use crate::{
-    general_err, legacy, reason_err, Config, ConnectionFinalizationSequence, ConnectorResult, DesktopSize, Sequence,
+    general_err, legacy, Config, ConnectionFinalizationSequence, ConnectorResult, DesktopSize, Sequence,
     State, Written,
 };
 
