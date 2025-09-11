@@ -722,7 +722,7 @@ impl iron_remote_desktop::Session for Session {
                                 desktop_size,
                                 enable_server_pointer,
                                 pointer_software_rendering,
-                            } = box_connection_activation.state
+                            } = box_connection_activation.connection_activation_state()
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
