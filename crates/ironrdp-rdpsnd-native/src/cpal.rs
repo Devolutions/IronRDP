@@ -132,7 +132,7 @@ impl RdpsndClientHandler for RdpsndBackend {
 #[doc(hidden)]
 pub struct DecodeStream {
     _dec_thread: Option<JoinHandle<()>>,
-    pub stream: Stream,
+    stream: Stream,
 }
 
 impl DecodeStream {
@@ -204,6 +204,10 @@ impl DecodeStream {
             _dec_thread: dec_thread,
             stream,
         })
+    }
+
+    pub fn stream(&self) -> &Stream {
+        &self.stream
     }
 }
 

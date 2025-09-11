@@ -13,7 +13,7 @@ pub struct FinalizationSequence {
     user_channel_id: u16,
     io_channel_id: u16,
 
-    pub input_events: Vec<Vec<u8>>,
+    input_events: Vec<Vec<u8>>,
 }
 
 #[derive(Default, Debug)]
@@ -189,6 +189,10 @@ impl FinalizationSequence {
             io_channel_id,
             input_events: Vec::new(),
         }
+    }
+
+    pub fn input_events(self) -> Vec<Vec<u8>> {
+        self.input_events
     }
 
     pub fn is_done(&self) -> bool {
