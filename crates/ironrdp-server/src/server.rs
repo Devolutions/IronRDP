@@ -202,7 +202,7 @@ impl DisplayControlHandler for DisplayControlBackend {
 ///     .with_addr(([127, 0, 0, 1], 3389))
 ///     .with_tls(tls_acceptor)
 ///     .with_input_handler(input_handler)
-///     .with_display_handler(display_handler)?
+///     .with_display_handler(display_handler)
 ///     .build();
 ///
 /// server.run().await;
