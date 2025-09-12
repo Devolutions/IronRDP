@@ -679,9 +679,7 @@ pub struct AddressFamily(u16);
 impl AddressFamily {
     pub const INET: Self = Self(0x0002);
     pub const INET_6: Self = Self(0x0017);
-}
 
-impl AddressFamily {
     pub fn from_u16(val: u16) -> Self {
         Self(val)
     }

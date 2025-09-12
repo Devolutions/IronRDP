@@ -41,20 +41,18 @@ impl RdpServerBuilder<WantsAddr> {
     pub fn new() -> Self {
         Self { state: WantsAddr {} }
     }
-}
 
-impl Default for RdpServerBuilder<WantsAddr> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RdpServerBuilder<WantsAddr> {
     #[expect(clippy::unused_self)] // ensuring state transition from WantsAddr
     pub fn with_addr(self, addr: impl Into<SocketAddr>) -> RdpServerBuilder<WantsSecurity> {
         RdpServerBuilder {
             state: WantsSecurity { addr: addr.into() },
         }
+    }
+}
+
+impl Default for RdpServerBuilder<WantsAddr> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

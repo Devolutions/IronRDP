@@ -755,6 +755,16 @@ impl SndWavePdu {
     const NAME: &'static str = "SNDWAVE";
 
     const FIXED_PART_SIZE: usize = 4 /* bPad */;
+
+    fn decode(src: &mut ReadCursor<'_>, data_len: usize) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        read_padding!(src, 4);
+        ensure_size!(in: src, size: data_len);
+        let data = src.read_slice(data_len).into();
+
+        Ok(Self { data })
+    }
 }
 
 impl Encode for SndWavePdu {
@@ -775,18 +785,6 @@ impl Encode for SndWavePdu {
         Self::FIXED_PART_SIZE
             .checked_add(self.data.len())
             .expect("never overflow")
-    }
-}
-
-impl SndWavePdu {
-    fn decode(src: &mut ReadCursor<'_>, data_len: usize) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
-
-        read_padding!(src, 4);
-        ensure_size!(in: src, size: data_len);
-        let data = src.read_slice(data_len).into();
-
-        Ok(Self { data })
     }
 }
 
@@ -925,6 +923,30 @@ impl WaveEncryptPdu {
         + 2 /* wFormatNo */
         + 1 /* cBlockNo */
         + 3 /* bPad */;
+
+    fn decode(src: &mut ReadCursor<'_>, version: Version) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let timestamp = src.read_u16();
+        let format_no = src.read_u16();
+        let block_no = src.read_u8();
+        read_padding!(src, 3);
+        let signature = if version >= Version::V5 {
+            ensure_size!(in: src, size: 8);
+            Some(src.read_array())
+        } else {
+            None
+        };
+        let data = src.read_remaining().into();
+
+        Ok(Self {
+            timestamp,
+            format_no,
+            block_no,
+            signature,
+            data,
+        })
+    }
 }
 
 impl Encode for WaveEncryptPdu {
@@ -953,32 +975,6 @@ impl Encode for WaveEncryptPdu {
             .expect("never overflow")
             .checked_add(self.data.len())
             .expect("never overflow")
-    }
-}
-
-impl WaveEncryptPdu {
-    fn decode(src: &mut ReadCursor<'_>, version: Version) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
-
-        let timestamp = src.read_u16();
-        let format_no = src.read_u16();
-        let block_no = src.read_u8();
-        read_padding!(src, 3);
-        let signature = if version >= Version::V5 {
-            ensure_size!(in: src, size: 8);
-            Some(src.read_array())
-        } else {
-            None
-        };
-        let data = src.read_remaining().into();
-
-        Ok(Self {
-            timestamp,
-            format_no,
-            block_no,
-            signature,
-            data,
-        })
     }
 }
 

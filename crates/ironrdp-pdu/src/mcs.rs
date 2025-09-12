@@ -937,6 +937,11 @@ impl DomainParameters {
 pub use legacy::McsError;
 
 mod legacy {
+    #![allow(
+        clippy::multiple_inherent_impl,
+        reason = "Cannot move the implementation from the legacy module"
+    )]
+
     use std::io;
 
     use ironrdp_core::{Decode, DecodeResult, Encode};

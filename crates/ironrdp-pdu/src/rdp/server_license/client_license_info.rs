@@ -116,9 +116,7 @@ impl ClientLicenseInfo {
             },
         ))
     }
-}
 
-impl ClientLicenseInfo {
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -142,22 +140,6 @@ impl ClientLicenseInfo {
         Ok(())
     }
 
-    pub fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    pub fn size(&self) -> usize {
-        self.license_header.size()
-            + LICENSE_INFO_STATIC_FIELDS_SIZE
-            + RANDOM_NUMBER_SIZE
-            + self.encrypted_premaster_secret.len()
-            + self.license_info.len()
-            + self.encrypted_hwid.len()
-            + MAC_SIZE
-    }
-}
-
-impl ClientLicenseInfo {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::LicenseInfo {
             return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
@@ -206,5 +188,19 @@ impl ClientLicenseInfo {
             encrypted_hwid,
             mac_data,
         })
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn size(&self) -> usize {
+        self.license_header.size()
+            + LICENSE_INFO_STATIC_FIELDS_SIZE
+            + RANDOM_NUMBER_SIZE
+            + self.encrypted_premaster_secret.len()
+            + self.license_info.len()
+            + self.encrypted_hwid.len()
+            + MAC_SIZE
     }
 }
