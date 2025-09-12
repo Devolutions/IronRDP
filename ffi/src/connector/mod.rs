@@ -180,6 +180,30 @@ pub mod ffi {
             connector.attach_static_channel(cliprdr);
             Ok(())
         }
+
+        pub fn next_pdu_hint(&self) -> Result<Option<Box<PduHint<'_>>>, Box<IronRdpError>> {
+            let Some(connector) = self.0.as_ref() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            tracing::trace!(pduhint=?connector.next_pdu_hint(), "Reading next PDU hint");
+            Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
+        }
+
+        pub fn get_dyn_state(&self) -> Result<Box<DynState<'_>>, Box<IronRdpError>> {
+            let Some(connector) = self.0.as_ref() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            Ok(Box::new(DynState(connector.state())))
+        }
+
+        pub fn consume_and_cast_to_client_connector_state(
+            &mut self,
+        ) -> Result<Box<ClientConnectorState>, Box<IronRdpError>> {
+            let Some(connector) = self.0.take() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            Ok(Box::new(ClientConnectorState(Some(connector.state))))
+        }
     }
 
     #[diplomat::opaque]
@@ -206,32 +230,6 @@ pub mod ffi {
 
         pub fn is_terminal(&'a self) -> bool {
             self.0.is_terminal()
-        }
-    }
-
-    impl ClientConnector {
-        pub fn next_pdu_hint(&self) -> Result<Option<Box<PduHint<'_>>>, Box<IronRdpError>> {
-            let Some(connector) = self.0.as_ref() else {
-                return Err(ValueConsumedError::for_item("connector").into());
-            };
-            tracing::trace!(pduhint=?connector.next_pdu_hint(), "Reading next PDU hint");
-            Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
-        }
-
-        pub fn get_dyn_state(&self) -> Result<Box<DynState<'_>>, Box<IronRdpError>> {
-            let Some(connector) = self.0.as_ref() else {
-                return Err(ValueConsumedError::for_item("connector").into());
-            };
-            Ok(Box::new(DynState(connector.state())))
-        }
-
-        pub fn consume_and_cast_to_client_connector_state(
-            &mut self,
-        ) -> Result<Box<ClientConnectorState>, Box<IronRdpError>> {
-            let Some(connector) = self.0.take() else {
-                return Err(ValueConsumedError::for_item("connector").into());
-            };
-            Ok(Box::new(ClientConnectorState(Some(connector.state))))
         }
     }
 

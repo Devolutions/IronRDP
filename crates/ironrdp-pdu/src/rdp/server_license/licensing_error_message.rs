@@ -53,9 +53,7 @@ impl LicensingErrorMessage {
         )?;
         Ok(this)
     }
-}
 
-impl LicensingErrorMessage {
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -70,16 +68,6 @@ impl LicensingErrorMessage {
         Ok(())
     }
 
-    pub fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    pub fn size(&self) -> usize {
-        self.license_header.size() + Self::FIXED_PART_SIZE + self.error_info.len() + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE
-    }
-}
-
-impl LicensingErrorMessage {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::ErrorAlert {
             return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
@@ -104,6 +92,14 @@ impl LicensingErrorMessage {
             state_transition,
             error_info,
         })
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn size(&self) -> usize {
+        self.license_header.size() + Self::FIXED_PART_SIZE + self.error_info.len() + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE
     }
 }
 

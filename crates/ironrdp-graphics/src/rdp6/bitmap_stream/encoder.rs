@@ -227,9 +227,7 @@ impl BitmapStreamEncoder {
 
         self.encode_channels_stream((r, g, b), dst, rle)
     }
-}
 
-impl BitmapStreamEncoder {
     pub fn encode_channels_stream_alpha<R, G, B, A>(
         &mut self,
         (r, g, b, a): (R, G, B, A),

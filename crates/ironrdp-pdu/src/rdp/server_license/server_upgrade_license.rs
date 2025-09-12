@@ -27,34 +27,8 @@ pub struct ServerUpgradeLicense {
 }
 
 impl ServerUpgradeLicense {
-    pub fn verify_server_license(&self, encryption_data: &LicenseEncryptionData) -> Result<(), ServerLicenseError> {
-        let decrypted_license_info = self.decrypted_license_info(encryption_data);
-        let mac_data =
-            super::compute_mac_data(encryption_data.mac_salt_key.as_slice(), decrypted_license_info.as_ref());
-
-        if mac_data != self.mac_data {
-            return Err(ServerLicenseError::InvalidMacData);
-        }
-
-        Ok(())
-    }
-
-    pub fn new_license_info(&self, encryption_data: &LicenseEncryptionData) -> DecodeResult<LicenseInformation> {
-        let data = self.decrypted_license_info(encryption_data);
-        LicenseInformation::decode(&mut ReadCursor::new(&data))
-    }
-
-    fn decrypted_license_info(&self, encryption_data: &LicenseEncryptionData) -> Vec<u8> {
-        let mut rc4 = Rc4::new(encryption_data.license_key.as_slice());
-        rc4.process(self.encrypted_license_info.as_slice())
-    }
-}
-
-impl ServerUpgradeLicense {
     const NAME: &'static str = "ServerUpgradeLicense";
-}
 
-impl ServerUpgradeLicense {
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -66,16 +40,6 @@ impl ServerUpgradeLicense {
         Ok(())
     }
 
-    pub fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    pub fn size(&self) -> usize {
-        self.license_header.size() + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE + self.encrypted_license_info.len() + MAC_SIZE
-    }
-}
-
-impl ServerUpgradeLicense {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::UpgradeLicense
             && license_header.preamble_message_type != PreambleType::NewLicense
@@ -100,6 +64,36 @@ impl ServerUpgradeLicense {
             encrypted_license_info,
             mac_data,
         })
+    }
+
+    pub fn verify_server_license(&self, encryption_data: &LicenseEncryptionData) -> Result<(), ServerLicenseError> {
+        let decrypted_license_info = self.decrypted_license_info(encryption_data);
+        let mac_data =
+            super::compute_mac_data(encryption_data.mac_salt_key.as_slice(), decrypted_license_info.as_ref());
+
+        if mac_data != self.mac_data {
+            return Err(ServerLicenseError::InvalidMacData);
+        }
+
+        Ok(())
+    }
+
+    pub fn new_license_info(&self, encryption_data: &LicenseEncryptionData) -> DecodeResult<LicenseInformation> {
+        let data = self.decrypted_license_info(encryption_data);
+        LicenseInformation::decode(&mut ReadCursor::new(&data))
+    }
+
+    fn decrypted_license_info(&self, encryption_data: &LicenseEncryptionData) -> Vec<u8> {
+        let mut rc4 = Rc4::new(encryption_data.license_key.as_slice());
+        rc4.process(self.encrypted_license_info.as_slice())
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn size(&self) -> usize {
+        self.license_header.size() + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE + self.encrypted_license_info.len() + MAC_SIZE
     }
 }
 
