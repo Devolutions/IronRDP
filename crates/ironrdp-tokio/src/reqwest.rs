@@ -28,15 +28,7 @@ impl ReqwestNetworkClient {
     pub fn new() -> Self {
         Self { client: None }
     }
-}
 
-impl Default for ReqwestNetworkClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ReqwestNetworkClient {
     pub async fn send_request<'a>(
         &'a mut self,
         request: &'a sspi::generator::NetworkRequest,
@@ -132,5 +124,11 @@ impl ReqwestNetworkClient {
         let body = Vec::from(body);
 
         Ok(body)
+    }
+}
+
+impl Default for ReqwestNetworkClient {
+    fn default() -> Self {
+        Self::new()
     }
 }

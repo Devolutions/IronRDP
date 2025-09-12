@@ -97,9 +97,7 @@ impl ClientPlatformChallengeResponse {
             mac_data,
         })
     }
-}
 
-impl ClientPlatformChallengeResponse {
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -116,18 +114,6 @@ impl ClientPlatformChallengeResponse {
         Ok(())
     }
 
-    pub fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    pub fn size(&self) -> usize {
-        self.license_header.size()
-        + (BLOB_TYPE_SIZE + BLOB_LENGTH_SIZE) * 2 // 2 blobs in this structure
-        + MAC_SIZE + self.encrypted_challenge_response_data.len() + self.encrypted_hwid.len()
-    }
-}
-
-impl ClientPlatformChallengeResponse {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::PlatformChallengeResponse {
             return Err(invalid_field_err!(
@@ -159,6 +145,16 @@ impl ClientPlatformChallengeResponse {
             encrypted_hwid,
             mac_data,
         })
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn size(&self) -> usize {
+        self.license_header.size()
+        + (BLOB_TYPE_SIZE + BLOB_LENGTH_SIZE) * 2 // 2 blobs in this structure
+        + MAC_SIZE + self.encrypted_challenge_response_data.len() + self.encrypted_hwid.len()
     }
 }
 
