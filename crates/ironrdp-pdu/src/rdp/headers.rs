@@ -585,9 +585,6 @@ impl ServerDeactivateAll {
 
 impl Decode<'_> for ServerDeactivateAll {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        if src.len() == 0 {
-            return Ok(ServerDeactivateAll)
-        }
         ensure_fixed_part_size!(in: src);
         let length_source_descriptor = src.read_u16();
         ensure_size!(in: src, size: length_source_descriptor.into());
