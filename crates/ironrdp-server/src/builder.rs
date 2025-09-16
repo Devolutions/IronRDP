@@ -125,13 +125,13 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(display),
                 sound_factory: None,
                 cliprdr_factory: None,
-                codecs: server_codecs_capabilities(&[]).unwrap(),
+                codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
             },
         }
     }
 
-    pub fn with_no_display(self) -> RdpServerBuilder<BuilderDone> {
-        RdpServerBuilder {
+    pub fn with_no_display(self) -> Result<RdpServerBuilder<BuilderDone>> {
+        Ok(RdpServerBuilder {
             state: BuilderDone {
                 addr: self.state.addr,
                 security: self.state.security,
@@ -139,9 +139,9 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(NoopDisplay),
                 sound_factory: None,
                 cliprdr_factory: None,
-                codecs: server_codecs_capabilities(&[]).unwrap(),
+                codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
             },
-        }
+        })
     }
 }
 
@@ -187,7 +187,7 @@ struct NoopDisplayUpdates;
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for NoopDisplayUpdates {
-    async fn next_update(&mut self) -> Option<DisplayUpdate> {
+    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
         let () = core::future::pending().await;
         unreachable!()
     }

@@ -381,16 +381,10 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?settings_initial, "Received");
 
-                let early_capability = settings_initial
-                    .conference_create_request
-                    .gcc_blocks
-                    .core
-                    .optional_data
-                    .early_capability_flags;
+                let gcc_blocks = settings_initial.conference_create_request.into_gcc_blocks();
+                let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
 
-                let joined: Vec<_> = settings_initial
-                    .conference_create_request
-                    .gcc_blocks
+                let joined: Vec<_> = gcc_blocks
                     .network
                     .map(|network| {
                         network
@@ -410,7 +404,7 @@ impl Sequence for Acceptor {
                     .into_iter()
                     .enumerate()
                     .map(|(i, channel)| {
-                        let channel_id = u16::try_from(i).unwrap() + self.io_channel_id + 1;
+                        let channel_id = u16::try_from(i).expect("always in the range") + self.io_channel_id + 1;
                         if let Some((type_id, c)) = channel {
                             self.static_channels.attach_channel_id(type_id, channel_id);
                             (channel_id, Some(c))
@@ -450,10 +444,8 @@ impl Sequence for Acceptor {
                 );
 
                 let settings_response = mcs::ConnectResponse {
-                    conference_create_response: gcc::ConferenceCreateResponse {
-                        user_id: self.user_channel_id,
-                        gcc_blocks: server_blocks,
-                    },
+                    conference_create_response: gcc::ConferenceCreateResponse::new(self.user_channel_id, server_blocks)
+                        .map_err(ConnectorError::decode)?,
                     called_connect_id: 1,
                     domain_parameters: mcs::DomainParameters::target(),
                 };

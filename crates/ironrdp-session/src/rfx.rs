@@ -108,7 +108,11 @@ impl DecodingContext {
         image: &mut DecodedImage,
         destination: &InclusiveRectangle,
     ) -> SessionResult<(FrameId, InclusiveRectangle)> {
-        let channel = self.channels.0.first().unwrap();
+        let channel = self
+            .channels
+            .0
+            .first()
+            .ok_or_else(|| general_err!("no RFX channel found"))?;
         let width = channel.width.try_into().map_err(|_| general_err!("invalid width"))?;
         let height = channel.height.try_into().map_err(|_| general_err!("invalid height"))?;
         let entropy_algorithm = self.context.entropy_algorithm;

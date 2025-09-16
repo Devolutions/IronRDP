@@ -155,7 +155,7 @@ impl Sequence for ConnectionActivationSequence {
                     });
 
                 let client_confirm_active = rdp::headers::ShareControlPdu::ClientConfirmActive(
-                    create_client_confirm_active(&self.config, capability_sets, desktop_size),
+                    create_client_confirm_active(&self.config, capability_sets, desktop_size)?,
                 );
 
                 debug!(message = ?client_confirm_active, "Send");
@@ -263,7 +263,7 @@ fn create_client_confirm_active(
     config: &Config,
     mut server_capability_sets: Vec<CapabilitySet>,
     desktop_size: DesktopSize,
-) -> rdp::capability_sets::ClientConfirmActive {
+) -> ConnectorResult<rdp::capability_sets::ClientConfirmActive> {
     use ironrdp_pdu::rdp::capability_sets::{
         client_codecs_capabilities, Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry,
         ClientConfirmActive, CmdFlags, DemandActive, FrameAcknowledge, General, GeneralExtraFlags, GlyphCache,
@@ -365,13 +365,10 @@ fn create_client_confirm_active(
         CapabilitySet::SurfaceCommands(SurfaceCommands {
             flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,
         }),
-        CapabilitySet::BitmapCodecs(
-            config
-                .bitmap
-                .as_ref()
-                .map(|b| b.codecs.clone())
-                .unwrap_or_else(|| client_codecs_capabilities(&[]).unwrap()),
-        ),
+        CapabilitySet::BitmapCodecs(match config.bitmap.as_ref().map(|b| b.codecs.clone()) {
+            Some(codecs) => codecs,
+            None => client_codecs_capabilities(&[]).expect("can't panic for &[]"),
+        }),
         CapabilitySet::FrameAcknowledge(FrameAcknowledge {
             // FIXME(#447): Revert this to 2 per FreeRDP.
             // This is a temporary hack to fix a resize bug, see:
@@ -389,11 +386,11 @@ fn create_client_confirm_active(
         }));
     }
 
-    ClientConfirmActive {
+    Ok(ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
         pdu: DemandActive {
             source_descriptor: "IRONRDP".to_owned(),
             capability_sets: server_capability_sets,
         },
-    }
+    })
 }

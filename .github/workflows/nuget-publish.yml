@@ -198,7 +198,7 @@ jobs:
           $CargoParams = @(
               "build",
               "-p", "ffi",
-              "--release",
+              "--profile", "production-ffi",
               "--target", "$RustTarget"
           )
 
@@ -206,7 +206,7 @@ jobs:
 
           $OutputLibraryName = "${LibPrefix}ironrdp$LibSuffix"
           $RenamedLibraryName = "${LibPrefix}DevolutionsIronRdp$LibSuffix"
-          $OutputLibrary = Join-Path "target" $RustTarget 'release' $OutputLibraryName
+          $OutputLibrary = Join-Path "target" $RustTarget 'production-ffi' $OutputLibraryName
           $OutputPath = Join-Path "dependencies" "runtimes" $DotNetRid "native"
           New-Item -ItemType Directory -Path $OutputPath | Out-Null
           Copy-Item $OutputLibrary $(Join-Path $OutputPath $RenamedLibraryName)

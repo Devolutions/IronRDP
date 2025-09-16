@@ -1,8 +1,8 @@
 use ironrdp_core::{
     ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSetErrorInfoPdu(pub ErrorInfo);
@@ -17,7 +17,7 @@ impl Encode for ServerSetErrorInfoPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(self.0.to_u32().unwrap());
+        dst.write_u32(self.0.as_u32());
 
         Ok(())
     }
@@ -66,6 +66,15 @@ impl ErrorInfo {
             Self::RdpSpecificCode(c) => format!("[RDP specific code]: {}", c.description()),
         }
     }
+
+    fn as_u32(self) -> u32 {
+        match self {
+            Self::ProtocolIndependentCode(c) => c.as_u32(),
+            Self::ProtocolIndependentLicensingCode(c) => c.as_u32(),
+            Self::ProtocolIndependentConnectionBrokerCode(c) => c.as_u32(),
+            Self::RdpSpecificCode(c) => c.as_u32(),
+        }
+    }
 }
 
 impl FromPrimitive for ErrorInfo {
@@ -94,27 +103,8 @@ impl FromPrimitive for ErrorInfo {
     }
 }
 
-impl ToPrimitive for ErrorInfo {
-    fn to_i64(&self) -> Option<i64> {
-        match self {
-            Self::ProtocolIndependentCode(c) => c.to_i64(),
-            Self::ProtocolIndependentLicensingCode(c) => c.to_i64(),
-            Self::ProtocolIndependentConnectionBrokerCode(c) => c.to_i64(),
-            Self::RdpSpecificCode(c) => c.to_i64(),
-        }
-    }
-
-    fn to_u64(&self) -> Option<u64> {
-        match self {
-            Self::ProtocolIndependentCode(c) => c.to_u64(),
-            Self::ProtocolIndependentLicensingCode(c) => c.to_u64(),
-            Self::ProtocolIndependentConnectionBrokerCode(c) => c.to_u64(),
-            Self::RdpSpecificCode(c) => c.to_u64(),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ProtocolIndependentCode {
     None = 0x0000_0000,
     RpcInitiatedDisconnect = 0x0000_0001,
@@ -159,9 +149,18 @@ impl ProtocolIndependentCode {
             Self::ServerCsrssCrash => "The CSRSS process running in the remote session terminated unexpectedly",
         }
     }
+
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    pub fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ProtocolIndependentLicensingCode {
     Internal = 0x0000_0100,
     NoLicenseServer = 0x0000_0101,
@@ -194,9 +193,18 @@ impl ProtocolIndependentLicensingCode {
             Self::NoRemoteConnections => "The remote computer is not licensed to accept remote connections",
         }
     }
+
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum ProtocolIndependentConnectionBrokerCode {
     DestinationNotFound = 0x0000_0400,
     LoadingDestination = 0x0000_0402,
@@ -227,9 +235,18 @@ impl ProtocolIndependentConnectionBrokerCode {
             Self::SessionOnlineVmSessmonFailed => "A session monitoring error occurred while the target endpoint (a virtual machine) was being started",
         }
     }
+
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum RdpSpecificCode {
     UnknownPduType2 = 0x0000_10C9,
     UnknownPduType = 0x0000_10CA,
@@ -393,6 +410,10 @@ impl RdpSpecificCode {
             Self::EncPkgMismatch => "Failed to find a usable Encryption Method in the encryptionMethods field of the Client Security Data",
             Self::DecryptFailed2 => "Unencrypted data was encountered in a protocol stream which is meant to be encrypted with Standard RDP Security mechanisms",
         }
+    }
+
+    fn as_u32(self) -> u32 {
+        self as u32
     }
 }
 

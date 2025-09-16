@@ -4,8 +4,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, Decode, DecodeResult, Encode,
     EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 use crate::fast_path::EncryptionFlags;
 use crate::input::{MousePdu, MouseRelPdu, MouseXPdu};
@@ -88,7 +88,7 @@ impl<'de> Decode<'de> for FastPathInputHeader {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 #[repr(u8)]
 pub enum FastpathInputEventType {
     ScanCode = 0x0000,
@@ -98,6 +98,16 @@ pub enum FastpathInputEventType {
     Unicode = 0x0004,
     MouseRel = 0x0005,
     QoeTimestamp = 0x0006,
+}
+
+impl FastpathInputEventType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,7 +142,7 @@ impl Encode for FastPathInputEvent {
             FastPathInputEvent::SyncEvent(flags) => (flags.bits(), FastpathInputEventType::Sync),
         };
         header.set_bits(0..5, flags);
-        header.set_bits(5..8, code.to_u8().unwrap());
+        header.set_bits(5..8, code.as_u8());
         dst.write_u8(header);
         match self {
             FastPathInputEvent::KeyboardEvent(_, code) => {

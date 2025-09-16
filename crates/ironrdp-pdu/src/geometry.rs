@@ -149,10 +149,12 @@ impl_rectangle!(InclusiveRectangle);
 impl_rectangle!(ExclusiveRectangle);
 
 impl Rectangle for InclusiveRectangle {
+    /// INVARIANT: `0 < output (width)`
     fn width(&self) -> u16 {
         self.right - self.left + 1
     }
 
+    /// INVARIANT: `0 < output (height)`
     fn height(&self) -> u16 {
         self.bottom - self.top + 1
     }

@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 
 use ironrdp_core::{
-    ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor, WriteCursor,
+    cast_length, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor,
+    WriteCursor,
 };
 
 use crate::tpdu::{TpduCode, TpduHeader};
@@ -42,16 +43,16 @@ where
         ensure_size!(in: dst, size: packet_length);
 
         TpktHeader {
-            packet_length: u16::try_from(packet_length).unwrap(),
+            packet_length: cast_length!("packet length", packet_length)?,
         }
         .write(dst)?;
 
-        TpduHeader {
-            li: u8::try_from(T::TPDU_CODE.header_fixed_part_size() + self.0.tpdu_header_variable_part_size() - 1)
-                .unwrap(),
-            code: T::TPDU_CODE,
-        }
-        .write(dst)?;
+        let li = cast_length!(
+            "length indicator",
+            (T::TPDU_CODE.header_fixed_part_size() + self.0.tpdu_header_variable_part_size() - 1)
+        )?;
+
+        TpduHeader { li, code: T::TPDU_CODE }.write(dst)?;
 
         self.0.x224_body_encode(dst)
     }

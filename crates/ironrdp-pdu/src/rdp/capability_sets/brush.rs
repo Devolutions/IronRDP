@@ -4,16 +4,27 @@ mod tests;
 use ironrdp_core::{
     ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 const BRUSH_LENGTH: usize = 4;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u32)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum SupportLevel {
     Default = 0,
     Color8x8 = 1,
     ColorFull = 2,
+}
+
+impl SupportLevel {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -31,7 +42,7 @@ impl Encode for Brush {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(self.support_level.to_u32().unwrap());
+        dst.write_u32(self.support_level.as_u32());
 
         Ok(())
     }

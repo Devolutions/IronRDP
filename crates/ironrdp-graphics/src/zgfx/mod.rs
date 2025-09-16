@@ -71,10 +71,15 @@ impl Decompressor {
     }
 
     fn decompress_segment(&mut self, encoded_data: &[u8], output: &mut Vec<u8>) -> Result<usize, ZgfxError> {
+        if encoded_data.is_empty() {
+            return Ok(0);
+        }
+
         let mut bits = BitSlice::from_slice(encoded_data);
 
         // The value of the last byte indicates the number of unused bits in the final byte
-        bits = &bits[..8 * (encoded_data.len() - 1) - *encoded_data.last().unwrap() as usize];
+        bits =
+            &bits[..8 * (encoded_data.len() - 1) - *encoded_data.last().expect("encoded_data is not empty") as usize];
         let mut bits = Bits::new(bits);
         let mut bytes_written = 0;
 

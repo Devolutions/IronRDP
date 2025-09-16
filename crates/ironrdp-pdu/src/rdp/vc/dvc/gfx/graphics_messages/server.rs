@@ -5,8 +5,8 @@ use ironrdp_core::{
     cast_length, decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding,
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 use super::{CapabilitySet, Color, Point, RDP_GFX_HEADER_SIZE};
 use crate::gcc::Monitor;
@@ -49,8 +49,8 @@ impl Encode for WireToSurface1Pdu {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.surface_id);
-        dst.write_u16(self.codec_id.to_u16().unwrap());
-        dst.write_u8(self.pixel_format.to_u8().unwrap());
+        dst.write_u16(self.codec_id.as_u16());
+        dst.write_u8(self.pixel_format.as_u8());
         self.destination_rectangle.encode(dst)?;
         dst.write_u32(cast_length!("BitmapDataLen", self.bitmap_data.len())?);
         dst.write_slice(&self.bitmap_data);
@@ -123,9 +123,9 @@ impl Encode for WireToSurface2Pdu {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.surface_id);
-        dst.write_u16(self.codec_id.to_u16().unwrap());
+        dst.write_u16(self.codec_id.as_u16());
         dst.write_u32(self.codec_context_id);
-        dst.write_u8(self.pixel_format.to_u8().unwrap());
+        dst.write_u8(self.pixel_format.as_u8());
         dst.write_u32(cast_length!("BitmapDataLen", self.bitmap_data.len())?);
         dst.write_slice(&self.bitmap_data);
 
@@ -460,7 +460,7 @@ impl Encode for CreateSurfacePdu {
         dst.write_u16(self.surface_id);
         dst.write_u16(self.width);
         dst.write_u16(self.height);
-        dst.write_u8(self.pixel_format.to_u8().unwrap());
+        dst.write_u8(self.pixel_format.as_u8());
 
         Ok(())
     }
@@ -931,7 +931,7 @@ impl<'a> Decode<'a> for CapabilitiesConfirmPdu {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum Codec1Type {
     Uncompressed = 0x0,
     RemoteFx = 0x3,
@@ -943,17 +943,43 @@ pub enum Codec1Type {
     Avc444v2 = 0xf,
 }
 
+impl Codec1Type {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
+}
+
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum Codec2Type {
     RemoteFxProgressive = 0x9,
 }
 
+impl Codec2Type {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
+}
+
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum PixelFormat {
     XRgb = 0x20,
     ARgb = 0x21,
+}
+
+impl PixelFormat {
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

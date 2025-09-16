@@ -6,8 +6,8 @@ use ironrdp_core::{
     ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
 use ironrdp_dvc::DvcEncode;
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 // Advanced Input channel as defined from Freerdp, [here]:
 //
 // [here]: https://github.com/FreeRDP/FreeRDP/blob/master/include/freerdp/channels/ainput.h
@@ -93,9 +93,20 @@ impl<'de> Decode<'de> for VersionPdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[repr(u16)]
 pub enum ServerPduType {
     Version = 0x01,
+}
+
+impl ServerPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(&self) -> u16 {
+        *self as u16
+    }
 }
 
 impl<'a> From<&'a ServerPdu> for ServerPduType {
@@ -121,7 +132,7 @@ impl Encode for ServerPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u16(ServerPduType::from(self).to_u16().unwrap());
+        dst.write_u16(ServerPduType::from(self).as_u16());
         match self {
             ServerPdu::Version(pdu) => pdu.encode(dst),
         }
@@ -220,7 +231,7 @@ impl Encode for ClientPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u16(ClientPduType::from(self).to_u16().unwrap());
+        dst.write_u16(ClientPduType::from(self).as_u16());
         match self {
             ClientPdu::Mouse(pdu) => pdu.encode(dst),
         }
@@ -254,9 +265,20 @@ impl<'de> Decode<'de> for ClientPdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[repr(u16)]
 pub enum ClientPduType {
     Mouse = 0x02,
+}
+
+impl ClientPduType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
 }
 
 impl<'a> From<&'a ClientPdu> for ClientPduType {

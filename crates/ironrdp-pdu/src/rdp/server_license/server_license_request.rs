@@ -221,11 +221,11 @@ impl ServerCertificate {
                 let public_exponent = certificate.public_key.public_exponent.to_le_bytes();
 
                 let rsa_public_key = pkcs1::RsaPublicKey {
-                    modulus: pkcs1::UintRef::new(&certificate.public_key.modulus).unwrap(),
-                    public_exponent: pkcs1::UintRef::new(&public_exponent).unwrap(),
+                    modulus: pkcs1::UintRef::new(&certificate.public_key.modulus)?,
+                    public_exponent: pkcs1::UintRef::new(&public_exponent)?,
                 };
 
-                let public_key = pkcs1::der::Encode::to_der(&rsa_public_key).unwrap();
+                let public_key = pkcs1::der::Encode::to_der(&rsa_public_key)?;
 
                 Ok(public_key)
             }

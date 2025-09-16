@@ -9,8 +9,8 @@ use ironrdp_core::{
     cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, Decode, DecodeResult,
     Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 const RFX_ICAP_VERSION: u16 = 0x0100;
 const RFX_ICAP_TILE_SIZE: u16 = 0x40;
@@ -582,7 +582,7 @@ impl Encode for RfxICap {
         dst.write_u8(self.flags.bits());
         dst.write_u8(RFX_ICAP_COLOR_CONVERSION);
         dst.write_u8(RFX_ICAP_TRANSFORM_BITS);
-        dst.write_u8(self.entropy_bits.to_u8().unwrap());
+        dst.write_u8(self.entropy_bits.as_u8());
 
         Ok(())
     }
@@ -629,10 +629,17 @@ impl<'de> Decode<'de> for RfxICap {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, FromPrimitive, ToPrimitive, Copy, Clone)]
+#[repr(u8)]
+#[derive(PartialEq, Eq, Debug, FromPrimitive, Copy, Clone)]
 pub enum EntropyBits {
     Rlgr1 = 1,
     Rlgr3 = 4,
+}
+
+impl EntropyBits {
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 bitflags! {
@@ -688,10 +695,7 @@ fn parse_codecs_config<'a>(codecs: &'a [&'a str]) -> Result<HashMap<&'a str, boo
     let mut result = HashMap::new();
 
     for &codec_str in codecs {
-        if let Some(colon_index) = codec_str.find(':') {
-            let codec_name = &codec_str[0..colon_index];
-            let state_str = &codec_str[colon_index + 1..];
-
+        if let Some((codec_name, state_str)) = codec_str.split_once(':') {
             let state = match state_str {
                 "on" => true,
                 "off" => false,

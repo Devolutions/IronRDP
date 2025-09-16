@@ -5,8 +5,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
 const CLIENT_ENCRYPTION_METHODS_SIZE: usize = 4;
@@ -100,7 +100,7 @@ impl Encode for ServerSecurityData {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.encryption_method.bits());
-        dst.write_u32(self.encryption_level.to_u32().unwrap());
+        dst.write_u32(self.encryption_level.as_u32());
 
         if self.encryption_method.is_empty() && self.encryption_level == EncryptionLevel::None {
             if self.server_random.is_some() || !self.server_cert.is_empty() {
@@ -197,13 +197,23 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum EncryptionLevel {
     None = 0,
     Low = 1,
     ClientCompatible = 2,
     High = 3,
     Fips = 4,
+}
+
+impl EncryptionLevel {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
 #[derive(Debug, Error)]

@@ -22,8 +22,8 @@ fn main() -> anyhow::Result<()> {
     // TODO: get window size & scale factor from GUI/App
     let window_size = (1024, 768);
     config.connector.desktop_scale_factor = 0;
-    config.connector.desktop_size.width = u16::try_from(window_size.0).unwrap();
-    config.connector.desktop_size.height = u16::try_from(window_size.1).unwrap();
+    config.connector.desktop_size.width = window_size.0;
+    config.connector.desktop_size.height = window_size.1;
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()

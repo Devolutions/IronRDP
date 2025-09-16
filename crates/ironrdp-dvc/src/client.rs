@@ -62,6 +62,13 @@ impl DrdynvcClient {
         self
     }
 
+    pub fn attach_dynamic_channel<T>(&mut self, channel: T)
+    where
+        T: DvcProcessor + 'static,
+    {
+        self.dynamic_channels.insert(channel);
+    }
+
     pub fn get_dvc_by_type_id<T>(&self) -> Option<&DynamicVirtualChannel>
     where
         T: DvcProcessor,
@@ -74,7 +81,7 @@ impl DrdynvcClient {
     }
 
     fn create_capabilities_response(&mut self) -> SvcMessage {
-        let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V1));
+        let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V2));
         debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
         self.cap_handshake_done = true;
         SvcMessage::from(caps_response)
@@ -126,7 +133,10 @@ impl SvcProcessor for DrdynvcClient {
                     // and get any start messages.
                     self.dynamic_channels
                         .attach_channel_id(channel_name.clone(), channel_id);
-                    let dynamic_channel = self.dynamic_channels.get_by_channel_name_mut(&channel_name).unwrap();
+                    let dynamic_channel = self
+                        .dynamic_channels
+                        .get_by_channel_name_mut(&channel_name)
+                        .expect("channel exists");
                     (CreationStatus::OK, dynamic_channel.start()?)
                 } else {
                     (CreationStatus::NO_LISTENER, Vec::new())

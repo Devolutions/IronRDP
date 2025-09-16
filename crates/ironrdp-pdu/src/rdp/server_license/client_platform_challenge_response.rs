@@ -8,8 +8,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive as _;
 
 use super::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader,
@@ -54,8 +54,8 @@ impl ClientPlatformChallengeResponse {
 
         let mut challenge_response_data = vec![0u8; RESPONSE_DATA_STATIC_FIELDS_SIZE];
         challenge_response_data.write_u16::<LittleEndian>(RESPONSE_DATA_VERSION)?;
-        challenge_response_data.write_u16::<LittleEndian>(ClientType::Other.to_u16().unwrap())?;
-        challenge_response_data.write_u16::<LittleEndian>(LicenseDetailLevel::Detail.to_u16().unwrap())?;
+        challenge_response_data.write_u16::<LittleEndian>(ClientType::Other.as_u16())?;
+        challenge_response_data.write_u16::<LittleEndian>(LicenseDetailLevel::Detail.as_u16())?;
         challenge_response_data.write_u16::<LittleEndian>(decrypted_challenge.len() as u16)?;
         challenge_response_data.write_all(&decrypted_challenge)?;
 
@@ -162,7 +162,8 @@ impl ClientPlatformChallengeResponse {
     }
 }
 
-#[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
 pub enum ClientType {
     Win32 = 0x0100,
     Win16 = 0x0200,
@@ -170,11 +171,32 @@ pub enum ClientType {
     Other = 0xff00,
 }
 
-#[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
+impl ClientType {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
+}
+
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
 pub enum LicenseDetailLevel {
     Simple = 1,
     Moderate = 2,
     Detail = 3,
+}
+
+impl LicenseDetailLevel {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u16(self) -> u16 {
+        self as u16
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -195,8 +217,8 @@ impl Encode for PlatformChallengeResponseData {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(RESPONSE_DATA_VERSION);
-        dst.write_u16(self.client_type.to_u16().unwrap());
-        dst.write_u16(self.license_detail_level.to_u16().unwrap());
+        dst.write_u16(self.client_type.as_u16());
+        dst.write_u16(self.license_detail_level.as_u16());
         dst.write_u16(cast_length!("len", self.challenge.len())?);
         dst.write_slice(&self.challenge);
 

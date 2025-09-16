@@ -154,6 +154,24 @@ impl ClientConnector {
         self.static_channels.insert(channel);
     }
 
+    pub fn get_static_channel_processor<T>(&mut self) -> Option<&T>
+    where
+        T: SvcClientProcessor + 'static,
+    {
+        self.static_channels
+            .get_by_type::<T>()
+            .and_then(|channel| channel.channel_processor_downcast_ref())
+    }
+
+    pub fn get_static_channel_processor_mut<T>(&mut self) -> Option<&mut T>
+    where
+        T: SvcClientProcessor + 'static,
+    {
+        self.static_channels
+            .get_by_type_mut::<T>()
+            .and_then(|channel| channel.channel_processor_downcast_mut())
+    }
+
     pub fn should_perform_security_upgrade(&self) -> bool {
         matches!(self.state, ClientConnectorState::EnhancedSecurityUpgrade { .. })
     }
@@ -327,7 +345,8 @@ impl Sequence for ClientConnector {
                 let client_gcc_blocks =
                     create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values())?;
 
-                let connect_initial = mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks);
+                let connect_initial =
+                    mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?connect_initial, "Send");
 
@@ -347,9 +366,9 @@ impl Sequence for ClientConnector {
 
                 debug!(message = ?connect_response, "Received");
 
-                let client_gcc_blocks = &connect_initial.conference_create_request.gcc_blocks;
+                let client_gcc_blocks = connect_initial.conference_create_request.gcc_blocks();
 
-                let server_gcc_blocks = connect_response.conference_create_response.gcc_blocks;
+                let server_gcc_blocks = connect_response.conference_create_response.into_gcc_blocks();
 
                 if client_gcc_blocks.security == gcc::ClientSecurityData::no_security()
                     && server_gcc_blocks.security != gcc::ServerSecurityData::no_security()

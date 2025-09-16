@@ -15,6 +15,14 @@ public partial class Config: IDisposable
 {
     private unsafe Raw.Config* _inner;
 
+    public DvcPipeProxyConfig? DvcPipeProxy
+    {
+        get
+        {
+            return GetDvcPipeProxy();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>Config</c> from a raw handle.
     /// </summary>
@@ -38,6 +46,26 @@ public partial class Config: IDisposable
         {
             Raw.ConfigBuilder* retVal = Raw.Config.GetBuilder();
             return new ConfigBuilder(retVal);
+        }
+    }
+
+    /// <returns>
+    /// A <c>DvcPipeProxyConfig</c> allocated on Rust side.
+    /// </returns>
+    public DvcPipeProxyConfig? GetDvcPipeProxy()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("Config");
+            }
+            Raw.DvcPipeProxyConfig* retVal = Raw.Config.GetDvcPipeProxy(_inner);
+            if (retVal == null)
+            {
+                return null;
+            }
+            return new DvcPipeProxyConfig(retVal);
         }
     }
 

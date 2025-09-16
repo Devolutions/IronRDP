@@ -3,17 +3,16 @@ use core::ops::Add;
 
 use byteorder::{LittleEndian, ReadBytesExt as _};
 use ironrdp_core::{ensure_size, invalid_field_err, other_err, ReadCursor, WriteCursor};
-use num_derive::{FromPrimitive, ToPrimitive};
+use num_derive::FromPrimitive;
 
 use crate::{DecodeResult, EncodeResult};
 
 pub fn split_u64(value: u64) -> (u32, u32) {
-    let bytes = value.to_le_bytes();
-    let (low, high) = bytes.split_at(size_of::<u32>());
-    (
-        u32::from_le_bytes(low.try_into().unwrap()),
-        u32::from_le_bytes(high.try_into().unwrap()),
-    )
+    let low =
+        u32::try_from(value & 0xFFFF_FFFF).expect("masking with 0xFFFF_FFFF ensures that the value fits into u32");
+    let high = u32::try_from(value >> 32).expect("(u64 >> 32) fits into u32");
+
+    (low, high)
 }
 
 pub fn combine_u64(lo: u32, hi: u32) -> u64 {
@@ -39,10 +38,21 @@ pub fn from_utf16_bytes(mut value: &[u8]) -> String {
     String::from_utf16_lossy(value_u16.as_ref())
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[repr(u16)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum CharacterSet {
     Ansi = 1,
     Unicode = 2,
+}
+
+impl CharacterSet {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    pub fn as_u16(self) -> u16 {
+        self as u16
+    }
 }
 
 // Read a string from the cursor, using the specified character set.
