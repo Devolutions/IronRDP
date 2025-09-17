@@ -24,7 +24,7 @@ impl OsPipe for WindowsPipe {
             .max_instances(2)
             .in_buffer_size(PIPE_BUFFER_SIZE)
             .out_buffer_size(PIPE_BUFFER_SIZE)
-            .pipe_mode(named_pipe::PipeMode::Message)
+            .pipe_mode(named_pipe::PipeMode::Byte)
             .create(pipe_name)
             .map_err(DvcPipeProxyError::Io)?;
 
