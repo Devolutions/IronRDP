@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::{ChannelFlags, SvcMessage};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::Notify;
 use tracing::{error, info};
 
 use crate::error::DvcPipeProxyError;
@@ -62,7 +62,16 @@ enum NextWorkerState {
     Reconnect,
 }
 
-async fn process_client<P: OsPipe>(ctx: &mut WorkerCtx) -> Result<NextWorkerState, DvcPipeProxyError> {
+struct BridgedWorkerCtx {
+    on_write_dvc: OnWriteDvcMessage,
+    to_pipe_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    abort_event: Arc<Notify>,
+    pipe_name: String,
+    channel_name: String,
+    channel_id: u32,
+}
+
+async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWorkerState, DvcPipeProxyError> {
     let pipe_name = &ctx.pipe_name;
     let channel_name = &ctx.channel_name;
 
@@ -132,21 +141,53 @@ async fn process_client<P: OsPipe>(ctx: &mut WorkerCtx) -> Result<NextWorkerStat
     }
 }
 
-async fn worker<P: OsPipe>(mut ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
+async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
+    // Create a bridge between std::sync::mpsc and tokio for async compatibility.
+    // It is fine to use unbounded channel here because we are using it only to
+    // forward data from a bounded channel (with size IO_MPSC_CHANNEL_SIZE),
+    // so we will never have unbounded memory growth.
+    let (async_tx, async_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let WorkerCtx {
+        on_write_dvc,
+        to_pipe_rx: std_rx,
+        abort_event,
+        pipe_name,
+        channel_name,
+        channel_id,
+    } = ctx;
+
+    // Spawn a thread to bridge std::sync::mpsc to tokio::sync::mpsc.
+    std::thread::spawn(move || {
+        while let Ok(data) = std_rx.recv() {
+            if async_tx.send(data).is_err() {
+                break; // Receiver dropped
+            }
+        }
+    });
+
+    let mut bridged_ctx = BridgedWorkerCtx {
+        on_write_dvc,
+        to_pipe_rx: async_rx,
+        abort_event,
+        pipe_name,
+        channel_name,
+        channel_id,
+    };
     loop {
-        match process_client::<P>(&mut ctx).await? {
+        match process_client::<P>(&mut bridged_ctx).await? {
             NextWorkerState::Abort => {
                 info!(
-                    channel_name = %ctx.channel_name,
-                    pipe_name = %ctx.pipe_name,
+                    channel_name = %bridged_ctx.channel_name,
+                    pipe_name = %bridged_ctx.pipe_name,
                     "Aborting DVC proxy worker thread."
                 );
                 break;
             }
             NextWorkerState::Reconnect => {
                 info!(
-                    channel_name = %ctx.channel_name,
-                    pipe_name = %ctx.pipe_name,
+                    channel_name = %bridged_ctx.channel_name,
+                    pipe_name = %bridged_ctx.pipe_name,
                     "Reconnecting to DVC pipe..."
                 );
                 continue;
