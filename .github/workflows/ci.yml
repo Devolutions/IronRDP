@@ -77,7 +77,7 @@ jobs:
       - name: Install devel packages on Linux
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get -y install libasound2-dev libopus_sys
+          sudo apt-get -y install libasound2-dev libopus-dev
       - name: Install devel packages on Windows
         if: runner.os == 'Windows'
         run: |
