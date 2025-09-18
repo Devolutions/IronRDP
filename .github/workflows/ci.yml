@@ -74,14 +74,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install devel packages on Linux
+      - name: Install devel packages
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get -y install libasound2-dev libopus-dev
-      - name: Install devel packages on MacOS
-        if: runner.os == 'macos'
-        run: |
-          brew install opus
+          sudo apt-get -y install libasound2-dev
 
       - name: Install NASM
         if: runner.os == 'Windows'
