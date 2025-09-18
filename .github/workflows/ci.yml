@@ -78,6 +78,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get -y install libasound2-dev
+        if: runner.os == 'Windows'
+        run: |
+          choco install -y opus
 
       - name: Install NASM
         if: runner.os == 'Windows'
