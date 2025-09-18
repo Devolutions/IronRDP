@@ -3007,9 +3007,9 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 
 [[package]]
 name = "libopus_sys"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b136ad89d8cfd74a3706bc79dee87bf313c71643ae7491216eb3bf3f7feaa8"
+checksum = "60e01ac33533ea26ecd6c9479ebc44833b88b0d8e9ab046b47cad3562d29ee33"
 dependencies = [
  "cmake",
  "log",
@@ -3730,9 +3730,9 @@ dependencies = [
 
 [[package]]
 name = "opus2"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c95e1bc137a1d521d97b00481da7b26a2b4337d6bb1583c0ffd87ee525c0168"
+checksum = "a8e79f6e5198dfc9ec913fd4ddc8b53b87263d59c500b989f8449bd566552ce3"
 dependencies = [
  "libopus_sys",
 ]
