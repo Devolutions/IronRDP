@@ -78,10 +78,6 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get -y install libasound2-dev libopus-dev
-      - name: Install devel packages on Windows
-        if: runner.os == 'Windows'
-        run: |
-          choco install -y opus
       - name: Install devel packages on MacOS
         if: runner.os == 'macos'
         run: |
