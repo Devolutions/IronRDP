@@ -305,7 +305,7 @@ impl RdpsndServerHandler for SndHandler {
                 }
             };
 
-            match opus2::Encoder::new(fmt.n_samples_per_sec, n_channels, opus::Application::Audio) {
+            match opus2::Encoder::new(fmt.n_samples_per_sec, n_channels, opus2::Application::Audio) {
                 Ok(enc) => Some(enc),
                 Err(err) => {
                     warn!("Failed to create OPUS encoder: {}", err);
