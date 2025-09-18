@@ -340,8 +340,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "audiopus_sys"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62314a1546a2064e033665d658e88c620a62904be945f8147e6b16c3db9f8651"
+source = "git+https://github.com/sevenc-nanashi/audiopus_sys?rev=00e9d16#00e9d168493710193ee133bc7fbb50715a1f6e61"
 dependencies = [
  "cmake",
  "log",

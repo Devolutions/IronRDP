@@ -199,3 +199,7 @@ opt-level = 3
 # FIXME: We need to catch up with Diplomat upstream again, but this is a significant amount of work.
 # In the meantime, we use this forked version which fixes an undefined behavior in the code expanded by the bridge macro.
 diplomat = { git = "https://github.com/CBenoit/diplomat", rev = "6dc806e80162b6b39509a04a2835744236cd2396" }
+# FIXME: Use patch audiopus_sys, the CMakeList.txt requires an older version of cmake that is not available in the runners we use.
+# There is `opus2` which is a fork that points to a more recent version of it,
+# but it doesn't compile properly (see https://github.com/cijiugechu/libopus_sys/issues/2)
+audiopus_sys = { git = 'https://github.com/sevenc-nanashi/audiopus_sys', rev = '00e9d16' }
