@@ -338,17 +338,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "audiopus_sys"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62314a1546a2064e033665d658e88c620a62904be945f8147e6b16c3db9f8651"
-dependencies = [
- "cmake",
- "log",
- "pkg-config",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2347,7 +2336,7 @@ dependencies = [
  "ironrdp-server",
  "ironrdp-session",
  "ironrdp-svc",
- "opus",
+ "opus2",
  "pico-args",
  "rand 0.9.2",
  "sspi",
@@ -2717,7 +2706,7 @@ dependencies = [
  "bytemuck",
  "cpal",
  "ironrdp-rdpsnd",
- "opus",
+ "opus2",
  "tracing",
  "tracing-subscriber",
 ]
@@ -3008,6 +2997,17 @@ name = "libm"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
+
+[[package]]
+name = "libopus_sys"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60e01ac33533ea26ecd6c9479ebc44833b88b0d8e9ab046b47cad3562d29ee33"
+dependencies = [
+ "cmake",
+ "log",
+ "pkg-config",
+]
 
 [[package]]
 name = "libredox"
@@ -3722,13 +3722,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "opus"
-version = "0.3.0"
+name = "opus2"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6526409b274a7e98e55ff59d96aafd38e6cd34d46b7dbbc32ce126dffcd75e8e"
+checksum = "a8e79f6e5198dfc9ec913fd4ddc8b53b87263d59c500b989f8449bd566552ce3"
 dependencies = [
- "audiopus_sys",
- "libc",
+ "libopus_sys",
 ]
 
 [[package]]

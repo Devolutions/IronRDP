@@ -300,16 +300,16 @@ impl RdpsndServerHandler for SndHandler {
         let fmt = client_format.formats[usize::from(nfmt)].clone();
 
         let mut opus_enc = if fmt.format == WaveFormat::OPUS {
-            let n_channels: opus::Channels = match fmt.n_channels {
-                1 => opus::Channels::Mono,
-                2 => opus::Channels::Stereo,
+            let n_channels: opus2::Channels = match fmt.n_channels {
+                1 => opus2::Channels::Mono,
+                2 => opus2::Channels::Stereo,
                 n => {
                     warn!("Invalid OPUS channels: {}", n);
                     return Some(0);
                 }
             };
 
-            match opus::Encoder::new(fmt.n_samples_per_sec, n_channels, opus::Application::Audio) {
+            match opus2::Encoder::new(fmt.n_samples_per_sec, n_channels, opus2::Application::Audio) {
                 Ok(enc) => Some(enc),
                 Err(err) => {
                     warn!("Failed to create OPUS encoder: {}", err);

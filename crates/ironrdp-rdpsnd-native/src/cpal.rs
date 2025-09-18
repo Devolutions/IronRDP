@@ -144,12 +144,12 @@ impl DecodeStream {
             #[cfg(feature = "opus")]
             WaveFormat::OPUS => {
                 let chan = match rx_format.n_channels {
-                    1 => opus::Channels::Mono,
-                    2 => opus::Channels::Stereo,
+                    1 => opus2::Channels::Mono,
+                    2 => opus2::Channels::Stereo,
                     _ => bail!("unsupported #channels for Opus"),
                 };
                 let (dec_tx, dec_rx) = mpsc::channel();
-                let mut dec = opus::Decoder::new(rx_format.n_samples_per_sec, chan)?;
+                let mut dec = opus2::Decoder::new(rx_format.n_samples_per_sec, chan)?;
                 dec_thread = Some(thread::spawn(move || {
                     while let Ok(pkt) = rx.recv() {
                         let nb_samples = match dec.get_nb_samples(&pkt) {
