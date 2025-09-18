@@ -77,10 +77,13 @@ jobs:
       - name: Install devel packages
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get -y install libasound2-dev
+          sudo apt-get -y install libasound2-dev libopus_sys
         if: runner.os == 'Windows'
         run: |
           choco install -y opus
+        if: runner.os == 'macos'
+        run: |
+          brew install opus  
 
       - name: Install NASM
         if: runner.os == 'Windows'
