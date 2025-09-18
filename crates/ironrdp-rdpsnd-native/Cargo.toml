@@ -23,7 +23,7 @@ anyhow = "1"
 bytemuck = { version = "1.23", optional = true }
 cpal = "0.16"
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.6" } # public
-opus2 = { version = "0.3", optional = true, features = ["dynamic"] }
+opus2 = { version = "0.3", optional = true, features = ["bundled"] }
 tracing = { version = "0.1", features = ["log"] }
 
 [dev-dependencies]
