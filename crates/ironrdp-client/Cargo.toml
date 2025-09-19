@@ -63,7 +63,7 @@ softbuffer = "0.4"
 # CLI
 clap = { version = "4.5", features = ["derive", "cargo"] }
 proc-exit = "2"
-inquire = "0.7"
+inquire = "0.9"
 
 # Logging
 tracing = { version = "0.1", features = ["log"] }
