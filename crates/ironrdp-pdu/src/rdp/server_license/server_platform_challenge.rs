@@ -23,9 +23,7 @@ impl ServerPlatformChallenge {
     const NAME: &'static str = "ServerPlatformChallenge";
 
     const FIXED_PART_SIZE: usize = CONNECT_FLAGS_FIELD_SIZE + MAC_SIZE + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE;
-}
 
-impl ServerPlatformChallenge {
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -38,16 +36,6 @@ impl ServerPlatformChallenge {
         Ok(())
     }
 
-    pub fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    pub fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE + self.license_header.size() + self.encrypted_platform_challenge.len()
-    }
-}
-
-impl ServerPlatformChallenge {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::PlatformChallenge {
             return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
@@ -66,5 +54,13 @@ impl ServerPlatformChallenge {
             encrypted_platform_challenge,
             mac_data,
         })
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.license_header.size() + self.encrypted_platform_challenge.len()
     }
 }

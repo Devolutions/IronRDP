@@ -16,9 +16,7 @@ impl TpduCode {
     pub const DISCONNECT_REQUEST: Self = Self(0x80);
     pub const DATA: Self = Self(0xF0);
     pub const ERROR: Self = Self(0x70);
-}
 
-impl TpduCode {
     pub fn header_fixed_part_size(self) -> usize {
         if self == TpduCode::DATA {
             TpduHeader::DATA_FIXED_PART_SIZE

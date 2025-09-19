@@ -302,8 +302,8 @@ impl Encode for FastPathInput {
 impl<'de> Decode<'de> for FastPathInput {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = FastPathInputHeader::decode(src)?;
-        let events = (0..header.num_events)
-            .map(|_| FastPathInputEvent::decode(src))
+        let events = core::iter::repeat_with(|| FastPathInputEvent::decode(src))
+            .take(usize::from(header.num_events))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self(events))

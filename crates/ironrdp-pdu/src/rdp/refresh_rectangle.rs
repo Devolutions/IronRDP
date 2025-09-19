@@ -54,10 +54,10 @@ impl<'de> Decode<'de> for RefreshRectanglePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let number_of_areas = src.read_u8();
+        let number_of_areas = usize::from(src.read_u8());
         read_padding!(src, 3);
-        let areas_to_refresh = (0..number_of_areas)
-            .map(|_| InclusiveRectangle::decode(src))
+        let areas_to_refresh = core::iter::repeat_with(|| InclusiveRectangle::decode(src))
+            .take(number_of_areas)
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self { areas_to_refresh })
