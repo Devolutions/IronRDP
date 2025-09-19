@@ -351,12 +351,12 @@ impl<'de> Decode<'de> for ServerAudioFormatPdu {
         read_padding!(src, 4); /* volume */
         read_padding!(src, 4); /* pitch */
         read_padding!(src, 2); /* DGramPort */
-        let n_formats = src.read_u16();
+        let n_formats = usize::from(src.read_u16());
         read_padding!(src, 1); /* blockNo */
         let version = Version::try_from(src.read_u16())?;
         read_padding!(src, 1);
-        let formats = (0..n_formats)
-            .map(|_| AudioFormat::decode(src))
+        let formats = core::iter::repeat_with(|| AudioFormat::decode(src))
+            .take(n_formats)
             .collect::<DecodeResult<_>>()?;
 
         Ok(Self { version, formats })
@@ -447,12 +447,12 @@ impl<'de> Decode<'de> for ClientAudioFormatPdu {
         let volume_right = (volume >> 16) as u16;
         let pitch = src.read_u32();
         let dgram_port = src.read_u16_be();
-        let n_formats = src.read_u16();
+        let n_formats = usize::from(src.read_u16());
         let _block_no = src.read_u8();
         let version = Version::try_from(src.read_u16())?;
         read_padding!(src, 1);
-        let formats = (0..n_formats)
-            .map(|_| AudioFormat::decode(src))
+        let formats = core::iter::repeat_with(|| AudioFormat::decode(src))
+            .take(n_formats)
             .collect::<DecodeResult<_>>()?;
 
         Ok(Self {

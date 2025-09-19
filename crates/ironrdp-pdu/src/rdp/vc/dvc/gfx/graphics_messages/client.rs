@@ -1,3 +1,5 @@
+use core::iter;
+
 use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
     WriteCursor,
@@ -44,8 +46,8 @@ impl<'a> Decode<'a> for CapabilitiesAdvertisePdu {
 
         ensure_size!(in: src, size: capabilities_count * CapabilitySet::FIXED_PART_SIZE);
 
-        let capabilities = (0..capabilities_count)
-            .map(|_| CapabilitySet::decode(src))
+        let capabilities = iter::repeat_with(|| CapabilitySet::decode(src))
+            .take(capabilities_count)
             .collect::<Result<_, _>>()?;
 
         Ok(Self(capabilities))
@@ -138,9 +140,9 @@ impl<'a> Decode<'a> for CacheImportReplyPdu {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let entries_count = src.read_u16();
+        let entries_count = usize::from(src.read_u16());
 
-        let cache_slots = (0..entries_count).map(|_| src.read_u16()).collect();
+        let cache_slots = iter::repeat_with(|| src.read_u16()).take(entries_count).collect();
 
         Ok(Self { cache_slots })
     }

@@ -1,3 +1,5 @@
+use core::iter;
+
 use bit_field::BitField as _;
 use bitflags::bitflags;
 use ironrdp_core::{
@@ -249,8 +251,8 @@ impl<'de> Decode<'de> for RegionPdu {
 
         ensure_size!(in: src, size: number_of_rectangles * RECTANGLE_SIZE);
 
-        let rectangles = (0..number_of_rectangles)
-            .map(|_| RfxRectangle::decode(src))
+        let rectangles = iter::repeat_with(|| RfxRectangle::decode(src))
+            .take(number_of_rectangles)
             .collect::<Result<Vec<_>, _>>()?;
 
         ensure_size!(in: src, size: 4);
@@ -381,15 +383,15 @@ impl<'de> Decode<'de> for TileSetPdu<'de> {
             return Err(invalid_field_err!("tile_size", "Invalid tile size"));
         }
 
-        let number_of_tiles = src.read_u16();
+        let number_of_tiles = usize::from(src.read_u16());
         let _tiles_data_size = src.read_u32() as usize;
 
-        let quants = (0..number_of_quants)
-            .map(|_| Quant::decode(src))
+        let quants = iter::repeat_with(|| Quant::decode(src))
+            .take(number_of_quants)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let tiles = (0..number_of_tiles)
-            .map(|_| Block::decode(src))
+        let tiles = iter::repeat_with(|| Block::decode(src))
+            .take(number_of_tiles)
             .collect::<Result<Vec<_>, _>>()?;
 
         let tiles = tiles

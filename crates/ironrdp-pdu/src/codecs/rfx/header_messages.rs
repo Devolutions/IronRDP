@@ -141,9 +141,9 @@ impl<'de> Decode<'de> for ChannelsPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let num_channels = src.read_u8();
-        let channels = (0..num_channels)
-            .map(|_| RfxChannel::decode(src))
+        let num_channels = usize::from(src.read_u8());
+        let channels = core::iter::repeat_with(|| RfxChannel::decode(src))
+            .take(num_channels)
             .collect::<DecodeResult<Vec<_>>>()?;
 
         Ok(Self(channels))
