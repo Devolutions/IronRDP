@@ -1,3 +1,4 @@
+use core::iter;
 use std::fmt;
 
 use bit_field::BitField as _;
@@ -15,7 +16,7 @@ use crate::geometry::InclusiveRectangle;
 pub(crate) const RESET_GRAPHICS_PDU_SIZE: usize = 340;
 
 const MAX_RESET_GRAPHICS_WIDTH_HEIGHT: u32 = 32_766;
-const MONITOR_COUNT_MAX: u32 = 16;
+const MONITOR_COUNT_MAX: usize = 16;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct WireToSurface1Pdu {
@@ -254,11 +255,11 @@ impl<'a> Decode<'a> for SolidFillPdu {
 
         let surface_id = src.read_u16();
         let fill_pixel = Color::decode(src)?;
-        let rectangles_count = src.read_u16();
+        let rectangles_count = usize::from(src.read_u16());
 
-        ensure_size!(in: src, size: usize::from(rectangles_count) * InclusiveRectangle::FIXED_PART_SIZE);
-        let rectangles = (0..rectangles_count)
-            .map(|_| InclusiveRectangle::decode(src))
+        ensure_size!(in: src, size: rectangles_count * InclusiveRectangle::FIXED_PART_SIZE);
+        let rectangles = iter::repeat_with(|| InclusiveRectangle::decode(src))
+            .take(rectangles_count)
             .collect::<Result<_, _>>()?;
 
         Ok(Self {
@@ -315,10 +316,10 @@ impl<'a> Decode<'a> for SurfaceToSurfacePdu {
         let source_surface_id = src.read_u16();
         let destination_surface_id = src.read_u16();
         let source_rectangle = InclusiveRectangle::decode(src)?;
-        let destination_points_count = src.read_u16();
+        let destination_points_count = usize::from(src.read_u16());
 
-        let destination_points = (0..destination_points_count)
-            .map(|_| Point::decode(src))
+        let destination_points = iter::repeat_with(|| Point::decode(src))
+            .take(destination_points_count)
             .collect::<Result<_, _>>()?;
 
         Ok(Self {
@@ -425,10 +426,10 @@ impl<'de> Decode<'de> for CacheToSurfacePdu {
 
         let cache_slot = src.read_u16();
         let surface_id = src.read_u16();
-        let destination_points_count = src.read_u16();
+        let destination_points_count = usize::from(src.read_u16());
 
-        let destination_points = (0..destination_points_count)
-            .map(|_| decode_cursor(src))
+        let destination_points = iter::repeat_with(|| decode_cursor(src))
+            .take(destination_points_count)
             .collect::<Result<_, _>>()?;
 
         Ok(Self {
@@ -589,13 +590,13 @@ impl<'a> Decode<'a> for ResetGraphicsPdu {
             return Err(invalid_field_err!("height", "invalid reset graphics height"));
         }
 
-        let monitor_count = src.read_u32();
+        let monitor_count = cast_length!("monitor count", src.read_u32())?;
         if monitor_count > MONITOR_COUNT_MAX {
             return Err(invalid_field_err!("height", "invalid reset graphics monitor count"));
         }
 
-        let monitors = (0..monitor_count)
-            .map(|_| Monitor::decode(src))
+        let monitors = iter::repeat_with(|| Monitor::decode(src))
+            .take(monitor_count)
             .collect::<Result<Vec<_>, _>>()?;
 
         let pdu = Self {

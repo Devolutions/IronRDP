@@ -61,11 +61,11 @@ impl<'de> Decode<'de> for InputEventPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let number_of_events = src.read_u16();
+        let number_of_events = usize::from(src.read_u16());
         read_padding!(src, 2);
 
-        let events = (0..number_of_events)
-            .map(|_| InputEvent::decode(src))
+        let events = core::iter::repeat_with(|| InputEvent::decode(src))
+            .take(number_of_events)
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self(events))
