@@ -1,3 +1,4 @@
+use alloc::borrow::ToOwned as _;
 use alloc::vec::Vec;
 use core::cmp;
 
@@ -28,7 +29,7 @@ impl CompleteData {
     }
 
     fn process_data_first_pdu(&mut self, data_first: DataFirstPdu) -> DecodeResult<Option<Vec<u8>>> {
-        let total_data_size: DecodeResult<_> = cast_length!("DataFirstPdu::length", data_first.length);
+        let total_data_size: DecodeResult<_> = cast_length!("DataFirstPdu::length", data_first.length());
         let total_data_size = total_data_size?;
         if self.total_size != 0 || !self.data.is_empty() {
             error!("Incomplete DVC message, it will be skipped");
@@ -36,11 +37,11 @@ impl CompleteData {
             self.data.clear();
         }
 
-        if total_data_size == data_first.data.len() {
-            Ok(Some(data_first.data))
+        if total_data_size == data_first.data().len() {
+            Ok(Some(data_first.data().to_owned()))
         } else {
             self.total_size = total_data_size;
-            self.data = data_first.data;
+            self.data = data_first.data().to_owned();
 
             Ok(None)
         }
@@ -49,22 +50,22 @@ impl CompleteData {
     fn process_data_pdu(&mut self, mut data: DataPdu) -> DecodeResult<Option<Vec<u8>>> {
         if self.total_size == 0 && self.data.is_empty() {
             // message is not fragmented
-            return Ok(Some(data.data));
+            return Ok(Some(data.data().to_owned()));
         }
 
         // The message is fragmented and needs to be reassembled.
-        match self.data.len().checked_add(data.data.len()) {
+        match self.data.len().checked_add(data.data().len()) {
             Some(actual_data_length) => {
                 match actual_data_length.cmp(&(self.total_size)) {
                     cmp::Ordering::Less => {
                         // this is one of the fragmented messages, just append it
-                        self.data.append(&mut data.data);
+                        self.data.append(data.data_mut());
                         Ok(None)
                     }
                     cmp::Ordering::Equal => {
                         // this is the last fragmented message, need to return the whole reassembled message
                         self.total_size = 0;
-                        self.data.append(&mut data.data);
+                        self.data.append(data.data_mut());
                         Ok(Some(self.data.drain(..).collect()))
                     }
                     cmp::Ordering::Greater => {
