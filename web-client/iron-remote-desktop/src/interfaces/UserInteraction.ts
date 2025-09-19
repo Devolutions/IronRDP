@@ -1,6 +1,5 @@
 ﻿import type { ScreenScale } from '../enums/ScreenScale';
 import type { NewSessionInfo } from './NewSessionInfo';
-import type { SessionEvent } from './session-event';
 import { ConfigBuilder } from '../services/ConfigBuilder';
 import type { Config } from '../services/Config';
 import type { Extension } from './Extension';
@@ -25,7 +24,9 @@ export interface UserInteraction {
 
     setCursorStyleOverride(style: string | null): void;
 
-    onSessionEvent(callback: Callback<SessionEvent>): void;
+    onWarningCallback(callback: Callback<string>): void;
+
+    onClipboardRemoteUpdateCallback(callback: Callback<void>): void;
 
     resize(width: number, height: number, scale?: number): void;
 
@@ -33,9 +34,9 @@ export interface UserInteraction {
 
     setEnableAutoClipboard(enable: boolean): void;
 
-    saveRemoteClipboardData(): Promise<boolean>;
+    saveRemoteClipboardData(): Promise<void>;
 
-    sendClipboardData(): Promise<boolean>;
+    sendClipboardData(): Promise<void>;
 
     invokeExtension(ext: Extension): void;
 }

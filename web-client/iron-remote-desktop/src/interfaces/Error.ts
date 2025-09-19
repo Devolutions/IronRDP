@@ -1,6 +1,4 @@
-﻿import type { SessionEventType } from '../enums/SessionEventType';
-
-export enum IronErrorKind {
+﻿export enum IronErrorKind {
     General = 0,
     WrongPassword = 1,
     LogonFailure = 2,
@@ -13,9 +11,4 @@ export enum IronErrorKind {
 export interface IronError {
     backtrace: () => string;
     kind: () => IronErrorKind;
-}
-
-export interface SessionEvent {
-    type: SessionEventType;
-    data: IronError | string;
 }
