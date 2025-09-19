@@ -43,6 +43,10 @@ pub enum CapabilitySet {
 }
 
 impl CapabilitySet {
+    const NAME: &'static str = "GfxCapabilitySet";
+
+    const FIXED_PART_SIZE: usize = CAPABILITY_SET_HEADER_SIZE;
+
     fn version(&self) -> CapabilityVersion {
         match self {
             CapabilitySet::V8 { .. } => CapabilityVersion::V8,
@@ -59,12 +63,6 @@ impl CapabilitySet {
             CapabilitySet::Unknown { .. } => CapabilityVersion::Unknown,
         }
     }
-}
-
-impl CapabilitySet {
-    const NAME: &'static str = "GfxCapabilitySet";
-
-    const FIXED_PART_SIZE: usize = CAPABILITY_SET_HEADER_SIZE;
 }
 
 impl Encode for CapabilitySet {

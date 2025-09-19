@@ -76,20 +76,20 @@ impl<'de> Decode<'de> for X509CertificateChain {
             return Err(invalid_field_err!("certArrayLen", "invalid x509 certificate amount"));
         }
 
-        let certificate_array: Vec<_> = (0..certificate_count)
-            .map(|_| {
-                ensure_size!(in: src, size: 4);
-                let certificate_len = cast_length!("certLen", src.read_u32())?;
-                if certificate_len > MAX_CERTIFICATE_LEN {
-                    return Err(invalid_field_err!("certLen", "invalid x509 certificate length"));
-                }
+        let certificate_array: Vec<_> = core::iter::repeat_with(|| {
+            ensure_size!(in: src, size: 4);
+            let certificate_len = cast_length!("certLen", src.read_u32())?;
+            if certificate_len > MAX_CERTIFICATE_LEN {
+                return Err(invalid_field_err!("certLen", "invalid x509 certificate length"));
+            }
 
-                ensure_size!(in: src, size: certificate_len);
-                let certificate = src.read_slice(certificate_len).into();
+            ensure_size!(in: src, size: certificate_len);
+            let certificate = src.read_slice(certificate_len).into();
 
-                Ok(certificate)
-            })
-            .collect::<Result<_, _>>()?;
+            Ok(certificate)
+        })
+        .take(certificate_count)
+        .collect::<Result<_, _>>()?;
 
         let padding = 8 + 4 * certificate_count; // MSDN: A byte array of the length 8 + 4*NumCertBlobs
         ensure_size!(in: src, size: padding);

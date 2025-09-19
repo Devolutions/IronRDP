@@ -63,7 +63,7 @@ impl ClientNewLicenseRequest {
     ) -> Result<(Self, LicenseEncryptionData), ServerLicenseError> {
         let public_key = license_request.get_public_key()?
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
-                "attempted to retrieve the server public key from a server license request message that does not have a certificate"))?;
+                                          "attempted to retrieve the server public key from a server license request message that does not have a certificate"))?;
 
         let encrypted_premaster_secret = encrypt_with_public_key(premaster_secret, &public_key)?;
 
@@ -123,9 +123,7 @@ impl ClientNewLicenseRequest {
             },
         ))
     }
-}
 
-impl ClientNewLicenseRequest {
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -155,23 +153,6 @@ impl ClientNewLicenseRequest {
         Ok(())
     }
 
-    pub fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    pub fn size(&self) -> usize {
-        self.license_header.size()
-            + LICENSE_REQUEST_STATIC_FIELDS_SIZE
-            + RANDOM_NUMBER_SIZE
-            + self.encrypted_premaster_secret.len()
-            + self.client_machine_name.len()
-            + UTF8_NULL_TERMINATOR_SIZE
-            + self.client_username.len()
-            + UTF8_NULL_TERMINATOR_SIZE
-    }
-}
-
-impl ClientNewLicenseRequest {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::NewLicenseRequest {
             return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
@@ -216,6 +197,21 @@ impl ClientNewLicenseRequest {
             client_username,
             client_machine_name,
         })
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn size(&self) -> usize {
+        self.license_header.size()
+            + LICENSE_REQUEST_STATIC_FIELDS_SIZE
+            + RANDOM_NUMBER_SIZE
+            + self.encrypted_premaster_secret.len()
+            + self.client_machine_name.len()
+            + UTF8_NULL_TERMINATOR_SIZE
+            + self.client_username.len()
+            + UTF8_NULL_TERMINATOR_SIZE
     }
 }
 

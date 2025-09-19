@@ -53,6 +53,14 @@ impl Extension {
     }
 }
 
+#[expect(
+    clippy::allow_attributes,
+    reason = "Unfortunately, expect attribute doesn't work with clippy::multiple_inherent_impl lint"
+)]
+#[allow(
+    clippy::multiple_inherent_impl,
+    reason = "We don't want to expose these methods to JS"
+)]
 impl Extension {
     pub fn ident(&self) -> &str {
         self.ident.as_str()

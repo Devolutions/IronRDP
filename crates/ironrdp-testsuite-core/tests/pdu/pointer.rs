@@ -29,7 +29,7 @@ fn expect_pointer_png(pointer: &DecodedPointer, expected_file_path: &str) {
     }
 
     let png_buffer = std::fs::read(path).unwrap();
-    let mut png_reader = png::Decoder::new(Cursor::new(&png_buffer[..])).read_info().unwrap();
+    let mut png_reader = png::Decoder::new(Cursor::new(&png_buffer)).read_info().unwrap();
     let mut png_reader_buffer = vec![0u8; png_reader.output_buffer_size().unwrap()];
     let frame_size = png_reader.next_frame(&mut png_reader_buffer).unwrap().buffer_size();
     let expected = &png_reader_buffer[..frame_size];

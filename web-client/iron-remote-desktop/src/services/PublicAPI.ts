@@ -68,11 +68,19 @@ export class PublicAPI {
         this.remoteDesktopService.setEnableAutoClipboard(enable);
     }
 
-    private async saveRemoteClipboardData(): Promise<boolean> {
+    private setOnWarningCallback(callback: (data: string) => void) {
+        this.remoteDesktopService.setOnWarningCallback(callback);
+    }
+
+    private setOnClipboardRemoteUpdateCallback(callback: () => void) {
+        this.remoteDesktopService.setOnClipboardRemoteUpdate(callback);
+    }
+
+    private async saveRemoteClipboardData(): Promise<void> {
         return await this.clipboardService.saveRemoteClipboardData();
     }
 
-    private async sendClipboardData(): Promise<boolean> {
+    private async sendClipboardData(): Promise<void> {
         return await this.clipboardService.sendClipboardData();
     }
 
@@ -85,10 +93,9 @@ export class PublicAPI {
             setVisibility: this.setVisibility.bind(this),
             configBuilder: this.configBuilder.bind(this),
             connect: this.connect.bind(this),
+            onWarningCallback: this.setOnWarningCallback.bind(this),
+            onClipboardRemoteUpdateCallback: this.setOnClipboardRemoteUpdateCallback.bind(this),
             setScale: this.setScale.bind(this),
-            onSessionEvent: (callback) => {
-                this.remoteDesktopService.sessionEventObservable.subscribe(callback);
-            },
             ctrlAltDel: this.ctrlAltDel.bind(this),
             metaKey: this.metaKey.bind(this),
             shutdown: this.shutdown.bind(this),
