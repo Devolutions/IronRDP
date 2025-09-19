@@ -1,8 +1,8 @@
 use std::io;
 
 use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding, Decode, DecodeResult, Encode,
-    EncodeResult, ReadCursor, WriteCursor,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding, Decode,
+    DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
@@ -38,7 +38,7 @@ impl Encode for InputEventPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u16(self.0.len() as u16);
+        dst.write_u16(cast_length!("input events count", self.0.len())?);
         write_padding!(dst, 2);
 
         for event in self.0.iter() {

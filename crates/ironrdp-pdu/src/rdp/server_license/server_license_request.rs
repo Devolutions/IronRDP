@@ -108,7 +108,9 @@ impl ServerLicenseRequest {
             return Err(invalid_field_err!("scopeCount", "invalid scope count"));
         }
 
-        let mut scope_list = Vec::with_capacity(scope_count as usize);
+        let mut scope_list = Vec::with_capacity(
+            usize::try_from(scope_count).expect("scope_count is guaranteed to fit into usize due to the prior check"),
+        );
 
         for _ in 0..scope_count {
             scope_list.push(Scope::decode(src)?);

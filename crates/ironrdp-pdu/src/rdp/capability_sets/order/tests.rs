@@ -30,27 +30,27 @@ lazy_static! {
         order_support: {
             let mut array = [0u8; 32];
 
-            array[OrderSupportIndex::DstBlt as usize] = 1;
-            array[OrderSupportIndex::PatBlt as usize] = 1;
-            array[OrderSupportIndex::ScrBlt as usize] = 1;
-            array[OrderSupportIndex::MemBlt as usize] = 1;
-            array[OrderSupportIndex::Mem3Blt as usize] = 1;
-            array[OrderSupportIndex::DrawnInEGrid as usize] = 1;
-            array[OrderSupportIndex::LineTo as usize] = 1;
-            array[OrderSupportIndex::MultiDrawnInEGrid as usize] = 1;
-            array[OrderSupportIndex::SaveBitmap as usize] = 1;
-            array[OrderSupportIndex::MultiDstBlt as usize] = 1;
-            array[OrderSupportIndex::MultiPatBlt as usize] = 1;
-            array[OrderSupportIndex::MultiScrBlt as usize] = 1;
-            array[OrderSupportIndex::MultiOpaqueRect as usize] = 1;
-            array[OrderSupportIndex::Fast as usize] = 1;
-            array[OrderSupportIndex::PolygonSC as usize] = 1;
-            array[OrderSupportIndex::PolygonCB as usize] = 1;
-            array[OrderSupportIndex::Polyline as usize] = 1;
-            array[OrderSupportIndex::FastGlyph as usize] = 1;
-            array[OrderSupportIndex::EllipseSC as usize] = 1;
-            array[OrderSupportIndex::EllipseCB as usize] = 1;
-            array[OrderSupportIndex::Index as usize] = 1;
+            array[usize::from(OrderSupportIndex::DstBlt.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::PatBlt.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::ScrBlt.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::MemBlt.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::Mem3Blt.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::DrawnInEGrid.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::LineTo.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::MultiDrawnInEGrid.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::SaveBitmap.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::MultiDstBlt.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::MultiPatBlt.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::MultiScrBlt.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::MultiOpaqueRect.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::Fast.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::PolygonSC.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::PolygonCB.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::Polyline.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::FastGlyph.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::EllipseSC.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::EllipseCB.as_u8())] = 1;
+            array[usize::from(OrderSupportIndex::Index.as_u8())] = 1;
 
             array
         },
