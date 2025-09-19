@@ -544,6 +544,10 @@ impl ResetGraphicsPdu {
     const NAME: &'static str = "ResetGraphicsPdu";
 
     const FIXED_PART_SIZE: usize = 4 /* Width */ + 4 /* Height */;
+
+    fn padding_size(&self) -> usize {
+        RESET_GRAPHICS_PDU_SIZE - RDP_GFX_HEADER_SIZE - 12 - self.monitors.iter().map(|m| m.size()).sum::<usize>()
+    }
 }
 
 impl Encode for ResetGraphicsPdu {
@@ -604,12 +608,6 @@ impl<'a> Decode<'a> for ResetGraphicsPdu {
         read_padding!(src, pdu.padding_size());
 
         Ok(pdu)
-    }
-}
-
-impl ResetGraphicsPdu {
-    fn padding_size(&self) -> usize {
-        RESET_GRAPHICS_PDU_SIZE - RDP_GFX_HEADER_SIZE - 12 - self.monitors.iter().map(|m| m.size()).sum::<usize>()
     }
 }
 

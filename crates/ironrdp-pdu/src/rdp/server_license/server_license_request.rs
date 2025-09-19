@@ -42,12 +42,6 @@ pub struct ServerLicenseRequest {
 impl ServerLicenseRequest {
     const NAME: &'static str = "ServerLicenseRequest";
 
-    pub fn get_public_key(&self) -> Result<Option<Vec<u8>>, ServerLicenseError> {
-        self.server_certificate.as_ref().map(|c| c.get_public_key()).transpose()
-    }
-}
-
-impl ServerLicenseRequest {
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -75,24 +69,6 @@ impl ServerLicenseRequest {
         Ok(())
     }
 
-    pub fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    pub fn size(&self) -> usize {
-        self.license_header.size()
-            + RANDOM_NUMBER_SIZE
-            + self.product_info.size()
-            + BLOB_LENGTH_SIZE * 2 // KeyExchangeBlob + CertificateBlob
-            + BLOB_TYPE_SIZE * 2 // KeyExchangeBlob + CertificateBlob
-            + KEY_EXCHANGE_FIELD_SIZE
-            + self.server_certificate.as_ref().map(|c| c.size()).unwrap_or(0)
-            + SCOPE_ARRAY_SIZE_FIELD_SIZE
-            + self.scope_list.iter().map(|s| s.size()).sum::<usize>()
-    }
-}
-
-impl ServerLicenseRequest {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::LicenseRequest {
             return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
@@ -145,6 +121,26 @@ impl ServerLicenseRequest {
             server_certificate,
             scope_list,
         })
+    }
+
+    pub fn get_public_key(&self) -> Result<Option<Vec<u8>>, ServerLicenseError> {
+        self.server_certificate.as_ref().map(|c| c.get_public_key()).transpose()
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn size(&self) -> usize {
+        self.license_header.size()
+            + RANDOM_NUMBER_SIZE
+            + self.product_info.size()
+            + BLOB_LENGTH_SIZE * 2 // KeyExchangeBlob + CertificateBlob
+            + BLOB_TYPE_SIZE * 2 // KeyExchangeBlob + CertificateBlob
+            + KEY_EXCHANGE_FIELD_SIZE
+            + self.server_certificate.as_ref().map(|c| c.size()).unwrap_or(0)
+            + SCOPE_ARRAY_SIZE_FIELD_SIZE
+            + self.scope_list.iter().map(|s| s.size()).sum::<usize>()
     }
 }
 

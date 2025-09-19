@@ -283,9 +283,7 @@ impl TypeHeader {
             filler,
         })
     }
-}
 
-impl TypeHeader {
     fn size() -> usize {
         size_of::<u32>() * 2
     }
