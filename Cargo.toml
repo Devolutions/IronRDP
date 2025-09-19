@@ -121,6 +121,7 @@ semicolon_outside_block = "warn" # With semicolon-outside-block-ignore-multiline
 clone_on_ref_ptr = "warn"
 cloned_instead_of_copied = "warn"
 pub_without_shorthand = "warn"
+empty_enum_variants_with_brackets = "warn"
 deref_by_slicing = "warn"
 multiple_inherent_impl = "warn"
 map_with_unused_argument_over_ranges = "warn"
