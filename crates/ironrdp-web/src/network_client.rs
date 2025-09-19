@@ -20,7 +20,7 @@ impl AsyncNetworkClient for WasmNetworkClient {
 
             match &network_request.protocol {
                 NetworkProtocol::Http | NetworkProtocol::Https => {
-                    let body = js_sys::Uint8Array::from(&network_request.data[..]);
+                    let body = js_sys::Uint8Array::from(network_request.data.as_slice());
 
                     let response = gloo_net::http::Request::post(network_request.url.as_str())
                         .header("keep-alive", "true")

@@ -275,15 +275,15 @@ fn truncate_leading_value(bits: &mut Bits<'_>, value: bool) -> usize {
 }
 
 fn count_run(number_of_zeros: usize, k: &mut u32, kp: &mut u32) -> u32 {
-    (0..number_of_zeros)
-        .map(|_| {
-            let run = 1 << *k;
-            *kp = min(*kp + UP_GR, KP_MAX);
-            *k = *kp >> LS_GR;
+    core::iter::repeat_with(|| {
+        let run = 1 << *k;
+        *kp = min(*kp + UP_GR, KP_MAX);
+        *k = *kp >> LS_GR;
 
-            run
-        })
-        .sum()
+        run
+    })
+    .take(number_of_zeros)
+    .sum()
 }
 
 fn compute_rl_magnitude(sign_bit: u8, code_remainder: u32) -> i16 {

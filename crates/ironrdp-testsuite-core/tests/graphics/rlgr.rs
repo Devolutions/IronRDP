@@ -19,7 +19,7 @@ fn encode_works_with_rlgr3() {
         let output_len = expected.len();
         let mut output = vec![0u8; output_len];
         encode(mode, input, &mut output).unwrap();
-        assert_eq!(&expected[..], &output[..]);
+        assert_eq!(*expected, &output);
     }
 }
 
@@ -41,7 +41,7 @@ fn decode_works_with_rlgr3() {
     let mut output = vec![0i16; expected.len() * output_len];
     for (i, (input, expected)) in input.iter().zip(expected.iter()).enumerate() {
         decode(mode, input, &mut output[i * output_len..(i + 1) * output_len]).unwrap();
-        assert_eq!(&expected[..], &output[i * 4096..(i + 1) * 4096]);
+        assert_eq!(**expected, output[i * 4096..(i + 1) * 4096]);
     }
 }
 

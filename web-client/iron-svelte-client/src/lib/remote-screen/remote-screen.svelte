@@ -1,6 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
+    import { userInteractionService } from '../../services/session.service';
     import { showLogin } from '$lib/login/login-store';
     import type { UserInteraction } from '../../../static/iron-remote-desktop';
     import { Backend } from '../../../static/iron-remote-desktop-rdp';
@@ -12,14 +12,6 @@
     userInteractionService.subscribe((uis) => {
         if (uis != null) {
             uiService = uis;
-            uiService.onSessionEvent((event) => {
-                if (event.type === 0) {
-                    uiService.setVisibility(true);
-                } else if (event.type === 1) {
-                    setCurrentSessionActive(false);
-                    showLogin.set(true);
-                }
-            });
         }
     });
 
