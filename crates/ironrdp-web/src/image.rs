@@ -1,9 +1,13 @@
 #![allow(clippy::arithmetic_side_effects)]
 
+use anyhow::Context;
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::session::image::DecodedImage;
 
-pub(crate) fn extract_partial_image(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
+pub(crate) fn extract_partial_image(
+    image: &DecodedImage,
+    region: InclusiveRectangle,
+) -> anyhow::Result<(InclusiveRectangle, Vec<u8>)> {
     // PERF: needs actual benchmark to find a better heuristic
     if region.height() > 64 || region.width() > 512 {
         extract_whole_rows(image, region)
@@ -13,7 +17,10 @@ pub(crate) fn extract_partial_image(image: &DecodedImage, region: InclusiveRecta
 }
 
 // Faster for low-height and smaller images
-fn extract_smallest_rectangle(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
+fn extract_smallest_rectangle(
+    image: &DecodedImage,
+    region: InclusiveRectangle,
+) -> anyhow::Result<(InclusiveRectangle, Vec<u8>)> {
     let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
 
     let image_width = usize::from(image.width());
@@ -33,20 +40,31 @@ fn extract_smallest_rectangle(image: &DecodedImage, region: InclusiveRectangle) 
     for row in 0..region_height {
         let src_begin = image_stride * (region_top + row) + region_left * pixel_size;
         let src_end = src_begin + region_stride;
-        let src_slice = &src[src_begin..src_end];
+        let src_slice = src.get(src_begin..src_end).with_context(|| {
+            format!(
+                "invalid region {region:?} for image with dimensions {}x{}",
+                image.width(),
+                image.height()
+            )
+        })?;
 
         let target_begin = region_stride * row;
         let target_end = target_begin + region_stride;
-        let target_slice = &mut dst[target_begin..target_end];
+        let target_slice = dst
+            .get_mut(target_begin..target_end)
+            .expect("slice index cannot be out of bounds");
 
         target_slice.copy_from_slice(src_slice);
     }
 
-    (region, dst)
+    Ok((region, dst))
 }
 
 // Faster for high-height and bigger images
-fn extract_whole_rows(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
+fn extract_whole_rows(
+    image: &DecodedImage,
+    region: InclusiveRectangle,
+) -> anyhow::Result<(InclusiveRectangle, Vec<u8>)> {
     let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
 
     let image_width = usize::from(image.width());
@@ -60,7 +78,16 @@ fn extract_whole_rows(image: &DecodedImage, region: InclusiveRectangle) -> (Incl
     let src_begin = region_top * image_stride;
     let src_end = (region_bottom + 1) * image_stride;
 
-    let dst = src[src_begin..src_end].to_vec();
+    let dst = src
+        .get(src_begin..src_end)
+        .with_context(|| {
+            format!(
+                "invalid region {region:?} for image with dimensions {}x{}",
+                image.width(),
+                image.height()
+            )
+        })?
+        .to_vec();
 
     let wider_region = InclusiveRectangle {
         left: 0,
@@ -69,5 +96,5 @@ fn extract_whole_rows(image: &DecodedImage, region: InclusiveRectangle) -> (Incl
         bottom: region.bottom,
     };
 
-    (wider_region, dst)
+    Ok((wider_region, dst))
 }
