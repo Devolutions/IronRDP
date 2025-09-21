@@ -406,6 +406,11 @@ macro_rules! make_bridge {
             pub fn is_empty(&self) -> bool {
                 $crate::ClipboardData::is_empty(&self.0)
             }
+
+            #[wasm_bindgen(js_name = clone)]
+            pub fn clone(&self) -> Self {
+                Self(self.0.clone())
+            }
         }
 
         #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]

@@ -146,8 +146,8 @@ export class ClipboardService {
 
         if (!clipboardData.isEmpty()) {
             this.lastSentClipboardData = clipboardData;
-            // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
-            await this.remoteDesktopService.onClipboardChanged(clipboardData);
+            // Explicitly clone the `clipboardData` object as `onClipboardChanged` consumes the value.
+            await this.remoteDesktopService.onClipboardChanged(clipboardData.clone());
         }
     }
 
@@ -185,10 +185,9 @@ export class ClipboardService {
 
     // This callback is required to send initial clipboard state if available.
     private onForceClipboardUpdate() {
-        // TODO(Fix): lastSentClipboardData is nullptr.
         try {
             if (this.lastSentClipboardData) {
-                this.remoteDesktopService.onClipboardChanged(this.lastSentClipboardData);
+                this.remoteDesktopService.onClipboardChanged(this.lastSentClipboardData.clone());
             } else {
                 this.remoteDesktopService.onClipboardChangedEmpty();
             }
@@ -306,8 +305,8 @@ export class ClipboardService {
 
                 if (!clipboardData.isEmpty()) {
                     this.lastSentClipboardData = clipboardData;
-                    // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
-                    await this.remoteDesktopService.onClipboardChanged(clipboardData);
+                    // Explicitly clone the `clipboardData` object as `onClipboardChanged` consumes the value.
+                    await this.remoteDesktopService.onClipboardChanged(clipboardData.clone());
                 }
             }
         } catch (err) {
@@ -399,8 +398,8 @@ export class ClipboardService {
 
         if (!clipboardData.isEmpty()) {
             this.lastSentClipboardData = clipboardData;
-            // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
-            await this.remoteDesktopService.onClipboardChanged(clipboardData);
+            // Explicitly clone the `clipboardData` object as `onClipboardChanged` consumes the value.
+            await this.remoteDesktopService.onClipboardChanged(clipboardData.clone());
         }
     }
 }
