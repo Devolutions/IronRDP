@@ -159,8 +159,8 @@ macro_rules! make_bridge {
             }
 
             #[wasm_bindgen(js_name = onClipboardPaste)]
-            pub async fn on_clipboard_paste(&self, content: ClipboardData) -> Result<(), IronError> {
-                $crate::Session::on_clipboard_paste(&self.0, content.0)
+            pub async fn on_clipboard_paste(&self, content: &ClipboardData) -> Result<(), IronError> {
+                $crate::Session::on_clipboard_paste(&self.0, content.0.clone())
                     .await
                     .map_err(IronError)
             }
@@ -405,11 +405,6 @@ macro_rules! make_bridge {
             #[wasm_bindgen(js_name = isEmpty)]
             pub fn is_empty(&self) -> bool {
                 $crate::ClipboardData::is_empty(&self.0)
-            }
-
-            #[wasm_bindgen(js_name = clone)]
-            pub fn clone(&self) -> Self {
-                Self(self.0.clone())
             }
         }
 

@@ -147,7 +147,7 @@ export class ClipboardService {
         if (!clipboardData.isEmpty()) {
             this.lastSentClipboardData = clipboardData;
             // Explicitly clone the `clipboardData` object as `onClipboardChanged` consumes the value.
-            await this.remoteDesktopService.onClipboardChanged(clipboardData.clone());
+            await this.remoteDesktopService.onClipboardChanged(clipboardData);
         }
     }
 
@@ -187,7 +187,7 @@ export class ClipboardService {
     private onForceClipboardUpdate() {
         try {
             if (this.lastSentClipboardData) {
-                this.remoteDesktopService.onClipboardChanged(this.lastSentClipboardData.clone());
+                this.remoteDesktopService.onClipboardChanged(this.lastSentClipboardData);
             } else {
                 this.remoteDesktopService.onClipboardChangedEmpty();
             }
@@ -305,8 +305,7 @@ export class ClipboardService {
 
                 if (!clipboardData.isEmpty()) {
                     this.lastSentClipboardData = clipboardData;
-                    // Explicitly clone the `clipboardData` object as `onClipboardChanged` consumes the value.
-                    await this.remoteDesktopService.onClipboardChanged(clipboardData.clone());
+                    await this.remoteDesktopService.onClipboardChanged(clipboardData);
                 }
             }
         } catch (err) {
@@ -399,7 +398,7 @@ export class ClipboardService {
         if (!clipboardData.isEmpty()) {
             this.lastSentClipboardData = clipboardData;
             // Explicitly clone the `clipboardData` object as `onClipboardChanged` consumes the value.
-            await this.remoteDesktopService.onClipboardChanged(clipboardData.clone());
+            await this.remoteDesktopService.onClipboardChanged(clipboardData);
         }
     }
 }

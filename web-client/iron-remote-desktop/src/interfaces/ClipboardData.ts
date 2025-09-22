@@ -5,5 +5,4 @@ export interface ClipboardData {
     addBinary(mimeType: string, binary: Uint8Array): void;
     items(): ClipboardItem[];
     isEmpty(): boolean;
-    clone(): ClipboardData;
 }
