@@ -72,8 +72,11 @@ export class ClipboardService {
         if (this.ClipboardApiSupported === ClipboardApiSupported.Full) {
             if (this.remoteDesktopService.autoClipboard) {
                 this.remoteDesktopService.setOnRemoteClipboardChanged(this.onRemoteClipboardChangedAutoMode.bind(this));
-                // Start the clipboard monitoring loop
-                setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL_MS);
+
+                // Start the clipboard monitoring loop after session has been started
+                this.remoteDesktopService.sessionStartedObservable.subscribe((_) => {
+                    this.scheduleOnMonitorClipboardUpdate();
+                });
             } else {
                 this.remoteDesktopService.setOnRemoteClipboardChanged(
                     this.onRemoteClipboardChangedManualMode.bind(this),
@@ -149,6 +152,10 @@ export class ClipboardService {
             // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
             await this.remoteDesktopService.onClipboardChanged(clipboardData);
         }
+    }
+
+    private scheduleOnMonitorClipboardUpdate() {
+        setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL_MS);
     }
 
     private runWhenWindowFocused(fn: () => void) {
@@ -323,7 +330,7 @@ export class ClipboardService {
             }
         } finally {
             if (!get(isComponentDestroyed)) {
-                setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL_MS);
+                this.scheduleOnMonitorClipboardUpdate();
             }
         }
     }
