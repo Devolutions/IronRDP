@@ -1,6 +1,6 @@
 #![allow(clippy::arithmetic_side_effects)]
 
-use anyhow::Context;
+use anyhow::Context as _;
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::session::image::DecodedImage;
 
