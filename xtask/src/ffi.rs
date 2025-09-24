@@ -91,7 +91,7 @@ pub(crate) fn build_bindings(sh: &Shell, skip_dotnet_build: bool) -> anyhow::Res
     let cwd = sh.current_dir();
     let generated_code_dir = cwd.join(dotnet_generated_path);
     if !generated_code_dir.exists() {
-        anyhow::bail!("The directory {:?} does not exist", generated_code_dir);
+        anyhow::bail!("The directory {} does not exist", generated_code_dir.display());
     }
     remove_cs_files(&generated_code_dir)?;
 

@@ -203,7 +203,7 @@ impl core::str::FromStr for OptCodec {
             "qoi" => Ok(Self::Qoi),
             #[cfg(feature = "qoiz")]
             "qoiz" => Ok(Self::QoiZ),
-            _ => Err(anyhow::anyhow!("unknown codec: {}", s)),
+            _ => anyhow::bail!("unknown codec: {s}"),
         }
     }
 }

@@ -314,8 +314,8 @@ pub enum RDCleanPath {
 }
 
 impl RDCleanPath {
-    pub fn try_into_pdu(self) -> Result<RDCleanPathPdu, der::Error> {
-        RDCleanPathPdu::try_from(self)
+    pub fn into_pdu(self) -> RDCleanPathPdu {
+        RDCleanPathPdu::from(self)
     }
 }
 
@@ -368,10 +368,8 @@ impl TryFrom<RDCleanPathPdu> for RDCleanPath {
     }
 }
 
-impl TryFrom<RDCleanPath> for RDCleanPathPdu {
-    type Error = der::Error;
-
-    fn try_from(value: RDCleanPath) -> Result<Self, Self::Error> {
+impl From<RDCleanPath> for RDCleanPathPdu {
+    fn from(value: RDCleanPath) -> Self {
         match value {
             RDCleanPath::Request {
                 destination,
@@ -379,7 +377,7 @@ impl TryFrom<RDCleanPath> for RDCleanPathPdu {
                 server_auth,
                 preconnection_blob,
                 x224_connection_request,
-            } => Ok(Self {
+            } => Self {
                 version: VERSION_1,
                 destination: Some(destination),
                 proxy_auth: Some(proxy_auth),
@@ -387,26 +385,26 @@ impl TryFrom<RDCleanPath> for RDCleanPathPdu {
                 preconnection_blob,
                 x224_connection_pdu: Some(x224_connection_request),
                 ..Default::default()
-            }),
+            },
             RDCleanPath::Response {
                 x224_connection_response,
                 server_cert_chain,
                 server_addr,
-            } => Ok(Self {
+            } => Self {
                 version: VERSION_1,
                 x224_connection_pdu: Some(x224_connection_response),
                 server_cert_chain: Some(server_cert_chain),
                 server_addr: Some(server_addr),
                 ..Default::default()
-            }),
-            RDCleanPath::GeneralErr(error) => Ok(Self {
+            },
+            RDCleanPath::GeneralErr(error) => Self {
                 version: VERSION_1,
                 error: Some(error),
                 ..Default::default()
-            }),
+            },
             RDCleanPath::NegotiationErr {
                 x224_connection_response,
-            } => Ok(Self {
+            } => Self {
                 version: VERSION_1,
                 error: Some(RDCleanPathErr {
                     error_code: NEGOTIATION_ERROR_CODE,
@@ -414,9 +412,12 @@ impl TryFrom<RDCleanPath> for RDCleanPathPdu {
                     wsa_last_error: None,
                     tls_alert_code: None,
                 }),
-                x224_connection_pdu: Some(OctetString::new(x224_connection_response)?),
+                x224_connection_pdu: Some(
+                    OctetString::new(x224_connection_response)
+                        .expect("x224_connection_response smaller than u32::MAX (256 MiB)"),
+                ),
                 ..Default::default()
-            }),
+            },
         }
     }
 }

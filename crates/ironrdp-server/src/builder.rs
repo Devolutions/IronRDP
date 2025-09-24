@@ -128,8 +128,8 @@ impl RdpServerBuilder<WantsDisplay> {
         }
     }
 
-    pub fn with_no_display(self) -> Result<RdpServerBuilder<BuilderDone>> {
-        Ok(RdpServerBuilder {
+    pub fn with_no_display(self) -> RdpServerBuilder<BuilderDone> {
+        RdpServerBuilder {
             state: BuilderDone {
                 addr: self.state.addr,
                 security: self.state.security,
@@ -139,7 +139,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 cliprdr_factory: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
             },
-        })
+        }
     }
 }
 

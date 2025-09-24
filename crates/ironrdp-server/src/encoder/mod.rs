@@ -523,7 +523,7 @@ impl QoizHandler {
             .set_parameter(zstd_safe::CParameter::CompressionLevel(3))
             .map_err(|code| {
                 anyhow!(
-                    "failed to set Zstd compression level: {}",
+                    "failed to set zstd compression level: {}",
                     zstd_safe::get_error_name(code)
                 )
             })?;
@@ -531,7 +531,7 @@ impl QoizHandler {
             .set_parameter(zstd_safe::CParameter::EnableLongDistanceMatching(true))
             .map_err(|code| {
                 anyhow!(
-                    "failed to set Zstd enable long distance matching: {}",
+                    "failed to set zstd enable long distance matching: {}",
                     zstd_safe::get_error_name(code)
                 )
             })?;
