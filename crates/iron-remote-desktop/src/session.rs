@@ -84,7 +84,7 @@ pub trait Session {
 
     fn on_clipboard_paste(
         &self,
-        content: Self::ClipboardData,
+        content: &Self::ClipboardData,
     ) -> impl core::future::Future<Output = Result<(), Self::Error>>;
 
     fn resize(

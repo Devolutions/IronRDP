@@ -149,7 +149,6 @@ export class ClipboardService {
 
         if (!clipboardData.isEmpty()) {
             this.lastSentClipboardData = clipboardData;
-            // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
             await this.remoteDesktopService.onClipboardChanged(clipboardData);
         }
     }
@@ -192,7 +191,6 @@ export class ClipboardService {
 
     // This callback is required to send initial clipboard state if available.
     private onForceClipboardUpdate() {
-        // TODO(Fix): lastSentClipboardData is nullptr.
         try {
             if (this.lastSentClipboardData) {
                 this.remoteDesktopService.onClipboardChanged(this.lastSentClipboardData);
@@ -313,7 +311,6 @@ export class ClipboardService {
 
                 if (!clipboardData.isEmpty()) {
                     this.lastSentClipboardData = clipboardData;
-                    // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
                     await this.remoteDesktopService.onClipboardChanged(clipboardData);
                 }
             }
@@ -406,7 +403,6 @@ export class ClipboardService {
 
         if (!clipboardData.isEmpty()) {
             this.lastSentClipboardData = clipboardData;
-            // TODO(Fix): onClipboardChanged takes an ownership over clipboardData, so lastSentClipboardData will be nullptr.
             await this.remoteDesktopService.onClipboardChanged(clipboardData);
         }
     }
