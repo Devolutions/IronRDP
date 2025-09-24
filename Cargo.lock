@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bit_field",
  "bitflags 2.9.4",
@@ -2717,7 +2717,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd-native"
-version = "0.5.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2760,7 +2760,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-session"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ironrdp-connector",
  "ironrdp-core",

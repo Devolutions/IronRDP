@@ -8,21 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.13.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.12.0...ironrdp-v0.13.0)] - 2025-09-24
 
-### <!-- 7 -->Build
+### Build
 
-- Replace opus by opus2 (#985) ([e5042a7d81](https://github.com/Devolutions/IronRDP/commit/e5042a7d81b864e78ccf19d6b358d94458f951d0)) 
-
-  opus is unmaintained and ponits to a 4-year old commit of the opus C
-  library. This does not compile anymore on our CI, because their
-  CMakeList.txt requires an older version of cmake that is not available
-  in the runners we use. opus2 is a fork that points to a more recent
-  version of it.
-
-### Refactor
-
-- [**breaking**] Enable `unwrap_used` clippy correctness lint (#965) ([630525deae](https://github.com/Devolutions/IronRDP/commit/630525deae92f39bfed53248ab0fec0e71249322)) 
-
-
+- Update dependencies
 
 ## [[0.12.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.11.0...ironrdp-v0.12.0)] - 2025-08-29
 

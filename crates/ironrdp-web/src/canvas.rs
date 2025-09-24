@@ -79,8 +79,10 @@ impl Canvas {
         let damage_rect = softbuffer::Rect {
             x: u32::from(region.left),
             y: u32::from(region.top),
-            width: NonZeroU32::new(u32::from(region_width)).expect("per invariants: 0 < region_width"),
-            height: NonZeroU32::new(u32::from(region_height)).expect("per invariants: 0 < region_height"),
+            width: NonZeroU32::new(u32::from(region_width))
+                .expect("per InclusiveRectangle invariants: 0 < region_width"),
+            height: NonZeroU32::new(u32::from(region_height))
+                .expect("per InclusiveRectangle invariants: 0 < region_height"),
         };
 
         dst.present_with_damage(&[damage_rect]).expect("buffer present");

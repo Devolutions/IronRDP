@@ -360,17 +360,17 @@ impl From<u32> for CompressionMode {
 
 #[derive(Debug)]
 pub enum RlgrError {
-    IoError(io::Error),
-    YuvError(YuvError),
+    Io(io::Error),
+    Yuv(YuvError),
     EmptyTile,
 }
 
 impl core::fmt::Display for RlgrError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::IoError(_error) => write!(f, "IO error"),
+            Self::Io(_) => write!(f, "IO error"),
+            Self::Yuv(_) => write!(f, "YUV error"),
             Self::EmptyTile => write!(f, "the input tile is empty"),
-            Self::YuvError(error) => write!(f, "YUV error: {error}"),
         }
     }
 }
@@ -378,8 +378,8 @@ impl core::fmt::Display for RlgrError {
 impl core::error::Error for RlgrError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::IoError(error) => Some(error),
-            Self::YuvError(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::Yuv(error) => Some(error),
             Self::EmptyTile => None,
         }
     }
@@ -387,6 +387,6 @@ impl core::error::Error for RlgrError {
 
 impl From<io::Error> for RlgrError {
     fn from(err: io::Error) -> Self {
-        Self::IoError(err)
+        Self::Io(err)
     }
 }

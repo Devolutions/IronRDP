@@ -154,15 +154,15 @@ impl DecodeStream {
                     while let Ok(pkt) = rx.recv() {
                         let nb_samples = match dec.get_nb_samples(&pkt) {
                             Ok(nb_samples) => nb_samples,
-                            Err(err) => {
-                                error!(?err, "Failed to get the number of samples of an Opus packet");
+                            Err(error) => {
+                                error!(?error, "Failed to get the number of samples of an Opus packet");
                                 continue;
                             }
                         };
 
                         let mut pcm = vec![0u8; nb_samples * chan as usize * size_of::<i16>()];
-                        if let Err(err) = dec.decode(&pkt, bytemuck::cast_slice_mut(pcm.as_mut_slice()), false) {
-                            error!(?err, "Failed to decode an Opus packet");
+                        if let Err(error) = dec.decode(&pkt, bytemuck::cast_slice_mut(pcm.as_mut_slice()), false) {
+                            error!(?error, "Failed to decode an Opus packet");
                             continue;
                         }
 

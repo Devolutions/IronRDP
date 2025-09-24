@@ -155,7 +155,7 @@ impl Sequence for ConnectionActivationSequence {
                     });
 
                 let client_confirm_active = rdp::headers::ShareControlPdu::ClientConfirmActive(
-                    create_client_confirm_active(&self.config, capability_sets, desktop_size)?,
+                    create_client_confirm_active(&self.config, capability_sets, desktop_size),
                 );
 
                 debug!(message = ?client_confirm_active, "Send");
@@ -263,7 +263,7 @@ fn create_client_confirm_active(
     config: &Config,
     mut server_capability_sets: Vec<CapabilitySet>,
     desktop_size: DesktopSize,
-) -> ConnectorResult<rdp::capability_sets::ClientConfirmActive> {
+) -> rdp::capability_sets::ClientConfirmActive {
     use ironrdp_pdu::rdp::capability_sets::{
         client_codecs_capabilities, Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry,
         ClientConfirmActive, CmdFlags, DemandActive, FrameAcknowledge, General, GeneralExtraFlags, GlyphCache,
@@ -386,11 +386,11 @@ fn create_client_confirm_active(
         }));
     }
 
-    Ok(ClientConfirmActive {
+    ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
         pdu: DemandActive {
             source_descriptor: "IRONRDP".to_owned(),
             capability_sets: server_capability_sets,
         },
-    })
+    }
 }
