@@ -146,7 +146,6 @@ export class ClipboardService {
 
         if (!clipboardData.isEmpty()) {
             this.lastSentClipboardData = clipboardData;
-            // Explicitly clone the `clipboardData` object as `onClipboardChanged` consumes the value.
             await this.remoteDesktopService.onClipboardChanged(clipboardData);
         }
     }
@@ -397,7 +396,6 @@ export class ClipboardService {
 
         if (!clipboardData.isEmpty()) {
             this.lastSentClipboardData = clipboardData;
-            // Explicitly clone the `clipboardData` object as `onClipboardChanged` consumes the value.
             await this.remoteDesktopService.onClipboardChanged(clipboardData);
         }
     }

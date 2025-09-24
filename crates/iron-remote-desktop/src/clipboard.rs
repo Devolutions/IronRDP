@@ -1,6 +1,6 @@
 use wasm_bindgen::JsValue;
 
-pub trait ClipboardData: Clone {
+pub trait ClipboardData {
     type Item: ClipboardItem;
 
     fn create() -> Self;
