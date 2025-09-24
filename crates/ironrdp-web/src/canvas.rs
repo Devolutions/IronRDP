@@ -45,10 +45,8 @@ impl Canvas {
         let region_height = region.height();
 
         let mut src = buffer.chunks_exact(4).map(|pixel| {
-            let r = *pixel.first().expect("index cannot be out of bounds");
-            let g = *pixel.get(1).expect("index cannot be out of bounds");
-            let b = *pixel.get(2).expect("index cannot be out of bounds");
-            u32::from_be_bytes([0, r, g, b])
+            let [r, g, b] = pixel.first_chunk::<3>().expect("cannot be out of bounds");
+            u32::from_be_bytes([0, *r, *g, *b])
         });
 
         let mut dst = self.surface.buffer_mut().expect("surface buffer");
