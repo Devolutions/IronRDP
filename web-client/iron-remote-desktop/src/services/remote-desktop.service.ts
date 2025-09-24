@@ -41,6 +41,8 @@ export class RemoteDesktopService {
     private enableClipboard: boolean = true;
     private _autoClipboard: boolean = true;
 
+    sessionStartedObservable: Observable<null> = new Observable();
+
     resizeObservable: Observable<ResizeEvent> = new Observable();
 
     session?: Session;
@@ -179,6 +181,8 @@ export class RemoteDesktopService {
             desktopSize: session.desktopSize(),
             sessionId: 0,
         });
+
+        this.sessionStartedObservable.publish(null);
 
         const run = async (): Promise<SessionTerminationInfo> => {
             try {
