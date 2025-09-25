@@ -30,18 +30,128 @@ pub struct RDCleanPathErr {
 
 impl fmt::Display for RDCleanPathErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RDCleanPath error (code {})", self.error_code)?;
+        let error_description = match self.error_code {
+            GENERAL_ERROR_CODE => "general error",
+            NEGOTIATION_ERROR_CODE => "negotiation error",
+            _ => "unknown error",
+        };
+        write!(f, "{error_description} (code {})", self.error_code)?;
 
         if let Some(http_status_code) = self.http_status_code {
-            write!(f, " [HTTP status = {http_status_code}]")?;
+            let description = match http_status_code {
+                200 => "OK",
+                400 => "bad request",
+                401 => "unauthorized",
+                403 => "forbidden",
+                404 => "not found",
+                405 => "method not allowed",
+                408 => "request timeout",
+                409 => "conflict",
+                410 => "gone",
+                413 => "payload too large",
+                414 => "URI too long",
+                422 => "unprocessable entity",
+                429 => "too many requests",
+                500 => "internal server error",
+                501 => "not implemented",
+                502 => "bad gateway",
+                503 => "service unavailable",
+                504 => "gateway timeout",
+                505 => "HTTP version not supported",
+                _ => "unknown HTTP status",
+            };
+            write!(f, "; HTTP {http_status_code} {description}")?;
         }
 
         if let Some(wsa_last_error) = self.wsa_last_error {
-            write!(f, " [WSA last error = {wsa_last_error}]")?;
+            let description = match wsa_last_error {
+                10004 => "interrupted system call",
+                10009 => "bad file descriptor",
+                10013 => "permission denied",
+                10014 => "bad address",
+                10022 => "invalid argument",
+                10024 => "too many open files",
+                10035 => "resource temporarily unavailable",
+                10036 => "operation now in progress",
+                10037 => "operation already in progress",
+                10038 => "socket operation on nonsocket",
+                10039 => "destination address required",
+                10040 => "message too long",
+                10041 => "protocol wrong type for socket",
+                10042 => "bad protocol option",
+                10043 => "protocol not supported",
+                10044 => "socket type not supported",
+                10045 => "operation not supported",
+                10046 => "protocol family not supported",
+                10047 => "address family not supported by protocol family",
+                10048 => "address already in use",
+                10049 => "cannot assign requested address",
+                10050 => "network is down",
+                10051 => "network is unreachable",
+                10052 => "network dropped connection on reset",
+                10053 => "software caused connection abort",
+                10054 => "connection reset by peer",
+                10055 => "no buffer space available",
+                10056 => "socket is already connected",
+                10057 => "socket is not connected",
+                10058 => "cannot send after socket shutdown",
+                10060 => "connection timed out",
+                10061 => "connection refused",
+                10064 => "host is down",
+                10065 => "no route to host",
+                10067 => "too many processes",
+                10091 => "network subsystem is unavailable",
+                10092 => "Winsock version not supported",
+                10093 => "successful WSAStartup not yet performed",
+                10101 => "graceful shutdown in progress",
+                10109 => "class type not found",
+                11001 => "host not found",
+                11002 => "nonauthoritative host not found",
+                11003 => "this is a nonrecoverable error",
+                11004 => "valid name, no data record of requested type",
+                _ => "unknown WSA error",
+            };
+            write!(f, "; WSA {wsa_last_error} {description}")?;
         }
 
         if let Some(tls_alert_code) = self.tls_alert_code {
-            write!(f, " [TLS alert = {tls_alert_code}]")?;
+            let description = match tls_alert_code {
+                0 => "close notify",
+                10 => "unexpected message",
+                20 => "bad record MAC",
+                21 => "decryption failed",
+                22 => "record overflow",
+                30 => "decompression failure",
+                40 => "handshake failure",
+                41 => "no certificate",
+                42 => "bad certificate",
+                43 => "unsupported certificate",
+                44 => "certificate revoked",
+                45 => "certificate expired",
+                46 => "certificate unknown",
+                47 => "illegal parameter",
+                48 => "unknown CA",
+                49 => "access denied",
+                50 => "decode error",
+                51 => "decrypt error",
+                60 => "export restriction",
+                70 => "protocol version",
+                71 => "insufficient security",
+                80 => "internal error",
+                90 => "user canceled",
+                100 => "no renegotiation",
+                109 => "missing extension",
+                110 => "unsupported extension",
+                111 => "certificate unobtainable",
+                112 => "unrecognized name",
+                113 => "bad certificate status response",
+                114 => "bad certificate hash value",
+                115 => "unknown PSK identity",
+                116 => "certificate required",
+                120 => "no application protocol",
+                _ => "unknown TLS alert",
+            };
+            write!(f, "; TLS alert {tls_alert_code} {description}")?;
         }
 
         Ok(())

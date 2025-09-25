@@ -15,7 +15,7 @@ impl IronError {
 
 impl iron_remote_desktop::IronError for IronError {
     fn backtrace(&self) -> String {
-        format!("{:?}", self.source)
+        format!("{:#}", self.source)
     }
 
     fn kind(&self) -> IronErrorKind {
