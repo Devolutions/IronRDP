@@ -1,4 +1,6 @@
-use ironrdp_rdcleanpath::{DetectionResult, RDCleanPathPdu, VERSION_1};
+use ironrdp_rdcleanpath::{
+    DetectionResult, RDCleanPathErr, RDCleanPathPdu, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE, VERSION_1,
+};
 use rstest::rstest;
 
 fn request() -> RDCleanPathPdu {
@@ -122,4 +124,88 @@ fn detect(#[case] der: &[u8]) {
 fn detect_not_enough(#[case] payload: &[u8]) {
     let result = RDCleanPathPdu::detect(payload);
     assert_eq!(result, DetectionResult::NotEnoughBytes);
+}
+
+#[test]
+fn error_display_http() {
+    let error = RDCleanPathErr {
+        error_code: GENERAL_ERROR_CODE,
+        http_status_code: Some(404),
+        wsa_last_error: None,
+        tls_alert_code: None,
+    };
+
+    let display_str = format!("{error}");
+    assert_eq!(display_str, "RDCleanPath general error (code 1) [HTTP 404: Not Found]");
+}
+
+#[test]
+fn error_display_wsa() {
+    let error = RDCleanPathErr {
+        error_code: GENERAL_ERROR_CODE,
+        http_status_code: None,
+        wsa_last_error: Some(10061),
+        tls_alert_code: None,
+    };
+
+    let display_str = format!("{error}");
+    assert_eq!(
+        display_str,
+        "RDCleanPath general error (code 1) [WSA 10061: Connection refused]"
+    );
+}
+
+#[test]
+fn error_display_tls() {
+    let error = RDCleanPathErr {
+        error_code: GENERAL_ERROR_CODE,
+        http_status_code: None,
+        wsa_last_error: None,
+        tls_alert_code: Some(40),
+    };
+
+    let display_str = format!("{error}");
+    assert_eq!(
+        display_str,
+        "RDCleanPath general error (code 1) [TLS alert 40: Handshake failure]"
+    );
+}
+
+#[test]
+fn error_display_negotiation_error() {
+    let error = RDCleanPathErr {
+        error_code: NEGOTIATION_ERROR_CODE,
+        http_status_code: None,
+        wsa_last_error: None,
+        tls_alert_code: None,
+    };
+
+    let display_str = format!("{error}");
+    assert_eq!(display_str, "RDCleanPath negotiation error (code 2)");
+}
+
+#[test]
+fn error_display_combined() {
+    let error = RDCleanPathErr {
+        error_code: GENERAL_ERROR_CODE,
+        http_status_code: Some(502),
+        wsa_last_error: Some(10060),
+        tls_alert_code: Some(45),
+    };
+
+    let display_str = format!("{error}");
+    assert_eq!(display_str, "RDCleanPath general error (code 1) [HTTP 502: Bad Gateway] [WSA 10060: Connection timed out] [TLS alert 45: Certificate expired]");
+}
+
+#[test]
+fn error_display_unknown_codes() {
+    let error = RDCleanPathErr {
+        error_code: 99,
+        http_status_code: Some(999),
+        wsa_last_error: Some(65000),
+        tls_alert_code: Some(255),
+    };
+
+    let display_str = format!("{error}");
+    assert_eq!(display_str, "RDCleanPath unknown error (code 99) [HTTP 999: Unknown HTTP Status] [WSA 65000: Unknown WSA error] [TLS alert 255: Unknown TLS alert]");
 }
