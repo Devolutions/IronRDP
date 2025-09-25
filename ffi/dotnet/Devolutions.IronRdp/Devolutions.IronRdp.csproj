@@ -4,7 +4,7 @@
     <Company>Devolutions</Company>
     <Description>Bindings to Rust IronRDP native library</Description>
     <LangVersion>latest</LangVersion>
-    <Version>2024.10.9.0</Version>
+    <Version>2025.09.24.0</Version>
     <ImplicitUsings>enable</ImplicitUsings> <!-- FIXME: set to disable -->
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
