@@ -30,18 +30,128 @@ pub struct RDCleanPathErr {
 
 impl fmt::Display for RDCleanPathErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RDCleanPath error (code {})", self.error_code)?;
+        let error_description = match self.error_code {
+            GENERAL_ERROR_CODE => "general error",
+            NEGOTIATION_ERROR_CODE => "negotiation error",
+            _ => "unknown error",
+        };
+        write!(f, "RDCleanPath {error_description} (code {})", self.error_code)?;
 
         if let Some(http_status_code) = self.http_status_code {
-            write!(f, " [HTTP status = {http_status_code}]")?;
+            let description = match http_status_code {
+                200 => "OK",
+                400 => "Bad Request",
+                401 => "Unauthorized",
+                403 => "Forbidden",
+                404 => "Not Found",
+                405 => "Method Not Allowed",
+                408 => "Request Timeout",
+                409 => "Conflict",
+                410 => "Gone",
+                413 => "Payload Too Large",
+                414 => "URI Too Long",
+                422 => "Unprocessable Entity",
+                429 => "Too Many Requests",
+                500 => "Internal Server Error",
+                501 => "Not Implemented",
+                502 => "Bad Gateway",
+                503 => "Service Unavailable",
+                504 => "Gateway Timeout",
+                505 => "HTTP Version Not Supported",
+                _ => "Unknown HTTP Status",
+            };
+            write!(f, " [HTTP {http_status_code}: {description}]")?;
         }
 
         if let Some(wsa_last_error) = self.wsa_last_error {
-            write!(f, " [WSA last error = {wsa_last_error}]")?;
+            let description = match wsa_last_error {
+                10004 => "Interrupted system call",
+                10009 => "Bad file descriptor",
+                10013 => "Permission denied",
+                10014 => "Bad address",
+                10022 => "Invalid argument",
+                10024 => "Too many open files",
+                10035 => "Resource temporarily unavailable",
+                10036 => "Operation now in progress",
+                10037 => "Operation already in progress",
+                10038 => "Socket operation on nonsocket",
+                10039 => "Destination address required",
+                10040 => "Message too long",
+                10041 => "Protocol wrong type for socket",
+                10042 => "Bad protocol option",
+                10043 => "Protocol not supported",
+                10044 => "Socket type not supported",
+                10045 => "Operation not supported",
+                10046 => "Protocol family not supported",
+                10047 => "Address family not supported by protocol family",
+                10048 => "Address already in use",
+                10049 => "Cannot assign requested address",
+                10050 => "Network is down",
+                10051 => "Network is unreachable",
+                10052 => "Network dropped connection on reset",
+                10053 => "Software caused connection abort",
+                10054 => "Connection reset by peer",
+                10055 => "No buffer space available",
+                10056 => "Socket is already connected",
+                10057 => "Socket is not connected",
+                10058 => "Cannot send after socket shutdown",
+                10060 => "Connection timed out",
+                10061 => "Connection refused",
+                10064 => "Host is down",
+                10065 => "No route to host",
+                10067 => "Too many processes",
+                10091 => "Network subsystem is unavailable",
+                10092 => "Winsock version not supported",
+                10093 => "Successful WSAStartup not yet performed",
+                10101 => "Graceful shutdown in progress",
+                10109 => "Class type not found",
+                11001 => "Host not found",
+                11002 => "Nonauthoritative host not found",
+                11003 => "This is a nonrecoverable error",
+                11004 => "Valid name, no data record of requested type",
+                _ => "Unknown WSA error",
+            };
+            write!(f, " [WSA {wsa_last_error}: {description}]")?;
         }
 
         if let Some(tls_alert_code) = self.tls_alert_code {
-            write!(f, " [TLS alert = {tls_alert_code}]")?;
+            let description = match tls_alert_code {
+                0 => "Close notify",
+                10 => "Unexpected message",
+                20 => "Bad record MAC",
+                21 => "Decryption failed",
+                22 => "Record overflow",
+                30 => "Decompression failure",
+                40 => "Handshake failure",
+                41 => "No certificate",
+                42 => "Bad certificate",
+                43 => "Unsupported certificate",
+                44 => "Certificate revoked",
+                45 => "Certificate expired",
+                46 => "Certificate unknown",
+                47 => "Illegal parameter",
+                48 => "Unknown CA",
+                49 => "Access denied",
+                50 => "Decode error",
+                51 => "Decrypt error",
+                60 => "Export restriction",
+                70 => "Protocol version",
+                71 => "Insufficient security",
+                80 => "Internal error",
+                90 => "User canceled",
+                100 => "No renegotiation",
+                109 => "Missing extension",
+                110 => "Unsupported extension",
+                111 => "Certificate unobtainable",
+                112 => "Unrecognized name",
+                113 => "Bad certificate status response",
+                114 => "Bad certificate hash value",
+                115 => "Unknown PSK identity",
+                116 => "Certificate required",
+                120 => "No application protocol",
+                _ => "Unknown TLS alert",
+            };
+            write!(f, " [TLS alert {tls_alert_code}: {description}]")?;
         }
 
         Ok(())
