@@ -93,6 +93,7 @@ fn_to_numeric_cast_any = "warn"
 ptr_cast_constness = "warn"
 
 # == Correctness == #
+#indexing_slicing = "warn" TODO: enable this lint project wide. 
 cast_lossless = "warn"
 cast_possible_truncation = "warn"
 cast_possible_wrap = "warn"
