@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- Changed onClipboardChanged to not consume the input (#992) ([6127e13c83](https://github.com/Devolutions/IronRDP/commit/6127e13c836d06764d483b6b55188fd23a4314a2)) 
+- [**breaking**] Changed onClipboardChanged to not consume the input (#992) ([6127e13c83](https://github.com/Devolutions/IronRDP/commit/6127e13c836d06764d483b6b55188fd23a4314a2)) 
 
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.5.0...iron-remote-desktop-v0.6.0)] - 2025-08-29
 
