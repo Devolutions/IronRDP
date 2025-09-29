@@ -6,19 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [[0.6.1](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.6.0...iron-remote-desktop-v0.6.1)] - 2025-09-29
+## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.6.0...iron-remote-desktop-v0.7.0)] - 2025-09-29
 
 ### <!-- 4 -->Bug Fixes
 
-- Fix this.lastSentClipboardData being nulled (#992) ([6127e13c83](https://github.com/Devolutions/IronRDP/commit/6127e13c836d06764d483b6b55188fd23a4314a2)) 
-
-  ```js
-  await this.remoteDesktopService.onClipboardChanged(...)
-  ```
-  Consumes the clipboard data we pass, so we need to clone the data to
-  prevent `this.lastSentClipboardData` from being null.
-
-
+- Changed onClipboardChanged to not consume the input (#992) ([6127e13c83](https://github.com/Devolutions/IronRDP/commit/6127e13c836d06764d483b6b55188fd23a4314a2)) 
 
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.5.0...iron-remote-desktop-v0.6.0)] - 2025-08-29
 

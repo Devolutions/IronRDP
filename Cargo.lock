@@ -2321,7 +2321,7 @@ dependencies = [
 
 [[package]]
 name = "iron-remote-desktop"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "console_error_panic_hook",
  "tracing",
