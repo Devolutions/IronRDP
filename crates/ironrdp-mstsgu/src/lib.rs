@@ -200,7 +200,7 @@ impl GwClient {
 
         let work = tokio::spawn(async move {
             let iv = Duration::from_secs(15 * 60);
-            let mut keepalive_interval: tokio::time::Interval =
+            let mut keepalive_interval =
                 tokio::time::interval_at(tokio::time::Instant::now() + iv, iv);
 
             loop {
