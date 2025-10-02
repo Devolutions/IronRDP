@@ -1,7 +1,7 @@
 use core::mem;
 
+use ironrdp_pdu::rdp;
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
-use ironrdp_pdu::rdp::{self};
 use tracing::{debug, warn};
 
 use crate::{
