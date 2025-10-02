@@ -11,7 +11,7 @@ use self::ffi::IronRdpErrorKind;
 
 impl From<ConnectorError> for IronRdpErrorKind {
     fn from(val: ConnectorError) -> Self {
-        match val.kind {
+        match val.kind() {
             ironrdp::connector::ConnectorErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
             ironrdp::connector::ConnectorErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
             ironrdp::connector::ConnectorErrorKind::Credssp(_) => IronRdpErrorKind::CredsspError,
