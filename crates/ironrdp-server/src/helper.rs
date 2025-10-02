@@ -7,8 +7,7 @@ use anyhow::Context as _;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio_rustls::rustls::pki_types::pem::PemObject as _;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tokio_rustls::rustls::{self};
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{rustls, TlsAcceptor};
 
 pub struct TlsIdentityCtx {
     pub certs: Vec<CertificateDer<'static>>,

@@ -1,8 +1,7 @@
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written};
 use ironrdp_core::WriteBuf;
+use ironrdp_pdu::rdp;
 use ironrdp_pdu::x224::X224;
-use ironrdp_pdu::{self as pdu};
-use pdu::rdp;
 use tracing::debug;
 
 use crate::util::{self, wrap_share_data};
@@ -60,13 +59,13 @@ impl State for FinalizationState {
 }
 
 impl Sequence for FinalizationSequence {
-    fn next_pdu_hint(&self) -> Option<&dyn pdu::PduHint> {
+    fn next_pdu_hint(&self) -> Option<&dyn ironrdp_pdu::PduHint> {
         match &self.state {
             FinalizationState::Consumed => None,
-            FinalizationState::WaitSynchronize => Some(&pdu::X224Hint),
-            FinalizationState::WaitControlCooperate => Some(&pdu::X224Hint),
-            FinalizationState::WaitRequestControl => Some(&pdu::X224Hint),
-            FinalizationState::WaitFontList => Some(&pdu::RdpHint),
+            FinalizationState::WaitSynchronize => Some(&ironrdp_pdu::X224Hint),
+            FinalizationState::WaitControlCooperate => Some(&ironrdp_pdu::X224Hint),
+            FinalizationState::WaitRequestControl => Some(&ironrdp_pdu::X224Hint),
+            FinalizationState::WaitFontList => Some(&ironrdp_pdu::RdpHint),
             FinalizationState::SendSynchronizeConfirm => None,
             FinalizationState::SendControlCooperateConfirm => None,
             FinalizationState::SendGrantedControlConfirm => None,
@@ -221,7 +220,7 @@ fn create_font_map() -> rdp::headers::ShareDataPdu {
 }
 
 fn decode_share_control(input: &[u8]) -> ConnectorResult<rdp::headers::ShareControlHeader> {
-    let data_request = ironrdp_core::decode::<X224<pdu::mcs::SendDataRequest<'_>>>(input)
+    let data_request = ironrdp_core::decode::<X224<ironrdp_pdu::mcs::SendDataRequest<'_>>>(input)
         .map_err(ConnectorError::decode)
         .map(|p| p.0)?;
     let share_control = ironrdp_core::decode::<rdp::headers::ShareControlHeader>(data_request.user_data.as_ref())
@@ -230,7 +229,7 @@ fn decode_share_control(input: &[u8]) -> ConnectorResult<rdp::headers::ShareCont
 }
 
 fn decode_font_list(input: &[u8]) -> Result<rdp::finalization_messages::FontPdu, ()> {
-    use pdu::rdp::headers::{ShareControlPdu, ShareDataPdu};
+    use ironrdp_pdu::rdp::headers::{ShareControlPdu, ShareDataPdu};
 
     let share_control = decode_share_control(input).map_err(|_| ())?;
 
