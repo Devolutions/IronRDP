@@ -2,7 +2,7 @@ use std::io;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio_rustls::rustls::pki_types::ServerName;
-use tokio_rustls::rustls::{self};
+use tokio_rustls::rustls;
 
 pub type TlsStream<S> = tokio_rustls::client::TlsStream<S>;
 

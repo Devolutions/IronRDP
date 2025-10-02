@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use rustls_pemfile::{certs, pkcs8_private_keys};
+use tokio_rustls::rustls;
 use tokio_rustls::rustls::pki_types::pem::PemObject as _;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tokio_rustls::rustls::{self};
 use tokio_rustls::TlsAcceptor;
 
 pub struct TlsIdentityCtx {
