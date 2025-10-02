@@ -4,9 +4,8 @@ use ironrdp_connector::{
     reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written,
 };
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu as pdu;
+use ironrdp_pdu::mcs;
 use ironrdp_pdu::x224::X224;
-use pdu::mcs;
 use tracing::debug;
 
 #[derive(Debug)]
@@ -57,13 +56,13 @@ impl State for ChannelConnectionState {
 }
 
 impl Sequence for ChannelConnectionSequence {
-    fn next_pdu_hint(&self) -> Option<&dyn pdu::PduHint> {
+    fn next_pdu_hint(&self) -> Option<&dyn ironrdp_pdu::PduHint> {
         match &self.state {
             ChannelConnectionState::Consumed => None,
-            ChannelConnectionState::WaitErectDomainRequest => Some(&pdu::X224_HINT),
-            ChannelConnectionState::WaitAttachUserRequest => Some(&pdu::X224_HINT),
+            ChannelConnectionState::WaitErectDomainRequest => Some(&ironrdp_pdu::X224_HINT),
+            ChannelConnectionState::WaitAttachUserRequest => Some(&ironrdp_pdu::X224_HINT),
             ChannelConnectionState::SendAttachUserConfirm => None,
-            ChannelConnectionState::WaitChannelJoinRequest { .. } => Some(&pdu::X224_HINT),
+            ChannelConnectionState::WaitChannelJoinRequest { .. } => Some(&ironrdp_pdu::X224_HINT),
             ChannelConnectionState::SendChannelJoinConfirm { .. } => None,
             ChannelConnectionState::AllJoined => None,
         }
