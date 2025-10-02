@@ -142,6 +142,7 @@ range_plus_one = "warn"
 # TODO: self_named_module_files = "warn"
 # TODO: partial_pub_fields = "warn" (should we enable only in pdu crates?)
 redundant_type_annotations = "warn"
+try_err = "warn"
 
 # == Compile-time / optimization == #
 doc_include_without_cfg = "warn"
