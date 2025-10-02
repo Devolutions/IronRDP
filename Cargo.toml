@@ -143,6 +143,8 @@ range_plus_one = "warn"
 # TODO: partial_pub_fields = "warn" (should we enable only in pdu crates?)
 redundant_type_annotations = "warn"
 unnecessary_self_imports = "warn"
+try_err = "warn"
+rest_pat_in_fully_bound_structs = "warn"
 
 # == Compile-time / optimization == #
 doc_include_without_cfg = "warn"
