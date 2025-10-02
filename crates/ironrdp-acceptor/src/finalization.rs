@@ -1,6 +1,7 @@
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written};
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu::{self as pdu, x224::X224};
+use ironrdp_pdu::x224::X224;
+use ironrdp_pdu::{self as pdu};
 use pdu::rdp;
 use tracing::debug;
 
