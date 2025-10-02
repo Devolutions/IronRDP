@@ -1,4 +1,7 @@
-use ironrdp_rdcleanpath::{DetectionResult, RDCleanPathPdu, VERSION_1};
+use expect_test::{expect, Expect};
+use ironrdp_rdcleanpath::{
+    DetectionResult, RDCleanPathErr, RDCleanPathPdu, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE, VERSION_1,
+};
 use rstest::rstest;
 
 fn request() -> RDCleanPathPdu {
@@ -122,4 +125,63 @@ fn detect(#[case] der: &[u8]) {
 fn detect_not_enough(#[case] payload: &[u8]) {
     let result = RDCleanPathPdu::detect(payload);
     assert_eq!(result, DetectionResult::NotEnoughBytes);
+}
+
+#[rstest]
+#[case::http(
+    RDCleanPathErr {
+        error_code: GENERAL_ERROR_CODE,
+        http_status_code: Some(404),
+        wsa_last_error: None,
+        tls_alert_code: None,
+    },
+    expect!["general error (code 1); HTTP 404 not found"],
+)]
+#[case::wsa(
+    RDCleanPathErr {
+        error_code: GENERAL_ERROR_CODE,
+        http_status_code: None,
+        wsa_last_error: Some(10061),
+        tls_alert_code: None,
+    },
+    expect!["general error (code 1); WSA 10061 connection refused"],
+)]
+#[case::tls(
+    RDCleanPathErr {
+        error_code: GENERAL_ERROR_CODE,
+        http_status_code: None,
+        wsa_last_error: None,
+        tls_alert_code: Some(40),
+    },
+    expect!["general error (code 1); TLS alert 40 handshake failure"],
+)]
+#[case::nego(
+    RDCleanPathErr {
+        error_code: NEGOTIATION_ERROR_CODE,
+        http_status_code: None,
+        wsa_last_error: None,
+        tls_alert_code: None,
+    },
+    expect!["negotiation error (code 2)"],
+)]
+#[case::combined(
+    RDCleanPathErr {
+        error_code: GENERAL_ERROR_CODE,
+        http_status_code: Some(502),
+        wsa_last_error: Some(10060),
+        tls_alert_code: Some(45),
+    },
+    expect!["general error (code 1); HTTP 502 bad gateway; WSA 10060 connection timed out; TLS alert 45 certificate expired"],
+)]
+#[case::unknown_codes(
+    RDCleanPathErr {
+        error_code: 99,
+        http_status_code: Some(999),
+        wsa_last_error: Some(65000),
+        tls_alert_code: Some(255),
+    },
+    expect!["unknown error (code 99); HTTP 999 unknown HTTP status; WSA 65000 unknown WSA error; TLS alert 255 unknown TLS alert"],
+)]
+fn error_display(#[case] error: RDCleanPathErr, #[case] expected: Expect) {
+    expected.assert_eq(&error.to_string());
 }
