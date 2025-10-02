@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.0...ironrdp-rdcleanpath-v0.2.1)] - 2025-10-02
+
+### <!-- 1 -->Features
+
+- Human-readable descriptions for RDCleanPath errors (#999) ([18c81ed5d8](https://github.com/Devolutions/IronRDP/commit/18c81ed5d8d3bf13b3d10fe15209233c0c10bb62)) 
+
+  More munging to give human-readable webclient-side errors for
+  RDCleanPath general/negotiation errors, including strings for WSA and
+  TLS and HTTP error conditions.
+
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.1.3...ironrdp-rdcleanpath-v0.2.0)] - 2025-08-29
 
 ### <!-- 1 -->Features
