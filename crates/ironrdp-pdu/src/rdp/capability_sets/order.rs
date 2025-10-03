@@ -9,6 +9,7 @@ const ORD_LEVEL_1_ORDERS: u16 = 1;
 const SUPPORT_ARRAY_LEN: usize = 32;
 const DESKTOP_SAVE_Y_GRAN_VAL: u16 = 20;
 
+#[repr(u8)]
 #[derive(Copy, Clone)]
 pub enum OrderSupportIndex {
     DstBlt = 0x00,
@@ -32,6 +33,16 @@ pub enum OrderSupportIndex {
     EllipseSC = 0x19,
     EllipseCB = 0x1A,
     Index = 0x1B,
+}
+
+impl OrderSupportIndex {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 bitflags! {
@@ -83,11 +94,11 @@ impl Order {
     }
 
     pub fn set_support_flag(&mut self, flag: OrderSupportIndex, value: bool) {
-        self.order_support[flag as usize] = u8::from(value)
+        self.order_support[usize::from(flag.as_u8())] = u8::from(value)
     }
 
     pub fn get_support_flag(&mut self, flag: OrderSupportIndex) -> bool {
-        self.order_support[flag as usize] == 1
+        self.order_support[usize::from(flag.as_u8())] == 1
     }
 }
 

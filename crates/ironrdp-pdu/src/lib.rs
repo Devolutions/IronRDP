@@ -1,10 +1,6 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // FIXME: remove
-#![allow(clippy::cast_lossless)] // FIXME: remove
-#![allow(clippy::cast_possible_truncation)] // FIXME: remove
-#![allow(clippy::cast_possible_wrap)] // FIXME: remove
-#![allow(clippy::cast_sign_loss)] // FIXME: remove
 
 use core::fmt;
 
@@ -104,6 +100,10 @@ impl Action {
         }
     }
 
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     pub fn as_u8(self) -> u8 {
         self as u8
     }

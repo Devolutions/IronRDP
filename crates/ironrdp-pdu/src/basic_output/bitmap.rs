@@ -7,8 +7,8 @@ use core::fmt::{self, Debug};
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
-    WriteCursor,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
+    ReadCursor, WriteCursor,
 };
 
 use crate::geometry::InclusiveRectangle;
@@ -41,11 +41,9 @@ impl Encode for BitmapUpdateData<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        if self.rectangles.len() > u16::MAX as usize {
-            return Err(invalid_field_err!("numberRectangles", "rectangle count is too big"));
-        }
+        let rectangles_number = cast_length!("number of rectangles", self.rectangles.len())?;
 
-        Self::encode_header(self.rectangles.len() as u16, dst)?;
+        Self::encode_header(rectangles_number, dst)?;
 
         for bitmap_data in self.rectangles.iter() {
             bitmap_data.encode(dst)?;
@@ -74,7 +72,7 @@ impl<'de> Decode<'de> for BitmapUpdateData<'de> {
             return Err(invalid_field_err!("updateType", "invalid update type"));
         }
 
-        let rectangles_number = src.read_u16() as usize;
+        let rectangles_number = usize::from(src.read_u16());
         let mut rectangles = Vec::with_capacity(rectangles_number);
 
         for _ in 0..rectangles_number {
@@ -111,16 +109,14 @@ impl Encode for BitmapData<'_> {
         ensure_size!(in: dst, size: self.size());
 
         let encoded_bitmap_data_length = self.encoded_bitmap_data_length();
-        if encoded_bitmap_data_length > u16::MAX as usize {
-            return Err(invalid_field_err!("bitmapLength", "bitmap data length is too big"));
-        }
+        let encoded_bitmap_data_length = cast_length!("bitmap data length", encoded_bitmap_data_length)?;
 
         self.rectangle.encode(dst)?;
         dst.write_u16(self.width);
         dst.write_u16(self.height);
         dst.write_u16(self.bits_per_pixel);
         dst.write_u16(self.compression_flags.bits());
-        dst.write_u16(encoded_bitmap_data_length as u16);
+        dst.write_u16(encoded_bitmap_data_length);
         if let Some(compressed_data_header) = &self.compressed_data_header {
             compressed_data_header.encode(dst)?;
         };
@@ -150,25 +146,25 @@ impl<'de> Decode<'de> for BitmapData<'de> {
 
         // A 16-bit, unsigned integer. The size in bytes of the data in the bitmapComprHdr
         // and bitmapDataStream fields.
-        let encoded_bitmap_data_length = src.read_u16();
+        let encoded_bitmap_data_length = usize::from(src.read_u16());
 
-        ensure_size!(in: src, size: encoded_bitmap_data_length as usize);
+        ensure_size!(in: src, size: encoded_bitmap_data_length);
 
         let (compressed_data_header, buffer_length) = if compression_flags.contains(Compression::BITMAP_COMPRESSION)
             && !compression_flags.contains(Compression::NO_BITMAP_COMPRESSION_HDR)
         {
             // Check if encoded_bitmap_data_length is at least CompressedDataHeader::ENCODED_SIZE
-            if encoded_bitmap_data_length < CompressedDataHeader::ENCODED_SIZE as u16 {
+            if encoded_bitmap_data_length < CompressedDataHeader::ENCODED_SIZE {
                 return Err(invalid_field_err!(
                     "cbCompEncodedBitmapDataLength",
                     "length is less than CompressedDataHeader::ENCODED_SIZE"
                 ));
             }
 
-            let buffer_length = encoded_bitmap_data_length as usize - CompressedDataHeader::ENCODED_SIZE;
+            let buffer_length = encoded_bitmap_data_length - CompressedDataHeader::ENCODED_SIZE;
             (Some(CompressedDataHeader::decode(src)?), buffer_length)
         } else {
-            (None, encoded_bitmap_data_length as usize)
+            (None, encoded_bitmap_data_length)
         };
 
         let bitmap_data = src.read_slice(buffer_length);
