@@ -106,9 +106,11 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                 k = kp >> LS_GR;
             }
             CompressionMode::GolombRice => {
+                #[expect(clippy::missing_panics_doc, reason = "unreachable panic (prior check)")]
                 let input_first = *input
                     .next()
                     .expect("value is guaranteed to be `Some` due to the prior check");
+
                 match mode {
                     EntropyAlgorithm::Rlgr1 => {
                         let two_ms = get_2magsign(input_first);

@@ -221,7 +221,7 @@ impl Processor {
 
                         let decoded_pointer = Arc::new(
                             DecodedPointer::decode_color_pointer_attribute(&pointer, bitmap_target)
-                                .expect("Failed to decode color pointer attribute"),
+                                .map_err(|e| SessionError::custom("Failed to decode color pointer attribute", e))?,
                         );
 
                         let _ = self
@@ -261,7 +261,7 @@ impl Processor {
 
                         let decoded_pointer = Arc::new(
                             DecodedPointer::decode_pointer_attribute(&pointer, bitmap_target)
-                                .expect("Failed to decode pointer attribute"),
+                                .map_err(|e| SessionError::custom("Failed to decode color pointer attribute", e))?,
                         );
 
                         let _ = self
@@ -279,7 +279,7 @@ impl Processor {
 
                         let decoded_pointer: Arc<DecodedPointer> = Arc::new(
                             DecodedPointer::decode_large_pointer_attribute(&pointer, bitmap_target)
-                                .expect("Failed to decode large pointer attribute"),
+                                .map_err(|e| SessionError::custom("Failed to decode color pointer attribute", e))?,
                         );
 
                         let _ = self

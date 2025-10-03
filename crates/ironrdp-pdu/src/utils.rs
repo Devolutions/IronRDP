@@ -8,8 +8,11 @@ use num_derive::FromPrimitive;
 use crate::{DecodeResult, EncodeResult};
 
 pub fn split_u64(value: u64) -> (u32, u32) {
+    #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked integer downcast)")]
     let low =
         u32::try_from(value & 0xFFFF_FFFF).expect("masking with 0xFFFF_FFFF ensures that the value fits into u32");
+
+    #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked integer downcast)")]
     let high = u32::try_from(value >> 32).expect("(u64 >> 32) fits into u32");
 
     (low, high)
@@ -31,6 +34,8 @@ pub fn to_utf16_bytes(value: &str) -> Vec<u8> {
 
 pub fn from_utf16_bytes(mut value: &[u8]) -> String {
     let mut value_u16 = vec![0x00; value.len() / 2];
+
+    #[expect(clippy::missing_panics_doc, reason = "unreachable panic (prior constrain)")]
     value
         .read_u16_into::<LittleEndian>(value_u16.as_mut())
         .expect("read_u16_into cannot fail at this point");
@@ -106,6 +111,7 @@ pub fn read_string_from_cursor(
             let str_buffer = &mut slice;
             let mut u16_buffer = vec![0u16; str_buffer.len() / 2];
 
+            #[expect(clippy::missing_panics_doc, reason = "unreachable panic (prior constrain)")]
             str_buffer
                 .read_u16_into::<LittleEndian>(u16_buffer.as_mut())
                 .expect("BUG: str_buffer is always even for UTF16");
@@ -295,7 +301,11 @@ where
     )
 }
 
-// Utility function that panics on overflow
+/// Utility function that panics on overflow
+///
+/// # Panics
+///
+/// If sum of values overflows.
 pub fn strict_sum<T>(values: &[T]) -> T
 where
     T: CheckedAdd + Copy + Debug,

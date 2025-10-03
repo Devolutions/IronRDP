@@ -62,7 +62,7 @@ impl ChannelName {
     ///
     /// # Panics
     ///
-    /// Panics if input is not null-terminated.
+    /// If input is not null-terminated.
     pub const fn from_static(value: &'static [u8; 8]) -> Self {
         // ensure the last byte is always the null terminator
         if value[Self::SIZE - 1] != 0 {
@@ -80,6 +80,10 @@ impl ChannelName {
     }
 
     /// Get a &str if this channel name is a valid ASCII string.
+    ///
+    /// # Panics
+    ///
+    /// If this channel name is not a valid, null-terminated ASCII string.
     pub fn as_str(&self) -> Option<&str> {
         if self.inner.iter().all(u8::is_ascii) {
             let terminator_idx = self

@@ -176,6 +176,11 @@ impl ClientConnector {
         matches!(self.state, ClientConnectorState::EnhancedSecurityUpgrade { .. })
     }
 
+    /// # Panics
+    ///
+    /// If state is not [ClientConnectorState::EnhancedSecurityUpgrade].
+    ///
+    /// If transition from [ClientConnectorState::EnhancedSecurityUpgrade] to next state failed.
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.should_perform_security_upgrade());
         self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
@@ -186,6 +191,11 @@ impl ClientConnector {
         matches!(self.state, ClientConnectorState::Credssp { .. })
     }
 
+    /// # Panics
+    ///
+    /// If state is not [ClientConnectorState::Credssp].
+    ///
+    /// If transition from [ClientConnectorState::EnhancedSecurityUpgrade] to next state failed.
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");

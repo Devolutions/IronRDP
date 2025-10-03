@@ -220,6 +220,7 @@ impl<'a> UpdateEncoder<'a> {
 }
 
 #[cfg(feature = "__bench")]
+#[expect(clippy::missing_panics_doc, reason = "panics in benches are allowd")]
 pub(crate) mod bench {
     use super::*;
 
