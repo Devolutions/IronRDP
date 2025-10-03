@@ -27,6 +27,7 @@ pub mod ffi {
 
     impl DvcPipeProxyMessageQueue {
         pub fn new(queue_size: u32) -> Box<DvcPipeProxyMessageQueue> {
+            #[expect(clippy::missing_panics_doc, reason = "unreachable panic (integer upcast)")]
             let queue_size = usize::try_from(queue_size).expect("invalid dvc pipe proxy message queue size");
 
             Box::new(DvcPipeProxyMessageQueue(DvcPipeProxyMessageQueueInner::new(queue_size)))

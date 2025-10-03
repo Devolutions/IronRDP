@@ -1,3 +1,5 @@
+#![expect(clippy::missing_panics_doc, reason = "panics in benches are allowed")]
+
 use core::num::{NonZeroU16, NonZeroUsize};
 
 use criterion::{criterion_group, criterion_main, Criterion};

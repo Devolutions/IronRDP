@@ -51,6 +51,7 @@ where
             if self.buf.len() >= length {
                 return Ok(self.buf.split_to(length));
             } else {
+                #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked underflow)")]
                 self.buf
                     .reserve(length.checked_sub(self.buf.len()).expect("length > self.buf.len()"));
             }

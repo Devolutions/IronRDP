@@ -40,6 +40,10 @@ pub fn ycbcr_to_rgba(input: YCbCrBuffer<'_>, output: &mut [u8]) -> io::Result<()
     rdp_yuv444_to_rgba(&planar, output, len).map_err(io::Error::other)
 }
 
+/// # Panics
+///
+/// - Panics if `width` > 64.
+/// - Panics if `height` > 64.
 #[expect(clippy::too_many_arguments)]
 pub fn to_64x64_ycbcr_tile(
     input: &[u8],

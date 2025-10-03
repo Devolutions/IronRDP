@@ -14,6 +14,11 @@ pub mod ffi {
     pub struct Log;
 
     impl Log {
+        /// # Panics
+        ///
+        /// FIXME: Panics if log directory creation fails.
+        ///
+        /// FIXME: Panics if tracing initialization fails.
         pub fn init_with_env() {
             INIT_LOG.call_once(|| {
                 let log_file = std::env::var(IRONRDP_LOG_PATH).ok();
