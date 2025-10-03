@@ -23,7 +23,7 @@ mod utils;
 
 /// # Panics
 ///
-/// If `input.len()` is not 4096 (64 * 46).
+/// Panics if `input.len()` is not 4096 (64 * 46).
 pub fn rfx_encode_component(
     input: &mut [i16],
     output: &mut [u8],

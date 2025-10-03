@@ -305,7 +305,7 @@ where
 ///
 /// # Panics
 ///
-/// If sum of values overflows.
+/// Panics if sum of values overflows.
 pub fn strict_sum<T>(values: &[T]) -> T
 where
     T: CheckedAdd + Copy + Debug,

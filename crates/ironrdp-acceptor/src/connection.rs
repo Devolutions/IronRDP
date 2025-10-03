@@ -125,9 +125,7 @@ impl Acceptor {
 
     /// # Panics
     ///
-    /// If state is not [AcceptorState::SecurityUpgrade].
-    ///
-    /// If transition from [AcceptorState::SecurityUpgrade] to next state failed.
+    /// Panics if state is not [AcceptorState::SecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.reached_security_upgrade().is_some());
         self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
@@ -140,9 +138,7 @@ impl Acceptor {
 
     /// # Panics
     ///
-    /// If state is not [AcceptorState::Credssp].
-    ///
-    /// If transition from [AcceptorState::Credssp] to next state failed.
+    /// Panics if state is not [AcceptorState::Credssp].
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");

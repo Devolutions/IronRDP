@@ -62,7 +62,7 @@ impl ChannelName {
     ///
     /// # Panics
     ///
-    /// If input is not null-terminated.
+    /// Panics if input is not null-terminated.
     pub const fn from_static(value: &'static [u8; 8]) -> Self {
         // ensure the last byte is always the null terminator
         if value[Self::SIZE - 1] != 0 {
@@ -79,18 +79,15 @@ impl ChannelName {
         self.inner.as_ref()
     }
 
-    /// Get a &str if this channel name is a valid ASCII string.
-    ///
-    /// # Panics
-    ///
-    /// If this channel name is not a valid, null-terminated ASCII string.
     pub fn as_str(&self) -> Option<&str> {
         if self.inner.iter().all(u8::is_ascii) {
+            #[expect(clippy::missing_panics_doc, reason = "unreachable panic (prior constrain)")]
             let terminator_idx = self
                 .inner
                 .iter()
                 .position(|c| *c == 0)
                 .expect("null-terminated ASCII string");
+
             Some(str::from_utf8(&self.inner[..terminator_idx]).expect("ASCII characters"))
         } else {
             None
