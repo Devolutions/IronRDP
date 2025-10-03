@@ -38,7 +38,7 @@ fn expect_pointer_png(pointer: &DecodedPointer, expected_file_path: &str) {
 
 #[test]
 fn new_pointer_32bpp() {
-    let data = include_bytes!("../../test_data/pdu/pointer/new_pointer_32bpp.bin");
+    let data = include_bytes!("../../../test_data/pdu/pointer/new_pointer_32bpp.bin");
     let mut parsed = ironrdp_core::decode::<PointerAttribute<'_>>(data).unwrap();
     let decoded = DecodedPointer::decode_pointer_attribute(&parsed, PointerBitmapTarget::Software).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/new_pointer_32bpp.png");
@@ -69,7 +69,7 @@ fn new_pointer_32bpp() {
 
 #[test]
 fn large_pointer_32bpp() {
-    let data = include_bytes!("../../test_data/pdu/pointer/large_pointer_32bpp.bin");
+    let data = include_bytes!("../../../test_data/pdu/pointer/large_pointer_32bpp.bin");
     let mut parsed = ironrdp_core::decode::<LargePointerAttribute<'_>>(data).unwrap();
     let decoded = DecodedPointer::decode_large_pointer_attribute(&parsed, PointerBitmapTarget::Software).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/large_pointer_32bpp.png");
@@ -98,7 +98,7 @@ fn large_pointer_32bpp() {
 
 #[test]
 fn color_pointer_24bpp() {
-    let data = include_bytes!("../../test_data/pdu/pointer/color_pointer_24bpp.bin");
+    let data = include_bytes!("../../../test_data/pdu/pointer/color_pointer_24bpp.bin");
     let mut parsed = ironrdp_core::decode::<ColorPointerAttribute<'_>>(data).unwrap();
     let decoded = DecodedPointer::decode_color_pointer_attribute(&parsed, PointerBitmapTarget::Software).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/color_pointer_24bpp.png");
