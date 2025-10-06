@@ -32,7 +32,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] }
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.1" }
 log = "0.4"
-tokio-tungstenite = { version = "0.27" }
+tokio-tungstenite = { version = "0.28" }
 tokio-util = { version = "0.7" }
 tokio = { version = "1.43", features = ["macros", "rt"] }
 uuid = { version = "1.16", features = ["v4"] }
