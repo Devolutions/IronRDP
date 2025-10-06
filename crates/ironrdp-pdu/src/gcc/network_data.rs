@@ -25,7 +25,8 @@ const SERVER_CHANNEL_SIZE: usize = 2;
 /// is using all the code values from 0 to 255, as such any u8 value is a valid ANSI character.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChannelName {
-    /// INVARIANT: A null-terminated 8-byte array containing at most seven ANSI characters.
+    /// INVARIANT: A null-terminated 8-byte array.
+    /// INVARIANT: Contains at most seven ANSI characters.
     inner: Cow<'static, [u8; Self::SIZE]>,
 }
 
