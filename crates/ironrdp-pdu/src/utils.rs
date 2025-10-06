@@ -306,6 +306,7 @@ where
 /// # Panics
 ///
 /// Panics if sum of values overflows.
+// FIXME: Is it really something we want to expose from ironrdp-pdu?
 pub fn strict_sum<T>(values: &[T]) -> T
 where
     T: CheckedAdd + Copy + Debug,
