@@ -29,7 +29,7 @@ yuv = { version = "0.8", features = ["rdp"] }
 
 [dev-dependencies]
 bmp = "0.5"
-bytemuck = "1.23"
+bytemuck = "1.24"
 expect-test.workspace = true
 
 [lints]
