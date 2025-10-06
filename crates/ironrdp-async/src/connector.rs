@@ -30,6 +30,9 @@ where
     Ok(ShouldUpgrade)
 }
 
+/// # Panics
+///
+/// Panics if connector state is not [ClientConnectorState::EnhancedSecurityUpgrade].
 pub fn skip_connect_begin(connector: &mut ClientConnector) -> ShouldUpgrade {
     assert!(connector.should_perform_security_upgrade());
     ShouldUpgrade

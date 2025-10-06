@@ -14,6 +14,11 @@ pub mod ffi {
     pub struct Log;
 
     impl Log {
+        /// # Panics
+        ///
+        /// - Panics if log directory creation fails.
+        /// - Panics if tracing initialization fails.
+        // FIXME: We should return an error instead, because panicking at the FFI boundary is unsafe.
         pub fn init_with_env() {
             INIT_LOG.call_once(|| {
                 let log_file = std::env::var(IRONRDP_LOG_PATH).ok();

@@ -25,6 +25,8 @@ const SERVER_CHANNEL_SIZE: usize = 2;
 /// is using all the code values from 0 to 255, as such any u8 value is a valid ANSI character.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChannelName {
+    /// INVARIANT: A null-terminated 8-byte array.
+    /// INVARIANT: Contains at most seven ANSI characters.
     inner: Cow<'static, [u8; Self::SIZE]>,
 }
 
@@ -79,14 +81,16 @@ impl ChannelName {
         self.inner.as_ref()
     }
 
-    /// Get a &str if this channel name is a valid ASCII string.
     pub fn as_str(&self) -> Option<&str> {
         if self.inner.iter().all(u8::is_ascii) {
+            #[expect(clippy::missing_panics_doc, reason = "never panics per invariant on self.inner")]
             let terminator_idx = self
                 .inner
                 .iter()
                 .position(|c| *c == 0)
                 .expect("null-terminated ASCII string");
+
+            #[expect(clippy::missing_panics_doc, reason = "never panics per invariant on self.inner")]
             Some(str::from_utf8(&self.inner[..terminator_idx]).expect("ASCII characters"))
         } else {
             None
