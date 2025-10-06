@@ -97,7 +97,7 @@ impl<'a> FileContentsResponse<'a> {
         let chunk = self.data.as_ref().try_into().map_err(|_| {
             invalid_field_err!(
                 "requestedFileContentsData",
-                "Can't cast self.data to u64 via &[u8, 8], invalid data size"
+                "not enough bytes for u64 size"
             )
         })?;
 
