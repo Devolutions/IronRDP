@@ -82,7 +82,7 @@ impl ChannelName {
 
     pub fn as_str(&self) -> Option<&str> {
         if self.inner.iter().all(u8::is_ascii) {
-            #[expect(clippy::missing_panics_doc, reason = "unreachable panic (prior constrain)")]
+            #[expect(clippy::missing_panics_doc, reason = "never panics per invariant on self.inner")]
             let terminator_idx = self
                 .inner
                 .iter()
