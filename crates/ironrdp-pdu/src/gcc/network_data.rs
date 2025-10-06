@@ -89,7 +89,7 @@ impl ChannelName {
                 .position(|c| *c == 0)
                 .expect("null-terminated ASCII string");
 
-            #[expect(clippy::missing_panics_doc, reason = "unreachable panic (prior constrain)")]
+            #[expect(clippy::missing_panics_doc, reason = "never panics per invariant on self.inner")]
             Some(str::from_utf8(&self.inner[..terminator_idx]).expect("ASCII characters"))
         } else {
             None
