@@ -94,12 +94,11 @@ impl<'a> FileContentsResponse<'a> {
 
     /// Read data as u64 size value
     pub fn data_as_size(&self) -> DecodeResult<u64> {
-        let chunk = self.data.as_ref().try_into().map_err(|_| {
-            invalid_field_err!(
-                "requestedFileContentsData",
-                "not enough bytes for u64 size"
-            )
-        })?;
+        let chunk = self
+            .data
+            .as_ref()
+            .try_into()
+            .map_err(|_| invalid_field_err!("requestedFileContentsData", "not enough bytes for u64 size"))?;
 
         Ok(u64::from_le_bytes(chunk))
     }
