@@ -6,6 +6,7 @@ use ironrdp::connector::ConnectorError;
 use ironrdp::session::SessionError;
 #[cfg(target_os = "windows")]
 use ironrdp_cliprdr_native::WinCliprdrError;
+use ironrdp_rdcleanpath::der;
 
 use self::ffi::IronRdpErrorKind;
 
@@ -90,6 +91,32 @@ impl From<WinCliprdrError> for IronRdpErrorKind {
 impl From<WrongOSError> for IronRdpErrorKind {
     fn from(_val: WrongOSError) -> Self {
         IronRdpErrorKind::WrongOS
+    }
+}
+
+impl From<der::Error> for IronRdpErrorKind {
+    fn from(_val: der::Error) -> Self {
+        IronRdpErrorKind::DecodeError
+    }
+}
+
+impl From<ironrdp_rdcleanpath::MissingRDCleanPathField> for IronRdpErrorKind {
+    fn from(_val: ironrdp_rdcleanpath::MissingRDCleanPathField) -> Self {
+        IronRdpErrorKind::Generic
+    }
+}
+
+pub struct GenericError(pub String);
+
+impl Display for GenericError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<GenericError> for IronRdpErrorKind {
+    fn from(_val: GenericError) -> Self {
+        IronRdpErrorKind::Generic
     }
 }
 

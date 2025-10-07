@@ -135,7 +135,7 @@ public static class Connection
         }
     }
 
-    private static async Task<ClientState> ResolveGenerator(CredsspProcessGenerator generator, TcpClient tcpClient)
+    internal static async Task<ClientState> ResolveGenerator(CredsspProcessGenerator generator, System.Net.Sockets.TcpClient tcpClient)
     {
         var state = generator.Start();
         NetworkStream? stream = null;
@@ -169,10 +169,26 @@ public static class Connection
                     throw new Exception("Unimplemented protocol");
                 }
             }
+            else if (state.IsCompleted())
+            {
+                try
+                {
+                    var clientState = state.GetClientStateIfCompleted();
+                    return clientState;
+                }
+                catch (IronRdpException ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[ResolveGenerator] Error getting client state: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[ResolveGenerator] Error kind: {ex.Inner?.Kind}");
+                    System.Diagnostics.Debug.WriteLine($"[ResolveGenerator] Stack trace: {ex.StackTrace}");
+                    throw;
+                }
+            }
             else
             {
-                var clientState = state.GetClientStateIfCompleted();
-                return clientState;
+                var errorMsg = $"[ResolveGenerator] Generator state is neither suspended nor completed. IsSuspended={state.IsSuspended()}, IsCompleted={state.IsCompleted()}";
+                System.Diagnostics.Debug.WriteLine(errorMsg);
+                throw new InvalidOperationException(errorMsg);
             }
         }
     }

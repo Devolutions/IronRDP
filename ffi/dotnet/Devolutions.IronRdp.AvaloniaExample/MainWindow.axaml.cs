@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Net.Security;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -22,7 +23,7 @@ public partial class MainWindow : Window
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
     ActiveStage? _activeStage;
     DecodedImage? _decodedImage;
-    Framed<SslStream>? _framed;
+    Framed<Stream>? _framed;  // Changed to Stream to support both SslStream and WebSocketStream
     WinCliprdr? _cliprdr;
     private readonly RendererModel _renderModel;
     private Image? _imageControl;
@@ -77,17 +78,47 @@ public partial class MainWindow : Window
 
         var username = Environment.GetEnvironmentVariable("IRONRDP_USERNAME");
         var password = Environment.GetEnvironmentVariable("IRONRDP_PASSWORD");
-        var domain = Environment.GetEnvironmentVariable("IRONRDP_DOMAIN");
+        var domain = Environment.GetEnvironmentVariable("IRONRDP_DOMAIN"); // Optional
         var server = Environment.GetEnvironmentVariable("IRONRDP_SERVER");
+        var portEnv = Environment.GetEnvironmentVariable("IRONRDP_PORT");
 
-        if (username == null || password == null || domain == null || server == null)
+        // NEW: Gateway configuration (optional)
+        var gatewayUrl = Environment.GetEnvironmentVariable("IRONRDP_GATEWAY_URL");
+        var gatewayToken = Environment.GetEnvironmentVariable("IRONRDP_GATEWAY_TOKEN");
+        var tokengenUrl = Environment.GetEnvironmentVariable("IRONRDP_TOKENGEN_URL");
+
+        if (username == null || password == null || server == null)
         {
             var errorMessage =
-                "Please set the IRONRDP_USERNAME, IRONRDP_PASSWORD, IRONRDP_DOMAIN, and RONRDP_SERVER environment variables";
+                "Please set the IRONRDP_USERNAME, IRONRDP_PASSWORD, and IRONRDP_SERVER environment variables";
             Trace.TraceError(errorMessage);
             Close();
             throw new InvalidProgramException(errorMessage);
         }
+
+        // Validate server is only domain or IP (no port allowed)
+        if (server.Contains(':'))
+        {
+            var errorMessage = $"IRONRDP_SERVER must be a domain or IP address only, not '{server}'. Use IRONRDP_PORT for the port.";
+            Trace.TraceError(errorMessage);
+            Close();
+            throw new InvalidProgramException(errorMessage);
+        }
+
+        // Parse port from environment variable or use default
+        int port = 3389;
+        if (!string.IsNullOrEmpty(portEnv))
+        {
+            if (!int.TryParse(portEnv, out port) || port <= 0 || port > 65535)
+            {
+                var errorMessage = $"IRONRDP_PORT must be a valid port number (1-65535), got '{portEnv}'";
+                Trace.TraceError(errorMessage);
+                Close();
+                throw new InvalidProgramException(errorMessage);
+            }
+        }
+
+        Trace.TraceInformation($"Target server: {server}:{port}");
 
         var config = BuildConfig(username, password, domain, _renderModel.Width, _renderModel.Height);
 
@@ -106,15 +137,79 @@ public partial class MainWindow : Window
         BeforeConnectSetup();
         Task.Run(async () =>
         {
-            var (res, framed) = await Connection.Connect(config, server, factory);
-            this._decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(),
-                res.GetDesktopSize().GetHeight());
-            this._activeStage = ActiveStage.New(res);
-            this._framed = framed;
-            ReadPduAndProcessActiveStage();
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            try
             {
-                HandleClipboardEvents();
+                ConnectionResult res;
+
+                // Determine connection mode: Gateway or Direct
+                if (!string.IsNullOrEmpty(gatewayUrl))
+                {
+                    Trace.TraceInformation("=== GATEWAY MODE ===");
+                    Trace.TraceInformation($"Gateway URL: {gatewayUrl}");
+                    Trace.TraceInformation($"Destination: {server}:{port}");
+
+                    // Generate token if not provided
+                    if (string.IsNullOrEmpty(gatewayToken))
+                    {
+                        Trace.TraceInformation("No token provided, generating token...");
+                        var tokenGen = new TokenGenerator(tokengenUrl ?? "http://localhost:8080");
+
+                        try
+                        {
+                            gatewayToken = await tokenGen.GenerateRdpTlsToken(
+                                dstHost: server!,
+                                proxyUser: $"{username}@{domain}",
+                                proxyPassword: password!,
+                                destUser: username!,
+                                destPassword: password!
+                            );
+                            Trace.TraceInformation($"Token generated successfully (length: {gatewayToken.Length})");
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.TraceError($"Failed to generate token: {ex.Message}");
+                            Trace.TraceInformation("Make sure tokengen server is running:");
+                            Trace.TraceInformation($"  cargo run --manifest-path D:/devolutions-gateway/tools/tokengen/Cargo.toml -- server");
+                            throw;
+                        }
+                    }
+
+                    // Connect via gateway - destination needs "hostname:port" format for RDCleanPath
+                    string destination = $"{server}:{port}";
+                    var (gatewayRes, gatewayFramed) = await GatewayConnection.ConnectViaGateway(
+                        config, gatewayUrl, gatewayToken!, destination, null, factory);
+                    res = gatewayRes;
+                    this._framed = new Framed<Stream>(gatewayFramed.GetInner().Item1);
+
+                    Trace.TraceInformation("=== GATEWAY CONNECTION SUCCESSFUL ===");
+                }
+                else
+                {
+                    Trace.TraceInformation("=== DIRECT MODE ===");
+
+                    // Direct connection (original behavior)
+                    var (directRes, directFramed) = await Connection.Connect(config, server, factory, port);
+                    res = directRes;
+                    this._framed = new Framed<Stream>(directFramed.GetInner().Item1);
+
+                    Trace.TraceInformation("=== DIRECT CONNECTION SUCCESSFUL ===");
+                }
+
+                this._decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(),
+                    res.GetDesktopSize().GetHeight());
+                this._activeStage = ActiveStage.New(res);
+                ReadPduAndProcessActiveStage();
+
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    HandleClipboardEvents();
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.TraceError($"Connection failed: {ex.Message}");
+                Trace.TraceError($"Stack trace: {ex.StackTrace}");
+                throw;
             }
         });
     }
@@ -260,12 +355,16 @@ public partial class MainWindow : Window
         });
     }
 
-    private static Config BuildConfig(string username, string password, string domain, int width, int height)
+    private static Config BuildConfig(string username, string password, string? domain, int width, int height)
     {
         ConfigBuilder configBuilder = ConfigBuilder.New();
 
         configBuilder.WithUsernameAndPassword(username, password);
-        configBuilder.SetDomain(domain);
+        if (domain != null)
+        {
+            configBuilder.SetDomain(domain);
+        }
+
         configBuilder.SetDesktopSize((ushort)height, (ushort)width);
         configBuilder.SetClientName("IronRdp");
         configBuilder.SetClientDir("C:\\");
