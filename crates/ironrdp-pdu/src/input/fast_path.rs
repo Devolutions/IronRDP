@@ -270,6 +270,11 @@ impl FastPathInput {
         Ok(Self(input_events))
     }
 
+    pub fn single(input_event: FastPathInputEvent) -> Self {
+        // A single element upholds the invariant.
+        Self(vec![input_event])
+    }
+
     pub fn input_events(&self) -> &[FastPathInputEvent] {
         &self.0
     }
