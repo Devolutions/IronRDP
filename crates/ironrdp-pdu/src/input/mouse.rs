@@ -25,7 +25,12 @@ impl Encode for MousePdu {
             PointerFlags::empty().bits()
         };
 
-        #[expect(clippy::as_conversions, reason = "truncation intended")]
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "truncation intended"
+        )]
         let truncated_wheel_rotation_units = self.number_of_wheel_rotation_units as u8;
         let wheel_rotations_bits = u16::from(truncated_wheel_rotation_units);
 
@@ -55,7 +60,11 @@ impl<'de> Decode<'de> for MousePdu {
 
         let flags = PointerFlags::from_bits_truncate(flags_raw);
 
-        #[expect(clippy::as_conversions, reason = "truncation intended")]
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            reason = "truncation intended"
+        )]
         let wheel_rotations_bits = flags_raw as u8;
 
         let number_of_wheel_rotation_units = if flags.contains(PointerFlags::WHEEL_NEGATIVE) {
