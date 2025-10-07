@@ -106,7 +106,7 @@ fn mac_data_computes_correctly() {
     let decrypted_server_challenge: [u8; 10] = [0x54, 0x0, 0x45, 0x0, 0x53, 0x0, 0x54, 0x0, 0x0, 0x0];
 
     assert_eq!(
-        compute_mac_data(mac_salt_key.as_ref(), decrypted_server_challenge.as_ref()),
+        compute_mac_data(mac_salt_key.as_ref(), decrypted_server_challenge.as_ref()).unwrap(),
         server_mac_data.as_ref()
     );
 }

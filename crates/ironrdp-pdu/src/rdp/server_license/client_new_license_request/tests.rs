@@ -68,14 +68,14 @@ lazy_static! {
             preamble_message_type: PreambleType::NewLicenseRequest,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (PREAMBLE_SIZE
+            preamble_message_size: u16::try_from(PREAMBLE_SIZE
                 + RANDOM_NUMBER_SIZE
                 + LICENSE_REQUEST_STATIC_FIELDS_SIZE
                 + ENCRYPTED_PREMASTER_SECRET.len()
                 + CLIENT_MACHINE_NAME.len()
                 + UTF8_NULL_TERMINATOR_SIZE
                 + CLIENT_USERNAME.len()
-                + UTF8_NULL_TERMINATOR_SIZE) as u16,
+                + UTF8_NULL_TERMINATOR_SIZE).expect("can't panic"),
         },
         client_random: Vec::from(CLIENT_RANDOM_BUFFER.as_ref()),
         encrypted_premaster_secret: Vec::from(ENCRYPTED_PREMASTER_SECRET.as_ref()),
@@ -86,11 +86,11 @@ lazy_static! {
     pub static ref REQUEST_BUFFER: Vec<u8> = {
         let username_len = CLIENT_USERNAME.len() + UTF8_NULL_TERMINATOR_SIZE;
         let mut username_len_buf = Vec::new();
-        username_len_buf.write_u16::<LittleEndian>(username_len as u16).unwrap();
+        username_len_buf.write_u16::<LittleEndian>(u16::try_from(username_len).expect("can't panic")).unwrap();
 
         let machine_name_len = CLIENT_MACHINE_NAME.len() + UTF8_NULL_TERMINATOR_SIZE;
         let mut machine_name_len_buf = Vec::new();
-        machine_name_len_buf.write_u16::<LittleEndian>(machine_name_len as u16).unwrap();
+        machine_name_len_buf.write_u16::<LittleEndian>(u16::try_from(machine_name_len).unwrap()).unwrap();
 
         let buf = [
             &[0x01u8, 0x00, 0x00, 0x00, // preferred_key_exchange_algorithm
@@ -109,7 +109,7 @@ lazy_static! {
             &[0x00]] // null
                 .concat();
 
-        let preamble_size_field = (buf.len() + PREAMBLE_SIZE) as u16;
+        let preamble_size_field = u16::try_from(buf.len() + PREAMBLE_SIZE).expect("can't panic");
 
         [
             LICENSE_HEADER_BUFFER_NO_SIZE.as_ref(),
@@ -270,7 +270,7 @@ lazy_static! {
             }),
             scope_list: vec![Scope(String::from("microsoft.com"))],
         };
-        req.license_header.preamble_message_size = req.size() as u16;
+        req.license_header.preamble_message_size = u16::try_from(req.size()).expect("can't panic");
         req.into()
     };
 }

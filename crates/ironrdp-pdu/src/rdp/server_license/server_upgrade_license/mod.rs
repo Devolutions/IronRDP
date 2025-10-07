@@ -69,7 +69,7 @@ impl ServerUpgradeLicense {
     pub fn verify_server_license(&self, encryption_data: &LicenseEncryptionData) -> Result<(), ServerLicenseError> {
         let decrypted_license_info = self.decrypted_license_info(encryption_data);
         let mac_data =
-            super::compute_mac_data(encryption_data.mac_salt_key.as_slice(), decrypted_license_info.as_ref());
+            super::compute_mac_data(encryption_data.mac_salt_key.as_slice(), decrypted_license_info.as_ref())?;
 
         if mac_data != self.mac_data {
             return Err(ServerLicenseError::InvalidMacData);

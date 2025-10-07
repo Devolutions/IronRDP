@@ -4,8 +4,8 @@ mod tests;
 use bit_field::BitField as _;
 use bitflags::bitflags;
 use ironrdp_core::{
-    decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeError, DecodeResult, Encode,
-    EncodeResult, InvalidFieldErr as _, ReadCursor, WriteCursor,
+    cast_length, decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeError,
+    DecodeResult, Encode, EncodeResult, InvalidFieldErr as _, ReadCursor, WriteCursor,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
@@ -42,7 +42,7 @@ impl FastPathHeader {
         // it may then be +2 if > 0x7f
         let len = self.data_length + Self::FIXED_PART_SIZE + 1;
 
-        Self::FIXED_PART_SIZE + per::sizeof_length(len as u16)
+        Self::FIXED_PART_SIZE + per::sizeof_length(len)
     }
 }
 
@@ -56,15 +56,13 @@ impl Encode for FastPathHeader {
         dst.write_u8(header);
 
         let length = self.data_length + self.size();
-        if length > u16::MAX as usize {
-            return Err(invalid_field_err!("length", "fastpath PDU length is too big"));
-        }
+        let length = cast_length!("length", length)?;
 
         if self.forced_long_length {
             // Preserve same layout for header as received
-            per::write_long_length(dst, length as u16);
+            per::write_long_length(dst, length);
         } else {
-            per::write_length(dst, length as u16);
+            per::write_length(dst, length);
         }
 
         Ok(())
@@ -93,14 +91,15 @@ impl<'de> Decode<'de> for FastPathHeader {
         let (length, sizeof_length) = per::read_length(src).map_err(|e| {
             DecodeError::invalid_field("", "length", "Invalid encoded fast path PDU length").with_source(e)
         })?;
-        if (length as usize) < sizeof_length + Self::FIXED_PART_SIZE {
+        let length = usize::from(length);
+        if length < sizeof_length + Self::FIXED_PART_SIZE {
             return Err(invalid_field_err!(
                 "length",
                 "received fastpath PDU length is smaller than header size"
             ));
         }
-        let data_length = length as usize - sizeof_length - Self::FIXED_PART_SIZE;
-        // Detect case, when received packet has non-optimal packet length packing
+        let data_length = length - sizeof_length - Self::FIXED_PART_SIZE;
+        // Detect case, when received packet has non-optimal packet length packing.
         let forced_long_length = per::sizeof_length(length) != sizeof_length;
 
         Ok(FastPathHeader {
@@ -131,9 +130,7 @@ impl Encode for FastPathUpdatePdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        if self.data.len() > u16::MAX as usize {
-            return Err(invalid_field_err!("data", "fastpath PDU data is too big"));
-        }
+        let data_len = cast_length!("data length", self.data.len())?;
 
         let mut header = 0u8;
         header.set_bits(0..4, self.update_code.as_u8());
@@ -148,7 +145,7 @@ impl Encode for FastPathUpdatePdu<'_> {
             dst.write_u8(compression_flags_with_type);
         }
 
-        dst.write_u16(self.data.len() as u16);
+        dst.write_u16(data_len);
         dst.write_slice(self.data);
 
         Ok(())
@@ -200,7 +197,7 @@ impl<'de> Decode<'de> for FastPathUpdatePdu<'de> {
             (None, None)
         };
 
-        let data_length = src.read_u16() as usize;
+        let data_length = usize::from(src.read_u16());
         ensure_size!(in: src, size: data_length);
         let data = src.read_slice(data_length);
 

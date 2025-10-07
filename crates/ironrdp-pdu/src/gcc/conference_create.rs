@@ -114,9 +114,9 @@ impl Encode for ConferenceCreateRequest {
 
         per::CHOICE_SIZE
             + CONFERENCE_REQUEST_OBJECT_ID.len()
-            + per::sizeof_length(req_length)
+            + per::sizeof_length(usize::from(req_length))
             + CONFERENCE_REQUEST_CONNECT_PDU_SIZE
-            + per::sizeof_length(length)
+            + per::sizeof_length(usize::from(length))
             + gcc_blocks_buffer_length
     }
 }
@@ -286,9 +286,9 @@ impl Encode for ConferenceCreateResponse {
 
         per::CHOICE_SIZE
             + CONFERENCE_REQUEST_OBJECT_ID.len()
-            + per::sizeof_length(req_length)
+            + per::sizeof_length(usize::from(req_length))
             + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE
-            + per::sizeof_length(length)
+            + per::sizeof_length(usize::from(length))
             + gcc_blocks_buffer_length
     }
 }

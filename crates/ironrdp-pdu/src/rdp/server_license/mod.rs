@@ -207,6 +207,8 @@ pub enum ServerLicenseError {
     Utf8Error(#[from] std::string::FromUtf8Error),
     #[error("DER error: {0}")]
     DerError(#[from] pkcs1::der::Error),
+    #[error("invalid `{0}`: out of range integral type conversion")]
+    InvalidField(&'static str),
     #[error("invalid preamble field: {0}")]
     InvalidPreamble(String),
     #[error("invalid preamble message type field")]
@@ -338,8 +340,10 @@ impl<'de> Decode<'de> for BlobHeader {
     }
 }
 
-fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
-    let data_len_buffer = (data.len() as u32).to_le_bytes();
+fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Result<Vec<u8>, ServerLicenseError> {
+    let data_len_buffer = u32::try_from(data.len())
+        .map_err(|_| ServerLicenseError::InvalidField("MAC data length"))?
+        .to_le_bytes();
 
     let pad_one: [u8; 40] = [0x36; 40];
 
@@ -360,7 +364,7 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
             .as_slice(),
     );
 
-    md5.finalize().to_vec()
+    Ok(md5.finalize().to_vec())
 }
 
 #[derive(Debug, PartialEq)]

@@ -304,7 +304,7 @@ impl Encode for TileSetPdu<'_> {
         dst.write_u16(properties);
 
         dst.write_u8(cast_length!("numQuant", self.quants.len())?);
-        dst.write_u8(TILE_SIZE as u8);
+        dst.write_u8(u8::try_from(TILE_SIZE).expect("TILE_SIZE value fits into u8"));
         dst.write_u16(cast_length!("numTiles", self.tiles.len())?);
 
         let tiles_data_size = self.tiles.iter().map(|t| Block::Tile(t.clone()).size()).sum::<usize>();
@@ -384,7 +384,7 @@ impl<'de> Decode<'de> for TileSetPdu<'de> {
         }
 
         let number_of_tiles = usize::from(src.read_u16());
-        let _tiles_data_size = src.read_u32() as usize;
+        let _tiles_data_size = src.read_u32();
 
         let quants = iter::repeat_with(|| Quant::decode(src))
             .take(number_of_quants)
@@ -544,24 +544,32 @@ impl Encode for Quant {
 
 impl<'de> Decode<'de> for Quant {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        #![allow(clippy::similar_names)] // It’s hard to do better than ll3, lh3, etc without going overly verbose.
+        #![allow(
+            clippy::similar_names,
+            reason = "it’s hard to do better than ll3, lh3, etc without going overly verbose"
+        )]
+
         ensure_fixed_part_size!(in: src);
 
-        let level3 = src.read_u16();
-        let ll3 = level3.get_bits(0..4) as u8;
-        let lh3 = level3.get_bits(4..8) as u8;
-        let hl3 = level3.get_bits(8..12) as u8;
-        let hh3 = level3.get_bits(12..16) as u8;
+        let ll3lh3 = src.read_u8();
+        let ll3 = ll3lh3.get_bits(0..4);
+        let lh3 = ll3lh3.get_bits(4..8);
 
-        let level2_with_lh1 = src.read_u16();
-        let lh2 = level2_with_lh1.get_bits(0..4) as u8;
-        let hl2 = level2_with_lh1.get_bits(4..8) as u8;
-        let hh2 = level2_with_lh1.get_bits(8..12) as u8;
-        let lh1 = level2_with_lh1.get_bits(12..16) as u8;
+        let hl3hh3 = src.read_u8();
+        let hl3 = hl3hh3.get_bits(0..4);
+        let hh3 = hl3hh3.get_bits(4..8);
 
-        let level1 = src.read_u8();
-        let hl1 = level1.get_bits(0..4);
-        let hh1 = level1.get_bits(4..8);
+        let lh2hl2 = src.read_u8();
+        let lh2 = lh2hl2.get_bits(0..4);
+        let hl2 = lh2hl2.get_bits(4..8);
+
+        let hh2lh1 = src.read_u8();
+        let hh2 = hh2lh1.get_bits(0..4);
+        let lh1 = hh2lh1.get_bits(4..8);
+
+        let hl1hh1 = src.read_u8();
+        let hl1 = hl1hh1.get_bits(0..4);
+        let hh1 = hl1hh1.get_bits(4..8);
 
         Ok(Self {
             ll3,

@@ -3,13 +3,25 @@ use ironrdp_core::{cast_length, ensure_size, invalid_field_err, ReadCursor, Writ
 use crate::{DecodeResult, EncodeResult};
 
 #[repr(u8)]
+#[derive(Copy, Clone)]
 pub(crate) enum Pc {
     Primitive = 0x00,
     Construct = 0x20,
 }
 
+impl Pc {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 #[repr(u8)]
 #[expect(unused)]
+#[derive(Copy, Clone)]
 enum Class {
     Universal = 0x00,
     Application = 0x40,
@@ -17,8 +29,19 @@ enum Class {
     Private = 0xC0,
 }
 
+impl Class {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 #[repr(u8)]
 #[expect(unused)]
+#[derive(Copy, Clone)]
 enum Tag {
     Mask = 0x1F,
     Boolean = 0x01,
@@ -28,6 +51,16 @@ enum Tag {
     ObjectIdentifier = 0x06,
     Enumerated = 0x0A,
     Sequence = 0x10,
+}
+
+impl Tag {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 pub(crate) const SIZEOF_ENUMERATED: usize = 3;
@@ -46,7 +79,7 @@ pub(crate) fn sizeof_sequence_tag(length: u16) -> usize {
 }
 
 pub(crate) fn sizeof_octet_string(length: u16) -> usize {
-    1 + sizeof_length(length) + length as usize
+    1 + sizeof_length(length) + usize::from(length)
 }
 
 pub(crate) fn sizeof_integer(value: u32) -> usize {
@@ -71,7 +104,7 @@ pub(crate) fn read_sequence_tag(stream: &mut ReadCursor<'_>) -> DecodeResult<u16
     ensure_size!(in: stream, size: 1);
     let identifier = stream.read_u8();
 
-    if identifier != Class::Universal as u8 | Pc::Construct as u8 | (TAG_MASK & Tag::Sequence as u8) {
+    if identifier != Class::Universal.as_u8() | Pc::Construct.as_u8() | (TAG_MASK & Tag::Sequence.as_u8()) {
         Err(invalid_field_err!("identifier", "invalid sequence tag identifier"))
     } else {
         read_length(stream)
@@ -82,11 +115,11 @@ pub(crate) fn write_application_tag(stream: &mut WriteCursor<'_>, tagnum: u8, le
     ensure_size!(in: stream, size: sizeof_application_tag(tagnum, length));
 
     let taglen = if tagnum > 0x1E {
-        stream.write_u8(Class::Application as u8 | Pc::Construct as u8 | TAG_MASK);
+        stream.write_u8(Class::Application.as_u8() | Pc::Construct.as_u8() | TAG_MASK);
         stream.write_u8(tagnum);
         2
     } else {
-        stream.write_u8(Class::Application as u8 | Pc::Construct as u8 | (TAG_MASK & tagnum));
+        stream.write_u8(Class::Application.as_u8() | Pc::Construct.as_u8() | (TAG_MASK & tagnum));
         1
     };
 
@@ -98,14 +131,14 @@ pub(crate) fn read_application_tag(stream: &mut ReadCursor<'_>, tagnum: u8) -> D
     let identifier = stream.read_u8();
 
     if tagnum > 0x1E {
-        if identifier != Class::Application as u8 | Pc::Construct as u8 | TAG_MASK {
+        if identifier != Class::Application.as_u8() | Pc::Construct.as_u8() | TAG_MASK {
             return Err(invalid_field_err!("identifier", "invalid application tag identifier"));
         }
         ensure_size!(in: stream, size: 1);
         if stream.read_u8() != tagnum {
             return Err(invalid_field_err!("tagnum", "invalid application tag identifier"));
         }
-    } else if identifier != Class::Application as u8 | Pc::Construct as u8 | (TAG_MASK & tagnum) {
+    } else if identifier != Class::Application.as_u8() | Pc::Construct.as_u8() | (TAG_MASK & tagnum) {
         return Err(invalid_field_err!("identifier", "invalid application tag identifier"));
     }
 
@@ -146,20 +179,22 @@ pub(crate) fn write_integer(stream: &mut WriteCursor<'_>, value: u32) -> EncodeR
     if value < 0x0000_0080 {
         write_length(stream, 1)?;
         ensure_size!(in: stream, size: 1);
-        stream.write_u8(value as u8);
+        stream.write_u8(u8::try_from(value).expect("value is guaranteed to fit into u8 due to the prior check"));
 
         Ok(3)
     } else if value < 0x0000_8000 {
         write_length(stream, 2)?;
         ensure_size!(in: stream, size: 2);
-        stream.write_u16_be(value as u16);
+        stream.write_u16_be(u16::try_from(value).expect("value is guaranteed to fit into u16 due to the prior check"));
 
         Ok(4)
     } else if value < 0x0080_0000 {
         write_length(stream, 3)?;
         ensure_size!(in: stream, size: 3);
-        stream.write_u8((value >> 16) as u8);
-        stream.write_u16_be((value & 0xFFFF) as u16);
+        stream.write_u8(u8::try_from(value >> 16).expect("value is guaranteed to fit into u8 due to the prior check"));
+        stream.write_u16_be(
+            u16::try_from(value & 0xFFFF).expect("masking with 0xFFFF ensures that the value fits into u16"),
+        );
 
         Ok(5)
     } else {
@@ -251,7 +286,7 @@ pub(crate) fn read_octet_string_tag(stream: &mut ReadCursor<'_>) -> DecodeResult
 fn write_universal_tag(stream: &mut WriteCursor<'_>, tag: Tag, pc: Pc) -> EncodeResult<usize> {
     ensure_size!(in: stream, size: 1);
 
-    let identifier = Class::Universal as u8 | pc as u8 | (TAG_MASK & tag as u8);
+    let identifier = Class::Universal.as_u8() | pc.as_u8() | (TAG_MASK & tag.as_u8());
     stream.write_u8(identifier);
 
     Ok(1)
@@ -262,7 +297,7 @@ fn read_universal_tag(stream: &mut ReadCursor<'_>, tag: Tag, pc: Pc) -> DecodeRe
 
     let identifier = stream.read_u8();
 
-    if identifier != Class::Universal as u8 | pc as u8 | (TAG_MASK & tag as u8) {
+    if identifier != Class::Universal.as_u8() | pc.as_u8() | (TAG_MASK & tag.as_u8()) {
         Err(invalid_field_err!("identifier", "invalid universal tag identifier"))
     } else {
         Ok(())
@@ -279,11 +314,11 @@ fn write_length(stream: &mut WriteCursor<'_>, length: u16) -> EncodeResult<usize
         Ok(3)
     } else if length > 0x7F {
         stream.write_u8(0x80 ^ 0x1);
-        stream.write_u8(length as u8);
+        stream.write_u8(u8::try_from(length).expect("length is guaranteed to fit into u8 due to the prior check"));
 
         Ok(2)
     } else {
-        stream.write_u8(length as u8);
+        stream.write_u8(u8::try_from(length).expect("length is guaranteed to fit into u8 due to the prior check"));
 
         Ok(1)
     }

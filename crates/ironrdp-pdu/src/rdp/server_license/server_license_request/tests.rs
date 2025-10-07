@@ -252,7 +252,7 @@ lazy_static! {
             }),
             scope_list: vec![Scope(String::from("microsoft.com"))],
         };
-        req.license_header.preamble_message_size = req.size() as u16;
+        req.license_header.preamble_message_size = u16::try_from(req.size()).expect("can't panic");
         req.into()
     };
     pub static ref X509_CERTIFICATE: ServerCertificate = ServerCertificate {
@@ -323,7 +323,7 @@ fn from_buffer_correctly_parses_server_license_request_no_certificate() {
         server_certificate: None,
         scope_list: vec![Scope(String::from("microsoft.com"))],
     };
-    request.license_header.preamble_message_size = request.size() as u16;
+    request.license_header.preamble_message_size = u16::try_from(request.size()).expect("can't panic");
     let request: LicensePdu = request.into();
 
     assert_eq!(request, decode(&request_buffer).unwrap());
@@ -370,7 +370,7 @@ fn to_buffer_correctly_serializes_server_license_request() {
         }),
         scope_list: vec![Scope(String::from("microsoft.com"))],
     };
-    request.license_header.preamble_message_size = request.size() as u16;
+    request.license_header.preamble_message_size = u16::try_from(request.size()).unwrap();
     let request: LicensePdu = request.into();
 
     let serialized_request = encode_vec(&request).unwrap();

@@ -51,9 +51,7 @@ impl Encode for FastPathInputHeader {
 
     fn size(&self) -> usize {
         let num_events_length = if self.num_events < 16 { 0 } else { 1 };
-        Self::FIXED_PART_SIZE
-            + per::sizeof_length(self.data_length as u16 + num_events_length as u16 + 1)
-            + num_events_length
+        Self::FIXED_PART_SIZE + per::sizeof_length(self.data_length + num_events_length + 1) + num_events_length
     }
 }
 
@@ -78,7 +76,7 @@ impl<'de> Decode<'de> for FastPathInputHeader {
             0
         };
 
-        let data_length = length as usize - sizeof_length - 1 - num_events_length;
+        let data_length = usize::from(length) - sizeof_length - 1 - num_events_length;
 
         Ok(FastPathInputHeader {
             flags,
@@ -110,7 +108,7 @@ impl FastpathInputEventType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FastPathInputEvent {
     KeyboardEvent(KeyboardFlags, u8),
     UnicodeKeyboardEvent(KeyboardFlags, u16),
@@ -255,10 +253,31 @@ bitflags! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FastPathInput(pub Vec<FastPathInputEvent>);
+pub struct FastPathInput(
+    /// INVARIANT: (1..=255).contains(len()) = at least one, and at most 255 elements.
+    Vec<FastPathInputEvent>,
+);
 
 impl FastPathInput {
     const NAME: &'static str = "FastPathInput";
+
+    pub fn new(input_events: Vec<FastPathInputEvent>) -> DecodeResult<Self> {
+        // Ensure the invariant on `input_events.len()` is respected.
+        if !(1..=255usize).contains(&input_events.len()) {
+            return Err(invalid_field_err!("nEvents", "invalid number of input events"));
+        }
+
+        Ok(Self(input_events))
+    }
+
+    pub fn single(input_event: FastPathInputEvent) -> Self {
+        // A single element upholds the invariant.
+        Self(vec![input_event])
+    }
+
+    pub fn input_events(&self) -> &[FastPathInputEvent] {
+        &self.0
+    }
 }
 
 impl Encode for FastPathInput {
@@ -271,7 +290,7 @@ impl Encode for FastPathInput {
 
         let data_length = self.0.iter().map(Encode::size).sum::<usize>();
         let header = FastPathInputHeader {
-            num_events: self.0.len() as u8,
+            num_events: u8::try_from(self.0.len()).expect("per invariant (1..=255).contains(num_events.len())"),
             flags: EncryptionFlags::empty(),
             data_length,
         };
@@ -291,7 +310,8 @@ impl Encode for FastPathInput {
     fn size(&self) -> usize {
         let data_length = self.0.iter().map(Encode::size).sum::<usize>();
         let header = FastPathInputHeader {
-            num_events: self.0.len() as u8,
+            num_events: u8::try_from(self.0.len())
+                .expect("INVARIANT: num_events is within the range of 1 to 255, inclusive"),
             flags: EncryptionFlags::empty(),
             data_length,
         };
@@ -306,6 +326,6 @@ impl<'de> Decode<'de> for FastPathInput {
             .take(usize::from(header.num_events))
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Self(events))
+        Self::new(events)
     }
 }

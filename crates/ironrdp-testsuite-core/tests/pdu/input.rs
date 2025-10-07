@@ -10,7 +10,7 @@ const FASTPATH_INPUT_MESSAGE: [u8; 44] = [
 ];
 
 lazy_static::lazy_static! {
-    pub static ref FASTPATH_INPUT: FastPathInput = FastPathInput(vec![
+    pub static ref FASTPATH_INPUT: FastPathInput = FastPathInput::new(vec![
         FastPathInputEvent::MouseEvent(MousePdu {
             flags: PointerFlags::DOWN | PointerFlags::LEFT_BUTTON,
             number_of_wheel_rotation_units: 0,
@@ -47,7 +47,7 @@ lazy_static::lazy_static! {
             x_position: 25,
             y_position: 1064
         })
-    ]);
+    ]).expect("can't panic");
 }
 
 #[test]

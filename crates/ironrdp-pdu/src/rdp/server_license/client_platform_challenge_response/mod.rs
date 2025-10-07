@@ -46,7 +46,7 @@ impl ClientPlatformChallengeResponse {
         let decrypted_challenge = rc4.process(platform_challenge.encrypted_platform_challenge.as_slice());
 
         let decrypted_challenge_mac =
-            super::compute_mac_data(encryption_data.mac_salt_key.as_slice(), decrypted_challenge.as_slice());
+            super::compute_mac_data(encryption_data.mac_salt_key.as_slice(), decrypted_challenge.as_slice())?;
 
         if decrypted_challenge_mac != platform_challenge.mac_data {
             return Err(ServerLicenseError::InvalidMacData);
@@ -56,7 +56,10 @@ impl ClientPlatformChallengeResponse {
         challenge_response_data.write_u16::<LittleEndian>(RESPONSE_DATA_VERSION)?;
         challenge_response_data.write_u16::<LittleEndian>(ClientType::Other.as_u16())?;
         challenge_response_data.write_u16::<LittleEndian>(LicenseDetailLevel::Detail.as_u16())?;
-        challenge_response_data.write_u16::<LittleEndian>(decrypted_challenge.len() as u16)?;
+        challenge_response_data.write_u16::<LittleEndian>(
+            u16::try_from(decrypted_challenge.len())
+                .map_err(|_| ServerLicenseError::InvalidField("decrypted challenge len"))?,
+        )?;
         challenge_response_data.write_all(&decrypted_challenge)?;
 
         let mut hardware_id = Vec::with_capacity(CLIENT_HARDWARE_IDENTIFICATION_SIZE);
@@ -75,7 +78,7 @@ impl ClientPlatformChallengeResponse {
         let mac_data = super::compute_mac_data(
             encryption_data.mac_salt_key.as_slice(),
             challenge_response_data.as_slice(),
-        );
+        )?;
 
         let license_header = LicenseHeader {
             security_header: BasicSecurityHeader {
@@ -84,10 +87,12 @@ impl ClientPlatformChallengeResponse {
             preamble_message_type: PreambleType::PlatformChallengeResponse,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (PREAMBLE_SIZE
+            preamble_message_size: u16::try_from(
+                PREAMBLE_SIZE
                 + (BLOB_TYPE_SIZE + BLOB_LENGTH_SIZE) * 2 // 2 blobs in this structure
-                + MAC_SIZE + encrypted_challenge_response_data.len() + encrypted_hwid.len())
-                as u16,
+                + MAC_SIZE + encrypted_challenge_response_data.len() + encrypted_hwid.len(),
+            )
+            .map_err(|_| ServerLicenseError::InvalidField("preamble message size"))?,
         };
 
         Ok(Self {

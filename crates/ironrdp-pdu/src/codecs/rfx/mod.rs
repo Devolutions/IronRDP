@@ -208,7 +208,7 @@ impl<'de> Decode<'de> for BlockHeader {
 
         let ty = src.read_u16();
         let ty = BlockType::from_u16(ty).ok_or_else(|| invalid_field_err!("blockType", "Invalid block type"))?;
-        let data_length = src.read_u32() as usize;
+        let data_length: usize = cast_length!("block length", src.read_u32())?;
         data_length
             .checked_sub(Self::FIXED_PART_SIZE)
             .ok_or_else(|| invalid_field_err!("blockLen", "Invalid block length"))?;
