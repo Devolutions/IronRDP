@@ -100,15 +100,7 @@ impl CredsspSequence {
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
-        info!(
-            ?credentials,
-            ?domain,
-            ?protocol,
-            ?server_name,
-            ?server_public_key,
-            ?kerberos_config,
-            "Initialize CredSSP sequence"
-        );
+
         let credentials: sspi::Credentials = match &credentials {
             Credentials::UsernamePassword { username, password } => {
                 let username = Username::new(username, domain).map_err(|e| custom_err!("invalid username", e))?;
