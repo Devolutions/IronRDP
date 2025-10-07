@@ -6,7 +6,7 @@ use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
 use sspi::Username;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::{
     custom_err, general_err, ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written,
@@ -100,7 +100,6 @@ impl CredsspSequence {
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
-
         let credentials: sspi::Credentials = match &credentials {
             Credentials::UsernamePassword { username, password } => {
                 let username = Username::new(username, domain).map_err(|e| custom_err!("invalid username", e))?;
