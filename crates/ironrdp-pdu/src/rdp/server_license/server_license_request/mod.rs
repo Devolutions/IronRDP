@@ -109,6 +109,7 @@ impl ServerLicenseRequest {
         }
 
         let mut scope_list = Vec::with_capacity(
+            #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked integer underflow)")]
             usize::try_from(scope_count).expect("scope_count is guaranteed to fit into usize due to the prior check"),
         );
 
