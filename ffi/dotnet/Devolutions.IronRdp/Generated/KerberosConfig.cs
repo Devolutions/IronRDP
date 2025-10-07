@@ -30,6 +30,42 @@ public partial class KerberosConfig: IDisposable
     }
 
     /// <summary>
+    /// Creates a new KerberosConfig for KDC proxy support.
+    /// </summary>
+    /// <remarks>
+    /// # Arguments
+    /// * `kdc_proxy_url` - KDC proxy URL (e.g., "https://gateway.example.com/KdcProxy/{token}"), empty string if not used
+    /// * `hostname` - Client hostname for Kerberos, empty string if not used
+    /// </remarks>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>KerberosConfig</c> allocated on Rust side.
+    /// </returns>
+    public static KerberosConfig New(string kdcProxyUrl, string hostname)
+    {
+        unsafe
+        {
+            byte[] kdcProxyUrlBuf = DiplomatUtils.StringToUtf8(kdcProxyUrl);
+            byte[] hostnameBuf = DiplomatUtils.StringToUtf8(hostname);
+            nuint kdcProxyUrlBufLength = (nuint)kdcProxyUrlBuf.Length;
+            nuint hostnameBufLength = (nuint)hostnameBuf.Length;
+            fixed (byte* kdcProxyUrlBufPtr = kdcProxyUrlBuf)
+            {
+                fixed (byte* hostnameBufPtr = hostnameBuf)
+                {
+                    Raw.CredsspFfiResultBoxKerberosConfigBoxIronRdpError result = Raw.KerberosConfig.New(kdcProxyUrlBufPtr, kdcProxyUrlBufLength, hostnameBufPtr, hostnameBufLength);
+                    if (!result.isOk)
+                    {
+                        throw new IronRdpException(new IronRdpError(result.Err));
+                    }
+                    Raw.KerberosConfig* retVal = result.Ok;
+                    return new KerberosConfig(retVal);
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
     public unsafe Raw.KerberosConfig* AsFFI()

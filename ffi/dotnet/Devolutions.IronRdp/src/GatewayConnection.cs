@@ -18,6 +18,8 @@ public static class GatewayConnection
     /// <param name="destination">The destination RDP server address (e.g., "10.10.0.3:3389")</param>
     /// <param name="pcb">Optional preconnection blob for Hyper-V VM connections</param>
     /// <param name="factory">Optional clipboard backend factory</param>
+    /// <param name="kdcProxyUrl">Optional KDC proxy URL with token (e.g., "https://gateway.example.com/KdcProxy/{token}")</param>
+    /// <param name="kdcHostname">Optional client hostname for Kerberos</param>
     /// <returns>A tuple containing the connection result and framed WebSocket stream</returns>
     public static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectViaGateway(
         Config config,
@@ -25,7 +27,9 @@ public static class GatewayConnection
         string authToken,
         string destination,
         string? pcb = null,
-        CliprdrBackendFactory? factory = null)
+        CliprdrBackendFactory? factory = null,
+        string? kdcProxyUrl = null,
+        string? kdcHostname = null)
     {
         // Step 1: Connect WebSocket to gateway
         Console.WriteLine($"Connecting to gateway at {gatewayUrl}...");
@@ -62,7 +66,7 @@ public static class GatewayConnection
 
         // Step 6: Finalize connection
         Console.WriteLine("Finalizing RDP connection...");
-        var result = await ConnectFinalize(destination, connector, serverPublicKey, framedAfterHandshake);
+        var result = await ConnectFinalize(destination, connector, serverPublicKey, framedAfterHandshake, kdcProxyUrl, kdcHostname);
 
         Console.WriteLine("Gateway connection established successfully!");
         return (result, framedAfterHandshake);
@@ -172,7 +176,9 @@ public static class GatewayConnection
         string serverName,
         ClientConnector connector,
         byte[] serverPubKey,
-        Framed<WebSocketStream> framedSsl)
+        Framed<WebSocketStream> framedSsl,
+        string? kdcProxyUrl,
+        string? kdcHostname)
     {
         var writeBuf = WriteBuf.New();
 
@@ -180,7 +186,7 @@ public static class GatewayConnection
         if (connector.ShouldPerformCredssp())
         {
             Console.WriteLine("Performing CredSSP authentication...");
-            await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey);
+            await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey, kdcProxyUrl, kdcHostname);
         }
 
         // Continue with remaining connection steps
@@ -213,7 +219,9 @@ public static class GatewayConnection
         string serverName,
         WriteBuf writeBuf,
         Framed<WebSocketStream> framedSsl,
-        byte[] serverpubkey)
+        byte[] serverpubkey,
+        string? kdcProxyUrl,
+        string? kdcHostname)
     {
         // Extract hostname from "hostname:port" format for CredSSP
         // CredSSP needs just the hostname for the service principal name (TERMSRV/hostname)
@@ -224,7 +232,15 @@ public static class GatewayConnection
             hostname = serverName.Substring(0, colonIndex);
         }
 
-        var credsspSequenceInitResult = CredsspSequence.Init(connector, hostname, serverpubkey, null);
+        // Create KerberosConfig if KDC proxy URL is provided
+        KerberosConfig? kerberosConfig = null;
+        if (!string.IsNullOrEmpty(kdcProxyUrl))
+        {
+            Console.WriteLine($"Using KDC proxy: {kdcProxyUrl}");
+            kerberosConfig = KerberosConfig.New(kdcProxyUrl, kdcHostname ?? "");
+        }
+
+        var credsspSequenceInitResult = CredsspSequence.Init(connector, hostname, serverpubkey, kerberosConfig);
         var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
         var tsRequest = credsspSequenceInitResult.GetTsRequest();
         var tcpClient = new System.Net.Sockets.TcpClient();
