@@ -253,15 +253,17 @@ bitflags! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-// INVARIANT: self.0.len() must be within the range of 1 to 255, inclusive.
-pub struct FastPathInput(Vec<FastPathInputEvent>);
+pub struct FastPathInput(
+    /// INVARIANT: (1..=255).contains(len()) = at least one, and at most 255 elements.
+    Vec<FastPathInputEvent>,
+);
 
 impl FastPathInput {
     const NAME: &'static str = "FastPathInput";
 
     pub fn new(input_events: Vec<FastPathInputEvent>) -> DecodeResult<Self> {
         // Ensure the invariant on `input_events.len()` is respected.
-        if !(1..256usize).contains(&input_events.len()) {
+        if !(1..=255usize).contains(&input_events.len()) {
             return Err(invalid_field_err!("nEvents", "invalid number of input events"));
         }
 
@@ -283,8 +285,7 @@ impl Encode for FastPathInput {
 
         let data_length = self.0.iter().map(Encode::size).sum::<usize>();
         let header = FastPathInputHeader {
-            num_events: u8::try_from(self.0.len())
-                .expect("INVARIANT: num_events is within the range of 1 to 255, inclusive"),
+            num_events: u8::try_from(self.0.len()).expect("per invariant (1..=255).contains(num_events.len())"),
             flags: EncryptionFlags::empty(),
             data_length,
         };

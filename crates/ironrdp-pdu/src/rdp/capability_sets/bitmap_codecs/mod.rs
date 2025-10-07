@@ -141,10 +141,10 @@ impl<'de> Decode<'de> for BitmapCodecs {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let codecs_count = src.read_u8();
+        let codec_count = src.read_u8();
 
-        let mut codecs = Vec::with_capacity(usize::from(codecs_count));
-        for _ in 0..codecs_count {
+        let mut codecs = Vec::with_capacity(usize::from(codec_count));
+        for _ in 0..codec_count {
             codecs.push(Codec::decode(src)?);
         }
 

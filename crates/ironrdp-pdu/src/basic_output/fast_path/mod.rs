@@ -92,14 +92,14 @@ impl<'de> Decode<'de> for FastPathHeader {
             DecodeError::invalid_field("", "length", "Invalid encoded fast path PDU length").with_source(e)
         })?;
         let length = usize::from(length);
-        if (length) < sizeof_length + Self::FIXED_PART_SIZE {
+        if length < sizeof_length + Self::FIXED_PART_SIZE {
             return Err(invalid_field_err!(
                 "length",
                 "received fastpath PDU length is smaller than header size"
             ));
         }
         let data_length = length - sizeof_length - Self::FIXED_PART_SIZE;
-        // Detect case, when received packet has non-optimal packet length packing
+        // Detect case, when received packet has non-optimal packet length packing.
         let forced_long_length = per::sizeof_length(length) != sizeof_length;
 
         Ok(FastPathHeader {

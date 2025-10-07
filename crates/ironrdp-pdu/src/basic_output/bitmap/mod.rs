@@ -41,9 +41,9 @@ impl Encode for BitmapUpdateData<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let rectangles_number = cast_length!("number of rectangles", self.rectangles.len())?;
+        let rectangle_count = cast_length!("number of rectangles", self.rectangles.len())?;
 
-        Self::encode_header(rectangles_number, dst)?;
+        Self::encode_header(rectangle_count, dst)?;
 
         for bitmap_data in self.rectangles.iter() {
             bitmap_data.encode(dst)?;
@@ -72,10 +72,10 @@ impl<'de> Decode<'de> for BitmapUpdateData<'de> {
             return Err(invalid_field_err!("updateType", "invalid update type"));
         }
 
-        let rectangles_number = usize::from(src.read_u16());
-        let mut rectangles = Vec::with_capacity(rectangles_number);
+        let rectangle_count = usize::from(src.read_u16());
+        let mut rectangles = Vec::with_capacity(rectangle_count);
 
-        for _ in 0..rectangles_number {
+        for _ in 0..rectangle_count {
             rectangles.push(BitmapData::decode(src)?);
         }
 
