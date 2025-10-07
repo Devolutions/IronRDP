@@ -16,6 +16,17 @@ public partial struct KerberosConfig
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
+    /// <summary>
+    /// Creates a new KerberosConfig for KDC proxy support.
+    /// </summary>
+    /// <remarks>
+    /// # Arguments
+    /// * `kdc_proxy_url` - KDC proxy URL (e.g., "https://gateway.example.com/KdcProxy/{token}"), empty string if not used
+    /// * `hostname` - Client hostname for Kerberos, empty string if not used
+    /// </remarks>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "KerberosConfig_new", ExactSpelling = true)]
+    public static unsafe extern CredsspFfiResultBoxKerberosConfigBoxIronRdpError New(byte* kdcProxyUrl, nuint kdcProxyUrlSz, byte* hostname, nuint hostnameSz);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "KerberosConfig_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(KerberosConfig* self);
 }

@@ -139,6 +139,8 @@ public static class Connection
     {
         var state = generator.Start();
         NetworkStream? stream = null;
+        HttpClient? httpClient = null;
+
         while (true)
         {
             if (state.IsSuspended())
@@ -147,16 +149,17 @@ public static class Connection
                 var protocol = request.GetProtocol();
                 var url = request.GetUrl();
                 var data = request.GetData();
-                if (null == stream)
-                {
-                    url = url.Replace("tcp://", "");
-                    var split = url.Split(":");
-                    await tcpClient.ConnectAsync(split[0], int.Parse(split[1]));
-                    stream = tcpClient.GetStream();
-                }
 
                 if (protocol == NetworkRequestProtocol.Tcp)
                 {
+                    if (null == stream)
+                    {
+                        url = url.Replace("tcp://", "");
+                        var split = url.Split(":");
+                        await tcpClient.ConnectAsync(split[0], int.Parse(split[1]));
+                        stream = tcpClient.GetStream();
+                    }
+
                     stream.Write(Utils.VecU8ToByte(data));
                     var readBuf = new byte[8096];
                     var readlen = await stream.ReadAsync(readBuf, 0, readBuf.Length);
@@ -164,9 +167,44 @@ public static class Connection
                     Array.Copy(readBuf, actuallyRead, readlen);
                     state = generator.Resume(actuallyRead);
                 }
+                else if (protocol == NetworkRequestProtocol.Http || protocol == NetworkRequestProtocol.Https)
+                {
+                    // Handle HTTP/HTTPS requests for KDC proxy (mimics ironrdp-web implementation)
+                    if (httpClient == null)
+                    {
+                        httpClient = new HttpClient();
+                        httpClient.DefaultRequestHeaders.Add("keep-alive", "true");
+                    }
+
+                    System.Diagnostics.Debug.WriteLine($"[ResolveGenerator] Sending {protocol} request to {url}");
+
+                    var bodyBytes = Utils.VecU8ToByte(data);
+                    var content = new ByteArrayContent(bodyBytes);
+
+                    HttpResponseMessage response;
+                    try
+                    {
+                        response = await httpClient.PostAsync(url, content);
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        throw new Exception($"Failed to send KDC request to {url}: {ex.Message}", ex);
+                    }
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        throw new Exception(
+                            $"KdcProxy HTTP status error ({(int)response.StatusCode} {response.ReasonPhrase})");
+                    }
+
+                    var responseData = await response.Content.ReadAsByteArrayAsync();
+                    System.Diagnostics.Debug.WriteLine($"[ResolveGenerator] Received {responseData.Length} bytes from KDC proxy");
+
+                    state = generator.Resume(responseData);
+                }
                 else
                 {
-                    throw new Exception("Unimplemented protocol");
+                    throw new Exception($"Unimplemented protocol: {protocol}");
                 }
             }
             else if (state.IsCompleted())
