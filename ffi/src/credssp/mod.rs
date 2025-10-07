@@ -22,10 +22,7 @@ pub mod ffi {
         /// # Arguments
         /// * `kdc_proxy_url` - KDC proxy URL (e.g., "https://gateway.example.com/KdcProxy/{token}"), empty string if not used
         /// * `hostname` - Client hostname for Kerberos, empty string if not used
-        pub fn new(
-            kdc_proxy_url: &str,
-            hostname: &str,
-        ) -> Result<Box<KerberosConfig>, Box<IronRdpError>> {
+        pub fn new(kdc_proxy_url: &str, hostname: &str) -> Result<Box<KerberosConfig>, Box<IronRdpError>> {
             let kdc_proxy_url_opt = if kdc_proxy_url.is_empty() {
                 None
             } else {
@@ -38,10 +35,7 @@ pub mod ffi {
                 Some(hostname.to_owned())
             };
 
-            let config = ironrdp::connector::credssp::KerberosConfig::new(
-                kdc_proxy_url_opt,
-                hostname_opt,
-            )?;
+            let config = ironrdp::connector::credssp::KerberosConfig::new(kdc_proxy_url_opt, hostname_opt)?;
             Ok(Box::new(KerberosConfig(config)))
         }
     }
