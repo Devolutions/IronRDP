@@ -72,7 +72,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Async, futures
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7" }
-tokio-tungstenite = "0.27"
+tokio-tungstenite = "0.28"
 transport = { git = "https://github.com/Devolutions/devolutions-gateway", rev = "06e91dfe82751a6502eaf74b6a99663f06f0236d" }
 futures-util = { version = "0.3", features = ["sink"] }
 
