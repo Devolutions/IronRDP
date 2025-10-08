@@ -37,20 +37,7 @@ public static class RDCleanPathConnection
 
         // Step 3: Setup ClientConnector
         var connector = ClientConnector.New(config, clientAddr);
-
-        // Attach optional dynamic/static channels
-        connector.WithDynamicChannelDisplayControl();
-        var dvcPipeProxy = config.DvcPipeProxy;
-        if (dvcPipeProxy != null)
-        {
-            connector.WithDynamicChannelPipeProxy(dvcPipeProxy);
-        }
-
-        if (factory != null)
-        {
-            var cliprdr = factory.BuildCliprdr();
-            connector.AttachStaticCliprdr(cliprdr);
-        }
+        ConnectionHelpers.SetupConnector(connector, config, factory);
 
         // Step 4: Perform RDCleanPath handshake
         System.Diagnostics.Debug.WriteLine("Performing RDCleanPath handshake...");
@@ -62,7 +49,7 @@ public static class RDCleanPathConnection
 
         // Step 6: Finalize connection
         System.Diagnostics.Debug.WriteLine("Finalizing RDP connection...");
-        var result = await ConnectFinalize(destination, connector, serverPublicKey, framedAfterHandshake);
+        var result = await ConnectionHelpers.ConnectFinalize(destination, connector, serverPublicKey, framedAfterHandshake);
 
         System.Diagnostics.Debug.WriteLine("Gateway connection established successfully!");
         return (result, framedAfterHandshake);
@@ -162,103 +149,6 @@ public static class RDCleanPathConnection
             throw new IronRdpLibException(
                 IronRdpLibExceptionType.ConnectionFailed,
                 $"Unexpected RDCleanPath response type: {resultType}");
-        }
-    }
-
-    /// <summary>
-    /// Finalizes the RDP connection after RDCleanPath handshake.
-    /// </summary>
-    private static async Task<ConnectionResult> ConnectFinalize(
-        string serverName,
-        ClientConnector connector,
-        byte[] serverPubKey,
-        Framed<WebSocketStream> framedSsl)
-    {
-        var writeBuf = WriteBuf.New();
-
-        // Perform CredSSP if needed
-        if (connector.ShouldPerformCredssp())
-        {
-            System.Diagnostics.Debug.WriteLine("Performing CredSSP authentication...");
-            await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey);
-        }
-
-        // Continue with remaining connection steps
-        System.Diagnostics.Debug.WriteLine("Completing connection sequence...");
-        while (!connector.GetDynState().IsTerminal())
-        {
-            await Connection.SingleSequenceStep(connector, writeBuf, framedSsl);
-        }
-
-        // Get final connection result
-        ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();
-
-        if (state.GetEnumType() == ClientConnectorStateType.Connected)
-        {
-            return state.GetConnectedResult();
-        }
-        else
-        {
-            throw new IronRdpLibException(
-                IronRdpLibExceptionType.ConnectionFailed,
-                "Connection failed after RDCleanPath handshake");
-        }
-    }
-
-    /// <summary>
-    /// Performs CredSSP authentication steps.
-    /// </summary>
-    private static async Task PerformCredsspSteps(
-        ClientConnector connector,
-        string serverName,
-        WriteBuf writeBuf,
-        Framed<WebSocketStream> framedSsl,
-        byte[] serverpubkey)
-    {
-        // Extract hostname from "hostname:port" format for CredSSP
-        // CredSSP needs just the hostname for the service principal name (TERMSRV/hostname)
-        var hostname = serverName;
-        var colonIndex = serverName.IndexOf(':');
-        if (colonIndex > 0)
-        {
-            hostname = serverName.Substring(0, colonIndex);
-        }
-
-        var credsspSequenceInitResult = CredsspSequence.Init(connector, hostname, serverpubkey, null);
-        var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
-        var tsRequest = credsspSequenceInitResult.GetTsRequest();
-        var tcpClient = new System.Net.Sockets.TcpClient();
-
-        while (true)
-        {
-            var generator = credsspSequence.ProcessTsRequest(tsRequest);
-            var clientState = await Connection.ResolveGenerator(generator, tcpClient);
-            writeBuf.Clear();
-            var written = credsspSequence.HandleProcessResult(clientState, writeBuf);
-
-            if (written.GetSize().IsSome())
-            {
-                var actualSize = (int)written.GetSize().Get();
-                var response = new byte[actualSize];
-                writeBuf.ReadIntoBuf(response);
-                await framedSsl.Write(response);
-            }
-
-            var pduHint = credsspSequence.NextPduHint();
-            if (pduHint == null)
-            {
-                break;
-            }
-
-            var pdu = await framedSsl.ReadByHint(pduHint);
-            var decoded = credsspSequence.DecodeServerMessage(pdu);
-
-            if (null == decoded)
-            {
-                break;
-            }
-
-            tsRequest = decoded;
         }
     }
 
