@@ -164,7 +164,7 @@ public partial class MainWindow : Window
                         {
                             gatewayToken = await tokenGen.GenerateRdpTlsToken(
                                 dstHost: server!,
-                                proxyUser: $"{username}@{domain}",
+                                proxyUser: string.IsNullOrEmpty(domain) ? username : $"{username}@{domain}",
                                 proxyPassword: password!,
                                 destUser: username!,
                                 destPassword: password!
