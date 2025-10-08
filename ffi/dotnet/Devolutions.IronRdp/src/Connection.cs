@@ -17,22 +17,11 @@ public static class Connection
 
         var connector = ClientConnector.New(config, clientAddr);
 
-        connector.WithDynamicChannelDisplayControl();
-        var dvcPipeProxy = config.DvcPipeProxy;
-        if (dvcPipeProxy != null)
-        {
-            connector.WithDynamicChannelPipeProxy(dvcPipeProxy);
-        }
-
-        if (factory != null)
-        {
-            var cliprdr = factory.BuildCliprdr();
-            connector.AttachStaticCliprdr(cliprdr);
-        }
+        ConnectionHelpers.SetupConnector(connector, config, factory);
 
         await ConnectBegin(framed, connector);
         var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector);
-        var result = await ConnectFinalize(serverName, connector, serverPublicKey, framedSsl);
+        var result = await ConnectionHelpers.ConnectFinalize(serverName, connector, serverPublicKey, framedSsl);
 
         return (result, framedSsl);
     }
@@ -64,74 +53,6 @@ public static class Connection
         while (!connector.ShouldPerformSecurityUpgrade())
         {
             await SingleSequenceStep(connector, writeBuf, framed);
-        }
-    }
-
-
-    private static async Task<ConnectionResult> ConnectFinalize(string serverName, ClientConnector connector,
-        byte[] serverPubKey, Framed<SslStream> framedSsl)
-    {
-        var writeBuf2 = WriteBuf.New();
-        if (connector.ShouldPerformCredssp())
-        {
-            await PerformCredsspSteps(connector, serverName, writeBuf2, framedSsl, serverPubKey);
-        }
-
-        while (!connector.GetDynState().IsTerminal())
-        {
-            await SingleSequenceStep(connector, writeBuf2, framedSsl);
-        }
-
-        ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();
-
-        if (state.GetEnumType() == ClientConnectorStateType.Connected)
-        {
-            return state.GetConnectedResult();
-        }
-        else
-        {
-            throw new IronRdpLibException(IronRdpLibExceptionType.ConnectionFailed, "Connection failed");
-        }
-    }
-
-    private static async Task PerformCredsspSteps(ClientConnector connector, string serverName, WriteBuf writeBuf,
-        Framed<SslStream> framedSsl, byte[] serverpubkey)
-    {
-        var credsspSequenceInitResult = CredsspSequence.Init(connector, serverName, serverpubkey, null);
-        var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
-        var tsRequest = credsspSequenceInitResult.GetTsRequest();
-        var tcpClient = new TcpClient();
-        while (true)
-        {
-            var generator = credsspSequence.ProcessTsRequest(tsRequest);
-            var clientState = await ResolveGenerator(generator, tcpClient);
-            writeBuf.Clear();
-            var written = credsspSequence.HandleProcessResult(clientState, writeBuf);
-
-            if (written.GetSize().IsSome())
-            {
-                var actualSize = (int)written.GetSize().Get();
-                var response = new byte[actualSize];
-                writeBuf.ReadIntoBuf(response);
-                await framedSsl.Write(response);
-            }
-
-            var pduHint = credsspSequence.NextPduHint();
-            if (pduHint == null)
-            {
-                break;
-            }
-
-            var pdu = await framedSsl.ReadByHint(pduHint);
-            var decoded = credsspSequence.DecodeServerMessage(pdu);
-
-            // Don't remove, DecodeServerMessage is generated, and it can return null
-            if (null == decoded)
-            {
-                break;
-            }
-
-            tsRequest = decoded;
         }
     }
 
