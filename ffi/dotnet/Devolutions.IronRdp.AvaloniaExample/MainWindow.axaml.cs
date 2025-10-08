@@ -23,7 +23,7 @@ public partial class MainWindow : Window
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
     ActiveStage? _activeStage;
     DecodedImage? _decodedImage;
-    Framed<Stream>? _framed;  // Changed to Stream to support both SslStream and WebSocketStream
+    Framed<Stream>? _framed;  
     WinCliprdr? _cliprdr;
     private readonly RendererModel _renderModel;
     private Image? _imageControl;

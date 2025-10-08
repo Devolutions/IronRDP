@@ -110,8 +110,7 @@ pub struct GenericError(pub anyhow::Error);
 
 impl Display for GenericError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let repr = format!("{:#}", self.0);
-        write!(f, "{repr}")
+        write!(f, "{:#}", self.0)
     }
 }
 

@@ -1,7 +1,8 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use anyhow::Context as _;
     use core::fmt::Write as _;
+
+    use anyhow::Context as _;
     use diplomat_runtime::DiplomatWriteable;
 
     use crate::error::ffi::IronRdpError;
