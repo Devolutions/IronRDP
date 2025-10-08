@@ -34,8 +34,8 @@ pub struct FfiClipbarodMessageProxy {
 
 impl ironrdp::cliprdr::backend::ClipboardMessageProxy for FfiClipbarodMessageProxy {
     fn send_clipboard_message(&self, message: ironrdp::cliprdr::backend::ClipboardMessage) {
-        if let Err(err) = self.sender.send(message) {
-            error!("Failed to send clipboard message: {:?}", err);
+        if let Err(error) = self.sender.send(message) {
+            error!(?error, "Failed to send clipboard message");
         }
     }
 }

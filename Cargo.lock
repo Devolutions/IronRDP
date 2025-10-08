@@ -1527,6 +1527,7 @@ dependencies = [
 name = "ffi"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "diplomat",
  "diplomat-runtime",
  "embed-resource",

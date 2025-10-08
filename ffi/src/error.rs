@@ -106,11 +106,12 @@ impl From<ironrdp_rdcleanpath::MissingRDCleanPathField> for IronRdpErrorKind {
     }
 }
 
-pub struct GenericError(pub String);
+pub struct GenericError(pub anyhow::Error);
 
 impl Display for GenericError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.0)
+        let repr = format!("{:#}", self.0);
+        write!(f, "{repr}")
     }
 }
 
@@ -248,11 +249,7 @@ impl IncorrectEnumTypeErrorBuilder {
 
 impl Display for IncorrectEnumTypeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "expected enum variable {}, of enum {}",
-            self.expected, self.enum_name
-        )
+        write!(f, "expected enum variable {} of enum {}", self.expected, self.enum_name)
     }
 }
 
