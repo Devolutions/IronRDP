@@ -82,12 +82,12 @@ public partial class MainWindow : Window
         var server = Environment.GetEnvironmentVariable("IRONRDP_SERVER");
         var portEnv = Environment.GetEnvironmentVariable("IRONRDP_PORT");
 
-        // NEW: Gateway configuration (optional)
+        // Gateway configuration (optional)
         var gatewayUrl = Environment.GetEnvironmentVariable("IRONRDP_GATEWAY_URL");
         var gatewayToken = Environment.GetEnvironmentVariable("IRONRDP_GATEWAY_TOKEN");
         var tokengenUrl = Environment.GetEnvironmentVariable("IRONRDP_TOKENGEN_URL");
 
-        // NEW: KDC proxy configuration (optional)
+        //  KDC proxy configuration (optional)
         var kdcProxyUrlBase = Environment.GetEnvironmentVariable("IRONRDP_KDC_PROXY_URL");
         var kdcRealm = Environment.GetEnvironmentVariable("IRONRDP_KDC_REALM");
         var kdcServer = Environment.GetEnvironmentVariable("IRONRDP_KDC_SERVER");
@@ -102,6 +102,7 @@ public partial class MainWindow : Window
         }
 
         // Validate server is only domain or IP (no port allowed)
+        // i.e. "example.com" or "10.10.0.3" the port should go to the dedicated env var IRONRDP_PORT
         if (server.Contains(':'))
         {
             var errorMessage = $"IRONRDP_SERVER must be a domain or IP address only, not '{server}'. Use IRONRDP_PORT for the port.";
@@ -568,7 +569,7 @@ public partial class MainWindow : Window
                     var writeBuf = WriteBuf.New();
                     while (true)
                     {
-                        await Connection.SingleSequenceStep(activationSequence, writeBuf,_framed!);
+                        await Connection.SingleSequenceStep(activationSequence, writeBuf, _framed!);
 
                         if (activationSequence.GetState().GetType() != ConnectionActivationStateType.Finalized)
                             continue;
