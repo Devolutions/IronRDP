@@ -224,7 +224,7 @@ public static class RDCleanPathConnection
             hostname = serverName.Substring(0, colonIndex);
         }
 
-        var credsspSequenceInitResult = CredsspSequence.Init(connector, hostname, serverpubkey, null);
+        var credsspSequenceInitResult = CredsspSequence.Init(connector, hostname, serverpubkey);
         var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
         var tsRequest = credsspSequenceInitResult.GetTsRequest();
         var tcpClient = new System.Net.Sockets.TcpClient();

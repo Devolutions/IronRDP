@@ -123,44 +123,6 @@ public class TokenGenerator : IDisposable
     }
 
     /// <summary>
-    /// Generates a KDC proxy token for Kerberos authentication through the gateway.
-    /// </summary>
-    /// <param name="krbRealm">Kerberos realm (e.g., "AD.EXAMPLE.COM")</param>
-    /// <param name="krbKdc">KDC address with protocol (e.g., "tcp://dc.ad.example.com:88")</param>
-    /// <param name="validityDuration">Token validity in seconds (default: 3600)</param>
-    /// <returns>A JWT token string</returns>
-    public async Task<string> GenerateKdcToken(
-        string krbRealm,
-        string krbKdc,
-        int validityDuration = 3600)
-    {
-        var request = new KdcTokenRequest
-        {
-            KrbRealm = krbRealm,
-            KrbKdc = krbKdc,
-            ValidityDuration = validityDuration
-        };
-
-        try
-        {
-            var response = await _client.PostAsJsonAsync($"{_tokengenUrl}/kdc", request);
-            response.EnsureSuccessStatusCode();
-
-            var result = await response.Content.ReadFromJsonAsync<TokenResponse>();
-            if (result?.Token == null)
-            {
-                throw new Exception("KDC token generation failed: Empty response");
-            }
-
-            return result.Token;
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new Exception($"Failed to generate KDC token from {_tokengenUrl}: {ex.Message}", ex);
-        }
-    }
-
-    /// <summary>
     /// Checks if the tokengen server is reachable.
     /// </summary>
     /// <returns>True if server is reachable, false otherwise</returns>
@@ -217,18 +179,6 @@ public class TokenGenerator : IDisposable
 
         [JsonPropertyName("jet_rec")]
         public bool JetRec { get; set; }
-
-        [JsonPropertyName("validity_duration")]
-        public int ValidityDuration { get; set; }
-    }
-
-    private class KdcTokenRequest
-    {
-        [JsonPropertyName("krb_realm")]
-        public string KrbRealm { get; set; } = string.Empty;
-
-        [JsonPropertyName("krb_kdc")]
-        public string KrbKdc { get; set; } = string.Empty;
 
         [JsonPropertyName("validity_duration")]
         public int ValidityDuration { get; set; }
