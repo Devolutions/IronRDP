@@ -175,7 +175,7 @@ public partial class MainWindow : Window
                         {
                             Trace.TraceError($"Failed to generate RDP token: {ex.Message}");
                             Trace.TraceInformation("Make sure tokengen server is running:");
-                            Trace.TraceInformation($"  cargo run --manifest-path D:/devolutions-gateway/tools/tokengen/Cargo.toml -- server");
+                            Trace.TraceInformation($"  cargo run --manifest-path tools/tokengen/Cargo.toml -- server");
                             throw;
                         }
                     }
