@@ -135,7 +135,7 @@ public static class Connection
         }
     }
 
-    internal static async Task<ClientState> ResolveGenerator(CredsspProcessGenerator generator, System.Net.Sockets.TcpClient tcpClient)
+    internal static async Task<ClientState> ResolveGenerator(CredsspProcessGenerator generator, TcpClient tcpClient)
     {
         var state = generator.Start();
         NetworkStream? stream = null;
