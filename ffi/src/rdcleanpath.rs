@@ -1,5 +1,6 @@
 #[diplomat::bridge]
 pub mod ffi {
+    use anyhow::Context as _;
     use core::fmt::Write as _;
     use diplomat_runtime::DiplomatWriteable;
 
@@ -32,7 +33,8 @@ pub mod ffi {
                 proxy_auth.to_owned(),
                 pcb_opt,
             )
-            .map_err(|e| GenericError(format!("Failed to create RDCleanPath request: {e}")))?;
+            .context("failed to create RDCleanPath request")
+            .map_err(GenericError)?;
 
             Ok(Box::new(RDCleanPathPdu(pdu)))
         }
@@ -40,7 +42,8 @@ pub mod ffi {
         /// Decodes a RDCleanPath PDU from DER-encoded bytes
         pub fn from_der(bytes: &[u8]) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
             let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(bytes)
-                .map_err(|e| GenericError(format!("Failed to decode RDCleanPath PDU: {e}")))?;
+                .context("failed to decode RDCleanPath PDU")
+                .map_err(GenericError)?;
 
             Ok(Box::new(RDCleanPathPdu(pdu)))
         }
@@ -50,7 +53,8 @@ pub mod ffi {
             let bytes = self
                 .0
                 .to_der()
-                .map_err(|e| GenericError(format!("Failed to encode RDCleanPath PDU: {e}")))?;
+                .context("failed to encode RDCleanPath PDU")
+                .map_err(GenericError)?;
 
             Ok(Box::new(VecU8(bytes)))
         }
@@ -67,7 +71,8 @@ pub mod ffi {
                 .0
                 .clone()
                 .into_enum()
-                .map_err(|e| GenericError(format!("Missing RDCleanPath field: {e}")))?;
+                .context("missing RDCleanPath field")
+                .map_err(GenericError)?;
 
             Ok(Box::new(RDCleanPathResult(rdcleanpath)))
         }
@@ -93,7 +98,7 @@ pub mod ffi {
             if let ironrdp_rdcleanpath::DetectionResult::Detected { total_length, .. } = self.0 {
                 Ok(total_length)
             } else {
-                Err(GenericError("Detection result is not Detected variant".into()).into())
+                Err(GenericError(anyhow::anyhow!("detection result is not Detected variant")).into())
             }
         }
     }
@@ -129,7 +134,7 @@ pub mod ffi {
                 ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
                     x224_connection_response,
                 } => Ok(Box::new(VecU8(x224_connection_response.clone()))),
-                _ => Err(GenericError("RDCleanPath variant does not contain X.224 response".into()).into()),
+                _ => Err(GenericError(anyhow::anyhow!("RDCleanPath variant does not contain X.224 response")).into()),
             }
         }
 
@@ -141,7 +146,10 @@ pub mod ffi {
                     let certs: Vec<Vec<u8>> = server_cert_chain.iter().map(|cert| cert.as_bytes().to_vec()).collect();
                     Ok(Box::new(CertificateChainIterator { certs, index: 0 }))
                 }
-                _ => Err(GenericError("RDCleanPath variant does not contain certificate chain".into()).into()),
+                _ => Err(GenericError(anyhow::anyhow!(
+                    "RDCleanPath variant does not contain certificate chain"
+                ))
+                .into()),
             }
         }
 
@@ -164,7 +172,7 @@ pub mod ffi {
             if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = &self.0 {
                 Ok(err.error_code)
             } else {
-                Err(GenericError("Not a GeneralError variant".into()).into())
+                Err(GenericError(anyhow::anyhow!("not a GeneralError variant")).into())
             }
         }
 

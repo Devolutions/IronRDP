@@ -23,6 +23,7 @@ sspi = { version = "0.16", features = ["network_client"] }
 thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0.100"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0"
