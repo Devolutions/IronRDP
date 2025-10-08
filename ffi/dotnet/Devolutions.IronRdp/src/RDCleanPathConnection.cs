@@ -4,17 +4,17 @@ using System.Security.Cryptography.X509Certificates;
 namespace Devolutions.IronRdp;
 
 /// <summary>
-/// Provides methods for connecting to RDP servers through Devolutions Gateway
-/// using the RDCleanPath protocol over WebSocket.
+/// Provides methods for connecting to RDP servers through an RDCleanPath-compatible gateway
+/// (such as Devolutions Gateway or Cloudflare) using WebSocket.
 /// </summary>
-public static class GatewayConnection
+public static class RDCleanPathConnection
 {
     /// <summary>
-    /// Connects to an RDP server through a Devolutions Gateway using WebSocket and RDCleanPath protocol.
+    /// Connects to an RDP server through an RDCleanPath-compatible gateway using WebSocket.
     /// </summary>
     /// <param name="config">The RDP connection configuration</param>
-    /// <param name="gatewayUrl">The WebSocket URL to the gateway (e.g., "ws://localhost:7171/jet/rdp")</param>
-    /// <param name="authToken">The JWT authentication token for the gateway</param>
+    /// <param name="gatewayUrl">The WebSocket URL to the RDCleanPath gateway (e.g., "ws://localhost:7171/jet/rdp")</param>
+    /// <param name="authToken">The JWT authentication token for the RDCleanPath gateway</param>
     /// <param name="destination">The destination RDP server address (e.g., "10.10.0.3:3389")</param>
     /// <param name="pcb">Optional preconnection blob for Hyper-V VM connections</param>
     /// <param name="factory">Optional clipboard backend factory</param>
@@ -73,7 +73,7 @@ public static class GatewayConnection
     }
 
     /// <summary>
-    /// Performs the RDCleanPath handshake with the gateway.
+    /// Performs the RDCleanPath handshake with the RDCleanPath-compatible gateway.
     /// </summary>
     private static async Task<(byte[], Framed<WebSocketStream>)> ConnectRdCleanPath(
         Framed<WebSocketStream> framed,
