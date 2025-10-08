@@ -32,7 +32,7 @@ public static class GatewayConnection
         string? kdcHostname = null)
     {
         // Step 1: Connect WebSocket to gateway
-        Console.WriteLine($"Connecting to gateway at {gatewayUrl}...");
+        System.Diagnostics.Debug.WriteLine($"Connecting to gateway at {gatewayUrl}...");
         var ws = await WebSocketStream.ConnectAsync(new Uri(gatewayUrl));
         var framed = new Framed<WebSocketStream>(ws);
 
@@ -57,7 +57,7 @@ public static class GatewayConnection
         }
 
         // Step 4: Perform RDCleanPath handshake
-        Console.WriteLine("Performing RDCleanPath handshake...");
+        System.Diagnostics.Debug.WriteLine("Performing RDCleanPath handshake...");
         var (serverPublicKey, framedAfterHandshake) = await ConnectRdCleanPath(
             framed, connector, destination, authToken, pcb ?? "");
 
@@ -65,10 +65,10 @@ public static class GatewayConnection
         connector.MarkSecurityUpgradeAsDone();
 
         // Step 6: Finalize connection
-        Console.WriteLine("Finalizing RDP connection...");
+        System.Diagnostics.Debug.WriteLine("Finalizing RDP connection...");
         var result = await ConnectFinalize(destination, connector, serverPublicKey, framedAfterHandshake, kdcProxyUrl, kdcHostname);
 
-        Console.WriteLine("Gateway connection established successfully!");
+        System.Diagnostics.Debug.WriteLine("Gateway connection established successfully!");
         return (result, framedAfterHandshake);
     }
 
@@ -85,14 +85,14 @@ public static class GatewayConnection
         var writeBuf = WriteBuf.New();
 
         // Step 1: Generate X.224 Connection Request
-        Console.WriteLine("Generating X.224 Connection Request...");
+        System.Diagnostics.Debug.WriteLine("Generating X.224 Connection Request...");
         var written = connector.StepNoInput(writeBuf);
         var x224PduSize = (int)written.GetSize().Get();
         var x224Pdu = new byte[x224PduSize];
         writeBuf.ReadIntoBuf(x224Pdu);
 
         // Step 2: Create and send RDCleanPath Request
-        Console.WriteLine($"Sending RDCleanPath request to {destination}...");
+        System.Diagnostics.Debug.WriteLine($"Sending RDCleanPath request to {destination}...");
         var rdCleanPathReq = RDCleanPathPdu.NewRequest(x224Pdu, destination, authToken, pcb);
         var reqBytes = rdCleanPathReq.ToDer();
         var reqBytesArray = new byte[reqBytes.GetSize()];
@@ -100,7 +100,7 @@ public static class GatewayConnection
         await framed.Write(reqBytesArray);
 
         // Step 3: Read RDCleanPath Response
-        Console.WriteLine("Waiting for RDCleanPath response...");
+        System.Diagnostics.Debug.WriteLine("Waiting for RDCleanPath response...");
         var respBytes = await framed.ReadByHint(new RDCleanPathHint());
         var rdCleanPathResp = RDCleanPathPdu.FromDer(respBytes);
 
@@ -110,7 +110,7 @@ public static class GatewayConnection
 
         if (resultType == RDCleanPathResultType.Response)
         {
-            Console.WriteLine("RDCleanPath handshake successful!");
+            System.Diagnostics.Debug.WriteLine("RDCleanPath handshake successful!");
 
             // Extract X.224 response
             var x224Response = result.GetX224Response();
@@ -143,7 +143,7 @@ public static class GatewayConnection
 
             var serverPublicKey = ExtractPublicKeyFromX509(certBytes);
 
-            Console.WriteLine($"Extracted server public key (length: {serverPublicKey.Length})");
+            System.Diagnostics.Debug.WriteLine($"Extracted server public key (length: {serverPublicKey.Length})");
 
             return (serverPublicKey, framed);
         }
@@ -185,12 +185,12 @@ public static class GatewayConnection
         // Perform CredSSP if needed
         if (connector.ShouldPerformCredssp())
         {
-            Console.WriteLine("Performing CredSSP authentication...");
+            System.Diagnostics.Debug.WriteLine("Performing CredSSP authentication...");
             await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey, kdcProxyUrl, kdcHostname);
         }
 
         // Continue with remaining connection steps
-        Console.WriteLine("Completing connection sequence...");
+        System.Diagnostics.Debug.WriteLine("Completing connection sequence...");
         while (!connector.GetDynState().IsTerminal())
         {
             await Connection.SingleSequenceStep(connector, writeBuf, framedSsl);
@@ -236,7 +236,7 @@ public static class GatewayConnection
         KerberosConfig? kerberosConfig = null;
         if (!string.IsNullOrEmpty(kdcProxyUrl))
         {
-            Console.WriteLine($"Using KDC proxy: {kdcProxyUrl}");
+            System.Diagnostics.Debug.WriteLine($"Using KDC proxy: {kdcProxyUrl}");
             kerberosConfig = KerberosConfig.New(kdcProxyUrl, kdcHostname ?? "");
         }
 

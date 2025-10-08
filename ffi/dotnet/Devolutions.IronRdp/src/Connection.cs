@@ -11,7 +11,7 @@ public static class Connection
     {
         var client = await CreateTcpConnection(serverName, port);
         string clientAddr = client.Client.LocalEndPoint.ToString();
-        Console.WriteLine(clientAddr);
+        System.Diagnostics.Debug.WriteLine(clientAddr);
 
         var framed = new Framed<NetworkStream>(client.GetStream());
 
