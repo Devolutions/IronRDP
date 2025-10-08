@@ -97,7 +97,7 @@ public static class Connection
     private static async Task PerformCredsspSteps(ClientConnector connector, string serverName, WriteBuf writeBuf,
         Framed<SslStream> framedSsl, byte[] serverpubkey)
     {
-        var credsspSequenceInitResult = CredsspSequence.Init(connector, serverName, serverpubkey);
+        var credsspSequenceInitResult = CredsspSequence.Init(connector, serverName, serverpubkey, null);
         var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
         var tsRequest = credsspSequenceInitResult.GetTsRequest();
         var tcpClient = new TcpClient();
