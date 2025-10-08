@@ -22,7 +22,7 @@ use ironrdp_svc::{server_encode_svc_messages, StaticChannelId, StaticChannelSet,
 use ironrdp_tokio::{split_tokio_framed, unsplit_tokio_framed, FramedRead, FramedWrite, TokioFramed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
@@ -310,7 +310,7 @@ impl RdpServer {
         acceptor.attach_static_channel(dvc);
     }
 
-    pub async fn run_connection(&mut self, stream: TcpStream) -> Result<()> {
+    pub async fn run_connection<T: AsyncRead + AsyncWrite + Send + Sync + Unpin>(&mut self, stream: T) -> Result<()> {
         let framed = TokioFramed::new(stream);
 
         let size = self.display.lock().await.size().await;
@@ -344,7 +344,7 @@ impl RdpServer {
                 if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
                     // how to get the client name?
                     // doesn't seem to matter yet
-                    let client_name = framed.get_inner().0.get_ref().0.peer_addr()?.to_string();
+                    let client_name = "";
 
                     ironrdp_acceptor::accept_credssp(
                         &mut framed,
