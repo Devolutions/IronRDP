@@ -131,7 +131,7 @@ pub mod ffi {
                 ironrdp_rdcleanpath::RDCleanPath::Response {
                     x224_connection_response,
                     ..
-                } => Ok(Box::new(VecU8(x224_connection_response.as_bytes().to_vec()))),
+                } => Ok(Box::new(VecU8(x224_connection_response.clone()))),
                 ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
                     x224_connection_response,
                 } => Ok(Box::new(VecU8(x224_connection_response.clone()))),
