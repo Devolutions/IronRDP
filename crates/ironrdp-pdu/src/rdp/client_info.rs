@@ -205,6 +205,7 @@ impl fmt::Debug for Credentials {
         f.debug_struct("Credentials")
             .field("username", &self.username)
             .field("domain", &self.domain)
+            .field("password", &self.password)
             .finish_non_exhaustive()
     }
 }
