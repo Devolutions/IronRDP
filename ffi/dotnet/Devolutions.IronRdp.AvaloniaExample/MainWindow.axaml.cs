@@ -87,11 +87,6 @@ public partial class MainWindow : Window
         var gatewayToken = Environment.GetEnvironmentVariable("IRONRDP_GATEWAY_TOKEN");
         var tokengenUrl = Environment.GetEnvironmentVariable("IRONRDP_TOKENGEN_URL");
 
-        //  KDC proxy configuration (optional)
-        var kdcProxyUrlBase = Environment.GetEnvironmentVariable("IRONRDP_KDC_PROXY_URL");
-        var kdcRealm = Environment.GetEnvironmentVariable("IRONRDP_KDC_REALM");
-        var kdcServer = Environment.GetEnvironmentVariable("IRONRDP_KDC_SERVER");
-
         if (username == null || password == null || server == null)
         {
             var errorMessage =
@@ -181,55 +176,11 @@ public partial class MainWindow : Window
                         }
                     }
 
-                    // Generate KDC token if KDC proxy is enabled
-                    string? kdcProxyUrl = null;
-                    if (!string.IsNullOrEmpty(kdcRealm) && !string.IsNullOrEmpty(kdcServer))
-                    {
-                        Trace.TraceInformation("=== KDC PROXY MODE ENABLED ===");
-                        Trace.TraceInformation($"KDC Realm: {kdcRealm}");
-                        Trace.TraceInformation($"KDC Server: {kdcServer}");
-
-                        try
-                        {
-                            var kdcToken = await tokenGen.GenerateKdcToken(
-                                krbRealm: kdcRealm!,
-                                krbKdc: kdcServer!
-                            );
-                            Trace.TraceInformation($"KDC token generated successfully (length: {kdcToken.Length})");
-
-                            // Build KDC proxy URL - use explicit URL if provided, otherwise auto-construct from gateway URL
-                            if (!string.IsNullOrEmpty(kdcProxyUrlBase))
-                            {
-                                kdcProxyUrl = $"{kdcProxyUrlBase.TrimEnd('/')}/{kdcToken}";
-                                Trace.TraceInformation($"Using explicit KDC Proxy URL: {kdcProxyUrl}");
-                            }
-                            else
-                            {
-                                var gatewayBaseUrl = new Uri(gatewayUrl.Replace("/jet/rdp", "")).GetLeftPart(UriPartial.Authority);
-                                kdcProxyUrl = $"{gatewayBaseUrl}/KdcProxy/{kdcToken}";
-                                Trace.TraceInformation($"Auto-constructed KDC Proxy URL: {kdcProxyUrl}");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Trace.TraceError($"Failed to generate KDC token: {ex.Message}");
-                            Trace.TraceWarning("Continuing without KDC proxy...");
-                        }
-                    }
-
                     // Connect via gateway - destination needs "hostname:port" format for RDCleanPath
                     string destination = $"{server}:{port}";
 
-                    // Get client hostname for Kerberos authentication
-                    string? kdcClientHostname = null;
-                    if (!string.IsNullOrEmpty(kdcProxyUrl))
-                    {
-                        kdcClientHostname = System.Net.Dns.GetHostName();
-                        Trace.TraceInformation($"Client hostname for Kerberos: {kdcClientHostname}");
-                    }
-
-                    var (gatewayRes, gatewayFramed) = await GatewayConnection.ConnectViaGateway(
-                        config, gatewayUrl, gatewayToken!, destination, null, factory, kdcProxyUrl, kdcClientHostname);
+                    var (gatewayRes, gatewayFramed) = await RDCleanPathConnection.ConnectViaGateway(
+                        config, gatewayUrl, gatewayToken!, destination, null, factory);
                     res = gatewayRes;
                     this._framed = new Framed<Stream>(gatewayFramed.GetInner().Item1);
 

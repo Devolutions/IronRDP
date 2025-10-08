@@ -53,7 +53,7 @@ public partial class CredsspSequence: IDisposable
     /// <returns>
     /// A <c>CredsspSequenceInitResult</c> allocated on Rust side.
     /// </returns>
-    public static CredsspSequenceInitResult Init(ClientConnector connector, string serverName, byte[] serverPublicKey, KerberosConfig? kerberoConfigs)
+    public static CredsspSequenceInitResult Init(ClientConnector connector, string serverName, byte[] serverPublicKey)
     {
         unsafe
         {
@@ -66,24 +66,11 @@ public partial class CredsspSequence: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            Raw.KerberosConfig* kerberoConfigsRaw;
-            if (kerberoConfigs == null)
-            {
-                kerberoConfigsRaw = null;
-            }
-            else
-            {
-                kerberoConfigsRaw = kerberoConfigs.AsFFI();
-                if (kerberoConfigsRaw == null)
-                {
-                    throw new ObjectDisposedException("KerberosConfig");
-                }
-            }
             fixed (byte* serverPublicKeyPtr = serverPublicKey)
             {
                 fixed (byte* serverNameBufPtr = serverNameBuf)
                 {
-                    Raw.CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError result = Raw.CredsspSequence.Init(connectorRaw, serverNameBufPtr, serverNameBufLength, serverPublicKeyPtr, serverPublicKeyLength, kerberoConfigsRaw);
+                    Raw.CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError result = Raw.CredsspSequence.Init(connectorRaw, serverNameBufPtr, serverNameBufLength, serverPublicKeyPtr, serverPublicKeyLength);
                     if (!result.isOk)
                     {
                         throw new IronRdpException(new IronRdpError(result.Err));
