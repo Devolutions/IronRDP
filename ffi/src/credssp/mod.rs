@@ -16,30 +16,6 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct KerberosConfig(pub ironrdp::connector::credssp::KerberosConfig);
 
-    impl KerberosConfig {
-        /// Creates a new KerberosConfig for KDC proxy support.
-        ///
-        /// # Arguments
-        /// * `kdc_proxy_url` - KDC proxy URL (e.g., "https://gateway.example.com/KdcProxy/{token}"), empty string if not used
-        /// * `hostname` - Client hostname for Kerberos, empty string if not used
-        pub fn new(kdc_proxy_url: &str, hostname: &str) -> Result<Box<KerberosConfig>, Box<IronRdpError>> {
-            let kdc_proxy_url_opt = if kdc_proxy_url.is_empty() {
-                None
-            } else {
-                Some(kdc_proxy_url.to_owned())
-            };
-
-            let hostname_opt = if hostname.is_empty() {
-                None
-            } else {
-                Some(hostname.to_owned())
-            };
-
-            let config = ironrdp::connector::credssp::KerberosConfig::new(kdc_proxy_url_opt, hostname_opt)?;
-            Ok(Box::new(KerberosConfig(config)))
-        }
-    }
-
     #[diplomat::opaque]
     pub struct CredsspSequence(pub ironrdp::connector::credssp::CredsspSequence);
 
