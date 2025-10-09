@@ -16,7 +16,7 @@
 
     https://learn.microsoft.com/en-us/dotnet/api/system.drawing?view=net-8.0
     -->
-    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.7" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.11" />
   </ItemGroup>
 
 </Project>
