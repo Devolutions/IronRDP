@@ -80,17 +80,21 @@ pub fn ptr_size(with_length: bool) -> usize {
 /// offset fields prefixing the string, as well as any extra padding for a 4-byte aligned
 /// NULL-terminated string.
 pub fn read_string_from_cursor(cursor: &mut ReadCursor<'_>, charset: CharacterSet) -> DecodeResult<String> {
+    const ALIGNMENT: usize = 4;
     ensure_size!(ctx: "ndr::read_string_from_cursor", in: cursor, size: size_of::<u32>() * 3);
-    let length = cursor.read_u32();
+    let _length = cursor.read_u32();
     let _offset = cursor.read_u32();
     let _length2 = cursor.read_u32();
 
     let string = utils::read_string_from_cursor(cursor, charset, true)?;
 
     // Skip padding for 4-byte aligned NULL-terminated string.
-    if length % 2 != 0 {
-        ensure_size!(ctx: "ndr::read_string_from_cursor", in: cursor, size: size_of::<u16>());
-        let _padding = cursor.read_u16();
+    let mut pad = cursor.pos();
+    let size = (pad + ALIGNMENT - 1) & !(ALIGNMENT - 1);
+    pad = size - pad;
+    if pad > 0 {
+        ensure_size!(ctx: "ndr::read_string_from_cursor", in: cursor, size: pad);
+        cursor.advance(pad);
     }
 
     Ok(string)
