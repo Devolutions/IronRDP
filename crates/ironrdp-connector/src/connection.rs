@@ -553,7 +553,7 @@ impl Sequence for ClientConnector {
                 mut connection_activation,
             } => {
                 let written = connection_activation.step(input, output)?;
-                match connection_activation.state {
+                match connection_activation.connection_activation_state() {
                     ConnectionActivationState::ConnectionFinalization { .. } => (
                         written,
                         ClientConnectorState::ConnectionFinalization { connection_activation },
@@ -570,10 +570,10 @@ impl Sequence for ClientConnector {
             } => {
                 let written = connection_activation.step(input, output)?;
 
-                let next_state = if !connection_activation.state.is_terminal() {
+                let next_state = if !connection_activation.connection_activation_state().is_terminal() {
                     ClientConnectorState::ConnectionFinalization { connection_activation }
                 } else {
-                    match connection_activation.state {
+                    match connection_activation.connection_activation_state() {
                         ConnectionActivationState::Finalized {
                             io_channel_id,
                             user_channel_id,

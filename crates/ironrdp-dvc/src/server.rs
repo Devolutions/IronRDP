@@ -139,22 +139,24 @@ impl SvcProcessor for DrdynvcServer {
             }
             DrdynvcClientPdu::Create(create_resp) => {
                 debug!("Got DVC Create Response PDU: {create_resp:?}");
-                let id = create_resp.channel_id;
+                let id = create_resp.channel_id();
                 let c = self.channel_by_id(id).map_err(|e| decode_err!(e))?;
                 if c.state != ChannelState::Creation {
                     return Err(pdu_other_err!("invalid channel state"));
                 }
-                if create_resp.creation_status != CreationStatus::OK {
-                    c.state = ChannelState::CreationFailed(create_resp.creation_status.into());
+                if create_resp.creation_status() != CreationStatus::OK {
+                    c.state = ChannelState::CreationFailed(create_resp.creation_status().into());
                     return Ok(resp);
                 }
                 c.state = ChannelState::Opened;
-                let msg = c.processor.start(create_resp.channel_id)?;
+                let msg = c.processor.start(create_resp.channel_id())?;
                 resp.extend(encode_dvc_messages(id, msg, ChannelFlags::SHOW_PROTOCOL).map_err(|e| encode_err!(e))?);
             }
             DrdynvcClientPdu::Close(close_resp) => {
                 debug!("Got DVC Close Response PDU: {close_resp:?}");
-                let c = self.channel_by_id(close_resp.channel_id).map_err(|e| decode_err!(e))?;
+                let c = self
+                    .channel_by_id(close_resp.channel_id())
+                    .map_err(|e| decode_err!(e))?;
                 if c.state != ChannelState::Opened {
                     return Err(pdu_other_err!("invalid channel state"));
                 }
