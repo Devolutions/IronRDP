@@ -2748,7 +2748,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr"
-version = "0.5.0"
+version = "0.4.2"
 dependencies = [
  "bitflags 2.9.4",
  "ironrdp-core",
