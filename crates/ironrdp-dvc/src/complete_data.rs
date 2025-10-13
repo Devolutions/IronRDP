@@ -1,4 +1,3 @@
-use alloc::borrow::ToOwned as _;
 use alloc::vec::Vec;
 use core::cmp;
 
@@ -38,10 +37,10 @@ impl CompleteData {
         }
 
         if total_data_size == data_first.as_data().len() {
-            Ok(Some(data_first.as_data().to_owned()))
+            Ok(Some(data_first.into_data()))
         } else {
             self.total_size = total_data_size;
-            self.data = data_first.as_data().to_owned();
+            self.data = data_first.into_data();
 
             Ok(None)
         }
@@ -50,7 +49,7 @@ impl CompleteData {
     fn process_data_pdu(&mut self, mut data: DataPdu) -> DecodeResult<Option<Vec<u8>>> {
         if self.total_size == 0 && self.data.is_empty() {
             // message is not fragmented
-            return Ok(Some(data.as_data().to_owned()));
+            return Ok(Some(data.into_data()));
         }
 
         // The message is fragmented and needs to be reassembled.

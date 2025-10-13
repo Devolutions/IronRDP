@@ -330,6 +330,10 @@ impl DataFirstPdu {
         &self.data
     }
 
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
+    }
+
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let fixed_part_size = checked_sum(&[header.cb_id.size_of_val(), header.sp.size_of_val()])?;
         ensure_size!(in: src, size: fixed_part_size);
@@ -457,6 +461,10 @@ impl DataPdu {
 
     pub fn as_data(&self) -> &[u8] {
         &self.data
+    }
+
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
     }
 
     pub fn data_mut(&mut self) -> &mut Vec<u8> {
