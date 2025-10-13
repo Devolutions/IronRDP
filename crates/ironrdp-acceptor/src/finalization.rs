@@ -190,7 +190,7 @@ impl FinalizationSequence {
         }
     }
 
-    pub fn input_events(self) -> Vec<Vec<u8>> {
+    pub fn into_input_events(self) -> Vec<Vec<u8>> {
         self.input_events
     }
 

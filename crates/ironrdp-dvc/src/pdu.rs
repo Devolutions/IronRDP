@@ -326,7 +326,7 @@ impl DataFirstPdu {
         self.length
     }
 
-    pub fn data(&self) -> &[u8] {
+    pub fn as_data(&self) -> &[u8] {
         &self.data
     }
 
@@ -455,7 +455,7 @@ impl DataPdu {
         }
     }
 
-    pub fn data(&self) -> &[u8] {
+    pub fn as_data(&self) -> &[u8] {
         &self.data
     }
 

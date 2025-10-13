@@ -38,11 +38,11 @@ bitflags! {
 /// NOTE: `Decode` implementation will read all remaining data in cursor as metafile contents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackedMetafile<'a> {
-    mapping_mode: PackedMetafileMappingMode,
-    x_ext: u32,
-    y_ext: u32,
+    pub mapping_mode: PackedMetafileMappingMode,
+    pub x_ext: u32,
+    pub y_ext: u32,
     /// The variable sized contents of the metafile as specified in [MS-WMF] section 2
-    data: Cow<'a, [u8]>,
+    pub data: Cow<'a, [u8]>,
 }
 
 impl PackedMetafile<'_> {
@@ -61,22 +61,6 @@ impl PackedMetafile<'_> {
             y_ext,
             data: data.into(),
         }
-    }
-
-    pub fn mapping_mode(&self) -> PackedMetafileMappingMode {
-        self.mapping_mode
-    }
-
-    pub fn x_ext(&self) -> u32 {
-        self.x_ext
-    }
-
-    pub fn y_ext(&self) -> u32 {
-        self.y_ext
-    }
-
-    pub fn data(&self) -> &[u8] {
-        &self.data
     }
 }
 

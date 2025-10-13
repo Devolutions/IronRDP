@@ -37,11 +37,11 @@ impl CompleteData {
             self.data.clear();
         }
 
-        if total_data_size == data_first.data().len() {
-            Ok(Some(data_first.data().to_owned()))
+        if total_data_size == data_first.as_data().len() {
+            Ok(Some(data_first.as_data().to_owned()))
         } else {
             self.total_size = total_data_size;
-            self.data = data_first.data().to_owned();
+            self.data = data_first.as_data().to_owned();
 
             Ok(None)
         }
@@ -50,11 +50,11 @@ impl CompleteData {
     fn process_data_pdu(&mut self, mut data: DataPdu) -> DecodeResult<Option<Vec<u8>>> {
         if self.total_size == 0 && self.data.is_empty() {
             // message is not fragmented
-            return Ok(Some(data.data().to_owned()));
+            return Ok(Some(data.as_data().to_owned()));
         }
 
         // The message is fragmented and needs to be reassembled.
-        match self.data.len().checked_add(data.data().len()) {
+        match self.data.len().checked_add(data.as_data().len()) {
             Some(actual_data_length) => {
                 match actual_data_length.cmp(&(self.total_size)) {
                     cmp::Ordering::Less => {
