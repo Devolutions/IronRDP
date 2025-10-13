@@ -1,4 +1,3 @@
-use alloc::borrow::ToOwned as _;
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
@@ -117,8 +116,8 @@ impl SvcProcessor for DrdynvcClient {
             }
             DrdynvcServerPdu::Create(create_request) => {
                 debug!("Got DVC Create Request PDU: {create_request:?}");
-                let channel_name = create_request.channel_name().to_owned();
                 let channel_id = create_request.channel_id();
+                let channel_name = create_request.into_channel_name();
 
                 if !self.cap_handshake_done {
                     debug!(

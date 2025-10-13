@@ -855,6 +855,10 @@ impl CreateRequestPdu {
         &self.channel_name
     }
 
+    pub fn into_channel_name(self) -> String {
+        self.channel_name
+    }
+
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::headerless_fixed_part_size(&header));
         let channel_id = header.cb_id.decode_val(src)?;
