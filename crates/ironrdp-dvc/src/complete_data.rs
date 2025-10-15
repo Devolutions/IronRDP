@@ -36,7 +36,7 @@ impl CompleteData {
             self.data.clear();
         }
 
-        if total_data_size == data_first.as_data().len() {
+        if total_data_size == data_first.data().len() {
             Ok(Some(data_first.into_data()))
         } else {
             self.total_size = total_data_size;
