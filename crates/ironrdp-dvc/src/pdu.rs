@@ -459,7 +459,7 @@ impl DataPdu {
         }
     }
 
-    pub fn as_data(&self) -> &[u8] {
+    pub fn data(&self) -> &[u8] {
         &self.data
     }
 

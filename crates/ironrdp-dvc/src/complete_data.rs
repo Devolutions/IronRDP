@@ -53,7 +53,7 @@ impl CompleteData {
         }
 
         // The message is fragmented and needs to be reassembled.
-        match self.data.len().checked_add(data.as_data().len()) {
+        match self.data.len().checked_add(data.data().len()) {
             Some(actual_data_length) => {
                 match actual_data_length.cmp(&(self.total_size)) {
                     cmp::Ordering::Less => {
