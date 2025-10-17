@@ -284,7 +284,7 @@ fn ycocg_with_cll_to_rgb(cll: u8, y: u8, co: u8, cg: u8) -> Rgb {
 
     return Rgb { r, g, b };
 
-    // TODO: Use (`cast_signed`)[https://doc.rust-lang.org/std/primitive.u8.html#method.cast_signed]
+    // TODO: Use [`cast_signed`](https://doc.rust-lang.org/std/primitive.u8.html#method.cast_signed)
     // once MSRV is 1.87+.
     #[expect(
         clippy::as_conversions,
