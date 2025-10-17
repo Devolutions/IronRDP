@@ -270,8 +270,8 @@ fn ycocg_with_cll_to_rgb(cll: u8, y: u8, co: u8, cg: u8) -> Rgb {
     let clip_i16 =
         |v: i16| u8::try_from(v.clamp(0, 255)).expect("fits into u8 because the value is clamped to [0..256]");
 
-    let co_signed = cast_singed(co << chroma_shift);
-    let cg_signed = cast_singed(cg << chroma_shift);
+    let co_signed = cast_signed(co << chroma_shift);
+    let cg_signed = cast_signed(cg << chroma_shift);
 
     let y = i16::from(y);
     let co = i16::from(co_signed);
@@ -291,7 +291,7 @@ fn ycocg_with_cll_to_rgb(cll: u8, y: u8, co: u8, cg: u8) -> Rgb {
         clippy::cast_possible_wrap,
         reason = "there is no other way to do this"
     )]
-    fn cast_singed(value: u8) -> i8 {
+    fn cast_signed(value: u8) -> i8 {
         value as i8
     }
 }
