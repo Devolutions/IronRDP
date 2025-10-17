@@ -180,7 +180,7 @@ lazy_static! {
             state_transition: LicensingStateTransition::NoTransition,
             error_info: Vec::new(),
         };
-        pdu.license_header.preamble_message_size = pdu.size() as u16;
+        pdu.license_header.preamble_message_size = u16::try_from(pdu.size()).unwrap();
         pdu.into()
     };
     pub static ref SERVER_DEMAND_ACTIVE_PDU: ShareControlHeader = ShareControlHeader {

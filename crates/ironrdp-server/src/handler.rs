@@ -97,6 +97,7 @@ impl From<(u16, fast_path::KeyboardFlags)> for KeyboardEvent {
 }
 
 impl From<(u16, scan_code::KeyboardFlags)> for KeyboardEvent {
+    #[expect(clippy::as_conversions)]
     #[expect(clippy::cast_possible_truncation)] // we are actually truncating the value
     fn from((key, flags): (u16, scan_code::KeyboardFlags)) -> Self {
         let extended = flags.contains(scan_code::KeyboardFlags::EXTENDED);
@@ -131,6 +132,7 @@ impl From<SynchronizeFlags> for KeyboardEvent {
 }
 
 impl From<SyncToggleFlags> for KeyboardEvent {
+    #[expect(clippy::as_conversions)]
     #[expect(clippy::cast_possible_truncation)] // we are actually truncating the value
     fn from(value: SyncToggleFlags) -> Self {
         KeyboardEvent::Synchronize(SynchronizeFlags::from_bits_truncate(value.bits() as u8))

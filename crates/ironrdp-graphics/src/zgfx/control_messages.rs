@@ -23,12 +23,14 @@ impl<'a> SegmentedDataPdu<'a> {
         match descriptor {
             SegmentedDescriptor::Single => Ok(SegmentedDataPdu::Single(BulkEncodedData::from_buffer(buffer)?)),
             SegmentedDescriptor::Multipart => {
-                let segment_count = buffer.read_u16::<LittleEndian>()? as usize;
-                let uncompressed_size = buffer.read_u32::<LittleEndian>()? as usize;
+                let segment_count = usize::from(buffer.read_u16::<LittleEndian>()?);
+                let uncompressed_size = usize::try_from(buffer.read_u32::<LittleEndian>()?)
+                    .map_err(|_| ZgfxError::InvalidIntegralConversion("segments uncompressed size"))?;
 
                 let mut segments = Vec::with_capacity(segment_count);
                 for _ in 0..segment_count {
-                    let size = buffer.read_u32::<LittleEndian>()? as usize;
+                    let size = usize::try_from(buffer.read_u32::<LittleEndian>()?)
+                        .map_err(|_| ZgfxError::InvalidIntegralConversion("segment data size"))?;
                     let (segment_data, new_buffer) = buffer.split_at(size);
                     buffer = new_buffer;
 

@@ -196,7 +196,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
 
     fn write_aycocg_planes_to_rgb24(&self, params: AYCoCgParams, planes: &[u8], dst: &mut Vec<u8>) {
         #![allow(clippy::similar_names)] // It’s hard to find better names for co, cg, etc.
-        let sample_shift = params.chroma_subsampling as usize;
+        let sample_shift = usize::from(params.chroma_subsampling);
 
         let (y_offset, co_offset, cg_offset) = (
             self.color_plane_offsets[0],
@@ -265,12 +265,13 @@ fn ycocg_with_cll_to_rgb(cll: u8, y: u8, co: u8, cg: u8) -> Rgb {
     // |R|   |1   1/2   -1/2|   |Y |
     // |G| = |1    0     1/2| * |Co|
     // |B|   |1  -1/2   -1/2|   |Cg|
-    let chroma_shift = (cll - 1) as usize;
+    let chroma_shift = cll - 1;
 
-    let clip_i16 = |v: i16| v.clamp(0, 255) as u8;
+    let clip_i16 =
+        |v: i16| u8::try_from(v.clamp(0, 255)).expect("fits into u8 because the value is clamped to [0..256]");
 
-    let co_signed = (co << chroma_shift) as i8;
-    let cg_signed = (cg << chroma_shift) as i8;
+    let co_signed = cast_singed(co << chroma_shift);
+    let cg_signed = cast_singed(cg << chroma_shift);
 
     let y = i16::from(y);
     let co = i16::from(co_signed);
@@ -281,7 +282,18 @@ fn ycocg_with_cll_to_rgb(cll: u8, y: u8, co: u8, cg: u8) -> Rgb {
     let g = clip_i16(y + cg);
     let b = clip_i16(t - co);
 
-    Rgb { r, g, b }
+    return Rgb { r, g, b };
+
+    // TODO: Use (`cast_signed`)[https://doc.rust-lang.org/std/primitive.u8.html#method.cast_signed]
+    // once MSRV is 1.87+.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_wrap,
+        reason = "there is no other way to do this"
+    )]
+    fn cast_singed(value: u8) -> i8 {
+        value as i8
+    }
 }
 
 impl BitmapStreamDecoder {

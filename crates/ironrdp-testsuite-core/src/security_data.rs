@@ -64,6 +64,7 @@ lazy_static! {
         };
 }
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS_BUFFER: [u8; 232] = concat_arrays!(
     SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS_PREFIX_BUFFER,
     (SERVER_RANDOM_BUFFER.len() as u32).to_le_bytes(),
@@ -72,6 +73,7 @@ pub const SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS_BUFFER: [u8; 232] = concat_a
     SERVER_CERT_BUFFER
 );
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const SERVER_SECURITY_DATA_WITH_INVALID_SERVER_RANDOM_BUFFER: [u8; 233] = concat_arrays!(
     SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS_PREFIX_BUFFER,
     (SERVER_RANDOM_BUFFER.len() as u32 + 1).to_le_bytes(),

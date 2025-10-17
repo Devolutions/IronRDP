@@ -24,6 +24,10 @@ pub enum MouseButton {
 }
 
 impl MouseButton {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     pub fn as_idx(self) -> usize {
         self as usize
     }
@@ -78,6 +82,7 @@ impl Scancode {
     pub const fn from_u16(scancode: u16) -> Self {
         let extended = scancode & 0xE000 == 0xE000;
 
+        #[expect(clippy::as_conversions)]
         #[expect(clippy::cast_possible_truncation)] // truncating on purpose
         let code = scancode as u8;
 

@@ -187,10 +187,11 @@ struct DecodingTileContext {
 
 impl DecodingTileContext {
     fn new() -> Self {
+        let tile_size = usize::from(TILE_SIZE);
         Self {
-            tile_output: vec![0; TILE_SIZE as usize * TILE_SIZE as usize * 4],
-            ycbcr_buffer: vec![vec![0; TILE_SIZE as usize * TILE_SIZE as usize]; 3],
-            ycbcr_temp_buffer: vec![0; TILE_SIZE as usize * TILE_SIZE as usize],
+            tile_output: vec![0; tile_size * tile_size * 4],
+            ycbcr_buffer: vec![vec![0; tile_size * tile_size]; 3],
+            ycbcr_temp_buffer: vec![0; tile_size * tile_size],
         }
     }
 }

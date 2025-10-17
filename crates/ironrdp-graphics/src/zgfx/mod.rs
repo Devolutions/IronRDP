@@ -78,8 +78,8 @@ impl Decompressor {
         let mut bits = BitSlice::from_slice(encoded_data);
 
         // The value of the last byte indicates the number of unused bits in the final byte
-        bits =
-            &bits[..8 * (encoded_data.len() - 1) - *encoded_data.last().expect("encoded_data is not empty") as usize];
+        bits = &bits
+            [..8 * (encoded_data.len() - 1) - usize::from(*encoded_data.last().expect("encoded_data is not empty"))];
         let mut bits = Bits::new(bits);
         let mut bytes_written = 0;
 
@@ -134,14 +134,15 @@ fn handle_match(
     distance_base: u32,
     history: &mut FixedCircularBuffer,
     output: &mut Vec<u8>,
-) -> io::Result<usize> {
+) -> Result<usize, ZgfxError> {
     // Each token has been assigned a different base distance
     // and number of additional value bits to be added to compute the full distance.
 
-    let distance = (distance_base + bits.split_to(distance_value_size).load_be::<u32>()) as usize;
+    let distance = usize::try_from(distance_base + bits.split_to(distance_value_size).load_be::<u32>())
+        .map_err(|_| ZgfxError::InvalidIntegralConversion("token's full distance"))?;
 
     if distance == 0 {
-        read_unencoded_bytes(bits, history, output)
+        read_unencoded_bytes(bits, history, output).map_err(ZgfxError::from)
     } else {
         read_encoded_bytes(bits, distance, history, output)
     }
@@ -155,7 +156,7 @@ fn read_unencoded_bytes(
     // A match distance of zero is a special case,
     // which indicates that an unencoded run of bytes follows.
     // The count of bytes is encoded as a 15-bit value
-    let length = bits.split_to(15).load_be::<u32>() as usize;
+    let length = bits.split_to(15).load_be::<usize>();
 
     if bits.remaining_bits_of_last_byte() > 0 {
         let pad_to_byte_boundary = 8 - bits.remaining_bits_of_last_byte();
@@ -178,7 +179,7 @@ fn read_encoded_bytes(
     distance: usize,
     history: &mut FixedCircularBuffer,
     output: &mut Vec<u8>,
-) -> io::Result<usize> {
+) -> Result<usize, ZgfxError> {
     // A match length prefix follows the token and indicates
     // how many additional bits will be needed to get the full length
     // (the number of bytes to be copied).
@@ -191,9 +192,12 @@ fn read_encoded_bytes(
 
         3
     } else {
-        let length = bits.split_to(length_token_size + 1).load_be::<u32>() as usize;
+        let length = bits.split_to(length_token_size + 1).load_be::<usize>();
 
-        let base = 2u32.pow(length_token_size as u32 + 1) as usize;
+        let length_token_size = u32::try_from(length_token_size)
+            .map_err(|_| ZgfxError::InvalidIntegralConversion("length of the token size"))?;
+
+        let base = 2usize.pow(length_token_size + 1);
 
         base + length
     };
@@ -440,6 +444,7 @@ pub enum ZgfxError {
         uncompressed_size: usize,
     },
     TokenBitsNotFound,
+    InvalidIntegralConversion(&'static str),
 }
 
 impl core::fmt::Display for ZgfxError {
@@ -456,6 +461,7 @@ impl core::fmt::Display for ZgfxError {
                 "decompressed size of segments ({decompressed_size}) does not equal to uncompressed size ({uncompressed_size})",
             ),
             Self::TokenBitsNotFound => write!(f, "token bits not found"),
+            Self::InvalidIntegralConversion(type_name) => write!(f, "invalid `{type_name}`: out of range integral type conversion"),
         }
     }
 }
@@ -468,6 +474,7 @@ impl core::error::Error for ZgfxError {
             Self::InvalidSegmentedDescriptor => None,
             Self::InvalidDecompressedSize { .. } => None,
             Self::TokenBitsNotFound => None,
+            Self::InvalidIntegralConversion(_) => None,
         }
     }
 }

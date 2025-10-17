@@ -51,6 +51,10 @@ impl TryFrom<u16> for Version {
 }
 
 impl From<Version> for u16 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(version: Version) -> Self {
         version as u16
     }
@@ -442,9 +446,8 @@ impl<'de> Decode<'de> for ClientAudioFormatPdu {
         ensure_fixed_part_size!(in: src);
 
         let flags = AudioFormatFlags::from_bits_truncate(src.read_u32());
-        let volume = src.read_u32();
-        let volume_left = (volume & 0xFFFF) as u16;
-        let volume_right = (volume >> 16) as u16;
+        let volume_left = src.read_u16();
+        let volume_right = src.read_u16();
         let pitch = src.read_u32();
         let dgram_port = src.read_u16_be();
         let n_formats = usize::from(src.read_u16());
@@ -489,6 +492,10 @@ impl TryFrom<u16> for QualityMode {
 }
 
 impl From<QualityMode> for u16 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(mode: QualityMode) -> Self {
         mode as u16
     }
@@ -626,7 +633,7 @@ impl<'de> Decode<'de> for TrainingPdu {
         ensure_fixed_part_size!(in: src);
 
         let timestamp = src.read_u16();
-        let len = src.read_u16() as usize;
+        let len = usize::from(src.read_u16());
         let data = if len != 0 {
             if len < Self::FIXED_PART_SIZE + ServerAudioOutputPdu::FIXED_PART_SIZE {
                 return Err(invalid_field_err!("TrainingPdu::wPackSize", "too small"));
@@ -839,7 +846,7 @@ impl Encode for WavePdu<'_> {
 impl WavePdu<'_> {
     fn decode(src: &mut ReadCursor<'_>, body_size: u16) -> DecodeResult<Self> {
         let info = WaveInfoPdu::decode(src)?;
-        let body_size = body_size as usize;
+        let body_size = usize::from(body_size);
         let data_len = body_size
             .checked_sub(info.size())
             .ok_or_else(|| invalid_field_err!("Length", "WaveInfo body_size is too small"))?;
@@ -1090,9 +1097,8 @@ impl<'de> Decode<'de> for VolumePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let volume = src.read_u32();
-        let volume_left = (volume & 0xFFFF) as u16;
-        let volume_right = (volume >> 16) as u16;
+        let volume_left = src.read_u16();
+        let volume_right = src.read_u16();
 
         Ok(Self {
             volume_left,
