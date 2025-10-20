@@ -20,7 +20,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.5" } # public
 tracing = { version = "0.1", features = ["log"] }
-bitflags = "2.9"
+bitflags = "2.10"
 
 [lints]
 workspace = true

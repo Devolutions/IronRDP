@@ -23,7 +23,7 @@ native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls"]
 
 [dependencies]
 base64 = "0.22"
-bitflags = "2.9"
+bitflags = "2.10"
 futures-util = "0.3"
 http-body-util = { version = "0.1" }
 hyper-util = { version = "0.1", features = ["tokio"] }

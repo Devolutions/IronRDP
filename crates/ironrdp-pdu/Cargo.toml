@@ -23,7 +23,7 @@ qoi = []
 qoiz = ["qoi"]
 
 [dependencies]
-bitflags = "2.9"
+bitflags = "2.10"
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 tap = "1"

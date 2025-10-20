@@ -18,7 +18,7 @@ test = false
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.4" } # public
-bitflags = "2.9"
+bitflags = "2.10"
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
 
