@@ -1,6 +1,7 @@
+use std::sync::LazyLock;
+
 use array_concat::concat_arrays;
 use ironrdp_pdu::gcc::{ClientSecurityData, EncryptionLevel, EncryptionMethod, ServerSecurityData};
-use lazy_static::lazy_static;
 
 pub const CLIENT_SECURITY_DATA_BUFFER: [u8; 8] = [
     0x1b, 0x00, 0x00, 0x00, // encryption methods
@@ -35,34 +36,34 @@ pub const SERVER_CERT_BUFFER: [u8; 184] = [
     0x6c, 0xd6, 0x76, 0x84, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-lazy_static! {
-    pub static ref CLIENT_SECURITY_DATA: ClientSecurityData = ClientSecurityData {
-        encryption_methods: EncryptionMethod::BIT_40
-            | EncryptionMethod::BIT_128
-            | EncryptionMethod::BIT_56
-            | EncryptionMethod::FIPS,
-        ext_encryption_methods: 0,
-    };
-    pub static ref SERVER_SECURITY_DATA_WITHOUT_OPTIONAL_FIELDS: ServerSecurityData = ServerSecurityData {
+pub static CLIENT_SECURITY_DATA: LazyLock<ClientSecurityData> = LazyLock::new(|| ClientSecurityData {
+    encryption_methods: EncryptionMethod::BIT_40
+        | EncryptionMethod::BIT_128
+        | EncryptionMethod::BIT_56
+        | EncryptionMethod::FIPS,
+    ext_encryption_methods: 0,
+});
+pub static SERVER_SECURITY_DATA_WITHOUT_OPTIONAL_FIELDS: LazyLock<ServerSecurityData> =
+    LazyLock::new(|| ServerSecurityData {
         encryption_method: EncryptionMethod::empty(),
         encryption_level: EncryptionLevel::None,
         server_random: None,
         server_cert: Vec::new(),
-    };
-    pub static ref SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS: ServerSecurityData = ServerSecurityData {
+    });
+pub static SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS: LazyLock<ServerSecurityData> =
+    LazyLock::new(|| ServerSecurityData {
         encryption_method: EncryptionMethod::BIT_128,
         encryption_level: EncryptionLevel::ClientCompatible,
         server_random: Some(SERVER_RANDOM_BUFFER),
         server_cert: SERVER_CERT_BUFFER.to_vec(),
-    };
-    pub static ref SERVER_SECURITY_DATA_WITH_MISMATCH_OF_REQUIRED_AND_OPTIONAL_FIELDS: ServerSecurityData =
-        ServerSecurityData {
-            encryption_method: EncryptionMethod::empty(),
-            encryption_level: EncryptionLevel::None,
-            server_random: Some(SERVER_RANDOM_BUFFER),
-            server_cert: SERVER_CERT_BUFFER.to_vec(),
-        };
-}
+    });
+pub static SERVER_SECURITY_DATA_WITH_MISMATCH_OF_REQUIRED_AND_OPTIONAL_FIELDS: LazyLock<ServerSecurityData> =
+    LazyLock::new(|| ServerSecurityData {
+        encryption_method: EncryptionMethod::empty(),
+        encryption_level: EncryptionLevel::None,
+        server_random: Some(SERVER_RANDOM_BUFFER),
+        server_cert: SERVER_CERT_BUFFER.to_vec(),
+    });
 
 pub const SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS_BUFFER: [u8; 232] = concat_arrays!(
     SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS_PREFIX_BUFFER,

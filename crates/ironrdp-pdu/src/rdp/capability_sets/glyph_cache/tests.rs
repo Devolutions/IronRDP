@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -14,61 +15,59 @@ const GLYPH_CACHE_BUFFER: [u8; 48] = [
 
 const CACHE_DEFINITION_BUFFER: [u8; 4] = [0xfe, 0x00, 0x04, 0x00];
 
-lazy_static! {
-    pub static ref GLYPH_CACHE: GlyphCache = GlyphCache {
-        glyph_cache: [
-            CacheDefinition {
-                entries: 254,
-                max_cell_size: 4
-            },
-            CacheDefinition {
-                entries: 254,
-                max_cell_size: 4
-            },
-            CacheDefinition {
-                entries: 254,
-                max_cell_size: 8
-            },
-            CacheDefinition {
-                entries: 254,
-                max_cell_size: 8
-            },
-            CacheDefinition {
-                entries: 254,
-                max_cell_size: 16
-            },
-            CacheDefinition {
-                entries: 254,
-                max_cell_size: 32
-            },
-            CacheDefinition {
-                entries: 254,
-                max_cell_size: 64
-            },
-            CacheDefinition {
-                entries: 254,
-                max_cell_size: 128
-            },
-            CacheDefinition {
-                entries: 254,
-                max_cell_size: 256
-            },
-            CacheDefinition {
-                entries: 64,
-                max_cell_size: 2048
-            }
-        ],
-        frag_cache: CacheDefinition {
-            entries: 256,
+static GLYPH_CACHE: LazyLock<GlyphCache> = LazyLock::new(|| GlyphCache {
+    glyph_cache: [
+        CacheDefinition {
+            entries: 254,
+            max_cell_size: 4,
+        },
+        CacheDefinition {
+            entries: 254,
+            max_cell_size: 4,
+        },
+        CacheDefinition {
+            entries: 254,
+            max_cell_size: 8,
+        },
+        CacheDefinition {
+            entries: 254,
+            max_cell_size: 8,
+        },
+        CacheDefinition {
+            entries: 254,
+            max_cell_size: 16,
+        },
+        CacheDefinition {
+            entries: 254,
+            max_cell_size: 32,
+        },
+        CacheDefinition {
+            entries: 254,
+            max_cell_size: 64,
+        },
+        CacheDefinition {
+            entries: 254,
+            max_cell_size: 128,
+        },
+        CacheDefinition {
+            entries: 254,
             max_cell_size: 256,
         },
-        glyph_support_level: GlyphSupportLevel::Encode,
-    };
-    pub static ref CACHE_DEFINITION: CacheDefinition = CacheDefinition {
-        entries: 254,
-        max_cell_size: 4,
-    };
-}
+        CacheDefinition {
+            entries: 64,
+            max_cell_size: 2048,
+        },
+    ],
+    frag_cache: CacheDefinition {
+        entries: 256,
+        max_cell_size: 256,
+    },
+    glyph_support_level: GlyphSupportLevel::Encode,
+});
+static CACHE_DEFINITION: LazyLock<CacheDefinition> = LazyLock::new(|| CacheDefinition {
+    entries: 254,
+    max_cell_size: 4,
+});
 
 #[test]
 fn from_buffer_correctly_parses_glyph_cache_capset() {

@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -8,11 +9,9 @@ const SURFACE_COMMANDS_BUFFER: [u8; 8] = [
     0x00, 0x00, 0x00, 0x00, // reserved
 ];
 
-lazy_static! {
-    pub static ref SURFACE_COMMANDS: SurfaceCommands = SurfaceCommands {
-        flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::FRAME_MARKER | CmdFlags::STREAM_SURFACE_BITS,
-    };
-}
+static SURFACE_COMMANDS: LazyLock<SurfaceCommands> = LazyLock::new(|| SurfaceCommands {
+    flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::FRAME_MARKER | CmdFlags::STREAM_SURFACE_BITS,
+});
 
 #[test]
 fn from_buffer_correctly_parses_surface_commands_capset() {

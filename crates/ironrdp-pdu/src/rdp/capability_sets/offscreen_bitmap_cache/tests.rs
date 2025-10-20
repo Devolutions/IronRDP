@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -8,14 +9,11 @@ const OFFSCREEN_BITMAP_CACHE_BUFFER: [u8; 8] = [
     0x00, 0x1e, // offscreenCacheSize
     0x64, 0x00, // offscreenCacheEntries
 ];
-
-lazy_static! {
-    pub static ref OFFSCREEN_BITMAP_CACHE: OffscreenBitmapCache = OffscreenBitmapCache {
-        is_supported: true,
-        cache_size: 7680,
-        cache_entries: 100,
-    };
-}
+static OFFSCREEN_BITMAP_CACHE: LazyLock<OffscreenBitmapCache> = LazyLock::new(|| OffscreenBitmapCache {
+    is_supported: true,
+    cache_size: 7680,
+    cache_entries: 100,
+});
 
 #[test]
 fn from_buffer_correctly_parses_offscreen_bitmap_cache_capset() {

@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::cert::{RsaPublicKey, PROP_CERT_BLOBS_HEADERS_SIZE, PROP_CERT_NO_BLOBS_SIZE, RSA_KEY_SIZE_WITHOUT_MODULUS};
 use super::*;
@@ -210,62 +211,60 @@ const SCOPE_BUFFER: [u8; 18] = [
     0x00, // scope array
 ];
 
-lazy_static! {
-    pub static ref PROPRIETARY_CERTIFICATE: ProprietaryCertificate = ProprietaryCertificate {
-        public_key: RsaPublicKey {
-            public_exponent: 0x0001_0001,
-            modulus: Vec::from(MODULUS.as_ref()),
-        },
-        signature: Vec::from(SIGNATURE.as_ref()),
-    };
-    pub static ref PRODUCT_INFO: ProductInfo = ProductInfo {
-        version: 0x60000,
-        company_name: "Microsoft Corporation".to_owned(),
-        product_id: "A02".to_owned(),
-    };
-    pub static ref PUBLIC_KEY: RsaPublicKey = RsaPublicKey {
+static PROPRIETARY_CERTIFICATE: LazyLock<ProprietaryCertificate> = LazyLock::new(|| ProprietaryCertificate {
+    public_key: RsaPublicKey {
         public_exponent: 0x0001_0001,
         modulus: Vec::from(MODULUS.as_ref()),
-    };
-    pub static ref SERVER_LICENSE_REQUEST: LicensePdu = {
-        let mut req = ServerLicenseRequest {
-            license_header: LicenseHeader {
-                security_header: BasicSecurityHeader {
-                    flags: BasicSecurityHeaderFlags::LICENSE_PKT,
-                },
-                preamble_message_type: PreambleType::LicenseRequest,
-                preamble_flags: PreambleFlags::empty(),
-                preamble_version: PreambleVersion::V3,
-                preamble_message_size: 0,
+    },
+    signature: Vec::from(SIGNATURE.as_ref()),
+});
+static PRODUCT_INFO: LazyLock<ProductInfo> = LazyLock::new(|| ProductInfo {
+    version: 0x60000,
+    company_name: "Microsoft Corporation".to_owned(),
+    product_id: "A02".to_owned(),
+});
+static PUBLIC_KEY: LazyLock<RsaPublicKey> = LazyLock::new(|| RsaPublicKey {
+    public_exponent: 0x0001_0001,
+    modulus: Vec::from(MODULUS.as_ref()),
+});
+static SERVER_LICENSE_REQUEST: LazyLock<LicensePdu> = LazyLock::new(|| {
+    let mut req = ServerLicenseRequest {
+        license_header: LicenseHeader {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
             },
-            server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
-            product_info: ProductInfo {
-                version: 0x60000,
-                company_name: "Microsoft Corporation".to_owned(),
-                product_id: "A02".to_owned(),
-            },
-            server_certificate: Some(ServerCertificate {
-                issued_permanently: true,
-                certificate: CertificateType::X509(X509CertificateChain {
-                    certificate_array: vec![Vec::from(CERT_1_BUFFER.as_ref()), Vec::from(CERT_2_BUFFER.as_ref())],
-                }),
+            preamble_message_type: PreambleType::LicenseRequest,
+            preamble_flags: PreambleFlags::empty(),
+            preamble_version: PreambleVersion::V3,
+            preamble_message_size: 0,
+        },
+        server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
+        product_info: ProductInfo {
+            version: 0x60000,
+            company_name: "Microsoft Corporation".to_owned(),
+            product_id: "A02".to_owned(),
+        },
+        server_certificate: Some(ServerCertificate {
+            issued_permanently: true,
+            certificate: CertificateType::X509(X509CertificateChain {
+                certificate_array: vec![Vec::from(CERT_1_BUFFER.as_ref()), Vec::from(CERT_2_BUFFER.as_ref())],
             }),
-            scope_list: vec![Scope(String::from("microsoft.com"))],
-        };
-        req.license_header.preamble_message_size = u16::try_from(req.size()).expect("can't panic");
-        req.into()
-    };
-    pub static ref X509_CERTIFICATE: ServerCertificate = ServerCertificate {
-        issued_permanently: true,
-        certificate: CertificateType::X509(X509CertificateChain {
-            certificate_array: vec![Vec::from(CERT_1_BUFFER.as_ref()), Vec::from(CERT_2_BUFFER.as_ref()),],
         }),
+        scope_list: vec![Scope(String::from("microsoft.com"))],
     };
-    pub static ref SCOPE: Scope = Scope(String::from("microsoft.com"));
-    static ref CERT_CHAIN: X509CertificateChain = X509CertificateChain {
-        certificate_array: vec![Vec::from(CERT_1_BUFFER.as_ref()), Vec::from(CERT_2_BUFFER.as_ref()),],
-    };
-}
+    req.license_header.preamble_message_size = u16::try_from(req.size()).expect("can't panic");
+    req.into()
+});
+static X509_CERTIFICATE: LazyLock<ServerCertificate> = LazyLock::new(|| ServerCertificate {
+    issued_permanently: true,
+    certificate: CertificateType::X509(X509CertificateChain {
+        certificate_array: vec![Vec::from(CERT_1_BUFFER.as_ref()), Vec::from(CERT_2_BUFFER.as_ref())],
+    }),
+});
+static SCOPE: LazyLock<Scope> = LazyLock::new(|| Scope(String::from("microsoft.com")));
+static CERT_CHAIN: LazyLock<X509CertificateChain> = LazyLock::new(|| X509CertificateChain {
+    certificate_array: vec![Vec::from(CERT_1_BUFFER.as_ref()), Vec::from(CERT_2_BUFFER.as_ref())],
+});
 
 #[test]
 fn from_buffer_correctly_parses_server_license_request() {

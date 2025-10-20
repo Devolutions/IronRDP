@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use ironrdp_pdu::rdp::client_info::{
     AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, DayOfWeek, DayOfWeekOccurrence,
     ExtendedClientInfo, ExtendedClientOptionalInfo, Month, OptionalSystemTime, PerformanceFlags, SystemTime,
@@ -81,75 +83,73 @@ pub const CLIENT_INFO_BUFFER_ANSI: [u8; 301] = [
     0x01, 0x00, 0x00, 0x00, // performance flags
 ];
 
-lazy_static::lazy_static! {
-    pub static ref CLIENT_INFO_UNICODE: ClientInfo = ClientInfo {
-        code_page: 0x0409_0409,
-        flags: ClientInfoFlags::MOUSE
-            | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
-            | ClientInfoFlags::UNICODE
-            | ClientInfoFlags::MAXIMIZE_SHELL
-            | ClientInfoFlags::COMPRESSION
-            | ClientInfoFlags::ENABLE_WINDOWS_KEY
-            | ClientInfoFlags::FORCE_ENCRYPTED_CS_PDU,
-        compression_type: CompressionType::K64,
-        credentials: Credentials {
-            username: String::from("eltons"),
-            password: String::from(""),
-            domain: Some(String::from("NTDEV"))
-        },
-        alternate_shell: String::from(""),
-        work_dir: String::from(""),
-        extra_info: ExtendedClientInfo {
-            address_family: AddressFamily::INET,
-            address: String::from("157.59.242.156"),
-            dir: String::from("C:\\depots\\w2k3_1\\termsrv\\newclient\\lib\\win32\\obj\\i386\\mstscax.dll"),
-            optional_data: ExtendedClientOptionalInfo::builder()
-                .timezone(TimezoneInfo {
-                    bias: 480,
-                    standard_name: String::from("Pacific Standard Time"),
-                    standard_date: OptionalSystemTime(Some(SystemTime {
-                        month: Month::October,
-                        day_of_week: DayOfWeek::Sunday,
-                        day: DayOfWeekOccurrence::Last,
-                        hour: 2,
-                        minute: 0,
-                        second: 0,
-                        milliseconds: 0,
-                    })),
-                    standard_bias: 0,
-                    daylight_name: String::from("Pacific Daylight Time"),
-                    daylight_date: OptionalSystemTime(Some(SystemTime {
-                        month: Month::April,
-                        day_of_week: DayOfWeek::Sunday,
-                        day: DayOfWeekOccurrence::First,
-                        hour: 2,
-                        minute: 0,
-                        second: 0,
-                        milliseconds: 0,
-                    })),
-                    daylight_bias: -60,
-                })
-                .session_id(0)
-                .performance_flags(PerformanceFlags::DISABLE_WALLPAPER)
-                .build(),
-        },
-    };
+pub static CLIENT_INFO_UNICODE: LazyLock<ClientInfo> = LazyLock::new(|| ClientInfo {
+    code_page: 0x0409_0409,
+    flags: ClientInfoFlags::MOUSE
+        | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
+        | ClientInfoFlags::UNICODE
+        | ClientInfoFlags::MAXIMIZE_SHELL
+        | ClientInfoFlags::COMPRESSION
+        | ClientInfoFlags::ENABLE_WINDOWS_KEY
+        | ClientInfoFlags::FORCE_ENCRYPTED_CS_PDU,
+    compression_type: CompressionType::K64,
+    credentials: Credentials {
+        username: String::from("eltons"),
+        password: String::from(""),
+        domain: Some(String::from("NTDEV")),
+    },
+    alternate_shell: String::from(""),
+    work_dir: String::from(""),
+    extra_info: ExtendedClientInfo {
+        address_family: AddressFamily::INET,
+        address: String::from("157.59.242.156"),
+        dir: String::from("C:\\depots\\w2k3_1\\termsrv\\newclient\\lib\\win32\\obj\\i386\\mstscax.dll"),
+        optional_data: ExtendedClientOptionalInfo::builder()
+            .timezone(TimezoneInfo {
+                bias: 480,
+                standard_name: String::from("Pacific Standard Time"),
+                standard_date: OptionalSystemTime(Some(SystemTime {
+                    month: Month::October,
+                    day_of_week: DayOfWeek::Sunday,
+                    day: DayOfWeekOccurrence::Last,
+                    hour: 2,
+                    minute: 0,
+                    second: 0,
+                    milliseconds: 0,
+                })),
+                standard_bias: 0,
+                daylight_name: String::from("Pacific Daylight Time"),
+                daylight_date: OptionalSystemTime(Some(SystemTime {
+                    month: Month::April,
+                    day_of_week: DayOfWeek::Sunday,
+                    day: DayOfWeekOccurrence::First,
+                    hour: 2,
+                    minute: 0,
+                    second: 0,
+                    milliseconds: 0,
+                })),
+                daylight_bias: -60,
+            })
+            .session_id(0)
+            .performance_flags(PerformanceFlags::DISABLE_WALLPAPER)
+            .build(),
+    },
+});
 
-    pub static ref CLIENT_INFO_ANSI: ClientInfo = {
-        let mut client_info = CLIENT_INFO_UNICODE.clone();
-        client_info.flags -= ClientInfoFlags::UNICODE;
-        client_info
-    };
+pub static CLIENT_INFO_ANSI: LazyLock<ClientInfo> = LazyLock::new(|| {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    client_info.flags -= ClientInfoFlags::UNICODE;
+    client_info
+});
 
-    pub static ref CLIENT_INFO_UNICODE_WITHOUT_OPTIONAL_FIELDS: ClientInfo = {
-        let mut client_info = CLIENT_INFO_UNICODE.clone();
-        client_info.extra_info.optional_data = ExtendedClientOptionalInfo::default();
-        client_info
-    };
+pub static CLIENT_INFO_UNICODE_WITHOUT_OPTIONAL_FIELDS: LazyLock<ClientInfo> = LazyLock::new(|| {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    client_info.extra_info.optional_data = ExtendedClientOptionalInfo::default();
+    client_info
+});
 
-    pub static ref CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS: Vec<u8> = {
-        let mut buffer = CLIENT_INFO_BUFFER_UNICODE.to_vec();
-        buffer.truncate(CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS_LEN);
-        buffer
-    };
-}
+pub static CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    let mut buffer = CLIENT_INFO_BUFFER_UNICODE.to_vec();
+    buffer.truncate(CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS_LEN);
+    buffer
+});

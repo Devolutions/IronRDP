@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -24,42 +25,40 @@ const ORDER_BUFFER: [u8; 84] = [
     0x00, 0x00, // pad2octetsE
 ];
 
-lazy_static! {
-    pub static ref ORDER: Order = Order {
-        order_flags: OrderFlags::COLOR_INDEX_SUPPORT | OrderFlags::NEGOTIATE_ORDER_SUPPORT,
-        order_support: {
-            let mut array = [0u8; 32];
+static ORDER: LazyLock<Order> = LazyLock::new(|| Order {
+    order_flags: OrderFlags::COLOR_INDEX_SUPPORT | OrderFlags::NEGOTIATE_ORDER_SUPPORT,
+    order_support: {
+        let mut array = [0u8; 32];
 
-            array[usize::from(OrderSupportIndex::DstBlt.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::PatBlt.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::ScrBlt.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::MemBlt.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::Mem3Blt.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::DrawnInEGrid.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::LineTo.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::MultiDrawnInEGrid.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::SaveBitmap.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::MultiDstBlt.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::MultiPatBlt.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::MultiScrBlt.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::MultiOpaqueRect.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::Fast.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::PolygonSC.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::PolygonCB.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::Polyline.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::FastGlyph.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::EllipseSC.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::EllipseCB.as_u8())] = 1;
-            array[usize::from(OrderSupportIndex::Index.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::DstBlt.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::PatBlt.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::ScrBlt.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::MemBlt.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::Mem3Blt.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::DrawnInEGrid.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::LineTo.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::MultiDrawnInEGrid.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::SaveBitmap.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::MultiDstBlt.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::MultiPatBlt.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::MultiScrBlt.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::MultiOpaqueRect.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::Fast.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::PolygonSC.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::PolygonCB.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::Polyline.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::FastGlyph.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::EllipseSC.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::EllipseCB.as_u8())] = 1;
+        array[usize::from(OrderSupportIndex::Index.as_u8())] = 1;
 
-            array
-        },
+        array
+    },
 
-        order_support_ex_flags: OrderSupportExFlags::CACHE_BITMAP_REV3_SUPPORT,
-        desktop_save_size: 230_400,
-        text_ansi_code_page: 0,
-    };
-}
+    order_support_ex_flags: OrderSupportExFlags::CACHE_BITMAP_REV3_SUPPORT,
+    desktop_save_size: 230_400,
+    text_ansi_code_page: 0,
+});
 
 #[test]
 fn from_buffer_correctly_parses_order_capset() {
