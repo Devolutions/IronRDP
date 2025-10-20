@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use ironrdp_pdu::codecs::rfx::*;
 use ironrdp_pdu::decode;
 use ironrdp_testsuite_core::encode_decode_test;
@@ -252,12 +254,14 @@ const FRAME_BEGIN_PDU: Block<'_> = Block::CodecChannel(CodecChannel::FrameBegin(
 
 const FRAME_END_PDU: Block<'_> = Block::CodecChannel(CodecChannel::FrameEnd(FrameEndPdu));
 
-lazy_static::lazy_static! {
-    static ref CHANNELS_PDU: Block<'static> = Block::Channels(ChannelsPdu(vec![
+static CHANNELS_PDU: LazyLock<Block<'static>> = LazyLock::new(|| {
+    Block::Channels(ChannelsPdu(vec![
         RfxChannel { width: 64, height: 64 },
-        RfxChannel { width: 32, height: 32 }
-    ]));
-    static ref REGION_PDU: Block<'static> = Block::CodecChannel(CodecChannel::Region(RegionPdu {
+        RfxChannel { width: 32, height: 32 },
+    ]))
+});
+static REGION_PDU: LazyLock<Block<'static>> = LazyLock::new(|| {
+    Block::CodecChannel(CodecChannel::Region(RegionPdu {
         rectangles: vec![
             RfxRectangle {
                 x: 0,
@@ -271,9 +275,11 @@ lazy_static::lazy_static! {
                 width: 0xff,
                 height: 0xff,
             },
-        ]
-    }));
-    static ref TILESET_PDU: Block<'static> = Block::CodecChannel(CodecChannel::TileSet(TileSetPdu {
+        ],
+    }))
+});
+static TILESET_PDU: LazyLock<Block<'static>> = LazyLock::new(|| {
+    Block::CodecChannel(CodecChannel::TileSet(TileSetPdu {
         entropy_algorithm: EntropyAlgorithm::Rlgr3,
         quants: vec![
             Quant {
@@ -316,8 +322,8 @@ lazy_static::lazy_static! {
                 cr_data: &TILE2_CR_DATA,
             },
         ],
-    }));
-}
+    }))
+});
 
 #[test]
 fn from_buffer_for_block_header_returns_error_on_zero_data_length() {

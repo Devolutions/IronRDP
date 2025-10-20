@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -19,28 +20,25 @@ const BITMAP_BUFFER: [u8; 24] = [
     0x00, 0x00, // pad2octetsB
 ];
 
-lazy_static! {
-    pub static ref BITMAP: Bitmap = Bitmap {
-        pref_bits_per_pix: 24,
-        desktop_width: 1280,
-        desktop_height: 1024,
-        desktop_resize_flag: true,
-        drawing_flags: BitmapDrawingFlags::ALLOW_SKIP_ALPHA,
-    };
-}
+static BITMAP: LazyLock<Bitmap> = LazyLock::new(|| Bitmap {
+    pref_bits_per_pix: 24,
+    desktop_width: 1280,
+    desktop_height: 1024,
+    desktop_resize_flag: true,
+    drawing_flags: BitmapDrawingFlags::ALLOW_SKIP_ALPHA,
+});
 
 #[test]
 fn from_buffer_correctly_parses_bitmap_capset() {
     let buffer = BITMAP_BUFFER.as_ref();
 
-    assert_eq!(*BITMAP, decode(buffer).unwrap());
+    let bitmap = LazyLock::force(&BITMAP);
+    assert_eq!(bitmap, &decode(buffer).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_bitmap_capset() {
-    let capset = BITMAP.clone();
-
-    let buffer = encode_vec(&capset).unwrap();
+    let buffer = encode_vec(LazyLock::force(&BITMAP)).unwrap();
 
     assert_eq!(buffer, BITMAP_BUFFER.as_ref());
 }

@@ -400,88 +400,86 @@ fn bands_internals_equal(first_band: &[InclusiveRectangle], second_band: &[Inclu
 
 #[cfg(test)]
 mod tests {
-    use lazy_static::lazy_static;
+    use std::sync::LazyLock;
 
     use super::*;
 
-    lazy_static! {
-        static ref REGION_FOR_RECTANGLES_INTERSECTION: Region = Region {
-            extents: InclusiveRectangle {
+    static REGION_FOR_RECTANGLES_INTERSECTION: LazyLock<Region> = LazyLock::new(|| Region {
+        extents: InclusiveRectangle {
+            left: 1,
+            top: 1,
+            right: 11,
+            bottom: 9,
+        },
+        rectangles: vec![
+            InclusiveRectangle {
                 left: 1,
                 top: 1,
+                right: 5,
+                bottom: 3,
+            },
+            InclusiveRectangle {
+                left: 7,
+                top: 1,
+                right: 8,
+                bottom: 3,
+            },
+            InclusiveRectangle {
+                left: 9,
+                top: 1,
                 right: 11,
+                bottom: 3,
+            },
+            InclusiveRectangle {
+                left: 7,
+                top: 3,
+                right: 11,
+                bottom: 4,
+            },
+            InclusiveRectangle {
+                left: 3,
+                top: 4,
+                right: 6,
+                bottom: 6,
+            },
+            InclusiveRectangle {
+                left: 7,
+                top: 4,
+                right: 11,
+                bottom: 6,
+            },
+            InclusiveRectangle {
+                left: 1,
+                top: 6,
+                right: 3,
+                bottom: 8,
+            },
+            InclusiveRectangle {
+                left: 4,
+                top: 6,
+                right: 5,
+                bottom: 8,
+            },
+            InclusiveRectangle {
+                left: 6,
+                top: 6,
+                right: 10,
+                bottom: 8,
+            },
+            InclusiveRectangle {
+                left: 4,
+                top: 8,
+                right: 5,
                 bottom: 9,
             },
-            rectangles: vec![
-                InclusiveRectangle {
-                    left: 1,
-                    top: 1,
-                    right: 5,
-                    bottom: 3,
-                },
-                InclusiveRectangle {
-                    left: 7,
-                    top: 1,
-                    right: 8,
-                    bottom: 3,
-                },
-                InclusiveRectangle {
-                    left: 9,
-                    top: 1,
-                    right: 11,
-                    bottom: 3,
-                },
-                InclusiveRectangle {
-                    left: 7,
-                    top: 3,
-                    right: 11,
-                    bottom: 4,
-                },
-                InclusiveRectangle {
-                    left: 3,
-                    top: 4,
-                    right: 6,
-                    bottom: 6,
-                },
-                InclusiveRectangle {
-                    left: 7,
-                    top: 4,
-                    right: 11,
-                    bottom: 6,
-                },
-                InclusiveRectangle {
-                    left: 1,
-                    top: 6,
-                    right: 3,
-                    bottom: 8,
-                },
-                InclusiveRectangle {
-                    left: 4,
-                    top: 6,
-                    right: 5,
-                    bottom: 8,
-                },
-                InclusiveRectangle {
-                    left: 6,
-                    top: 6,
-                    right: 10,
-                    bottom: 8,
-                },
-                InclusiveRectangle {
-                    left: 4,
-                    top: 8,
-                    right: 5,
-                    bottom: 9,
-                },
-                InclusiveRectangle {
-                    left: 6,
-                    top: 8,
-                    right: 10,
-                    bottom: 9,
-                },
-            ],
-        };
-    }
+            InclusiveRectangle {
+                left: 6,
+                top: 8,
+                right: 10,
+                bottom: 9,
+            },
+        ],
+    });
 
     #[test]
     fn union_rectangle_sets_extents_and_single_rectangle_for_empty_region() {

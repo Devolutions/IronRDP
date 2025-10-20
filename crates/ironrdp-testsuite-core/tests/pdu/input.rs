@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode_cursor, encode_vec, ReadCursor};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::mouse::PointerFlags;
@@ -9,46 +11,47 @@ const FASTPATH_INPUT_MESSAGE: [u8; 44] = [
     0x0, 0x28, 0x4,
 ];
 
-lazy_static::lazy_static! {
-    pub static ref FASTPATH_INPUT: FastPathInput = FastPathInput::new(vec![
+static FASTPATH_INPUT: LazyLock<FastPathInput> = LazyLock::new(|| {
+    FastPathInput::new(vec![
         FastPathInputEvent::MouseEvent(MousePdu {
             flags: PointerFlags::DOWN | PointerFlags::LEFT_BUTTON,
             number_of_wheel_rotation_units: 0,
             x_position: 26,
-            y_position: 1062
+            y_position: 1062,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
             flags: PointerFlags::MOVE,
             number_of_wheel_rotation_units: 0,
             x_position: 27,
-            y_position: 1062
+            y_position: 1062,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
             flags: PointerFlags::LEFT_BUTTON,
             number_of_wheel_rotation_units: 0,
             x_position: 27,
-            y_position: 1062
+            y_position: 1062,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
             flags: PointerFlags::MOVE,
             number_of_wheel_rotation_units: 0,
             x_position: 26,
-            y_position: 1063
+            y_position: 1063,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
             flags: PointerFlags::MOVE,
             number_of_wheel_rotation_units: 0,
             x_position: 25,
-            y_position: 1063
+            y_position: 1063,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
             flags: PointerFlags::MOVE,
             number_of_wheel_rotation_units: 0,
             x_position: 25,
-            y_position: 1064
-        })
-    ]).expect("can't panic");
-}
+            y_position: 1064,
+        }),
+    ])
+    .expect("can't panic")
+});
 
 #[test]
 fn from_buffer_correctly_parses_fastpath_input_message() {

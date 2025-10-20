@@ -26,7 +26,6 @@ array-concat = "0.5"
 expect-test = "1"
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-pdu.path = "../ironrdp-pdu"
-lazy_static.workspace = true # TODO: remove in favor of https://doc.rust-lang.org/std/sync/struct.OnceLock.html
 paste = "1"
 visibility = { version = "0.1", optional = true }
 

@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode_cursor, encode_vec, DecodeErrorKind};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -168,14 +169,27 @@ const BITMAP_CODECS_BUFFER: [u8; 91] = [
     0x03, // color loss level
 ];
 
-lazy_static! {
-    #[rustfmt::skip]
-    pub static ref GUID: Guid = Guid(0xca8d_1bb9, 0x000f, 0x154f, 0x58, 0x9f, 0xae, 0x2d, 0x1a, 0x87, 0xe2, 0xd6);
-    pub static ref RFX_ICAP: RfxICap = RfxICap {
-        flags: RfxICapFlags::CODEC_MODE,
-        entropy_bits: EntropyBits::Rlgr3,
-    };
-    pub static ref RFX_CAPSET: RfxCapset = RfxCapset(vec![
+static GUID: LazyLock<Guid> = LazyLock::new(|| {
+    Guid(
+        0xca8d_1bb9,
+        0x000f,
+        0x154f,
+        0x58,
+        0x9f,
+        0xae,
+        0x2d,
+        0x1a,
+        0x87,
+        0xe2,
+        0xd6,
+    )
+});
+static RFX_ICAP: LazyLock<RfxICap> = LazyLock::new(|| RfxICap {
+    flags: RfxICapFlags::CODEC_MODE,
+    entropy_bits: EntropyBits::Rlgr3,
+});
+static RFX_CAPSET: LazyLock<RfxCapset> = LazyLock::new(|| {
+    RfxCapset(vec![
         RfxICap {
             flags: RfxICapFlags::empty(),
             entropy_bits: EntropyBits::Rlgr1,
@@ -183,9 +197,11 @@ lazy_static! {
         RfxICap {
             flags: RfxICapFlags::CODEC_MODE,
             entropy_bits: EntropyBits::Rlgr3,
-        }
-    ]);
-    pub static ref RFX_CAPS: RfxCaps = RfxCaps(RfxCapset(vec![
+        },
+    ])
+});
+static RFX_CAPS: LazyLock<RfxCaps> = LazyLock::new(|| {
+    RfxCaps(RfxCapset(vec![
         RfxICap {
             flags: RfxICapFlags::empty(),
             entropy_bits: EntropyBits::Rlgr1,
@@ -193,9 +209,30 @@ lazy_static! {
         RfxICap {
             flags: RfxICapFlags::CODEC_MODE,
             entropy_bits: EntropyBits::Rlgr3,
-        }
-    ]));
-    pub static ref RFX_CLIENT_CAPS_CONTAINER: RfxClientCapsContainer = RfxClientCapsContainer {
+        },
+    ]))
+});
+static RFX_CLIENT_CAPS_CONTAINER: LazyLock<RfxClientCapsContainer> = LazyLock::new(|| RfxClientCapsContainer {
+    capture_flags: CaptureFlags::CARDP_CAPS_CAPTURE_NON_CAC,
+    caps_data: RfxCaps(RfxCapset(vec![
+        RfxICap {
+            flags: RfxICapFlags::empty(),
+            entropy_bits: EntropyBits::Rlgr1,
+        },
+        RfxICap {
+            flags: RfxICapFlags::CODEC_MODE,
+            entropy_bits: EntropyBits::Rlgr3,
+        },
+    ])),
+});
+static NSCODEC: LazyLock<NsCodec> = LazyLock::new(|| NsCodec {
+    is_dynamic_fidelity_allowed: true,
+    is_subsampling_allowed: true,
+    color_loss_level: 3,
+});
+static CODEC: LazyLock<Codec> = LazyLock::new(|| Codec {
+    id: 3,
+    property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
         capture_flags: CaptureFlags::CARDP_CAPS_CAPTURE_NON_CAC,
         caps_data: RfxCaps(RfxCapset(vec![
             RfxICap {
@@ -205,18 +242,19 @@ lazy_static! {
             RfxICap {
                 flags: RfxICapFlags::CODEC_MODE,
                 entropy_bits: EntropyBits::Rlgr3,
-            }
+            },
         ])),
-    };
-    pub static ref NSCODEC: NsCodec = NsCodec {
-        is_dynamic_fidelity_allowed: true,
-        is_subsampling_allowed: true,
-        color_loss_level: 3,
-    };
-    pub static ref CODEC: Codec = Codec {
-        id: 3,
-        property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(
-            RfxClientCapsContainer {
+    })),
+});
+static CODEC_SERVER_MODE: LazyLock<Codec> = LazyLock::new(|| Codec {
+    id: 0,
+    property: CodecProperty::ImageRemoteFx(RemoteFxContainer::ServerContainer(4)),
+});
+static BITMAP_CODECS: LazyLock<BitmapCodecs> = LazyLock::new(|| {
+    BitmapCodecs(vec![
+        Codec {
+            id: 3,
+            property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
                 capture_flags: CaptureFlags::CARDP_CAPS_CAPTURE_NON_CAC,
                 caps_data: RfxCaps(RfxCapset(vec![
                     RfxICap {
@@ -226,33 +264,9 @@ lazy_static! {
                     RfxICap {
                         flags: RfxICapFlags::CODEC_MODE,
                         entropy_bits: EntropyBits::Rlgr3,
-                    }
+                    },
                 ])),
-            }
-        )),
-    };
-    pub static ref CODEC_SERVER_MODE: Codec = Codec {
-        id: 0,
-        property: CodecProperty::ImageRemoteFx(RemoteFxContainer::ServerContainer(4)),
-    };
-    pub static ref BITMAP_CODECS: BitmapCodecs = BitmapCodecs(vec![
-        Codec {
-            id: 3,
-            property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(
-                RfxClientCapsContainer {
-                    capture_flags: CaptureFlags::CARDP_CAPS_CAPTURE_NON_CAC,
-                    caps_data: RfxCaps(RfxCapset(vec![
-                        RfxICap {
-                            flags: RfxICapFlags::empty(),
-                            entropy_bits: EntropyBits::Rlgr1,
-                        },
-                        RfxICap {
-                            flags: RfxICapFlags::CODEC_MODE,
-                            entropy_bits: EntropyBits::Rlgr3,
-                        }
-                    ])),
-                }
-            ))
+            })),
         },
         Codec {
             id: 1,
@@ -260,10 +274,10 @@ lazy_static! {
                 is_dynamic_fidelity_allowed: true,
                 is_subsampling_allowed: true,
                 color_loss_level: 3,
-            })
+            }),
         },
-    ]);
-}
+    ])
+});
 
 #[test]
 fn from_buffer_correctly_parses_guid() {

@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -35,17 +36,15 @@ const STATUS_VALID_CLIENT_BUFFER: [u8; 20] = [
     0xff, 0x03, 0x10, 0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
 ];
 
-lazy_static! {
-    pub static ref LICENSE_HEADER: LicenseHeader = LicenseHeader {
-        security_header: BasicSecurityHeader {
-            flags: BasicSecurityHeaderFlags::LICENSE_PKT,
-        },
-        preamble_message_type: PreambleType::ErrorAlert,
-        preamble_flags: PreambleFlags::empty(),
-        preamble_version: PreambleVersion::V3,
-        preamble_message_size: 0x10,
-    };
-}
+static LICENSE_HEADER: LazyLock<LicenseHeader> = LazyLock::new(|| LicenseHeader {
+    security_header: BasicSecurityHeader {
+        flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+    },
+    preamble_message_type: PreambleType::ErrorAlert,
+    preamble_flags: PreambleFlags::empty(),
+    preamble_version: PreambleVersion::V3,
+    preamble_message_size: 0x10,
+});
 
 #[test]
 fn read_blob_header_handles_wrong_type_correctly() {

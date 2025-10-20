@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::server_license::{
@@ -244,15 +245,15 @@ const NEW_LICENSE_INFORMATION_BUFFER: [u8; 2031] = [
     0xb8, 0x1b, 0xb9, 0xcd, 0xfb, 0x31, 0x00, // license info
 ];
 
-lazy_static! {
-    pub static ref NEW_LICENSE_INFORMATION: LicenseInformation = LicenseInformation {
-        version: 0x0006_0000,
-        scope: "microsoft.com".to_owned(),
-        company_name: "Microsoft Corporation".to_owned(),
-        product_id: "A02".to_owned(),
-        license_info: Vec::from(&NEW_LICENSE_INFORMATION_BUFFER[NEW_LICENSE_INFORMATION_BUFFER.len() - 0x0799..]),
-    };
-    pub static ref SERVER_UPGRADE_LICENSE: LicensePdu = ServerUpgradeLicense {
+static NEW_LICENSE_INFORMATION: LazyLock<LicenseInformation> = LazyLock::new(|| LicenseInformation {
+    version: 0x0006_0000,
+    scope: "microsoft.com".to_owned(),
+    company_name: "Microsoft Corporation".to_owned(),
+    product_id: "A02".to_owned(),
+    license_info: Vec::from(&NEW_LICENSE_INFORMATION_BUFFER[NEW_LICENSE_INFORMATION_BUFFER.len() - 0x0799..]),
+});
+static SERVER_UPGRADE_LICENSE: LazyLock<LicensePdu> = LazyLock::new(|| {
+    ServerUpgradeLicense {
         license_header: LicenseHeader {
             security_header: BasicSecurityHeader {
                 flags: BasicSecurityHeaderFlags::LICENSE_PKT,
@@ -264,12 +265,12 @@ lazy_static! {
                 .expect("buffer size is too large"),
         },
         encrypted_license_info: Vec::from(
-            &SERVER_UPGRADE_LICENSE_BUFFER[12..SERVER_UPGRADE_LICENSE_BUFFER.len() - MAC_SIZE]
+            &SERVER_UPGRADE_LICENSE_BUFFER[12..SERVER_UPGRADE_LICENSE_BUFFER.len() - MAC_SIZE],
         ),
         mac_data: Vec::from(MAC_DATA.as_ref()),
     }
-    .into();
-}
+    .into()
+});
 
 #[test]
 fn from_buffer_correctly_parses_new_license_information() {

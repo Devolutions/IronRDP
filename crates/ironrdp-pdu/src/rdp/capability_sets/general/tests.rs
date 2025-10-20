@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -17,20 +18,18 @@ const GENERAL_CAPSET_BUFFER: [u8; 20] = [
     0x00, // suppressOutputSupport
 ];
 
-lazy_static! {
-    pub static ref CAPSET_GENERAL: General = General {
-        major_platform_type: MajorPlatformType::WINDOWS,
-        minor_platform_type: MinorPlatformType::WINDOWS_NT,
-        protocol_version: PROTOCOL_VER,
-        extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED
-            | GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED
-            | GeneralExtraFlags::AUTORECONNECT_SUPPORTED
-            | GeneralExtraFlags::ENC_SALTED_CHECKSUM
-            | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR,
-        refresh_rect_support: false,
-        suppress_output_support: false,
-    };
-}
+static CAPSET_GENERAL: LazyLock<General> = LazyLock::new(|| General {
+    major_platform_type: MajorPlatformType::WINDOWS,
+    minor_platform_type: MinorPlatformType::WINDOWS_NT,
+    protocol_version: PROTOCOL_VER,
+    extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED
+        | GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED
+        | GeneralExtraFlags::AUTORECONNECT_SUPPORTED
+        | GeneralExtraFlags::ENC_SALTED_CHECKSUM
+        | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR,
+    refresh_rect_support: false,
+    suppress_output_support: false,
+});
 
 #[test]
 fn from_buffer_correctly_parses_general_capset() {

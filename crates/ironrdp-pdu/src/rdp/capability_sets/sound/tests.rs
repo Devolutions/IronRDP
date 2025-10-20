@@ -1,15 +1,14 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
 const SOUND_BUFFER: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
-lazy_static! {
-    pub static ref SOUND: Sound = Sound {
-        flags: SoundFlags::BEEPS,
-    };
-}
+static SOUND: LazyLock<Sound> = LazyLock::new(|| Sound {
+    flags: SoundFlags::BEEPS,
+});
 
 #[test]
 fn from_buffer_correctly_parses_sound_capset() {

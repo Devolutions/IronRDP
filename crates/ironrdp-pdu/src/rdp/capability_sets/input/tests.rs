@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -16,16 +17,14 @@ const INPUT_BUFFER: [u8; 84] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // imeFileName
 ];
 
-lazy_static! {
-    pub static ref INPUT: Input = Input {
-        input_flags: InputFlags::SCANCODES | InputFlags::UNICODE | InputFlags::MOUSEX,
-        keyboard_layout: 0x409,
-        keyboard_type: Some(KeyboardType::IbmEnhanced),
-        keyboard_subtype: 0,
-        keyboard_function_key: 12,
-        keyboard_ime_filename: String::new(),
-    };
-}
+static INPUT: LazyLock<Input> = LazyLock::new(|| Input {
+    input_flags: InputFlags::SCANCODES | InputFlags::UNICODE | InputFlags::MOUSEX,
+    keyboard_layout: 0x409,
+    keyboard_type: Some(KeyboardType::IbmEnhanced),
+    keyboard_subtype: 0,
+    keyboard_function_key: 12,
+    keyboard_ime_filename: String::new(),
+});
 
 #[test]
 fn from_buffer_correctly_parses_input_capset() {

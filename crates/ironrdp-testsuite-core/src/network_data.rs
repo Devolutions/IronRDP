@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_pdu::gcc::{ChannelDef, ChannelName, ChannelOptions, ClientNetworkData, ServerNetworkData};
-use lazy_static::lazy_static;
 
 pub const CLIENT_NETWORK_DATA_WITH_CHANNELS_BUFFER: [u8; 40] = [
     0x03, 0x00, 0x00, 0x00, // channels count
@@ -29,33 +30,32 @@ pub const SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID_BUFFER: [u8; 4] = [
     0x00, 0x00, // channels count
 ];
 
-lazy_static! {
-    pub static ref CLIENT_NETWORK_DATA_WITH_CHANNELS: ClientNetworkData = ClientNetworkData {
-        channels: vec![
-            ChannelDef {
-                name: ChannelName::from_utf8("rdpdr").unwrap(),
-                options: ChannelOptions::INITIALIZED | ChannelOptions::COMPRESS_RDP,
-            },
-            ChannelDef {
-                name: ChannelName::from_utf8("cliprdr").unwrap(),
-                options: ChannelOptions::INITIALIZED
-                    | ChannelOptions::COMPRESS_RDP
-                    | ChannelOptions::ENCRYPT_RDP
-                    | ChannelOptions::SHOW_PROTOCOL,
-            },
-            ChannelDef {
-                name: ChannelName::from_utf8("rdpsnd").unwrap(),
-                options: ChannelOptions::INITIALIZED | ChannelOptions::ENCRYPT_RDP,
-            },
-        ],
-    };
-    pub static ref SERVER_NETWORK_DATA_WITH_CHANNELS_ID: ServerNetworkData = ServerNetworkData {
-        io_channel: 1003,
-        channel_ids: vec![1004, 1005, 1006],
-    };
-    pub static ref CLIENT_NETWORK_DATA_WITHOUT_CHANNELS: ClientNetworkData = ClientNetworkData { channels: Vec::new() };
-    pub static ref SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID: ServerNetworkData = ServerNetworkData {
-        io_channel: 1003,
-        channel_ids: Vec::new(),
-    };
-}
+pub static CLIENT_NETWORK_DATA_WITH_CHANNELS: LazyLock<ClientNetworkData> = LazyLock::new(|| ClientNetworkData {
+    channels: vec![
+        ChannelDef {
+            name: ChannelName::from_utf8("rdpdr").unwrap(),
+            options: ChannelOptions::INITIALIZED | ChannelOptions::COMPRESS_RDP,
+        },
+        ChannelDef {
+            name: ChannelName::from_utf8("cliprdr").unwrap(),
+            options: ChannelOptions::INITIALIZED
+                | ChannelOptions::COMPRESS_RDP
+                | ChannelOptions::ENCRYPT_RDP
+                | ChannelOptions::SHOW_PROTOCOL,
+        },
+        ChannelDef {
+            name: ChannelName::from_utf8("rdpsnd").unwrap(),
+            options: ChannelOptions::INITIALIZED | ChannelOptions::ENCRYPT_RDP,
+        },
+    ],
+});
+pub static SERVER_NETWORK_DATA_WITH_CHANNELS_ID: LazyLock<ServerNetworkData> = LazyLock::new(|| ServerNetworkData {
+    io_channel: 1003,
+    channel_ids: vec![1004, 1005, 1006],
+});
+pub static CLIENT_NETWORK_DATA_WITHOUT_CHANNELS: LazyLock<ClientNetworkData> =
+    LazyLock::new(|| ClientNetworkData { channels: Vec::new() });
+pub static SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID: LazyLock<ServerNetworkData> = LazyLock::new(|| ServerNetworkData {
+    io_channel: 1003,
+    channel_ids: Vec::new(),
+});
