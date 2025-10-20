@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::server_license::{LicensePdu, BASIC_SECURITY_HEADER_SIZE};
@@ -44,37 +45,37 @@ const DATA_BUFFER: [u8; 16] = [
     0xf1, 0x59, 0x87, 0x3e, 0xc9, 0xd8, 0x98, 0xaf, 0x24, 0x02, 0xf8, 0xf3, 0x29, 0x3a, 0xf0, 0x26,
 ];
 
-lazy_static! {
-    pub(crate) static ref RESPONSE: PlatformChallengeResponseData = PlatformChallengeResponseData {
-        client_type: ClientType::Win32,
-        license_detail_level: LicenseDetailLevel::Detail,
-        challenge: Vec::from(CHALLENGE_BUFFER.as_ref()),
-    };
-    pub(crate) static ref CLIENT_HARDWARE_IDENTIFICATION: ClientHardwareIdentification = ClientHardwareIdentification {
+pub(crate) static RESPONSE: LazyLock<PlatformChallengeResponseData> = LazyLock::new(|| PlatformChallengeResponseData {
+    client_type: ClientType::Win32,
+    license_detail_level: LicenseDetailLevel::Detail,
+    challenge: Vec::from(CHALLENGE_BUFFER.as_ref()),
+});
+pub(crate) static CLIENT_HARDWARE_IDENTIFICATION: LazyLock<ClientHardwareIdentification> =
+    LazyLock::new(|| ClientHardwareIdentification {
         platform_id: HARDWARE_ID,
         data: Vec::from(DATA_BUFFER.as_ref()),
-    };
-    pub(crate) static ref CLIENT_PLATFORM_CHALLENGE_RESPONSE: LicensePdu =
-        LicensePdu::ClientPlatformChallengeResponse(ClientPlatformChallengeResponse {
-            license_header: LicenseHeader {
-                security_header: BasicSecurityHeader {
-                    flags: BasicSecurityHeaderFlags::LICENSE_PKT,
-                },
-                preamble_message_type: PreambleType::PlatformChallengeResponse,
-                preamble_flags: PreambleFlags::empty(),
-                preamble_version: PreambleVersion::V3,
-                preamble_message_size: u16::try_from(
-                    CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE
-                )
-                .expect("can't panic"),
+    });
+pub(crate) static CLIENT_PLATFORM_CHALLENGE_RESPONSE: LazyLock<LicensePdu> = LazyLock::new(|| {
+    LicensePdu::ClientPlatformChallengeResponse(ClientPlatformChallengeResponse {
+        license_header: LicenseHeader {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
             },
-            encrypted_challenge_response_data: Vec::from(&CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER[12..30]),
-            encrypted_hwid: Vec::from(&CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER[34..54]),
-            mac_data: Vec::from(
-                &CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER[CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER.len() - 16..]
-            ),
-        });
-}
+            preamble_message_type: PreambleType::PlatformChallengeResponse,
+            preamble_flags: PreambleFlags::empty(),
+            preamble_version: PreambleVersion::V3,
+            preamble_message_size: u16::try_from(
+                CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE,
+            )
+            .expect("can't panic"),
+        },
+        encrypted_challenge_response_data: Vec::from(&CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER[12..30]),
+        encrypted_hwid: Vec::from(&CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER[34..54]),
+        mac_data: Vec::from(
+            &CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER[CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER.len() - 16..],
+        ),
+    })
+});
 
 #[test]
 fn from_buffer_correctly_parses_platform_challenge_response_data() {

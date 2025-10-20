@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::server_license::{
@@ -26,8 +27,8 @@ const MAC_DATA_BUFFER: [u8; MAC_SIZE] = [
     0x38, 0x23, 0x62, 0x5d, 0x10, 0x8b, 0x93, 0xc3, 0xf1, 0xe4, 0x67, 0x1f, 0x4a, 0xb6, 0x00, 0x0a, // mac data
 ];
 
-lazy_static! {
-    pub static ref PLATFORM_CHALLENGE: LicensePdu = ServerPlatformChallenge {
+static PLATFORM_CHALLENGE: LazyLock<LicensePdu> = LazyLock::new(|| {
+    ServerPlatformChallenge {
         license_header: LicenseHeader {
             security_header: BasicSecurityHeader {
                 flags: BasicSecurityHeaderFlags::LICENSE_PKT,
@@ -41,8 +42,8 @@ lazy_static! {
         encrypted_platform_challenge: Vec::from(CHALLENGE_BUFFER.as_ref()),
         mac_data: Vec::from(MAC_DATA_BUFFER.as_ref()),
     }
-    .into();
-}
+    .into()
+});
 
 #[test]
 fn from_buffer_correctly_parses_server_platform_challenge() {

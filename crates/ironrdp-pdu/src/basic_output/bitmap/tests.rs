@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -31,31 +32,29 @@ const BITMAP_BUFFER: [u8; 114] = [
     0x55, 0xad, 0x10, 0x10, 0xa8, 0xd8, 0x60, 0x12,
 ];
 
-lazy_static! {
-    static ref BITMAP: BitmapUpdateData<'static> = BitmapUpdateData {
-        rectangles: {
-            let vec = vec![BitmapData {
-                rectangle: InclusiveRectangle {
-                    left: 1792,
-                    top: 1024,
-                    right: 1855,
-                    bottom: 1079,
-                },
-                width: 64,
-                height: 56,
-                bits_per_pixel: 16,
-                compression_flags: Compression::BITMAP_COMPRESSION,
-                compressed_data_header: Some(CompressedDataHeader {
-                    main_body_size: 80,
-                    scan_width: 28,
-                    uncompressed_size: 4,
-                }),
-                bitmap_data: &BITMAP_BUFFER[30..],
-            }];
-            vec
-        }
-    };
-}
+static BITMAP: LazyLock<BitmapUpdateData<'static>> = LazyLock::new(|| BitmapUpdateData {
+    rectangles: {
+        let vec = vec![BitmapData {
+            rectangle: InclusiveRectangle {
+                left: 1792,
+                top: 1024,
+                right: 1855,
+                bottom: 1079,
+            },
+            width: 64,
+            height: 56,
+            bits_per_pixel: 16,
+            compression_flags: Compression::BITMAP_COMPRESSION,
+            compressed_data_header: Some(CompressedDataHeader {
+                main_body_size: 80,
+                scan_width: 28,
+                uncompressed_size: 4,
+            }),
+            bitmap_data: &BITMAP_BUFFER[30..],
+        }];
+        vec
+    },
+});
 
 #[test]
 fn from_buffer_bitmap_data_parsses_correctly() {

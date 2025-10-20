@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::LazyLock;
 
 use array_concat::{concat_arrays, concat_arrays_size};
 use ironrdp_pdu::mcs::{
@@ -6,7 +7,6 @@ use ironrdp_pdu::mcs::{
     DisconnectProviderUltimatum, DisconnectReason, DomainParameters, ErectDomainPdu, OwnedSendDataIndication,
     OwnedSendDataRequest, SendDataIndication, SendDataRequest,
 };
-use lazy_static::lazy_static;
 
 use crate::conference_create::{
     CONFERENCE_CREATE_REQUEST, CONFERENCE_CREATE_REQUEST_BUFFER, CONFERENCE_CREATE_RESPONSE,
@@ -105,55 +105,53 @@ pub const CONNECT_RESPONSE_BUFFER: [u8; concat_arrays_size!(
     CONFERENCE_CREATE_RESPONSE_BUFFER
 )] = concat_arrays!(CONNECT_RESPONSE_PREFIX_BUFFER, CONFERENCE_CREATE_RESPONSE_BUFFER);
 
-lazy_static! {
-    pub static ref CONNECT_INITIAL: ConnectInitial = ConnectInitial {
-        calling_domain_selector: vec![0x01],
-        called_domain_selector: vec![0x01],
-        upward_flag: true,
-        target_parameters: DomainParameters {
-            max_channel_ids: 34,
-            max_user_ids: 2,
-            max_token_ids: 0,
-            num_priorities: 1,
-            min_throughput: 0,
-            max_height: 1,
-            max_mcs_pdu_size: 65535,
-            protocol_version: 2,
-        },
-        min_parameters: DomainParameters {
-            max_channel_ids: 1,
-            max_user_ids: 1,
-            max_token_ids: 1,
-            num_priorities: 1,
-            min_throughput: 0,
-            max_height: 1,
-            max_mcs_pdu_size: 1056,
-            protocol_version: 2,
-        },
-        max_parameters: DomainParameters {
-            max_channel_ids: 65535,
-            max_user_ids: 64535,
-            max_token_ids: 65535,
-            num_priorities: 1,
-            min_throughput: 0,
-            max_height: 1,
-            max_mcs_pdu_size: 65535,
-            protocol_version: 2,
-        },
-        conference_create_request: CONFERENCE_CREATE_REQUEST.clone(),
-    };
-    pub static ref CONNECT_RESPONSE: ConnectResponse = ConnectResponse {
-        called_connect_id: 0,
-        domain_parameters: DomainParameters {
-            max_channel_ids: 34,
-            max_user_ids: 3,
-            max_token_ids: 0,
-            num_priorities: 1,
-            min_throughput: 0,
-            max_height: 1,
-            max_mcs_pdu_size: 65528,
-            protocol_version: 2,
-        },
-        conference_create_response: CONFERENCE_CREATE_RESPONSE.clone(),
-    };
-}
+pub static CONNECT_INITIAL: LazyLock<ConnectInitial> = LazyLock::new(|| ConnectInitial {
+    calling_domain_selector: vec![0x01],
+    called_domain_selector: vec![0x01],
+    upward_flag: true,
+    target_parameters: DomainParameters {
+        max_channel_ids: 34,
+        max_user_ids: 2,
+        max_token_ids: 0,
+        num_priorities: 1,
+        min_throughput: 0,
+        max_height: 1,
+        max_mcs_pdu_size: 65535,
+        protocol_version: 2,
+    },
+    min_parameters: DomainParameters {
+        max_channel_ids: 1,
+        max_user_ids: 1,
+        max_token_ids: 1,
+        num_priorities: 1,
+        min_throughput: 0,
+        max_height: 1,
+        max_mcs_pdu_size: 1056,
+        protocol_version: 2,
+    },
+    max_parameters: DomainParameters {
+        max_channel_ids: 65535,
+        max_user_ids: 64535,
+        max_token_ids: 65535,
+        num_priorities: 1,
+        min_throughput: 0,
+        max_height: 1,
+        max_mcs_pdu_size: 65535,
+        protocol_version: 2,
+    },
+    conference_create_request: CONFERENCE_CREATE_REQUEST.clone(),
+});
+pub static CONNECT_RESPONSE: LazyLock<ConnectResponse> = LazyLock::new(|| ConnectResponse {
+    called_connect_id: 0,
+    domain_parameters: DomainParameters {
+        max_channel_ids: 34,
+        max_user_ids: 3,
+        max_token_ids: 0,
+        num_priorities: 1,
+        min_throughput: 0,
+        max_height: 1,
+        max_mcs_pdu_size: 65528,
+        protocol_version: 2,
+    },
+    conference_create_response: CONFERENCE_CREATE_RESPONSE.clone(),
+});

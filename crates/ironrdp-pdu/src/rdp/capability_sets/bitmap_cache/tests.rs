@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -35,58 +36,56 @@ const BITMAP_CACHE_REV2_BUFFER: [u8; 36] = [
 
 const CELL_INFO_BUFFER: [u8; 4] = [0xfb, 0x09, 0x00, 0x80];
 
-lazy_static! {
-    pub static ref BITMAP_CACHE: BitmapCache = BitmapCache {
-        caches: [
-            CacheEntry {
-                entries: 200,
-                max_cell_size: 512
-            },
-            CacheEntry {
-                entries: 600,
-                max_cell_size: 2048
-            },
-            CacheEntry {
-                entries: 1000,
-                max_cell_size: 8192
-            }
-        ],
-    };
-    pub static ref BITMAP_CACHE_REV2: BitmapCacheRev2 = BitmapCacheRev2 {
-        cache_flags: CacheFlags::PERSISTENT_KEYS_EXPECTED_FLAG | CacheFlags::ALLOW_CACHE_WAITING_LIST_FLAG,
-        num_cell_caches: 3,
-        cache_cell_info: [
-            CellInfo {
-                num_entries: 120,
-                is_cache_persistent: false
-            },
-            CellInfo {
-                num_entries: 120,
-                is_cache_persistent: false
-            },
-            CellInfo {
-                num_entries: 2555,
-                is_cache_persistent: true
-            },
-            CellInfo {
-                num_entries: 0,
-                is_cache_persistent: false
-            },
-            CellInfo {
-                num_entries: 0,
-                is_cache_persistent: false
-            }
-        ],
-    };
-    pub static ref CELL_INFO: CellInfo = CellInfo {
-        num_entries: 2555,
-        is_cache_persistent: true
-    };
-    pub static ref CACHE_ENTRY: CacheEntry = CacheEntry {
-        entries: 0x64,
-        max_cell_size: 0x32,
-    };
-}
+static BITMAP_CACHE: LazyLock<BitmapCache> = LazyLock::new(|| BitmapCache {
+    caches: [
+        CacheEntry {
+            entries: 200,
+            max_cell_size: 512,
+        },
+        CacheEntry {
+            entries: 600,
+            max_cell_size: 2048,
+        },
+        CacheEntry {
+            entries: 1000,
+            max_cell_size: 8192,
+        },
+    ],
+});
+static BITMAP_CACHE_REV2: LazyLock<BitmapCacheRev2> = LazyLock::new(|| BitmapCacheRev2 {
+    cache_flags: CacheFlags::PERSISTENT_KEYS_EXPECTED_FLAG | CacheFlags::ALLOW_CACHE_WAITING_LIST_FLAG,
+    num_cell_caches: 3,
+    cache_cell_info: [
+        CellInfo {
+            num_entries: 120,
+            is_cache_persistent: false,
+        },
+        CellInfo {
+            num_entries: 120,
+            is_cache_persistent: false,
+        },
+        CellInfo {
+            num_entries: 2555,
+            is_cache_persistent: true,
+        },
+        CellInfo {
+            num_entries: 0,
+            is_cache_persistent: false,
+        },
+        CellInfo {
+            num_entries: 0,
+            is_cache_persistent: false,
+        },
+    ],
+});
+static CELL_INFO: LazyLock<CellInfo> = LazyLock::new(|| CellInfo {
+    num_entries: 2555,
+    is_cache_persistent: true,
+});
+static CACHE_ENTRY: LazyLock<CacheEntry> = LazyLock::new(|| CacheEntry {
+    entries: 0x64,
+    max_cell_size: 0x32,
+});
 
 #[test]
 fn from_buffer_correctly_parses_bitmap_cache_capset() {
@@ -97,9 +96,7 @@ fn from_buffer_correctly_parses_bitmap_cache_capset() {
 
 #[test]
 fn to_buffer_correctly_serializes_bitmap_cache_capset() {
-    let bitmap_cache = BITMAP_CACHE.clone();
-
-    let buffer = encode_vec(&bitmap_cache).unwrap();
+    let buffer = encode_vec(&*BITMAP_CACHE).unwrap();
 
     assert_eq!(buffer, BITMAP_CACHE_BUFFER.as_ref());
 }
@@ -118,9 +115,7 @@ fn from_buffer_correctly_parses_bitmap_cache_rev2_capset() {
 
 #[test]
 fn to_buffer_correctly_serializes_bitmap_cache_rev2_capset() {
-    let bitmap_cache = BITMAP_CACHE_REV2.clone();
-
-    let buffer = encode_vec(&bitmap_cache).unwrap();
+    let buffer = encode_vec(&*BITMAP_CACHE_REV2).unwrap();
 
     assert_eq!(buffer, BITMAP_CACHE_REV2_BUFFER.as_ref());
 }

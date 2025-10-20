@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -75,8 +76,8 @@ const FRAME_MARKER_PDU: SurfaceCommand<'_> = SurfaceCommand::FrameMarker(FrameMa
     frame_id: Some(5),
 });
 
-lazy_static! {
-    static ref SURFACE_BITS_PDU: SurfaceCommand<'static> = SurfaceCommand::StreamSurfaceBits(SurfaceBitsPdu {
+static SURFACE_BITS_PDU: LazyLock<SurfaceCommand<'static>> = LazyLock::new(|| {
+    SurfaceCommand::StreamSurfaceBits(SurfaceBitsPdu {
         destination: ExclusiveRectangle {
             left: 0,
             top: 0,
@@ -91,8 +92,8 @@ lazy_static! {
             header: None,
             data: &SURFACE_BITS_BUFFER[22..],
         },
-    });
-}
+    })
+});
 
 #[test]
 fn from_buffer_correctly_parses_surface_command_frame_marker() {

@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::server_license::LicensePdu;
@@ -10,26 +11,24 @@ const LICENSE_MESSAGE_BUFFER: [u8; 12] = [
     0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // message
 ];
 
-lazy_static! {
-    pub static ref LICENSING_ERROR_MESSAGE: LicensePdu = {
-        let mut pdu = LicensingErrorMessage {
-            license_header: LicenseHeader {
-                security_header: BasicSecurityHeader {
-                    flags: BasicSecurityHeaderFlags::LICENSE_PKT,
-                },
-                preamble_message_type: PreambleType::ErrorAlert,
-                preamble_flags: PreambleFlags::empty(),
-                preamble_version: PreambleVersion::V3,
-                preamble_message_size: 0,
+static LICENSING_ERROR_MESSAGE: LazyLock<LicensePdu> = LazyLock::new(|| {
+    let mut pdu = LicensingErrorMessage {
+        license_header: LicenseHeader {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
             },
-            error_code: LicenseErrorCode::StatusValidClient,
-            state_transition: LicensingStateTransition::NoTransition,
-            error_info: Vec::new(),
-        };
-        pdu.license_header.preamble_message_size = u16::try_from(pdu.size()).expect("can't panic");
-        pdu.into()
+            preamble_message_type: PreambleType::ErrorAlert,
+            preamble_flags: PreambleFlags::empty(),
+            preamble_version: PreambleVersion::V3,
+            preamble_message_size: 0,
+        },
+        error_code: LicenseErrorCode::StatusValidClient,
+        state_transition: LicensingStateTransition::NoTransition,
+        error_info: Vec::new(),
     };
-}
+    pdu.license_header.preamble_message_size = u16::try_from(pdu.size()).expect("can't panic");
+    pdu.into()
+});
 
 #[test]
 fn from_buffer_correctly_parses_licensing_error_message() {

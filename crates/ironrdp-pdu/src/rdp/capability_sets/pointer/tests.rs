@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -9,12 +10,10 @@ const POINTER_BUFFER: [u8; 6] = [
     0x15, 0x00, // pointerCacheSize
 ];
 
-lazy_static! {
-    pub static ref POINTER: Pointer = Pointer {
-        color_pointer_cache_size: 20,
-        pointer_cache_size: 21,
-    };
-}
+static POINTER: LazyLock<Pointer> = LazyLock::new(|| Pointer {
+    color_pointer_cache_size: 20,
+    pointer_cache_size: 21,
+});
 
 #[test]
 fn from_buffer_correctly_parses_pointer_capset() {

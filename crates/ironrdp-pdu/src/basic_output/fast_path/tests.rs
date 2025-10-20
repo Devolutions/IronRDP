@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -29,15 +30,13 @@ const FAST_PATH_HEADER_WITH_FORCED_LONG_LEN_PDU: FastPathHeader = FastPathHeader
     forced_long_length: true,
 };
 
-lazy_static! {
-    static ref FAST_PATH_UPDATE_PDU: FastPathUpdatePdu<'static> = FastPathUpdatePdu {
-        fragmentation: Fragmentation::Single,
-        update_code: UpdateCode::SurfaceCommands,
-        compression_flags: None,
-        compression_type: None,
-        data: &FAST_PATH_UPDATE_PDU_BUFFER[3..],
-    };
-}
+static FAST_PATH_UPDATE_PDU: LazyLock<FastPathUpdatePdu<'static>> = LazyLock::new(|| FastPathUpdatePdu {
+    fragmentation: Fragmentation::Single,
+    update_code: UpdateCode::SurfaceCommands,
+    compression_flags: None,
+    compression_type: None,
+    data: &FAST_PATH_UPDATE_PDU_BUFFER[3..],
+});
 
 #[test]
 fn from_buffer_correctly_parses_fast_path_header_with_short_length() {

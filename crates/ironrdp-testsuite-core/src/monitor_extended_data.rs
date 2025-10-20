@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_pdu::gcc::{ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorOrientation};
-use lazy_static::lazy_static;
 
 pub const MONITOR_DATA_WITHOUT_MONITORS_BUFFER: [u8; 12] =
     [0x00, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -10,11 +11,12 @@ pub const MONITOR_DATA_WITH_MONITORS_BUFFER: [u8; 52] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-lazy_static! {
-    pub static ref MONITOR_DATA_WITHOUT_MONITORS: ClientMonitorExtendedData = ClientMonitorExtendedData {
-        extended_monitors_info: Vec::new()
-    };
-    pub static ref MONITOR_DATA_WITH_MONITORS: ClientMonitorExtendedData = ClientMonitorExtendedData {
+pub static MONITOR_DATA_WITHOUT_MONITORS: LazyLock<ClientMonitorExtendedData> =
+    LazyLock::new(|| ClientMonitorExtendedData {
+        extended_monitors_info: Vec::new(),
+    });
+pub static MONITOR_DATA_WITH_MONITORS: LazyLock<ClientMonitorExtendedData> =
+    LazyLock::new(|| ClientMonitorExtendedData {
         extended_monitors_info: vec![
             ExtendedMonitorInfo {
                 physical_width: 0,
@@ -29,7 +31,6 @@ lazy_static! {
                 orientation: MonitorOrientation::Landscape,
                 desktop_scale_factor: 0,
                 device_scale_factor: 0,
-            }
-        ]
-    };
-}
+            },
+        ],
+    });

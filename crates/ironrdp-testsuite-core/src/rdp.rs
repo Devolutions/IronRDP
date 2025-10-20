@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use array_concat::{concat_arrays, concat_arrays_size};
 use ironrdp_pdu::gcc;
 use ironrdp_pdu::rdp::finalization_messages::{
@@ -12,7 +14,6 @@ use ironrdp_pdu::rdp::server_license::{
     PreambleType, PreambleVersion,
 };
 use ironrdp_pdu::rdp::{client_info, ClientInfoPdu};
-use lazy_static::lazy_static;
 
 use crate::capsets::{
     CLIENT_DEMAND_ACTIVE, CLIENT_DEMAND_ACTIVE_BUFFER, SERVER_DEMAND_ACTIVE, SERVER_DEMAND_ACTIVE_BUFFER,
@@ -158,145 +159,143 @@ pub const SERVER_LICENSE_BUFFER: [u8; 20] = [
     0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
 ];
 
-lazy_static! {
-    pub static ref CLIENT_INFO_PDU: ClientInfoPdu = ClientInfoPdu {
-        security_header: BasicSecurityHeader {
-            flags: BasicSecurityHeaderFlags::INFO_PKT,
-        },
-        client_info: CLIENT_INFO_UNICODE.clone(),
-    };
-    pub static ref SERVER_LICENSE_PDU: LicensePdu = {
-        let mut pdu = LicensingErrorMessage {
-            license_header: LicenseHeader {
-                security_header: BasicSecurityHeader {
-                    flags: BasicSecurityHeaderFlags::LICENSE_PKT,
-                },
-                preamble_message_type: PreambleType::ErrorAlert,
-                preamble_flags: PreambleFlags::empty(),
-                preamble_version: PreambleVersion::V3,
-                preamble_message_size: 0,
+pub static CLIENT_INFO_PDU: LazyLock<ClientInfoPdu> = LazyLock::new(|| ClientInfoPdu {
+    security_header: BasicSecurityHeader {
+        flags: BasicSecurityHeaderFlags::INFO_PKT,
+    },
+    client_info: CLIENT_INFO_UNICODE.clone(),
+});
+pub static SERVER_LICENSE_PDU: LazyLock<LicensePdu> = LazyLock::new(|| {
+    let mut pdu = LicensingErrorMessage {
+        license_header: LicenseHeader {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
             },
-            error_code: LicenseErrorCode::StatusValidClient,
-            state_transition: LicensingStateTransition::NoTransition,
-            error_info: Vec::new(),
-        };
-        pdu.license_header.preamble_message_size = u16::try_from(pdu.size()).unwrap();
-        pdu.into()
+            preamble_message_type: PreambleType::ErrorAlert,
+            preamble_flags: PreambleFlags::empty(),
+            preamble_version: PreambleVersion::V3,
+            preamble_message_size: 0,
+        },
+        error_code: LicenseErrorCode::StatusValidClient,
+        state_transition: LicensingStateTransition::NoTransition,
+        error_info: Vec::new(),
     };
-    pub static ref SERVER_DEMAND_ACTIVE_PDU: ShareControlHeader = ShareControlHeader {
-        share_control_pdu: ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()),
-        pdu_source: 1002,
-        share_id: 66_538,
-    };
-    pub static ref CLIENT_DEMAND_ACTIVE_PDU: ShareControlHeader = ShareControlHeader {
-        share_control_pdu: ShareControlPdu::ClientConfirmActive(CLIENT_DEMAND_ACTIVE.clone()),
-        pdu_source: 1007,
-        share_id: 66_538,
-    };
-    pub static ref CLIENT_SYNCHRONIZE: ShareControlHeader = ShareControlHeader {
-        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
-            share_data_pdu: ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0x03ea }),
-            stream_priority: StreamPriority::Low,
-            compression_flags: CompressionFlags::empty(),
-            compression_type: client_info::CompressionType::K8,
+    pdu.license_header.preamble_message_size = u16::try_from(pdu.size()).unwrap();
+    pdu.into()
+});
+pub static SERVER_DEMAND_ACTIVE_PDU: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {
+    share_control_pdu: ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()),
+    pdu_source: 1002,
+    share_id: 66_538,
+});
+pub static CLIENT_DEMAND_ACTIVE_PDU: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {
+    share_control_pdu: ShareControlPdu::ClientConfirmActive(CLIENT_DEMAND_ACTIVE.clone()),
+    pdu_source: 1007,
+    share_id: 66_538,
+});
+pub static CLIENT_SYNCHRONIZE: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {
+    share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0x03ea }),
+        stream_priority: StreamPriority::Low,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: client_info::CompressionType::K8,
+    }),
+    pdu_source: 1007,
+    share_id: 66_538,
+});
+pub static CONTROL_COOPERATE: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {
+    share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::Control(ControlPdu {
+            action: ControlAction::Cooperate,
+            grant_id: 0,
+            control_id: 0,
         }),
-        pdu_source: 1007,
-        share_id: 66_538,
-    };
-    pub static ref CONTROL_COOPERATE: ShareControlHeader = ShareControlHeader {
-        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
-            share_data_pdu: ShareDataPdu::Control(ControlPdu {
-                action: ControlAction::Cooperate,
-                grant_id: 0,
-                control_id: 0,
-            }),
-            stream_priority: StreamPriority::Low,
-            compression_flags: CompressionFlags::empty(),
-            compression_type: client_info::CompressionType::K8,
+        stream_priority: StreamPriority::Low,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: client_info::CompressionType::K8,
+    }),
+    pdu_source: 1007,
+    share_id: 66_538,
+});
+pub static CONTROL_REQUEST_CONTROL: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {
+    share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::Control(ControlPdu {
+            action: ControlAction::RequestControl,
+            grant_id: 0,
+            control_id: 0,
         }),
-        pdu_source: 1007,
-        share_id: 66_538,
-    };
-    pub static ref CONTROL_REQUEST_CONTROL: ShareControlHeader = ShareControlHeader {
-        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
-            share_data_pdu: ShareDataPdu::Control(ControlPdu {
-                action: ControlAction::RequestControl,
-                grant_id: 0,
-                control_id: 0,
-            }),
-            stream_priority: StreamPriority::Low,
-            compression_flags: CompressionFlags::empty(),
-            compression_type: client_info::CompressionType::K8,
+        stream_priority: StreamPriority::Low,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: client_info::CompressionType::K8,
+    }),
+    pdu_source: 1007,
+    share_id: 66_538,
+});
+pub static SERVER_GRANTED_CONTROL: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {
+    share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::Control(ControlPdu {
+            action: ControlAction::GrantedControl,
+            grant_id: 1007,
+            control_id: 1002,
         }),
-        pdu_source: 1007,
-        share_id: 66_538,
-    };
-    pub static ref SERVER_GRANTED_CONTROL: ShareControlHeader = ShareControlHeader {
-        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
-            share_data_pdu: ShareDataPdu::Control(ControlPdu {
-                action: ControlAction::GrantedControl,
-                grant_id: 1007,
-                control_id: 1002,
-            }),
-            stream_priority: StreamPriority::Medium,
-            compression_flags: CompressionFlags::empty(),
-            compression_type: client_info::CompressionType::K8,
+        stream_priority: StreamPriority::Medium,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: client_info::CompressionType::K8,
+    }),
+    pdu_source: 1002,
+    share_id: 66_538,
+});
+pub static CLIENT_FONT_LIST: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {
+    share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::FontList(FontPdu {
+            number: 0,
+            total_number: 0,
+            flags: SequenceFlags::FIRST | SequenceFlags::LAST,
+            entry_size: 50,
         }),
-        pdu_source: 1002,
-        share_id: 66_538,
-    };
-    pub static ref CLIENT_FONT_LIST: ShareControlHeader = ShareControlHeader {
-        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
-            share_data_pdu: ShareDataPdu::FontList(FontPdu {
-                number: 0,
-                total_number: 0,
-                flags: SequenceFlags::FIRST | SequenceFlags::LAST,
-                entry_size: 50,
-            }),
-            stream_priority: StreamPriority::Low,
-            compression_flags: CompressionFlags::empty(),
-            compression_type: client_info::CompressionType::K8,
+        stream_priority: StreamPriority::Low,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: client_info::CompressionType::K8,
+    }),
+    pdu_source: 1007,
+    share_id: 66_538,
+});
+pub static SERVER_FONT_MAP: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {
+    share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::FontMap(FontPdu {
+            number: 0,
+            total_number: 0,
+            flags: SequenceFlags::FIRST | SequenceFlags::LAST,
+            entry_size: 4,
         }),
-        pdu_source: 1007,
-        share_id: 66_538,
-    };
-    pub static ref SERVER_FONT_MAP: ShareControlHeader = ShareControlHeader {
-        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
-            share_data_pdu: ShareDataPdu::FontMap(FontPdu {
-                number: 0,
-                total_number: 0,
-                flags: SequenceFlags::FIRST | SequenceFlags::LAST,
-                entry_size: 4,
-            }),
-            stream_priority: StreamPriority::Medium,
-            compression_flags: CompressionFlags::empty(),
-            compression_type: client_info::CompressionType::K8,
+        stream_priority: StreamPriority::Medium,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: client_info::CompressionType::K8,
+    }),
+    pdu_source: 1002,
+    share_id: 66_538,
+});
+pub static MONITOR_LAYOUT_PDU: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {
+    share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::MonitorLayout(MonitorLayoutPdu {
+            monitors: crate::monitor_data::MONITOR_DATA_WITH_MONITORS.monitors.clone(),
         }),
-        pdu_source: 1002,
-        share_id: 66_538,
-    };
-    pub static ref MONITOR_LAYOUT_PDU: ShareControlHeader = ShareControlHeader {
-        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
-            share_data_pdu: ShareDataPdu::MonitorLayout(MonitorLayoutPdu {
-                monitors: crate::monitor_data::MONITOR_DATA_WITH_MONITORS.monitors.clone(),
-            }),
-            stream_priority: StreamPriority::Low,
-            compression_flags: CompressionFlags::empty(),
-            compression_type: client_info::CompressionType::K8,
-        }),
-        pdu_source: 1007,
-        share_id: 66_538,
-    };
-    pub static ref MONITOR_LAYOUT_PDU_BUFFER: Vec<u8> = {
-        let mut buffer = MONITOR_LAYOUT_HEADERS_BUFFER.to_vec();
-        buffer.extend(
-            MONITOR_DATA_WITH_MONITORS_BUFFER
-                .to_vec()
-                .split_off(gcc::MONITOR_FLAGS_SIZE),
-        );
-        buffer
-    };
-}
+        stream_priority: StreamPriority::Low,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: client_info::CompressionType::K8,
+    }),
+    pdu_source: 1007,
+    share_id: 66_538,
+});
+pub static MONITOR_LAYOUT_PDU_BUFFER: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    let mut buffer = MONITOR_LAYOUT_HEADERS_BUFFER.to_vec();
+    buffer.extend(
+        MONITOR_DATA_WITH_MONITORS_BUFFER
+            .to_vec()
+            .split_off(gcc::MONITOR_FLAGS_SIZE),
+    );
+    buffer
+});
 
 pub const CLIENT_INFO_PDU_BUFFER: [u8; concat_arrays_size!(
     CLIENT_INFO_PDU_SECURITY_HEADER_BUFFER,

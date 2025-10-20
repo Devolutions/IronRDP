@@ -1,15 +1,14 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec};
-use lazy_static::lazy_static;
 
 use super::*;
 
 const BRUSH_BUFFER: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
-lazy_static! {
-    pub static ref BRUSH: Brush = Brush {
-        support_level: SupportLevel::Color8x8,
-    };
-}
+static BRUSH: LazyLock<Brush> = LazyLock::new(|| Brush {
+    support_level: SupportLevel::Color8x8,
+});
 
 #[test]
 fn from_buffer_successfully_parses_brush_capset() {

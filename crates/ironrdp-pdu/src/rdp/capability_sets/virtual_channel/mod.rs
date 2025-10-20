@@ -29,7 +29,7 @@ bitflags! {
 /// # MSDN
 ///
 /// * [Virtual Channel Capability Set](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8593178-80c0-4b80-876c-cb77e62cecfc)
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct VirtualChannel {
     pub flags: VirtualChannelFlags,
     pub chunk_size: Option<u32>,

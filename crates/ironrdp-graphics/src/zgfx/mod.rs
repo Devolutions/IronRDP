@@ -4,6 +4,7 @@ mod circular_buffer;
 mod control_messages;
 
 use std::io::{self, Write as _};
+use std::sync::LazyLock;
 
 use bitvec::bits;
 use bitvec::field::BitField as _;
@@ -227,8 +228,8 @@ enum TokenType {
     },
 }
 
-lazy_static::lazy_static! {
-    static ref TOKEN_TABLE: [Token; 40] = [
+static TOKEN_TABLE: LazyLock<[Token; 40]> = LazyLock::new(|| {
+    [
         Token {
             prefix: bits![static u8, Msb0; 0],
             ty: TokenType::NullLiteral,
@@ -431,8 +432,8 @@ lazy_static::lazy_static! {
                 distance_base: 17_094_304,
             },
         },
-    ];
-}
+    ]
+});
 
 #[derive(Debug)]
 pub enum ZgfxError {

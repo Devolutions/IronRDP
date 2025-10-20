@@ -1,5 +1,6 @@
+use std::sync::LazyLock;
+
 use ironrdp_core::{decode, encode_vec, DecodeErrorKind};
-use lazy_static::lazy_static;
 
 use super::*;
 
@@ -234,39 +235,37 @@ const DOMAIN_NAME: &str = "NTDEV";
 const USER_NAME: &str = "eltons";
 const SESSION_ID: u32 = 0x02;
 
-lazy_static! {
-    static ref LOGON_INFO_V1: LogonInfoVersion1 = LogonInfoVersion1 {
-        logon_info: LogonInfo {
-            domain_name: DOMAIN_NAME.to_owned(),
-            user_name: USER_NAME.to_owned(),
-            session_id: SESSION_ID,
-        },
-    };
-    static ref LOGON_INFO_V2: LogonInfoVersion2 = LogonInfoVersion2 {
-        logon_info: LogonInfo {
-            domain_name: DOMAIN_NAME.to_owned(),
-            user_name: USER_NAME.to_owned(),
-            session_id: SESSION_ID,
-        },
-    };
-    static ref LOGON_EXTENDED: LogonInfoExtended = LogonInfoExtended {
-        present_fields_flags: LogonExFlags::AUTO_RECONNECT_COOKIE | LogonExFlags::LOGON_ERRORS,
-        auto_reconnect: Some(ServerAutoReconnect {
-            logon_id: SESSION_ID,
-            random_bits: [
-                0xa8, 0x02, 0xe7, 0x25, 0xe2, 0x4c, 0x82, 0xb7, 0x52, 0xa5, 0x53, 0x50, 0x34, 0x98, 0xa1, 0xa8
-            ],
-        }),
-        errors_info: Some(LogonErrorsInfo {
-            error_type: LogonErrorNotificationType::NoPermission,
-            error_data: LogonErrorNotificationData::ErrorCode(LogonErrorNotificationDataErrorCode::FailedOther),
-        }),
-    };
-    static ref SESSION_PLAIN_NOTIFY: SaveSessionInfoPdu = SaveSessionInfoPdu {
-        info_type: InfoType::PlainNotify,
-        info_data: InfoData::PlainNotify,
-    };
-}
+static LOGON_INFO_V1: LazyLock<LogonInfoVersion1> = LazyLock::new(|| LogonInfoVersion1 {
+    logon_info: LogonInfo {
+        domain_name: DOMAIN_NAME.to_owned(),
+        user_name: USER_NAME.to_owned(),
+        session_id: SESSION_ID,
+    },
+});
+static LOGON_INFO_V2: LazyLock<LogonInfoVersion2> = LazyLock::new(|| LogonInfoVersion2 {
+    logon_info: LogonInfo {
+        domain_name: DOMAIN_NAME.to_owned(),
+        user_name: USER_NAME.to_owned(),
+        session_id: SESSION_ID,
+    },
+});
+static LOGON_EXTENDED: LazyLock<LogonInfoExtended> = LazyLock::new(|| LogonInfoExtended {
+    present_fields_flags: LogonExFlags::AUTO_RECONNECT_COOKIE | LogonExFlags::LOGON_ERRORS,
+    auto_reconnect: Some(ServerAutoReconnect {
+        logon_id: SESSION_ID,
+        random_bits: [
+            0xa8, 0x02, 0xe7, 0x25, 0xe2, 0x4c, 0x82, 0xb7, 0x52, 0xa5, 0x53, 0x50, 0x34, 0x98, 0xa1, 0xa8,
+        ],
+    }),
+    errors_info: Some(LogonErrorsInfo {
+        error_type: LogonErrorNotificationType::NoPermission,
+        error_data: LogonErrorNotificationData::ErrorCode(LogonErrorNotificationDataErrorCode::FailedOther),
+    }),
+});
+static SESSION_PLAIN_NOTIFY: LazyLock<SaveSessionInfoPdu> = LazyLock::new(|| SaveSessionInfoPdu {
+    info_type: InfoType::PlainNotify,
+    info_data: InfoData::PlainNotify,
+});
 
 #[test]
 fn from_buffer_correct_parses_logon_info_v1() {
