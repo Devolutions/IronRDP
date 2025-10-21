@@ -37,6 +37,7 @@ impl ConnectionActivationSequence {
         }
     }
 
+    /// Returns the current state as a district type, rather than `&dyn State` provided by [`Self::state`].
     pub fn connection_activation_state(&self) -> ConnectionActivationState {
         self.state
     }
