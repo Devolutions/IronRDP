@@ -23,7 +23,7 @@ public partial class MainWindow : Window
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
     ActiveStage? _activeStage;
     DecodedImage? _decodedImage;
-    Framed<Stream>? _framed;  
+    Framed<Stream>? _framed;
     WinCliprdr? _cliprdr;
     private readonly RendererModel _renderModel;
     private Image? _imageControl;
@@ -80,7 +80,7 @@ public partial class MainWindow : Window
         var password = Environment.GetEnvironmentVariable("IRONRDP_PASSWORD");
         var domain = Environment.GetEnvironmentVariable("IRONRDP_DOMAIN"); // Optional
         var server = Environment.GetEnvironmentVariable("IRONRDP_SERVER");
-        var portEnv = Environment.GetEnvironmentVariable("IRONRDP_PORT");
+        var portEnv = Environment.GetEnvironmentVariable("IRONRDP_PORT"); // Optional
 
         // Gateway configuration (optional)
         var gatewayUrl = Environment.GetEnvironmentVariable("IRONRDP_GATEWAY_URL");
@@ -179,7 +179,7 @@ public partial class MainWindow : Window
                     // Connect via gateway - destination needs "hostname:port" format for RDCleanPath
                     string destination = $"{server}:{port}";
 
-                    var (gatewayRes, gatewayFramed) = await RDCleanPathConnection.ConnectViaGateway(
+                    var (gatewayRes, gatewayFramed) = await RDCleanPathConnection.ConnectRDCleanPath(
                         config, gatewayUrl, gatewayToken!, destination, null, factory);
                     res = gatewayRes;
                     this._framed = new Framed<Stream>(gatewayFramed.GetInner().Item1);

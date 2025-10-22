@@ -19,7 +19,7 @@ public static class RDCleanPathConnection
     /// <param name="pcb">Optional preconnection blob for Hyper-V VM connections</param>
     /// <param name="factory">Optional clipboard backend factory</param>
     /// <returns>A tuple containing the connection result and framed WebSocket stream</returns>
-    public static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectViaGateway(
+    public static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPath(
         Config config,
         string gatewayUrl,
         string authToken,

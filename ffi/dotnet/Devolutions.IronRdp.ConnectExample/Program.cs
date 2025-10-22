@@ -23,7 +23,7 @@ namespace Devolutions.IronRdp.ConnectExample
 
             try
             {
-                var (res, framed) = await Connection.Connect(buildConfig( username, password, domain, 1980, 1080), serverName, null);
+                var (res, framed) = await Connection.Connect(buildConfig(username, password, domain, 1980, 1080), serverName, null);
                 var decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(), res.GetDesktopSize().GetHeight());
                 var activeState = ActiveStage.New(res);
                 var keepLooping = true;

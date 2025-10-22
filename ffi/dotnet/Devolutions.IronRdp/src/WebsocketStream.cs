@@ -36,10 +36,10 @@ public sealed class WebSocketStream : Stream
 
     public ClientWebSocket Socket => _ws;
 
-    public override bool CanRead  => true;
-    public override bool CanSeek  => false;
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
     public override bool CanWrite => true;
-    public override long Length   => throw new NotSupportedException();
+    public override long Length => throw new NotSupportedException();
     public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
 
     public override void Flush() { /* no-op */ }
