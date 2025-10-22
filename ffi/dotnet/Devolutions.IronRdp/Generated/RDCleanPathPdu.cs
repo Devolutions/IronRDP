@@ -369,8 +369,9 @@ public partial class RDCleanPathPdu: IDisposable
 
     /// <summary>
     /// Gets the HTTP status code if present (for GeneralError variant)
-    /// Returns 0 if not present or not a GeneralError variant
+    /// Returns error if not present or not a GeneralError variant
     /// </summary>
+    /// <exception cref="IronRdpException"></exception>
     public ushort GetHttpStatusCode()
     {
         unsafe
@@ -379,23 +380,12 @@ public partial class RDCleanPathPdu: IDisposable
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            ushort retVal = Raw.RDCleanPathPdu.GetHttpStatusCode(_inner);
-            return retVal;
-        }
-    }
-
-    /// <summary>
-    /// Checks if HTTP status code is present
-    /// </summary>
-    public bool HasHttpStatusCode()
-    {
-        unsafe
-        {
-            if (_inner == null)
+            Raw.RdcleanpathFfiResultU16BoxIronRdpError result = Raw.RDCleanPathPdu.GetHttpStatusCode(_inner);
+            if (!result.isOk)
             {
-                throw new ObjectDisposedException("RDCleanPathPdu");
+                throw new IronRdpException(new IronRdpError(result.Err));
             }
-            bool retVal = Raw.RDCleanPathPdu.HasHttpStatusCode(_inner);
+            ushort retVal = result.Ok;
             return retVal;
         }
     }

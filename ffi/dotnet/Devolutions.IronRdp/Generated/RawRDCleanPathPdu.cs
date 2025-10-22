@@ -86,17 +86,10 @@ public partial struct RDCleanPathPdu
 
     /// <summary>
     /// Gets the HTTP status code if present (for GeneralError variant)
-    /// Returns 0 if not present or not a GeneralError variant
+    /// Returns error if not present or not a GeneralError variant
     /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_http_status_code", ExactSpelling = true)]
-    public static unsafe extern ushort GetHttpStatusCode(RDCleanPathPdu* self);
-
-    /// <summary>
-    /// Checks if HTTP status code is present
-    /// </summary>
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_has_http_status_code", ExactSpelling = true)]
-    [return: MarshalAs(UnmanagedType.U1)]
-    public static unsafe extern bool HasHttpStatusCode(RDCleanPathPdu* self);
+    public static unsafe extern RdcleanpathFfiResultU16BoxIronRdpError GetHttpStatusCode(RDCleanPathPdu* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(RDCleanPathPdu* self);

@@ -163,24 +163,21 @@ pub mod ffi {
         }
 
         /// Gets the HTTP status code if present (for GeneralError variant)
-        /// Returns 0 if not present or not a GeneralError variant
-        pub fn get_http_status_code(&self) -> u16 {
-            if let Ok(rdcleanpath) = self.0.clone().into_enum() {
-                if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = rdcleanpath {
-                    return err.http_status_code.unwrap_or(0);
-                }
-            }
-            0
-        }
+        /// Returns error if not present or not a GeneralError variant
+        pub fn get_http_status_code(&self) -> Result<u16, Box<IronRdpError>> {
+            let rdcleanpath = self
+                .0
+                .clone()
+                .into_enum()
+                .context("missing RDCleanPath field")
+                .map_err(GenericError)?;
 
-        /// Checks if HTTP status code is present
-        pub fn has_http_status_code(&self) -> bool {
-            if let Ok(rdcleanpath) = self.0.clone().into_enum() {
-                if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = rdcleanpath {
-                    return err.http_status_code.is_some();
-                }
+            if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = rdcleanpath {
+                err.http_status_code
+                    .ok_or_else(|| GenericError(anyhow::anyhow!("HTTP status code not present")).into())
+            } else {
+                Err(GenericError(anyhow::anyhow!("not a GeneralError variant")).into())
             }
-            false
         }
     }
 
