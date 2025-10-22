@@ -130,19 +130,15 @@ pub mod ffi {
 
         /// Gets the server address string (for Response variant)
         pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
-            if let Ok(rdcleanpath) = self.0.clone().into_enum() {
-                if let ironrdp_rdcleanpath::RDCleanPath::Response { server_addr, .. } = rdcleanpath {
-                    let _ = write!(writeable, "{server_addr}");
-                }
+            if let Ok(ironrdp_rdcleanpath::RDCleanPath::Response { server_addr, .. }) = self.0.clone().into_enum() {
+                let _ = write!(writeable, "{server_addr}");
             }
         }
 
         /// Gets error message (for GeneralError variant)
         pub fn get_error_message<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
-            if let Ok(rdcleanpath) = self.0.clone().into_enum() {
-                if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = rdcleanpath {
-                    let _ = write!(writeable, "{err}");
-                }
+            if let Ok(ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err)) = self.0.clone().into_enum() {
+                let _ = write!(writeable, "{err}");
             }
         }
 
