@@ -32,8 +32,10 @@ public static class RDCleanPathConnection
         var ws = await WebSocketStream.ConnectAsync(new Uri(gatewayUrl));
         var framed = new Framed<WebSocketStream>(ws);
 
-        // Step 2: Get client local address (dummy for WebSocket)
-        string clientAddr = "127.0.0.1:33899";
+        // Step 2: Get client local address from the WebSocket connection
+        // This mimics Rust: let client_addr = socket.local_addr()?;
+        string clientAddr = ws.ClientAddr;
+        System.Diagnostics.Debug.WriteLine($"Client local address: {clientAddr}");
 
         // Step 3: Setup ClientConnector
         var connector = ClientConnector.New(config, clientAddr);
@@ -87,16 +89,15 @@ public static class RDCleanPathConnection
         var respBytes = await framed.ReadByHint(new RDCleanPathHint());
         var rdCleanPathResp = RDCleanPathPdu.FromDer(respBytes);
 
-        // Step 4: Parse response
-        var result = rdCleanPathResp.IntoEnum();
-        var resultType = result.GetType();
+        // Step 4: Determine response type and handle accordingly
+        var resultType = rdCleanPathResp.GetType();
 
         if (resultType == RDCleanPathResultType.Response)
         {
             System.Diagnostics.Debug.WriteLine("RDCleanPath handshake successful!");
 
             // Extract X.224 response
-            var x224Response = result.GetX224Response();
+            var x224Response = rdCleanPathResp.GetX224Response();
             var x224ResponseBytes = new byte[x224Response.GetSize()];
             x224Response.Fill(x224ResponseBytes);
 
@@ -105,7 +106,7 @@ public static class RDCleanPathConnection
             connector.Step(x224ResponseBytes, writeBuf);
 
             // Extract server public key from certificate chain
-            var certChain = result.GetServerCertChain();
+            var certChain = rdCleanPathResp.GetServerCertChain();
             if (certChain.IsEmpty())
             {
                 throw new IronRdpLibException(
@@ -132,8 +133,8 @@ public static class RDCleanPathConnection
         }
         else if (resultType == RDCleanPathResultType.GeneralError)
         {
-            var errorCode = result.GetErrorCode();
-            var errorMessage = result.GetErrorMessage();
+            var errorCode = rdCleanPathResp.GetErrorCode();
+            var errorMessage = rdCleanPathResp.GetErrorMessage();
             throw new IronRdpLibException(
                 IronRdpLibExceptionType.ConnectionFailed,
                 $"RDCleanPath error (code {errorCode}): {errorMessage}");

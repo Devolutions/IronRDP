@@ -66,8 +66,8 @@ pub mod ffi {
             Box::new(RDCleanPathDetectionResult(result))
         }
 
-        /// Converts the PDU into a typed enum for pattern matching
-        pub fn into_enum(&self) -> Result<Box<RDCleanPathResult>, Box<IronRdpError>> {
+        /// Gets the type of this RDCleanPath PDU
+        pub fn get_type(&self) -> Result<RDCleanPathResultType, Box<IronRdpError>> {
             let rdcleanpath = self
                 .0
                 .clone()
@@ -75,8 +75,121 @@ pub mod ffi {
                 .context("missing RDCleanPath field")
                 .map_err(GenericError)?;
 
-            Ok(Box::new(RDCleanPathResult(rdcleanpath)))
+            let result_type = match rdcleanpath {
+                ironrdp_rdcleanpath::RDCleanPath::Request { .. } => RDCleanPathResultType::Request,
+                ironrdp_rdcleanpath::RDCleanPath::Response { .. } => RDCleanPathResultType::Response,
+                ironrdp_rdcleanpath::RDCleanPath::GeneralErr(_) => RDCleanPathResultType::GeneralError,
+                ironrdp_rdcleanpath::RDCleanPath::NegotiationErr { .. } => RDCleanPathResultType::NegotiationError,
+            };
+
+            Ok(result_type)
         }
+
+        /// Gets the X.224 connection response bytes (for Response or NegotiationError variants)
+        pub fn get_x224_response(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let rdcleanpath = self
+                .0
+                .clone()
+                .into_enum()
+                .context("missing RDCleanPath field")
+                .map_err(GenericError)?;
+
+            match rdcleanpath {
+                ironrdp_rdcleanpath::RDCleanPath::Response {
+                    x224_connection_response,
+                    ..
+                } => Ok(Box::new(VecU8(x224_connection_response.as_bytes().to_vec()))),
+                ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
+                    x224_connection_response,
+                } => Ok(Box::new(VecU8(x224_connection_response))),
+                _ => Err(GenericError(anyhow::anyhow!("RDCleanPath variant does not contain X.224 response")).into()),
+            }
+        }
+
+        /// Gets the server certificate chain (for Response variant)
+        /// Returns a vector iterator of certificate bytes
+        pub fn get_server_cert_chain(&self) -> Result<Box<CertificateChainIterator>, Box<IronRdpError>> {
+            let rdcleanpath = self
+                .0
+                .clone()
+                .into_enum()
+                .context("missing RDCleanPath field")
+                .map_err(GenericError)?;
+
+            match rdcleanpath {
+                ironrdp_rdcleanpath::RDCleanPath::Response { server_cert_chain, .. } => {
+                    let certs: Vec<Vec<u8>> = server_cert_chain.iter().map(|cert| cert.as_bytes().to_vec()).collect();
+                    Ok(Box::new(CertificateChainIterator { certs, index: 0 }))
+                }
+                _ => Err(GenericError(anyhow::anyhow!(
+                    "RDCleanPath variant does not contain certificate chain"
+                ))
+                .into()),
+            }
+        }
+
+        /// Gets the server address string (for Response variant)
+        pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
+            if let Ok(rdcleanpath) = self.0.clone().into_enum() {
+                if let ironrdp_rdcleanpath::RDCleanPath::Response { server_addr, .. } = rdcleanpath {
+                    let _ = write!(writeable, "{server_addr}");
+                }
+            }
+        }
+
+        /// Gets error message (for GeneralError variant)
+        pub fn get_error_message<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
+            if let Ok(rdcleanpath) = self.0.clone().into_enum() {
+                if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = rdcleanpath {
+                    let _ = write!(writeable, "{err}");
+                }
+            }
+        }
+
+        /// Gets the error code (for GeneralError variant)
+        pub fn get_error_code(&self) -> Result<u16, Box<IronRdpError>> {
+            let rdcleanpath = self
+                .0
+                .clone()
+                .into_enum()
+                .context("missing RDCleanPath field")
+                .map_err(GenericError)?;
+
+            if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = rdcleanpath {
+                Ok(err.error_code)
+            } else {
+                Err(GenericError(anyhow::anyhow!("not a GeneralError variant")).into())
+            }
+        }
+
+        /// Gets the HTTP status code if present (for GeneralError variant)
+        /// Returns 0 if not present or not a GeneralError variant
+        pub fn get_http_status_code(&self) -> u16 {
+            if let Ok(rdcleanpath) = self.0.clone().into_enum() {
+                if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = rdcleanpath {
+                    return err.http_status_code.unwrap_or(0);
+                }
+            }
+            0
+        }
+
+        /// Checks if HTTP status code is present
+        pub fn has_http_status_code(&self) -> bool {
+            if let Ok(rdcleanpath) = self.0.clone().into_enum() {
+                if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = rdcleanpath {
+                    return err.http_status_code.is_some();
+                }
+            }
+            false
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum RDCleanPathResultType {
+        Request,
+        Response,
+        GeneralError,
+        NegotiationError,
     }
 
     #[diplomat::opaque]
@@ -100,99 +213,6 @@ pub mod ffi {
                 Ok(total_length)
             } else {
                 Err(GenericError(anyhow::anyhow!("detection result is not Detected variant")).into())
-            }
-        }
-    }
-
-    #[diplomat::opaque]
-    pub struct RDCleanPathResult(pub ironrdp_rdcleanpath::RDCleanPath);
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum RDCleanPathResultType {
-        Request,
-        Response,
-        GeneralError,
-        NegotiationError,
-    }
-
-    impl RDCleanPathResult {
-        pub fn get_type(&self) -> RDCleanPathResultType {
-            match &self.0 {
-                ironrdp_rdcleanpath::RDCleanPath::Request { .. } => RDCleanPathResultType::Request,
-                ironrdp_rdcleanpath::RDCleanPath::Response { .. } => RDCleanPathResultType::Response,
-                ironrdp_rdcleanpath::RDCleanPath::GeneralErr(_) => RDCleanPathResultType::GeneralError,
-                ironrdp_rdcleanpath::RDCleanPath::NegotiationErr { .. } => RDCleanPathResultType::NegotiationError,
-            }
-        }
-
-        /// Gets the X.224 connection response bytes (for Response variant)
-        pub fn get_x224_response(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
-            match &self.0 {
-                ironrdp_rdcleanpath::RDCleanPath::Response {
-                    x224_connection_response,
-                    ..
-                } => Ok(Box::new(VecU8(x224_connection_response.as_bytes().to_vec()))),
-                ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
-                    x224_connection_response,
-                } => Ok(Box::new(VecU8(x224_connection_response.clone()))),
-                _ => Err(GenericError(anyhow::anyhow!("RDCleanPath variant does not contain X.224 response")).into()),
-            }
-        }
-
-        /// Gets the server certificate chain (for Response variant)
-        /// Returns a vector iterator of certificate bytes
-        pub fn get_server_cert_chain(&self) -> Result<Box<CertificateChainIterator>, Box<IronRdpError>> {
-            match &self.0 {
-                ironrdp_rdcleanpath::RDCleanPath::Response { server_cert_chain, .. } => {
-                    let certs: Vec<Vec<u8>> = server_cert_chain.iter().map(|cert| cert.as_bytes().to_vec()).collect();
-                    Ok(Box::new(CertificateChainIterator { certs, index: 0 }))
-                }
-                _ => Err(GenericError(anyhow::anyhow!(
-                    "RDCleanPath variant does not contain certificate chain"
-                ))
-                .into()),
-            }
-        }
-
-        /// Gets the server address string (for Response variant)
-        pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
-            if let ironrdp_rdcleanpath::RDCleanPath::Response { server_addr, .. } = &self.0 {
-                let _ = write!(writeable, "{server_addr}");
-            }
-        }
-
-        /// Gets error message (for GeneralError variant)
-        pub fn get_error_message<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
-            if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = &self.0 {
-                let _ = write!(writeable, "{err}");
-            }
-        }
-
-        /// Gets the error code (for GeneralError variant)
-        pub fn get_error_code(&self) -> Result<u16, Box<IronRdpError>> {
-            if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = &self.0 {
-                Ok(err.error_code)
-            } else {
-                Err(GenericError(anyhow::anyhow!("not a GeneralError variant")).into())
-            }
-        }
-
-        /// Gets the HTTP status code if present (for GeneralError variant)
-        /// Returns 0 if not present or not a GeneralError variant
-        pub fn get_http_status_code(&self) -> u16 {
-            if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = &self.0 {
-                err.http_status_code.unwrap_or(0)
-            } else {
-                0
-            }
-        }
-
-        /// Checks if HTTP status code is present
-        pub fn has_http_status_code(&self) -> bool {
-            if let ironrdp_rdcleanpath::RDCleanPath::GeneralErr(err) = &self.0 {
-                err.http_status_code.is_some()
-            } else {
-                false
             }
         }
     }

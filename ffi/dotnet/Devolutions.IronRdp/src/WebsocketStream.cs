@@ -1,6 +1,8 @@
 using System;
 using System.Buffers;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,14 +15,16 @@ public sealed class WebSocketStream : Stream
     private int _recvLen;
     private bool _remoteClosed;
     private bool _disposed;
+    private readonly string _clientAddr;
 
     private const int DefaultRecvBufferSize = 64 * 1024;
     private const int MaxSendFrame = 16 * 1024; // send in chunks
 
-    private WebSocketStream(ClientWebSocket ws, int receiveBufferSize)
+    private WebSocketStream(ClientWebSocket ws, int receiveBufferSize, string clientAddr)
     {
         _ws = ws ?? throw new ArgumentNullException(nameof(ws));
         _recvBuf = ArrayPool<byte>.Shared.Rent(Math.Max(1024, receiveBufferSize));
+        _clientAddr = clientAddr;
     }
 
     public static async Task<WebSocketStream> ConnectAsync(
@@ -29,12 +33,53 @@ public sealed class WebSocketStream : Stream
         int receiveBufferSize = DefaultRecvBufferSize,
         CancellationToken ct = default)
     {
+        // Follow the Rust native client approach: establish TCP connection first,
+        // get local address, then use it for WebSocket
+        var hostname = uri.Host;
+        var port = uri.Port > 0 ? uri.Port : (uri.Scheme == "wss" ? 443 : 80);
+
+        string clientAddr;
+
+        // Step 1: Create TCP socket and connect to get local address
+        // This mimics Rust: let socket = TcpStream::connect((hostname, port)).await?;
+        //                   let client_addr = socket.local_addr()?;
+        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        try
+        {
+            await socket.ConnectAsync(hostname, port, ct).ConfigureAwait(false);
+
+            // Step 2: Set TCP_NODELAY (like Rust: socket.set_nodelay(true)?)
+            socket.NoDelay = true;
+
+            // Step 3: Get local endpoint
+            var localEndPoint = socket.LocalEndPoint as IPEndPoint;
+            clientAddr = localEndPoint?.ToString() ?? "127.0.0.1:0";
+
+            // Step 4: Close this probe socket - we just needed the address
+            // (Unfortunately, .NET's ClientWebSocket doesn't support using an existing socket)
+            socket.Close();
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+
+        // Step 5: Now establish the actual WebSocket connection with TLS
+        // This mimics Rust: tokio_tungstenite::client_async_tls(rdcleanpath.url.as_str(), socket)
         ws ??= new ClientWebSocket();
         await ws.ConnectAsync(uri, ct).ConfigureAwait(false);
-        return new WebSocketStream(ws, receiveBufferSize);
+
+        return new WebSocketStream(ws, receiveBufferSize, clientAddr);
     }
 
     public ClientWebSocket Socket => _ws;
+
+    /// <summary>
+    /// Gets the local client address in "IP:port" format.
+    /// This is the address that was determined when establishing the TCP connection.
+    /// </summary>
+    public string ClientAddr => _clientAddr;
 
     public override bool CanRead => true;
     public override bool CanSeek => false;

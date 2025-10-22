@@ -48,10 +48,55 @@ public partial struct RDCleanPathPdu
     public static unsafe extern RDCleanPathDetectionResult* Detect(byte* bytes, nuint bytesSz);
 
     /// <summary>
-    /// Converts the PDU into a typed enum for pattern matching
+    /// Gets the type of this RDCleanPath PDU
     /// </summary>
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_into_enum", ExactSpelling = true)]
-    public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathResultBoxIronRdpError IntoEnum(RDCleanPathPdu* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_type", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultRDCleanPathResultTypeBoxIronRdpError GetType(RDCleanPathPdu* self);
+
+    /// <summary>
+    /// Gets the X.224 connection response bytes (for Response or NegotiationError variants)
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_x224_response", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultBoxVecU8BoxIronRdpError GetX224Response(RDCleanPathPdu* self);
+
+    /// <summary>
+    /// Gets the server certificate chain (for Response variant)
+    /// Returns a vector iterator of certificate bytes
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_server_cert_chain", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultBoxCertificateChainIteratorBoxIronRdpError GetServerCertChain(RDCleanPathPdu* self);
+
+    /// <summary>
+    /// Gets the server address string (for Response variant)
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_server_addr", ExactSpelling = true)]
+    public static unsafe extern void GetServerAddr(RDCleanPathPdu* self, DiplomatWriteable* writeable);
+
+    /// <summary>
+    /// Gets error message (for GeneralError variant)
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_error_message", ExactSpelling = true)]
+    public static unsafe extern void GetErrorMessage(RDCleanPathPdu* self, DiplomatWriteable* writeable);
+
+    /// <summary>
+    /// Gets the error code (for GeneralError variant)
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_error_code", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultU16BoxIronRdpError GetErrorCode(RDCleanPathPdu* self);
+
+    /// <summary>
+    /// Gets the HTTP status code if present (for GeneralError variant)
+    /// Returns 0 if not present or not a GeneralError variant
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_http_status_code", ExactSpelling = true)]
+    public static unsafe extern ushort GetHttpStatusCode(RDCleanPathPdu* self);
+
+    /// <summary>
+    /// Checks if HTTP status code is present
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_has_http_status_code", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static unsafe extern bool HasHttpStatusCode(RDCleanPathPdu* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(RDCleanPathPdu* self);

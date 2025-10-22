@@ -15,6 +15,62 @@ public partial class RDCleanPathPdu: IDisposable
 {
     private unsafe Raw.RDCleanPathPdu* _inner;
 
+    public ushort ErrorCode
+    {
+        get
+        {
+            return GetErrorCode();
+        }
+    }
+
+    public string ErrorMessage
+    {
+        get
+        {
+            return GetErrorMessage();
+        }
+    }
+
+    public ushort HttpStatusCode
+    {
+        get
+        {
+            return GetHttpStatusCode();
+        }
+    }
+
+    public string ServerAddr
+    {
+        get
+        {
+            return GetServerAddr();
+        }
+    }
+
+    public CertificateChainIterator ServerCertChain
+    {
+        get
+        {
+            return GetServerCertChain();
+        }
+    }
+
+    public RDCleanPathResultType Type
+    {
+        get
+        {
+            return GetType();
+        }
+    }
+
+    public VecU8 X224Response
+    {
+        get
+        {
+            return GetX224Response();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>RDCleanPathPdu</c> from a raw handle.
     /// </summary>
@@ -146,13 +202,13 @@ public partial class RDCleanPathPdu: IDisposable
     }
 
     /// <summary>
-    /// Converts the PDU into a typed enum for pattern matching
+    /// Gets the type of this RDCleanPath PDU
     /// </summary>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
-    /// A <c>RDCleanPathResult</c> allocated on Rust side.
+    /// A <c>RDCleanPathResultType</c> allocated on C# side.
     /// </returns>
-    public RDCleanPathResult IntoEnum()
+    public RDCleanPathResultType GetType()
     {
         unsafe
         {
@@ -160,13 +216,187 @@ public partial class RDCleanPathPdu: IDisposable
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            Raw.RdcleanpathFfiResultBoxRDCleanPathResultBoxIronRdpError result = Raw.RDCleanPathPdu.IntoEnum(_inner);
+            Raw.RdcleanpathFfiResultRDCleanPathResultTypeBoxIronRdpError result = Raw.RDCleanPathPdu.GetType(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.RDCleanPathResult* retVal = result.Ok;
-            return new RDCleanPathResult(retVal);
+            Raw.RDCleanPathResultType retVal = result.Ok;
+            return (RDCleanPathResultType)retVal;
+        }
+    }
+
+    /// <summary>
+    /// Gets the X.224 connection response bytes (for Response or NegotiationError variants)
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 GetX224Response()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            Raw.RdcleanpathFfiResultBoxVecU8BoxIronRdpError result = Raw.RDCleanPathPdu.GetX224Response(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <summary>
+    /// Gets the server certificate chain (for Response variant)
+    /// Returns a vector iterator of certificate bytes
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>CertificateChainIterator</c> allocated on Rust side.
+    /// </returns>
+    public CertificateChainIterator GetServerCertChain()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            Raw.RdcleanpathFfiResultBoxCertificateChainIteratorBoxIronRdpError result = Raw.RDCleanPathPdu.GetServerCertChain(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.CertificateChainIterator* retVal = result.Ok;
+            return new CertificateChainIterator(retVal);
+        }
+    }
+
+    /// <summary>
+    /// Gets the server address string (for Response variant)
+    /// </summary>
+    public void GetServerAddr(DiplomatWriteable writeable)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            Raw.RDCleanPathPdu.GetServerAddr(_inner, &writeable);
+        }
+    }
+
+    /// <summary>
+    /// Gets the server address string (for Response variant)
+    /// </summary>
+    public string GetServerAddr()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            DiplomatWriteable writeable = new DiplomatWriteable();
+            Raw.RDCleanPathPdu.GetServerAddr(_inner, &writeable);
+            string retVal = writeable.ToUnicode();
+            writeable.Dispose();
+            return retVal;
+        }
+    }
+
+    /// <summary>
+    /// Gets error message (for GeneralError variant)
+    /// </summary>
+    public void GetErrorMessage(DiplomatWriteable writeable)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            Raw.RDCleanPathPdu.GetErrorMessage(_inner, &writeable);
+        }
+    }
+
+    /// <summary>
+    /// Gets error message (for GeneralError variant)
+    /// </summary>
+    public string GetErrorMessage()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            DiplomatWriteable writeable = new DiplomatWriteable();
+            Raw.RDCleanPathPdu.GetErrorMessage(_inner, &writeable);
+            string retVal = writeable.ToUnicode();
+            writeable.Dispose();
+            return retVal;
+        }
+    }
+
+    /// <summary>
+    /// Gets the error code (for GeneralError variant)
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    public ushort GetErrorCode()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            Raw.RdcleanpathFfiResultU16BoxIronRdpError result = Raw.RDCleanPathPdu.GetErrorCode(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            ushort retVal = result.Ok;
+            return retVal;
+        }
+    }
+
+    /// <summary>
+    /// Gets the HTTP status code if present (for GeneralError variant)
+    /// Returns 0 if not present or not a GeneralError variant
+    /// </summary>
+    public ushort GetHttpStatusCode()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            ushort retVal = Raw.RDCleanPathPdu.GetHttpStatusCode(_inner);
+            return retVal;
+        }
+    }
+
+    /// <summary>
+    /// Checks if HTTP status code is present
+    /// </summary>
+    public bool HasHttpStatusCode()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            bool retVal = Raw.RDCleanPathPdu.HasHttpStatusCode(_inner);
+            return retVal;
         }
     }
 
