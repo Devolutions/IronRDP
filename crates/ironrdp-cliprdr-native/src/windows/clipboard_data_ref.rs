@@ -27,7 +27,7 @@ impl<'a> ClipboardDataRef<'a> {
         };
 
         // SAFETY: It is safe to call `GlobalLock` on the valid handle.
-        let data = unsafe { GlobalLock(handle) } as *const u8;
+        let data = unsafe { GlobalLock(handle) }.cast::<u8>().cast_const();
 
         if data.is_null() {
             // Can't lock data handle, handle is not valid anymore (e.g. clipboard has changed)

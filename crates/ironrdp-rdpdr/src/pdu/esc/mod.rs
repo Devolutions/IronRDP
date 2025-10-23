@@ -574,6 +574,10 @@ impl ReturnCode {
 }
 
 impl From<ReturnCode> for u32 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(val: ReturnCode) -> Self {
         val as u32
     }
@@ -1244,7 +1248,7 @@ impl rpce::HeaderlessDecode for TransmitCall {
 #[derive(Debug, PartialEq, Clone)]
 pub struct SCardIORequest {
     pub protocol: CardProtocol,
-    pub extra_bytes_length: u32,
+    pub extra_bytes_length: usize,
     pub extra_bytes: Vec<u8>,
 }
 
@@ -1255,7 +1259,7 @@ impl ndr::Decode for SCardIORequest {
     {
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let protocol = CardProtocol::from_bits_retain(src.read_u32());
-        let extra_bytes_length = src.read_u32();
+        let extra_bytes_length = cast_length!("SCardIORequest", "extra_bytes_length", src.read_u32())?;
         let _extra_bytes_ptr = ndr::decode_ptr(src, index)?;
         let extra_bytes = Vec::new();
         Ok(Self {
@@ -1267,9 +1271,8 @@ impl ndr::Decode for SCardIORequest {
 
     fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<()> {
         expect_no_charset(charset)?;
-        let extra_bytes_length: usize = cast_length!("TransmitCall", "extra_bytes_length", self.extra_bytes_length)?;
-        ensure_size!(in: src, size: extra_bytes_length);
-        self.extra_bytes = src.read_slice(extra_bytes_length).to_vec();
+        ensure_size!(in: src, size: self.extra_bytes_length);
+        self.extra_bytes = src.read_slice(self.extra_bytes_length).to_vec();
         Ok(())
     }
 }
@@ -1277,8 +1280,11 @@ impl ndr::Decode for SCardIORequest {
 impl ndr::Encode for SCardIORequest {
     fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size_ptr());
+
+        let extra_bytes_length = cast_length!("SCardIORequest", "extra_bytes_length", self.extra_bytes_length)?;
+
         dst.write_u32(self.protocol.bits());
-        ndr::encode_ptr(Some(self.extra_bytes_length), index, dst)
+        ndr::encode_ptr(Some(extra_bytes_length), index, dst)
     }
 
     fn encode_value(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -1292,7 +1298,7 @@ impl ndr::Encode for SCardIORequest {
     }
 
     fn size_value(&self) -> usize {
-        self.extra_bytes_length as usize
+        self.extra_bytes_length
     }
 }
 
@@ -1485,6 +1491,10 @@ pub enum CardState {
 }
 
 impl From<CardState> for u32 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(val: CardState) -> Self {
         val as u32
     }

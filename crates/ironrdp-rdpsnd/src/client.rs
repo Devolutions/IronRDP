@@ -80,7 +80,7 @@ impl Rdpsnd {
 
         server_format
             .formats
-            .get(format_no as usize)
+            .get(usize::from(format_no))
             .ok_or_else(|| pdu_other_err!("invalid format"))
     }
 
@@ -196,7 +196,7 @@ impl SvcProcessor for Rdpsnd {
                 match pdu {
                     // TODO: handle WaveInfo for < v8
                     pdu::ServerAudioOutputPdu::Wave2(pdu) => {
-                        let format_no = pdu.format_no as usize;
+                        let format_no = usize::from(pdu.format_no);
                         let ts = pdu.audio_timestamp;
                         self.handler.wave(format_no, ts, pdu.data);
                         return Ok(self.wave_confirm(pdu.timestamp, pdu.block_no)?.into());

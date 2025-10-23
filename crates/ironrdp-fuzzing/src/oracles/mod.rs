@@ -114,8 +114,8 @@ pub fn rdp6_decode_bitmap_stream_to_rgb24(input: &BitmapInput<'_>) {
     let _ = BitmapStreamDecoder::default().decode_bitmap_stream_to_rgb24(
         input.src,
         &mut out,
-        input.width as usize,
-        input.height as usize,
+        usize::from(input.width),
+        usize::from(input.height),
     );
 }
 

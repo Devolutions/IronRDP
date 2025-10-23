@@ -1,3 +1,4 @@
+use core::ptr::with_exposed_provenance_mut;
 use core::time::Duration;
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -320,17 +321,19 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
 
         // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transferred to OS earlier
         // via `SetWindowSubclass` call.
-        let _ = unsafe { Box::from_raw(data as *mut WinClipboardImpl) };
+        let _ = unsafe { Box::from_raw(with_exposed_provenance_mut::<WinClipboardImpl>(data)) };
         return LRESULT(0);
     }
 
     // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transferred to OS earlier
     // via `SetWindowSubclass` call.
-    let ctx = unsafe { &mut *(data as *mut WinClipboardImpl) };
+    let ctx = unsafe { &mut *(with_exposed_provenance_mut::<WinClipboardImpl>(data)) };
 
     match msg {
         // We need to keep track of window state to distinguish between local and remote copy
-        WM_ACTIVATE | WM_ACTIVATEAPP => ctx.window_is_active = wparam.0 != WA_INACTIVE as usize, // `as` conversion is fine for constants
+        WM_ACTIVATE | WM_ACTIVATEAPP => {
+            ctx.window_is_active = wparam.0 != usize::try_from(WA_INACTIVE).expect("WA_INACTIVE fits into usize")
+        }
         // Sent by the OS when OS clipboard content is changed
         WM_CLIPBOARDUPDATE => {
             // SAFETY: `GetClipboardOwner` is always safe to call.
@@ -347,8 +350,9 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
         }
         // Sent by the OS when delay-rendered data is requested for rendering.
         WM_RENDERFORMAT => {
-            #[expect(clippy::cast_possible_truncation)] // should never truncate in practice
-            ctx.handle_event(BackendEvent::RenderFormat(ClipboardFormatId::new(wparam.0 as u32)));
+            ctx.handle_event(BackendEvent::RenderFormat(ClipboardFormatId::new(
+                u32::try_from(wparam.0).expect("should never truncate in practice"),
+            )));
         }
         // Sent by the OS when all delay-rendered data is requested for rendering.
         WM_RENDERALLFORMATS => {

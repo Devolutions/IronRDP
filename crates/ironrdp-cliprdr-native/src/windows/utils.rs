@@ -26,7 +26,7 @@ impl GlobalMemoryBuffer {
         // - `dst` is valid for writes of `data.len()` bytes, we allocated enough above.
         // - Both `data` and `dst` are properly aligned: u8 alignment is 1
         // - Memory regions are not overlapping, `dst` was allocated by us just above.
-        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, data.len()) };
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst.cast::<u8>(), data.len()) };
 
         // SAFETY: We called `GlobalLock` on this handle just above.
         if let Err(error) = unsafe { GlobalUnlock(handle) } {

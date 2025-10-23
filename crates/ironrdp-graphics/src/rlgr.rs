@@ -95,12 +95,15 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                     runmax = 1 << k;
                 }
                 bits.output_bit(1, true);
-                bits.output_bits(k as usize, nz);
+                bits.output_bits(
+                    usize::try_from(k).map_err(|_| RlgrError::InvalidIntegralConversion("k"))?,
+                    nz,
+                );
 
                 if let Some(val) = input.next() {
-                    let mag = val.unsigned_abs() as u32;
+                    let mag = u32::from(val.unsigned_abs());
                     bits.output_bit(1, *val < 0);
-                    code_gr(&mut bits, &mut krp, mag - 1);
+                    code_gr(&mut bits, &mut krp, mag - 1)?;
                 }
                 kp = kp.saturating_sub(DN_GR);
                 k = kp >> LS_GR;
@@ -110,11 +113,10 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                 let input_first = *input
                     .next()
                     .expect("value is guaranteed to be `Some` due to the prior check");
-
                 match mode {
                     EntropyAlgorithm::Rlgr1 => {
                         let two_ms = get_2magsign(input_first);
-                        code_gr(&mut bits, &mut krp, two_ms);
+                        code_gr(&mut bits, &mut krp, two_ms)?;
                         if two_ms == 0 {
                             kp = min(kp + UP_GR, KP_MAX);
                         } else {
@@ -126,9 +128,11 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                         let two_ms1 = get_2magsign(input_first);
                         let two_ms2 = input.next().map(|&n| get_2magsign(n)).unwrap_or(1);
                         let sum2ms = two_ms1 + two_ms2;
-                        code_gr(&mut bits, &mut krp, sum2ms);
+                        code_gr(&mut bits, &mut krp, sum2ms)?;
 
-                        let m = 32 - sum2ms.leading_zeros() as usize;
+                        let m = 32
+                            - usize::try_from(sum2ms.leading_zeros())
+                                .map_err(|_| RlgrError::InvalidIntegralConversion("sum2ms leading zeros count"))?;
                         if m != 0 {
                             bits.output_bits(m, two_ms1);
                         }
@@ -152,14 +156,15 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
 fn get_2magsign(val: i16) -> u32 {
     let sign = if val < 0 { 1 } else { 0 };
 
-    (val.unsigned_abs() as u32) * 2 - sign
+    (u32::from(val.unsigned_abs())) * 2 - sign
 }
 
-fn code_gr(bits: &mut BitStream<'_>, krp: &mut u32, val: u32) {
-    let kr = (*krp >> LS_GR) as usize;
-    let vk = (val >> kr) as usize;
+fn code_gr(bits: &mut BitStream<'_>, krp: &mut u32, val: u32) -> Result<(), RlgrError> {
+    let kr = usize::try_from(*krp >> LS_GR).map_err(|_| RlgrError::InvalidIntegralConversion("krp >> LS_GR"))?;
+    let vk = val >> kr;
+    let vk_usize = usize::try_from(vk).map_err(|_| RlgrError::InvalidIntegralConversion("val >> kr"))?;
 
-    bits.output_bit(vk, true);
+    bits.output_bit(vk_usize, true);
     bits.output_bit(1, false);
     if kr != 0 {
         let remainder = val & ((1 << kr) - 1);
@@ -168,8 +173,10 @@ fn code_gr(bits: &mut BitStream<'_>, krp: &mut u32, val: u32) {
     if vk == 0 {
         *krp = krp.saturating_sub(2);
     } else if vk > 1 {
-        *krp = min(*krp + vk as u32, KP_MAX);
+        *krp = min(*krp + vk, KP_MAX);
     }
+
+    Ok(())
 }
 
 pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Result<(), RlgrError> {
@@ -188,22 +195,34 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
             CompressionMode::RunLength => {
                 let number_of_zeros = truncate_leading_value(&mut bits, false);
                 try_split_bits!(bits, 1);
-                let run = count_run(number_of_zeros, &mut k, &mut kp) + load_be_u32(try_split_bits!(bits, k as usize));
+                let run = count_run(number_of_zeros, &mut k, &mut kp)
+                    + load_be_u32(try_split_bits!(
+                        bits,
+                        usize::try_from(k).map_err(|_| RlgrError::InvalidIntegralConversion("k"))?
+                    ));
 
                 let sign_bit = try_split_bits!(bits, 1).load_be::<u8>();
 
                 let number_of_ones = truncate_leading_value(&mut bits, true);
                 try_split_bits!(bits, 1);
 
-                let code_remainder = load_be_u32(try_split_bits!(bits, kr as usize)) + ((number_of_ones as u32) << kr);
+                let code_remainder = load_be_u32(try_split_bits!(
+                    bits,
+                    usize::try_from(kr).map_err(|_| RlgrError::InvalidIntegralConversion("kr"))?
+                )) + (u32::try_from(number_of_ones)
+                    .map_err(|_| RlgrError::InvalidIntegralConversion("number of ones"))?
+                    << kr);
 
-                update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
+                update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp)?;
                 kp = kp.saturating_sub(DN_GR);
                 k = kp >> LS_GR;
 
-                let magnitude = compute_rl_magnitude(sign_bit, code_remainder);
+                let magnitude = compute_rl_magnitude(sign_bit, code_remainder)?;
 
-                let size = min(run as usize, output.len());
+                let size = min(
+                    usize::try_from(run).map_err(|_| RlgrError::InvalidIntegralConversion("run"))?,
+                    output.len(),
+                );
                 fill(&mut output[..size], 0);
                 output = &mut output[size..];
                 write_byte!(output, magnitude);
@@ -212,13 +231,18 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
                 let number_of_ones = truncate_leading_value(&mut bits, true);
                 try_split_bits!(bits, 1);
 
-                let code_remainder = load_be_u32(try_split_bits!(bits, kr as usize)) + ((number_of_ones as u32) << kr);
+                let code_remainder = load_be_u32(try_split_bits!(
+                    bits,
+                    usize::try_from(kr).map_err(|_| RlgrError::InvalidIntegralConversion("kr"))?
+                )) + ((u32::try_from(number_of_ones)
+                    .map_err(|_| RlgrError::InvalidIntegralConversion("number of ones"))?)
+                    << kr);
 
-                update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
+                update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp)?;
 
                 match mode {
                     EntropyAlgorithm::Rlgr1 => {
-                        let magnitude = compute_rlgr1_magnitude(code_remainder, &mut k, &mut kp);
+                        let magnitude = compute_rlgr1_magnitude(code_remainder, &mut k, &mut kp)?;
                         write_byte!(output, magnitude);
                     }
                     EntropyAlgorithm::Rlgr3 => {
@@ -234,10 +258,10 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
                             k = kp >> LS_GR;
                         }
 
-                        let magnitude = compute_rlgr3_magnitude(val1);
+                        let magnitude = compute_rlgr3_magnitude(val1)?;
                         write_byte!(output, magnitude);
 
-                        let magnitude = compute_rlgr3_magnitude(val2);
+                        let magnitude = compute_rlgr3_magnitude(val2)?;
                         write_byte!(output, magnitude);
                     }
                 }
@@ -288,37 +312,41 @@ fn count_run(number_of_zeros: usize, k: &mut u32, kp: &mut u32) -> u32 {
     .sum()
 }
 
-fn compute_rl_magnitude(sign_bit: u8, code_remainder: u32) -> i16 {
+fn compute_rl_magnitude(sign_bit: u8, code_remainder: u32) -> Result<i16, RlgrError> {
+    let rl_magnitude =
+        i16::try_from(code_remainder + 1).map_err(|_| RlgrError::InvalidIntegralConversion("code remainder + 1"))?;
+
     if sign_bit != 0 {
-        -((code_remainder + 1) as i16)
+        Ok(-rl_magnitude)
     } else {
-        (code_remainder + 1) as i16
+        Ok(rl_magnitude)
     }
 }
 
-fn compute_rlgr1_magnitude(code_remainder: u32, k: &mut u32, kp: &mut u32) -> i16 {
+fn compute_rlgr1_magnitude(code_remainder: u32, k: &mut u32, kp: &mut u32) -> Result<i16, RlgrError> {
     if code_remainder == 0 {
         *kp = min(*kp + UQ_GR, KP_MAX);
         *k = *kp >> LS_GR;
 
-        0
+        Ok(0)
     } else {
         *kp = kp.saturating_sub(DQ_GR);
         *k = *kp >> LS_GR;
 
         if code_remainder % 2 != 0 {
-            -(((code_remainder + 1) >> 1) as i16)
+            Ok(-i16::try_from((code_remainder + 1) >> 1)
+                .map_err(|_| RlgrError::InvalidIntegralConversion("(code remainder + 1) >> 1"))?)
         } else {
-            (code_remainder >> 1) as i16
+            i16::try_from(code_remainder >> 1).map_err(|_| RlgrError::InvalidIntegralConversion("code remainder >> 1"))
         }
     }
 }
 
-fn compute_rlgr3_magnitude(val: u32) -> i16 {
+fn compute_rlgr3_magnitude(val: u32) -> Result<i16, RlgrError> {
     if val % 2 != 0 {
-        -(((val + 1) >> 1) as i16)
+        Ok(-i16::try_from((val + 1) >> 1).map_err(|_| RlgrError::InvalidIntegralConversion("(val + 1) >> 1"))?)
     } else {
-        (val >> 1) as i16
+        i16::try_from(val >> 1).map_err(|_| RlgrError::InvalidIntegralConversion("val >> 1"))
     }
 }
 
@@ -334,14 +362,23 @@ fn compute_n_index(code_remainder: u32) -> usize {
     32 - leading_zeros
 }
 
-fn update_parameters_according_to_number_of_ones(number_of_ones: usize, kr: &mut u32, krp: &mut u32) {
+fn update_parameters_according_to_number_of_ones(
+    number_of_ones: usize,
+    kr: &mut u32,
+    krp: &mut u32,
+) -> Result<(), RlgrError> {
     if number_of_ones == 0 {
         *krp = (*krp).saturating_sub(2);
         *kr = *krp >> LS_GR;
     } else if number_of_ones > 1 {
-        *krp = min(*krp + number_of_ones as u32, KP_MAX);
+        *krp = min(
+            *krp + u32::try_from(number_of_ones).map_err(|_| RlgrError::InvalidIntegralConversion("number of ones"))?,
+            KP_MAX,
+        );
         *kr = *krp >> LS_GR;
     }
+
+    Ok(())
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -365,6 +402,7 @@ pub enum RlgrError {
     Io(io::Error),
     Yuv(YuvError),
     EmptyTile,
+    InvalidIntegralConversion(&'static str),
 }
 
 impl core::fmt::Display for RlgrError {
@@ -373,6 +411,7 @@ impl core::fmt::Display for RlgrError {
             Self::Io(_) => write!(f, "IO error"),
             Self::Yuv(_) => write!(f, "YUV error"),
             Self::EmptyTile => write!(f, "the input tile is empty"),
+            Self::InvalidIntegralConversion(s) => write!(f, "invalid `{s}`: out of range integral type conversion"),
         }
     }
 }
@@ -383,6 +422,7 @@ impl core::error::Error for RlgrError {
             Self::Io(error) => Some(error),
             Self::Yuv(error) => Some(error),
             Self::EmptyTile => None,
+            Self::InvalidIntegralConversion(_) => None,
         }
     }
 }

@@ -1,5 +1,6 @@
 use core::num::NonZeroU32;
 
+use anyhow::Context as _;
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use softbuffer::{NoDisplayHandle, NoWindowHandle};
 use web_sys::HtmlCanvasElement;
@@ -61,7 +62,7 @@ impl Canvas {
             let region_width_usize = usize::from(region_width);
 
             for dst_row in dst
-                .chunks_exact_mut(self.width.get() as usize)
+                .chunks_exact_mut(usize::try_from(self.width.get()).context("canvas width")?)
                 .skip(region_top_usize)
                 .take(region_height_usize)
             {

@@ -160,6 +160,10 @@ impl DecodeStream {
                             }
                         };
 
+                        #[expect(
+                            clippy::as_conversions,
+                            reason = "opus::Channels has no conversions to usize implemented"
+                        )]
                         let mut pcm = vec![0u8; nb_samples * chan as usize * size_of::<i16>()];
                         if let Err(error) = dec.decode(&pkt, bytemuck::cast_slice_mut(pcm.as_mut_slice()), false) {
                             error!(?error, "Failed to decode an Opus packet");

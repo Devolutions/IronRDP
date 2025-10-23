@@ -19,7 +19,7 @@ pub(crate) struct BitmapEncoder {
 impl BitmapEncoder {
     pub(crate) fn new() -> Self {
         Self {
-            buffer: vec![0; u16::MAX as usize],
+            buffer: vec![0; usize::from(u16::MAX)],
         }
     }
 

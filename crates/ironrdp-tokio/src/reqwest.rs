@@ -2,7 +2,7 @@ use core::future::Future;
 use core::net::{IpAddr, Ipv4Addr};
 use core::pin::Pin;
 
-use ironrdp_connector::{custom_err, ConnectorResult};
+use ironrdp_connector::{custom_err, general_err, ConnectorResult};
 use reqwest::Client;
 use sspi::{Error, ErrorKind};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -62,7 +62,10 @@ impl ReqwestNetworkClient {
             .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
             .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
 
-        let mut buf = vec![0; len as usize + 4];
+        let len = usize::try_from(len)
+            .map_err(|_| general_err!("invalid buffer length: out of range integral type conversion"))?;
+
+        let mut buf = vec![0; len + 4];
         buf[0..4].copy_from_slice(&(len.to_be_bytes()));
 
         stream

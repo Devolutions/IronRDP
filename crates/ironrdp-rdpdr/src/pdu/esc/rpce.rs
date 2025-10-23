@@ -244,6 +244,10 @@ impl TryFrom<u8> for Endianness {
 }
 
 impl From<Endianness> for u8 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(endianness: Endianness) -> Self {
         endianness as u8
     }

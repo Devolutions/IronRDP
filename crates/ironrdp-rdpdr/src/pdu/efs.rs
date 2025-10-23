@@ -154,9 +154,15 @@ impl ClientNameRequest {
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
+
+        let encoded_computer_name_length = cast_length!(
+            "encoded computer name length",
+            encoded_str_len(self.computer_name(), self.unicode_flag().into(), true)
+        )?;
+
         dst.write_u32(self.unicode_flag().into());
         dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
-        dst.write_u32(encoded_str_len(self.computer_name(), self.unicode_flag().into(), true) as u32);
+        dst.write_u32(encoded_computer_name_length);
         write_string_to_cursor(dst, self.computer_name(), self.unicode_flag().into(), true)
     }
 
@@ -186,6 +192,10 @@ impl From<ClientNameRequestUnicodeFlag> for CharacterSet {
 }
 
 impl From<ClientNameRequestUnicodeFlag> for u32 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(val: ClientNameRequestUnicodeFlag) -> Self {
         val as u32
     }
@@ -431,7 +441,7 @@ impl CapabilityHeader {
     fn new_general() -> Self {
         Self {
             cap_type: CapabilityType::General,
-            length: (Self::SIZE + GeneralCapabilitySet::SIZE) as u16,
+            length: u16::try_from(Self::SIZE + GeneralCapabilitySet::SIZE).expect("value fits into u16"),
             version: GENERAL_CAPABILITY_VERSION_02,
         }
     }
@@ -439,7 +449,7 @@ impl CapabilityHeader {
     fn new_smartcard() -> Self {
         Self {
             cap_type: CapabilityType::Smartcard,
-            length: Self::SIZE as u16,
+            length: u16::try_from(Self::SIZE).expect("value fits into u16"),
             version: SMARTCARD_CAPABILITY_VERSION_01,
         }
     }
@@ -447,7 +457,7 @@ impl CapabilityHeader {
     fn new_drive() -> Self {
         Self {
             cap_type: CapabilityType::Drive,
-            length: Self::SIZE as u16,
+            length: u16::try_from(Self::SIZE).expect("value fits into u16"),
             version: DRIVE_CAPABILITY_VERSION_02,
         }
     }
@@ -490,6 +500,10 @@ enum CapabilityType {
 }
 
 impl From<CapabilityType> for u16 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(cap_type: CapabilityType) -> Self {
         cap_type as u16
     }
@@ -990,6 +1004,10 @@ pub enum DeviceType {
 }
 
 impl From<DeviceType> for u32 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(device_type: DeviceType) -> Self {
         device_type as u32
     }
@@ -1211,6 +1229,10 @@ impl TryFrom<u32> for MajorFunction {
 }
 
 impl From<MajorFunction> for u32 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(major_function: MajorFunction) -> Self {
         major_function as u32
     }
@@ -1250,12 +1272,6 @@ impl From<u32> for MinorFunction {
 impl From<MinorFunction> for u32 {
     fn from(minor_function: MinorFunction) -> Self {
         minor_function.0
-    }
-}
-
-impl From<MinorFunction> for u8 {
-    fn from(minor_function: MinorFunction) -> Self {
-        minor_function.0 as u8
     }
 }
 

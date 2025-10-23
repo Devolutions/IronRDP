@@ -95,7 +95,7 @@ impl Encode for ExtendedMonitorInfo {
 
         dst.write_u32(self.physical_width);
         dst.write_u32(self.physical_height);
-        dst.write_u32(self.orientation.as_u32());
+        dst.write_u32(u32::from(self.orientation.as_u16()));
         dst.write_u32(self.desktop_scale_factor);
         dst.write_u32(self.device_scale_factor);
 
@@ -132,7 +132,7 @@ impl<'de> Decode<'de> for ExtendedMonitorInfo {
     }
 }
 
-#[repr(u32)]
+#[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum MonitorOrientation {
     Landscape = 0,
@@ -146,7 +146,7 @@ impl MonitorOrientation {
         clippy::as_conversions,
         reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
     )]
-    fn as_u32(self) -> u32 {
-        self as u32
+    pub fn as_u16(self) -> u16 {
+        self as u16
     }
 }

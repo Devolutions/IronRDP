@@ -42,6 +42,7 @@ const fn make_gcc_block_buffer<const N: usize>(data_type: u16, buffer: &[u8]) ->
 
     let array = copy_slice(&data_type.to_le_bytes(), [0; N], 0);
 
+    #[expect(clippy::as_conversions, reason = "must be const casts")]
     let length = (buffer.len() + USER_HEADER_LEN) as u16;
     let array = copy_slice(&length.to_le_bytes(), array, 2);
 
@@ -161,6 +162,7 @@ pub static SERVER_GCC_WITH_OPTIONAL_FIELDS: LazyLock<ServerGccBlocks> = LazyLock
     data
 });
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const CLIENT_GCC_CORE_BLOCK_BUFFER: [u8; gcc_block_size(
     CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER,
 )] = make_gcc_block_buffer(
@@ -168,18 +170,22 @@ pub const CLIENT_GCC_CORE_BLOCK_BUFFER: [u8; gcc_block_size(
     &CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER,
 );
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const CLIENT_GCC_SECURITY_BLOCK_BUFFER: [u8; gcc_block_size(CLIENT_SECURITY_DATA_BUFFER)] =
     make_gcc_block_buffer(ClientGccType::SecurityData as u16, &CLIENT_SECURITY_DATA_BUFFER);
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const CLIENT_GCC_NETWORK_BLOCK_BUFFER: [u8; gcc_block_size(CLIENT_NETWORK_DATA_WITH_CHANNELS_BUFFER)] =
     make_gcc_block_buffer(
         ClientGccType::NetworkData as u16,
         &CLIENT_NETWORK_DATA_WITH_CHANNELS_BUFFER,
     );
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const CLIENT_GCC_CLUSTER_BLOCK_BUFFER: [u8; gcc_block_size(CLUSTER_DATA_BUFFER)] =
     make_gcc_block_buffer(ClientGccType::ClusterData as u16, &CLUSTER_DATA_BUFFER);
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const CLIENT_GCC_MONITOR_BLOCK_BUFFER: [u8; gcc_block_size(
     crate::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER,
 )] = make_gcc_block_buffer(
@@ -187,6 +193,7 @@ pub const CLIENT_GCC_MONITOR_BLOCK_BUFFER: [u8; gcc_block_size(
     &crate::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER,
 );
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const CLIENT_GCC_MONITOR_EXTENDED_BLOCK_BUFFER: [u8; gcc_block_size(
     crate::monitor_extended_data::MONITOR_DATA_WITH_MONITORS_BUFFER,
 )] = make_gcc_block_buffer(
@@ -194,24 +201,28 @@ pub const CLIENT_GCC_MONITOR_EXTENDED_BLOCK_BUFFER: [u8; gcc_block_size(
     &crate::monitor_extended_data::MONITOR_DATA_WITH_MONITORS_BUFFER,
 );
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const SERVER_GCC_CORE_BLOCK_BUFFER: [u8; gcc_block_size(SERVER_CORE_DATA_TO_REQUESTED_PROTOCOL_BUFFER)] =
     make_gcc_block_buffer(
         ServerGccType::CoreData as u16,
         &SERVER_CORE_DATA_TO_REQUESTED_PROTOCOL_BUFFER,
     );
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const SERVER_GCC_NETWORK_BLOCK_BUFFER: [u8; gcc_block_size(SERVER_NETWORK_DATA_WITH_CHANNELS_ID_BUFFER)] =
     make_gcc_block_buffer(
         ServerGccType::NetworkData as u16,
         &SERVER_NETWORK_DATA_WITH_CHANNELS_ID_BUFFER,
     );
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const SERVER_GCC_SECURITY_BLOCK_BUFFER: [u8; gcc_block_size(SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS_BUFFER)] =
     make_gcc_block_buffer(
         ServerGccType::SecurityData as u16,
         &SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS_BUFFER,
     );
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER: [u8; gcc_block_size(
     crate::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER,
 )] = make_gcc_block_buffer(
@@ -219,6 +230,7 @@ pub const SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER: [u8; gcc_block_size(
     &crate::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER,
 );
 
+#[expect(clippy::as_conversions, reason = "must be const casts")]
 pub const SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER: [u8; gcc_block_size(
     crate::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER,
 )] = make_gcc_block_buffer(

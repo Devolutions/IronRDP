@@ -66,6 +66,7 @@ impl App {
         let Some((window, _)) = self.window.as_mut() else {
             return;
         };
+        #[expect(clippy::as_conversions, reason = "casting f64 to u32")]
         let scale_factor = (window.scale_factor() * 100.0) as u32;
 
         let width = u16::try_from(size.width).expect("reasonable width");
@@ -222,8 +223,10 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let win_size = window.inner_size();
-                let x = (position.x / win_size.width as f64 * self.buffer_size.0 as f64) as u16;
-                let y = (position.y / win_size.height as f64 * self.buffer_size.1 as f64) as u16;
+                #[expect(clippy::as_conversions, reason = "casting f64 to u16")]
+                let x = (position.x / f64::from(win_size.width) * f64::from(self.buffer_size.0)) as u16;
+                #[expect(clippy::as_conversions, reason = "casting f64 to u16")]
+                let y = (position.y / f64::from(win_size.height) * f64::from(self.buffer_size.1)) as u16;
                 let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition { x, y });
 
                 let input_events = self.input_database.apply(core::iter::once(operation));
@@ -239,6 +242,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                             operations.push(ironrdp::input::Operation::WheelRotations(
                                 ironrdp::input::WheelRotations {
                                     is_vertical: false,
+                                    #[expect(clippy::as_conversions, reason = "casting f32 to i16")]
                                     rotation_units: (delta_x * 100.) as i16,
                                 },
                             ));
@@ -248,6 +252,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                             operations.push(ironrdp::input::Operation::WheelRotations(
                                 ironrdp::input::WheelRotations {
                                     is_vertical: true,
+                                    #[expect(clippy::as_conversions, reason = "casting f32 to i16")]
                                     rotation_units: (delta_y * 100.) as i16,
                                 },
                             ));
@@ -258,6 +263,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                             operations.push(ironrdp::input::Operation::WheelRotations(
                                 ironrdp::input::WheelRotations {
                                     is_vertical: false,
+                                    #[expect(clippy::as_conversions, reason = "casting f64 to i16")]
                                     rotation_units: delta.x as i16,
                                 },
                             ));
@@ -267,6 +273,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                             operations.push(ironrdp::input::Operation::WheelRotations(
                                 ironrdp::input::WheelRotations {
                                     is_vertical: true,
+                                    #[expect(clippy::as_conversions, reason = "casting f64 to i16")]
                                     rotation_units: delta.y as i16,
                                 },
                             ));

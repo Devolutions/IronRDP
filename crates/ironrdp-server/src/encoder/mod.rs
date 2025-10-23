@@ -31,6 +31,16 @@ enum CodecId {
     None = 0x0,
 }
 
+impl CodecId {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 #[cfg_attr(feature = "__bench", visibility::make(pub))]
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
@@ -389,7 +399,7 @@ impl BitmapUpdateHandler for NoneHandler {
         for row in bitmap.data.chunks(bitmap.stride.get()).rev() {
             data.extend_from_slice(&row[..stride]);
         }
-        set_surface(bitmap, CodecId::None as u8, &data)
+        set_surface(bitmap, CodecId::None.as_u8(), &data)
     }
 }
 

@@ -260,9 +260,12 @@ impl DecodedPointer {
                 } else if target.should_premultiply_alpha() {
                     // Calculate premultiplied alpha via integer arithmetic
                     let with_premultiplied_alpha = [
-                        ((color[0] as u16 * color[0] as u16) >> 8) as u8,
-                        ((color[1] as u16 * color[1] as u16) >> 8) as u8,
-                        ((color[2] as u16 * color[2] as u16) >> 8) as u8,
+                        u8::try_from((u16::from(color[0]) * u16::from(color[0])) >> 8)
+                            .expect("(u16 >> 8) fits into u8"),
+                        u8::try_from((u16::from(color[1]) * u16::from(color[1])) >> 8)
+                            .expect("(u16 >> 8) fits into u8"),
+                        u8::try_from((u16::from(color[2]) * u16::from(color[2])) >> 8)
+                            .expect("(u16 >> 8) fits into u8"),
                         color[3],
                     ];
                     bitmap_data.extend_from_slice(&with_premultiplied_alpha);
