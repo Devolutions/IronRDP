@@ -66,11 +66,11 @@ bitflags! {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Order {
-    pub order_flags: OrderFlags,
+    order_flags: OrderFlags,
     order_support: [u8; SUPPORT_ARRAY_LEN],
-    pub order_support_ex_flags: OrderSupportExFlags,
-    pub desktop_save_size: u32,
-    pub text_ansi_code_page: u16,
+    order_support_ex_flags: OrderSupportExFlags,
+    desktop_save_size: u32,
+    text_ansi_code_page: u16,
 }
 
 impl Order {

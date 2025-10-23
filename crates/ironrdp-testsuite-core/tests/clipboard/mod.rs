@@ -356,7 +356,7 @@ fn metafile_pdu_ms() {
         assert_eq!(metafile.y_ext, 423);
 
         // Just check some known arbitrary byte in raw metafile data
-        assert_eq!(metafile.data()[metafile.data().len() - 6], 0x03);
+        assert_eq!(metafile.data[metafile.data.len() - 6], 0x03);
     } else {
         panic!("Expected FormatDataResponse");
     };

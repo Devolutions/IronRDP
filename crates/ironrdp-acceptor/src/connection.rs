@@ -713,7 +713,7 @@ impl Sequence for Acceptor {
                     AcceptorState::Accepted {
                         channels,
                         client_capabilities,
-                        input_events: finalization.input_events,
+                        input_events: finalization.into_input_events(),
                     }
                 } else {
                     AcceptorState::ConnectionFinalization {

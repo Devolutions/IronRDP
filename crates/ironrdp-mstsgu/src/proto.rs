@@ -66,7 +66,7 @@ impl TryFrom<u16> for PktTy {
 #[derive(Default, Debug)]
 pub(crate) struct PktHdr {
     pub ty: PktTy,
-    _reserved: u16,
+    pub _reserved: u16,
     pub length: u32,
 }
 
@@ -183,7 +183,7 @@ impl Decode<'_> for HandshakeRespPkt {
 pub(crate) struct TunnelReqPkt {
     pub caps: u32,
     pub fields_present: u16,
-    pub(crate) _reserved: u16,
+    pub _reserved: u16,
 }
 
 impl Encode for TunnelReqPkt {
@@ -384,13 +384,17 @@ impl Encode for TunnelAuthPkt {
 /// 2.2.10.16 HTTP_TUNNEL_AUTH_RESPONSE Structure
 #[derive(Debug)]
 pub(crate) struct TunnelAuthRespPkt {
-    pub error_code: u32,
+    error_code: u32,
     _fields_present: u16,
     _reserved: u16,
 }
 
 impl TunnelAuthRespPkt {
     const FIXED_PART_SIZE: usize = 4 /* error_code */ + 2 /* fields_present */ + 2 /* _reserved */;
+
+    pub(crate) fn error_code(&self) -> u32 {
+        self.error_code
+    }
 }
 
 impl Decode<'_> for TunnelAuthRespPkt {
@@ -455,7 +459,7 @@ impl Encode for ChannelPkt {
 /// 2.2.10.4 HTTP_CHANNEL_RESPONSE
 #[derive(Default, Debug)]
 pub(crate) struct ChannelResp {
-    pub error_code: u32,
+    error_code: u32,
     fields_present: u16,
     _reserved: u16,
 
@@ -467,6 +471,10 @@ pub(crate) struct ChannelResp {
 
 impl ChannelResp {
     const FIXED_PART_SIZE: usize = 4 /* error_code */ + 2 /* fields_present */ + 2 /* _reserved */;
+
+    pub(crate) fn error_code(&self) -> u32 {
+        self.error_code
+    }
 }
 
 impl Decode<'_> for ChannelResp {

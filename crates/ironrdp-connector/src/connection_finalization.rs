@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 
 use crate::{general_err, legacy, reason_err, ConnectorResult, Sequence, State, Written};
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 #[non_exhaustive]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ConnectionFinalizationState {
@@ -48,7 +48,7 @@ impl State for ConnectionFinalizationState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectionFinalizationSequence {
     pub state: ConnectionFinalizationState,

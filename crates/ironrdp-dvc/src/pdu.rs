@@ -282,12 +282,12 @@ impl From<Cmd> for String {
 #[derive(Debug, PartialEq)]
 pub struct DataFirstPdu {
     header: Header,
-    pub channel_id: DynamicChannelId,
+    channel_id: DynamicChannelId,
     /// Length is the *total* length of the data to be sent, including the length
     /// of the data that will be sent by subsequent DVC_DATA PDUs.
-    pub length: u32,
+    length: u32,
     /// Data is just the data to be sent in this PDU.
-    pub data: Vec<u8>,
+    data: Vec<u8>,
 }
 
 impl DataFirstPdu {
@@ -320,6 +320,18 @@ impl DataFirstPdu {
             header: self.header.with_sp(sp),
             ..self
         }
+    }
+
+    pub fn length(&self) -> u32 {
+        self.length
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
@@ -434,8 +446,8 @@ impl From<FieldType> for u8 {
 #[derive(Debug, PartialEq)]
 pub struct DataPdu {
     header: Header,
-    pub channel_id: DynamicChannelId,
-    pub data: Vec<u8>,
+    channel_id: DynamicChannelId,
+    data: Vec<u8>,
 }
 
 impl DataPdu {
@@ -445,6 +457,18 @@ impl DataPdu {
             channel_id,
             data,
         }
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
+    }
+
+    pub fn data_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.data
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
@@ -485,8 +509,8 @@ impl DataPdu {
 #[derive(Debug, PartialEq)]
 pub struct CreateResponsePdu {
     header: Header,
-    pub channel_id: DynamicChannelId,
-    pub creation_status: CreationStatus,
+    channel_id: DynamicChannelId,
+    creation_status: CreationStatus,
 }
 
 impl CreateResponsePdu {
@@ -496,6 +520,14 @@ impl CreateResponsePdu {
             channel_id,
             creation_status,
         }
+    }
+
+    pub fn channel_id(&self) -> DynamicChannelId {
+        self.channel_id
+    }
+
+    pub fn creation_status(&self) -> CreationStatus {
+        self.creation_status
     }
 
     fn name() -> &'static str {
@@ -564,7 +596,7 @@ impl From<CreationStatus> for u32 {
 #[derive(Debug, PartialEq)]
 pub struct ClosePdu {
     header: Header,
-    pub channel_id: DynamicChannelId,
+    channel_id: DynamicChannelId,
 }
 
 impl ClosePdu {
@@ -581,6 +613,10 @@ impl ClosePdu {
             header: self.header.with_cb_id(cb_id),
             ..self
         }
+    }
+
+    pub fn channel_id(&self) -> DynamicChannelId {
+        self.channel_id
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
@@ -798,8 +834,8 @@ impl CapabilitiesRequestPdu {
 #[derive(Debug, PartialEq)]
 pub struct CreateRequestPdu {
     header: Header,
-    pub channel_id: DynamicChannelId,
-    pub channel_name: String,
+    channel_id: DynamicChannelId,
+    channel_name: String,
 }
 
 impl CreateRequestPdu {
@@ -809,6 +845,18 @@ impl CreateRequestPdu {
             channel_id,
             channel_name,
         }
+    }
+
+    pub fn channel_id(&self) -> DynamicChannelId {
+        self.channel_id
+    }
+
+    pub fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
+    pub fn into_channel_name(self) -> String {
+        self.channel_name
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {

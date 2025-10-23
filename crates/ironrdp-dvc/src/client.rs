@@ -116,8 +116,8 @@ impl SvcProcessor for DrdynvcClient {
             }
             DrdynvcServerPdu::Create(create_request) => {
                 debug!("Got DVC Create Request PDU: {create_request:?}");
-                let channel_name = create_request.channel_name;
-                let channel_id = create_request.channel_id;
+                let channel_id = create_request.channel_id();
+                let channel_name = create_request.into_channel_name();
 
                 if !self.cap_handshake_done {
                     debug!(
@@ -156,9 +156,9 @@ impl SvcProcessor for DrdynvcClient {
             }
             DrdynvcServerPdu::Close(close_request) => {
                 debug!("Got DVC Close Request PDU: {close_request:?}");
-                self.dynamic_channels.remove_by_channel_id(close_request.channel_id);
+                self.dynamic_channels.remove_by_channel_id(close_request.channel_id());
 
-                let close_response = DrdynvcClientPdu::Close(ClosePdu::new(close_request.channel_id));
+                let close_response = DrdynvcClientPdu::Close(ClosePdu::new(close_request.channel_id()));
 
                 debug!("Send DVC Close Response PDU: {close_response:?}");
                 responses.push(SvcMessage::from(close_response));

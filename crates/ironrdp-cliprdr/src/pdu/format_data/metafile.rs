@@ -42,7 +42,7 @@ pub struct PackedMetafile<'a> {
     pub x_ext: u32,
     pub y_ext: u32,
     /// The variable sized contents of the metafile as specified in [MS-WMF] section 2
-    data: Cow<'a, [u8]>,
+    pub data: Cow<'a, [u8]>,
 }
 
 impl PackedMetafile<'_> {
@@ -61,10 +61,6 @@ impl PackedMetafile<'_> {
             y_ext,
             data: data.into(),
         }
-    }
-
-    pub fn data(&self) -> &[u8] {
-        &self.data
     }
 }
 

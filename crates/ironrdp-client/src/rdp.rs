@@ -660,7 +660,7 @@ async fn active_session(
                             desktop_size,
                             enable_server_pointer,
                             pointer_software_rendering,
-                        } = connection_activation.state
+                        } = connection_activation.connection_activation_state()
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
                             // Update image size with the new desktop size.
