@@ -10,18 +10,18 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="11.0.10" />
-    <PackageReference Include="Avalonia.Desktop" Version="11.0.10" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.0.10" />
-    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.0.10" />
+    <PackageReference Include="Avalonia" Version="11.3.7" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.7" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.7" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.7" />
     <!--Condition
     below is needed to remove Avalonia.Diagnostics package from build output in Release
     configuration.-->
-    <PackageReference Condition="'$(Configuration)' == 'Debug'" Include="Avalonia.Diagnostics" Version="11.0.10" />
+    <PackageReference Condition="'$(Configuration)' == 'Debug'" Include="Avalonia.Diagnostics" Version="11.3.7" />
     <ProjectReference Include="../Devolutions.IronRdp/Devolutions.IronRdp.csproj" />
   </ItemGroup>
 
   <ItemGroup Condition="'$([System.OperatingSystem]::IsWindows())'">
-    <PackageReference Include="Avalonia.Win32" Version="11.0.10" />
+    <PackageReference Include="Avalonia.Win32" Version="11.3.7" />
   </ItemGroup>
 </Project>

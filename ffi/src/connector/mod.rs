@@ -97,7 +97,7 @@ pub mod ffi {
 
         pub fn with_dynamic_channel_display_control(&mut self) -> Result<(), Box<IronRdpError>> {
             self.with_dvc(DisplayControlClient::new(|c| {
-                info!(DisplayCountrolCapabilities = ?c, "DisplayControl capabilities received");
+                info!(display_control_capabilities = ?c, "DisplayControl capabilities received");
                 Ok(Vec::new())
             }))
         }
@@ -185,7 +185,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            tracing::trace!(pduhint=?connector.next_pdu_hint(), "Reading next PDU hint");
+            tracing::trace!(pdu_hint=?connector.next_pdu_hint(), "Reading next PDU hint");
             Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
         }
 

@@ -134,4 +134,45 @@ public class Framed<TS> where TS : Stream
             }
         }
     }
+
+    /// <summary>
+    /// Reads data from the buffer based on a custom PDU hint function.
+    /// </summary>
+    /// <param name="customHint">A custom hint object implementing IPduHint interface.</param>
+    /// <returns>An asynchronous task that represents the operation. The task result contains the read data as a byte array.</returns>
+    public async Task<byte[]> ReadByHint(IPduHint customHint)
+    {
+        while (true)
+        {
+            var result = customHint.FindSize(this._buffer.ToArray());
+            if (result.HasValue)
+            {
+                return await this.ReadExact((nuint)result.Value.Item2);
+            }
+            else
+            {
+                var len = await this.Read();
+                if (len == 0)
+                {
+                    throw new Exception("EOF");
+                }
+            }
+        }
+    }
+}
+
+/// <summary>
+/// Interface for custom PDU hint implementations.
+/// </summary>
+public interface IPduHint
+{
+    /// <summary>
+    /// Finds the size of a PDU in the given byte array.
+    /// </summary>
+    /// <param name="bytes">The byte array to analyze.</param>
+    /// <returns>
+    /// A tuple (detected, size) if PDU is detected, null if more bytes are needed.
+    /// Throws exception if invalid PDU is detected.
+    /// </returns>
+    (bool, int)? FindSize(byte[] bytes);
 }
