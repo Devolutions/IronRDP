@@ -151,6 +151,12 @@ impl From<MousePdu> for MouseEvent {
             } else {
                 MouseEvent::RightReleased
             }
+        } else if value.flags.contains(PointerFlags::MIDDLE_BUTTON_OR_WHEEL) {
+            if value.flags.contains(PointerFlags::DOWN) {
+                MouseEvent::MiddlePressed
+            } else {
+                MouseEvent::MiddleReleased
+            }
         } else if value.flags.contains(PointerFlags::VERTICAL_WHEEL) {
             MouseEvent::VerticalScroll {
                 value: value.number_of_wheel_rotation_units,
