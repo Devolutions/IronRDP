@@ -104,6 +104,9 @@ jobs:
     needs:
       - preflight
       - npm-merge
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
       - name: Checkout repository
@@ -116,10 +119,6 @@ jobs:
         with:
           name: npm
           path: npm-packages
-
-      - name: Prepare npm
-        shell: pwsh
-        run: npm config set "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}"
 
       - name: Publish
         shell: pwsh
