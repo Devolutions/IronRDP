@@ -5,7 +5,7 @@ on:
     branches:
       - master
   pull_request:
-    types: [ opened, synchronize, reopened ]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 env:
@@ -32,19 +32,19 @@ jobs:
         run: cargo xtask cov install -v
 
       - name: Generate PR report
-        if: github.event.number != ''
+        if: ${{ github.event.number != '' }}
+        run: cargo xtask cov report-gh --repo "${{ github.repository }}" --pr "${{ github.event.number }}" -v
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cargo xtask cov report-gh --repo "${{ github.repository }}" --pr "${{ github.event.number }}" -v
 
       - name: Configure Git Identity
-        if: github.ref == 'refs/heads/master'
+        if: ${{ github.ref == 'refs/heads/master' }}
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Update coverage data
-        if: github.ref == 'refs/heads/master'
+        if: ${{ github.ref == 'refs/heads/master' }}
+        run: cargo xtask cov update -v
         env:
           GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_TOKEN }}
-        run: cargo xtask cov update -v

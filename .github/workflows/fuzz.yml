@@ -36,12 +36,12 @@ jobs:
 
   fuzz:
     name: Fuzzing ${{ matrix.target }}
+    needs: [corpus-download]
     runs-on: ubuntu-latest
-    needs: corpus-download
     strategy:
       fail-fast: false
       matrix:
-        target: [ pdu_decoding, rle_decompression, bitmap_stream, cliprdr_format, channel_processing ]
+        target: [pdu_decoding, rle_decompression, bitmap_stream, cliprdr_format, channel_processing]
 
     steps:
       - uses: actions/checkout@v4
@@ -108,9 +108,9 @@ jobs:
 
   corpus-merge:
     name: Corpus merge artifacts
-    runs-on: ubuntu-latest
-    needs: fuzz
     if: ${{ always() && !cancelled() }}
+    needs: [fuzz]
+    runs-on: ubuntu-latest
 
     steps:
       - name: Merge Artifacts
@@ -122,9 +122,9 @@ jobs:
 
   corpus-upload:
     name: Upload corpus
-    runs-on: ubuntu-latest
-    needs: corpus-merge
     if: ${{ always() && !cancelled() }}
+    needs: [corpus-merge]
+    runs-on: ubuntu-latest
     env:
       AZURE_STORAGE_KEY: ${{ secrets.CORPUS_AZURE_STORAGE_KEY }}
 
@@ -156,13 +156,13 @@ jobs:
 
   notify:
     name: Notify failure
-    runs-on: ubuntu-latest
     if: ${{ always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule' }}
-    needs:
-      - fuzz
+    needs: [fuzz]
+    runs-on: ubuntu-latest
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_ARCHITECTURE }}
       SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
     steps:
       - name: Send slack notification
         id: slack
