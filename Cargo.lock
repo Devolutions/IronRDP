@@ -1527,6 +1527,7 @@ dependencies = [
 name = "ffi"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "diplomat",
  "diplomat-runtime",
  "embed-resource",
@@ -1534,6 +1535,7 @@ dependencies = [
  "ironrdp-cliprdr-native",
  "ironrdp-core",
  "ironrdp-dvc-pipe-proxy",
+ "ironrdp-rdcleanpath",
  "sspi",
  "thiserror 2.0.17",
  "tracing",

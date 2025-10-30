@@ -29,6 +29,13 @@ public partial class Log: IDisposable
         _inner = handle;
     }
 
+    /// <summary>
+    /// # Panics
+    /// </summary>
+    /// <remarks>
+    /// - Panics if log directory creation fails.
+    /// - Panics if tracing initialization fails.
+    /// </remarks>
     public static void InitWithEnv()
     {
         unsafe
