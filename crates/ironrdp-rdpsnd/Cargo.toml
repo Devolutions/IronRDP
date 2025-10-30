@@ -20,7 +20,7 @@ default = []
 std = []
 
 [dependencies]
-bitflags = "2.9"
+bitflags = "2.10"
 tracing = { version = "0.1", features = ["log"] }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.5" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
