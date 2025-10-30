@@ -193,7 +193,7 @@ pub mod ffi {
         }
 
         fn missing_field(field: &'static str) -> Box<IronRdpError> {
-            GenericError(anyhow::anyhow!("RDCleanPath is missing {} field", field)).into()
+            GenericError(anyhow::anyhow!("RDCleanPath is missing {field} field")).into()
         }
 
         fn general_error(&self) -> Result<&ironrdp_rdcleanpath::RDCleanPathErr, Box<IronRdpError>> {
