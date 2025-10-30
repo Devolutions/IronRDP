@@ -14,9 +14,8 @@ jobs:
   # Create a PR with the new versions and changelog, preparing the next release.
   open-pr:
     name: Open release PR
-    runs-on: ubuntu-latest
     environment: cratesio-publish
-
+    runs-on: ubuntu-latest
     concurrency:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
@@ -37,7 +36,6 @@ jobs:
           github-token: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
 
       - name: Update fuzz/Cargo.lock
-        shell: pwsh
         if: ${{ steps.release-plz.outputs.did-open-pr == 'true' }}
         run: |
           $prRaw = '${{ steps.release-plz.outputs.pr }}'
@@ -61,12 +59,13 @@ jobs:
 
           Write-Host "Update the release pull request"
           git push --force
+        shell: pwsh
 
   # Release unpublished packages.
   release:
     name: Release crates
-    runs-on: ubuntu-latest
     environment: cratesio-publish
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository

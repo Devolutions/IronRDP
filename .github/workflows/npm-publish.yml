@@ -21,7 +21,6 @@ jobs:
     steps:
       - name: Get dry run
         id: get-dry-run
-        shell: pwsh
         run: |
           $IsDryRun = '${{ github.event.inputs.dry-run }}' -Eq 'true' -Or '${{ github.event_name }}' -Eq 'schedule'
 
@@ -30,13 +29,12 @@ jobs:
           } else {
             echo "dry-run=false" >> $Env:GITHUB_OUTPUT
           }
+        shell: pwsh
 
   build:
     name: Build package [${{matrix.library}}]
+    needs: [preflight]
     runs-on: ubuntu-latest
-    needs:
-      - preflight
-
     strategy:
       fail-fast: false
       matrix:
@@ -49,18 +47,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup wasm-pack
-        shell: bash
         run: |
           curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        shell: bash
 
       - name: Install dependencies
-        shell: pwsh
         run: |
           Set-Location -Path "./web-client/${{matrix.library}}/"
           npm install
+        shell: pwsh
 
       - name: Build package
-        shell: pwsh
         run: |
           Set-PSDebug -Trace 1
 
@@ -68,14 +65,15 @@ jobs:
           npm run build
           Set-Location -Path ./dist
           npm pack
+        shell: pwsh
 
       - name: Harvest package
-        shell: pwsh
         run: |
           Set-PSDebug -Trace 1
 
           New-Item -ItemType "directory" -Path . -Name "npm-packages"
           Get-ChildItem -Path ./web-client/ -Recurse *.tgz | ForEach { Copy-Item $_ "./npm-packages" }
+        shell: pwsh
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
@@ -85,8 +83,8 @@ jobs:
 
   npm-merge:
     name: Merge artifacts
+    needs: [build]
     runs-on: ubuntu-latest
-    needs: build
 
     steps:
       - name: Merge Artifacts
@@ -98,12 +96,13 @@ jobs:
 
   publish:
     name: Publish package
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     environment: publish
-    needs:
-      - preflight
-      - npm-merge
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: [preflight, npm-merge]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
       - name: Checkout repository
@@ -117,12 +116,7 @@ jobs:
           name: npm
           path: npm-packages
 
-      - name: Prepare npm
-        shell: pwsh
-        run: npm config set "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}"
-
       - name: Publish
-        shell: pwsh
         run: |
           Set-PSDebug -Trace 1
 
@@ -168,15 +162,10 @@ jobs:
             $publishCmd = $publishCmd -Join ' '
             Invoke-Expression $publishCmd
           }
+        shell: pwsh
 
       - name: Create version tags
         if: ${{ needs.preflight.outputs.dry-run == 'false' }}
-        shell: bash
-        env:
-          GIT_AUTHOR_NAME: github-actions
-          GIT_AUTHOR_EMAIL: github-actions@github.com
-          GIT_COMMITTER_NAME: github-actions
-          GIT_COMMITTER_EMAIL: github-actions@github.com
         run: |
           set -e
 
@@ -202,6 +191,12 @@ jobs:
             git tag "$tag" "$GITHUB_SHA"
             git push origin "$tag"
           done
+        shell: bash
+        env:
+          GIT_AUTHOR_NAME: github-actions
+          GIT_AUTHOR_EMAIL: github-actions@github.com
+          GIT_COMMITTER_NAME: github-actions
+          GIT_COMMITTER_EMAIL: github-actions@github.com
 
       - name: Update Artifactory Cache
         if: ${{ needs.preflight.outputs.dry-run == 'false' }}
@@ -213,14 +208,13 @@ jobs:
 
   notify:
     name: Notify failure
-    runs-on: ubuntu-latest
     if: ${{ always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule' }}
-    needs:
-      - preflight
-      - build
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_ARCHITECTURE }}
       SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
     steps:
       - name: Send slack notification
         id: slack
