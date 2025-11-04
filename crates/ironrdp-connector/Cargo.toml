@@ -27,13 +27,13 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", features = ["std"] } # public
 arbitrary = { version = "1", features = ["derive"], optional = true } # public
-sspi = "0.16" # public
+sspi = { git = "https://github.com/allan2/sspi-rs", branch = "picky-9829751", features = ["scard"] }
 url = "2.5" # public
 rand = { version = "0.9", features = ["std"] } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }
-picky-asn1-der = "0.5"
-picky-asn1-x509 = "0.14"
-picky = "7.0.0-rc.17"
+picky-asn1-der = { git = "https://github.com/allan2/picky-rs", rev = "9829751" }
+picky-asn1-x509 = { git = "https://github.com/allan2/picky-rs", rev = "9829751" }
+picky = { git = "https://github.com/allan2/picky-rs", rev = "9829751" }
 
 [lints]
 workspace = true

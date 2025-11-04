@@ -19,7 +19,7 @@ ironrdp-cliprdr-native.path = "../crates/ironrdp-cliprdr-native"
 ironrdp-dvc-pipe-proxy.path = "../crates/ironrdp-dvc-pipe-proxy"
 ironrdp-core = { path = "../crates/ironrdp-core", features = ["alloc"] }
 ironrdp-rdcleanpath.path = "../crates/ironrdp-rdcleanpath"
-sspi = { version = "0.16", features = ["network_client"] }
+sspi = { git = "https://github.com/allan2/sspi-rs", branch = "picky-9829751", features = ["network_client"] }
 thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
