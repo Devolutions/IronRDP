@@ -5284,7 +5284,7 @@ dependencies = [
 [[package]]
 name = "sspi"
 version = "0.18.1"
-source = "git+https://github.com/allan2/sspi-rs?branch=picky-9829751#25a1d7d5eeb45dac255c1c4839f0d5a5d03ed858"
+source = "git+https://github.com/allan2/sspi-rs?branch=picky-9829751#9399d2d6a94c0bb87a26493a51710fd17176b074"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -6935,7 +6935,7 @@ dependencies = [
 [[package]]
 name = "winscard"
 version = "0.2.3"
-source = "git+https://github.com/allan2/sspi-rs?branch=picky-9829751#25a1d7d5eeb45dac255c1c4839f0d5a5d03ed858"
+source = "git+https://github.com/allan2/sspi-rs?branch=picky-9829751#9399d2d6a94c0bb87a26493a51710fd17176b074"
 dependencies = [
  "bitflags 2.10.0",
  "crypto-bigint",
