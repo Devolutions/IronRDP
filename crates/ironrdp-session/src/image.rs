@@ -123,7 +123,7 @@ fn copy_cursor_data(
                     continue;
                 }
 
-                #[expect(clippy::cast_lossless, reason = "(u16 >> 8) fits into u8 + hot loop")]
+                #[expect(clippy::as_conversions, reason = "(u16 >> 8) fits into u8 + hot loop")]
                 {
                     // Integer alpha blending, source represented as premultiplied alpha color, calculation in floating point
                     to[to_start + pixel * PIXEL_SIZE] =
