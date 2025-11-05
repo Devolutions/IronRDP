@@ -387,6 +387,8 @@ fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64, phase:
         samples.push(sample_i16);
         samples.push(sample_i16);
     }
+
+    samples
 }
 
 async fn run(
