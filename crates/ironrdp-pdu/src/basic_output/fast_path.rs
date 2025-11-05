@@ -240,7 +240,22 @@ impl<'a> FastPathUpdate<'a> {
 
                 Ok(Self::SurfaceCommands(commands))
             }
-            UpdateCode::Bitmap => Ok(Self::Bitmap(decode_cursor(src)?)),
+            UpdateCode::Bitmap => {
+                // TS_FP_UPDATE_BITMAP uses a 2-byte flags field followed by number of rectangles.
+                // Older/alternate paths reused TS_UPDATE_BITMAP_DATA directly, but to be robust we
+                // parse the fast-path layout explicitly here and then reuse TS_BITMAP_DATA parser
+                // for each rectangle.
+                ensure_size!(in: src, size: 2 /* flags */ + 2 /* nrect */);
+                let _flags = src.read_u16();
+                let rectangles_number = src.read_u16() as usize;
+
+                let mut rectangles = Vec::with_capacity(rectangles_number);
+                for _ in 0..rectangles_number {
+                    rectangles.push(decode_cursor::<super::bitmap::BitmapData<'_>>(src)?);
+                }
+
+                Ok(Self::Bitmap(BitmapUpdateData { rectangles }))
+            }
             UpdateCode::HiddenPointer => Ok(Self::Pointer(PointerUpdateData::SetHidden)),
             UpdateCode::DefaultPointer => Ok(Self::Pointer(PointerUpdateData::SetDefault)),
             UpdateCode::PositionPointer => Ok(Self::Pointer(PointerUpdateData::SetPosition(decode_cursor(src)?))),
@@ -275,7 +290,16 @@ impl Encode for FastPathUpdate<'_> {
                 }
             }
             Self::Bitmap(bitmap) => {
-                bitmap.encode(dst)?;
+                // TS_FP_UPDATE_BITMAP: flags (u16), numberRectangles (u16), then TS_BITMAP_DATA rectangles
+                // We set flags to 0 as we don't currently use fast-path specific flags here.
+                dst.write_u16(0);
+                if bitmap.rectangles.len() > u16::MAX as usize {
+                    return Err(invalid_field_err!("numberRectangles", "rectangle count is too big"));
+                }
+                dst.write_u16(bitmap.rectangles.len() as u16);
+                for rect in &bitmap.rectangles {
+                    rect.encode(dst)?;
+                }
             }
             Self::Pointer(pointer) => match pointer {
                 PointerUpdateData::SetHidden => {}
@@ -298,7 +322,7 @@ impl Encode for FastPathUpdate<'_> {
     fn size(&self) -> usize {
         match self {
             Self::SurfaceCommands(commands) => commands.iter().map(|c| c.size()).sum::<usize>(),
-            Self::Bitmap(bitmap) => bitmap.size(),
+            Self::Bitmap(bitmap) => 2 /* flags */ + bitmap.size(),
             Self::Pointer(pointer) => match pointer {
                 PointerUpdateData::SetHidden => 0,
                 PointerUpdateData::SetDefault => 0,

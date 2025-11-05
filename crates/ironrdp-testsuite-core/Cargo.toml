@@ -47,6 +47,7 @@ ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
 ironrdp-session = { path = "../ironrdp-session", features = ["qoi"] }
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
+ironrdp-svc.path = "../ironrdp-svc"
 png = "0.18"
 pretty_assertions = "1.4"
 proptest.workspace = true

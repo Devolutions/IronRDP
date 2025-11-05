@@ -3,8 +3,7 @@ use lazy_static::lazy_static;
 
 use super::*;
 
-const BITMAP_BUFFER: [u8; 114] = [
-    0x01, 0x00, // Bitmap update type = must be PDATETYPE_BITMAP (0x0001)
+const BITMAP_BUFFER: [u8; 112] = [
     0x01, 0x00, // Number of rectangles = 1
     // Rectangle
     0x00, 0x07, // Left bound of the rectangle = 1792
@@ -50,7 +49,7 @@ lazy_static! {
                     scan_width: 28,
                     uncompressed_size: 4,
                 }),
-                bitmap_data: &BITMAP_BUFFER[30..],
+                bitmap_data: &BITMAP_BUFFER[28..],
             }];
             vec
         }
@@ -75,5 +74,5 @@ fn to_buffer_bitmap_data_serializes_correctly() {
 fn bitmap_data_length_is_correct() {
     let actual = decode::<BitmapUpdateData<'_>>(BITMAP_BUFFER.as_ref()).unwrap();
     let actual = actual.rectangles.first().unwrap().bitmap_data.len();
-    assert_eq!(BITMAP_BUFFER[30..].len(), actual)
+    assert_eq!(BITMAP_BUFFER[28..].len(), actual)
 }

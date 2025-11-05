@@ -2812,6 +2812,7 @@ dependencies = [
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
  "ironrdp-session",
+ "ironrdp-svc",
  "lazy_static",
  "paste",
  "png",

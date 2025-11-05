@@ -167,7 +167,9 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
-        enable_tls: false, // This example does not expose any frontend.
+        // Prefer TLS without CredSSP to maximize compatibility with servers
+        // that have NLA disabled but accept SSL/TLS security.
+        enable_tls: true,
         enable_credssp: true,
         keyboard_type: KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
@@ -286,6 +288,83 @@ fn active_stage(
 
         trace!(?action, frame_length = payload.len(), "Frame received");
 
+        // Temporary introspection to pinpoint X.224 decode failures
+        if matches!(action, ironrdp::pdu::Action::X224) {
+            use ironrdp::connector::legacy as legacy_conn;
+            match legacy_conn::decode_send_data_indication(&payload) {
+                Ok(ctx) => {
+                    let dump_len = ctx.user_data.len().min(32);
+                    let mut first_bytes = String::new();
+                    for b in &ctx.user_data[..dump_len] {
+                        use core::fmt::Write as _;
+                        let _ = write!(&mut first_bytes, "{:02x} ", b);
+                    }
+                    tracing::debug!(
+                        channel_id = ctx.channel_id,
+                        initiator_id = ctx.initiator_id,
+                        user_data_len = ctx.user_data.len(),
+                        first_bytes = %first_bytes,
+                        "X224 SendDataIndication"
+                    );
+                    // Try to decode share control header to see PDU type
+                    match legacy_conn::decode_share_control(ctx) {
+                        Ok(sc) => {
+                            tracing::debug!(
+                                pdu_type = %sc.pdu.as_short_name(),
+                                "X224 payload contains ShareControlPDU"
+                            );
+                            if let ironrdp::pdu::rdp::headers::ShareControlPdu::Data(share_data) = sc.pdu {
+                                tracing::debug!(
+                                    share_data_pdu_type = %share_data.share_data_pdu.as_short_name(),
+                                    "ShareData PDU"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            // Using e.report() for detailed errors.
+                            tracing::warn!("Failed to decode ShareControl header: {}", e.report());
+                            // Perform a light-weight peek of ShareControl/ShareData header fixed fields
+                            if let Some(info) = peek_share_data_header_fixed(ctx.user_data) {
+                                tracing::warn!(
+                                    total_len = info.total_len,
+                                    sc_pdu_type = info.sc_pdu_type,
+                                    stream_id = info.stream_id,
+                                    uncompressed_len = info.uncompressed_len,
+                                    sd_pdu_type = info.sd_pdu_type,
+                                    compression_flags_raw = info.compression_flags_raw,
+                                    compression_type_raw = info.compression_type_raw,
+                                    compressed_len = info.compressed_len,
+                                    update_type = info.update_type,
+                                    nrect = info.nrect,
+                                    first_rect_bpp = info.first_rect_bpp,
+                                    first_rect_flags = info.first_rect_flags,
+                                    first_rect_len = info.first_rect_len,
+                                    "Peeked ShareDataHeader fields"
+                                );
+                                // Dump first 32 bytes of update payload (after updateType+pad)
+                                let base = 10usize; // ShareControlHeader fixed size
+                                let upd_off = base + 8; // ShareDataHeader fixed size
+                                let payload_off = upd_off + 4; // updateType (2) + pad2 (2)
+                                let end = core::cmp::min(payload_off + 32, ctx.user_data.len());
+                                let mut buf = String::new();
+                                for b in &ctx.user_data[payload_off..end] {
+                                    use core::fmt::Write as _;
+                                    let _ = write!(&mut buf, "{:02x} ", b);
+                                }
+                                tracing::warn!(first_payload_bytes = %buf, "Update payload head");
+                            } else {
+                                tracing::warn!("Peek failed to parse ShareDataHeader fixed fields");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Using e.report() for detailed errors.
+                    tracing::warn!("Failed to decode SendDataIndication: {}", e.report());
+                }
+            }
+        }
+
         let outputs = active_stage.process(image, action, &payload)?;
 
         for out in outputs {
@@ -298,6 +377,91 @@ fn active_stage(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ShareDataPeekInfo {
+    total_len: u16,
+    sc_pdu_type: u16,
+    stream_id: u8,
+    uncompressed_len: u16,
+    sd_pdu_type: u8,
+    compression_flags_raw: u8,
+    compression_type_raw: u8,
+    compressed_len: u16,
+    update_type: Option<u16>,
+    nrect: Option<u16>,
+    first_rect_bpp: Option<u16>,
+    first_rect_flags: Option<u16>,
+    first_rect_len: Option<u16>,
+}
+
+fn peek_share_data_header_fixed(buf: &[u8]) -> Option<ShareDataPeekInfo> {
+    // ShareControlHeader fixed: 2 (len) + 2 (type+ver) + 2 (pdu_source) + 4 (share_id)
+    if buf.len() < 10 {
+        return None;
+    }
+    let total_len = u16::from_le_bytes([buf[0], buf[1]]);
+    let sc_pdu_type = u16::from_le_bytes([buf[2], buf[3]]);
+    // let _pdu_source = u16::from_le_bytes([buf[4], buf[5]]);
+    // let _share_id = u32::from_le_bytes([buf[6], buf[7], buf[8], buf[9]]);
+
+    // Data PDU type is 0x7 (masked by 0xF)
+    if (sc_pdu_type & 0x000F) != 0x0007 {
+        return None;
+    }
+
+    if buf.len() < 10 + 1 + 1 + 2 + 1 + 1 + 2 {
+        return None;
+    }
+    let base = 10;
+    let _pad = buf[base];
+    let stream_id = buf[base + 1];
+    let uncompressed_len = u16::from_le_bytes([buf[base + 2], buf[base + 3]]);
+    let sd_pdu_type = buf[base + 4];
+    let comp_flags_with_type = buf[base + 5];
+    let compressed_len = u16::from_le_bytes([buf[base + 6], buf[base + 7]]);
+
+    let mut info = ShareDataPeekInfo {
+        total_len,
+        sc_pdu_type,
+        stream_id,
+        uncompressed_len,
+        sd_pdu_type,
+        compression_flags_raw: comp_flags_with_type & !ironrdp::pdu::rdp::headers::SHARE_DATA_HEADER_COMPRESSION_MASK,
+        compression_type_raw: comp_flags_with_type & ironrdp::pdu::rdp::headers::SHARE_DATA_HEADER_COMPRESSION_MASK,
+        compressed_len,
+        update_type: None,
+        nrect: None,
+        first_rect_bpp: None,
+        first_rect_flags: None,
+        first_rect_len: None,
+    };
+
+    // Try to read updateType (u16) after ShareDataHeader fixed part
+    let upd_off = base + 8;
+    if buf.len() >= upd_off + 4 {
+        let upd_type = u16::from_le_bytes([buf[upd_off], buf[upd_off + 1]]);
+        info.update_type = Some(upd_type);
+        // TS_UPDATE_BITMAP_DATA starts at upd_off + 4
+        if upd_type == 1 && buf.len() >= upd_off + 6 {
+            let nrect = u16::from_le_bytes([buf[upd_off + 4], buf[upd_off + 5]]);
+            info.nrect = Some(nrect);
+            // Try to parse first TS_BITMAP_DATA minimal header fields
+            let rect_off = upd_off + 6;
+            if buf.len() >= rect_off + 8 + 2 + 2 + 2 + 2 + 2 {
+                // skip rectangle (8 bytes)
+                let bpp = u16::from_le_bytes([buf[rect_off + 8 + 4], buf[rect_off + 8 + 5]]);
+                let flags = u16::from_le_bytes([buf[rect_off + 8 + 6], buf[rect_off + 8 + 7]]);
+                let len = u16::from_le_bytes([buf[rect_off + 8 + 8], buf[rect_off + 8 + 9]]);
+                info.first_rect_bpp = Some(bpp);
+                info.first_rect_flags = Some(flags);
+                info.first_rect_len = Some(len);
+            }
+        }
+    }
+
+    Some(info)
 }
 
 fn lookup_addr(hostname: &str, port: u16) -> anyhow::Result<core::net::SocketAddr> {

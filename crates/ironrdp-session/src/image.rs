@@ -547,7 +547,7 @@ impl DecodedImage {
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
         rgb16
-            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+            .chunks_exact((rectangle_width + 3) / 4 * 4 * SRC_COLOR_DEPTH)
             .rev()
             .enumerate()
             .for_each(|(row_idx, row)| {
@@ -614,7 +614,7 @@ impl DecodedImage {
     ) -> SessionResult<InclusiveRectangle> {
         const SRC_COLOR_DEPTH: usize = 3;
         let rectangle_width = usize::from(update_rectangle.width());
-        let lines = rgb24.chunks_exact(rectangle_width * SRC_COLOR_DEPTH);
+        let lines = rgb24.chunks_exact((rectangle_width + 3) / 4 * 4 * SRC_COLOR_DEPTH);
         if flip {
             self.apply_rgb24_iter(lines.rev(), update_rectangle)
         } else {

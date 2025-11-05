@@ -144,7 +144,7 @@ impl<'a> ReadCursor<'a> {
     }
 
     /// Read the remaining bytes.
-    pub fn read_remaining(&mut self) -> &[u8] {
+    pub fn read_remaining(&mut self) -> &'a [u8] {
         self.read_slice(self.len())
     }
 

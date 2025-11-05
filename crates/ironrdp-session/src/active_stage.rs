@@ -117,7 +117,7 @@ impl ActiveStage {
             Action::X224 => {
                 let outputs = self
                     .x224_processor
-                    .process(frame)?
+                    .process(image, frame)?
                     .into_iter()
                     .map(TryFrom::try_from)
                     .collect::<Result<Vec<_>, _>>()?;
@@ -287,6 +287,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
                 Ok(Self::Terminate(desc))
             }
             x224::ProcessorOutput::DeactivateAll(cas) => Ok(Self::DeactivateAll(cas)),
+            x224::ProcessorOutput::UpdateRegion(region) => Ok(Self::GraphicsUpdate(region)),
         }
     }
 }

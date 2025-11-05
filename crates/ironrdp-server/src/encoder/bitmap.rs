@@ -3,7 +3,7 @@ use core::num::NonZeroUsize;
 use ironrdp_core::{invalid_field_err, Encode as _, EncodeResult, WriteCursor};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rdp6::{ABgrChannels, ARgbChannels, BgrAChannels, BitmapStreamEncoder, RgbAChannels};
-use ironrdp_pdu::bitmap::{self, BitmapData, BitmapUpdateData, Compression};
+use ironrdp_pdu::bitmap::{self, BitmapData, Compression};
 use ironrdp_pdu::geometry::InclusiveRectangle;
 
 use crate::BitmapUpdate;
@@ -39,7 +39,8 @@ impl BitmapEncoder {
         let chunks = bitmap.data.chunks(stride * chunk_height);
 
         let total = u16::try_from(chunks.size_hint().0).unwrap();
-        BitmapUpdateData::encode_header(total, &mut cursor)?;
+        // TS_UPDATE_BITMAP_DATA header: numberRectangles (u16)
+        cursor.write_u16(total);
 
         for (i, chunk) in chunks.enumerate() {
             let height = chunk.len() / stride;

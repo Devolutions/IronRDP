@@ -1,13 +1,18 @@
+use crate::image::DecodedImage;
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::legacy::SendDataIndicationCtx;
 use ironrdp_core::WriteBuf;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
+use ironrdp_graphics::rdp6::BitmapStreamDecoder;
+use ironrdp_graphics::rle::RlePixelFormat;
+use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::update::ShareUpdate;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{client_encode_svc_messages, StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{reason_err, SessionError, SessionErrorExt as _, SessionResult};
 
@@ -23,6 +28,8 @@ pub enum ProcessorOutput {
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     DeactivateAll(Box<ConnectionActivationSequence>),
+    /// Region updated in the framebuffer.
+    UpdateRegion(InclusiveRectangle),
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +49,7 @@ pub struct Processor {
     user_channel_id: u16,
     io_channel_id: u16,
     connection_activation: ConnectionActivationSequence,
+    bitmap_stream_decoder: BitmapStreamDecoder,
 }
 
 impl Processor {
@@ -56,6 +64,7 @@ impl Processor {
             user_channel_id,
             io_channel_id,
             connection_activation,
+            bitmap_stream_decoder: BitmapStreamDecoder::default(),
         }
     }
 
@@ -94,15 +103,15 @@ impl Processor {
             .get_dvc_by_channel_id(channel_id)
     }
 
-    /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that must be processed
-    /// in the returned order.
-    pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<ProcessorOutput>> {
+    /// Processes a frame, applying a bitmap updates to `images` and returning outputs, a vector
+    /// of [`ProcessorOutput`] that must be processed.
+    pub fn process(&mut self, image: &mut DecodedImage, frame: &[u8]) -> SessionResult<Vec<ProcessorOutput>> {
         let data_ctx: SendDataIndicationCtx<'_> =
             ironrdp_connector::legacy::decode_send_data_indication(frame).map_err(crate::legacy::map_error)?;
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
-            self.process_io_channel(data_ctx)
+            self.process_io_channel(image, data_ctx)
         } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
             let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
             process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
@@ -112,7 +121,11 @@ impl Processor {
         }
     }
 
-    fn process_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
+    fn process_io_channel(
+        &mut self,
+        image: &mut DecodedImage,
+        data_ctx: SendDataIndicationCtx<'_>,
+    ) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
 
         let io_channel = ironrdp_connector::legacy::decode_io_channel(data_ctx).map_err(crate::legacy::map_error)?;
@@ -120,6 +133,19 @@ impl Processor {
         match io_channel {
             ironrdp_connector::legacy::IoChannelPdu::Data(ctx) => {
                 match ctx.pdu {
+                    ShareDataPdu::Update(share_update) => match share_update {
+                        ShareUpdate::Bitmap(update) => {
+                            if let Some(region) = apply_bitmap_update(image, &mut self.bitmap_stream_decoder, &update) {
+                                return Ok(vec![ProcessorOutput::UpdateRegion(region)]);
+                            }
+
+                            Ok(Vec::new())
+                        }
+                        other => {
+                            debug!("Ignoring unsupported slow-path update: {:?}", other);
+                            Ok(Vec::new())
+                        }
+                    },
                     ShareDataPdu::SaveSessionInfo(session_info) => {
                         debug!("Got Session Save Info PDU: {session_info:?}");
                         Ok(Vec::new())
@@ -184,6 +210,88 @@ impl Processor {
                 .map_err(crate::legacy::map_error)?;
         Ok(written)
     }
+}
+
+fn apply_bitmap_update(
+    image: &mut DecodedImage,
+    rdp6_decoder: &mut BitmapStreamDecoder,
+    update: &ironrdp_pdu::update::BitmapUpdateOwned,
+) -> Option<InclusiveRectangle> {
+    let mut region: Option<InclusiveRectangle> = None;
+    let mut buf = Vec::new();
+
+    for rect in &update.rectangles {
+        let updated_rect = if rect
+            .compression_flags
+            .contains(ironrdp_pdu::bitmap::Compression::BITMAP_COMPRESSION)
+        {
+            if rect.bits_per_pixel == 32 {
+                match rdp6_decoder.decode_bitmap_stream_to_rgb24(
+                    rect.bitmap_data.as_slice(),
+                    &mut buf,
+                    usize::from(rect.width),
+                    usize::from(rect.height),
+                ) {
+                    Ok(()) => match image.apply_rgb24(&buf, &rect.rectangle, true) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            warn!("apply_rgb24 failed: {e}");
+                            rect.rectangle.clone()
+                        }
+                    },
+                    Err(err) => {
+                        warn!("Invalid RDP6_BITMAP_STREAM: {err}");
+                        rect.rectangle.clone()
+                    }
+                }
+            } else {
+                match ironrdp_graphics::rle::decompress(
+                    rect.bitmap_data.as_slice(),
+                    &mut buf,
+                    usize::from(rect.width),
+                    usize::from(rect.height),
+                    usize::from(rect.bits_per_pixel),
+                ) {
+                    Ok(RlePixelFormat::Rgb16) => match image.apply_rgb16_bitmap(&buf, &rect.rectangle) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            warn!("apply_rgb16_bitmap failed: {e}");
+                            rect.rectangle.clone()
+                        }
+                    },
+                    Ok(format @ (RlePixelFormat::Rgb8 | RlePixelFormat::Rgb15 | RlePixelFormat::Rgb24)) => {
+                        warn!("Unsupported RLE color depth: {format:?}");
+                        rect.rectangle.clone()
+                    }
+                    Err(e) => {
+                        warn!("Invalid RLE-compressed bitmap: {e}");
+                        rect.rectangle.clone()
+                    }
+                }
+            }
+        } else {
+            match rect.bits_per_pixel {
+                16 => match image.apply_rgb16_bitmap(rect.bitmap_data.as_slice(), &rect.rectangle) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!("apply_rgb16_bitmap failed: {e}");
+                        rect.rectangle.clone()
+                    }
+                },
+                unsupported => {
+                    warn!("Unsupported raw bitmap bpp: {unsupported}");
+                    rect.rectangle.clone()
+                }
+            }
+        };
+
+        region = Some(match region {
+            Some(acc) => acc.union(&updated_rect),
+            None => updated_rect,
+        });
+    }
+
+    region
 }
 
 /// Processes a vector of [`SvcMessage`] in preparation for sending them to the server on the `channel_id` channel.

@@ -23,18 +23,8 @@ pub struct BitmapUpdateData<'a> {
 
 impl BitmapUpdateData<'_> {
     const NAME: &'static str = "TS_UPDATE_BITMAP_DATA";
-    const FIXED_PART_SIZE: usize = 2 /* flags */ + 2 /* nrect */;
-}
-
-impl BitmapUpdateData<'_> {
-    pub fn encode_header(rectangles: u16, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        ensure_size!(in: dst, size: 2);
-
-        dst.write_u16(BitmapFlags::BITMAP_UPDATE_TYPE.bits());
-        dst.write_u16(rectangles);
-
-        Ok(())
-    }
+    // numberRectangles (u16)
+    const FIXED_PART_SIZE: usize = 2 /* nrect */;
 }
 
 impl Encode for BitmapUpdateData<'_> {
@@ -45,7 +35,8 @@ impl Encode for BitmapUpdateData<'_> {
             return Err(invalid_field_err!("numberRectangles", "rectangle count is too big"));
         }
 
-        Self::encode_header(self.rectangles.len() as u16, dst)?;
+        // numberRectangles
+        dst.write_u16(self.rectangles.len() as u16);
 
         for bitmap_data in self.rectangles.iter() {
             bitmap_data.encode(dst)?;
@@ -68,11 +59,6 @@ impl Encode for BitmapUpdateData<'_> {
 impl<'de> Decode<'de> for BitmapUpdateData<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
-
-        let update_type = BitmapFlags::from_bits_truncate(src.read_u16());
-        if !update_type.contains(BitmapFlags::BITMAP_UPDATE_TYPE) {
-            return Err(invalid_field_err!("updateType", "invalid update type"));
-        }
 
         let rectangles_number = src.read_u16() as usize;
         let mut rectangles = Vec::with_capacity(rectangles_number);
@@ -266,13 +252,6 @@ impl Encode for CompressedDataHeader {
 
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE
-    }
-}
-
-bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct BitmapFlags: u16{
-        const BITMAP_UPDATE_TYPE = 0x0001;
     }
 }
 

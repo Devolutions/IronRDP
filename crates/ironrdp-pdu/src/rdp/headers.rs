@@ -6,6 +6,7 @@ use ironrdp_core::{
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
+use crate::basic_output::update::ShareUpdate;
 use crate::codecs::rfx::FrameAcknowledgePdu;
 use crate::input::InputEventPdu;
 use crate::rdp::capability_sets::{ClientConfirmActive, ServerDemandActive};
@@ -127,7 +128,10 @@ impl<'de> Decode<'de> for ShareControlHeader {
             return Err(invalid_field_err!("pdu_version", "invalid PDU version"));
         }
 
+        // Decode the inner PDU and track how many bytes were actually consumed.
+        let len_before_pdu = src.len();
         let share_pdu = ShareControlPdu::from_type(src, pdu_type)?;
+        let consumed_pdu_len = len_before_pdu - src.len();
         let header = Self {
             share_control_pdu: share_pdu,
             pdu_source,
@@ -138,7 +142,7 @@ impl<'de> Decode<'de> for ShareControlHeader {
             // Some windows version have an issue where
             // there is some padding not part of the inner unit.
             // Consume that data
-            let header_length = header.size();
+            let header_length = SHARE_CONTROL_HEADER_SIZE + consumed_pdu_len;
 
             if header_length != total_length {
                 if total_length < header_length {
@@ -286,7 +290,7 @@ impl<'de> Decode<'de> for ShareDataHeader {
         read_padding!(src, 1);
         let stream_priority = StreamPriority::from_u8(src.read_u8())
             .ok_or_else(|| invalid_field_err!("streamPriority", "Invalid stream priority"))?;
-        let _uncompressed_length = src.read_u16();
+        let uncompressed_length = src.read_u16();
         let pdu_type = ShareDataPduType::from_u8(src.read_u8())
             .ok_or_else(|| invalid_field_err!("pduType", "Invalid pdu type"))?;
         let compression_flags_with_type = src.read_u8();
@@ -296,9 +300,29 @@ impl<'de> Decode<'de> for ShareDataHeader {
         let compression_type =
             client_info::CompressionType::from_u8(compression_flags_with_type & SHARE_DATA_HEADER_COMPRESSION_MASK)
                 .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type"))?;
-        let _compressed_length = src.read_u16();
+        let compressed_length = src.read_u16();
 
-        let share_data_pdu = ShareDataPdu::from_type(src, pdu_type)?;
+        // If compressed, decompress 'compressed_length' bytes using MPPC before decoding inner PDU
+        let share_data_pdu = if compression_flags.contains(CompressionFlags::COMPRESSED) {
+            ensure_size!(in: src, size: compressed_length as usize);
+            let compressed = src.read_slice(compressed_length as usize);
+            let decompressed =
+                crate::compression::mppc::global_decompress(compression_flags, compression_type, compressed)
+                    .map_err(|e| other_err!(e))?;
+
+            // Validate uncompressed length if present (non-zero)
+            if uncompressed_length != 0 && decompressed.len() != usize::from(uncompressed_length) {
+                return Err(invalid_field_err!(
+                    "uncompressedLength",
+                    "mismatch between header and decompressed size"
+                ));
+            }
+
+            let mut inner = ReadCursor::new(&decompressed);
+            ShareDataPdu::from_type(&mut inner, pdu_type)?
+        } else {
+            ShareDataPdu::from_type(src, pdu_type)?
+        };
 
         Ok(Self {
             share_data_pdu,
@@ -324,7 +348,7 @@ pub enum ShareDataPdu {
     ShutdownDenied,
     SuppressOutput(SuppressOutputPdu),
     RefreshRectangle(RefreshRectanglePdu),
-    Update(Vec<u8>),
+    Update(ShareUpdate),
     Pointer(Vec<u8>),
     PlaySound(Vec<u8>),
     SetKeyboardIndicators(Vec<u8>),
@@ -420,7 +444,10 @@ impl ShareDataPdu {
             ShareDataPduType::ShutdownDenied => Ok(ShareDataPdu::ShutdownDenied),
             ShareDataPduType::SuppressOutput => Ok(ShareDataPdu::SuppressOutput(SuppressOutputPdu::decode(src)?)),
             ShareDataPduType::RefreshRectangle => Ok(ShareDataPdu::RefreshRectangle(RefreshRectanglePdu::decode(src)?)),
-            ShareDataPduType::Update => Ok(ShareDataPdu::Update(src.remaining().to_vec())),
+            ShareDataPduType::Update => {
+                let upd = crate::basic_output::update::Update::decode(src)?;
+                Ok(ShareDataPdu::Update(ironrdp_core::IntoOwned::into_owned(upd)))
+            }
             ShareDataPduType::Pointer => Ok(ShareDataPdu::Pointer(src.remaining().to_vec())),
             ShareDataPduType::PlaySound => Ok(ShareDataPdu::PlaySound(src.remaining().to_vec())),
             ShareDataPduType::SetKeyboardIndicators => {
@@ -456,7 +483,19 @@ impl Encode for ShareDataPdu {
             ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => Ok(()),
             ShareDataPdu::SuppressOutput(pdu) => pdu.encode(dst),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.encode(dst),
-            _ => Err(other_err!("Encoding not implemented")),
+            ShareDataPdu::Update(update) => update.encode(dst),
+            // Encoding not implemented for other legacy/slow-path variants we currently only decode.
+            ShareDataPdu::Pointer(_)
+            | ShareDataPdu::PlaySound(_)
+            | ShareDataPdu::SetKeyboardIndicators(_)
+            | ShareDataPdu::BitmapCachePersistentList(_)
+            | ShareDataPdu::BitmapCacheErrorPdu(_)
+            | ShareDataPdu::SetKeyboardImeStatus(_)
+            | ShareDataPdu::OffscreenCacheErrorPdu(_)
+            | ShareDataPdu::DrawNineGridErrorPdu(_)
+            | ShareDataPdu::DrawGdiPusErrorPdu(_)
+            | ShareDataPdu::ArcStatusPdu(_)
+            | ShareDataPdu::StatusInfoPdu(_) => Err(other_err!("encoding not implemented")),
         }
     }
 
@@ -477,8 +516,8 @@ impl Encode for ShareDataPdu {
             ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => 0,
             ShareDataPdu::SuppressOutput(pdu) => pdu.size(),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.size(),
-            ShareDataPdu::Update(buffer)
-            | ShareDataPdu::Pointer(buffer)
+            ShareDataPdu::Update(update) => update.size(),
+            ShareDataPdu::Pointer(buffer)
             | ShareDataPdu::PlaySound(buffer)
             | ShareDataPdu::SetKeyboardIndicators(buffer)
             | ShareDataPdu::BitmapCachePersistentList(buffer)

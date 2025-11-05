@@ -17,6 +17,7 @@ mod macros;
 pub mod codecs;
 pub mod gcc;
 pub mod geometry;
+pub mod compression;
 pub mod input;
 pub mod mcs;
 pub mod nego;
@@ -33,7 +34,7 @@ pub(crate) mod ber;
 pub(crate) mod crypto;
 pub(crate) mod per;
 
-pub use crate::basic_output::{bitmap, fast_path, pointer, surface_commands};
+pub use crate::basic_output::{bitmap, fast_path, pointer, surface_commands, update};
 pub use crate::rdp::vc::dvc;
 
 pub type PduResult<T> = Result<T, PduError>;

@@ -9,4 +9,5 @@ mod mcs;
 mod pointer;
 mod rdp;
 mod rfx;
+mod update;
 mod x224;

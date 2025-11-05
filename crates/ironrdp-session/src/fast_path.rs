@@ -158,6 +158,16 @@ impl Processor {
 
                         match update.bits_per_pixel {
                             16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
+                            32 => {
+                                // Raw 32 bpp is BGRX on the wire
+                                match image.apply_rgb32_bitmap(update.bitmap_data, PixelFormat::BgrX32, &update.rectangle) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        warn!("apply_rgb32_bitmap failed: {e}");
+                                        update.rectangle.clone()
+                                    }
+                                }
+                            }
                             // TODO: support other pixel formats…
                             unsupported => {
                                 warn!("Invalid raw bitmap with {unsupported} bytes per pixels");

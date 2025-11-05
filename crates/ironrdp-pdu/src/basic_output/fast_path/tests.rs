@@ -2,6 +2,7 @@ use ironrdp_core::{decode, encode};
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::geometry::InclusiveRectangle;
 
 const FAST_PATH_HEADER_WITH_SHORT_LEN_BUFFER: [u8; 2] = [0x80, 0x08];
 const FAST_PATH_HEADER_WITH_LONG_LEN_BUFFER: [u8; 3] = [0x80, 0x81, 0xE7];
@@ -155,4 +156,85 @@ fn buffer_size_boundary_fast_path_update() {
         forced_long_length: false,
     };
     assert_eq!(fph.size(), 3);
+}
+
+#[test]
+fn decode_fast_path_bitmap_update_with_single_uncompressed_16bpp_rect() {
+    // Fast-Path Bitmap data layout:
+    // u16 flags, u16 numberRectangles, then one TS_BITMAP_DATA rectangle
+    // TS_BITMAP_DATA (uncompressed):
+    // InclusiveRectangle (8 bytes), width(u16), height(u16), bpp(u16), flags(u16)=0,
+    // dataLen(u16)=2, data[2]
+    let data: [u8; 2 + 2 + 8 + 2 + 2 + 2 + 2 + 2 + 2] = [
+        // flags
+        0x00, 0x00,
+        // numberRectangles
+        0x01, 0x00,
+        // rectangle: left, top, right, bottom (all zeros)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // width=1, height=1
+        0x01, 0x00, 0x01, 0x00,
+        // bpp = 16
+        0x10, 0x00,
+        // compression flags = 0 (uncompressed)
+        0x00, 0x00,
+        // data length = 2
+        0x02, 0x00,
+        // pixel data
+        0xAA, 0xBB,
+    ];
+
+    let update = FastPathUpdate::decode_with_code(&data, UpdateCode::Bitmap).expect("decode fast-path bitmap");
+
+    match update {
+        FastPathUpdate::Bitmap(bmp) => {
+            assert_eq!(bmp.rectangles.len(), 1);
+            let r = &bmp.rectangles[0];
+            assert_eq!(r.rectangle, InclusiveRectangle { left: 0, top: 0, right: 0, bottom: 0 });
+            assert_eq!(r.width, 1);
+            assert_eq!(r.height, 1);
+            assert_eq!(r.bits_per_pixel, 16);
+            assert!(r.compression_flags.is_empty());
+            assert!(r.compressed_data_header.is_none());
+            assert_eq!(r.bitmap_data, &[0xAA, 0xBB]);
+        }
+        _ => panic!("expected Bitmap update"),
+    }
+}
+
+#[test]
+fn encode_fast_path_bitmap_update_with_single_uncompressed_16bpp_rect() {
+    // Build a FastPathUpdate::Bitmap with a single uncompressed 16bpp TS_BITMAP_DATA and
+    // verify it encodes to the expected fast-path payload bytes (flags + nrect + rect).
+    let rect = InclusiveRectangle { left: 0, top: 0, right: 0, bottom: 0 };
+    let bmp = BitmapUpdateData {
+        rectangles: vec![super::super::bitmap::BitmapData {
+            rectangle: rect,
+            width: 1,
+            height: 1,
+            bits_per_pixel: 16,
+            compression_flags: super::super::bitmap::Compression::empty(),
+            compressed_data_header: None,
+            bitmap_data: &[0xAA, 0xBB],
+        }],
+    };
+    let update = FastPathUpdate::Bitmap(bmp);
+
+    let mut buf = vec![0u8; update.size()];
+    encode(&update, &mut buf).expect("encode fast-path bitmap");
+
+    let expected: [u8; 2 + 2 + 8 + 2 + 2 + 2 + 2 + 2 + 2] = [
+        0x00, 0x00, // flags
+        0x01, 0x00, // numberRectangles
+        0x00, 0x00, 0x00, 0x00, // left, top
+        0x00, 0x00, 0x00, 0x00, // right, bottom
+        0x01, 0x00, // width
+        0x01, 0x00, // height
+        0x10, 0x00, // bpp
+        0x00, 0x00, // compression flags
+        0x02, 0x00, // data length
+        0xAA, 0xBB, // data
+    ];
+
+    assert_eq!(buf, expected);
 }
