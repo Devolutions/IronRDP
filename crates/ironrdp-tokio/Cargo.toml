@@ -27,7 +27,7 @@ ironrdp-async = { path = "../ironrdp-async", version = "0.7" } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.7", optional = true }
 tokio = { version = "1", features = ["io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "system-proxy"], optional = true }
-sspi = { version = "0.16", features = ["network_client", "dns_resolver"], optional = true }
+sspi = { git = "https://github.com/allan2/sspi-rs", branch = "picky-9829751", features = ["network_client", "dns_resolver"], optional = true }
 url = { version = "2.5", optional = true }
 
 [lints]
