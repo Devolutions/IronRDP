@@ -82,8 +82,11 @@ impl Scancode {
     pub const fn from_u16(scancode: u16) -> Self {
         let extended = scancode & 0xE000 == 0xE000;
 
-        #[expect(clippy::as_conversions)]
-        #[expect(clippy::cast_possible_truncation)] // truncating on purpose
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            reason = "truncating on purpose"
+        )]
         let code = scancode as u8;
 
         Self { code, extended }

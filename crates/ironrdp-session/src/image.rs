@@ -123,14 +123,17 @@ fn copy_cursor_data(
                     continue;
                 }
 
-                // Integer alpha blending, source represented as premultiplied alpha color, calculation in floating point
-                to[to_start + pixel * PIXEL_SIZE] = src_r
-                    + u8::try_from((u16::from(dest_r) * u16::from(255 - src_a)) >> 8).expect("(u16 >> 8) fits into u8");
-                to[to_start + pixel * PIXEL_SIZE + 1] = src_g
-                    + u8::try_from((u16::from(dest_g) * u16::from(255 - src_a)) >> 8).expect("(u16 >> 8) fits into u8");
-                to[to_start + pixel * PIXEL_SIZE + 2] = src_b
-                    + u8::try_from((u16::from(dest_b) * u16::from(255 - src_a)) >> 8).expect("(u16 >> 8) fits into u8");
-                // Framebuffer is always opaque, so we can skip alpha channel change
+                #[expect(clippy::cast_lossless, reason = "(u16 >> 8) fits into u8 + hot loop")]
+                {
+                    // Integer alpha blending, source represented as premultiplied alpha color, calculation in floating point
+                    to[to_start + pixel * PIXEL_SIZE] =
+                        src_r + ((u16::from(dest_r) * u16::from(255 - src_a)) >> 8) as u8;
+                    to[to_start + pixel * PIXEL_SIZE + 1] =
+                        src_g + ((u16::from(dest_g) * u16::from(255 - src_a)) >> 8) as u8;
+                    to[to_start + pixel * PIXEL_SIZE + 2] =
+                        src_b + ((u16::from(dest_b) * u16::from(255 - src_a)) >> 8) as u8;
+                    // Framebuffer is always opaque, so we can skip alpha channel change
+                }
             }
         } else {
             to[to_start..to_start + width * PIXEL_SIZE]

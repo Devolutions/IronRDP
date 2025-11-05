@@ -1,4 +1,4 @@
-msrv = "1.84"
+msrv = "1.87"
 semicolon-outside-block-ignore-multiline = true
 accept-comment-above-statement = true
 accept-comment-above-attributes = true

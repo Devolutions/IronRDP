@@ -221,7 +221,7 @@ impl GwClient {
                         let mut cur = ReadCursor::new(&msg);
                         let hdr = PktHdr::decode(&mut cur).map_err(|e| custom_err!("Header Decode", e))?;
 
-                         let header_length = usize::try_from(hdr.length).map_err(|_| Error::new("PktHdr too big", GwErrorKind::Decode))?;
+                        let header_length = usize::try_from(hdr.length).map_err(|_| Error::new("PktHdr too big", GwErrorKind::Decode))?;
                         assert!(cur.len() >= header_length - hdr.size());
                         match hdr.ty {
                             PktTy::Keepalive => {

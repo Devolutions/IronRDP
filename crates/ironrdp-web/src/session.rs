@@ -1153,9 +1153,7 @@ where
     }
 }
 
-#[expect(clippy::as_conversions)]
-#[expect(clippy::cast_sign_loss)]
-#[expect(clippy::cast_possible_truncation)]
+#[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
 }

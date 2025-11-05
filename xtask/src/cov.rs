@@ -328,9 +328,11 @@ fn get_json_float(value: &tinyjson::JsonValue, key: &str) -> anyhow::Result<f64>
 }
 
 fn get_json_int(value: &tinyjson::JsonValue, key: &str) -> anyhow::Result<u64> {
-    // tinyjson does not expose any integers at all, so we need the f64 to u64 as casting
-    #[expect(clippy::as_conversions)]
-    #[expect(clippy::cast_sign_loss)]
-    #[expect(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "tinyjson does not expose any integers at all, so we need the f64 to u64 as casting"
+    )]
     get_json_float(value, key).map(|value| value as u64)
 }

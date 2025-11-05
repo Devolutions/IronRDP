@@ -327,13 +327,7 @@ impl RdpsndServerHandler for SndHandler {
             let mut phase = 0.0f32;
             loop {
                 interval.tick().await;
-                let wave = match generate_sine_wave(fmt.n_samples_per_sec, 440.0, 20, &mut phase) {
-                    Ok(wave) => wave,
-                    Err(err) => {
-                        warn!("Failed to generate sine wave: {err}");
-                        return;
-                    }
-                };
+                let wave = generate_sine_wave(fmt.n_samples_per_sec, 440.0, 20, &mut phase);
 
                 let data = if let Some(ref mut enc) = opus_enc {
                     match enc.encode_vec(&wave, wave.len()) {
@@ -366,33 +360,33 @@ impl RdpsndServerHandler for SndHandler {
     }
 }
 
-fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64, phase: &mut f32) -> anyhow::Result<Vec<i16>> {
+fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64, phase: &mut f32) -> Vec<i16> {
     use core::f32::consts::PI;
 
     let total_samples = (u64::from(sample_rate) * duration_ms) / 1000;
+
     #[expect(clippy::as_conversions)]
     let delta_phase = 2.0 * PI * frequency / sample_rate as f32;
+
     let amplitude = 32767.0; // Max amplitude for 16-bit audio
 
-    let capacity = (usize::try_from(total_samples).context("total samples")?) * 2; // 2 channels
+    let capacity = usize::try_from(total_samples).expect("u64-to-usize") * 2; // 2 channels
     let mut samples = Vec::with_capacity(capacity);
 
     for _ in 0..total_samples {
         let sample = (*phase).sin();
         *phase += delta_phase;
-        // Wrap phase to maintain precision and avoid overflow
+
+        // Wrap phase to maintain precision and avoid overflow.
         *phase %= 2.0 * PI;
 
-        #[expect(clippy::as_conversions)]
-        #[expect(clippy::cast_possible_truncation)]
+        #[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
         let sample_i16 = (sample * amplitude) as i16;
 
         // Write same sample to both channels (stereo)
         samples.push(sample_i16);
         samples.push(sample_i16);
     }
-
-    Ok(samples)
 }
 
 async fn run(

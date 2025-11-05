@@ -63,17 +63,23 @@ impl<'a> BitStream<'a> {
 }
 
 pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<usize, RlgrError> {
-    let mut k: u32 = 1;
-    let kr: u32 = 1;
-    let mut kp: u32 = k << LS_GR;
-    let mut krp: u32 = kr << LS_GR;
+    #![expect(
+        clippy::as_conversions,
+        reason = "u32-to-usize and usize-to-u32 conversions, mostly fine, and hot loop"
+    )]
 
     if input.is_empty() {
         return Err(RlgrError::EmptyTile);
     }
 
+    let mut k: u32 = 1;
+    let kr: u32 = 1;
+    let mut kp: u32 = k << LS_GR;
+    let mut krp: u32 = kr << LS_GR;
     let mut bits = BitStream::new(tile);
+
     let mut input = input.iter().peekable();
+
     while input.peek().is_some() {
         match CompressionMode::from(k) {
             CompressionMode::RunLength => {
@@ -95,15 +101,12 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                     runmax = 1 << k;
                 }
                 bits.output_bit(1, true);
-                bits.output_bits(
-                    usize::try_from(k).map_err(|_| RlgrError::InvalidIntegralConversion("k"))?,
-                    nz,
-                );
+                bits.output_bits(k as usize, nz);
 
                 if let Some(val) = input.next() {
                     let mag = u32::from(val.unsigned_abs());
                     bits.output_bit(1, *val < 0);
-                    code_gr(&mut bits, &mut krp, mag - 1)?;
+                    code_gr(&mut bits, &mut krp, mag - 1);
                 }
                 kp = kp.saturating_sub(DN_GR);
                 k = kp >> LS_GR;
@@ -113,10 +116,11 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                 let input_first = *input
                     .next()
                     .expect("value is guaranteed to be `Some` due to the prior check");
+
                 match mode {
                     EntropyAlgorithm::Rlgr1 => {
                         let two_ms = get_2magsign(input_first);
-                        code_gr(&mut bits, &mut krp, two_ms)?;
+                        code_gr(&mut bits, &mut krp, two_ms);
                         if two_ms == 0 {
                             kp = min(kp + UP_GR, KP_MAX);
                         } else {
@@ -128,11 +132,9 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                         let two_ms1 = get_2magsign(input_first);
                         let two_ms2 = input.next().map(|&n| get_2magsign(n)).unwrap_or(1);
                         let sum2ms = two_ms1 + two_ms2;
-                        code_gr(&mut bits, &mut krp, sum2ms)?;
+                        code_gr(&mut bits, &mut krp, sum2ms);
 
-                        let m = 32
-                            - usize::try_from(sum2ms.leading_zeros())
-                                .map_err(|_| RlgrError::InvalidIntegralConversion("sum2ms leading zeros count"))?;
+                        let m = 32 - sum2ms.leading_zeros() as usize;
                         if m != 0 {
                             bits.output_bits(m, two_ms1);
                         }
@@ -159,70 +161,71 @@ fn get_2magsign(val: i16) -> u32 {
     (u32::from(val.unsigned_abs())) * 2 - sign
 }
 
-fn code_gr(bits: &mut BitStream<'_>, krp: &mut u32, val: u32) -> Result<(), RlgrError> {
-    let kr = usize::try_from(*krp >> LS_GR).map_err(|_| RlgrError::InvalidIntegralConversion("krp >> LS_GR"))?;
+fn code_gr(bits: &mut BitStream<'_>, krp: &mut u32, val: u32) {
+    #![expect(
+        clippy::as_conversions,
+        reason = "u32-to-usize and usize-to-u32 conversions, mostly fine, and hot loop"
+    )]
+
+    let kr = (*krp >> LS_GR) as usize;
+
     let vk = val >> kr;
-    let vk_usize = usize::try_from(vk).map_err(|_| RlgrError::InvalidIntegralConversion("val >> kr"))?;
+    let vk_usize = vk as usize;
 
     bits.output_bit(vk_usize, true);
     bits.output_bit(1, false);
+
     if kr != 0 {
         let remainder = val & ((1 << kr) - 1);
         bits.output_bits(kr, remainder);
     }
+
     if vk == 0 {
         *krp = krp.saturating_sub(2);
     } else if vk > 1 {
         *krp = min(*krp + vk, KP_MAX);
     }
-
-    Ok(())
 }
 
 pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Result<(), RlgrError> {
-    let mut k: u32 = 1;
-    let mut kr: u32 = 1;
-    let mut kp: u32 = k << LS_GR;
-    let mut krp: u32 = kr << LS_GR;
+    #![expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "u32-to-usize and usize-to-u32 conversions, mostly fine, and hot loop"
+    )]
 
     if tile.is_empty() {
         return Err(RlgrError::EmptyTile);
     }
 
+    let mut k: u32 = 1;
+    let mut kr: u32 = 1;
+    let mut kp: u32 = k << LS_GR;
+    let mut krp: u32 = kr << LS_GR;
+
     let mut bits = Bits::new(BitSlice::from_slice(tile));
+
     while !bits.is_empty() && !output.is_empty() {
         match CompressionMode::from(k) {
             CompressionMode::RunLength => {
                 let number_of_zeros = truncate_leading_value(&mut bits, false);
                 try_split_bits!(bits, 1);
-                let run = count_run(number_of_zeros, &mut k, &mut kp)
-                    + load_be_u32(try_split_bits!(
-                        bits,
-                        usize::try_from(k).map_err(|_| RlgrError::InvalidIntegralConversion("k"))?
-                    ));
+                let run = count_run(number_of_zeros, &mut k, &mut kp) + load_be_u32(try_split_bits!(bits, k as usize));
 
                 let sign_bit = try_split_bits!(bits, 1).load_be::<u8>();
 
                 let number_of_ones = truncate_leading_value(&mut bits, true);
                 try_split_bits!(bits, 1);
 
-                let code_remainder = load_be_u32(try_split_bits!(
-                    bits,
-                    usize::try_from(kr).map_err(|_| RlgrError::InvalidIntegralConversion("kr"))?
-                )) + (u32::try_from(number_of_ones)
-                    .map_err(|_| RlgrError::InvalidIntegralConversion("number of ones"))?
-                    << kr);
+                let code_remainder = load_be_u32(try_split_bits!(bits, kr as usize)) + ((number_of_ones as u32) << kr);
 
-                update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp)?;
+                update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
                 kp = kp.saturating_sub(DN_GR);
                 k = kp >> LS_GR;
 
                 let magnitude = compute_rl_magnitude(sign_bit, code_remainder)?;
 
-                let size = min(
-                    usize::try_from(run).map_err(|_| RlgrError::InvalidIntegralConversion("run"))?,
-                    output.len(),
-                );
+                let size = min(run as usize, output.len());
                 fill(&mut output[..size], 0);
                 output = &mut output[size..];
                 write_byte!(output, magnitude);
@@ -231,14 +234,9 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
                 let number_of_ones = truncate_leading_value(&mut bits, true);
                 try_split_bits!(bits, 1);
 
-                let code_remainder = load_be_u32(try_split_bits!(
-                    bits,
-                    usize::try_from(kr).map_err(|_| RlgrError::InvalidIntegralConversion("kr"))?
-                )) + ((u32::try_from(number_of_ones)
-                    .map_err(|_| RlgrError::InvalidIntegralConversion("number of ones"))?)
-                    << kr);
+                let code_remainder = load_be_u32(try_split_bits!(bits, kr as usize)) + ((number_of_ones as u32) << kr);
 
-                update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp)?;
+                update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
 
                 match mode {
                     EntropyAlgorithm::Rlgr1 => {
@@ -269,7 +267,7 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
         }
     }
 
-    // fill remaining buffer with zeros
+    // Fill remaining buffer with zeros.
     fill(output, 0);
 
     Ok(())
@@ -362,23 +360,20 @@ fn compute_n_index(code_remainder: u32) -> usize {
     32 - leading_zeros
 }
 
-fn update_parameters_according_to_number_of_ones(
-    number_of_ones: usize,
-    kr: &mut u32,
-    krp: &mut u32,
-) -> Result<(), RlgrError> {
+fn update_parameters_according_to_number_of_ones(number_of_ones: usize, kr: &mut u32, krp: &mut u32) {
+    #![expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "usize-to-u32 conversions, hot loop"
+    )]
+
     if number_of_ones == 0 {
         *krp = (*krp).saturating_sub(2);
         *kr = *krp >> LS_GR;
     } else if number_of_ones > 1 {
-        *krp = min(
-            *krp + u32::try_from(number_of_ones).map_err(|_| RlgrError::InvalidIntegralConversion("number of ones"))?,
-            KP_MAX,
-        );
+        *krp = min(*krp + (number_of_ones as u32), KP_MAX);
         *kr = *krp >> LS_GR;
     }
-
-    Ok(())
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
