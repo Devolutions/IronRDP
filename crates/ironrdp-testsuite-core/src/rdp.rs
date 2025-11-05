@@ -180,7 +180,7 @@ pub static SERVER_LICENSE_PDU: LazyLock<LicensePdu> = LazyLock::new(|| {
         state_transition: LicensingStateTransition::NoTransition,
         error_info: Vec::new(),
     };
-    pdu.license_header.preamble_message_size = pdu.size() as u16;
+    pdu.license_header.preamble_message_size = u16::try_from(pdu.size()).unwrap();
     pdu.into()
 });
 pub static SERVER_DEMAND_ACTIVE_PDU: LazyLock<ShareControlHeader> = LazyLock::new(|| ShareControlHeader {

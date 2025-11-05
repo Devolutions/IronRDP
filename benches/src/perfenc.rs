@@ -68,7 +68,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut updates = DisplayUpdates::new(file, DesktopSize { width, height }, fps);
     while let Some(up) = updates.next_update().await? {
         if let DisplayUpdate::Bitmap(ref up) = up {
-            total_raw += up.data.len() as u64;
+            total_raw += u64::try_from(up.data.len())?;
         } else {
             eprintln!("Invalid update");
             break;
@@ -78,7 +78,7 @@ async fn main() -> Result<(), anyhow::Error> {
             let Some(frag) = iter.next().await else {
                 break;
             };
-            let len = frag?.data.len() as u64;
+            let len = u64::try_from(frag?.data.len())?;
             total_enc += len;
         }
         n_updates += 1;
@@ -87,6 +87,7 @@ async fn main() -> Result<(), anyhow::Error> {
     }
     println!();
 
+    #[expect(clippy::as_conversions, reason = "casting u64 to f64")]
     let ratio = total_enc as f64 / total_raw as f64;
     let percent = 100.0 - ratio * 100.0;
     println!("Encoder: {encoder:?}");

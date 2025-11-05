@@ -364,19 +364,23 @@ fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64, phase:
     use core::f32::consts::PI;
 
     let total_samples = (u64::from(sample_rate) * duration_ms) / 1000;
+
+    #[expect(clippy::as_conversions)]
     let delta_phase = 2.0 * PI * frequency / sample_rate as f32;
+
     let amplitude = 32767.0; // Max amplitude for 16-bit audio
 
-    let capacity = (total_samples as usize) * 2; // 2 channels
+    let capacity = usize::try_from(total_samples).expect("u64-to-usize") * 2; // 2 channels
     let mut samples = Vec::with_capacity(capacity);
 
     for _ in 0..total_samples {
         let sample = (*phase).sin();
         *phase += delta_phase;
-        // Wrap phase to maintain precision and avoid overflow
+
+        // Wrap phase to maintain precision and avoid overflow.
         *phase %= 2.0 * PI;
 
-        #[expect(clippy::cast_possible_truncation)]
+        #[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
         let sample_i16 = (sample * amplitude) as i16;
 
         // Write same sample to both channels (stereo)

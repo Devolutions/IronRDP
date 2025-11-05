@@ -374,6 +374,10 @@ impl TryFrom<u16> for Component {
 }
 
 impl From<Component> for u16 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(component: Component) -> Self {
         component as u16
     }
@@ -454,6 +458,10 @@ impl Display for PacketId {
 }
 
 impl From<PacketId> for u16 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(packet_id: PacketId) -> Self {
         packet_id as u16
     }

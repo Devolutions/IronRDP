@@ -92,7 +92,7 @@ fn_to_numeric_cast_any = "warn"
 ptr_cast_constness = "warn"
 
 # == Correctness == #
-#as_conversions = "warn"
+as_conversions = "warn"
 cast_lossless = "warn"
 cast_possible_truncation = "warn"
 cast_possible_wrap = "warn"

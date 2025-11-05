@@ -93,9 +93,9 @@ impl RlePlaneDecoder {
         let raw_bytes_field = (control_byte >> 4) & 0x0F;
 
         let (run_length, raw_bytes_count) = match rle_bytes_field {
-            1 => (16 + raw_bytes_field as usize, 0),
-            2 => (32 + raw_bytes_field as usize, 0),
-            rle_control => (rle_control as usize, raw_bytes_field as usize),
+            1 => (16 + usize::from(raw_bytes_field), 0),
+            2 => (32 + usize::from(raw_bytes_field), 0),
+            rle_control => (usize::from(rle_control), usize::from(raw_bytes_field)),
         };
 
         self.decoded_data_len = raw_bytes_count + run_length;
@@ -207,7 +207,8 @@ impl<I: Iterator> RleEncoderScanlineIterator<I> {
     }
 
     fn delta_value(prev: u8, next: u8) -> u8 {
-        let mut result = (next as i16 - prev as i16) as u8;
+        let mut result = u8::try_from((i16::from(next) - i16::from(prev)) & 0xFF)
+            .expect("masking with 0xFF ensures that the value fits into u8");
 
         // bit magic from 3.1.9.2.1 of [MS-RDPEGDI].
         if result < 128 {
@@ -326,7 +327,10 @@ impl RlePlaneEncoder {
             raw = &raw[15..];
         }
 
-        let control = ((raw.len() as u8) << 4) + cmp::min(run, 15) as u8;
+        let raw_len = u8::try_from(raw.len()).expect("max value is guaranteed to be 15 due to the prior while loop");
+        let run_capped = u8::try_from(cmp::min(run, 15)).expect("max value is guaranteed to be 15");
+
+        let control = (raw_len << 4) + run_capped;
 
         ensure_size!(dst: dst, size: raw.len() + 1);
 
@@ -352,7 +356,8 @@ impl RlePlaneEncoder {
         while run >= 16 {
             ensure_size!(dst: dst, size: 1);
 
-            let current = cmp::min(run, MAX_DECODED_SEGMENT_SIZE) as u8;
+            let current = u8::try_from(cmp::min(run, MAX_DECODED_SEGMENT_SIZE))
+                .expect("max value is guaranteed to be MAX_DECODED_SEGMENT_SIZE (47)");
 
             let c_raw_bytes = cmp::min(current / 16, 2);
             let n_run_length = current - c_raw_bytes * 16;
@@ -361,7 +366,7 @@ impl RlePlaneEncoder {
             dst.write_u8(control);
             written += 1;
 
-            run -= current as usize;
+            run -= usize::from(current);
         }
 
         if run > 0 {

@@ -200,7 +200,7 @@ impl Header {
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
-        dst.write_u8(((self.cmd as u8) << 4) | (Into::<u8>::into(self.sp) << 2) | Into::<u8>::into(self.cb_id));
+        dst.write_u8(((self.cmd.as_u8()) << 4) | (Into::<u8>::into(self.sp) << 2) | Into::<u8>::into(self.cb_id));
         Ok(())
     }
 
@@ -233,6 +233,16 @@ enum Cmd {
     DataCompressed = 0x07,
     SoftSyncRequest = 0x08,
     SoftSyncResponse = 0x09,
+}
+
+impl Cmd {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 impl TryFrom<u8> for Cmd {
@@ -702,7 +712,7 @@ impl CapsVersion {
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: Self::size());
-        dst.write_u16(*self as u16);
+        dst.write_u16(u16::from(*self));
         Ok(())
     }
 
@@ -725,6 +735,10 @@ impl TryFrom<u16> for CapsVersion {
 }
 
 impl From<CapsVersion> for u16 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
     fn from(version: CapsVersion) -> Self {
         version as u16
     }

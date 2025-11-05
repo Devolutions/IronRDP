@@ -63,17 +63,23 @@ impl<'a> BitStream<'a> {
 }
 
 pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<usize, RlgrError> {
-    let mut k: u32 = 1;
-    let kr: u32 = 1;
-    let mut kp: u32 = k << LS_GR;
-    let mut krp: u32 = kr << LS_GR;
+    #![expect(
+        clippy::as_conversions,
+        reason = "u32-to-usize and usize-to-u32 conversions, mostly fine, and hot loop"
+    )]
 
     if input.is_empty() {
         return Err(RlgrError::EmptyTile);
     }
 
+    let mut k: u32 = 1;
+    let kr: u32 = 1;
+    let mut kp: u32 = k << LS_GR;
+    let mut krp: u32 = kr << LS_GR;
     let mut bits = BitStream::new(tile);
+
     let mut input = input.iter().peekable();
+
     while input.peek().is_some() {
         match CompressionMode::from(k) {
             CompressionMode::RunLength => {
@@ -98,7 +104,7 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                 bits.output_bits(k as usize, nz);
 
                 if let Some(val) = input.next() {
-                    let mag = val.unsigned_abs() as u32;
+                    let mag = u32::from(val.unsigned_abs());
                     bits.output_bit(1, *val < 0);
                     code_gr(&mut bits, &mut krp, mag - 1);
                 }
@@ -152,37 +158,53 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
 fn get_2magsign(val: i16) -> u32 {
     let sign = if val < 0 { 1 } else { 0 };
 
-    (val.unsigned_abs() as u32) * 2 - sign
+    (u32::from(val.unsigned_abs())) * 2 - sign
 }
 
 fn code_gr(bits: &mut BitStream<'_>, krp: &mut u32, val: u32) {
-    let kr = (*krp >> LS_GR) as usize;
-    let vk = (val >> kr) as usize;
+    #![expect(
+        clippy::as_conversions,
+        reason = "u32-to-usize and usize-to-u32 conversions, mostly fine, and hot loop"
+    )]
 
-    bits.output_bit(vk, true);
+    let kr = (*krp >> LS_GR) as usize;
+
+    let vk = val >> kr;
+    let vk_usize = vk as usize;
+
+    bits.output_bit(vk_usize, true);
     bits.output_bit(1, false);
+
     if kr != 0 {
         let remainder = val & ((1 << kr) - 1);
         bits.output_bits(kr, remainder);
     }
+
     if vk == 0 {
         *krp = krp.saturating_sub(2);
     } else if vk > 1 {
-        *krp = min(*krp + vk as u32, KP_MAX);
+        *krp = min(*krp + vk, KP_MAX);
     }
 }
 
 pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Result<(), RlgrError> {
-    let mut k: u32 = 1;
-    let mut kr: u32 = 1;
-    let mut kp: u32 = k << LS_GR;
-    let mut krp: u32 = kr << LS_GR;
+    #![expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "u32-to-usize and usize-to-u32 conversions, mostly fine, and hot loop"
+    )]
 
     if tile.is_empty() {
         return Err(RlgrError::EmptyTile);
     }
 
+    let mut k: u32 = 1;
+    let mut kr: u32 = 1;
+    let mut kp: u32 = k << LS_GR;
+    let mut krp: u32 = kr << LS_GR;
+
     let mut bits = Bits::new(BitSlice::from_slice(tile));
+
     while !bits.is_empty() && !output.is_empty() {
         match CompressionMode::from(k) {
             CompressionMode::RunLength => {
@@ -201,7 +223,7 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
                 kp = kp.saturating_sub(DN_GR);
                 k = kp >> LS_GR;
 
-                let magnitude = compute_rl_magnitude(sign_bit, code_remainder);
+                let magnitude = compute_rl_magnitude(sign_bit, code_remainder)?;
 
                 let size = min(run as usize, output.len());
                 fill(&mut output[..size], 0);
@@ -218,7 +240,7 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
 
                 match mode {
                     EntropyAlgorithm::Rlgr1 => {
-                        let magnitude = compute_rlgr1_magnitude(code_remainder, &mut k, &mut kp);
+                        let magnitude = compute_rlgr1_magnitude(code_remainder, &mut k, &mut kp)?;
                         write_byte!(output, magnitude);
                     }
                     EntropyAlgorithm::Rlgr3 => {
@@ -234,10 +256,10 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
                             k = kp >> LS_GR;
                         }
 
-                        let magnitude = compute_rlgr3_magnitude(val1);
+                        let magnitude = compute_rlgr3_magnitude(val1)?;
                         write_byte!(output, magnitude);
 
-                        let magnitude = compute_rlgr3_magnitude(val2);
+                        let magnitude = compute_rlgr3_magnitude(val2)?;
                         write_byte!(output, magnitude);
                     }
                 }
@@ -245,7 +267,7 @@ pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Re
         }
     }
 
-    // fill remaining buffer with zeros
+    // Fill remaining buffer with zeros.
     fill(output, 0);
 
     Ok(())
@@ -288,37 +310,41 @@ fn count_run(number_of_zeros: usize, k: &mut u32, kp: &mut u32) -> u32 {
     .sum()
 }
 
-fn compute_rl_magnitude(sign_bit: u8, code_remainder: u32) -> i16 {
+fn compute_rl_magnitude(sign_bit: u8, code_remainder: u32) -> Result<i16, RlgrError> {
+    let rl_magnitude =
+        i16::try_from(code_remainder + 1).map_err(|_| RlgrError::InvalidIntegralConversion("code remainder + 1"))?;
+
     if sign_bit != 0 {
-        -((code_remainder + 1) as i16)
+        Ok(-rl_magnitude)
     } else {
-        (code_remainder + 1) as i16
+        Ok(rl_magnitude)
     }
 }
 
-fn compute_rlgr1_magnitude(code_remainder: u32, k: &mut u32, kp: &mut u32) -> i16 {
+fn compute_rlgr1_magnitude(code_remainder: u32, k: &mut u32, kp: &mut u32) -> Result<i16, RlgrError> {
     if code_remainder == 0 {
         *kp = min(*kp + UQ_GR, KP_MAX);
         *k = *kp >> LS_GR;
 
-        0
+        Ok(0)
     } else {
         *kp = kp.saturating_sub(DQ_GR);
         *k = *kp >> LS_GR;
 
         if code_remainder % 2 != 0 {
-            -(((code_remainder + 1) >> 1) as i16)
+            Ok(-i16::try_from((code_remainder + 1) >> 1)
+                .map_err(|_| RlgrError::InvalidIntegralConversion("(code remainder + 1) >> 1"))?)
         } else {
-            (code_remainder >> 1) as i16
+            i16::try_from(code_remainder >> 1).map_err(|_| RlgrError::InvalidIntegralConversion("code remainder >> 1"))
         }
     }
 }
 
-fn compute_rlgr3_magnitude(val: u32) -> i16 {
+fn compute_rlgr3_magnitude(val: u32) -> Result<i16, RlgrError> {
     if val % 2 != 0 {
-        -(((val + 1) >> 1) as i16)
+        Ok(-i16::try_from((val + 1) >> 1).map_err(|_| RlgrError::InvalidIntegralConversion("(val + 1) >> 1"))?)
     } else {
-        (val >> 1) as i16
+        i16::try_from(val >> 1).map_err(|_| RlgrError::InvalidIntegralConversion("val >> 1"))
     }
 }
 
@@ -335,11 +361,17 @@ fn compute_n_index(code_remainder: u32) -> usize {
 }
 
 fn update_parameters_according_to_number_of_ones(number_of_ones: usize, kr: &mut u32, krp: &mut u32) {
+    #![expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "usize-to-u32 conversions, hot loop"
+    )]
+
     if number_of_ones == 0 {
         *krp = (*krp).saturating_sub(2);
         *kr = *krp >> LS_GR;
     } else if number_of_ones > 1 {
-        *krp = min(*krp + number_of_ones as u32, KP_MAX);
+        *krp = min(*krp + (number_of_ones as u32), KP_MAX);
         *kr = *krp >> LS_GR;
     }
 }
@@ -365,6 +397,7 @@ pub enum RlgrError {
     Io(io::Error),
     Yuv(YuvError),
     EmptyTile,
+    InvalidIntegralConversion(&'static str),
 }
 
 impl core::fmt::Display for RlgrError {
@@ -373,6 +406,7 @@ impl core::fmt::Display for RlgrError {
             Self::Io(_) => write!(f, "IO error"),
             Self::Yuv(_) => write!(f, "YUV error"),
             Self::EmptyTile => write!(f, "the input tile is empty"),
+            Self::InvalidIntegralConversion(s) => write!(f, "invalid `{s}`: out of range integral type conversion"),
         }
     }
 }
@@ -383,6 +417,7 @@ impl core::error::Error for RlgrError {
             Self::Io(error) => Some(error),
             Self::Yuv(error) => Some(error),
             Self::EmptyTile => None,
+            Self::InvalidIntegralConversion(_) => None,
         }
     }
 }

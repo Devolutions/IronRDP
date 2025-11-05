@@ -72,7 +72,6 @@ struct PointerRenderingState {
 }
 
 #[expect(clippy::too_many_arguments)]
-#[expect(clippy::cast_lossless)] // FIXME
 fn copy_cursor_data(
     from: &[u8],
     from_pos: (usize, usize),
@@ -124,11 +123,17 @@ fn copy_cursor_data(
                     continue;
                 }
 
-                // Integer alpha blending, source represented as premultiplied alpha color, calculation in floating point
-                to[to_start + pixel * PIXEL_SIZE] = src_r + (((dest_r as u16) * (255 - src_a) as u16) >> 8) as u8;
-                to[to_start + pixel * PIXEL_SIZE + 1] = src_g + (((dest_g as u16) * (255 - src_a) as u16) >> 8) as u8;
-                to[to_start + pixel * PIXEL_SIZE + 2] = src_b + (((dest_b as u16) * (255 - src_a) as u16) >> 8) as u8;
-                // Framebuffer is always opaque, so we can skip alpha channel change
+                #[expect(clippy::as_conversions, reason = "(u16 >> 8) fits into u8 + hot loop")]
+                {
+                    // Integer alpha blending, source represented as premultiplied alpha color, calculation in floating point
+                    to[to_start + pixel * PIXEL_SIZE] =
+                        src_r + ((u16::from(dest_r) * u16::from(255 - src_a)) >> 8) as u8;
+                    to[to_start + pixel * PIXEL_SIZE + 1] =
+                        src_g + ((u16::from(dest_g) * u16::from(255 - src_a)) >> 8) as u8;
+                    to[to_start + pixel * PIXEL_SIZE + 2] =
+                        src_b + ((u16::from(dest_b) * u16::from(255 - src_a)) >> 8) as u8;
+                    // Framebuffer is always opaque, so we can skip alpha channel change
+                }
             }
         } else {
             to[to_start..to_start + width * PIXEL_SIZE]
@@ -227,6 +232,13 @@ impl DecodedImage {
             return Ok(None);
         }
 
+        let pointer_src_rect_width = usize::from(self.pointer_src_rect.width());
+        let pointer_src_rect_height = usize::from(self.pointer_src_rect.height());
+        let pointer_draw_x = usize::from(self.pointer_draw_x);
+        let pointer_draw_y = usize::from(self.pointer_draw_y);
+        let width = usize::from(self.width);
+        let height = usize::from(self.height);
+
         match &layer {
             PointerLayer::Background => {
                 if self.pointer_backbuffer.is_empty() {
@@ -237,15 +249,12 @@ impl DecodedImage {
                 copy_cursor_data(
                     &self.pointer_backbuffer,
                     (0, 0),
-                    self.pointer_src_rect.width() as usize * 4,
+                    pointer_src_rect_width * 4,
                     &mut self.data,
-                    self.width as usize * 4,
-                    (self.pointer_draw_x as usize, self.pointer_draw_y as usize),
-                    (
-                        self.pointer_src_rect.width() as usize,
-                        self.pointer_src_rect.height() as usize,
-                    ),
-                    (self.width as usize, self.height as usize),
+                    width * 4,
+                    (pointer_draw_x, pointer_draw_y),
+                    (pointer_src_rect_width, pointer_src_rect_height),
+                    (width, height),
                     false,
                 );
             }
@@ -254,37 +263,34 @@ impl DecodedImage {
                 let buffer_size = self
                     .pointer_backbuffer
                     .len()
-                    .max(self.pointer_src_rect.width() as usize * self.pointer_src_rect.height() as usize * 4);
+                    .max(pointer_src_rect_width * pointer_src_rect_height * 4);
                 self.pointer_backbuffer.resize(buffer_size, 0);
 
                 copy_cursor_data(
                     &self.data,
-                    (self.pointer_draw_x as usize, self.pointer_draw_y as usize),
-                    self.width as usize * 4,
+                    (pointer_draw_x, pointer_draw_y),
+                    width * 4,
                     &mut self.pointer_backbuffer,
-                    self.pointer_src_rect.width() as usize * 4,
+                    pointer_src_rect_width * 4,
                     (0, 0),
-                    (
-                        self.pointer_src_rect.width() as usize,
-                        self.pointer_src_rect.height() as usize,
-                    ),
-                    (self.width as usize, self.height as usize),
+                    (pointer_src_rect_width, pointer_src_rect_height),
+                    (width, height),
                     false,
                 );
 
                 // Draw pointer (with compositing)
                 copy_cursor_data(
                     pointer.bitmap_data.as_slice(),
-                    (self.pointer_src_rect.left as usize, self.pointer_src_rect.top as usize),
+                    (
+                        usize::from(self.pointer_src_rect.left),
+                        usize::from(self.pointer_src_rect.top),
+                    ),
                     usize::from(pointer.width) * 4,
                     &mut self.data,
-                    self.width as usize * 4,
-                    (self.pointer_draw_x as usize, self.pointer_draw_y as usize),
-                    (
-                        self.pointer_src_rect.width() as usize,
-                        self.pointer_src_rect.height() as usize,
-                    ),
-                    (self.width as usize, self.height as usize),
+                    width * 4,
+                    (pointer_draw_x, pointer_draw_y),
+                    (pointer_src_rect_width, pointer_src_rect_height),
+                    (width, height),
                     true,
                 );
             }
@@ -312,7 +318,6 @@ impl DecodedImage {
         }
     }
 
-    #[expect(clippy::cast_possible_wrap)] // FIXME
     fn recalculate_pointer_geometry(&mut self) {
         let x = self.pointer_x;
         let y = self.pointer_y;
@@ -322,10 +327,10 @@ impl DecodedImage {
             _ => return,
         };
 
-        let left_virtual = x as i16 - pointer.hotspot_x as i16;
-        let top_virtual = y as i16 - pointer.hotspot_y as i16;
-        let right_virtual = left_virtual + pointer.width as i16 - 1;
-        let bottom_virtual = top_virtual + pointer.height as i16 - 1;
+        let left_virtual = i32::from(x) - i32::from(pointer.hotspot_x);
+        let top_virtual = i32::from(y) - i32::from(pointer.hotspot_y);
+        let right_virtual = left_virtual + i32::from(pointer.width) - 1;
+        let bottom_virtual = top_virtual + i32::from(pointer.height) - 1;
 
         let (left, draw_x) = if left_virtual < 0 {
             // Cut left side if required
@@ -342,7 +347,7 @@ impl DecodedImage {
         };
 
         // Cut right side if required
-        let right = if right_virtual >= (self.width - 1) as i16 {
+        let right = if right_virtual >= i32::from(self.width - 1) {
             if draw_x + 1 >= self.width {
                 // Pointer is completely out of bounds horizontally
                 self.pointer_visible_on_screen = false;
@@ -355,7 +360,7 @@ impl DecodedImage {
         };
 
         // Cut bottom side if required
-        let bottom = if bottom_virtual >= (self.height - 1) as i16 {
+        let bottom = if bottom_virtual >= i32::from(self.height - 1) {
             if (draw_y + 1) >= self.height {
                 // Pointer is completely out of bounds vertically
                 self.pointer_visible_on_screen = false;
@@ -539,7 +544,7 @@ impl DecodedImage {
         const SRC_COLOR_DEPTH: usize = 2;
         const DST_COLOR_DEPTH: usize = 4;
 
-        let image_width = self.width as usize;
+        let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
@@ -586,7 +591,7 @@ impl DecodedImage {
         const SRC_COLOR_DEPTH: usize = 3;
         const DST_COLOR_DEPTH: usize = 4;
 
-        let image_width = self.width as usize;
+        let image_width = usize::from(self.width);
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
 
@@ -636,7 +641,7 @@ impl DecodedImage {
         const SRC_COLOR_DEPTH: usize = 4;
         const DST_COLOR_DEPTH: usize = 4;
 
-        let image_width = self.width as usize;
+        let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);

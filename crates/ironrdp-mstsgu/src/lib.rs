@@ -221,7 +221,8 @@ impl GwClient {
                         let mut cur = ReadCursor::new(&msg);
                         let hdr = PktHdr::decode(&mut cur).map_err(|e| custom_err!("Header Decode", e))?;
 
-                        assert!(cur.len() >= hdr.length as usize - hdr.size());
+                        let header_length = usize::try_from(hdr.length).map_err(|_| Error::new("PktHdr too big", GwErrorKind::Decode))?;
+                        assert!(cur.len() >= header_length - hdr.size());
                         match hdr.ty {
                             PktTy::Keepalive => {
                                 continue;
@@ -287,7 +288,10 @@ impl GwConn {
         let mut cur = ReadCursor::new(&msg);
 
         let hdr = PktHdr::decode(&mut cur).map_err(|_| Error::new("PktHdr", GwErrorKind::Decode))?;
-        if cur.len() != hdr.length as usize - hdr.size() {
+
+        let header_length =
+            usize::try_from(hdr.length).map_err(|_| Error::new("PktHdr too big", GwErrorKind::Decode))?;
+        if cur.len() != header_length - hdr.size() {
             return Err(Error::new("read_packet", GwErrorKind::PacketEof));
         }
 
@@ -315,7 +319,7 @@ impl GwConn {
     async fn tunnel(&mut self) -> Result<(), Error> {
         let req = TunnelReqPkt {
             // Havent seen any server working without this.
-            caps: HttpCapsTy::MessagingConsentSign as u32,
+            caps: HttpCapsTy::MessagingConsentSign.as_u32(),
             fields_present: 0,
             ..TunnelReqPkt::default()
         };
