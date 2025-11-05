@@ -11,6 +11,7 @@ pub mod graphics;
 pub mod input;
 pub mod log;
 pub mod pdu;
+pub mod rdcleanpath;
 pub mod session;
 pub mod svc;
 pub mod utils;

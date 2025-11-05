@@ -23,7 +23,7 @@ pub mod ffi {
             INIT_LOG.call_once(|| {
                 let log_file = std::env::var(IRONRDP_LOG_PATH).ok();
                 let log_file = log_file.as_deref();
-                setup_logging(log_file).expect("Failed to setup logging");
+                setup_logging(log_file).expect("failed to setup logging");
             });
         }
     }

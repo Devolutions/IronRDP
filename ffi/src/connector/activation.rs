@@ -16,7 +16,7 @@ pub mod ffi {
 
     impl ConnectionActivationSequence {
         pub fn get_state(&self) -> Box<ConnectionActivationState> {
-            Box::new(ConnectionActivationState(self.0.state.clone()))
+            Box::new(ConnectionActivationState(self.0.connection_activation_state()))
         }
 
         pub fn next_pdu_hint<'a>(&'a self) -> Result<Option<Box<PduHint<'a>>>, Box<IronRdpError>> {
@@ -83,17 +83,17 @@ pub mod ffi {
         pub fn get_connection_finalization(
             &self,
         ) -> Result<Box<ConnectionActivationStateConnectionFinalization>, Box<IronRdpError>> {
-            match &self.0 {
+            match self.0 {
                 ironrdp::connector::connection_activation::ConnectionActivationState::ConnectionFinalization {
                     io_channel_id,
                     user_channel_id,
                     desktop_size,
                     connection_finalization,
                 } => Ok(Box::new(ConnectionActivationStateConnectionFinalization {
-                    io_channel_id: *io_channel_id,
-                    user_channel_id: *user_channel_id,
-                    desktop_size: *desktop_size,
-                    connection_finalization: connection_finalization.clone(),
+                    io_channel_id,
+                    user_channel_id,
+                    desktop_size,
+                    connection_finalization,
                 })),
                 _ => Err(IncorrectEnumTypeError::on_variant("ConnectionFinalization")
                     .of_enum("ConnectionActivationState")

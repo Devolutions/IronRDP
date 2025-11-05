@@ -26,7 +26,6 @@ jobs:
 
       - name: Get dry run
         id: get-dry-run
-        shell: pwsh
         run: |
           $IsDryRun = '${{ github.event.inputs.dry-run }}' -Eq 'true' -Or '${{ github.event_name }}' -Eq 'schedule'
 
@@ -35,26 +34,27 @@ jobs:
           } else {
             echo "dry-run=false" >> $Env:GITHUB_OUTPUT
           }
+        shell: pwsh
 
       - name: Get version
         id: get-version
-        shell: pwsh
         run: |
           $CsprojXml = [Xml] (Get-Content .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj)
           $ProjectVersion = $CsprojXml.Project.PropertyGroup.Version | Select-Object -First 1
           $PackageVersion = $ProjectVersion -Replace "^(\d+)\.(\d+)\.(\d+).(\d+)$", "`$1.`$2.`$3"
           echo "project-version=$ProjectVersion" >> $Env:GITHUB_OUTPUT
           echo "package-version=$PackageVersion" >> $Env:GITHUB_OUTPUT
+        shell: pwsh
 
   build-native:
     name: Native build
+    needs: [preflight]
     runs-on: ${{matrix.runner}}
-    needs: preflight
     strategy:
       fail-fast: false
       matrix:
-        os: [ win, osx, linux, ios, android ]
-        arch: [ x86, x64, arm, arm64 ]
+        os: [win, osx, linux, ios, android]
+        arch: [x86, x64, arm, arm64]
         include:
           - os: win
             runner: windows-2022
@@ -89,20 +89,20 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure Android NDK
+        if: ${{ matrix.os == 'android' }}
         uses: Devolutions/actions-public/cargo-android-ndk@v1
-        if: matrix.os == 'android'
         with:
           android_api_level: "21"
 
       - name: Configure macOS deployement target
         if: ${{ matrix.os == 'osx' }}
-        shell: pwsh
         run: Write-Output "MACOSX_DEPLOYMENT_TARGET=10.10" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
 
       - name: Configure iOS deployement target
         if: ${{ matrix.os == 'ios' }}
-        shell: pwsh
         run: Write-Output "IPHONEOS_DEPLOYMENT_TARGET=12.1" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
 
       - name: Update runner
         if: ${{ matrix.os == 'linux' }}
@@ -110,12 +110,11 @@ jobs:
 
       - name: Install dependencies for rustls
         if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
         run: |
           choco install ninja nasm
 
           # We need to add the NASM binary folder to the PATH manually.
-          # We don’t need to do that for ninja.
+          # We don't need to do that for ninja.
           Write-Output "PATH=$Env:PATH;$Env:ProgramFiles\NASM" >> $Env:GITHUB_ENV
 
           # libclang / LLVM is a requirement for AWS LC.
@@ -125,6 +124,7 @@ jobs:
 
           # Install Visual Studio Developer PowerShell Module for cmdlets such as Enter-VsDevShell
           Install-Module VsDevShell -Force
+        shell: pwsh
 
       # No pre-generated bindings for Android and iOS.
       # https://aws.github.io/aws-lc-rs/platform_support.html#pre-generated-bindings
@@ -141,19 +141,18 @@ jobs:
           sudo apt-get install gcc-multilib
 
       - name: Setup LLVM
+        if: ${{ matrix.os == 'linux' }}
         uses: Devolutions/actions-public/setup-llvm@v1
-        if: matrix.os == 'linux'
         with:
           version: "18.1.8"
 
       - name: Setup CBake
+        if: ${{ matrix.os == 'linux' }}
         uses: Devolutions/actions-public/setup-cbake@v1
-        if: matrix.os == 'linux'
         with:
           cargo_env_scripts: true
 
       - name: Build native lib (${{matrix.os}}-${{matrix.arch}})
-        shell: pwsh
         run: |
           $DotNetOs = '${{matrix.os}}'
           $DotNetArch = '${{matrix.arch}}'
@@ -210,6 +209,7 @@ jobs:
           $OutputPath = Join-Path "dependencies" "runtimes" $DotNetRid "native"
           New-Item -ItemType Directory -Path $OutputPath | Out-Null
           Copy-Item $OutputLibrary $(Join-Path $OutputPath $RenamedLibraryName)
+        shell: pwsh
 
       - name: Upload native components
         uses: actions/upload-artifact@v4
@@ -219,8 +219,8 @@ jobs:
 
   build-universal:
     name: Universal build
+    needs: [preflight, build-native]
     runs-on: ubuntu-22.04
-    needs: [ preflight, build-native ]
     strategy:
       fail-fast: false
       matrix:
@@ -239,7 +239,6 @@ jobs:
           path: dependencies/runtimes
 
       - name: Lipo native components
-        shell: pwsh
         run: |
           Set-Location "dependencies/runtimes"
           # No RID for universal binaries, see: https://github.com/dotnet/runtime/issues/53156
@@ -249,9 +248,9 @@ jobs:
           $LipoCmd = $(@('lipo', '-create', '-output', (Join-Path -Path $OutputPath -ChildPath "libDevolutionsIronRdp.dylib")) + $Libraries) -Join ' '
           Write-Host $LipoCmd
           Invoke-Expression $LipoCmd
+        shell: pwsh
 
       - name: Framework
-        shell: pwsh
         if: ${{ matrix.os == 'ios' }}
         run: |
           $Version = '${{ needs.preflight.outputs.project-version }}'
@@ -269,19 +268,19 @@ jobs:
 
           [xml] $InfoPlistXml = Get-Content (Join-Path "ffi" "dotnet" "Devolutions.IronRdp" "Info.plist")
           Select-Xml -xml $InfoPlistXml -XPath "/plist/dict/key[. = 'CFBundleIdentifier']/following-sibling::string[1]" |
-          %{ 	
+          %{
           $_.Node.InnerXml = "com.devolutions.ironrdp"
           }
           Select-Xml -xml $InfoPlistXml -XPath "/plist/dict/key[. = 'CFBundleExecutable']/following-sibling::string[1]" |
-          %{ 	
+          %{
           $_.Node.InnerXml = $BundleName
           }
           Select-Xml -xml $InfoPlistXml -XPath "/plist/dict/key[. = 'CFBundleVersion']/following-sibling::string[1]" |
-          %{ 	
+          %{
           $_.Node.InnerXml = $Version
           }
           Select-Xml -xml $InfoPlistXml -XPath "/plist/dict/key[. = 'CFBundleShortVersionString']/following-sibling::string[1]" |
-          %{ 	
+          %{
           $_.Node.InnerXml = $ShortVersion
           }
 
@@ -294,6 +293,7 @@ jobs:
           # .NET XML document inserts two square brackets at the end of the DOCTYPE tag
           # It's perfectly valid XML, but we're dealing with plists here and dyld will not be able to read the file
           ((Get-Content -Path (Join-Path $FrameworkDir "Info.plist") -Raw) -Replace 'PropertyList-1.0.dtd"\[\]', 'PropertyList-1.0.dtd"') | Set-Content -Path (Join-Path $FrameworkDir "Info.plist")
+        shell: pwsh
 
       - name: Upload native components
         uses: actions/upload-artifact@v4
@@ -303,8 +303,8 @@ jobs:
 
   build-managed:
     name: Managed build
+    needs: [build-universal]
     runs-on: windows-2022
-    needs: build-universal
 
     steps:
       - name: Check out ${{ github.repository }}
@@ -317,9 +317,9 @@ jobs:
         run: dotnet workload install ios
 
       - name: Prepare dependencies
-        shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "dependencies/runtimes" | Out-Null
+        shell: pwsh
 
       - name: Download native components
         uses: actions/download-artifact@v4
@@ -327,19 +327,19 @@ jobs:
           path: dependencies/runtimes
 
       - name: Rename dependencies
-        shell: pwsh
         run: |
           Set-Location "dependencies/runtimes"
           $(Get-Item ".\ironrdp-*") | ForEach-Object { Rename-Item $_ $_.Name.Replace("ironrdp-", "") }
           Get-ChildItem * -Recurse
+        shell: pwsh
 
       - name: Build Devolutions.IronRdp (managed)
-        shell: pwsh
         run: |
           # net8.0 target packaged as Devolutions.IronRdp
           dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release
           # net8.0-ios target packaged as Devolutions.IronRdp.iOS
           dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS
+        shell: pwsh
 
       - name: Upload managed components
         uses: actions/upload-artifact@v4
@@ -349,12 +349,10 @@ jobs:
 
   publish:
     name: Publish NuGet package
-    runs-on: ubuntu-latest
     environment: nuget-publish
-    if: needs.preflight.outputs.dry-run == 'false'
-    needs:
-      - preflight
-      - build-managed
+    if: ${{ needs.preflight.outputs.dry-run == 'false' }}
+    needs: [preflight, build-managed]
+    runs-on: ubuntu-latest
 
     steps:
       - name: Download NuGet package artifact
@@ -364,15 +362,14 @@ jobs:
           path: package
 
       - name: Publish to nuget.org
-        shell: pwsh
         run: |
           $Files = Get-ChildItem -Recurse package/*.nupkg
 
           foreach ($File in $Files) {
             $PushCmd = @(
-              'dotnet', 
-              'nuget', 
-              'push', 
+              'dotnet',
+              'nuget',
+              'push',
               "$File",
               '--api-key',
               '${{ secrets.NUGET_API_KEY }}',
@@ -385,19 +382,17 @@ jobs:
             $PushCmd = $PushCmd -Join ' '
             Invoke-Expression $PushCmd
           }
+        shell: pwsh
 
   notify:
     name: Notify failure
-    runs-on: ubuntu-latest
     if: ${{ always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule' }}
-    needs:
-      - preflight
-      - build-native
-      - build-universal
-      - build-managed
+    needs: [preflight, build-native, build-universal, build-managed]
+    runs-on: ubuntu-latest
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_ARCHITECTURE }}
       SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
     steps:
       - name: Send slack notification
         id: slack
