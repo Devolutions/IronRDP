@@ -2116,7 +2116,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -2463,7 +2463,7 @@ dependencies = [
  "url",
  "uuid",
  "whoami",
- "windows 0.62.1",
+ "windows 0.62.2",
  "winit",
  "x509-cert",
 ]
@@ -2494,7 +2494,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-core",
  "tracing",
- "windows 0.62.1",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -6218,9 +6218,9 @@ dependencies = [
 
 [[package]]
 name = "windows"
-version = "0.62.1"
+version = "0.62.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49e6c4a1f363c8210c6f77ba24f645c61c6fb941eccf013da691f7e09515b8ac"
+checksum = "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580"
 dependencies = [
  "windows-collections 0.3.2",
  "windows-core 0.62.2",
