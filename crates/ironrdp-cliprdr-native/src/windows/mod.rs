@@ -162,7 +162,7 @@ impl WinClipboard {
         // SAFETY: low-level WinAPI call
         let atom = unsafe { RegisterClassA(&wc) };
         if atom == 0 {
-            return Err(WinCliprdrError::from(Error::from_win32()));
+            return Err(WinCliprdrError::from(Error::from_thread()));
         }
 
         // SAFETY: low-level WinAPI call
@@ -184,7 +184,7 @@ impl WinClipboard {
         };
 
         if window.is_invalid() {
-            return Err(WinCliprdrError::from(Error::from_win32()));
+            return Err(WinCliprdrError::from(Error::from_thread()));
         }
         // Init clipboard processing for WinAPI event loop
         //
