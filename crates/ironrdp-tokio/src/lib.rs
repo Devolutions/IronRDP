@@ -158,3 +158,66 @@ where
         })
     }
 }
+
+pub type MovableTokioFramed<S> = Framed<MovableTokioStream<S>>;
+
+pub struct MovableTokioStream<S: Send> {
+    inner: S,
+}
+
+impl<S: Send> StreamWrapper for MovableTokioStream<S> {
+    type InnerStream = S;
+
+    fn from_inner(stream: Self::InnerStream) -> Self {
+        Self { inner: stream }
+    }
+
+    fn into_inner(self) -> Self::InnerStream {
+        self.inner
+    }
+
+    fn get_inner(&self) -> &Self::InnerStream {
+        &self.inner
+    }
+
+    fn get_inner_mut(&mut self) -> &mut Self::InnerStream {
+        &mut self.inner
+    }
+}
+
+impl<S> FramedRead for MovableTokioStream<S>
+where
+    S: Send + Unpin + AsyncRead,
+{
+    type ReadFut<'read>
+        = Pin<Box<dyn core::future::Future<Output = io::Result<usize>> + Send + 'read>>
+    where
+        Self: 'read;
+
+    fn read<'a>(&'a mut self, buf: &'a mut BytesMut) -> Self::ReadFut<'a> {
+        use tokio::io::AsyncReadExt as _;
+
+        Box::pin(async { self.inner.read_buf(buf).await })
+    }
+}
+
+impl<S> FramedWrite for MovableTokioStream<S>
+where
+    S: Send + Unpin + AsyncWrite,
+{
+    type WriteAllFut<'write>
+        = Pin<Box<dyn core::future::Future<Output = io::Result<()>> + Send + 'write>>
+    where
+        Self: 'write;
+
+    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+        use tokio::io::AsyncWriteExt as _;
+
+        Box::pin(async {
+            self.inner.write_all(buf).await?;
+            self.inner.flush().await?;
+
+            Ok(())
+        })
+    }
+}
