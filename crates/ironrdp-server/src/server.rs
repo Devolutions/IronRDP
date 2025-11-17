@@ -21,7 +21,7 @@ use ironrdp_pdu::{decode_err, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
 use ironrdp_tokio::{split_tokio_framed, unsplit_tokio_framed, FramedRead, FramedWrite, TokioFramed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task;
@@ -357,7 +357,12 @@ impl RdpServer {
                     .await?;
                 }
 
-                self.accept_finalize(framed, acceptor).await?;
+                let framed = self.accept_finalize(framed, acceptor).await?;
+                debug!("Shutting down TLS connection");
+                let (mut tls_stream, _) = framed.into_inner();
+                if let Err(e) = tls_stream.shutdown().await {
+                    debug!(?e, "TLS shutdown error");
+                }
             }
 
             BeginResult::Continue(framed) => {
@@ -954,7 +959,7 @@ impl RdpServer {
         }
     }
 
-    async fn accept_finalize<S>(&mut self, mut framed: TokioFramed<S>, mut acceptor: Acceptor) -> Result<()>
+    async fn accept_finalize<S>(&mut self, mut framed: TokioFramed<S>, mut acceptor: Acceptor) -> Result<TokioFramed<S>>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
@@ -982,11 +987,12 @@ impl RdpServer {
                     framed = unsplit_tokio_framed(reader, writer);
                     continue;
                 }
-                RunState::Disconnect => break,
+                RunState::Disconnect => {
+                    let final_framed = unsplit_tokio_framed(reader, writer);
+                    return Ok(final_framed);
+                }
             }
         }
-
-        Ok(())
     }
 
     pub fn set_credentials(&mut self, creds: Option<Credentials>) {
