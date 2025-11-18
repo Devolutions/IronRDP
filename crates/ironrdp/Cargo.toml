@@ -16,7 +16,7 @@ doctest = false
 test = false
 
 [features]
-default = ["core", "pdu", "scard"]
+default = ["core", "pdu"]
 core = ["dep:ironrdp-core"]
 pdu = ["dep:ironrdp-pdu"]
 cliprdr = ["dep:ironrdp-cliprdr"]
@@ -25,7 +25,6 @@ acceptor = ["dep:ironrdp-acceptor"]
 session = ["dep:ironrdp-session"]
 graphics = ["dep:ironrdp-graphics"]
 input = ["dep:ironrdp-input"]
-scard = ["ironrdp-connector?/scard"]
 server = ["dep:ironrdp-server"]
 svc = ["dep:ironrdp-svc"]
 dvc = ["dep:ironrdp-dvc"]
@@ -42,7 +41,7 @@ __bench = ["ironrdp-server/__bench"]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", optional = true } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", optional = true } # public
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.4", optional = true } # public
-ironrdp-connector = { path = "../ironrdp-connector", version = "0.7", optional = true, default-features = false } # public
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.7", optional = true } # public
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.7", optional = true } # public
 ironrdp-session = { path = "../ironrdp-session", version = "0.7", optional = true } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.6", optional = true } # public

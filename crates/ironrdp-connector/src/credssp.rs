@@ -1,9 +1,7 @@
 use ironrdp_core::{other_err, WriteBuf};
 use ironrdp_pdu::{nego, PduHint};
 
-#[cfg(feature = "scard")]
 use picky::key::PrivateKey;
-#[cfg(feature = "scard")]
 use sspi::Secret;
 
 use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
@@ -115,7 +113,6 @@ impl CredsspSequence {
                 }
                 .into()
             }
-            #[cfg(feature = "scard")]
             Credentials::SmartCard { pin, config } => match config {
                 Some(config) => {
                     let cert: Certificate = picky_asn1_der::from_bytes(&config.certificate)

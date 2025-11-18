@@ -117,7 +117,6 @@ pub enum Credentials {
         password: String,
     },
 
-    #[cfg(feature = "scard")]
     SmartCard {
         pin: String,
         config: Option<SmartCardIdentity>,
@@ -128,7 +127,6 @@ impl Credentials {
     fn username(&self) -> Option<&str> {
         match self {
             Self::UsernamePassword { username, .. } => Some(username),
-            #[cfg(feature = "scard")]
             Self::SmartCard { .. } => None, // Username is ultimately provided by the smart card certificate.
         }
     }
@@ -136,7 +134,6 @@ impl Credentials {
     fn secret(&self) -> &str {
         match self {
             Self::UsernamePassword { password, .. } => password,
-            #[cfg(feature = "scard")]
             Self::SmartCard { pin, .. } => pin,
         }
     }
