@@ -116,7 +116,6 @@ pub enum Credentials {
         username: String,
         password: String,
     },
-
     SmartCard {
         pin: String,
         config: Option<SmartCardIdentity>,
