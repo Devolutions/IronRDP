@@ -758,6 +758,7 @@ fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::Cli
         flags |= ClientInfoFlags::AUTOLOGON;
     }
 
+    #[cfg(feature = "scard")]
     if let crate::Credentials::SmartCard { .. } = &config.credentials {
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
     }

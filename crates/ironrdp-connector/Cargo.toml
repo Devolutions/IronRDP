@@ -20,6 +20,7 @@ default = []
 arbitrary = ["dep:arbitrary"]
 qoi = ["ironrdp-pdu/qoi"]
 qoiz = ["ironrdp-pdu/qoiz"]
+scard = ["sspi/scard"]
 
 [dependencies]
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.5" } # public
@@ -27,7 +28,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", features = ["std"] } # public
 arbitrary = { version = "1", features = ["derive"], optional = true } # public
-sspi = { version = "0.18", features = ["scard"] }
+sspi = { version = "0.18" }
 url = "2.5" # public
 rand = { version = "0.9", features = ["std"] } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }

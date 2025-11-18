@@ -25,7 +25,8 @@ qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
 # Protocols
-ironrdp = { path = "../ironrdp", features = [
+ironrdp = { path = "../ironrdp", default-features = false, features = [
+    "core",
     "connector",
     "session",
     "input",
