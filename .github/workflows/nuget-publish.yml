@@ -353,6 +353,8 @@ jobs:
     if: ${{ needs.preflight.outputs.dry-run == 'false' }}
     needs: [preflight, build-managed]
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
 
     steps:
       - name: Download NuGet package artifact
@@ -360,6 +362,12 @@ jobs:
         with:
           name: ironrdp-nupkg
           path: package
+
+      - name: NuGet login (OIDC)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: ${{ secrets.NUGET_BOT_USERNAME }}
 
       - name: Publish to nuget.org
         run: |
@@ -372,7 +380,7 @@ jobs:
               'push',
               "$File",
               '--api-key',
-              '${{ secrets.NUGET_API_KEY }}',
+              '${{ steps.nuget-login.outputs.NUGET_API_KEY }}',
               '--source',
               'https://api.nuget.org/v3/index.json',
               '--skip-duplicate'
