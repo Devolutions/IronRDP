@@ -127,7 +127,9 @@ impl CredsspSequence {
                         csp_name: config.csp_name.clone(),
                         pin: pin.as_bytes().to_vec().into(),
                         private_key: Some(key.into()),
-                        scard_type: sspi::SmartCardType::default(),
+                        scard_type: sspi::SmartCardType::Emulated {
+                            scard_pin: Secret::new(pin.as_bytes().to_vec()),
+                        },
                     };
                     sspi::Credentials::SmartCard(Box::new(identity))
                 }
