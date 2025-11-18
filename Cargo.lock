@@ -5293,7 +5293,7 @@ dependencies = [
 [[package]]
 name = "sspi"
 version = "0.18.3"
-source = "git+https://github.com/allan2/sspi-rs?branch=mac-zlib#fa7b9481658821a9b73162046aadf27c6a076a97"
+source = "git+https://github.com/allan2/sspi-rs?branch=mac-zlib#883f7dd25330b3d9fceeaa144211a0c18f2b3d44"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -7016,7 +7016,7 @@ dependencies = [
 [[package]]
 name = "winscard"
 version = "0.2.3"
-source = "git+https://github.com/allan2/sspi-rs?branch=mac-zlib#fa7b9481658821a9b73162046aadf27c6a076a97"
+source = "git+https://github.com/allan2/sspi-rs?branch=mac-zlib#883f7dd25330b3d9fceeaa144211a0c18f2b3d44"
 dependencies = [
  "bitflags 2.10.0",
  "crypto-bigint",
