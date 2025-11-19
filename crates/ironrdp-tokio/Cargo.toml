@@ -29,5 +29,6 @@ tokio = { version = "1", features = ["io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "system-proxy"], optional = true }
 sspi = { version = "0.18", features = ["network_client", "dns_resolver"], optional = true }
 url = { version = "2.5", optional = true }
+
 [lints]
 workspace = true

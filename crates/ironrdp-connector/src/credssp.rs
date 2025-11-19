@@ -1,13 +1,11 @@
 use ironrdp_core::{other_err, WriteBuf};
 use ironrdp_pdu::{nego, PduHint};
-
 use picky::key::PrivateKey;
-use sspi::Secret;
-
 use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
+use sspi::Secret;
 use sspi::Username;
 use tracing::debug;
 
