@@ -5,6 +5,7 @@ use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
+use sspi::Secret;
 use sspi::Username;
 use tracing::debug;
 
@@ -123,11 +124,13 @@ impl CredsspSequence {
                         certificate: cert,
                         reader_name: config.reader_name.clone(),
                         card_name: None,
-                        container_name: config.container_name.clone(),
+                        container_name: Some(config.container_name.clone()),
                         csp_name: config.csp_name.clone(),
                         pin: pin.as_bytes().to_vec().into(),
-                        private_key_file_index: None,
                         private_key: Some(key.into()),
+                        scard_type: sspi::SmartCardType::Emulated {
+                            scard_pin: Secret::new(pin.as_bytes().to_vec()),
+                        },
                     };
                     sspi::Credentials::SmartCard(Box::new(identity))
                 }
