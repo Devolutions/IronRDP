@@ -5292,8 +5292,9 @@ dependencies = [
 
 [[package]]
 name = "sspi"
-version = "0.18.3"
-source = "git+https://github.com/allan2/sspi-rs?branch=mac-zlib#62aeef7577b0eff16d222d48aa51f2ee9d727eb1"
+version = "0.18.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70f8d436177e1f17d2efb8ec1b661068ad04fd282544dfd8369522168300a82e"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -7015,8 +7016,9 @@ dependencies = [
 
 [[package]]
 name = "winscard"
-version = "0.2.3"
-source = "git+https://github.com/allan2/sspi-rs?branch=mac-zlib#62aeef7577b0eff16d222d48aa51f2ee9d727eb1"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6a17695372a560c4f47f2e24e7754cdcc138fd6e62b8b54801d69f19a121a1c"
 dependencies = [
  "bitflags 2.10.0",
  "crypto-bigint",

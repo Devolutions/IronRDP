@@ -61,7 +61,7 @@ async-trait = "0.1"
 image = { version = "0.25.6", default-features = false, features = ["png"] }
 pico-args = "0.5"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
-sspi = { git = "https://github.com/allan2/sspi-rs", branch = "mac-zlib", features = ["network_client"] }
+sspi = { version = "0.18", features = ["network_client"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-rustls = "0.26"
