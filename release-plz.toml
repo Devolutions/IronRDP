@@ -11,6 +11,7 @@ release_commits = "^(feat|docs|fix|build|perf)"
 [[package]]
 name = "ironrdp-client"
 git_release_enable = true
+publish = false # TODO: enable publishing when ready.
 
 # ironrdp-tls does not compile if no backend is specified.
 # rustls is the most common backend, so we let cargo publish check with it.
