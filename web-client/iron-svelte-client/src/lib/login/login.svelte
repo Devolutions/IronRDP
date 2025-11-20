@@ -182,6 +182,46 @@
     };
 
     onMount(async () => {
+        const envGateway = import.meta.env.VITE_IRON_GATEWAY_ADDRESS as string | undefined;
+        if (envGateway !== undefined && envGateway.trim() !== '') {
+            gatewayAddress = envGateway;
+        }
+
+        const envHostname = import.meta.env.VITE_IRON_HOSTNAME as string | undefined;
+        if (envHostname !== undefined && envHostname.trim() !== '') {
+            hostname = envHostname;
+        }
+
+        const envUsername = import.meta.env.VITE_IRON_USERNAME as string | undefined;
+        if (envUsername !== undefined && envUsername.trim() !== '') {
+            username = envUsername;
+        }
+
+        const envPassword = import.meta.env.VITE_IRON_PASSWORD as string | undefined;
+        if (envPassword !== undefined && envPassword.trim() !== '') {
+            password = envPassword;
+        }
+
+        const envDomain = import.meta.env.VITE_IRON_DOMAIN as string | undefined;
+        if (envDomain !== undefined && envDomain.trim() !== '') {
+            domain = envDomain;
+        }
+
+        const envKdcProxy = import.meta.env.VITE_IRON_KDC_PROXY_URL as string | undefined;
+        if (envKdcProxy !== undefined && envKdcProxy.trim() !== '') {
+            kdc_proxy_url = envKdcProxy;
+        }
+
+        const envPcb = import.meta.env.VITE_IRON_RDP_PCB as string | undefined;
+        if (envPcb !== undefined && envPcb.trim() !== '') {
+            pcb = envPcb;
+        }
+
+        const envVmconnect = import.meta.env.VITE_IRON_VMCONNECT_ID as string | undefined;
+        if (envVmconnect !== undefined && envVmconnect.trim() !== '') {
+            vmconnect = envVmconnect;
+        }
+
         await init('INFO');
     });
 </script>
