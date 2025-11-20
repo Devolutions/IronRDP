@@ -5,16 +5,14 @@
         html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg"
     )
 )]
-#![allow(clippy::new_without_default)] // Default trait can't be used by wasm consumer anyway.
+#![allow(clippy::new_without_default)] // Default trait can’t be used by wasm consumer anyway.
 
 // Silence the unused_crate_dependencies lint.
 // These crates are added just to enable additional WASM features.
 extern crate chrono as _;
-extern crate console_error_panic_hook as _;
 extern crate getrandom as _;
 extern crate getrandom2 as _;
 extern crate time as _;
-extern crate tracing_wasm as _;
 
 mod canvas;
 mod clipboard;

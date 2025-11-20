@@ -27,22 +27,13 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", features = ["std"] } # public
 arbitrary = { version = "1", features = ["derive"], optional = true } # public
-<<<<<<< HEAD
 sspi = { version = "0.18", features = ["scard"] }
-=======
->>>>>>> 3cd4bad6 (squahs everything in vmconnect because rebase to master is painful)
 url = "2.5" # public
 rand = { version = "0.9", features = ["std"] } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }
 picky-asn1-der = "0.5"
-<<<<<<< HEAD
 picky-asn1-x509 = "0.15"
 picky = "=7.0.0-rc.20" # FIXME: We are pinning with = because the candidate version number counts as the minor number by Cargo, and will be automatically bumped in the Cargo.lock.
-=======
-picky-asn1-x509 = "0.14"
-picky = "7.0.0-rc.17"
-sspi = "0.16" # public
->>>>>>> 3cd4bad6 (squahs everything in vmconnect because rebase to master is painful)
 
 [lints]
 workspace = true

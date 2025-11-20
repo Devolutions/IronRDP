@@ -19,15 +19,11 @@ ironrdp-cliprdr-native.path = "../crates/ironrdp-cliprdr-native"
 ironrdp-dvc-pipe-proxy.path = "../crates/ironrdp-dvc-pipe-proxy"
 ironrdp-core = { path = "../crates/ironrdp-core", features = ["alloc"] }
 ironrdp-rdcleanpath.path = "../crates/ironrdp-rdcleanpath"
-<<<<<<< HEAD
 sspi = { version = "0.18", features = ["network_client"] }
-=======
->>>>>>> 3cd4bad6 (squahs everything in vmconnect because rebase to master is painful)
 thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
-sspi = { version = "0.16", features = ["network_client"] }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0"
