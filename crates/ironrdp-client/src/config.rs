@@ -32,6 +32,8 @@ pub struct Config {
     /// server, which will be used for proxying DVC messages to/from user-defined DVC logic
     /// implemented as named pipe clients (either in the same process or in a different process).
     pub dvc_pipe_proxies: Vec<DvcProxyInfo>,
+
+    pub pcb: Option<PreconnectionBlobPayload>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -295,6 +297,36 @@ struct Args {
     /// `<pipe>` will automatically be prefixed with `\\.\pipe\` on Windows.
     #[clap(long)]
     dvc_proxy: Vec<DvcProxyInfo>,
+
+    /// The ID for the HyperV VM server to connect to
+    #[clap(long, conflicts_with("pcb"))]
+    vmconnect: Option<uuid::Uuid>,
+
+    /// Preconnection Blob payload to use
+    #[clap(long)]
+    pcb: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreconnectionBlobPayload {
+    General(String),
+    VmConnect(String),
+}
+
+impl PreconnectionBlobPayload {
+    pub fn general(&self) -> Option<&str> {
+        match self {
+            PreconnectionBlobPayload::General(pcb) => Some(pcb),
+            PreconnectionBlobPayload::VmConnect(_) => None,
+        }
+    }
+
+    pub fn vmconnect(&self) -> Option<&str> {
+        match self {
+            PreconnectionBlobPayload::VmConnect(vm_id) => Some(vm_id),
+            PreconnectionBlobPayload::General(_) => None,
+        }
+    }
 }
 
 impl Config {
@@ -470,6 +502,15 @@ impl Config {
             .zip(args.rdcleanpath_token)
             .map(|(url, auth_token)| RDCleanPathConfig { url, auth_token });
 
+        let pcb = match (args.vmconnect, args.pcb) {
+            (Some(_), Some(_)) => {
+                unreachable!("Cannot use both `--vmconnect` and `--pcb` at the same time");
+            }
+            (Some(vm_id), None) => Some(PreconnectionBlobPayload::VmConnect(vm_id.to_string())),
+            (None, Some(pcb)) => Some(PreconnectionBlobPayload::General(pcb)),
+            (None, None) => None,
+        };
+
         Ok(Self {
             log_file: args.log_file,
             gw,
@@ -478,6 +519,7 @@ impl Config {
             clipboard_type,
             rdcleanpath,
             dvc_pipe_proxies: args.dvc_proxy,
+            pcb,
         })
     }
 }

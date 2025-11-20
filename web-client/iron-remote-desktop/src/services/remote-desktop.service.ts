@@ -154,6 +154,13 @@ export class RemoteDesktopService {
             sessionBuilder.extension(extension);
         });
 
+        loggingService.info(
+            `[CLIPBOARD] buildSession: enableClipboard=${this.enableClipboard}, ` +
+                `hasRemoteChangedCb=${!!this.onRemoteClipboardChanged}, ` +
+                `hasFormatListCb=${!!this.onRemoteReceivedFormatList}, ` +
+                `hasForceUpdateCb=${!!this.onForceClipboardUpdate}`,
+        );
+
         if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
             sessionBuilder.remoteClipboardChangedCallback(this.onRemoteClipboardChanged);
         }
@@ -166,6 +173,9 @@ export class RemoteDesktopService {
         if (this.onCanvasResized != null) {
             sessionBuilder.canvasResizedCallback(this.onCanvasResized);
         }
+
+        // after calling the sessionBuilder callbacks:
+        loggingService.info('[CLIPBOARD] callbacks registered (if enabled)');
 
         if (config.desktopSize != null) {
             sessionBuilder.desktopSize(

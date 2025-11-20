@@ -1,9 +1,9 @@
-use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, KerberosConfig};
+use ironrdp_connector::credssp::{CredsspProcessGenerator, KerberosConfig};
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    custom_err, general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
-    ServerName, State as _,
+    custom_err, general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorCore, ConnectorError,
+    ConnectorResult, SecurityConnector, ServerName,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
@@ -15,7 +15,10 @@ use crate::{single_sequence_step, AsyncNetworkClient};
 pub struct ShouldUpgrade;
 
 #[instrument(skip_all)]
-pub async fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut ClientConnector) -> ConnectorResult<ShouldUpgrade>
+pub async fn connect_begin<S>(
+    framed: &mut Framed<S>,
+    connector: &mut dyn ConnectorCore,
+) -> ConnectorResult<ShouldUpgrade>
 where
     S: Sync + FramedRead + FramedWrite,
 {
@@ -33,7 +36,7 @@ where
 /// # Panics
 ///
 /// Panics if connector state is not [ClientConnectorState::EnhancedSecurityUpgrade].
-pub fn skip_connect_begin(connector: &mut ClientConnector) -> ShouldUpgrade {
+pub fn skip_connect_begin(connector: &mut dyn SecurityConnector) -> ShouldUpgrade {
     assert!(connector.should_perform_security_upgrade());
     ShouldUpgrade
 }
@@ -42,22 +45,26 @@ pub fn skip_connect_begin(connector: &mut ClientConnector) -> ShouldUpgrade {
 pub struct Upgraded;
 
 #[instrument(skip_all)]
-pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector) -> Upgraded {
+pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut dyn SecurityConnector) -> Upgraded {
     trace!("Marked as upgraded");
     connector.mark_security_upgrade_as_done();
     Upgraded
 }
 
-#[instrument(skip_all)]
-pub async fn connect_finalize<S>(
+#[non_exhaustive]
+pub struct CredSSPFinished {
+    pub(crate) write_buf: WriteBuf,
+}
+
+pub async fn perform_credssp<S>(
     _: Upgraded,
+    connector: &mut dyn ConnectorCore,
     framed: &mut Framed<S>,
-    mut connector: ClientConnector,
     server_name: ServerName,
     server_public_key: Vec<u8>,
     network_client: Option<&mut dyn AsyncNetworkClient>,
     kerberos_config: Option<KerberosConfig>,
-) -> ConnectorResult<ConnectionResult>
+) -> ConnectorResult<CredSSPFinished>
 where
     S: FramedRead + FramedWrite,
 {
@@ -66,7 +73,7 @@ where
     if connector.should_perform_credssp() {
         perform_credssp_step(
             framed,
-            &mut connector,
+            connector,
             &mut buf,
             server_name,
             server_public_key,
@@ -76,6 +83,19 @@ where
         .await?;
     }
 
+    Ok(CredSSPFinished { write_buf: buf })
+}
+
+#[instrument(skip_all)]
+pub async fn connect_finalize<S>(
+    CredSSPFinished { write_buf: mut buf }: CredSSPFinished,
+    framed: &mut Framed<S>,
+    mut connector: ClientConnector,
+) -> ConnectorResult<ConnectionResult>
+where
+    S: FramedRead + FramedWrite,
+{
+    buf.clear();
     let result = loop {
         single_sequence_step(framed, &mut connector, &mut buf).await?;
 
@@ -112,7 +132,7 @@ async fn resolve_generator(
 #[instrument(level = "trace", skip_all)]
 async fn perform_credssp_step<S>(
     framed: &mut Framed<S>,
-    connector: &mut ClientConnector,
+    connector: &mut dyn ConnectorCore,
     buf: &mut WriteBuf,
     server_name: ServerName,
     server_public_key: Vec<u8>,
@@ -124,70 +144,70 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let selected_protocol = match connector.state {
-        ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
-        _ => return Err(general_err!("invalid connector state for CredSSP sequence")),
-    };
+    let selected_protocol = connector
+        .selected_protocol()
+        .ok_or_else(|| general_err!("CredSSP protocol not selected, cannot perform CredSSP step"))?;
 
-    let (mut sequence, mut ts_request) = CredsspSequence::init(
-        connector.config.credentials.clone(),
-        connector.config.domain.as_deref(),
-        selected_protocol,
-        server_name,
-        server_public_key,
-        kerberos_config,
-    )?;
+    {
+        let (mut sequence, mut ts_request) = connector.init_credssp(
+            connector.config().credentials.clone(),
+            connector.config().domain.as_deref(),
+            selected_protocol,
+            server_name,
+            server_public_key,
+            kerberos_config,
+        )?;
 
-    loop {
-        let client_state = {
-            let mut generator = sequence.process_ts_request(ts_request);
+        loop {
+            let client_state = {
+                let mut generator = sequence.process_ts_request(ts_request);
 
-            if let Some(network_client_ref) = network_client.as_deref_mut() {
-                trace!("resolving network");
-                resolve_generator(&mut generator, network_client_ref).await?
-            } else {
-                generator
-                    .resolve_to_result()
-                    .map_err(|e| custom_err!("resolve without network client", e))?
+                if let Some(network_client_ref) = network_client.as_deref_mut() {
+                    trace!("resolving network");
+                    resolve_generator(&mut generator, network_client_ref).await?
+                } else {
+                    generator
+                        .resolve_to_result()
+                        .map_err(|e| custom_err!("resolve without network client", e))?
+                }
+            }; // drop generator
+
+            buf.clear();
+            let written = sequence.handle_process_result(client_state, buf)?;
+
+            if let Some(response_len) = written.size() {
+                let response = &buf[..response_len];
+                trace!(response_len, "Send response");
+                framed
+                    .write_all(response)
+                    .await
+                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
             }
-        }; // drop generator
 
-        buf.clear();
-        let written = sequence.handle_process_result(client_state, buf)?;
+            let Some(next_pdu_hint) = sequence.next_pdu_hint() else {
+                break;
+            };
 
-        if let Some(response_len) = written.size() {
-            let response = &buf[..response_len];
-            trace!(response_len, "Send response");
-            framed
-                .write_all(response)
+            debug!(
+                connector.state = connector.state().name(),
+                hint = ?next_pdu_hint,
+                "Wait for PDU"
+            );
+
+            let pdu = framed
+                .read_by_hint(next_pdu_hint)
                 .await
-                .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
-        }
+                .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
-        let Some(next_pdu_hint) = sequence.next_pdu_hint() else {
-            break;
-        };
+            trace!(length = pdu.len(), "PDU received");
 
-        debug!(
-            connector.state = connector.state.name(),
-            hint = ?next_pdu_hint,
-            "Wait for PDU"
-        );
-
-        let pdu = framed
-            .read_by_hint(next_pdu_hint)
-            .await
-            .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
-
-        trace!(length = pdu.len(), "PDU received");
-
-        if let Some(next_request) = sequence.decode_server_message(&pdu)? {
-            ts_request = next_request;
-        } else {
-            break;
+            if let Some(next_request) = sequence.decode_server_message(&pdu)? {
+                ts_request = next_request;
+            } else {
+                break;
+            }
         }
     }
-
     connector.mark_credssp_as_done();
 
     Ok(())

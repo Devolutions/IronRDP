@@ -2,7 +2,13 @@
     import { currentSession, setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import type { IronError, UserInteraction } from '../../../static/iron-remote-desktop';
     import type { Session } from '../../models/session';
-    import { preConnectionBlob, displayControl, kdcProxyUrl, init } from '../../../static/iron-remote-desktop-rdp';
+    import {
+        preConnectionBlob,
+        displayControl,
+        kdcProxyUrl,
+        init,
+        vmConnect,
+    } from '../../../static/iron-remote-desktop-rdp';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
     import { onMount } from 'svelte';
@@ -16,6 +22,7 @@
     let kdc_proxy_url = '';
     let desktopSize = { width: 1280, height: 720 };
     let pcb = '';
+    let vmconnect = '';
     let pop_up = false;
     let enable_clipboard = true;
 
@@ -119,6 +126,10 @@
             configBuilder.withExtension(preConnectionBlob(pcb));
         }
 
+        if (vmconnect !== '') {
+            configBuilder.withExtension(vmConnect(vmconnect));
+        }
+
         if (kdc_proxy_url !== '') {
             configBuilder.withExtension(kdcProxyUrl(kdc_proxy_url));
         }
@@ -211,6 +222,10 @@
                         <div class="field label border">
                             <input id="pcb" type="text" bind:value={pcb} />
                             <label for="pcb">Pre Connection Blob</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="vmconnect" type="text" bind:value={vmconnect} />
+                            <label for="vmconnect">HyperV VmConnect ID</label>
                         </div>
                         <div class="field label border">
                             <input id="desktopSizeW" type="text" bind:value={desktopSize.width} />

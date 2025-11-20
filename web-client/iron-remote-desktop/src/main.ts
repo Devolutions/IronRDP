@@ -10,3 +10,5 @@ export type { InputTransaction } from './interfaces/InputTransaction';
 export type { Session } from './interfaces/Session';
 export type { SessionBuilder } from './interfaces/SessionBuilder';
 export type { UserInteraction } from './interfaces/UserInteraction';
+
+console.log('FK ANGULAR, this is updated at 9.30');
