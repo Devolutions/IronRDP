@@ -19,7 +19,7 @@ arbitrary = { version = "1", features = ["derive"], optional = true } # public
 tracing = { version = "0.1", features = ["log"] }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.7" } # public
 
-sspi = "0.16" # public
+sspi = "0.18" # public
 
 [lints]
 workspace = true
