@@ -504,7 +504,7 @@ impl Config {
 
         let pcb = match (args.vmconnect, args.pcb) {
             (Some(_), Some(_)) => {
-                unreachable!("Cannot use both `--vmconnect` and `--pcb` at the same time");
+                anyhow::bail!("Cannot use both `--vmconnect` and `--pcb` at the same time");
             }
             (Some(vm_id), None) => Some(PreconnectionBlobPayload::VmConnect(vm_id.to_string())),
             (None, Some(pcb)) => Some(PreconnectionBlobPayload::General(pcb)),
