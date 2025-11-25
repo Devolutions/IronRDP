@@ -1,15 +1,14 @@
 use core::mem;
 
+use ironrdp_connector::{
+    general_err, reason_err, ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorExt as _,
+    ConnectorResult, CredsspSequenceFactory, Sequence, State, Written,
+};
 use ironrdp_core::{decode, WriteBuf};
 use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{nego, PduHint};
 use tracing::{debug, error, info};
-
-use ironrdp_connector::{
-    general_err, reason_err, ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorExt as _,
-    ConnectorResult, CredsspSequenceFactory, Sequence, State, Written,
-};
 
 use crate::config::VmConnectorConfig;
 

@@ -1,9 +1,9 @@
-use crate::{single_sequence_step, CredSSPFinished, Framed, FramedRead, FramedWrite};
 use ironrdp_connector::{ClientConnector, ConnectorResult};
 use ironrdp_pdu::pcb::PcbVersion;
+use ironrdp_vmconnect::VmClientConnector;
 use tracing::info;
 
-use ironrdp_vmconnect::VmClientConnector;
+use crate::{single_sequence_step, CredSSPFinished, Framed, FramedRead, FramedWrite};
 
 #[non_exhaustive]
 pub struct PcbSent;

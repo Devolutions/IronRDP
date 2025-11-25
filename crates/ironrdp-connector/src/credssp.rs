@@ -5,8 +5,7 @@ use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
-use sspi::Secret;
-use sspi::Username;
+use sspi::{Secret, Username};
 use tracing::debug;
 
 use crate::{

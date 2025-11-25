@@ -80,8 +80,6 @@ tap = "1"
 semver = "1"
 url = "2.5"
 base64 = "0.22"
-tracing-wasm = "0.2.1"
-console_error_panic_hook = "0.1.7"
 
 [lints]
 workspace = true

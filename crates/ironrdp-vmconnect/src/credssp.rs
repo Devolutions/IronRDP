@@ -1,10 +1,10 @@
 use ironrdp_connector::credssp::{CredsspSequenceTrait, CredsspState};
-use ironrdp_connector::{custom_err, general_err};
+use ironrdp_connector::{
+    custom_err, general_err, ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written,
+};
 use ironrdp_core::WriteBuf;
 use sspi::credssp::{self, ClientState, CredSspClient};
 use tracing::debug;
-
-use ironrdp_connector::{ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written};
 
 use crate::config::Credentials;
 

@@ -11,12 +11,11 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
-use crate::credssp;
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
-    encode_x224_packet, general_err, reason_err, Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind,
-    ConnectorResult, CredsspSequenceFactory, DesktopSize, NegotiationFailure, SecurityConnector, Sequence, State,
-    Written,
+    credssp, encode_x224_packet, general_err, reason_err, Config, ConnectorError, ConnectorErrorExt as _,
+    ConnectorErrorKind, ConnectorResult, CredsspSequenceFactory, DesktopSize, NegotiationFailure, SecurityConnector,
+    Sequence, State, Written,
 };
 
 #[derive(Debug)]
