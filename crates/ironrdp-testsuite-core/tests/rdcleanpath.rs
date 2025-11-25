@@ -6,7 +6,7 @@ use rstest::rstest;
 
 fn request() -> RDCleanPathPdu {
     RDCleanPathPdu::new_request(
-        vec![0xDE, 0xAD, 0xBE, 0xFF],
+        Some(vec![0xDE, 0xAD, 0xBE, 0xFF]),
         "destination".to_owned(),
         "proxy auth".to_owned(),
         Some("PCB".to_owned()),
@@ -23,7 +23,7 @@ const REQUEST_DER: &[u8] = &[
 fn response_success() -> RDCleanPathPdu {
     RDCleanPathPdu::new_response(
         "192.168.7.95".to_owned(),
-        vec![0xDE, 0xAD, 0xBE, 0xFF],
+        Some(vec![0xDE, 0xAD, 0xBE, 0xFF]),
         [
             vec![0xDE, 0xAD, 0xBE, 0xFF],
             vec![0xDE, 0xAD, 0xBE, 0xFF],

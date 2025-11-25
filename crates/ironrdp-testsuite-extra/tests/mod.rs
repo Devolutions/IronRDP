@@ -210,17 +210,21 @@ where
                     .expect("TLS upgrade");
                 let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
                 let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
-                let connection_result = ironrdp_async::connect_finalize(
+                let credssp_finished = ironrdp_async::perform_credssp(
                     upgraded,
+                    &mut connector,
                     &mut upgraded_framed,
-                    connector,
                     "localhost".into(),
                     server_public_key,
                     None,
                     None,
                 )
                 .await
-                .expect("finalize connection");
+                .expect("perform CredSSP");
+                let connection_result =
+                    ironrdp_async::connect_finalize(credssp_finished, &mut upgraded_framed, connector)
+                        .await
+                        .expect("finalize connection");
 
                 let active_stage = ActiveStage::new(connection_result);
                 let (active_stage, mut upgraded_framed) = clientfn(active_stage, upgraded_framed, display_tx).await;
