@@ -2966,7 +2966,6 @@ dependencies = [
  "anyhow",
  "base64",
  "chrono",
- "console_error_panic_hook",
  "futures-channel",
  "futures-util",
  "getrandom 0.2.16",
@@ -2992,7 +2991,6 @@ dependencies = [
  "tap",
  "time",
  "tracing",
- "tracing-wasm",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5911,17 +5909,6 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
-]
-
-[[package]]
-name = "tracing-wasm"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4575c663a174420fa2d78f4108ff68f65bf2fbb7dd89f33749b6e826b3626e07"
-dependencies = [
- "tracing",
- "tracing-subscriber",
- "wasm-bindgen",
 ]
 
 [[package]]
