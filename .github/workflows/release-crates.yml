@@ -66,6 +66,8 @@ jobs:
     name: Release crates
     environment: cratesio-publish
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
 
     steps:
       - name: Checkout repository
@@ -73,8 +75,12 @@ jobs:
         with:
           fetch-depth: 512
 
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: Run release-plz
         uses: Devolutions/actions-public/release-plz@v1
         with:
           command: release
-          registry-token: ${{ secrets.CRATES_IO_TOKEN }}
+          registry-token: ${{ steps.auth.outputs.token }}
