@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.7.0...ironrdp-tokio-v0.7.1)] - 2025-11-26
+
+### <!-- 1 -->Features
+
+- Add MovableTokioFramed for Send+!Sync context ([#1033](https://github.com/Devolutions/IronRDP/issues/1033)) ([966ba8a53e](https://github.com/Devolutions/IronRDP/commit/966ba8a53e43a193271f40b9db80e45e495e2f24)) 
+
+  The `ironrdp-tokio` crate currently provides the following two
+  `Framed<S>` implementations using the standard `tokio::io` traits:
+  - `type TokioFramed<S> = Framed<TokioStream<S>>` where `S: Send + Sync +
+  Unpin`
+  - `type LocalTokioFramed<S> = Framed<LocalTokioStream<S>>` where `S:
+  Unpin`
+  
+  The former is meant for multi-threaded runtimes and the latter is meant
+  for single-threaded runtimes.
+  
+  This PR adds a third `Framed<S>` implementation:
+  
+  `pub type MovableTokioFramed<S> = Framed<MovableTokioStream<S>>` where
+  `S: Send + Unpin`
+  
+  This is a valid usecase as some implementations of the `tokio::io`
+  traits are `Send` but `!Sync`. Without this new third type, consumers of
+  `Framed<S>` who have a `S: Send + !Sync` trait for their streams are
+  forced to downgrade to `LocalTokioFramed` and do some hacky workaround
+  with `tokio::task::spawn_blocking` since the defined associated futures,
+  `ReadFut` and `WriteAllFut`, are neither `Send` nor `Sync`.
+
+### <!-- 7 -->Build
+
+- Bump picky and sspi ([#1028](https://github.com/Devolutions/IronRDP/issues/1028)) ([5bd319126d](https://github.com/Devolutions/IronRDP/commit/5bd319126d32fbd8e505508e27ab2b1a18a83d04)) 
+
+  This fixes build issues with some dependencies.
+
+
+
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.5.1...ironrdp-tokio-v0.6.0)] - 2025-07-08
 
 ### Build
