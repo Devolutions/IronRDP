@@ -8,7 +8,7 @@ pub mod ffi {
     use core::fmt::Write as _;
 
     use diplomat_runtime::DiplomatWriteable;
-    use ironrdp::connector::Sequence as _;
+    use ironrdp::connector::{SecurityConnector as _, Sequence as _};
     use ironrdp::displaycontrol::client::DisplayControlClient;
     use ironrdp::dvc::DvcProcessor;
     use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;

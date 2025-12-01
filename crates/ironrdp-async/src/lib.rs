@@ -6,6 +6,7 @@ pub use bytes;
 mod connector;
 mod framed;
 mod session;
+mod vmconnector;
 
 use core::future::Future;
 use core::pin::Pin;
@@ -15,7 +16,7 @@ use ironrdp_connector::ConnectorResult;
 
 pub use self::connector::*;
 pub use self::framed::*;
-// pub use self::session::*;
+pub use self::vmconnector::*;
 
 pub trait AsyncNetworkClient {
     fn send<'a>(
