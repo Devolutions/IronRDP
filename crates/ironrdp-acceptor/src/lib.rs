@@ -1,7 +1,7 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-use ironrdp_async::{single_sequence_step, AsyncNetworkClient, Framed, FramedRead, FramedWrite, StreamWrapper};
+use ironrdp_async::{single_sequence_step, Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
 use ironrdp_connector::{custom_err, general_err, ConnectorResult, ServerName};
@@ -51,16 +51,17 @@ where
     }
 }
 
-pub async fn accept_credssp<S>(
+pub async fn accept_credssp<S, N>(
     framed: &mut Framed<S>,
     acceptor: &mut Acceptor,
+    network_client: &mut N,
     client_computer_name: ServerName,
     public_key: Vec<u8>,
     kerberos_config: Option<KerberosServerConfig>,
-    network_client: Option<&mut dyn AsyncNetworkClient>,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
+    N: NetworkClient,
 {
     let mut buf = WriteBuf::new();
 
@@ -68,11 +69,11 @@ where
         perform_credssp_step(
             framed,
             acceptor,
+            network_client,
             &mut buf,
             client_computer_name,
             public_key,
             kerberos_config,
-            network_client,
         )
         .await
     } else {
@@ -98,34 +99,73 @@ where
 }
 
 #[instrument(level = "trace", skip_all, ret)]
-async fn perform_credssp_step<S>(
+async fn perform_credssp_step<S, N>(
     framed: &mut Framed<S>,
     acceptor: &mut Acceptor,
+    network_client: &mut N,
     buf: &mut WriteBuf,
     client_computer_name: ServerName,
     public_key: Vec<u8>,
     kerberos_config: Option<KerberosServerConfig>,
-    network_client: Option<&mut dyn AsyncNetworkClient>,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
+    N: NetworkClient,
 {
     assert!(acceptor.should_perform_credssp());
     let AcceptorState::Credssp { protocol, .. } = acceptor.state else {
         unreachable!()
     };
 
-    async fn credssp_loop<S>(
+    let result = credssp_loop(
+        framed,
+        acceptor,
+        network_client,
+        buf,
+        client_computer_name,
+        public_key,
+        kerberos_config,
+    )
+    .await;
+
+    if protocol.intersects(nego::SecurityProtocol::HYBRID_EX) {
+        trace!(?result, "HYBRID_EX");
+
+        let result = if result.is_ok() {
+            EarlyUserAuthResult::Success
+        } else {
+            EarlyUserAuthResult::AccessDenied
+        };
+
+        buf.clear();
+        result
+            .to_buffer(&mut *buf)
+            .map_err(|e| ironrdp_connector::custom_err!("to_buffer", e))?;
+        let response = &buf[..result.buffer_len()];
+        framed
+            .write_all(response)
+            .await
+            .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+    }
+
+    result?;
+
+    acceptor.mark_credssp_as_done();
+
+    return Ok(());
+
+    async fn credssp_loop<S, N>(
         framed: &mut Framed<S>,
         acceptor: &mut Acceptor,
+        network_client: &mut N,
         buf: &mut WriteBuf,
         client_computer_name: ServerName,
         public_key: Vec<u8>,
         kerberos_config: Option<KerberosServerConfig>,
-        mut network_client: Option<&mut dyn AsyncNetworkClient>,
     ) -> ConnectorResult<()>
     where
         S: FramedRead + FramedWrite,
+        N: NetworkClient,
     {
         let creds = acceptor
             .creds
@@ -164,12 +204,7 @@ where
 
             let result = {
                 let mut generator = sequence.process_ts_request(ts_request);
-
-                if let Some(network_client_ref) = network_client.as_deref_mut() {
-                    resolve_generator(&mut generator, network_client_ref).await
-                } else {
-                    generator.resolve_to_result()
-                }
+                resolve_generator(&mut generator, network_client).await
             }; // drop generator
 
             buf.clear();
@@ -184,43 +219,7 @@ where
                     .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
             }
         }
+
         Ok(())
     }
-
-    let result = credssp_loop(
-        framed,
-        acceptor,
-        buf,
-        client_computer_name,
-        public_key,
-        kerberos_config,
-        network_client,
-    )
-    .await;
-
-    if protocol.intersects(nego::SecurityProtocol::HYBRID_EX) {
-        trace!(?result, "HYBRID_EX");
-
-        let result = if result.is_ok() {
-            EarlyUserAuthResult::Success
-        } else {
-            EarlyUserAuthResult::AccessDenied
-        };
-
-        buf.clear();
-        result
-            .to_buffer(&mut *buf)
-            .map_err(|e| ironrdp_connector::custom_err!("to_buffer", e))?;
-        let response = &buf[..result.buffer_len()];
-        framed
-            .write_all(response)
-            .await
-            .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
-    }
-
-    result?;
-
-    acceptor.mark_credssp_as_done();
-
-    Ok(())
 }

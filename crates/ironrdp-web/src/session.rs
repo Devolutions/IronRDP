@@ -979,11 +979,11 @@ async fn connect(
 
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
-        &mut framed,
         connector,
+        &mut framed,
+        &mut WasmNetworkClient,
         (&destination).into(),
         server_public_key,
-        Some(&mut WasmNetworkClient),
         url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
             .ok()
             .map(|url| KerberosConfig {

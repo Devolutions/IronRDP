@@ -258,11 +258,11 @@ fn connect(
     let mut network_client = ReqwestNetworkClient;
     let connection_result = ironrdp_blocking::connect_finalize(
         upgraded,
-        &mut upgraded_framed,
         connector,
+        &mut upgraded_framed,
+        &mut network_client,
         server_name.into(),
         server_public_key,
-        &mut network_client,
         None,
     )
     .context("finalize connection")?;

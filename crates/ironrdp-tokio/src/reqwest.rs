@@ -1,6 +1,4 @@
-use core::future::Future;
 use core::net::{IpAddr, Ipv4Addr};
-use core::pin::Pin;
 
 use ironrdp_connector::{custom_err, general_err, ConnectorResult};
 use reqwest::Client;
@@ -9,18 +7,15 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpStream, UdpSocket};
 use url::Url;
 
-use crate::AsyncNetworkClient;
+use crate::NetworkClient;
 
 pub struct ReqwestNetworkClient {
     client: Option<Client>,
 }
 
-impl AsyncNetworkClient for ReqwestNetworkClient {
-    fn send<'a>(
-        &'a mut self,
-        network_request: &'a sspi::generator::NetworkRequest,
-    ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
-        Box::pin(ReqwestNetworkClient::send_request(self, network_request))
+impl NetworkClient for ReqwestNetworkClient {
+    async fn send(&mut self, network_request: &sspi::generator::NetworkRequest) -> ConnectorResult<Vec<u8>> {
+        ReqwestNetworkClient::send_request(self, network_request).await
     }
 }
 

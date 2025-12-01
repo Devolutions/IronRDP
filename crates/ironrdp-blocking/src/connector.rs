@@ -53,11 +53,11 @@ pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector) -> Up
 #[instrument(skip_all)]
 pub fn connect_finalize<S>(
     _: Upgraded,
-    framed: &mut Framed<S>,
     mut connector: ClientConnector,
+    framed: &mut Framed<S>,
+    network_client: &mut impl NetworkClient,
     server_name: ServerName,
     server_public_key: Vec<u8>,
-    network_client: &mut impl NetworkClient,
     kerberos_config: Option<KerberosConfig>,
 ) -> ConnectorResult<ConnectionResult>
 where
@@ -69,12 +69,12 @@ where
 
     if connector.should_perform_credssp() {
         perform_credssp_step(
-            framed,
             &mut connector,
+            framed,
+            network_client,
             &mut buf,
             server_name,
             server_public_key,
-            network_client,
             kerberos_config,
         )?;
     }
@@ -118,12 +118,12 @@ fn resolve_generator(
 
 #[instrument(level = "trace", skip_all)]
 fn perform_credssp_step<S>(
-    framed: &mut Framed<S>,
     connector: &mut ClientConnector,
+    framed: &mut Framed<S>,
+    network_client: &mut impl NetworkClient,
     buf: &mut WriteBuf,
     server_name: ServerName,
     server_public_key: Vec<u8>,
-    network_client: &mut impl NetworkClient,
     kerberos_config: Option<KerberosConfig>,
 ) -> ConnectorResult<()>
 where
