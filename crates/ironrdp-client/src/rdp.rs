@@ -240,11 +240,11 @@ async fn connect(
 
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
-        &mut upgraded_framed,
         connector,
+        &mut upgraded_framed,
+        &mut ReqwestNetworkClient::new(),
         (&config.destination).into(),
         server_public_key,
-        Some(&mut ReqwestNetworkClient::new()),
         None,
     )
     .await?;
@@ -326,11 +326,11 @@ async fn connect_ws(
 
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
-        &mut framed,
         connector,
+        &mut framed,
+        &mut ReqwestNetworkClient::new(),
         (&config.destination).into(),
         server_public_key,
-        Some(&mut ReqwestNetworkClient::new()),
         None,
     )
     .await?;

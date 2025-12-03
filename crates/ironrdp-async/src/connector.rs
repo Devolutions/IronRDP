@@ -2,14 +2,14 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    custom_err, general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
-    ServerName, State as _,
+    general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, ServerName,
+    State as _,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
 
 use crate::framed::{Framed, FramedRead, FramedWrite};
-use crate::{single_sequence_step, AsyncNetworkClient};
+use crate::{single_sequence_step, NetworkClient};
 
 #[non_exhaustive]
 pub struct ShouldUpgrade;
@@ -49,28 +49,29 @@ pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector) -> Up
 }
 
 #[instrument(skip_all)]
-pub async fn connect_finalize<S>(
+pub async fn connect_finalize<S, N>(
     _: Upgraded,
-    framed: &mut Framed<S>,
     mut connector: ClientConnector,
+    framed: &mut Framed<S>,
+    network_client: &mut N,
     server_name: ServerName,
     server_public_key: Vec<u8>,
-    network_client: Option<&mut dyn AsyncNetworkClient>,
     kerberos_config: Option<KerberosConfig>,
 ) -> ConnectorResult<ConnectionResult>
 where
     S: FramedRead + FramedWrite,
+    N: NetworkClient,
 {
     let mut buf = WriteBuf::new();
 
     if connector.should_perform_credssp() {
         perform_credssp_step(
-            framed,
             &mut connector,
+            framed,
+            network_client,
             &mut buf,
             server_name,
             server_public_key,
-            network_client,
             kerberos_config,
         )
         .await?;
@@ -91,7 +92,7 @@ where
 
 async fn resolve_generator(
     generator: &mut CredsspProcessGenerator<'_>,
-    network_client: &mut dyn AsyncNetworkClient,
+    network_client: &mut impl NetworkClient,
 ) -> ConnectorResult<ClientState> {
     let mut state = generator.start();
 
@@ -110,17 +111,18 @@ async fn resolve_generator(
 }
 
 #[instrument(level = "trace", skip_all)]
-async fn perform_credssp_step<S>(
-    framed: &mut Framed<S>,
+async fn perform_credssp_step<S, N>(
     connector: &mut ClientConnector,
+    framed: &mut Framed<S>,
+    network_client: &mut N,
     buf: &mut WriteBuf,
     server_name: ServerName,
     server_public_key: Vec<u8>,
-    mut network_client: Option<&mut dyn AsyncNetworkClient>,
     kerberos_config: Option<KerberosConfig>,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
+    N: NetworkClient,
 {
     assert!(connector.should_perform_credssp());
 
@@ -141,15 +143,8 @@ where
     loop {
         let client_state = {
             let mut generator = sequence.process_ts_request(ts_request);
-
-            if let Some(network_client_ref) = network_client.as_deref_mut() {
-                trace!("resolving network");
-                resolve_generator(&mut generator, network_client_ref).await?
-            } else {
-                generator
-                    .resolve_to_result()
-                    .map_err(|e| custom_err!("resolve without network client", e))?
-            }
+            trace!("resolving network");
+            resolve_generator(&mut generator, network_client).await?
         }; // drop generator
 
         buf.clear();

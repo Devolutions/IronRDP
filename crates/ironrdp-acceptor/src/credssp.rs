@@ -1,4 +1,4 @@
-use ironrdp_async::AsyncNetworkClient;
+use ironrdp_async::NetworkClient;
 use ironrdp_connector::sspi::credssp::{
     CredSspServer, CredentialsProxy, ServerError, ServerMode, ServerState, TsRequest,
 };
@@ -71,7 +71,7 @@ impl CredentialsProxy for CredentialsProxyImpl<'_> {
 
 pub(crate) async fn resolve_generator(
     generator: &mut CredsspProcessGenerator<'_>,
-    network_client: &mut dyn AsyncNetworkClient,
+    network_client: &mut impl NetworkClient,
 ) -> Result<ServerState, ServerError> {
     let mut state = generator.start();
 

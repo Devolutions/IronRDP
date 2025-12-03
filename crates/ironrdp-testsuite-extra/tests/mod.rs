@@ -212,11 +212,11 @@ where
                 let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
                 let connection_result = ironrdp_async::connect_finalize(
                     upgraded,
-                    &mut upgraded_framed,
                     connector,
+                    &mut upgraded_framed,
+                    &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
                     "localhost".into(),
                     server_public_key,
-                    None,
                     None,
                 )
                 .await

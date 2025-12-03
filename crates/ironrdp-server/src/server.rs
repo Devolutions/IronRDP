@@ -349,9 +349,9 @@ impl RdpServer {
                     ironrdp_acceptor::accept_credssp(
                         &mut framed,
                         &mut acceptor,
+                        &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
                         client_name.into(),
                         pub_key.clone(),
-                        None,
                         None,
                     )
                     .await?;
