@@ -156,6 +156,7 @@ or_fun_call = "warn"
 rc_buffer = "warn"
 string_lit_chars_any = "warn"
 unnecessary_box_returns = "warn"
+large_futures = "warn"
 
 # == Extra-pedantic clippy == #
 allow_attributes = "warn"
