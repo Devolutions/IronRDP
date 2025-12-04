@@ -65,7 +65,7 @@ impl core::fmt::Display for WinCliprdrError {
             WinCliprdrError::Alloc => write!(f, "failed to allocate global memory"),
             WinCliprdrError::DataReceiveTimeout => write!(f, "failed to receive data from remote clipboard"),
             WinCliprdrError::RenderFormat => write!(f, "failed to render clipboard format"),
-            WinCliprdrError::WinAPI(error) => write!(f, "WinAPI error: {error}"),
+            WinCliprdrError::WinAPI(_error) => write!(f, "WinAPI error"),
         }
     }
 }
