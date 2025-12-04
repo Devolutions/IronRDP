@@ -337,7 +337,7 @@ jobs:
         run: |
           # net8.0 target packaged as Devolutions.IronRdp
           dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release
-          # net8.0-ios target packaged as Devolutions.IronRdp.iOS
+          # net9.0-ios target packaged as Devolutions.IronRdp.iOS
           dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS
         shell: pwsh
 
