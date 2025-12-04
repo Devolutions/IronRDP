@@ -19,7 +19,8 @@ use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveCli
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExA, DefWindowProcA, RegisterClassA, CW_USEDEFAULT, WINDOW_EX_STYLE, WM_USER, WNDCLASSA, WS_POPUP,
+    CreateWindowExA, DefWindowProcA, GetClassInfoA, RegisterClassA, CW_USEDEFAULT, WINDOW_EX_STYLE, WM_USER, WNDCLASSA,
+    WS_POPUP,
 };
 
 use self::clipboard_impl::{clipboard_subproc, WinClipboardImpl};
@@ -152,17 +153,25 @@ impl WinClipboard {
         // SAFETY: low-level WinAPI call
         let instance = unsafe { GetModuleHandleA(None)? };
         let window_class = s!("IronRDPClipboardMonitor");
-        let wc = WNDCLASSA {
-            hInstance: instance.into(),
-            lpszClassName: window_class,
-            lpfnWndProc: Some(wndproc),
-            ..Default::default()
-        };
 
-        // SAFETY: low-level WinAPI call
-        let atom = unsafe { RegisterClassA(&wc) };
-        if atom == 0 {
-            return Err(WinCliprdrError::from(Error::from_thread()));
+        let mut existing_wc = WNDCLASSA::default();
+        // SAFETY: `instance` is a valid module handle, `window_class` is a valid null-terminated string,
+        // and `existing_wc` is a valid mutable reference to a WNDCLASSA structure.
+        let class_exists = unsafe { GetClassInfoA(Some(instance.into()), window_class, &mut existing_wc).is_ok() };
+
+        if !class_exists {
+            let wc = WNDCLASSA {
+                hInstance: instance.into(),
+                lpszClassName: window_class,
+                lpfnWndProc: Some(wndproc),
+                ..Default::default()
+            };
+
+            // SAFETY: low-level WinAPI call
+            let atom = unsafe { RegisterClassA(&wc) };
+            if atom == 0 {
+                return Err(WinCliprdrError::from(Error::from_thread()));
+            }
         }
 
         // SAFETY: low-level WinAPI call
