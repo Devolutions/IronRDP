@@ -10,102 +10,6 @@ use ironrdp_rdcleanpath::der;
 
 use self::ffi::IronRdpErrorKind;
 
-impl From<ConnectorError> for IronRdpErrorKind {
-    fn from(val: ConnectorError) -> Self {
-        match val.kind() {
-            ironrdp::connector::ConnectorErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
-            ironrdp::connector::ConnectorErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
-            ironrdp::connector::ConnectorErrorKind::Credssp(_) => IronRdpErrorKind::CredsspError,
-            ironrdp::connector::ConnectorErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
-            _ => IronRdpErrorKind::Generic,
-        }
-    }
-}
-
-impl From<&str> for IronRdpErrorKind {
-    fn from(_val: &str) -> Self {
-        IronRdpErrorKind::Generic
-    }
-}
-
-impl From<sspi::Error> for IronRdpErrorKind {
-    fn from(_val: sspi::Error) -> Self {
-        IronRdpErrorKind::CredsspError
-    }
-}
-
-impl From<ironrdp::pdu::PduError> for IronRdpErrorKind {
-    fn from(_val: ironrdp::pdu::PduError) -> Self {
-        IronRdpErrorKind::PduError
-    }
-}
-
-impl From<ironrdp::core::EncodeError> for IronRdpErrorKind {
-    fn from(_val: ironrdp::core::EncodeError) -> Self {
-        IronRdpErrorKind::EncodeError
-    }
-}
-
-impl From<ironrdp::core::DecodeError> for IronRdpErrorKind {
-    fn from(_val: ironrdp::core::DecodeError) -> Self {
-        IronRdpErrorKind::DecodeError
-    }
-}
-
-impl From<std::io::Error> for IronRdpErrorKind {
-    fn from(_: std::io::Error) -> Self {
-        IronRdpErrorKind::IO
-    }
-}
-
-impl From<core::fmt::Error> for IronRdpErrorKind {
-    fn from(_val: core::fmt::Error) -> Self {
-        IronRdpErrorKind::Generic
-    }
-}
-
-impl From<SessionError> for IronRdpErrorKind {
-    fn from(value: SessionError) -> Self {
-        match value.kind() {
-            ironrdp::session::SessionErrorKind::Pdu(_) => IronRdpErrorKind::PduError,
-            ironrdp::session::SessionErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
-            ironrdp::session::SessionErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
-            _ => IronRdpErrorKind::Generic,
-        }
-    }
-}
-
-impl From<&dyn ClipboardError> for IronRdpErrorKind {
-    fn from(_val: &dyn ClipboardError) -> Self {
-        IronRdpErrorKind::Clipboard
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl From<WinCliprdrError> for IronRdpErrorKind {
-    fn from(_val: WinCliprdrError) -> Self {
-        IronRdpErrorKind::Clipboard
-    }
-}
-
-impl From<WrongOSError> for IronRdpErrorKind {
-    fn from(_val: WrongOSError) -> Self {
-        IronRdpErrorKind::WrongOS
-    }
-}
-
-impl From<der::Error> for IronRdpErrorKind {
-    fn from(_val: der::Error) -> Self {
-        IronRdpErrorKind::DecodeError
-    }
-}
-
-impl From<ironrdp_rdcleanpath::MissingRDCleanPathField> for IronRdpErrorKind {
-    fn from(_val: ironrdp_rdcleanpath::MissingRDCleanPathField) -> Self {
-        IronRdpErrorKind::Generic
-    }
-}
-
 pub struct GenericError(pub anyhow::Error);
 
 impl Display for GenericError {
@@ -114,26 +18,166 @@ impl Display for GenericError {
     }
 }
 
-impl From<GenericError> for IronRdpErrorKind {
-    fn from(_val: GenericError) -> Self {
-        IronRdpErrorKind::Generic
-    }
-}
-
-impl<T> From<T> for Box<ffi::IronRdpError>
-where
-    T: Into<IronRdpErrorKind> + ToString,
-{
-    fn from(value: T) -> Self {
-        let repr = value.to_string();
-        let kind = value.into();
-        Box::new(ffi::IronRdpError(IronRdpErrorInner { repr, kind }))
-    }
-}
-
 struct IronRdpErrorInner {
     repr: String,
     kind: IronRdpErrorKind,
+}
+
+// Helper function to create an IronRdpError
+fn make_ffi_error(repr: String, kind: IronRdpErrorKind) -> Box<ffi::IronRdpError> {
+    Box::new(ffi::IronRdpError(IronRdpErrorInner { repr, kind }))
+}
+
+// Direct conversion from IronRdpErrorKind (for cases with no underlying error)
+impl From<IronRdpErrorKind> for Box<ffi::IronRdpError> {
+    fn from(kind: IronRdpErrorKind) -> Self {
+        make_ffi_error(kind.to_string(), kind)
+    }
+}
+
+// IronRDP errors - use .report() to include full error chain with sources
+impl From<ConnectorError> for Box<ffi::IronRdpError> {
+    fn from(value: ConnectorError) -> Self {
+        let kind = match value.kind() {
+            ironrdp::connector::ConnectorErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
+            ironrdp::connector::ConnectorErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
+            ironrdp::connector::ConnectorErrorKind::Credssp(_) => IronRdpErrorKind::CredsspError,
+            ironrdp::connector::ConnectorErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
+            _ => IronRdpErrorKind::Generic,
+        };
+        let repr = value.report().to_string();
+        make_ffi_error(repr, kind)
+    }
+}
+
+impl From<SessionError> for Box<ffi::IronRdpError> {
+    fn from(value: SessionError) -> Self {
+        let kind = match value.kind() {
+            ironrdp::session::SessionErrorKind::Pdu(_) => IronRdpErrorKind::PduError,
+            ironrdp::session::SessionErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
+            ironrdp::session::SessionErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
+            _ => IronRdpErrorKind::Generic,
+        };
+        let repr = value.report().to_string();
+        make_ffi_error(repr, kind)
+    }
+}
+
+impl From<ironrdp::pdu::PduError> for Box<ffi::IronRdpError> {
+    fn from(value: ironrdp::pdu::PduError) -> Self {
+        let repr = value.report().to_string();
+        make_ffi_error(repr, IronRdpErrorKind::PduError)
+    }
+}
+
+impl From<ironrdp::core::EncodeError> for Box<ffi::IronRdpError> {
+    fn from(value: ironrdp::core::EncodeError) -> Self {
+        let repr = value.report().to_string();
+        make_ffi_error(repr, IronRdpErrorKind::EncodeError)
+    }
+}
+
+impl From<ironrdp::core::DecodeError> for Box<ffi::IronRdpError> {
+    fn from(value: ironrdp::core::DecodeError) -> Self {
+        let repr = value.report().to_string();
+        make_ffi_error(repr, IronRdpErrorKind::DecodeError)
+    }
+}
+
+// std::io::Error - convert to anyhow::Error for proper source chain formatting
+impl From<std::io::Error> for Box<ffi::IronRdpError> {
+    fn from(value: std::io::Error) -> Self {
+        let repr = format!("{:#}", anyhow::Error::new(value));
+        make_ffi_error(repr, IronRdpErrorKind::IO)
+    }
+}
+
+// sspi::Error - convert to anyhow::Error for proper source chain formatting
+impl From<sspi::Error> for Box<ffi::IronRdpError> {
+    fn from(value: sspi::Error) -> Self {
+        let repr = format!("{:#}", anyhow::Error::new(value));
+        make_ffi_error(repr, IronRdpErrorKind::CredsspError)
+    }
+}
+
+// Simple string error
+impl From<&str> for Box<ffi::IronRdpError> {
+    fn from(value: &str) -> Self {
+        make_ffi_error(value.to_owned(), IronRdpErrorKind::Generic)
+    }
+}
+
+// core::fmt::Error - convert to anyhow::Error for consistency
+impl From<core::fmt::Error> for Box<ffi::IronRdpError> {
+    fn from(value: core::fmt::Error) -> Self {
+        let repr = format!("{:#}", anyhow::Error::new(value));
+        make_ffi_error(repr, IronRdpErrorKind::Generic)
+    }
+}
+
+// Clipboard errors - manually format with full source chain
+impl From<&dyn ClipboardError> for Box<ffi::IronRdpError> {
+    fn from(value: &dyn ClipboardError) -> Self {
+        use core::fmt::Write as _;
+
+        // Manually build error chain since we have a trait object reference
+        let mut repr = value.to_string();
+        let mut source = value.source();
+        while let Some(e) = source {
+            let _ = write!(&mut repr, ", caused by: {e}");
+            source = e.source();
+        }
+        make_ffi_error(repr, IronRdpErrorKind::Clipboard)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<WinCliprdrError> for Box<ffi::IronRdpError> {
+    fn from(value: WinCliprdrError) -> Self {
+        let repr = format!("{:#}", anyhow::Error::new(value));
+        make_ffi_error(repr, IronRdpErrorKind::Clipboard)
+    }
+}
+
+// DER errors - convert to anyhow::Error for proper source chain formatting
+impl From<der::Error> for Box<ffi::IronRdpError> {
+    fn from(value: der::Error) -> Self {
+        let repr = format!("{:#}", anyhow::Error::new(value));
+        make_ffi_error(repr, IronRdpErrorKind::DecodeError)
+    }
+}
+
+impl From<ironrdp_rdcleanpath::MissingRDCleanPathField> for Box<ffi::IronRdpError> {
+    fn from(value: ironrdp_rdcleanpath::MissingRDCleanPathField) -> Self {
+        let repr = format!("{:#}", anyhow::Error::new(value));
+        make_ffi_error(repr, IronRdpErrorKind::Generic)
+    }
+}
+
+// GenericError already has proper Display impl with {:#}
+impl From<GenericError> for Box<ffi::IronRdpError> {
+    fn from(value: GenericError) -> Self {
+        make_ffi_error(value.to_string(), IronRdpErrorKind::Generic)
+    }
+}
+
+// FFI-specific errors
+impl From<ValueConsumedError> for Box<ffi::IronRdpError> {
+    fn from(value: ValueConsumedError) -> Self {
+        make_ffi_error(value.to_string(), IronRdpErrorKind::Consumed)
+    }
+}
+
+impl From<IncorrectEnumTypeError> for Box<ffi::IronRdpError> {
+    fn from(value: IncorrectEnumTypeError) -> Self {
+        make_ffi_error(value.to_string(), IronRdpErrorKind::IncorrectEnumType)
+    }
+}
+
+impl From<WrongOSError> for Box<ffi::IronRdpError> {
+    fn from(value: WrongOSError) -> Self {
+        make_ffi_error(value.to_string(), IronRdpErrorKind::WrongOS)
+    }
 }
 
 #[diplomat::bridge]
