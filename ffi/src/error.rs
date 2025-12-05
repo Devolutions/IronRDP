@@ -103,7 +103,7 @@ impl From<sspi::Error> for Box<ffi::IronRdpError> {
 // Simple string error
 impl From<&str> for Box<ffi::IronRdpError> {
     fn from(value: &str) -> Self {
-        make_ffi_error(value.to_string(), IronRdpErrorKind::Generic)
+        make_ffi_error(value.to_owned(), IronRdpErrorKind::Generic)
     }
 }
 
@@ -118,13 +118,13 @@ impl From<core::fmt::Error> for Box<ffi::IronRdpError> {
 // Clipboard errors - manually format with full source chain
 impl From<&dyn ClipboardError> for Box<ffi::IronRdpError> {
     fn from(value: &dyn ClipboardError) -> Self {
-        use std::fmt::Write as _;
+        use core::fmt::Write as _;
 
         // Manually build error chain since we have a trait object reference
         let mut repr = value.to_string();
         let mut source = value.source();
         while let Some(e) = source {
-            let _ = write!(&mut repr, ", caused by: {}", e);
+            let _ = write!(&mut repr, ", caused by: {e}");
             source = e.source();
         }
         make_ffi_error(repr, IronRdpErrorKind::Clipboard)
