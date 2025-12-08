@@ -34,7 +34,7 @@ categories = ["network-programming"]
 # even for private dependencies.
 expect-test = "1"
 proptest = "1.4"
-rstest = "0.25"
+rstest = "0.26"
 
 # Note: we are trying to move away from using these crates.
 # They are being kept around for now for legacy compatibility,
