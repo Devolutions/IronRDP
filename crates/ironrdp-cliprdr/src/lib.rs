@@ -230,26 +230,32 @@ impl<R: Role> Cliprdr<R> {
     pub fn initiate_copy(&self, available_formats: &[ClipboardFormat]) -> PduResult<CliprdrSvcMessages<R>> {
         let mut pdus = Vec::new();
 
-        match (self.state, R::is_server()) {
-            // When user initiates copy, we should send format list to server.
-            (CliprdrState::Ready, _) => {
-                pdus.push(ClipboardPdu::FormatList(
-                    self.build_format_list(available_formats).map_err(|e| encode_err!(e))?,
-                ));
-            }
-            (CliprdrState::Initialization, false) => {
-                // During initialization state, first copy action is synthetic and should be sent along with
-                // capabilities and temporary directory PDUs.
-                pdus.push(ClipboardPdu::Capabilities(self.capabilities.clone()));
-                pdus.push(ClipboardPdu::TemporaryDirectory(
-                    ClientTemporaryDirectory::new(self.backend.temporary_directory()).map_err(|e| encode_err!(e))?,
-                ));
-                pdus.push(ClipboardPdu::FormatList(
-                    self.build_format_list(available_formats).map_err(|e| encode_err!(e))?,
-                ));
-            }
-            _ => {
-                error!(?self.state, "Attempted to initiate copy in incorrect state");
+        if R::is_server() {
+            pdus.push(ClipboardPdu::FormatList(
+                self.build_format_list(available_formats).map_err(|e| encode_err!(e))?,
+            ));
+        } else {
+            match self.state {
+                CliprdrState::Ready => {
+                    pdus.push(ClipboardPdu::FormatList(
+                        self.build_format_list(available_formats).map_err(|e| encode_err!(e))?,
+                    ));
+                }
+                CliprdrState::Initialization => {
+                    // During initialization state, first copy action is synthetic and should be sent along with
+                    // capabilities and temporary directory PDUs.
+                    pdus.push(ClipboardPdu::Capabilities(self.capabilities.clone()));
+                    pdus.push(ClipboardPdu::TemporaryDirectory(
+                        ClientTemporaryDirectory::new(self.backend.temporary_directory())
+                            .map_err(|e| encode_err!(e))?,
+                    ));
+                    pdus.push(ClipboardPdu::FormatList(
+                        self.build_format_list(available_formats).map_err(|e| encode_err!(e))?,
+                    ));
+                }
+                _ => {
+                    error!(?self.state, "Attempted to initiate copy in incorrect state");
+                }
             }
         }
 
