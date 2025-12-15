@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 
 pub type TlsStream<S> = tokio_native_tls::TlsStream<S>;
 
-pub async fn upgrade<S>(stream: S, server_name: &str) -> io::Result<(TlsStream<S>, Vec<u8>)>
+pub async fn upgrade<S>(stream: S, server_name: &str) -> io::Result<(TlsStream<S>, x509_cert::Certificate)>
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
@@ -24,15 +24,18 @@ where
 
     tls_stream.flush().await?;
 
-    let server_public_key = {
+    let tls_cert = {
+        use x509_cert::der::Decode as _;
+
         let cert = tls_stream
             .get_ref()
             .peer_certificate()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "peer certificate is missing"))?;
         let cert = cert.to_der().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        crate::extract_tls_server_public_key(&cert)?
+
+        x509_cert::Certificate::from_der(&cert).map_err(io::Error::other)?
     };
 
-    Ok((tls_stream, server_public_key))
+    Ok((tls_stream, tls_cert))
 }
