@@ -1969,7 +1969,7 @@ pub struct MapSurfaceToScaledWindowPdu {
 impl MapSurfaceToScaledWindowPdu {
     const NAME: &'static str = "MapSurfaceToScaledWindowPdu";
 
-    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 2 /* reserved */ + 8 /* surfaceId */ + 4 /* mappedWidth */ + 4 /* mappedHeight */ + 4 /* targetWidth */ + 4 /* targetHeight */;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 8 /* WindowId */ + 4 /* MappedWidth */ + 4 /* MappedHeight */ + 4 /* TargetWidth */ + 4 /* TargetHeight */;
 }
 
 impl Encode for MapSurfaceToScaledWindowPdu {
