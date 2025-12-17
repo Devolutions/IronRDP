@@ -9,6 +9,9 @@ use crate::{
     CHANNEL_NAME,
 };
 
+/// Max capacity to keep for decompressed buffer when cleared.
+const MAX_DECOMPRESSED_BUFFER_CAPACITY: usize = 16384; // 16 KiB
+
 pub trait GraphicsPipelineHandler: Send {
     fn capabilities(&self) -> Vec<CapabilitySet> {
         vec![CapabilitySet::V8 {
@@ -33,7 +36,7 @@ impl GraphicsPipelineClient {
         Self {
             handler,
             decompressor: zgfx::Decompressor::new(),
-            decompressed_buffer: Vec::with_capacity(1024 * 16),
+            decompressed_buffer: Vec::new(),
         }
     }
 }
@@ -53,6 +56,7 @@ impl DvcProcessor for GraphicsPipelineClient {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         self.decompressed_buffer.clear();
+        self.decompressed_buffer.shrink_to(MAX_DECOMPRESSED_BUFFER_CAPACITY);
         self.decompressor
             .decompress(payload, &mut self.decompressed_buffer)
             .map_err(|e| decode_err!(e))?;

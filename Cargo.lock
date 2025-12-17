@@ -2862,6 +2862,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
+ "ironrdp-egfx",
  "ironrdp-fuzzing",
  "ironrdp-graphics",
  "ironrdp-input",
