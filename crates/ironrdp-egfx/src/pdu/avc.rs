@@ -387,11 +387,8 @@ pub fn annex_b_to_avc(data: &[u8]) -> Vec<u8> {
             result.extend_from_slice(nal_data);
         }
 
-        i = start + (end - start);
-        // Skip past start code prefix for next iteration
-        if i == end && end < data.len() {
-            i = end;
-        }
+        // Move to end of current NAL unit; next iteration will find the next start code
+        i = end;
     }
 
     result
