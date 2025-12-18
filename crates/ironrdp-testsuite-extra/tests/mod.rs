@@ -205,18 +205,20 @@ where
                     .await
                     .expect("begin connection");
                 let initial_stream = framed.into_inner_no_leftover();
-                let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, "localhost")
+                let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade(initial_stream, "localhost")
                     .await
                     .expect("TLS upgrade");
                 let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
                 let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
+                let server_public_key =
+                    ironrdp_tls::extract_tls_server_public_key(&tls_cert).expect("extract server public key");
                 let connection_result = ironrdp_async::connect_finalize(
                     upgraded,
                     connector,
                     &mut upgraded_framed,
                     &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
                     "localhost".into(),
-                    server_public_key,
+                    server_public_key.to_owned(),
                     None,
                 )
                 .await
