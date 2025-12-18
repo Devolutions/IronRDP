@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.4.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.4.0...ironrdp-cliprdr-native-v0.4.1)] - 2025-12-18
+
+### <!-- 4 -->Bug Fixes
+
+- Prevent window class registration error on multiple sessions ([#1047](https://github.com/Devolutions/IronRDP/issues/1047)) ([a2af587e60](https://github.com/Devolutions/IronRDP/commit/a2af587e60e869f0235703e21772d1fc6a7dadcd)) 
+
+  When starting a second clipboard session, `RegisterClassA` would fail
+  with `ERROR_CLASS_ALREADY_EXISTS` because window classes are global to
+  the process. Now checks if the class is already registered before
+  attempting registration, allowing multiple WinClipboard instances to
+  coexist.
+
+### <!-- 7 -->Build
+
+- Bump windows from 0.61.3 to 0.62.1 ([#1010](https://github.com/Devolutions/IronRDP/issues/1010)) ([79e71c4f90](https://github.com/Devolutions/IronRDP/commit/79e71c4f90ea68b14fe45241c1cf3953027b22a2)) 
+
+
+
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.3.0...ironrdp-cliprdr-native-v0.4.0)] - 2025-08-29
 
 ### <!-- 4 -->Bug Fixes

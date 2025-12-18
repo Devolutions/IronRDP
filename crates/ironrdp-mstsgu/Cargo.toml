@@ -30,7 +30,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 hyper = { version = "1.7", features = ["client", "http1"] }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] }
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" }
-ironrdp-tls = { path = "../ironrdp-tls", version = "0.1" }
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
 log = "0.4"
 tokio-tungstenite = { version = "0.28" }
 tokio-util = { version = "0.7" }

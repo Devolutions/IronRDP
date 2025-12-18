@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.1...ironrdp-connector-v0.8.0)] - 2025-12-18
+
+### <!-- 7 -->Build
+
+- Bump picky and sspi ([#1028](https://github.com/Devolutions/IronRDP/issues/1028)) ([5bd319126d](https://github.com/Devolutions/IronRDP/commit/5bd319126d32fbd8e505508e27ab2b1a18a83d04)) 
+
+  This fixes build issues with some dependencies.
+
+### Refactor
+
+- [**breaking**] Fix unwrap_used clippy lint warnings ([#964](https://github.com/Devolutions/IronRDP/issues/964)) ([e8d7570cd1](https://github.com/Devolutions/IronRDP/commit/e8d7570cd19a8d52483b620e95092b751c83a2c9)) 
+
+- [**breaking**] Enable `unwrap_used` clippy correctness lint ([#965](https://github.com/Devolutions/IronRDP/issues/965)) ([630525deae](https://github.com/Devolutions/IronRDP/commit/630525deae92f39bfed53248ab0fec0e71249322)) 
+
+
+
 ## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.0...ironrdp-connector-v0.7.1)] - 2025-09-04
 
 ### <!-- 1 -->Features

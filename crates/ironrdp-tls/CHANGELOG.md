@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.1.4...ironrdp-tls-v0.2.0)] - 2025-12-18
+
+### <!-- 1 -->Features
+
+- [**breaking**] Return x509_cert::Certificate from upgrade() ([#1054](https://github.com/Devolutions/IronRDP/issues/1054)) ([bd2aed7686](https://github.com/Devolutions/IronRDP/commit/bd2aed76867f4038c32df9a0d24532ee40d2f14c)) 
+
+  This allows client applications to verify details of the certificate,
+  possibly with the user, when connecting to a server using TLS.
+
+
+
 ## [[0.1.4](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.1.3...ironrdp-tls-v0.1.4)] - 2025-08-29
 
 ### <!-- 7 -->Build
