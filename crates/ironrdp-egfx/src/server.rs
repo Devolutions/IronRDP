@@ -129,12 +129,12 @@ impl Surface {
 ///
 /// Implements the "Offscreen Surfaces ADM element" from MS-RDPEGFX.
 #[derive(Debug, Default)]
-pub struct SurfaceManager {
+pub struct Surfaces {
     surfaces: HashMap<u16, Surface>,
     next_surface_id: u16,
 }
 
-impl SurfaceManager {
+impl Surfaces {
     /// Create a new surface manager
     pub fn new() -> Self {
         Self::default()
@@ -300,7 +300,6 @@ impl FrameTracker {
 
     /// Handle frame acknowledgment from client
     pub fn acknowledge(&mut self, frame_id: u32, queue_depth: u32) -> Option<FrameInfo> {
-        // Update queue depth
         if queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH {
             self.ack_suspended = true;
             self.client_queue_depth = 0;
@@ -309,7 +308,6 @@ impl FrameTracker {
             self.client_queue_depth = queue_depth;
         }
 
-        // Remove and return the frame info
         let info = self.unacknowledged.remove(&frame_id);
         if info.is_some() {
             self.total_acked += 1;
@@ -452,11 +450,9 @@ fn capability_priority(cap: &CapabilitySet) -> u32 {
 
 /// Negotiate the best capability set between client and server
 fn negotiate_capabilities(client_caps: &[CapabilitySet], server_caps: &[CapabilitySet]) -> Option<CapabilitySet> {
-    // Sort server capabilities by priority (highest first)
     let mut server_sorted: Vec<_> = server_caps.iter().collect();
     server_sorted.sort_by_key(|cap| core::cmp::Reverse(capability_priority(cap)));
 
-    // Find highest priority server cap that client also supports
     for server_cap in server_sorted {
         for client_cap in client_caps {
             if core::mem::discriminant(client_cap) == core::mem::discriminant(server_cap) {
@@ -490,11 +486,6 @@ pub trait GraphicsPipelineHandler: Send {
     fn on_ready(&mut self, negotiated: &CapabilitySet);
 
     /// Called when a frame has been acknowledged by the client
-    ///
-    /// # Arguments
-    ///
-    /// * `frame_id` - The acknowledged frame
-    /// * `queue_depth` - Client's reported queue depth (bytes buffered)
     fn on_frame_ack(&mut self, _frame_id: u32, _queue_depth: u32) {}
 
     /// Called when QoE metrics are received from client (V10+)
@@ -515,19 +506,15 @@ pub trait GraphicsPipelineHandler: Send {
     /// AVC420/AVC444 with V10.7 and V8.1 as fallback.
     fn preferred_capabilities(&self) -> Vec<CapabilitySet> {
         vec![
-            // Prefer V10.7 with AVC enabled
             CapabilitySet::V10_7 {
                 flags: CapabilitiesV107Flags::SMALL_CACHE,
             },
-            // V10 fallback
             CapabilitySet::V10 {
                 flags: CapabilitiesV10Flags::SMALL_CACHE,
             },
-            // V8.1 with AVC420
             CapabilitySet::V8_1 {
                 flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
             },
-            // V8 basic fallback
             CapabilitySet::V8 {
                 flags: CapabilitiesV8Flags::SMALL_CACHE,
             },
@@ -576,22 +563,15 @@ enum ServerState {
 pub struct GraphicsPipelineServer {
     handler: Box<dyn GraphicsPipelineHandler>,
 
-    // State management
     state: ServerState,
     negotiated_caps: Option<CapabilitySet>,
     codec_caps: CodecCapabilities,
 
-    // Surface management (Offscreen Surfaces ADM element)
-    surfaces: SurfaceManager,
-
-    // Frame tracking (Unacknowledged Frames ADM element)
+    surfaces: Surfaces,
     frames: FrameTracker,
 
-    // Graphics output buffer dimensions
     output_width: u16,
     output_height: u16,
-
-    // Output queue for PDUs that need to be sent
     output_queue: VecDeque<GfxPdu>,
 }
 
@@ -607,7 +587,7 @@ impl GraphicsPipelineServer {
             state: ServerState::WaitingForCapabilities,
             negotiated_caps: None,
             codec_caps: CodecCapabilities::default(),
-            surfaces: SurfaceManager::new(),
+            surfaces: Surfaces::new(),
             frames,
             output_width: 0,
             output_height: 0,
@@ -676,7 +656,6 @@ impl GraphicsPipelineServer {
         let surface_id = self.surfaces.allocate_id();
         let surface = Surface::new(surface_id, width, height, pixel_format);
 
-        // Queue CreateSurface PDU
         self.output_queue.push_back(GfxPdu::CreateSurface(CreateSurfacePdu {
             surface_id,
             width,
@@ -699,7 +678,6 @@ impl GraphicsPipelineServer {
             return false;
         }
 
-        // Queue DeleteSurface PDU
         self.output_queue
             .push_back(GfxPdu::DeleteSurface(DeleteSurfacePdu { surface_id }));
 
@@ -769,23 +747,19 @@ impl GraphicsPipelineServer {
         self.output_width = width;
         self.output_height = height;
 
-        // Delete all existing surfaces
         let surface_ids: Vec<_> = self.surfaces.surface_ids().collect();
         for id in surface_ids {
             self.delete_surface(id);
         }
 
-        // Clear frame tracking
         self.frames.clear();
 
-        // Send ResetGraphics
         self.output_queue.push_back(GfxPdu::ResetGraphics(ResetGraphicsPdu {
             width: u32::from(width),
             height: u32::from(height),
             monitors,
         }));
 
-        // Return to Ready state
         self.state = ServerState::Ready;
     }
 
@@ -870,17 +844,8 @@ impl GraphicsPipelineServer {
 
     /// Queue an H.264 AVC420 frame for transmission
     ///
-    /// # Arguments
-    ///
-    /// * `surface_id` - Target surface
-    /// * `h264_data` - H.264 encoded data in AVC format (use `annex_b_to_avc` if needed)
-    /// * `regions` - List of regions describing the frame
-    /// * `timestamp_ms` - Frame timestamp in milliseconds
-    ///
-    /// # Returns
-    ///
-    /// `Some(frame_id)` if the frame was queued, `None` if backpressure is active,
-    /// server is not ready, or AVC420 is not supported.
+    /// Returns `Some(frame_id)` if queued, `None` if backpressure is active,
+    /// server not ready, or AVC420 not supported.
     pub fn send_avc420_frame(
         &mut self,
         surface_id: u16,
@@ -889,35 +854,24 @@ impl GraphicsPipelineServer {
         timestamp_ms: u32,
     ) -> Option<u32> {
         if !self.is_ready() {
-            debug!("EGFX not ready, dropping frame");
             return None;
         }
-
         if !self.supports_avc420() {
-            debug!("AVC420 not supported, dropping frame");
             return None;
         }
-
         if self.should_backpressure() {
-            trace!(frames_in_flight = self.frames.in_flight(), "EGFX backpressure active");
             return None;
         }
 
-        let Some(surface) = self.surfaces.get(surface_id) else {
-            debug!(surface_id, "Surface not found, dropping frame");
-            return None;
-        };
+        let surface = self.surfaces.get(surface_id)?;
 
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
 
-        // Build the bitmap data
-        let bitmap_data = encode_avc420_bitmap_stream(regions, h264_data);
+        let encoded_stream = encode_avc420_bitmap_stream(regions, h264_data);
+        let target_rect = Self::compute_dest_rect(regions, surface.width, surface.height);
 
-        // Determine destination rectangle
-        let dest_rect = Self::compute_dest_rect(regions, surface.width, surface.height);
-
-        // Queue the frame PDUs
+        // MS-RDPEGFX requires three-PDU sequence per frame
         self.output_queue
             .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
 
@@ -925,33 +879,21 @@ impl GraphicsPipelineServer {
             surface_id,
             codec_id: Codec1Type::Avc420,
             pixel_format: surface.pixel_format,
-            destination_rectangle: dest_rect,
-            bitmap_data,
+            destination_rectangle: target_rect,
+            bitmap_data: encoded_stream,
         }));
 
         self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
-        trace!(frame_id, surface_id, "Queued AVC420 frame");
         Some(frame_id)
     }
 
     /// Queue an H.264 AVC444 frame for transmission
     ///
-    /// AVC444 uses two streams: one for luma (Y) and one for chroma (UV).
-    /// If only luma data is provided, set `chroma_data` to `None`.
+    /// AVC444 uses two streams: luma (Y) and chroma (UV). Set `chroma_data` to
+    /// `None` for luma-only transmission.
     ///
-    /// # Arguments
-    ///
-    /// * `surface_id` - Target surface
-    /// * `luma_data` - H.264 encoded luma (Y) data in AVC format
-    /// * `luma_regions` - Regions for luma stream
-    /// * `chroma_data` - Optional H.264 encoded chroma (UV) data
-    /// * `chroma_regions` - Regions for chroma stream (required if chroma_data provided)
-    /// * `timestamp_ms` - Frame timestamp in milliseconds
-    ///
-    /// # Returns
-    ///
-    /// `Some(frame_id)` if the frame was queued, `None` if not supported or backpressured.
+    /// Returns `Some(frame_id)` if queued, `None` if not supported or backpressured.
     pub fn send_avc444_frame(
         &mut self,
         surface_id: u16,
@@ -962,29 +904,20 @@ impl GraphicsPipelineServer {
         timestamp_ms: u32,
     ) -> Option<u32> {
         if !self.is_ready() {
-            debug!("EGFX not ready, dropping frame");
             return None;
         }
-
         if !self.supports_avc444() {
-            debug!("AVC444 not supported, dropping frame");
             return None;
         }
-
         if self.should_backpressure() {
-            trace!(frames_in_flight = self.frames.in_flight(), "EGFX backpressure active");
             return None;
         }
 
-        let Some(surface) = self.surfaces.get(surface_id) else {
-            debug!(surface_id, "Surface not found, dropping frame");
-            return None;
-        };
+        let surface = self.surfaces.get(surface_id)?;
 
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
 
-        // Build luma stream
         let luma_rectangles: Vec<_> = luma_regions.iter().map(Avc420Region::to_rectangle).collect();
         let luma_quant_vals: Vec<_> = luma_regions.iter().map(Avc420Region::to_quant_quality).collect();
 
@@ -994,7 +927,6 @@ impl GraphicsPipelineServer {
             data: luma_data,
         };
 
-        // Build chroma stream if provided
         let (encoding, stream2) = if let (Some(chroma), Some(chroma_regs)) = (chroma_data, chroma_regions) {
             let chroma_rectangles: Vec<_> = chroma_regs.iter().map(Avc420Region::to_rectangle).collect();
             let chroma_quant_vals: Vec<_> = chroma_regs.iter().map(Avc420Region::to_quant_quality).collect();
@@ -1017,13 +949,9 @@ impl GraphicsPipelineServer {
             stream2,
         };
 
-        // Encode the AVC444 stream
-        let bitmap_data = encode_avc444_bitmap_stream(&avc444_stream);
+        let encoded_stream = encode_avc444_bitmap_stream(&avc444_stream);
+        let target_rect = Self::compute_dest_rect(luma_regions, surface.width, surface.height);
 
-        // Determine destination rectangle
-        let dest_rect = Self::compute_dest_rect(luma_regions, surface.width, surface.height);
-
-        // Queue the frame PDUs
         self.output_queue
             .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
 
@@ -1031,13 +959,12 @@ impl GraphicsPipelineServer {
             surface_id,
             codec_id: Codec1Type::Avc444,
             pixel_format: surface.pixel_format,
-            destination_rectangle: dest_rect,
-            bitmap_data,
+            destination_rectangle: target_rect,
+            bitmap_data: encoded_stream,
         }));
 
         self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
-        trace!(frame_id, surface_id, "Queued AVC444 frame");
         Some(frame_id)
     }
 
@@ -1066,67 +993,39 @@ impl GraphicsPipelineServer {
     // Internal Message Handlers
     // ========================================================================
 
-    /// Handle capability negotiation
     fn handle_capabilities_advertise(&mut self, pdu: CapabilitiesAdvertisePdu) {
-        debug!(?pdu, "Received CapabilitiesAdvertise");
-
-        // Notify handler
         self.handler.capabilities_advertise(&pdu);
-
-        // Get server's preferred capabilities
         let server_caps = self.handler.preferred_capabilities();
 
-        // Negotiate best match
+        // V8.1 fallback ensures minimum AVC420 support when negotiation fails
         let negotiated = negotiate_capabilities(&pdu.0, &server_caps).unwrap_or_else(|| {
-            // Fallback to V8.1 with AVC420
-            warn!("No matching capabilities, falling back to V8.1");
+            warn!("No capability match, falling back to V8.1");
             CapabilitySet::V8_1 {
                 flags: CapabilitiesV81Flags::AVC420_ENABLED,
             }
         });
 
-        debug!(?negotiated, "Negotiated capabilities");
-
-        // Extract codec capabilities
         self.codec_caps = CodecCapabilities::from_capability_set(&negotiated);
         self.negotiated_caps = Some(negotiated.clone());
 
-        // Queue CapabilitiesConfirm
         self.output_queue
             .push_back(GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu(negotiated.clone())));
 
-        // Transition to ready state
         self.state = ServerState::Ready;
-
-        // Notify handler
         self.handler.on_ready(&negotiated);
-
-        debug!(
-            avc420 = self.codec_caps.avc420,
-            avc444 = self.codec_caps.avc444,
-            "EGFX server ready"
-        );
     }
 
-    /// Handle frame acknowledgment
     fn handle_frame_acknowledge(&mut self, pdu: FrameAcknowledgePdu) {
-        trace!(?pdu, "Received FrameAcknowledge");
+        let queue_depth = pdu.queue_depth.to_u32();
 
-        // Convert QueueDepth enum to u32 for tracking
-        let queue_depth_u32 = pdu.queue_depth.to_u32();
-
-        if let Some(info) = self.frames.acknowledge(pdu.frame_id, queue_depth_u32) {
-            let latency = info.sent_at.elapsed();
-            trace!(frame_id = pdu.frame_id, ?latency, "Frame acknowledged");
+        if let Some(info) = self.frames.acknowledge(pdu.frame_id, queue_depth) {
+            trace!(frame_id = pdu.frame_id, latency = ?info.sent_at.elapsed());
         }
 
-        self.handler.on_frame_ack(pdu.frame_id, queue_depth_u32);
+        self.handler.on_frame_ack(pdu.frame_id, queue_depth);
     }
 
-    /// Handle QoE frame acknowledgment
     fn handle_qoe_frame_acknowledge(&mut self, pdu: QoeFrameAcknowledgePdu) {
-        trace!(?pdu, "Received QoeFrameAcknowledge");
-
         let metrics = QoeMetrics {
             frame_id: pdu.frame_id,
             timestamp: pdu.timestamp,
@@ -1137,14 +1036,9 @@ impl GraphicsPipelineServer {
         self.handler.on_qoe_metrics(metrics);
     }
 
-    /// Handle cache import offer
     fn handle_cache_import_offer(&mut self, pdu: CacheImportOfferPdu) {
-        debug!(entries = pdu.cache_entries.len(), "Received CacheImportOffer");
-
-        // Ask handler which entries to accept
         let accepted = self.handler.on_cache_import_offer(&pdu);
 
-        // Send reply
         self.output_queue
             .push_back(GfxPdu::CacheImportReply(CacheImportReplyPdu { cache_slots: accepted }));
     }
@@ -1158,13 +1052,11 @@ impl DvcProcessor for GraphicsPipelineServer {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        debug!("EGFX channel started");
-        // Server doesn't send anything at start - waits for client CapabilitiesAdvertise
+        // Server waits for client CapabilitiesAdvertise before sending anything
         Ok(vec![])
     }
 
     fn close(&mut self, _channel_id: u32) {
-        debug!("EGFX channel closed");
         self.state = ServerState::Closed;
         self.handler.on_close();
     }
@@ -1190,7 +1082,6 @@ impl DvcProcessor for GraphicsPipelineServer {
             }
         }
 
-        // Return any queued output
         Ok(self.drain_output())
     }
 }
