@@ -15,19 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Add support for sending a proper TLS close_notify message when the RDP
   client initiates a graceful disconnect PDU.
 
-- [**breaking**] Use static dispatch for NetworkClient trait ([#1043](https://github.com/Devolutions/IronRDP/issues/1043)) ([bca6d190a8](https://github.com/Devolutions/IronRDP/commit/bca6d190a870708468534d224ff225a658767a9a)) 
-
-  - Rename `AsyncNetworkClient` to `NetworkClient`
-  - Replace dynamic dispatch (`Option<&mut dyn ...>`) with static dispatch
-  using generics (`&mut N where N: NetworkClient`)
-  - Reorder `connect_finalize` parameters for consistency across crates
-
-### Refactor
-
-- [**breaking**] Fix `as_conversions` clippy lint warnings ([#967](https://github.com/Devolutions/IronRDP/issues/967)) ([82dbb6460f](https://github.com/Devolutions/IronRDP/commit/82dbb6460fa576e8ac45a311e859813a289fc9d4)) 
-
-
-
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.8.0...ironrdp-server-v0.9.0)] - 2025-09-24
 
 ### <!-- 4 -->Bug Fixes

@@ -17,15 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using generics (`&mut N where N: NetworkClient`)
   - Reorder `connect_finalize` parameters for consistency across crates
 
-
-
 ## [[0.3.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-async-v0.3.1...ironrdp-async-v0.3.2)] - 2025-03-12
 
 ### <!-- 7 -->Build
 
 - Bump ironrdp-pdu
-
-
 
 ## [[0.3.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-async-v0.3.0...ironrdp-async-v0.3.1)] - 2025-03-12
 

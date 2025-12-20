@@ -17,14 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using generics (`&mut N where N: NetworkClient`)
   - Reorder `connect_finalize` parameters for consistency across crates
 
-### Refactor
-
-- [**breaking**] Fix unwrap_used clippy lint warnings ([#964](https://github.com/Devolutions/IronRDP/issues/964)) ([e8d7570cd1](https://github.com/Devolutions/IronRDP/commit/e8d7570cd19a8d52483b620e95092b751c83a2c9)) 
-
-- [**breaking**] Enable `unwrap_used` clippy correctness lint ([#965](https://github.com/Devolutions/IronRDP/issues/965)) ([630525deae](https://github.com/Devolutions/IronRDP/commit/630525deae92f39bfed53248ab0fec0e71249322)) 
-
-
-
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.5.0...ironrdp-acceptor-v0.6.0)] - 2025-07-08
 
 ### <!-- 1 -->Features

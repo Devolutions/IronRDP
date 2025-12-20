@@ -15,8 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This allows client applications to verify details of the certificate,
   possibly with the user, when connecting to a server using TLS.
 
-
-
 ## [[0.1.4](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.1.3...ironrdp-tls-v0.1.4)] - 2025-08-29
 
 ### <!-- 7 -->Build

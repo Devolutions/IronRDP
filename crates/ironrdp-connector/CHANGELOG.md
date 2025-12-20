@@ -14,14 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   This fixes build issues with some dependencies.
 
-### Refactor
-
-- [**breaking**] Fix unwrap_used clippy lint warnings ([#964](https://github.com/Devolutions/IronRDP/issues/964)) ([e8d7570cd1](https://github.com/Devolutions/IronRDP/commit/e8d7570cd19a8d52483b620e95092b751c83a2c9)) 
-
-- [**breaking**] Enable `unwrap_used` clippy correctness lint ([#965](https://github.com/Devolutions/IronRDP/issues/965)) ([630525deae](https://github.com/Devolutions/IronRDP/commit/630525deae92f39bfed53248ab0fec0e71249322)) 
-
-
-
 ## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.0...ironrdp-connector-v0.7.1)] - 2025-09-04
 
 ### <!-- 1 -->Features

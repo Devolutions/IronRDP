@@ -49,8 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   This fixes build issues with some dependencies.
 
-
-
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tokio-v0.5.1...ironrdp-tokio-v0.6.0)] - 2025-07-08
 
 ### Build

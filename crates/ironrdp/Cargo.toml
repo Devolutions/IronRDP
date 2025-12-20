@@ -43,7 +43,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", optional = true } # pu
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.5", optional = true } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.8", optional = true } # public
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.8", optional = true } # public
-ironrdp-session = { path = "../ironrdp-session", version = "0.7", optional = true } # public
+ironrdp-session = { path = "../ironrdp-session", version = "0.8", optional = true } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.7", optional = true } # public
 ironrdp-input = { path = "../ironrdp-input", version = "0.4", optional = true } # public
 ironrdp-server = { path = "../ironrdp-server", version = "0.10", optional = true, features = ["helper"] } # public
@@ -55,7 +55,7 @@ ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.4", 
 
 [dev-dependencies]
 ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.8.0" }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.4.1" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.5.0" }
 anyhow = "1"
 async-trait = "0.1"
 image = { version = "0.25.6", default-features = false, features = ["png"] }

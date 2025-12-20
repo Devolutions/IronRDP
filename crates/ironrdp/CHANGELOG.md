@@ -8,22 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.14.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.13.0...ironrdp-v0.14.0)] - 2025-12-18
 
-### <!-- 4 -->Bug Fixes
-
-- [**breaking**] Use static dispatch for NetworkClient trait ([#1043](https://github.com/Devolutions/IronRDP/issues/1043)) ([bca6d190a8](https://github.com/Devolutions/IronRDP/commit/bca6d190a870708468534d224ff225a658767a9a)) 
-
-  - Rename `AsyncNetworkClient` to `NetworkClient`
-  - Replace dynamic dispatch (`Option<&mut dyn ...>`) with static dispatch
-  using generics (`&mut N where N: NetworkClient`)
-  - Reorder `connect_finalize` parameters for consistency across crates
-
 ### <!-- 7 -->Build
 
 - Bump picky and sspi ([#1028](https://github.com/Devolutions/IronRDP/issues/1028)) ([5bd319126d](https://github.com/Devolutions/IronRDP/commit/5bd319126d32fbd8e505508e27ab2b1a18a83d04)) 
 
   This fixes build issues with some dependencies.
-
-
 
 ## [[0.13.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.12.0...ironrdp-v0.13.0)] - 2025-09-24
 

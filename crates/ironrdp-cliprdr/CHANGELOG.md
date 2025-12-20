@@ -12,8 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [**breaking**] Receiving a TemporaryDirectory PDU should not fail the svc ([#1031](https://github.com/Devolutions/IronRDP/issues/1031)) ([f2326ef046](https://github.com/Devolutions/IronRDP/commit/f2326ef046cc81fb0e8985f03382859085882e86)) 
 
-  - Fixes the Cliprdr `SvcProcessor` impl. to support handling a
-  `TemporaryDirectory` Clipboard PDU.
+  - Fixes the Cliprdr `SvcProcessor` impl to support handling a `TemporaryDirectory` Clipboard PDU.
   - Removes `ClipboardError::UnimplementedPdu` since it is no longer used
 
 - Allow servers to announce clipboard ownership ([#1053](https://github.com/Devolutions/IronRDP/issues/1053)) ([d587b0c4c1](https://github.com/Devolutions/IronRDP/commit/d587b0c4c114c49d30f52859f43b22f829456a01)) 
@@ -31,12 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This change enables RDP servers to properly announce clipboard ownership
   by bypassing the Initialization/Ready state check when R::is_server() is
   true. Client behavior remains unchanged.
-
-### Refactor
-
-- [**breaking**] Enable `unwrap_used` clippy correctness lint ([#965](https://github.com/Devolutions/IronRDP/issues/965)) ([630525deae](https://github.com/Devolutions/IronRDP/commit/630525deae92f39bfed53248ab0fec0e71249322)) 
-
-
 
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.3.0...ironrdp-cliprdr-v0.4.0)] - 2025-08-29
 

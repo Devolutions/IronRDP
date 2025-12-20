@@ -17,18 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using generics (`&mut N where N: NetworkClient`)
   - Reorder `connect_finalize` parameters for consistency across crates
 
-### Refactor
-
-- [**breaking**] Enable `unwrap_used` clippy correctness lint ([#965](https://github.com/Devolutions/IronRDP/issues/965)) ([630525deae](https://github.com/Devolutions/IronRDP/commit/630525deae92f39bfed53248ab0fec0e71249322)) 
-
-
-
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.3.1...ironrdp-blocking-v0.4.0)] - 2025-03-12
 
 ### <!-- 7 -->Build
 
 - Bump ironrdp-pdu
-
 
 
 ## [[0.3.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.3.0...ironrdp-blocking-v0.3.1)] - 2025-03-12
@@ -46,7 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### <!-- 6 -->Documentation
 
 - Use CDN URLs instead of the blob storage URLs for Devolutions logo (#631) ([dd249909a8](https://github.com/Devolutions/IronRDP/commit/dd249909a894004d4f728d30b3a4aa77a0f8193b)) 
-
 
 
 ## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.2.0...ironrdp-blocking-v0.2.1)] - 2024-12-14
