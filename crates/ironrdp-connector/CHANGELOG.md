@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.1...ironrdp-connector-v0.8.0)] - 2025-12-18
+
+### <!-- 7 -->Build
+
+- Bump picky and sspi ([#1028](https://github.com/Devolutions/IronRDP/issues/1028)) ([5bd319126d](https://github.com/Devolutions/IronRDP/commit/5bd319126d32fbd8e505508e27ab2b1a18a83d04)) 
+
+  This fixes build issues with some dependencies.
+
 ## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.0...ironrdp-connector-v0.7.1)] - 2025-09-04
 
 ### <!-- 1 -->Features

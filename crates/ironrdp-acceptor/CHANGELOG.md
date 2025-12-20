@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.7.0...ironrdp-acceptor-v0.8.0)] - 2025-12-18
+
+### <!-- 4 -->Bug Fixes
+
+- [**breaking**] Use static dispatch for NetworkClient trait ([#1043](https://github.com/Devolutions/IronRDP/issues/1043)) ([bca6d190a8](https://github.com/Devolutions/IronRDP/commit/bca6d190a870708468534d224ff225a658767a9a)) 
+
+  - Rename `AsyncNetworkClient` to `NetworkClient`
+  - Replace dynamic dispatch (`Option<&mut dyn ...>`) with static dispatch
+  using generics (`&mut N where N: NetworkClient`)
+  - Reorder `connect_finalize` parameters for consistency across crates
+
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.5.0...ironrdp-acceptor-v0.6.0)] - 2025-07-08
 
 ### <!-- 1 -->Features
