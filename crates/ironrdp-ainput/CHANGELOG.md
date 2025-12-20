@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-ainput-v0.4.0...ironrdp-ainput-v0.6.0)] - 2025-12-18
+
+### <!-- 7 -->Build
+
+- Bump ironrdp-dvc dependency
+
+
 ## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-ainput-v0.2.0...ironrdp-ainput-v0.2.1)] - 2025-05-27
 
 ### <!-- 7 -->Build

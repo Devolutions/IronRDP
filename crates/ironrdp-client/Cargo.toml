@@ -45,8 +45,8 @@ ironrdp = { path = "../ironrdp", version = "0.14", features = [
     "connector",
 ] }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.4" }
-ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.4" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.6" }
+ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.6" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.8", features = ["reqwest"] }
