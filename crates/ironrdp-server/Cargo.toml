@@ -32,13 +32,13 @@ tokio = { version = "1", features = ["net", "macros", "sync", "rt"] } # public
 tokio-rustls = "0.26" # public
 async-trait = "0.1"
 ironrdp-async = { path = "../ironrdp-async", version = "0.8" }
-ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.6" }
+ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.5" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.6" } # public
-ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.6" } # public
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.6" } # public
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.5" } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.5" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.8" }
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.8" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.7" } # public
