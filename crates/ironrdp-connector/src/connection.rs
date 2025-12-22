@@ -7,7 +7,7 @@ use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_activation::{
@@ -15,8 +15,9 @@ use crate::connection_activation::{
 };
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
-    Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize,
-    NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
+    Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, CredsspSequenceFactory,
+    DesktopSize, NegotiationFailure, SecurityConnector, Sequence, State, Written, credssp, encode_x224_packet,
+    general_err, reason_err,
 };
 
 #[derive(Debug)]
@@ -166,7 +167,6 @@ impl ClientConnector {
     {
         self.static_channels.insert(channel);
     }
-
     pub fn get_static_channel_processor<T>(&mut self) -> Option<&T>
     where
         T: SvcClientProcessor + 'static,
@@ -184,32 +184,62 @@ impl ClientConnector {
             .get_by_type_mut::<T>()
             .and_then(|channel| channel.channel_processor_downcast_mut())
     }
+}
 
-    pub fn should_perform_security_upgrade(&self) -> bool {
+impl SecurityConnector for ClientConnector {
+    fn should_perform_security_upgrade(&self) -> bool {
         matches!(self.state, ClientConnectorState::EnhancedSecurityUpgrade { .. })
     }
 
-    /// # Panics
-    ///
-    /// Panics if state is not [ClientConnectorState::EnhancedSecurityUpgrade].
-    pub fn mark_security_upgrade_as_done(&mut self) {
+    fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.should_perform_security_upgrade());
         self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
         debug_assert!(!self.should_perform_security_upgrade());
     }
 
-    pub fn should_perform_credssp(&self) -> bool {
+    fn should_perform_credssp(&self) -> bool {
         matches!(self.state, ClientConnectorState::Credssp { .. })
     }
 
-    /// # Panics
-    ///
-    /// Panics if state is not [ClientConnectorState::Credssp].
-    pub fn mark_credssp_as_done(&mut self) {
+    fn selected_protocol(&self) -> Option<nego::SecurityProtocol> {
+        match &self.state {
+            ClientConnectorState::Credssp { selected_protocol } => Some(*selected_protocol),
+            _ => None,
+        }
+    }
+
+    fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
+    }
+
+    fn config(&self) -> &Config {
+        &self.config
+    }
+}
+
+impl CredsspSequenceFactory for ClientConnector {
+    fn init_credssp(
+        &self,
+        credentials: crate::Credentials,
+        domain: Option<&str>,
+        protocol: nego::SecurityProtocol,
+        server_name: crate::ServerName,
+        server_public_key: Vec<u8>,
+        kerberos_config: Option<credssp::KerberosConfig>,
+    ) -> ConnectorResult<(Box<dyn credssp::CredsspSequenceTrait>, sspi::credssp::TsRequest)> {
+        let (sequence, ts_request) = credssp::CredsspSequence::init(
+            credentials,
+            domain,
+            protocol,
+            server_name,
+            server_public_key,
+            kerberos_config,
+        )?;
+
+        Ok((Box::new(sequence), ts_request))
     }
 }
 
@@ -408,6 +438,8 @@ impl Sequence for ClientConnector {
                 debug!(message = ?connect_initial, "Send");
 
                 let written = encode_x224_packet(&connect_initial, output)?;
+
+                trace!(written, "Written");
 
                 (
                     Written::from_size(written)?,

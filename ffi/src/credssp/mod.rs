@@ -5,6 +5,7 @@ pub mod network;
 pub mod ffi {
 
     use ironrdp::connector::ClientConnectorState;
+    use ironrdp::connector::credssp::CredsspSequenceTrait as _;
 
     use super::network::ffi::{ClientState, CredsspProcessGenerator};
     use crate::connector::ffi::{ClientConnector, PduHint};

@@ -66,6 +66,7 @@ ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqw
 ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.2" }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
+ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.1" }
 
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7", optional = true } # public

@@ -82,6 +82,8 @@ pub struct Config {
     pub(crate) properties: PropertySet,
 
     pub(crate) extensions: ExtensionRegistry,
+
+    pub(crate) pcb: Option<PreconnectionBlobPayload>,
 }
 
 impl Config {
@@ -130,6 +132,11 @@ impl Config {
     /// Merged `.rdp` PropertySet that produced this config.
     pub fn properties(&self) -> &PropertySet {
         &self.properties
+    }
+
+    /// Preconnection blob to send before the RDP handshake, if any.
+    pub fn pcb(&self) -> Option<&PreconnectionBlobPayload> {
+        self.pcb.as_ref()
     }
 }
 
@@ -457,6 +464,32 @@ const RDP_DEFAULT_PORT: u16 = 3389;
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
 
+/// How the preconnection blob payload should be interpreted.
+///
+/// `VmConnect` carries a Hyper-V VM ID, which the vmconnect connector wraps in the
+/// MS-RDPBCGR preconnection PDU before the RDP handshake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreconnectionBlobPayload {
+    General(String),
+    VmConnect(String),
+}
+
+impl PreconnectionBlobPayload {
+    pub fn general(&self) -> Option<&str> {
+        match self {
+            PreconnectionBlobPayload::General(pcb) => Some(pcb),
+            PreconnectionBlobPayload::VmConnect(_) => None,
+        }
+    }
+
+    pub fn vmconnect(&self) -> Option<&str> {
+        match self {
+            PreconnectionBlobPayload::VmConnect(vm_id) => Some(vm_id),
+            PreconnectionBlobPayload::General(_) => None,
+        }
+    }
+}
+
 /// A configuration value that the consumer must supply before [`ConfigBuilder::build`] can succeed.
 ///
 /// Query the outstanding ones with [`ConfigBuilder::missing`], resolve each (prompt the user, or
@@ -574,6 +607,7 @@ pub struct ConfigBuilder {
     dvc_plugins: Vec<PathBuf>,
     properties: PropertySet,
     extensions: ExtensionRegistry,
+    pcb: Option<PreconnectionBlobPayload>,
 }
 
 impl ConfigBuilder {
@@ -887,6 +921,13 @@ impl ConfigBuilder {
             self.properties.clear_kdc_proxy_url();
         }
         self.kerberos_config = Some(cfg);
+        self
+    }
+
+    /// Set the preconnection blob sent before the RDP handshake (general payload or Hyper-V VM ID).
+    #[must_use]
+    pub fn with_pcb(mut self, pcb: PreconnectionBlobPayload) -> Self {
+        self.pcb = Some(pcb);
         self
     }
 
@@ -1205,6 +1246,7 @@ impl ConfigBuilder {
             dvc_plugins: self.dvc_plugins,
             properties,
             extensions: self.extensions,
+            pcb: self.pcb,
         })
     }
 
