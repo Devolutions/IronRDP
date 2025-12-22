@@ -1,9 +1,9 @@
-use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, KerberosConfig};
+use ironrdp_connector::credssp::{CredsspProcessGenerator, KerberosConfig};
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, ServerName,
-    State as _,
+    custom_err, general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorCore, ConnectorError,
+    ConnectorResult, SecurityConnector, ServerName,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
@@ -15,7 +15,10 @@ use crate::{single_sequence_step, NetworkClient};
 pub struct ShouldUpgrade;
 
 #[instrument(skip_all)]
-pub async fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut ClientConnector) -> ConnectorResult<ShouldUpgrade>
+pub async fn connect_begin<S>(
+    framed: &mut Framed<S>,
+    connector: &mut dyn ConnectorCore,
+) -> ConnectorResult<ShouldUpgrade>
 where
     S: Sync + FramedRead + FramedWrite,
 {
@@ -33,7 +36,7 @@ where
 /// # Panics
 ///
 /// Panics if connector state is not [ClientConnectorState::EnhancedSecurityUpgrade].
-pub fn skip_connect_begin(connector: &mut ClientConnector) -> ShouldUpgrade {
+pub fn skip_connect_begin(connector: &mut dyn SecurityConnector) -> ShouldUpgrade {
     assert!(connector.should_perform_security_upgrade());
     ShouldUpgrade
 }
@@ -42,22 +45,27 @@ pub fn skip_connect_begin(connector: &mut ClientConnector) -> ShouldUpgrade {
 pub struct Upgraded;
 
 #[instrument(skip_all)]
-pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector) -> Upgraded {
+pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut dyn SecurityConnector) -> Upgraded {
     trace!("Marked as upgraded");
     connector.mark_security_upgrade_as_done();
     Upgraded
 }
 
+#[non_exhaustive]
+pub struct CredSSPFinished {
+    pub(crate) write_buf: WriteBuf,
+}
+
 #[instrument(skip_all)]
-pub async fn connect_finalize<S, N>(
+pub async fn perform_credssp<S, N>(
     _: Upgraded,
-    mut connector: ClientConnector,
+    connector: &mut dyn ConnectorCore,
     framed: &mut Framed<S>,
-    network_client: &mut N,
     server_name: ServerName,
     server_public_key: Vec<u8>,
+    network_client: Option<&mut N>,
     kerberos_config: Option<KerberosConfig>,
-) -> ConnectorResult<ConnectionResult>
+) -> ConnectorResult<CredSSPFinished>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
@@ -66,7 +74,7 @@ where
 
     if connector.should_perform_credssp() {
         perform_credssp_step(
-            &mut connector,
+            connector,
             framed,
             network_client,
             &mut buf,
@@ -77,6 +85,19 @@ where
         .await?;
     }
 
+    Ok(CredSSPFinished { write_buf: buf })
+}
+
+#[instrument(skip_all)]
+pub async fn connect_finalize<S>(
+    CredSSPFinished { write_buf: mut buf }: CredSSPFinished,
+    framed: &mut Framed<S>,
+    mut connector: ClientConnector,
+) -> ConnectorResult<ConnectionResult>
+where
+    S: FramedRead + FramedWrite,
+{
+    buf.clear();
     let result = loop {
         single_sequence_step(framed, &mut connector, &mut buf).await?;
 
@@ -90,9 +111,9 @@ where
     Ok(result)
 }
 
-async fn resolve_generator(
+async fn resolve_generator<N: NetworkClient>(
     generator: &mut CredsspProcessGenerator<'_>,
-    network_client: &mut impl NetworkClient,
+    network_client: &mut N,
 ) -> ConnectorResult<ClientState> {
     let mut state = generator.start();
 
@@ -112,9 +133,9 @@ async fn resolve_generator(
 
 #[instrument(level = "trace", skip_all)]
 async fn perform_credssp_step<S, N>(
-    connector: &mut ClientConnector,
+    connector: &mut dyn ConnectorCore,
     framed: &mut Framed<S>,
-    network_client: &mut N,
+    mut network_client: Option<&mut N>,
     buf: &mut WriteBuf,
     server_name: ServerName,
     server_public_key: Vec<u8>,
@@ -126,14 +147,13 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let selected_protocol = match connector.state {
-        ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
-        _ => return Err(general_err!("invalid connector state for CredSSP sequence")),
-    };
+    let selected_protocol = connector
+        .selected_protocol()
+        .ok_or_else(|| general_err!("CredSSP protocol not selected, cannot perform CredSSP step"))?;
 
-    let (mut sequence, mut ts_request) = CredsspSequence::init(
-        connector.config.credentials.clone(),
-        connector.config.domain.as_deref(),
+    let (mut sequence, mut ts_request) = connector.init_credssp(
+        connector.config().credentials.clone(),
+        connector.config().domain.as_deref(),
         selected_protocol,
         server_name,
         server_public_key,
@@ -143,8 +163,15 @@ where
     loop {
         let client_state = {
             let mut generator = sequence.process_ts_request(ts_request);
-            trace!("resolving network");
-            resolve_generator(&mut generator, network_client).await?
+
+            if let Some(network_client_ref) = network_client.as_deref_mut() {
+                trace!("resolving network");
+                resolve_generator(&mut generator, network_client_ref).await?
+            } else {
+                generator
+                    .resolve_to_result()
+                    .map_err(|e| custom_err!("resolve without network client", e))?
+            }
         }; // drop generator
 
         buf.clear();
@@ -164,7 +191,7 @@ where
         };
 
         debug!(
-            connector.state = connector.state.name(),
+            connector.state = connector.state().name(),
             hint = ?next_pdu_hint,
             "Wait for PDU"
         );

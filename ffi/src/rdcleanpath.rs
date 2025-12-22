@@ -29,7 +29,7 @@ pub mod ffi {
             let pcb_opt = if pcb.is_empty() { None } else { Some(pcb.to_owned()) };
 
             let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::new_request(
-                x224_pdu.to_vec(),
+                Some(x224_pdu.to_vec()),
                 destination.to_owned(),
                 proxy_auth.to_owned(),
                 pcb_opt,

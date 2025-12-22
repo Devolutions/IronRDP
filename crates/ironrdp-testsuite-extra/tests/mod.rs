@@ -212,17 +212,21 @@ where
                 let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
                 let server_public_key =
                     ironrdp_tls::extract_tls_server_public_key(&tls_cert).expect("extract server public key");
-                let connection_result = ironrdp_async::connect_finalize(
+                let credssp_finished = ironrdp_async::perform_credssp(
                     upgraded,
-                    connector,
+                    &mut connector,
                     &mut upgraded_framed,
-                    &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
                     "localhost".into(),
                     server_public_key.to_owned(),
+                    Some(&mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new()),
                     None,
                 )
                 .await
-                .expect("finalize connection");
+                .expect("perform CredSSP");
+                let connection_result =
+                    ironrdp_async::connect_finalize(credssp_finished, &mut upgraded_framed, connector)
+                        .await
+                        .expect("finalize connection");
 
                 let active_stage = ActiveStage::new(connection_result);
                 let (active_stage, mut upgraded_framed) = clientfn(active_stage, upgraded_framed, display_tx).await;

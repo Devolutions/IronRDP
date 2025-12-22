@@ -43,6 +43,7 @@ ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
 iron-remote-desktop.path = "../iron-remote-desktop"
+ironrdp-vmconnect.path = "../ironrdp-vmconnect"
 
 # WASM
 wasm-bindgen = "0.2"

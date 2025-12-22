@@ -55,6 +55,7 @@ ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
 ironrdp-cfg.path = "../ironrdp-cfg"
+ironrdp-vmconnect.path = "../ironrdp-vmconnect"
 
 # Windowing and rendering
 winit = { version = "0.30", features = ["rwh_06"] }
