@@ -2,7 +2,13 @@
     import { currentSession, setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import type { IronError, UserInteraction } from '../../../static/iron-remote-desktop';
     import type { Session } from '../../models/session';
-    import { preConnectionBlob, displayControl, kdcProxyUrl, init } from '../../../static/iron-remote-desktop-rdp';
+    import {
+        preConnectionBlob,
+        displayControl,
+        kdcProxyUrl,
+        init,
+        vmConnect,
+    } from '../../../static/iron-remote-desktop-rdp';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
     import { onMount } from 'svelte';
@@ -16,6 +22,7 @@
     let kdc_proxy_url = '';
     let desktopSize = { width: 1280, height: 720 };
     let pcb = '';
+    let vmconnect = '';
     let pop_up = false;
     let enable_clipboard = true;
 
@@ -119,6 +126,10 @@
             configBuilder.withExtension(preConnectionBlob(pcb));
         }
 
+        if (vmconnect !== '') {
+            configBuilder.withExtension(vmConnect(vmconnect));
+        }
+
         if (kdc_proxy_url !== '') {
             configBuilder.withExtension(kdcProxyUrl(kdc_proxy_url));
         }
@@ -171,6 +182,46 @@
     };
 
     onMount(async () => {
+        const envGateway = import.meta.env.VITE_IRON_GATEWAY_ADDRESS as string | undefined;
+        if (envGateway !== undefined && envGateway.trim() !== '') {
+            gatewayAddress = envGateway;
+        }
+
+        const envHostname = import.meta.env.VITE_IRON_HOSTNAME as string | undefined;
+        if (envHostname !== undefined && envHostname.trim() !== '') {
+            hostname = envHostname;
+        }
+
+        const envUsername = import.meta.env.VITE_IRON_USERNAME as string | undefined;
+        if (envUsername !== undefined && envUsername.trim() !== '') {
+            username = envUsername;
+        }
+
+        const envPassword = import.meta.env.VITE_IRON_PASSWORD as string | undefined;
+        if (envPassword !== undefined && envPassword.trim() !== '') {
+            password = envPassword;
+        }
+
+        const envDomain = import.meta.env.VITE_IRON_DOMAIN as string | undefined;
+        if (envDomain !== undefined && envDomain.trim() !== '') {
+            domain = envDomain;
+        }
+
+        const envKdcProxy = import.meta.env.VITE_IRON_KDC_PROXY_URL as string | undefined;
+        if (envKdcProxy !== undefined && envKdcProxy.trim() !== '') {
+            kdc_proxy_url = envKdcProxy;
+        }
+
+        const envPcb = import.meta.env.VITE_IRON_RDP_PCB as string | undefined;
+        if (envPcb !== undefined && envPcb.trim() !== '') {
+            pcb = envPcb;
+        }
+
+        const envVmconnect = import.meta.env.VITE_IRON_VMCONNECT_ID as string | undefined;
+        if (envVmconnect !== undefined && envVmconnect.trim() !== '') {
+            vmconnect = envVmconnect;
+        }
+
         await init('INFO');
     });
 </script>
@@ -211,6 +262,10 @@
                         <div class="field label border">
                             <input id="pcb" type="text" bind:value={pcb} />
                             <label for="pcb">Pre Connection Blob</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="vmconnect" type="text" bind:value={vmconnect} />
+                            <label for="vmconnect">HyperV VmConnect ID</label>
                         </div>
                         <div class="field label border">
                             <input id="desktopSizeW" type="text" bind:value={desktopSize.width} />

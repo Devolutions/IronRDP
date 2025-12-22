@@ -1,0 +1,25 @@
+[package]
+name = "ironrdp-vmconnect"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", features = [
+    "std",
+] } # public
+
+arbitrary = { version = "1", features = ["derive"], optional = true } # public
+tracing = { version = "0.1", features = ["log"] }
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.8" } # public
+
+sspi = "0.18" # public
+
+[lints]
+workspace = true

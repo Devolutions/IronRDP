@@ -18,18 +18,20 @@ use core::fmt;
 use std::sync::Arc;
 
 use ironrdp_core::{encode_buf, encode_vec, Encode, WriteBuf};
-use ironrdp_pdu::nego::NegoRequestData;
+use ironrdp_pdu::nego::{NegoRequestData, SecurityProtocol};
 use ironrdp_pdu::rdp::capability_sets::{self, BitmapCodecs};
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{gcc, x224, PduHint};
 pub use sspi;
+use sspi::credssp::TsRequest;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use self::connection::{encode_send_data_request, ClientConnector, ClientConnectorState, ConnectionResult};
 pub use self::connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 pub use self::license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use self::server_name::ServerName;
+use crate::credssp::{CredsspSequenceTrait, KerberosConfig};
 pub use crate::license_exchange::LicenseCache;
 
 /// Provides user-friendly error messages for RDP negotiation failures
@@ -432,4 +434,40 @@ where
     let written = encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
+}
+
+pub trait SecurityConnector {
+    fn should_perform_security_upgrade(&self) -> bool;
+
+    fn mark_security_upgrade_as_done(&mut self);
+
+    fn should_perform_credssp(&self) -> bool;
+
+    fn selected_protocol(&self) -> Option<SecurityProtocol>;
+
+    fn mark_credssp_as_done(&mut self);
+
+    fn config(&self) -> &Config;
+}
+
+pub trait CredsspSequenceFactory {
+    fn init_credssp(
+        &self,
+        credentials: Credentials,
+        domain: Option<&str>,
+        protocol: SecurityProtocol,
+        server_name: ServerName,
+        server_public_key: Vec<u8>,
+        kerberos_config: Option<KerberosConfig>,
+    ) -> ConnectorResult<(Box<dyn CredsspSequenceTrait>, TsRequest)>;
+}
+
+pub trait ConnectorCore: Sequence + SecurityConnector + CredsspSequenceFactory + Any {
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
+impl<T: Sequence + SecurityConnector + CredsspSequenceFactory + 'static> ConnectorCore for T {
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
 }

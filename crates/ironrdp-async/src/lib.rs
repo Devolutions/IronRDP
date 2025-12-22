@@ -8,13 +8,14 @@ pub use bytes;
 mod connector;
 mod framed;
 mod session;
+mod vmconnector;
 
 use ironrdp_connector::sspi::generator::NetworkRequest;
 use ironrdp_connector::ConnectorResult;
 
 pub use self::connector::*;
 pub use self::framed::*;
-// pub use self::session::*;
+pub use self::vmconnector::*;
 
 pub trait NetworkClient {
     fn send(&mut self, network_request: &NetworkRequest) -> impl Future<Output = ConnectorResult<Vec<u8>>>;

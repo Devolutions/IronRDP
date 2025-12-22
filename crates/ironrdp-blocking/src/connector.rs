@@ -1,12 +1,12 @@
 use std::io::{Read, Write};
 
-use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, KerberosConfig};
+use ironrdp_connector::credssp::{CredsspProcessGenerator, KerberosConfig};
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::sspi::network_client::NetworkClient;
 use ironrdp_connector::{
-    general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
-    Sequence as _, ServerName, State as _,
+    general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorCore, ConnectorError,
+    ConnectorResult, CredsspSequenceFactory as _, SecurityConnector, Sequence, ServerName,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
@@ -17,7 +17,7 @@ use crate::framed::Framed;
 pub struct ShouldUpgrade;
 
 #[instrument(skip_all)]
-pub fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut ClientConnector) -> ConnectorResult<ShouldUpgrade>
+pub fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut dyn ConnectorCore) -> ConnectorResult<ShouldUpgrade>
 where
     S: Sync + Read + Write,
 {
@@ -35,7 +35,7 @@ where
 /// # Panics
 ///
 /// Panics if connector state is not [ClientConnectorState::EnhancedSecurityUpgrade].
-pub fn skip_connect_begin(connector: &mut ClientConnector) -> ShouldUpgrade {
+pub fn skip_connect_begin(connector: &mut dyn SecurityConnector) -> ShouldUpgrade {
     assert!(connector.should_perform_security_upgrade());
     ShouldUpgrade
 }
@@ -44,7 +44,7 @@ pub fn skip_connect_begin(connector: &mut ClientConnector) -> ShouldUpgrade {
 pub struct Upgraded;
 
 #[instrument(skip_all)]
-pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector) -> Upgraded {
+pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut dyn SecurityConnector) -> Upgraded {
     trace!("Marked as upgraded");
     connector.mark_security_upgrade_as_done();
     Upgraded
@@ -131,14 +131,13 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let selected_protocol = match connector.state {
-        ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
-        _ => return Err(general_err!("invalid connector state for CredSSP sequence")),
-    };
+    let selected_protocol = connector
+        .selected_protocol()
+        .ok_or_else(|| general_err!("CredSSP protocol not selected, cannot perform CredSSP step"))?;
 
-    let (mut sequence, mut ts_request) = CredsspSequence::init(
-        connector.config.credentials.clone(),
-        connector.config.domain.as_deref(),
+    let (mut sequence, mut ts_request) = connector.init_credssp(
+        connector.config().credentials.clone(),
+        connector.config().domain.as_deref(),
         selected_protocol,
         server_name,
         server_public_key,
@@ -167,7 +166,7 @@ where
         };
 
         debug!(
-            connector.state = connector.state.name(),
+            connector.state = connector.state().name(),
             hint = ?next_pdu_hint,
             "Wait for PDU"
         );
@@ -192,7 +191,7 @@ where
 
 pub fn single_sequence_step<S>(
     framed: &mut Framed<S>,
-    connector: &mut ClientConnector,
+    connector: &mut dyn Sequence,
     buf: &mut WriteBuf,
 ) -> ConnectorResult<()>
 where
@@ -202,7 +201,7 @@ where
 
     let written = if let Some(next_pdu_hint) = connector.next_pdu_hint() {
         debug!(
-            connector.state = connector.state.name(),
+            connector.state = connector.state().name(),
             hint = ?next_pdu_hint,
             "Wait for PDU"
         );
