@@ -577,6 +577,10 @@ async fn active_session(
                                     Some(cliprdr.request_file_contents(request)
                                         .map_err(|e| session::custom_err!("CLIPRDR", e))?)
                                 }
+                                ClipboardMessage::SendFileContentsResponse(response) => {
+                                    Some(cliprdr.submit_file_contents(response)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
+                                }
                                 ClipboardMessage::Error(e) => {
                                     error!("Clipboard backend error: {}", e);
                                     None

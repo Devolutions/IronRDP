@@ -557,6 +557,7 @@ impl RdpServer {
                             cliprdr.unlock_clipboard(clip_data_id)
                         }
                         ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
+                        ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
                         ClipboardMessage::Error(error) => {
                             error!(?error, "Handling clipboard event");
                             continue;
