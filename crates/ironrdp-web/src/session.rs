@@ -526,6 +526,14 @@ impl iron_remote_desktop::Session for Session {
                                         cliprdr.initiate_paste(format)
                                             .context("CLIPRDR initiate paste")?
                                     ),
+                                    ClipboardMessage::SendLockClipboard { clip_data_id } => Some(
+                                        cliprdr.lock_clipboard(clip_data_id)
+                                            .context("CLIPRDR lock clipboard")?
+                                    ),
+                                    ClipboardMessage::SendUnlockClipboard { clip_data_id } => Some(
+                                        cliprdr.unlock_clipboard(clip_data_id)
+                                            .context("CLIPRDR unlock clipboard")?
+                                    ),
                                     ClipboardMessage::Error(e) => {
                                         error!("Clipboard backend error: {}", e);
                                         None
