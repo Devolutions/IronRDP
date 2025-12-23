@@ -33,6 +33,21 @@ pub enum ClipboardMessage {
     /// received.
     SendInitiatePaste(ClipboardFormatId),
 
+    /// Sent by clipboard backend when clipboard data should be locked on the remote.
+    ///
+    /// Implementation should send lock clipboard data PDU on `CLIPRDR` SVC when received.
+    SendLockClipboard { clip_data_id: u32 },
+
+    /// Sent by clipboard backend when clipboard data should be unlocked on the remote.
+    ///
+    /// Implementation should send unlock clipboard data PDU on `CLIPRDR` SVC when received.
+    SendUnlockClipboard { clip_data_id: u32 },
+
+    /// Sent by clipboard backend when file contents are needed from the remote.
+    ///
+    /// Implementation should send file contents request on `CLIPRDR` SVC when received.
+    SendFileContentsRequest(FileContentsRequest),
+
     /// Failure received from the OS clipboard event loop.
     ///
     /// Client implementation should log/display this error.

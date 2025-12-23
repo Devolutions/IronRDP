@@ -565,6 +565,18 @@ async fn active_session(
                                     Some(cliprdr.initiate_paste(format)
                                         .map_err(|e| session::custom_err!("CLIPRDR", e))?)
                                 }
+                                ClipboardMessage::SendLockClipboard { clip_data_id } => {
+                                    Some(cliprdr.lock_clipboard(clip_data_id)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
+                                }
+                                ClipboardMessage::SendUnlockClipboard { clip_data_id } => {
+                                    Some(cliprdr.unlock_clipboard(clip_data_id)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
+                                }
+                                ClipboardMessage::SendFileContentsRequest(request) => {
+                                    Some(cliprdr.request_file_contents(request)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
+                                }
                                 ClipboardMessage::Error(e) => {
                                     error!("Clipboard backend error: {}", e);
                                     None
