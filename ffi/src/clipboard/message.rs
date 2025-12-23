@@ -14,6 +14,18 @@ pub mod ffi {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendInitiatePaste(_) => {
                     ClipboardMessageType::SendInitiatePaste
                 }
+                ironrdp::cliprdr::backend::ClipboardMessage::SendLockClipboard { .. } => {
+                    ClipboardMessageType::SendLockClipboard
+                }
+                ironrdp::cliprdr::backend::ClipboardMessage::SendUnlockClipboard { .. } => {
+                    ClipboardMessageType::SendUnlockClipboard
+                }
+                ironrdp::cliprdr::backend::ClipboardMessage::SendFileContentsRequest(_) => {
+                    ClipboardMessageType::SendFileContentsRequest
+                }
+                ironrdp::cliprdr::backend::ClipboardMessage::SendFileContentsResponse(_) => {
+                    ClipboardMessageType::SendFileContentsResponse
+                }
                 ironrdp::cliprdr::backend::ClipboardMessage::Error(_) => ClipboardMessageType::Error,
             }
         }
@@ -51,6 +63,10 @@ pub mod ffi {
         SendInitiateCopy,
         SendFormatData,
         SendInitiatePaste,
+        SendLockClipboard,
+        SendUnlockClipboard,
+        SendFileContentsRequest,
+        SendFileContentsResponse,
         Error,
     }
 
