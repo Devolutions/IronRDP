@@ -15,8 +15,8 @@ use ironrdp_svc::{
 };
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
-    ClipboardPdu, ClipboardProtocolVersion, FileContentsResponse, FormatDataRequest, FormatListResponse, LockDataId,
-    OwnedFormatDataResponse,
+    ClipboardPdu, ClipboardProtocolVersion, FileContentsRequest, FileContentsResponse, FormatDataRequest,
+    FormatListResponse, LockDataId, OwnedFormatDataResponse,
 };
 use tracing::{error, info};
 
@@ -300,6 +300,20 @@ impl<R: Role> Cliprdr<R> {
         ready_guard!(self, unlock_clipboard);
 
         let pdu = ClipboardPdu::UnlockData(LockDataId(clip_data_id));
+        Ok(vec![into_cliprdr_message(pdu)].into())
+    }
+
+    /// [2.2.5.3] File Contents Request PDU (CLIPRDR_FILECONTENTS_REQUEST)
+    ///
+    /// Requests file contents from the Shared Clipboard Owner. Should be called when
+    /// the Local Clipboard Owner needs file data after receiving a file list format.
+    /// The remote will respond via [`CliprdrBackend::on_file_contents_response`].
+    ///
+    /// [2.2.5.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/cbc851d3-4e68-45f4-9292-26872a9209f2
+    pub fn request_file_contents(&self, request: FileContentsRequest) -> PduResult<CliprdrSvcMessages<R>> {
+        ready_guard!(self, request_file_contents);
+
+        let pdu = ClipboardPdu::FileContentsRequest(request);
         Ok(vec![into_cliprdr_message(pdu)].into())
     }
 }
