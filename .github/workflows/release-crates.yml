@@ -1,9 +1,5 @@
 name: Release crates
 
-permissions:
-  pull-requests: write
-  contents: write
-
 on:
   workflow_dispatch:
   push:
@@ -68,12 +64,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 512
 
       - name: Authenticate with crates.io
         id: auth

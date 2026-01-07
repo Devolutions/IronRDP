@@ -17,8 +17,8 @@ test = false
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6" } # public
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.5" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.5" } # public
 nix = { version = "0.30", features = ["fs", "dir"] }
 tracing = { version = "0.1", features = ["log"] }

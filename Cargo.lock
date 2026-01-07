@@ -2413,7 +2413,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-ainput"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bitflags 2.10.0",
  "ironrdp-core",
@@ -2557,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -2579,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc-pipe-proxy"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "ironrdp-core",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-input"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bitvec",
  "ironrdp-pdu",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bit_field",
  "bitflags 2.10.0",
@@ -2740,7 +2740,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bitflags 2.10.0",
  "ironrdp-core",
@@ -2751,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd-native"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2815,7 +2815,7 @@ version = "0.0.0"
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bitflags 2.10.0",
  "ironrdp-core",
