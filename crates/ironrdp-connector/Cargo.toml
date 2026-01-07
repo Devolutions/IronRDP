@@ -22,10 +22,10 @@ qoi = ["ironrdp-pdu/qoi"]
 qoiz = ["ironrdp-pdu/qoiz"]
 
 [dependencies]
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.5" } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", features = ["std"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7", features = ["std"] } # public
 arbitrary = { version = "1", features = ["derive"], optional = true } # public
 sspi = { version = "0.18", features = ["scard"] }
 url = "2.5" # public

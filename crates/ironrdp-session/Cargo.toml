@@ -23,12 +23,12 @@ qoiz = ["dep:zstd-safe", "qoi"]
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.8" } # public # TODO: at some point, this dependency could be removed (good for compilation speed)
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.5" } # public
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.4" } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.5" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.7" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", features = ["std"] } # public
-ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.4" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7", features = ["std"] } # public
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.5" }
 tracing = { version = "0.1", features = ["log"] }
 qoicoubeh = { version = "0.5", optional = true }
 zstd-safe = { version = "7.2", optional = true, features = ["std"] }

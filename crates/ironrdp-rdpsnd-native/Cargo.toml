@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpsnd-native"
-version = "0.4.2"
+version = "0.5.0"
 description = "Native RDPSND static channel backend implementations for IronRDP"
 edition.workspace = true
 license.workspace = true
@@ -22,7 +22,7 @@ opus = ["dep:opus2", "dep:bytemuck"]
 anyhow = "1"
 bytemuck = { version = "1.24", optional = true }
 cpal = "0.16"
-ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.6" } # public
+ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.7" } # public
 opus2 = { version = "0.3", optional = true, features = ["bundled"] }
 tracing = { version = "0.1", features = ["log"] }
 

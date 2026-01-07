@@ -20,7 +20,7 @@ bit_field = "0.10"
 bitflags = "2.9"
 bitvec = "1.0"
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.6", features = ["std"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7", features = ["std"] } # public
 byteorder = "1.5" # TODO: remove
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
