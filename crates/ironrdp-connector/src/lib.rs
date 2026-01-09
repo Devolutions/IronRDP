@@ -406,7 +406,8 @@ pub trait ConnectorResultExt {
 impl<T> ConnectorResultExt for ConnectorResult<T> {
     fn with_context(self, context: &'static str) -> Self {
         self.map_err(|mut e| {
-            e.set_context(context);
+            e.context = context;
+            // e.set_context(context);
             e
         })
     }
