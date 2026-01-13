@@ -534,6 +534,10 @@ impl iron_remote_desktop::Session for Session {
                                         cliprdr.unlock_clipboard(clip_data_id)
                                             .context("CLIPRDR unlock clipboard")?
                                     ),
+                                    ClipboardMessage::SendFileContentsRequest(request) => Some(
+                                        cliprdr.request_file_contents(request)
+                                            .context("CLIPRDR request file contents")?
+                                    ),
                                     ClipboardMessage::Error(e) => {
                                         error!("Clipboard backend error: {}", e);
                                         None
