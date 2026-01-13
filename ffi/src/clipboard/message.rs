@@ -23,6 +23,9 @@ pub mod ffi {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendFileContentsRequest(_) => {
                     ClipboardMessageType::SendFileContentsRequest
                 }
+                ironrdp::cliprdr::backend::ClipboardMessage::SendFileContentsResponse(_) => {
+                    ClipboardMessageType::SendFileContentsResponse
+                }
                 ironrdp::cliprdr::backend::ClipboardMessage::Error(_) => ClipboardMessageType::Error,
             }
         }
@@ -63,6 +66,7 @@ pub mod ffi {
         SendLockClipboard,
         SendUnlockClipboard,
         SendFileContentsRequest,
+        SendFileContentsResponse,
         Error,
     }
 
