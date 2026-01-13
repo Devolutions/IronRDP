@@ -203,7 +203,7 @@ impl DecodeStream {
         let mut rx = RxBuffer::new(rx);
         let config = StreamConfig {
             channels: rx_format.n_channels,
-            sample_rate: cpal::SampleRate(rx_format.n_samples_per_sec),
+            sample_rate: rx_format.n_samples_per_sec,
             buffer_size: cpal::BufferSize::Default,
         };
         debug!(?config);
