@@ -1,6 +1,7 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![cfg_attr(not(feature = "std"), no_std)]
+#![expect(clippy::partial_pub_fields)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -23,8 +24,8 @@ impl<T> Source for T where T: fmt::Display + fmt::Debug + Send + Sync + 'static 
 
 #[derive(Debug)]
 pub struct Error<Kind> {
-    context: &'static str,
-    kind: Kind,
+    pub context: &'static str,
+    pub kind: Kind,
     #[cfg(feature = "std")]
     source: Option<Box<dyn core::error::Error + Sync + Send>>,
     #[cfg(all(not(feature = "std"), feature = "alloc"))]
@@ -78,10 +79,6 @@ impl<Kind> Error<Kind> {
 
     pub fn kind(&self) -> &Kind {
         &self.kind
-    }
-
-    pub fn set_context(&mut self, context: &'static str) {
-        self.context = context;
     }
 
     pub fn report(&self) -> ErrorReport<'_, Kind> {
