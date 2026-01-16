@@ -32,6 +32,3 @@ publish_no_verify = true
 [[package]]
 name = "ironrdp-cliprdr-native"
 publish_no_verify = true
-
-[changelog]
-protect_breaking_commits = true # Always include commits with breaking changes in the changelog.
