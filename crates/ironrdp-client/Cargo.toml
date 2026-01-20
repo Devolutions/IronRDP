@@ -77,7 +77,7 @@ transport = { git = "https://github.com/Devolutions/devolutions-gateway", rev = 
 futures-util = { version = "0.3", features = ["sink"] }
 
 # Utils
-whoami = "1.6"
+whoami = "2.0"
 anyhow = "1"
 smallvec = "1.15"
 tap = "1"

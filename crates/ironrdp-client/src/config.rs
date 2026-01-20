@@ -442,14 +442,14 @@ impl Config {
                 .map_or(0, |version| version.major * 100 + version.minor * 10 + version.patch)
                 .pipe(u32::try_from)
                 .context("cargo package version")?,
-            client_name: whoami::fallible::hostname().unwrap_or_else(|_| "ironrdp".to_owned()),
+            client_name: whoami::hostname().unwrap_or_else(|_| "ironrdp".to_owned()),
             // NOTE: hardcode this value like in freerdp
             // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
             client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
             platform: match whoami::platform() {
                 whoami::Platform::Windows => MajorPlatformType::WINDOWS,
                 whoami::Platform::Linux => MajorPlatformType::UNIX,
-                whoami::Platform::MacOS => MajorPlatformType::MACINTOSH,
+                whoami::Platform::Mac => MajorPlatformType::MACINTOSH,
                 whoami::Platform::Ios => MajorPlatformType::IOS,
                 whoami::Platform::Android => MajorPlatformType::ANDROID,
                 _ => MajorPlatformType::UNSPECIFIED,
