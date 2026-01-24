@@ -284,9 +284,15 @@ pub trait RdpServerDisplayUpdates {
 #[async_trait::async_trait]
 pub trait RdpServerDisplay: Send {
     /// This method should return the current size of the display.
-    /// Currently, there is no way for the client to negotiate resolution,
-    /// so the size returned by this method will be enforced.
     async fn size(&mut self) -> DesktopSize;
+
+    /// Request an initial size for the display.
+    ///
+    /// This method should return the negotiated display size.
+    async fn request_initial_size(&mut self, client_size: DesktopSize) -> DesktopSize {
+        debug!(?client_size, "Requesting initial size");
+        self.size().await
+    }
 
     /// Return a display updates receiver
     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>>;

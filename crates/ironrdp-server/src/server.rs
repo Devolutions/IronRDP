@@ -736,7 +736,7 @@ impl RdpServer {
                         width: b.desktop_width,
                         height: b.desktop_height,
                     };
-                    let display_size = self.display.lock().await.size().await;
+                    let display_size = self.display.lock().await.request_initial_size(client_size).await;
 
                     // It's problematic when the client didn't resize, as we send bitmap updates that don't fit.
                     // The client will likely drop the connection.
