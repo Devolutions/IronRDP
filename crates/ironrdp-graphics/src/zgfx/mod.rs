@@ -2,6 +2,9 @@
 
 mod circular_buffer;
 mod control_messages;
+mod wrapper;
+
+pub use wrapper::{wrap_compressed, wrap_uncompressed};
 
 use std::io::{self, Write as _};
 use std::sync::LazyLock;
