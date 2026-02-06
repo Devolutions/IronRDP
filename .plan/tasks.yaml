@@ -271,11 +271,12 @@ tasks:
       - TASK-009
       - TASK-011
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "6 round-trip tests: small RDP4/RDP5 (49B bells), medium RDP5 (386B island), large RDP5 (6.5KB), 16KB pattern RDP4/RDP5"
+    files_affected:
+      - crates/ironrdp-bulk/src/mppc/mod.rs
     estimated_hours: 1
 
   # Phase 5: XCRUSH Decompression

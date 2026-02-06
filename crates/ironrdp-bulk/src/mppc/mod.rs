@@ -846,4 +846,102 @@ mod tests {
             "MppcCompressBufferRdp5: output mismatch"
         );
     }
+
+    // ========================
+    // Round-trip tests
+    // ========================
+
+    /// Helper: compress data, then decompress, and assert the round-trip matches.
+    fn assert_roundtrip(compression_level: u32, input: &[u8], label: &str) {
+        let mut compressor = MppcContext::new(compression_level, true);
+        let mut compressed_buf = vec![0u8; 65536];
+
+        let (compressed_size, compress_flags) = compressor
+            .compress(input, &mut compressed_buf)
+            .unwrap_or_else(|e| panic!("{label}: compress failed: {e:?}"));
+
+        // If flushed without compression, the caller would send the data uncompressed.
+        // For round-trip validation, we require actual compression.
+        assert!(
+            compress_flags & flags::PACKET_COMPRESSED != 0,
+            "{label}: expected PACKET_COMPRESSED, got flags=0x{compress_flags:08X}"
+        );
+        assert!(
+            compressed_size < input.len(),
+            "{label}: compressed size ({compressed_size}) should be smaller than input ({})",
+            input.len()
+        );
+
+        let mut decompressor = MppcContext::new(compression_level, false);
+        let decompressed = decompressor
+            .decompress(&compressed_buf[..compressed_size], compress_flags)
+            .unwrap_or_else(|e| panic!("{label}: decompress failed: {e:?}"));
+
+        assert_eq!(
+            decompressed.len(),
+            input.len(),
+            "{label}: round-trip size mismatch: decompressed={}, original={}",
+            decompressed.len(),
+            input.len()
+        );
+        assert_eq!(decompressed, input, "{label}: round-trip data mismatch");
+    }
+
+    /// Round-trip test: small text input with RDP4.
+    #[test]
+    fn test_roundtrip_small_rdp4() {
+        // The "bells" test string (49 bytes) — has repetition
+        assert_roundtrip(0, test_data::TEST_MPPC_BELLS, "roundtrip_small_rdp4");
+    }
+
+    /// Round-trip test: small text input with RDP5.
+    #[test]
+    fn test_roundtrip_small_rdp5() {
+        assert_roundtrip(1, test_data::TEST_MPPC_BELLS, "roundtrip_small_rdp5");
+    }
+
+    /// Round-trip test: medium text input (~386 bytes) with RDP5.
+    #[test]
+    fn test_roundtrip_medium_rdp5() {
+        assert_roundtrip(1, test_data::TEST_ISLAND_DATA, "roundtrip_medium_rdp5");
+    }
+
+    /// Round-trip test: large binary input (~6.5 KB) with RDP5.
+    #[test]
+    fn test_roundtrip_large_rdp5() {
+        assert_roundtrip(
+            1,
+            test_data::TEST_RDP5_UNCOMPRESSED_DATA,
+            "roundtrip_large_rdp5",
+        );
+    }
+
+    /// Round-trip test: ~16 KB repetitive pattern with RDP5.
+    ///
+    /// Uses a synthetic pattern that exercises match extension.
+    #[test]
+    fn test_roundtrip_16kb_pattern_rdp5() {
+        // Create a 16KB buffer with a repeating pattern
+        let pattern = b"The quick brown fox jumps over the lazy dog. ";
+        let mut data = Vec::with_capacity(16384);
+        while data.len() < 16384 {
+            let remaining = 16384 - data.len();
+            let chunk = core::cmp::min(remaining, pattern.len());
+            data.extend_from_slice(&pattern[..chunk]);
+        }
+        assert_roundtrip(1, &data, "roundtrip_16kb_pattern_rdp5");
+    }
+
+    /// Round-trip test: ~16 KB repetitive pattern with RDP4.
+    #[test]
+    fn test_roundtrip_16kb_pattern_rdp4() {
+        let pattern = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ";
+        let mut data = Vec::with_capacity(8000);
+        while data.len() < 8000 {
+            let remaining = 8000 - data.len();
+            let chunk = core::cmp::min(remaining, pattern.len());
+            data.extend_from_slice(&pattern[..chunk]);
+        }
+        assert_roundtrip(0, &data, "roundtrip_16kb_pattern_rdp4");
+    }
 }
