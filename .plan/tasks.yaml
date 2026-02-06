@@ -143,11 +143,13 @@ tasks:
     dependencies:
       - TASK-003
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "Also includes RDP4/RDP5 history masks"
+    files_affected:
+      - "crates/ironrdp-bulk/src/mppc/mod.rs"
+      - "crates/ironrdp-bulk/src/mppc/tables.rs"
     estimated_hours: 0.5
 
   - id: TASK-008

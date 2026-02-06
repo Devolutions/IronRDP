@@ -103,7 +103,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 1 day
 
 **Tasks**:
-- [ ] **TASK-007**: Port MPPC constants and lookup tables
+- [x] **TASK-007**: Port MPPC constants and lookup tables
   - **Acceptance Criteria**: `MPPC_MATCH_TABLE` and related constants defined
   - **Dependencies**: TASK-003
   - **Risk**: Low
