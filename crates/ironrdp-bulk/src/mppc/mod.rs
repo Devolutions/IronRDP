@@ -7,7 +7,7 @@ pub(crate) mod tables;
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 
-use crate::bitstream::BitStreamReader;
+use crate::bitstream::{BitStreamReader, BitStreamWriter};
 use crate::error::BulkError;
 use crate::flags;
 
@@ -330,6 +330,274 @@ impl MppcContext {
         self.history_ptr = history_ptr;
 
         Ok(&self.history_buffer[output_start..output_end])
+    }
+
+    /// Compresses data using MPPC (LZ77 with 3-byte hash matching).
+    ///
+    /// Ported from FreeRDP's `mppc_compress`.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_data` — input data to compress.
+    /// * `output_buffer` — caller-provided buffer for compressed output
+    ///   (should be at least `src_data.len()` bytes).
+    ///
+    /// # Returns
+    ///
+    /// `Ok((output_size, flags))`:
+    /// - If `flags & PACKET_COMPRESSED != 0`: compressed data is in
+    ///   `output_buffer[..output_size]`.
+    /// - If `flags & PACKET_FLUSHED != 0` and `flags & PACKET_COMPRESSED == 0`:
+    ///   compression overflowed; caller should send `src_data` uncompressed
+    ///   with the returned flags. `output_size` equals `src_data.len()`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "bit manipulation and index arithmetic matching FreeRDP's C code; \
+                  values are bounded: local_ptr fits u16 (max 65535), \
+                  copy_offset and length_of_match fit u32"
+    )]
+    pub(crate) fn compress(
+        &mut self,
+        src_data: &[u8],
+        output_buffer: &mut [u8],
+    ) -> Result<(usize, u32), BulkError> {
+        let history_buffer_size = self.history_buffer_size;
+        let compression_level = self.compression_level;
+        let mut history_offset = self.history_offset;
+        let mut result_flags: u32 = 0;
+        let mut packet_flushed = false;
+
+        // Determine whether the history buffer has room for this data.
+        // If not (or first call), reset to position 0.
+        let packet_at_front = if history_offset != 0
+            && (history_offset + src_data.len()) < history_buffer_size.saturating_sub(3)
+        {
+            false
+        } else {
+            // Sentinel value from reset(flush=true) means prior call flushed
+            if history_offset == history_buffer_size + 1 {
+                packet_flushed = true;
+            }
+            history_offset = 0;
+            true
+        };
+
+        let mut local_ptr = history_offset; // local write position in history buffer
+
+        // Cap destination size: compressed output should not exceed source size
+        let dst_size = core::cmp::min(output_buffer.len(), src_data.len());
+
+        if src_data.is_empty() || dst_size == 0 {
+            result_flags |= flags::PACKET_COMPRESSED | compression_level;
+            if packet_at_front {
+                result_flags |= flags::PACKET_AT_FRONT;
+            }
+            if packet_flushed {
+                result_flags |= flags::PACKET_FLUSHED;
+            }
+            self.history_ptr = local_ptr;
+            self.history_offset = local_ptr;
+            return Ok((0, result_flags));
+        }
+
+        let mut bs = BitStreamWriter::new(&mut output_buffer[..dst_size]);
+
+        let src_len = src_data.len();
+        let mut src_idx: usize = 0;
+
+        // --- Main compression loop ---
+        // Need at least 3 lookahead bytes for hash matching.
+        // C: while (pSrcPtr < (pSrcEnd - 2))  where pSrcEnd = &pSrcData[SrcSize-1]
+        while src_idx + 3 < src_len {
+            let sym1 = src_data[src_idx];
+            let sym2 = src_data[src_idx + 1];
+            let sym3 = src_data[src_idx + 2];
+
+            // Copy Sym1 to history and advance
+            self.history_buffer[local_ptr] = sym1;
+            local_ptr += 1;
+            src_idx += 1;
+
+            // Hash the 3-byte window
+            let match_index = tables::mppc_match_index(sym1, sym2, sym3);
+            let match_pos = self.match_buffer[match_index] as usize;
+
+            // Update hash table if it doesn't already point here
+            if match_pos != local_ptr - 1 {
+                self.match_buffer[match_index] = local_ptr as u16;
+            }
+
+            // Update high-water mark
+            if self.history_ptr < local_ptr {
+                self.history_ptr = local_ptr;
+            }
+
+            // Validate the match (order matters: check match_pos == 0 first to avoid underflow)
+            let no_match = match_pos == 0
+                || match_pos == local_ptr - 1
+                || match_pos == local_ptr
+                || match_pos + 1 > self.history_ptr
+                || self.history_buffer[match_pos - 1] != sym1
+                || self.history_buffer[match_pos] != sym2
+                || self.history_buffer[match_pos + 1] != sym3;
+
+            if no_match {
+                // --- Encode as literal ---
+
+                // Overflow check: literal needs at most 9 bits (~2 bytes)
+                if (bs.bits_written() / 8) + 2 > dst_size - 1 {
+                    self.reset(true);
+                    return Ok((
+                        src_data.len(),
+                        flags::PACKET_FLUSHED | compression_level,
+                    ));
+                }
+
+                let accumulator = u32::from(sym1);
+                if accumulator < 0x80 {
+                    // 8 bits: literal as-is
+                    bs.write_bits(accumulator, 8);
+                } else {
+                    // 9 bits: prefix 10 + lower 7 bits
+                    bs.write_bits(0x100 | (accumulator & 0x7F), 9);
+                }
+            } else {
+                // --- Found a match ---
+
+                let copy_offset =
+                    (history_buffer_size - 1) & local_ptr.wrapping_sub(match_pos);
+
+                // Copy Sym2, Sym3 to history
+                self.history_buffer[local_ptr] = sym2;
+                local_ptr += 1;
+                self.history_buffer[local_ptr] = sym3;
+                local_ptr += 1;
+                src_idx += 2;
+
+                let mut length_of_match: usize = 3;
+                let mut match_ptr = match_pos + 2;
+
+                // Extend match (up to but not including the last source byte)
+                while src_idx < src_len - 1
+                    && match_ptr <= self.history_ptr
+                    && src_data[src_idx] == self.history_buffer[match_ptr]
+                {
+                    self.history_buffer[local_ptr] = src_data[src_idx];
+                    local_ptr += 1;
+                    src_idx += 1;
+                    match_ptr += 1;
+                    length_of_match += 1;
+                }
+
+                // Overflow check: match encoding can use up to ~51 bits (~7 bytes)
+                if (bs.bits_written() / 8) + 7 > dst_size - 1 {
+                    self.reset(true);
+                    return Ok((
+                        src_data.len(),
+                        flags::PACKET_FLUSHED | compression_level,
+                    ));
+                }
+
+                // --- Encode CopyOffset ---
+                let co = copy_offset as u32;
+                if compression_level != 0 {
+                    // RDP5
+                    if copy_offset < 64 {
+                        bs.write_bits(0x07C0 | (co & 0x003F), 11);
+                    } else if copy_offset < 320 {
+                        bs.write_bits(0x1E00 | ((co - 64) & 0x00FF), 13);
+                    } else if copy_offset < 2368 {
+                        bs.write_bits(0x7000 | ((co - 320) & 0x07FF), 15);
+                    } else {
+                        bs.write_bits(0x060000 | ((co - 2368) & 0xFFFF), 19);
+                    }
+                } else {
+                    // RDP4
+                    if copy_offset < 64 {
+                        bs.write_bits(0x03C0 | (co & 0x003F), 10);
+                    } else if copy_offset < 320 {
+                        bs.write_bits(0x0E00 | ((co - 64) & 0x00FF), 12);
+                    } else if copy_offset < 8192 {
+                        bs.write_bits(0xC000 | ((co - 320) & 0x1FFF), 16);
+                    }
+                }
+
+                // --- Encode LengthOfMatch ---
+                let lom = length_of_match as u32;
+                if length_of_match == 3 {
+                    bs.write_bits(0, 1);
+                } else if length_of_match < 8 {
+                    bs.write_bits(0x0008 | (lom & 0x0003), 4);
+                } else if length_of_match < 16 {
+                    bs.write_bits(0x0030 | (lom & 0x0007), 6);
+                } else if length_of_match < 32 {
+                    bs.write_bits(0x00E0 | (lom & 0x000F), 8);
+                } else if length_of_match < 64 {
+                    bs.write_bits(0x03C0 | (lom & 0x001F), 10);
+                } else if length_of_match < 128 {
+                    bs.write_bits(0x0F80 | (lom & 0x003F), 12);
+                } else if length_of_match < 256 {
+                    bs.write_bits(0x3F00 | (lom & 0x007F), 14);
+                } else if length_of_match < 512 {
+                    bs.write_bits(0xFE00 | (lom & 0x00FF), 16);
+                } else if length_of_match < 1024 {
+                    bs.write_bits(0x3FC00 | (lom & 0x01FF), 18);
+                } else if length_of_match < 2048 {
+                    bs.write_bits(0xFF800 | (lom & 0x03FF), 20);
+                } else if length_of_match < 4096 {
+                    bs.write_bits(0x3FF000 | (lom & 0x07FF), 22);
+                } else if length_of_match < 8192 {
+                    bs.write_bits(0xFFE000 | (lom & 0x0FFF), 24);
+                } else if length_of_match < 16384 && compression_level != 0 {
+                    bs.write_bits(0x3FFC000 | (lom & 0x1FFF), 26);
+                } else if length_of_match < 32768 && compression_level != 0 {
+                    bs.write_bits(0xFFF8000 | (lom & 0x3FFF), 28);
+                } else if length_of_match < 65536 && compression_level != 0 {
+                    bs.write_bits(0x3FFF0000 | (lom & 0x7FFF), 30);
+                }
+            }
+        }
+
+        // --- Encode trailing symbols as literals ---
+        while src_idx < src_len {
+            if (bs.bits_written() / 8) + 2 > dst_size - 1 {
+                self.reset(true);
+                return Ok((
+                    src_data.len(),
+                    flags::PACKET_FLUSHED | compression_level,
+                ));
+            }
+
+            let accumulator = u32::from(src_data[src_idx]);
+            if accumulator < 0x80 {
+                bs.write_bits(accumulator, 8);
+            } else {
+                bs.write_bits(0x100 | (accumulator & 0x7F), 9);
+            }
+
+            self.history_buffer[local_ptr] = src_data[src_idx];
+            local_ptr += 1;
+            src_idx += 1;
+        }
+
+        // Flush remaining bits in the accumulator
+        bs.flush();
+
+        result_flags |= flags::PACKET_COMPRESSED | compression_level;
+
+        if packet_at_front {
+            result_flags |= flags::PACKET_AT_FRONT;
+        }
+        if packet_flushed {
+            result_flags |= flags::PACKET_FLUSHED;
+        }
+
+        let output_size = bs.byte_length();
+        self.history_ptr = local_ptr;
+        self.history_offset = local_ptr;
+
+        Ok((output_size, result_flags))
     }
 }
 

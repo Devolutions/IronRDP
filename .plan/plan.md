@@ -140,7 +140,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 1 day
 
 **Tasks**:
-- [ ] **TASK-011**: Implement `mppc_compress` function
+- [x] **TASK-011**: Implement `mppc_compress` function
   - **Acceptance Criteria**: Compresses data using 3-byte hash matching, literal/copy-offset/length encoding
   - **Dependencies**: TASK-005, TASK-008
   - **Risk**: High (complex algorithm with hash table management)
