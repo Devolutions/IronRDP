@@ -1,0 +1,715 @@
+project_name: "Port FreeRDP Bulk Compression to IronRDP"
+created: "2026-02-06T00:00:00Z"
+total_tasks: 37
+total_phases: 11
+
+tasks:
+  # Phase 1: Project Setup & Crate Scaffold
+  - id: TASK-001
+    phase: 1
+    title: "Create ironrdp-bulk crate with Cargo.toml"
+    description: "Create crates/ironrdp-bulk/ directory with a Cargo.toml that declares the crate as no_std compatible with alloc feature. Add to workspace members. Dependencies: ironrdp-core (workspace)."
+    acceptance_criteria:
+      - "crates/ironrdp-bulk/Cargo.toml exists with correct metadata"
+      - "Crate is listed in workspace Cargo.toml members"
+      - "cargo check -p ironrdp-bulk succeeds"
+    dependencies: []
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 0.5
+
+  - id: TASK-002
+    phase: 1
+    title: "Set up module structure"
+    description: "Create src/lib.rs with module declarations for mppc, xcrush, ncrush, bulk, and bitstream. Create placeholder mod.rs files for each submodule."
+    acceptance_criteria:
+      - "src/lib.rs declares all submodules"
+      - "Each submodule directory has a mod.rs"
+      - "Crate compiles with cargo check"
+    dependencies:
+      - TASK-001
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 0.5
+
+  - id: TASK-003
+    phase: 1
+    title: "Define shared types and error types"
+    description: "Define CompressionType enum (RDP4/8K, RDP5/64K, RDP6/NCRUSH, RDP61/XCRUSH), CompressionFlags (PACKET_COMPRESSED, PACKET_AT_FRONT, PACKET_FLUSHED, L1 flags), and error types for compression failures."
+    acceptance_criteria:
+      - "CompressionType enum with all 4 variants defined"
+      - "CompressionFlags constants matching FreeRDP bulk.h values"
+      - "Error type with Display and std::error::Error impl"
+    dependencies:
+      - TASK-002
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 0.5
+
+  # Phase 2: Bitstream Utilities
+  - id: TASK-004
+    phase: 2
+    title: "Implement BitStreamReader for decompression"
+    description: "Port FreeRDP's wBitStream read operations to Rust. The reader uses a 32-bit accumulator with prefetch, reading big-endian from the byte buffer. Must support reading N bits (1-32), peeking, and tracking position. Match the exact semantics of BitStream_Fetch, BitStream_Prefetch, BitStream_Shift."
+    acceptance_criteria:
+      - "BitStreamReader can attach to a byte slice"
+      - "read_bits(n) returns n bits correctly"
+      - "Position tracking is accurate"
+      - "End-of-stream detection works"
+    dependencies:
+      - TASK-002
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: "FreeRDP uses big-endian 32-bit loads with prefetch buffer"
+    files_affected: []
+    estimated_hours: 2
+
+  - id: TASK-005
+    phase: 2
+    title: "Implement BitStreamWriter for compression"
+    description: "Port FreeRDP's wBitStream write operations to Rust. The writer uses a 32-bit accumulator, flushing big-endian to the output buffer. Must support writing N bits, flushing partial bytes, and tracking capacity. Match BitStream_Write_Bits and BitStream_Flush semantics."
+    acceptance_criteria:
+      - "BitStreamWriter can write to a mutable byte slice"
+      - "write_bits(value, n) correctly writes n bits"
+      - "Flush writes remaining bits to output"
+      - "Capacity overflow detection works"
+    dependencies:
+      - TASK-002
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 2
+
+  - id: TASK-006
+    phase: 2
+    title: "Unit tests for bitstream utilities"
+    description: "Write comprehensive tests for BitStreamReader and BitStreamWriter covering: single bit read/write, multi-bit read/write, boundary conditions (32 bits), round-trip (write then read), partial byte handling."
+    acceptance_criteria:
+      - "Tests cover 1-bit, 8-bit, 16-bit, 32-bit reads/writes"
+      - "Tests cover accumulator boundary crossing"
+      - "Round-trip test: write bits then read back identical"
+      - "All tests pass"
+    dependencies:
+      - TASK-004
+      - TASK-005
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  # Phase 3: MPPC Decompression
+  - id: TASK-007
+    phase: 3
+    title: "Port MPPC constants and lookup tables"
+    description: "Port the MPPC_MATCH_TABLE[256] and MPPC_MATCH_INDEX macro to Rust. Define constants for RDP4 history size (8192), RDP5 history size (65536), and match buffer size (32768)."
+    acceptance_criteria:
+      - "MPPC_MATCH_TABLE is a static [u32; 256] array matching FreeRDP"
+      - "mppc_match_index function computes same values as C macro"
+      - "History buffer size constants defined"
+    dependencies:
+      - TASK-003
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 0.5
+
+  - id: TASK-008
+    phase: 3
+    title: "Implement MPPC context struct"
+    description: "Create MppcContext struct with: history_buffer [u8; 65536], history_offset, history_buffer_size, match_buffer [u16; 32768], compression_level (RDP4=0, RDP5=1), compressor flag. Implement new() and reset() methods."
+    acceptance_criteria:
+      - "MppcContext::new(level, compressor) creates correct context"
+      - "reset() clears history and match buffers"
+      - "History buffer size is 8192 for RDP4, 65536 for RDP5"
+    dependencies:
+      - TASK-007
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  - id: TASK-009
+    phase: 3
+    title: "Implement mppc_decompress function"
+    description: "Port mppc_decompress from FreeRDP. Handles: PACKET_FLUSHED (reset context), PACKET_AT_FRONT (reset history pointer), literal decoding (< 0x80: 8 bits with 0 prefix; >= 0x80: 9 bits with 10 prefix), CopyOffset decoding (different for RDP4 vs RDP5), LengthOfMatch decoding (unary prefix, ranges 3 to 65535), history buffer copy with wrapping."
+    acceptance_criteria:
+      - "Decompresses RDP4 data correctly"
+      - "Decompresses RDP5 data correctly"
+      - "Handles PACKET_FLUSHED flag"
+      - "Handles PACKET_AT_FRONT flag"
+      - "History wrapping works correctly"
+    dependencies:
+      - TASK-004
+      - TASK-008
+    risk: high
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: "RDP4 uses 0x1FFF mask, RDP5 uses 0xFFFF mask for history wrapping"
+    files_affected: []
+    estimated_hours: 4
+
+  - id: TASK-010
+    phase: 3
+    title: "Port MPPC decompression tests"
+    description: "Port test_MppcDecompressBellsRdp4, test_MppcDecompressBellsRdp5, and test_MppcDecompressBufferRdp5 from FreeRDP TestFreeRDPCodecMppc.c. Include all test data byte arrays."
+    acceptance_criteria:
+      - "test_mppc_decompress_bells_rdp4 passes"
+      - "test_mppc_decompress_bells_rdp5 passes"
+      - "test_mppc_decompress_buffer_rdp5 passes"
+      - "Output matches expected byte-for-byte"
+    dependencies:
+      - TASK-009
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 2
+
+  # Phase 4: MPPC Compression
+  - id: TASK-011
+    phase: 4
+    title: "Implement mppc_compress function"
+    description: "Port mppc_compress from FreeRDP. Uses 3-byte hash (MPPC_MATCH_INDEX) for match finding in MatchBuffer, encodes literals and copy-offset/length pairs using bitstream writer. Handles history buffer accumulation and overflow (PACKET_FLUSHED fallback). Different encoding for RDP4 vs RDP5."
+    acceptance_criteria:
+      - "Compresses data using LZ77 with 3-byte hash matching"
+      - "Literal encoding matches FreeRDP (< 0x80: 0+7bits, >= 0x80: 10+7bits)"
+      - "CopyOffset encoding matches FreeRDP (RDP4 and RDP5 variants)"
+      - "LengthOfMatch encoding matches FreeRDP"
+      - "Falls back to PACKET_FLUSHED when compression doesn't help"
+    dependencies:
+      - TASK-005
+      - TASK-008
+    risk: high
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: "Must produce byte-exact output matching FreeRDP for test vectors"
+    files_affected: []
+    estimated_hours: 4
+
+  - id: TASK-012
+    phase: 4
+    title: "Port MPPC compression tests"
+    description: "Port test_MppcCompressBellsRdp4, test_MppcCompressBellsRdp5, test_MppcCompressIslandRdp5, test_MppcCompressBufferRdp5 from FreeRDP. Include all test data byte arrays."
+    acceptance_criteria:
+      - "test_mppc_compress_bells_rdp4 passes with exact output"
+      - "test_mppc_compress_bells_rdp5 passes with exact output"
+      - "test_mppc_compress_island_rdp5 passes with exact output"
+      - "test_mppc_compress_buffer_rdp5 passes with exact output"
+    dependencies:
+      - TASK-011
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 2
+
+  - id: TASK-013
+    phase: 4
+    title: "MPPC round-trip validation"
+    description: "Add tests that compress arbitrary data and then decompress it, verifying the round-trip produces identical output. Test with various input sizes and patterns."
+    acceptance_criteria:
+      - "Round-trip test with small input (<= 50 bytes)"
+      - "Round-trip test with medium input (~1KB)"
+      - "Round-trip test with large input (~16KB)"
+      - "All round-trip outputs match original input"
+    dependencies:
+      - TASK-009
+      - TASK-011
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  # Phase 5: XCRUSH Decompression
+  - id: TASK-014
+    phase: 5
+    title: "Port XCRUSH types and structures"
+    description: "Define Rust types for: XCrushContext (2MB history, chunk tables, signatures, matches), XCrushMatchInfo (match_offset, chunk_offset, match_length), XCrushChunk (offset, next), XCrushSignature (seed, size), Rdp61MatchDetails (match_length, match_output_offset, match_history_offset), Rdp61CompressedData (L1/L2 flags, match count, matches, literals)."
+    acceptance_criteria:
+      - "All struct types defined matching FreeRDP layout"
+      - "XCrushContext::new() creates valid context with 2MB history"
+      - "reset() method clears all state"
+    dependencies:
+      - TASK-003
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: "XCRUSH uses a 2MB history buffer - much larger than MPPC/NCRUSH"
+    files_affected: []
+    estimated_hours: 1
+
+  - id: TASK-015
+    phase: 5
+    title: "Implement XCRUSH Level 1 decompression"
+    description: "Port xcrush_decompress_l1 from FreeRDP. Parses the RDP61 compressed data format: reads L1 flags, L2 flags, match count, match details array, and literal data. Reconstructs output by interleaving literal copies with history match copies."
+    acceptance_criteria:
+      - "Correctly parses RDP61 compressed data header"
+      - "Handles match detail entries (length, output offset, history offset)"
+      - "Copies literals and matches to produce decompressed output"
+      - "Handles L1_NO_COMPRESSION flag"
+    dependencies:
+      - TASK-014
+    risk: high
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 3
+
+  - id: TASK-016
+    phase: 5
+    title: "Implement XCRUSH full decompression (L1 + L2/MPPC)"
+    description: "Port xcrush_decompress from FreeRDP. Handles all flag combinations: L1 only, L1+L2 (MPPC), no compression. When L1_INNER_COMPRESSION is set, first decompress via MPPC, then apply L1 decompression."
+    acceptance_criteria:
+      - "Handles L1_COMPRESSED with L1_INNER_COMPRESSION (MPPC then L1)"
+      - "Handles L1_COMPRESSED without inner compression"
+      - "Handles L1_NO_COMPRESSION passthrough"
+      - "Integrates correctly with MPPC decompression"
+    dependencies:
+      - TASK-009
+      - TASK-015
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 2
+
+  # Phase 6: XCRUSH Compression & Tests
+  - id: TASK-017
+    phase: 6
+    title: "Implement XCRUSH chunk computation (rolling hash)"
+    description: "Port xcrush_compute_chunks from FreeRDP. Uses a 32-byte rolling hash where accumulator rotates left by 1 and XORs with next byte. Chunk boundary when accumulator & 0x7F == 0. Creates XCrushSignature entries with seed and size."
+    acceptance_criteria:
+      - "Rolling hash matches FreeRDP semantics"
+      - "Chunk boundaries computed correctly"
+      - "Signatures array populated with correct seed/size values"
+    dependencies:
+      - TASK-014
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 2
+
+  - id: TASK-018
+    phase: 6
+    title: "Implement XCRUSH match finding and optimization"
+    description: "Port xcrush_find_all_matches and xcrush_optimize_matches. Match finding: lookup chunk hash in Chunks table, extend match bidirectionally, minimum match length 11. Optimization: remove overlapping matches, adjust offsets."
+    acceptance_criteria:
+      - "Hash-based chunk matching works correctly"
+      - "Bidirectional match extension produces correct lengths"
+      - "Overlap removal produces non-overlapping match set"
+      - "Minimum match length enforced (11 bytes)"
+    dependencies:
+      - TASK-017
+    risk: high
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 3
+
+  - id: TASK-019
+    phase: 6
+    title: "Implement XCRUSH full compression (L1 + L2/MPPC)"
+    description: "Port xcrush_compress from FreeRDP. Two-level compression: first apply L1 (chunk matching) to produce match details + literals, then apply L2 (MPPC) if output > 50 bytes. Handles history management and chunk table updates."
+    acceptance_criteria:
+      - "L1 compression produces correct match details format"
+      - "L2 (MPPC) applied when beneficial"
+      - "Output format matches RDP61 specification"
+      - "History buffer updated correctly"
+    dependencies:
+      - TASK-011
+      - TASK-018
+    risk: high
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 4
+
+  - id: TASK-020
+    phase: 6
+    title: "Port XCRUSH tests"
+    description: "Port test_XCrushCompressBells and test_XCrushCompressIsland from FreeRDP TestFreeRDPCodecXCrush.c. Include test data arrays."
+    acceptance_criteria:
+      - "test_xcrush_compress_bells passes with exact output"
+      - "test_xcrush_compress_island passes with exact output"
+    dependencies:
+      - TASK-016
+      - TASK-019
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 2
+
+  # Phase 7: NCRUSH Decompression
+  - id: TASK-021
+    phase: 7
+    title: "Port NCRUSH constants and Huffman tables"
+    description: "Port all static lookup tables from ncrush.c: HuffTableLEC[8192], HuffTableLOM[512], HuffTableMask[39], HuffLengthLEC[294], HuffCodeLEC[588], HuffLengthLOM[32], HuffCodeLOM[32], CopyOffsetBitsLUT[32], CopyOffsetBaseLUT[32], LOMBitsLUT[30], LOMBaseLUT[30]."
+    acceptance_criteria:
+      - "All lookup tables defined as static arrays"
+      - "Values match FreeRDP byte-for-byte"
+      - "Tables are correctly typed (u8, u16, u32 as appropriate)"
+    dependencies:
+      - TASK-003
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: "Large tables - generate with script or copy carefully"
+    files_affected: []
+    estimated_hours: 2
+
+  - id: TASK-022
+    phase: 7
+    title: "Implement NCRUSH context struct"
+    description: "Create NCrushContext with: history_buffer [u8; 65536], hash_table [u16; 65536], match_table [u16; 65536], offset_cache [u32; 4], Huffman tables. Implement new() and reset()."
+    acceptance_criteria:
+      - "NCrushContext::new(compressor) creates valid context"
+      - "reset() clears all state including offset cache"
+      - "History buffer size is 65536"
+    dependencies:
+      - TASK-021
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: "Large struct - consider Box allocation"
+    files_affected: []
+    estimated_hours: 1
+
+  - id: TASK-023
+    phase: 7
+    title: "Implement ncrush_decompress function"
+    description: "Port ncrush_decompress from FreeRDP. Huffman decoding: read bits from accumulator, lookup in HuffTableLEC (literals 0-255, EndOfStream 256, CopyOffset 257-288, OffsetCache 289-292), then HuffTableLOM for length. Handle offset cache updates (LRU rotation). History buffer copy with wrapping."
+    acceptance_criteria:
+      - "Huffman decoding for literals works"
+      - "CopyOffset index to actual offset conversion works"
+      - "OffsetCache (LRU) references work correctly"
+      - "LengthOfMatch decoding works"
+      - "History buffer copy with wrapping works"
+      - "PACKET_FLUSHED handling works"
+    dependencies:
+      - TASK-004
+      - TASK-022
+    risk: high
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: "Complex state machine with multiple symbol types"
+    files_affected: []
+    estimated_hours: 4
+
+  - id: TASK-024
+    phase: 7
+    title: "Port NCRUSH decompression test"
+    description: "Port test_NCrushDecompressBells from FreeRDP TestFreeRDPCodecNCrush.c. Include test data arrays."
+    acceptance_criteria:
+      - "test_ncrush_decompress_bells passes"
+      - "Output matches expected byte-for-byte"
+    dependencies:
+      - TASK-023
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  # Phase 8: NCRUSH Compression & Tests
+  - id: TASK-025
+    phase: 8
+    title: "Implement NCRUSH hash-chain match finding"
+    description: "Port ncrush match finding from FreeRDP. Uses 2-byte hash (get_word) into HashTable for initial lookup, then follows MatchTable chain. Searches up to 4 candidates. Tracks best match length and offset."
+    acceptance_criteria:
+      - "2-byte hash computation matches FreeRDP"
+      - "Hash chain traversal finds matches correctly"
+      - "Maximum 4 candidates searched"
+      - "Best match selected by length"
+    dependencies:
+      - TASK-022
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 2
+
+  - id: TASK-026
+    phase: 8
+    title: "Implement NCRUSH Huffman encoding"
+    description: "Port ncrush Huffman encoding from FreeRDP. Encode literals using HuffCodeLEC/HuffLengthLEC, CopyOffset indices and extra bits, OffsetCache references, and LengthOfMatch using HuffCodeLOM/HuffLengthLOM."
+    acceptance_criteria:
+      - "Literal Huffman encoding matches FreeRDP"
+      - "CopyOffset Huffman encoding matches FreeRDP"
+      - "OffsetCache reference encoding matches FreeRDP"
+      - "LengthOfMatch Huffman encoding matches FreeRDP"
+    dependencies:
+      - TASK-005
+      - TASK-025
+    risk: high
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 3
+
+  - id: TASK-027
+    phase: 8
+    title: "Implement ncrush_compress function"
+    description: "Port ncrush_compress from FreeRDP. Full compression pipeline: hash chain match finding, offset cache management (LRU), Huffman encoding of literals and matches, history buffer management with window sliding at 32KB."
+    acceptance_criteria:
+      - "Compression produces valid NCRUSH output"
+      - "Offset cache updated correctly during compression"
+      - "History window slides correctly when exceeding 32KB"
+      - "EndOfStream marker written correctly"
+    dependencies:
+      - TASK-026
+    risk: high
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 4
+
+  - id: TASK-028
+    phase: 8
+    title: "Port NCRUSH compression test"
+    description: "Port test_NCrushCompressBells from FreeRDP TestFreeRDPCodecNCrush.c."
+    acceptance_criteria:
+      - "test_ncrush_compress_bells passes with exact output"
+    dependencies:
+      - TASK-027
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  - id: TASK-029
+    phase: 8
+    title: "NCRUSH round-trip validation"
+    description: "Add round-trip tests: compress then decompress, verify identical output."
+    acceptance_criteria:
+      - "Round-trip test with bells data passes"
+      - "Output matches original input byte-for-byte"
+    dependencies:
+      - TASK-023
+      - TASK-027
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  # Phase 9: Bulk Compressor Coordinator
+  - id: TASK-030
+    phase: 9
+    title: "Implement BulkCompressor struct"
+    description: "Port rdp_bulk from FreeRDP. Holds optional MPPC, XCRUSH, NCRUSH contexts based on compression level. Manages send/receive context pairs. Output buffer for compressed data."
+    acceptance_criteria:
+      - "BulkCompressor::new(compression_level) creates correct context set"
+      - "Correct compressor selected based on compression type flag"
+      - "Send and receive contexts independent"
+    dependencies:
+      - TASK-009
+      - TASK-011
+      - TASK-016
+      - TASK-019
+      - TASK-023
+      - TASK-027
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  - id: TASK-031
+    phase: 9
+    title: "Implement bulk compress/decompress routing"
+    description: "Port bulk_compress and bulk_decompress routing logic. Extract compression type from flags (low 4 bits), route to appropriate algorithm. Handle flag extraction and composition. Skip compression for sizes <= 50 or >= 16384."
+    acceptance_criteria:
+      - "Compression type correctly extracted from flags"
+      - "Routes to MPPC for type 0x00 and 0x01"
+      - "Routes to NCRUSH for type 0x02"
+      - "Routes to XCRUSH for type 0x03"
+      - "Skips compression for edge case sizes"
+    dependencies:
+      - TASK-030
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  - id: TASK-032
+    phase: 9
+    title: "Unit tests for bulk coordinator"
+    description: "Tests verifying correct routing for each compression type. Test that decompress(compress(data)) == data through the bulk API for each algorithm."
+    acceptance_criteria:
+      - "Test routing for each compression type"
+      - "Round-trip through bulk API for each algorithm"
+    dependencies:
+      - TASK-031
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  # Phase 10: Memory Safety Refactoring
+  - id: TASK-033
+    phase: 10
+    title: "Audit all unsafe blocks and raw pointer usage"
+    description: "Search crate for all unsafe blocks, raw pointer operations, and unchecked indexing. Document each with the safe alternative to use."
+    acceptance_criteria:
+      - "Complete inventory of all unsafe usages"
+      - "Each has identified safe replacement"
+      - "No unnecessary unsafe remains"
+    dependencies:
+      - TASK-032
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  - id: TASK-034
+    phase: 10
+    title: "Replace unsafe with safe Rust patterns"
+    description: "Replace raw pointer arithmetic with slice operations. Use get() with bounds checking or split_at(). Replace unchecked indexing with checked alternatives. Use wrapping arithmetic explicitly where needed. Consider using a circular buffer abstraction for history buffers."
+    acceptance_criteria:
+      - "All history buffer ops use safe slice methods"
+      - "Bitstream operations are bounds-checked"
+      - "Hash table operations use safe indexing"
+      - "No raw pointer usage remains"
+    dependencies:
+      - TASK-033
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: "May need to restructure some hot paths for performance"
+    files_affected: []
+    estimated_hours: 4
+
+  - id: TASK-035
+    phase: 10
+    title: "Verify all tests pass after safety refactoring"
+    description: "Run complete test suite. Verify byte-exact output is preserved. Check for any performance regressions with larger inputs."
+    acceptance_criteria:
+      - "All existing tests pass without modification"
+      - "No byte-level output differences"
+      - "No panics on valid input"
+    dependencies:
+      - TASK-034
+    risk: medium
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
+
+  # Phase 11: WebAssembly Compatibility & Final Integration
+  - id: TASK-036
+    phase: 11
+    title: "Verify wasm32-unknown-unknown build"
+    description: "Run cargo check --target wasm32-unknown-unknown -p ironrdp-bulk. Fix any issues (likely std dependencies, platform-specific code)."
+    acceptance_criteria:
+      - "cargo check --target wasm32-unknown-unknown -p ironrdp-bulk succeeds"
+      - "No std-only dependencies"
+      - "No platform-specific code"
+    dependencies:
+      - TASK-035
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 0.5
+
+  - id: TASK-037
+    phase: 11
+    title: "Final cleanup, documentation, and code review prep"
+    description: "Add rustdoc to all public items. Write crate-level documentation. Run clippy with all warnings. Remove dead code. Ensure consistent naming."
+    acceptance_criteria:
+      - "All public items have rustdoc comments"
+      - "Crate-level doc with usage examples"
+      - "cargo clippy -p ironrdp-bulk clean"
+      - "No dead code warnings"
+      - "Consistent naming throughout"
+    dependencies:
+      - TASK-036
+    risk: low
+    status: pending
+    started_at: null
+    completed_at: null
+    notes: ""
+    files_affected: []
+    estimated_hours: 1
