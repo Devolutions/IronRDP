@@ -107,7 +107,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: `MPPC_MATCH_TABLE` and related constants defined
   - **Dependencies**: TASK-003
   - **Risk**: Low
-- [ ] **TASK-008**: Implement MPPC context struct
+- [x] **TASK-008**: Implement MPPC context struct
   - **Acceptance Criteria**: `MppcContext` with history buffer, match buffer, compression level
   - **Dependencies**: TASK-007
   - **Risk**: Low

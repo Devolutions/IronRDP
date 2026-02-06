@@ -163,11 +163,12 @@ tasks:
     dependencies:
       - TASK-007
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "Box-allocated to avoid stack overflow (history_buffer=64K, match_buffer=64K)"
+    files_affected:
+      - "crates/ironrdp-bulk/src/mppc/mod.rs"
     estimated_hours: 1
 
   - id: TASK-009
