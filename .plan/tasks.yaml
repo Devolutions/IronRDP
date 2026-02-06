@@ -185,11 +185,12 @@ tasks:
       - TASK-004
       - TASK-008
     risk: high
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: "RDP4 uses 0x1FFF mask, RDP5 uses 0xFFFF mask for history wrapping"
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "Ported full mppc_decompress with RDP4/RDP5 CopyOffset variants, unary-coded LengthOfMatch, literal decoding, and history buffer copy with wrapping mask. Uses shared lifetime for zero-copy uncompressed passthrough."
+    files_affected:
+      - "crates/ironrdp-bulk/src/mppc/mod.rs"
     estimated_hours: 4
 
   - id: TASK-010
