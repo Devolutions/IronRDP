@@ -70,7 +70,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 0.5 days
 
 **Tasks**:
-- [ ] **TASK-004**: Implement `BitStreamReader` for decompression
+- [x] **TASK-004**: Implement `BitStreamReader` for decompression
   - **Acceptance Criteria**: Can read N bits from a byte buffer, handles prefetch/accumulator correctly
   - **Dependencies**: TASK-002
   - **Risk**: Medium (bit-level operations are error-prone)
