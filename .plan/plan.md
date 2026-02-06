@@ -78,7 +78,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Can write N bits to a byte buffer, handles flush correctly
   - **Dependencies**: TASK-002
   - **Risk**: Medium
-- [ ] **TASK-006**: Unit tests for bitstream utilities
+- [x] **TASK-006**: Unit tests for bitstream utilities
   - **Acceptance Criteria**: Tests cover reading/writing various bit widths, boundary conditions
   - **Dependencies**: TASK-004, TASK-005
   - **Risk**: Low
