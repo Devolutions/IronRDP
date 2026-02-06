@@ -44,7 +44,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Module tree compiles: `lib.rs`, `mppc/`, `xcrush/`, `ncrush/`, `bulk.rs`
   - **Dependencies**: TASK-001
   - **Risk**: Low
-- [ ] **TASK-003**: Define shared types and error types
+- [x] **TASK-003**: Define shared types and error types
   - **Acceptance Criteria**: `CompressionType`, `CompressionFlags`, error enum defined and usable
   - **Dependencies**: TASK-002
   - **Risk**: Low
