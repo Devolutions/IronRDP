@@ -205,11 +205,13 @@ tasks:
     dependencies:
       - TASK-009
     risk: medium
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "Ported all 3 decompression tests from FreeRDP. Created test_data.rs module with TEST_MPPC_BELLS, TEST_MPPC_BELLS_RDP4, TEST_MPPC_BELLS_RDP5, TEST_RDP5_COMPRESSED_DATA (2835 bytes), TEST_RDP5_UNCOMPRESSED_DATA (6496 bytes). All tests pass byte-for-byte."
+    files_affected:
+      - crates/ironrdp-bulk/src/mppc/test_data.rs
+      - crates/ironrdp-bulk/src/mppc/mod.rs
     estimated_hours: 2
 
   # Phase 4: MPPC Compression

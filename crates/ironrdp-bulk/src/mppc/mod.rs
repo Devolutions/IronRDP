@@ -334,6 +334,9 @@ impl MppcContext {
 }
 
 #[cfg(test)]
+mod test_data;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -380,5 +383,83 @@ mod tests {
         assert_eq!(result, b"data");
         assert_eq!(ctx.history_ptr, 0);
         assert_eq!(ctx.history_offset, 0);
+    }
+
+    /// Ported from FreeRDP's `test_MppcDecompressBellsRdp4`.
+    ///
+    /// Decompresses `TEST_MPPC_BELLS_RDP4` using RDP4 (8K history)
+    /// and verifies the output matches "for.whom.the.bell.tolls,.the.bell.tolls.for.thee!".
+    #[test]
+    fn test_mppc_decompress_bells_rdp4() {
+        let mut ctx = MppcContext::new(0, false);
+        // Flags: PACKET_AT_FRONT | PACKET_COMPRESSED (RDP4 — compression level 0)
+        let flags_value = flags::PACKET_AT_FRONT | flags::PACKET_COMPRESSED;
+        let result = ctx
+            .decompress(test_data::TEST_MPPC_BELLS_RDP4, flags_value)
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            test_data::TEST_MPPC_BELLS.len(),
+            "output size mismatch: actual={}, expected={}",
+            result.len(),
+            test_data::TEST_MPPC_BELLS.len()
+        );
+        assert_eq!(
+            result,
+            test_data::TEST_MPPC_BELLS,
+            "MppcDecompressBellsRdp4: output mismatch"
+        );
+    }
+
+    /// Ported from FreeRDP's `test_MppcDecompressBellsRdp5`.
+    ///
+    /// Decompresses `TEST_MPPC_BELLS_RDP5` using RDP5 (64K history)
+    /// and verifies the output matches "for.whom.the.bell.tolls,.the.bell.tolls.for.thee!".
+    #[test]
+    fn test_mppc_decompress_bells_rdp5() {
+        let mut ctx = MppcContext::new(1, false);
+        // Flags: PACKET_AT_FRONT | PACKET_COMPRESSED | 1 (RDP5)
+        let flags_value = flags::PACKET_AT_FRONT | flags::PACKET_COMPRESSED | 1;
+        let result = ctx
+            .decompress(test_data::TEST_MPPC_BELLS_RDP5, flags_value)
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            test_data::TEST_MPPC_BELLS.len(),
+            "output size mismatch: actual={}, expected={}",
+            result.len(),
+            test_data::TEST_MPPC_BELLS.len()
+        );
+        assert_eq!(
+            result,
+            test_data::TEST_MPPC_BELLS,
+            "MppcDecompressBellsRdp5: output mismatch"
+        );
+    }
+
+    /// Ported from FreeRDP's `test_MppcDecompressBufferRdp5`.
+    ///
+    /// Decompresses a large binary buffer using RDP5 (64K history)
+    /// and verifies byte-for-byte match with the expected uncompressed data.
+    #[test]
+    fn test_mppc_decompress_buffer_rdp5() {
+        let mut ctx = MppcContext::new(1, false);
+        // Flags: PACKET_AT_FRONT | PACKET_COMPRESSED | 1 (RDP5)
+        let flags_value = flags::PACKET_AT_FRONT | flags::PACKET_COMPRESSED | 1;
+        let result = ctx
+            .decompress(test_data::TEST_RDP5_COMPRESSED_DATA, flags_value)
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            test_data::TEST_RDP5_UNCOMPRESSED_DATA.len(),
+            "output size mismatch: actual={}, expected={}",
+            result.len(),
+            test_data::TEST_RDP5_UNCOMPRESSED_DATA.len()
+        );
+        assert_eq!(
+            result,
+            test_data::TEST_RDP5_UNCOMPRESSED_DATA,
+            "MppcDecompressBufferRdp5: output mismatch"
+        );
     }
 }

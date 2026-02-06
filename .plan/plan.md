@@ -115,7 +115,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Decompresses RDP4 and RDP5 MPPC data correctly
   - **Dependencies**: TASK-004, TASK-008
   - **Risk**: High (complex bit manipulation, two encoding variants)
-- [ ] **TASK-010**: Port MPPC decompression tests
+- [x] **TASK-010**: Port MPPC decompression tests
   - **Acceptance Criteria**: `test_mppc_decompress_bells_rdp4`, `test_mppc_decompress_bells_rdp5`, `test_mppc_decompress_buffer_rdp5` all pass
   - **Dependencies**: TASK-009
   - **Risk**: Medium
