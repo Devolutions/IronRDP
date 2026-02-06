@@ -144,7 +144,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Compresses data using 3-byte hash matching, literal/copy-offset/length encoding
   - **Dependencies**: TASK-005, TASK-008
   - **Risk**: High (complex algorithm with hash table management)
-- [ ] **TASK-012**: Port MPPC compression tests
+- [x] **TASK-012**: Port MPPC compression tests
   - **Acceptance Criteria**: `test_mppc_compress_bells_rdp4`, `test_mppc_compress_bells_rdp5`, `test_mppc_compress_island_rdp5`, `test_mppc_compress_buffer_rdp5` all pass
   - **Dependencies**: TASK-011
   - **Risk**: Medium

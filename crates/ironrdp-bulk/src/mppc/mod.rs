@@ -730,4 +730,120 @@ mod tests {
             "MppcDecompressBufferRdp5: output mismatch"
         );
     }
+
+    // ========================
+    // Compression tests
+    // ========================
+
+    /// Ported from FreeRDP's `test_MppcCompressBellsRdp4`.
+    ///
+    /// Compresses the "bells" text with RDP4 (8K) and verifies the output
+    /// matches the expected compressed bytes byte-for-byte.
+    #[test]
+    fn test_mppc_compress_bells_rdp4() {
+        let mut ctx = MppcContext::new(0, true);
+        let mut output = [0u8; 65536];
+        let (size, result_flags) = ctx
+            .compress(test_data::TEST_MPPC_BELLS, &mut output)
+            .unwrap();
+        assert!(
+            result_flags & flags::PACKET_COMPRESSED != 0,
+            "expected PACKET_COMPRESSED flag, got 0x{result_flags:08X}"
+        );
+        assert_eq!(
+            size,
+            test_data::TEST_MPPC_BELLS_RDP4.len(),
+            "MppcCompressBellsRdp4: output size mismatch: actual={size}, expected={}",
+            test_data::TEST_MPPC_BELLS_RDP4.len()
+        );
+        assert_eq!(
+            &output[..size],
+            test_data::TEST_MPPC_BELLS_RDP4,
+            "MppcCompressBellsRdp4: output mismatch"
+        );
+    }
+
+    /// Ported from FreeRDP's `test_MppcCompressBellsRdp5`.
+    ///
+    /// Compresses the "bells" text with RDP5 (64K) and verifies the output
+    /// matches the expected compressed bytes byte-for-byte.
+    #[test]
+    fn test_mppc_compress_bells_rdp5() {
+        let mut ctx = MppcContext::new(1, true);
+        let mut output = [0u8; 65536];
+        let (size, result_flags) = ctx
+            .compress(test_data::TEST_MPPC_BELLS, &mut output)
+            .unwrap();
+        assert!(
+            result_flags & flags::PACKET_COMPRESSED != 0,
+            "expected PACKET_COMPRESSED flag, got 0x{result_flags:08X}"
+        );
+        assert_eq!(
+            size,
+            test_data::TEST_MPPC_BELLS_RDP5.len(),
+            "MppcCompressBellsRdp5: output size mismatch: actual={size}, expected={}",
+            test_data::TEST_MPPC_BELLS_RDP5.len()
+        );
+        assert_eq!(
+            &output[..size],
+            test_data::TEST_MPPC_BELLS_RDP5,
+            "MppcCompressBellsRdp5: output mismatch"
+        );
+    }
+
+    /// Ported from FreeRDP's `test_MppcCompressIslandRdp5`.
+    ///
+    /// Compresses the "island" text (John Donne excerpt) with RDP5 (64K)
+    /// and verifies byte-for-byte match with the expected compressed output.
+    #[test]
+    fn test_mppc_compress_island_rdp5() {
+        let mut ctx = MppcContext::new(1, true);
+        let mut output = [0u8; 65536];
+        let (size, result_flags) = ctx
+            .compress(test_data::TEST_ISLAND_DATA, &mut output)
+            .unwrap();
+        assert!(
+            result_flags & flags::PACKET_COMPRESSED != 0,
+            "expected PACKET_COMPRESSED flag, got 0x{result_flags:08X}"
+        );
+        assert_eq!(
+            size,
+            test_data::TEST_ISLAND_DATA_RDP5.len(),
+            "MppcCompressIslandRdp5: output size mismatch: actual={size}, expected={}",
+            test_data::TEST_ISLAND_DATA_RDP5.len()
+        );
+        assert_eq!(
+            &output[..size],
+            test_data::TEST_ISLAND_DATA_RDP5,
+            "MppcCompressIslandRdp5: output mismatch"
+        );
+    }
+
+    /// Ported from FreeRDP's `test_MppcCompressBufferRdp5`.
+    ///
+    /// Compresses a large binary buffer with RDP5 (64K) and verifies
+    /// byte-for-byte match with the expected compressed output.
+    #[test]
+    fn test_mppc_compress_buffer_rdp5() {
+        let mut ctx = MppcContext::new(1, true);
+        let mut output = [0u8; 65536];
+        let (size, result_flags) = ctx
+            .compress(test_data::TEST_RDP5_UNCOMPRESSED_DATA, &mut output)
+            .unwrap();
+        assert!(
+            result_flags & flags::PACKET_COMPRESSED != 0,
+            "expected PACKET_COMPRESSED flag, got 0x{result_flags:08X}"
+        );
+        assert_eq!(
+            size,
+            test_data::TEST_RDP5_COMPRESSED_DATA.len(),
+            "MppcCompressBufferRdp5: output size mismatch: actual={size}, expected={}",
+            test_data::TEST_RDP5_COMPRESSED_DATA.len()
+        );
+        assert_eq!(
+            &output[..size],
+            test_data::TEST_RDP5_COMPRESSED_DATA,
+            "MppcCompressBufferRdp5: output mismatch"
+        );
+    }
 }
