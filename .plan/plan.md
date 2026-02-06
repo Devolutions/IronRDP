@@ -40,7 +40,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Crate compiles with `cargo check -p ironrdp-bulk`
   - **Dependencies**: None
   - **Risk**: Low
-- [ ] **TASK-002**: Set up module structure (lib.rs, submodules)
+- [x] **TASK-002**: Set up module structure (lib.rs, submodules)
   - **Acceptance Criteria**: Module tree compiles: `lib.rs`, `mppc/`, `xcrush/`, `ncrush/`, `bulk.rs`
   - **Dependencies**: TASK-001
   - **Risk**: Low

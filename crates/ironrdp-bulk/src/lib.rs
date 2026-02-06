@@ -7,3 +7,9 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+
+mod bitstream;
+mod bulk;
+mod mppc;
+mod ncrush;
+mod xcrush;

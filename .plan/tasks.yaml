@@ -35,11 +35,17 @@ tasks:
     dependencies:
       - TASK-001
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
     notes: ""
-    files_affected: []
+    files_affected:
+      - "crates/ironrdp-bulk/src/lib.rs"
+      - "crates/ironrdp-bulk/src/bitstream.rs"
+      - "crates/ironrdp-bulk/src/bulk.rs"
+      - "crates/ironrdp-bulk/src/mppc/mod.rs"
+      - "crates/ironrdp-bulk/src/xcrush/mod.rs"
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
     estimated_hours: 0.5
 
   - id: TASK-003
