@@ -108,7 +108,10 @@ impl<'a> BitStreamReader<'a> {
         debug_assert!(nbits < 32, "use shift32() for shifting 32 bits");
 
         self.accumulator <<= nbits;
-        self.bits_consumed += usize::from(nbits);
+        #[expect(clippy::as_conversions, reason = "nbits is always <= 31, fits in usize")]
+        {
+            self.bits_consumed += nbits as usize;
+        }
         self.offset += nbits;
 
         if self.offset < 32 {
@@ -184,6 +187,122 @@ impl<'a> BitStreamReader<'a> {
         }
         if pos + 3 < cap {
             self.prefetch |= u32::from(self.buffer[pos + 3]);
+        }
+    }
+}
+
+/// Writes bits to a byte buffer using a 32-bit accumulator.
+///
+/// This is a faithful port of FreeRDP's `wBitStream` write operations.
+/// Bits are written from the most significant bit (MSB) first.
+/// When the 32-bit accumulator is full, it is flushed to the buffer
+/// in big-endian order.
+pub(crate) struct BitStreamWriter<'a> {
+    buffer: &'a mut [u8],
+    /// Byte offset where the next 4-byte flush will write.
+    byte_position: usize,
+    /// Total number of bits written so far.
+    bits_written: usize,
+    /// Number of bits written within the current 4-byte accumulator.
+    offset: u32,
+    /// Current 32-bit accumulator (big-endian, MSB first).
+    accumulator: u32,
+}
+
+impl<'a> BitStreamWriter<'a> {
+    /// Creates a new BitStreamWriter targeting the given byte buffer.
+    pub(crate) fn new(buffer: &'a mut [u8]) -> Self {
+        Self {
+            buffer,
+            byte_position: 0,
+            bits_written: 0,
+            offset: 0,
+            accumulator: 0,
+        }
+    }
+
+    /// Writes `nbits` bits from `value` into the stream.
+    ///
+    /// The bits are taken from the lowest `nbits` bits of `value`.
+    /// They are placed MSB-first into the accumulator. When the
+    /// accumulator fills 32 bits, it is flushed to the buffer.
+    ///
+    /// This is the Rust equivalent of FreeRDP's `BitStream_Write_Bits`.
+    pub(crate) fn write_bits(&mut self, value: u32, nbits: u32) {
+        #[expect(clippy::as_conversions, reason = "nbits is always <= 32, fits in usize")]
+        {
+            self.bits_written += nbits as usize;
+        }
+        self.offset += nbits;
+
+        if self.offset < 32 {
+            // Fits within the current accumulator.
+            // Place bits at position (32 - offset), which is just after
+            // the previously written bits.
+            self.accumulator |= value << (32 - self.offset);
+        } else {
+            // Crossed the 32-bit boundary.
+            self.offset -= 32;
+
+            // Put the upper (nbits - offset) bits into the current accumulator.
+            let mask = (1u32 << (nbits - self.offset)) - 1;
+            self.accumulator |= (value >> self.offset) & mask;
+
+            // Flush the full accumulator to the buffer.
+            self.do_flush();
+            self.accumulator = 0;
+            self.byte_position += 4;
+
+            // Put the remaining lower `offset` bits into the new accumulator.
+            if self.offset > 0 {
+                let mask = (1u32 << self.offset) - 1;
+                self.accumulator |= (value & mask) << (32 - self.offset);
+            }
+        }
+    }
+
+    /// Flushes any remaining bits in the accumulator to the output buffer.
+    ///
+    /// This must be called after all bits have been written to ensure
+    /// any partial accumulator contents are written to the buffer.
+    ///
+    /// This is the Rust equivalent of FreeRDP's `BitStream_Flush`.
+    pub(crate) fn flush(&mut self) {
+        self.do_flush();
+    }
+
+    /// Returns the total number of bits written so far.
+    #[inline]
+    pub(crate) fn bits_written(&self) -> usize {
+        self.bits_written
+    }
+
+    /// Returns the number of bytes needed to hold all written bits,
+    /// rounding up for any partial byte.
+    ///
+    /// Equivalent to `(bs->position + 7) / 8` in FreeRDP.
+    #[inline]
+    pub(crate) fn byte_length(&self) -> usize {
+        self.bits_written.div_ceil(8)
+    }
+
+    /// Writes the accumulator bytes to the buffer in big-endian order.
+    #[expect(clippy::as_conversions, reason = "intentional byte extraction from u32 via masking")]
+    fn do_flush(&mut self) {
+        let pos = self.byte_position;
+        let cap = self.buffer.len();
+
+        if pos < cap {
+            self.buffer[pos] = ((self.accumulator >> 24) & 0xFF) as u8;
+        }
+        if pos + 1 < cap {
+            self.buffer[pos + 1] = ((self.accumulator >> 16) & 0xFF) as u8;
+        }
+        if pos + 2 < cap {
+            self.buffer[pos + 2] = ((self.accumulator >> 8) & 0xFF) as u8;
+        }
+        if pos + 3 < cap {
+            self.buffer[pos + 3] = (self.accumulator & 0xFF) as u8;
         }
     }
 }
