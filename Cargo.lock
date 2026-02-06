@@ -2468,6 +2468,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-bulk"
+version = "0.1.0"
+
+[[package]]
 name = "ironrdp-cfg"
 version = "0.1.0"
 dependencies = [

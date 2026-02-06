@@ -36,7 +36,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 0.5 days
 
 **Tasks**:
-- [ ] **TASK-001**: Create `crates/ironrdp-bulk/` crate with Cargo.toml
+- [x] **TASK-001**: Create `crates/ironrdp-bulk/` crate with Cargo.toml
   - **Acceptance Criteria**: Crate compiles with `cargo check -p ironrdp-bulk`
   - **Dependencies**: None
   - **Risk**: Low

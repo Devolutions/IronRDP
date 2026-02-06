@@ -15,11 +15,13 @@ tasks:
       - "cargo check -p ironrdp-bulk succeeds"
     dependencies: []
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "Crate auto-included via crates/* workspace glob"
+    files_affected:
+      - "crates/ironrdp-bulk/Cargo.toml"
+      - "crates/ironrdp-bulk/src/lib.rs"
     estimated_hours: 0.5
 
   - id: TASK-002
