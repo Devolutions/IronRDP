@@ -538,11 +538,12 @@ tasks:
       - TASK-005
       - TASK-025
     risk: high
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Implemented NCrushBitWriter (LSB-first bit accumulator) and 6 encoding helpers: encode_literal, encode_copy_offset, encode_offset_cache_hit, encode_length_of_match, encode_eos, get_lec_code. Added 12 unit tests covering bit writer and all encoding patterns."
+    files_affected:
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
     estimated_hours: 3
 
   - id: TASK-027

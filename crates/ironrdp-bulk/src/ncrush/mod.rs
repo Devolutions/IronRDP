@@ -15,6 +15,89 @@ use alloc::boxed::Box;
 
 use crate::error::BulkError;
 
+/// LSB-first (little-endian) bit writer for NCRUSH compression.
+///
+/// Bits are accumulated from the least-significant side. When the
+/// accumulator reaches ≥ 16 bits, the lower 16 bits are flushed as
+/// two little-endian bytes to the output buffer.
+///
+/// Ported from FreeRDP's `NCrushWriteStart`/`NCrushWriteBits`/`NCrushWriteFinish`.
+pub(crate) struct NCrushBitWriter<'a> {
+    /// Output byte buffer.
+    dst: &'a mut [u8],
+    /// Current write position in `dst`.
+    pos: usize,
+    /// Bit accumulator (bits are packed from LSB upward).
+    accumulator: u32,
+    /// Number of valid bits in the accumulator.
+    offset: u32,
+}
+
+impl<'a> NCrushBitWriter<'a> {
+    /// Creates a new bit writer targeting the given output buffer.
+    pub(crate) fn new(dst: &'a mut [u8]) -> Self {
+        Self {
+            dst,
+            pos: 0,
+            accumulator: 0,
+            offset: 0,
+        }
+    }
+
+    /// Writes `nbits` bits from the low end of `bits` into the stream.
+    ///
+    /// When the accumulator reaches ≥ 16 bits, the lower 16 bits are
+    /// flushed as 2 bytes (little-endian) to the output buffer.
+    ///
+    /// Returns `Err` if the output buffer overflows.
+    pub(crate) fn write_bits(&mut self, bits: u32, nbits: u32) -> Result<(), BulkError> {
+        self.accumulator |= bits << self.offset;
+        self.offset += nbits;
+
+        if self.offset >= 16 {
+            if self.pos + 2 > self.dst.len() {
+                return Err(BulkError::OutputBufferTooSmall {
+                    required: self.pos + 2,
+                    available: self.dst.len(),
+                });
+            }
+            self.dst[self.pos] = (self.accumulator & 0xFF) as u8;
+            self.dst[self.pos + 1] = ((self.accumulator >> 8) & 0xFF) as u8;
+            self.pos += 2;
+            self.accumulator >>= 16;
+            self.offset -= 16;
+        }
+
+        Ok(())
+    }
+
+    /// Flushes any remaining bits in the accumulator to the output buffer.
+    ///
+    /// Always writes 2 bytes (the lower 16 bits of the accumulator).
+    pub(crate) fn finish(&mut self) -> Result<(), BulkError> {
+        if self.pos + 2 > self.dst.len() {
+            return Err(BulkError::OutputBufferTooSmall {
+                required: self.pos + 2,
+                available: self.dst.len(),
+            });
+        }
+        self.dst[self.pos] = (self.accumulator & 0xFF) as u8;
+        self.dst[self.pos + 1] = ((self.accumulator >> 8) & 0xFF) as u8;
+        self.pos += 2;
+        Ok(())
+    }
+
+    /// Returns the number of bytes written so far (including any `finish` call).
+    pub(crate) fn bytes_written(&self) -> usize {
+        self.pos
+    }
+
+    /// Returns `true` if writing `n` more bytes would overflow the buffer.
+    pub(crate) fn would_overflow(&self, n: usize) -> bool {
+        self.pos + n > self.dst.len()
+    }
+}
+
 /// History buffer size for NCRUSH (64 KB).
 pub(crate) const HISTORY_BUFFER_SIZE: usize = 65536;
 
@@ -863,6 +946,196 @@ impl NCrushContext {
         Ok(())
     }
 
+    // ---------------------------------------------------------------
+    // Huffman encoding helpers for NCRUSH compression
+    // ---------------------------------------------------------------
+
+    /// Reads a little-endian 16-bit Huffman code from the `HuffCodeLEC` byte
+    /// array at the given symbol index.
+    ///
+    /// `HuffCodeLEC` stores codes as pairs of bytes (LE). For symbol `index`,
+    /// the two bytes at `[2*index]` and `[2*index + 1]` form the 16-bit code.
+    fn get_lec_code(index: usize) -> Result<u32, BulkError> {
+        let byte_index = index * 2;
+        if byte_index + 1 >= tables::HuffCodeLEC.len() {
+            return Err(BulkError::InvalidCompressedData("HuffCodeLEC index out of bounds"));
+        }
+        let lo = tables::HuffCodeLEC[byte_index] as u32;
+        let hi = tables::HuffCodeLEC[byte_index + 1] as u32;
+        Ok(lo | (hi << 8))
+    }
+
+    /// Encodes a literal byte using the LEC Huffman table.
+    ///
+    /// Writes `HuffLengthLEC[literal]` bits of `HuffCodeLEC[2*literal]` (LE word).
+    ///
+    /// Ported from FreeRDP's literal encoding in `ncrush_compress`.
+    pub(crate) fn encode_literal(writer: &mut NCrushBitWriter<'_>, literal: u8) -> Result<(), BulkError> {
+        let index = literal as usize;
+        if index >= tables::HuffLengthLEC.len() {
+            return Err(BulkError::InvalidCompressedData("Literal index out of HuffLengthLEC range"));
+        }
+        let bit_length = tables::HuffLengthLEC[index] as u32;
+        if bit_length > 15 {
+            return Err(BulkError::InvalidCompressedData("Literal Huffman code length exceeds 15"));
+        }
+        let code = Self::get_lec_code(index)?;
+        writer.write_bits(code, bit_length)
+    }
+
+    /// Encodes a CopyOffset that is **not** in the offset cache.
+    ///
+    /// 1. Looks up the copy-offset index via `huff_table_copy_offset`.
+    /// 2. Writes the Huffman code for `LEC[257 + copy_offset_index]`.
+    /// 3. Writes the extra low-order bits of the raw copy-offset.
+    ///
+    /// Ported from FreeRDP's non-cache CopyOffset encoding in `ncrush_compress`.
+    pub(crate) fn encode_copy_offset(
+        &self,
+        writer: &mut NCrushBitWriter<'_>,
+        copy_offset: u32,
+    ) -> Result<(), BulkError> {
+        // Map raw offset to lookup index (same as FreeRDP)
+        let lookup = if copy_offset >= 256 {
+            (copy_offset >> 7) + 256
+        } else {
+            copy_offset
+        };
+
+        let lookup_idx = (lookup as usize) + 2; // +2 matches FreeRDP's `bits + 2`
+        if lookup_idx >= HUFF_TABLE_COPY_OFFSET_SIZE {
+            return Err(BulkError::InvalidCompressedData("CopyOffset lookup index out of range"));
+        }
+
+        let copy_offset_index = self.huff_table_copy_offset[lookup_idx] as usize;
+
+        if copy_offset_index >= tables::CopyOffsetBitsLUT.len() {
+            return Err(BulkError::InvalidCompressedData("CopyOffsetIndex out of CopyOffsetBitsLUT range"));
+        }
+        let copy_offset_bits = tables::CopyOffsetBitsLUT[copy_offset_index];
+
+        let index_lec = 257 + copy_offset_index;
+        if index_lec >= tables::HuffLengthLEC.len() {
+            return Err(BulkError::InvalidCompressedData("CopyOffset LEC index out of HuffLengthLEC range"));
+        }
+        let bit_length = tables::HuffLengthLEC[index_lec] as u32;
+        if bit_length > 15 {
+            return Err(BulkError::InvalidCompressedData("CopyOffset Huffman code length exceeds 15"));
+        }
+        if copy_offset_bits > 18 {
+            return Err(BulkError::InvalidCompressedData("CopyOffset extra bits exceed 18"));
+        }
+
+        let code = Self::get_lec_code(index_lec)?;
+        writer.write_bits(code, bit_length)?;
+
+        // Write extra bits (the low-order bits of the raw offset)
+        if copy_offset_bits > 0 {
+            let mask = (1u32 << copy_offset_bits) - 1;
+            let masked_bits = copy_offset & mask;
+            writer.write_bits(masked_bits, copy_offset_bits)?;
+        }
+
+        Ok(())
+    }
+
+    /// Encodes an offset-cache hit (CopyOffset found in the LRU cache).
+    ///
+    /// Writes the Huffman code for `LEC[289 + cache_index]`.
+    ///
+    /// Ported from FreeRDP's OffsetCache encoding in `ncrush_compress`.
+    pub(crate) fn encode_offset_cache_hit(
+        writer: &mut NCrushBitWriter<'_>,
+        cache_index: usize,
+    ) -> Result<(), BulkError> {
+        let index_lec = 289 + cache_index;
+        if index_lec >= tables::HuffLengthLEC.len() {
+            return Err(BulkError::InvalidCompressedData("OffsetCache LEC index out of HuffLengthLEC range"));
+        }
+        let bit_length = tables::HuffLengthLEC[index_lec] as u32;
+        if bit_length >= 15 {
+            return Err(BulkError::InvalidCompressedData("OffsetCache Huffman code length >= 15"));
+        }
+        let code = Self::get_lec_code(index_lec)?;
+        writer.write_bits(code, bit_length)
+    }
+
+    /// Encodes a match length using the LOM Huffman table.
+    ///
+    /// 1. Looks up `IndexCO` via `huff_table_lom` (or uses 28 for large lengths).
+    /// 2. Writes `HuffCodeLOM[IndexCO]` with `HuffLengthLOM[IndexCO]` bits.
+    /// 3. Writes extra bits for the difference from `LOMBaseLUT[IndexCO]`.
+    ///
+    /// The `match_length` parameter is the **raw** match length (not minus 2).
+    /// FreeRDP uses `(MatchLength - 2)` for the LOM table lookup but keeps
+    /// `MatchLength` for the extra-bits calculation.
+    ///
+    /// Ported from FreeRDP's LOM encoding in `ncrush_compress`.
+    pub(crate) fn encode_length_of_match(
+        &self,
+        writer: &mut NCrushBitWriter<'_>,
+        match_length: u32,
+    ) -> Result<(), BulkError> {
+        // FreeRDP: if ((MatchLength - 2) >= 768) IndexCO = 28; else IndexCO = HuffTableLOM[MatchLength];
+        let index_co = if (match_length.wrapping_sub(2)) >= 768 {
+            28usize
+        } else {
+            if (match_length as usize) >= HUFF_TABLE_LOM_SIZE {
+                return Err(BulkError::InvalidCompressedData("MatchLength out of HuffTableLOM range"));
+            }
+            self.huff_table_lom[match_length as usize] as usize
+        };
+
+        if index_co >= tables::HuffLengthLOM.len() {
+            return Err(BulkError::InvalidCompressedData("LOM IndexCO out of HuffLengthLOM range"));
+        }
+        let bit_length = tables::HuffLengthLOM[index_co] as u32;
+
+        if index_co >= tables::LOMBitsLUT.len() {
+            return Err(BulkError::InvalidCompressedData("LOM IndexCO out of LOMBitsLUT range"));
+        }
+        let lom_bits = tables::LOMBitsLUT[index_co] as u32;
+
+        if index_co >= tables::HuffCodeLOM.len() {
+            return Err(BulkError::InvalidCompressedData("LOM IndexCO out of HuffCodeLOM range"));
+        }
+        writer.write_bits(tables::HuffCodeLOM[index_co] as u32, bit_length)?;
+
+        // Write extra bits: (MatchLength - 2) & mask
+        if lom_bits > 0 {
+            let mask = (1u32 << lom_bits) - 1;
+            let masked_bits = match_length.wrapping_sub(2) & mask;
+
+            // Verify the encoding is consistent
+            if index_co >= tables::LOMBaseLUT.len() {
+                return Err(BulkError::InvalidCompressedData("LOM IndexCO out of LOMBaseLUT range"));
+            }
+            if masked_bits + tables::LOMBaseLUT[index_co] as u32 != match_length {
+                return Err(BulkError::InvalidCompressedData("LOM encoding inconsistency: MaskedBits + LOMBase != MatchLength"));
+            }
+
+            writer.write_bits(masked_bits, lom_bits)?;
+        }
+
+        Ok(())
+    }
+
+    /// Encodes the end-of-stream marker (symbol 256 in the LEC table).
+    ///
+    /// Ported from FreeRDP's EOS encoding at the end of `ncrush_compress`.
+    pub(crate) fn encode_eos(writer: &mut NCrushBitWriter<'_>) -> Result<(), BulkError> {
+        let index = 256;
+        if index >= tables::HuffLengthLEC.len() {
+            return Err(BulkError::InvalidCompressedData("EOS index out of HuffLengthLEC range"));
+        }
+        let bit_length = tables::HuffLengthLEC[index] as u32;
+        if bit_length > 15 {
+            return Err(BulkError::InvalidCompressedData("EOS Huffman code length exceeds 15"));
+        }
+        let code = Self::get_lec_code(index)?;
+        writer.write_bits(code, bit_length)
+    }
+
     /// Resets the NCRUSH context.
     ///
     /// Zeros the history buffer, offset cache, match table, and hash table.
@@ -1305,5 +1578,189 @@ mod tests {
         // history_offset = 32868 - 32768 = 100
         // 50 - 100 = -50 → clamped to 0
         assert_eq!(ctx.hash_table[42], 0);
+    }
+
+    // ---------------------------------------------------------------
+    // NCrushBitWriter tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_ncrush_bit_writer_basic() {
+        let mut buf = [0u8; 16];
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // Write 8 bits: 0xAB
+        writer.write_bits(0xAB, 8).unwrap();
+        assert_eq!(writer.bytes_written(), 0); // not flushed yet (< 16 bits)
+
+        // Write 8 more bits: 0xCD → accumulator has 16 bits, should flush
+        writer.write_bits(0xCD, 8).unwrap();
+        assert_eq!(writer.bytes_written(), 2);
+        // Flushed bytes should be LE: low byte first
+        assert_eq!(buf[0], 0xAB);
+        assert_eq!(buf[1], 0xCD);
+    }
+
+    #[test]
+    fn test_ncrush_bit_writer_finish() {
+        let mut buf = [0u8; 16];
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // Write 5 bits
+        writer.write_bits(0x15, 5).unwrap();
+        assert_eq!(writer.bytes_written(), 0);
+
+        writer.finish().unwrap();
+        assert_eq!(writer.bytes_written(), 2);
+        assert_eq!(buf[0], 0x15);
+        assert_eq!(buf[1], 0x00);
+    }
+
+    #[test]
+    fn test_ncrush_bit_writer_overflow() {
+        let mut buf = [0u8; 2]; // Only room for one flush
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // Fill 16 bits → flush (2 bytes)
+        writer.write_bits(0xFFFF, 16).unwrap();
+        assert_eq!(writer.bytes_written(), 2);
+
+        // Another 16 bits → should fail
+        let result = writer.write_bits(0x0001, 16);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ncrush_bit_writer_accumulation() {
+        // Verify bits are accumulated LSB-first
+        let mut buf = [0u8; 4];
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // Write 4 bits: 0b1010
+        writer.write_bits(0b1010, 4).unwrap();
+        // Write 4 bits: 0b0101 → accumulator = 0b0101_1010
+        writer.write_bits(0b0101, 4).unwrap();
+        // Write 8 bits: 0xFF → accumulator has 16 bits, flush
+        writer.write_bits(0xFF, 8).unwrap();
+        assert_eq!(writer.bytes_written(), 2);
+        // Low byte: 0b0101_1010 = 0x5A, High byte: 0xFF
+        assert_eq!(buf[0], 0x5A);
+        assert_eq!(buf[1], 0xFF);
+    }
+
+    // ---------------------------------------------------------------
+    // Huffman encoding helper tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_ncrush_encode_literal() {
+        let mut buf = [0u8; 16];
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // Encode literal 0 (space character equivalent in many codings)
+        NCrushContext::encode_literal(&mut writer, 0).unwrap();
+
+        // HuffLengthLEC[0] = 6, HuffCodeLEC[0..2] = [0x04, 0x00] → code = 0x0004
+        // After write_bits(0x0004, 6): accumulator = 0x04, offset = 6
+        // Not flushed yet — finish to see the output
+        writer.finish().unwrap();
+        assert_eq!(buf[0], 0x04);
+        assert_eq!(buf[1], 0x00);
+    }
+
+    #[test]
+    fn test_ncrush_encode_two_literals() {
+        let mut buf = [0u8; 16];
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // Encode literal 0: code=0x04, len=6
+        NCrushContext::encode_literal(&mut writer, 0).unwrap();
+        // Encode literal 1: code=0x24, len=6
+        NCrushContext::encode_literal(&mut writer, 1).unwrap();
+        // Total: 12 bits — not flushed yet
+
+        // Encode literal 2: code=0x14, len=6
+        NCrushContext::encode_literal(&mut writer, 2).unwrap();
+        // Total: 18 bits → should have flushed 16 bits
+
+        assert_eq!(writer.bytes_written(), 2);
+
+        // accumulator after 3 writes:
+        // bits 0-5:   0x04 = 0b000100
+        // bits 6-11:  0x24 = 0b100100
+        // bits 12-17: 0x14 = 0b010100
+        // Combined: 0b010100_100100_000100
+        // Lower 16 bits: 0b0100_100100_000100 = 0x4904
+        assert_eq!(buf[0], 0x04);
+        assert_eq!(buf[1], 0x49);
+    }
+
+    #[test]
+    fn test_ncrush_encode_eos() {
+        let mut buf = [0u8; 16];
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // EOS is symbol 256 in LEC table
+        NCrushContext::encode_eos(&mut writer).unwrap();
+
+        // HuffLengthLEC[256] = 13, HuffCodeLEC[512..514] = [0xFF, 0x17] → code = 0x17FF
+        writer.finish().unwrap();
+        // 13 bits of 0x17FF = lower 13 bits = 0x17FF & 0x1FFF = 0x17FF
+        assert_eq!(buf[0], 0xFF);
+        assert_eq!(buf[1], 0x17);
+    }
+
+    #[test]
+    fn test_ncrush_encode_offset_cache_hit() {
+        let mut buf = [0u8; 16];
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // Cache index 0 → LEC index 289
+        // HuffLengthLEC[289] = 5, HuffCodeLEC[578..580] = [0x18, 0x00] → code = 0x0018
+        NCrushContext::encode_offset_cache_hit(&mut writer, 0).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(buf[0], 0x18);
+        assert_eq!(buf[1], 0x00);
+    }
+
+    #[test]
+    fn test_ncrush_encode_length_of_match_simple() {
+        let ctx = NCrushContext::new(true).unwrap();
+        let mut buf = [0u8; 16];
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // match_length = 2 (minimum match)
+        // huff_table_lom[2] = 0 → IndexCO = 0
+        // HuffLengthLOM[0] = 4, HuffCodeLOM[0] = 0x0001
+        // LOMBitsLUT[0] = 0 → no extra bits
+        ctx.encode_length_of_match(&mut writer, 2).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(buf[0], 0x01);
+        assert_eq!(buf[1], 0x00);
+    }
+
+    #[test]
+    fn test_ncrush_encode_copy_offset_small() {
+        let ctx = NCrushContext::new(true).unwrap();
+        let mut buf = [0u8; 16];
+        let mut writer = NCrushBitWriter::new(&mut buf);
+
+        // CopyOffset = 1 (small offset)
+        // lookup = 1, lookup_idx = 3
+        // huff_table_copy_offset[3] should be 1 (from generate_tables)
+        // CopyOffsetBitsLUT[1] = 0 → no extra bits
+        // IndexLEC = 257 + 1 = 258
+        // The encoding should succeed without error
+        ctx.encode_copy_offset(&mut writer, 1).unwrap();
+        writer.finish().unwrap();
+
+        // Just verify it wrote something without error
+        assert!(writer.bytes_written() > 0);
+    }
+
+    #[test]
+    fn test_ncrush_encode_would_overflow() {
+        let mut writer = NCrushBitWriter::new(&mut []);
+        assert!(writer.would_overflow(1));
     }
 }
