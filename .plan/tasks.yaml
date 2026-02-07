@@ -433,11 +433,13 @@ tasks:
     dependencies:
       - TASK-003
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: "Large tables - generate with script or copy carefully"
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "All 11 tables ported via Python extraction script. Validated all sizes match. Also added NCRUSH constants (HISTORY_BUFFER_SIZE, etc.)."
+    files_affected:
+      - crates/ironrdp-bulk/src/ncrush/mod.rs
+      - crates/ironrdp-bulk/src/ncrush/tables.rs
     estimated_hours: 2
 
   - id: TASK-022

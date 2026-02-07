@@ -242,7 +242,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 1 day
 
 **Tasks**:
-- [ ] **TASK-021**: Port NCRUSH constants and Huffman tables
+- [x] **TASK-021**: Port NCRUSH constants and Huffman tables
   - **Acceptance Criteria**: All static tables ported: `HuffTableLEC`, `HuffTableLOM`, `HuffTableMask`, `CopyOffsetBitsLUT`, `CopyOffsetBaseLUT`, `LOMBitsLUT`, `LOMBaseLUT`, Huffman code/length tables
   - **Dependencies**: TASK-003
   - **Risk**: Low (tedious but straightforward)
