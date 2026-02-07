@@ -361,7 +361,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: All history buffer operations use safe slice methods
   - **Dependencies**: TASK-033
   - **Risk**: Medium (must maintain performance)
-- [ ] **TASK-035**: Ensure all tests still pass after safety refactoring
+- [x] **TASK-035**: Ensure all tests still pass after safety refactoring
   - **Acceptance Criteria**: Full test suite passes, no regressions
   - **Dependencies**: TASK-034
   - **Risk**: Medium
