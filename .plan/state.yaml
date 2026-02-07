@@ -80,7 +80,7 @@ phases:
     started_at: "2026-02-07T00:00:00Z"
     completed_at: null
     tasks_total: 5
-    tasks_completed: 0
+    tasks_completed: 1
     blocked: false
     blocker_reason: null
 
@@ -115,9 +115,9 @@ phases:
     blocker_reason: null
 
 tasks_total: 37
-tasks_completed: 24
+tasks_completed: 25
 tasks_in_progress: 0
 tasks_blocked: 0
 last_updated: "2026-02-06T00:00:00Z"
-last_commit: "TASK-024: Port NCRUSH decompression test"
+last_commit: "TASK-025: Implement NCRUSH hash-chain match finding"
 notes: []

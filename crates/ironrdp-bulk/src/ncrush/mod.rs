@@ -620,6 +620,249 @@ impl NCrushContext {
         Ok(&self.history_buffer[history_start..history_ptr])
     }
 
+    /// Adds source data positions to the hash table and match table.
+    ///
+    /// For each position in `[history_offset, history_offset + src_size - 8)`:
+    /// - Computes a 2-byte hash from the source data (little-endian u16).
+    /// - Stores the old hash table entry into `match_table[position]`
+    ///   (creating a chain of positions with the same hash).
+    /// - Updates `hash_table[hash]` with the new position.
+    ///
+    /// Ported from FreeRDP's `ncrush_hash_table_add`.
+    pub(crate) fn hash_table_add(
+        &mut self,
+        src_data: &[u8],
+        src_size: usize,
+        history_offset: usize,
+    ) {
+        if src_size < 8 {
+            return;
+        }
+        let end_offset = history_offset + src_size - 8;
+        let mut offset = history_offset;
+        let mut src_idx = 0usize;
+
+        while offset < end_offset {
+            let hash =
+                u16::from_le_bytes([src_data[src_idx], src_data[src_idx + 1]]) as usize;
+            let old_entry = self.hash_table[hash];
+            self.hash_table[hash] = offset as u16;
+            self.match_table[offset] = old_entry;
+            src_idx += 1;
+            offset += 1;
+        }
+    }
+
+    /// Computes the match length between two positions in the history buffer.
+    ///
+    /// Compares bytes starting at `offset1` and `offset2`, stopping when a
+    /// mismatch is found or `offset1` exceeds `limit`. Returns the number
+    /// of matching bytes (may be negative if the limit is exceeded
+    /// immediately, indicating no valid comparison was possible).
+    ///
+    /// Ported from FreeRDP's `ncrush_find_match_length`.
+    fn find_match_length(&self, offset1: usize, offset2: usize, limit: usize) -> i32 {
+        let buf = &*self.history_buffer;
+        let start = offset1;
+        let mut i1 = offset1;
+        let mut i2 = offset2;
+
+        loop {
+            if i1 > limit {
+                break;
+            }
+            let v1 = buf[i1];
+            let v2 = buf[i2];
+            i1 += 1;
+            i2 += 1;
+            if v1 != v2 {
+                break;
+            }
+        }
+
+        // Equivalent to FreeRDP's `Ptr1 - (Ptr + 1)`
+        (i1 as i32) - (start as i32) - 1
+    }
+
+    /// Finds the best LZ77 match for the current position using hash-chain
+    /// traversal.
+    ///
+    /// Searches up to 4 candidates from the hash chain, using a quick filter
+    /// (checking the byte at the current best match length) before computing
+    /// full match lengths. Returns `None` if no match is found, or
+    /// `Some((match_length, match_offset))` for the best match.
+    ///
+    /// A match length > 16 is considered "good enough" and terminates the
+    /// search early.
+    ///
+    /// Ported from FreeRDP's `ncrush_find_best_match`.
+    pub(crate) fn find_best_match(
+        &mut self,
+        history_offset: u16,
+    ) -> Result<Option<(usize, u16)>, BulkError> {
+        let ho = history_offset as usize;
+
+        if self.match_table[ho] == 0 {
+            return Ok(None);
+        }
+
+        let mut match_length: usize = 2;
+        let mut offset: u16 = history_offset;
+        let history_ptr = self.history_offset; // end of valid data
+
+        // Sentinel: allows the chain-following logic to work at position 0
+        self.match_table[0] = history_offset;
+        let mut match_offset: u16 = self.match_table[ho];
+        let mut next_offset: u16 = self.match_table[offset as usize];
+
+        for _i in 0..4 {
+            let mut j: i32 = -1;
+
+            // 6 chain-following steps with quick-filter check.
+            // Each step follows the chain one link and checks if the
+            // candidate's byte at position `match_length` matches the
+            // current position's byte at `history_offset + match_length`.
+            // Alternates between Offset and NextOffset.
+            let target_byte = self.history_buffer[ho + match_length];
+
+            if j < 0 {
+                offset = self.match_table[next_offset as usize];
+                if self.history_buffer[match_length + next_offset as usize] == target_byte {
+                    j = 0;
+                }
+            }
+            if j < 0 {
+                next_offset = self.match_table[offset as usize];
+                if self.history_buffer[match_length + offset as usize] == target_byte {
+                    j = 1;
+                }
+            }
+            if j < 0 {
+                offset = self.match_table[next_offset as usize];
+                if self.history_buffer[match_length + next_offset as usize] == target_byte {
+                    j = 2;
+                }
+            }
+            if j < 0 {
+                next_offset = self.match_table[offset as usize];
+                if self.history_buffer[match_length + offset as usize] == target_byte {
+                    j = 3;
+                }
+            }
+            if j < 0 {
+                offset = self.match_table[next_offset as usize];
+                if self.history_buffer[match_length + next_offset as usize] == target_byte {
+                    j = 4;
+                }
+            }
+            if j < 0 {
+                next_offset = self.match_table[offset as usize];
+                if self.history_buffer[match_length + offset as usize] == target_byte {
+                    j = 5;
+                }
+            }
+
+            if j >= 0 {
+                // Pick the candidate: even j → NextOffset, odd j → Offset
+                if (j % 2) == 0 {
+                    offset = next_offset;
+                }
+
+                if (offset != history_offset) && (offset != 0) {
+                    let len = self.find_match_length(
+                        ho + 2,
+                        offset as usize + 2,
+                        history_ptr,
+                    );
+                    let length = (len + 2) as usize;
+
+                    if (len + 2) < 2 {
+                        // Boundary error — clean up and return error
+                        self.match_table[0] = 0;
+                        return Err(BulkError::InvalidCompressedData(
+                            "NCRUSH: match length computation error",
+                        ));
+                    }
+
+                    if length > 16 {
+                        // Great match — update and stop
+                        match_length = length;
+                        match_offset = offset;
+                        break;
+                    }
+
+                    if length > match_length {
+                        match_length = length;
+                        match_offset = offset;
+                    }
+
+                    if (length <= match_length) || (ho + 2 < history_ptr) {
+                        next_offset = self.match_table[offset as usize];
+                        // match_length may have changed; next iteration
+                        // will recompute target_byte
+                        continue;
+                    }
+                }
+
+                break;
+            }
+            // j < 0: no candidate passed the quick filter in this batch
+            // of 6 chain steps. Continue to next outer iteration (the
+            // chain pointers have already advanced).
+        }
+
+        self.match_table[0] = 0; // Clean up sentinel
+        Ok(Some((match_length, match_offset)))
+    }
+
+    /// Slides the encoder window by moving the last 32 KB of history to the
+    /// front, and adjusting all hash/match table entries accordingly.
+    ///
+    /// Called when the history buffer is nearly full to make room for new data
+    /// while preserving the most recent 32 KB for back-references.
+    ///
+    /// Ported from FreeRDP's `ncrush_move_encoder_windows`.
+    pub(crate) fn move_encoder_windows(
+        &mut self,
+        history_ptr: usize,
+    ) -> Result<(), BulkError> {
+        const HALF: usize = HISTORY_BUFFER_SIZE / 2; // 32768
+
+        if history_ptr < HALF || history_ptr > HISTORY_BUFFER_SIZE {
+            return Err(BulkError::InvalidCompressedData(
+                "NCRUSH: invalid history ptr for window move",
+            ));
+        }
+
+        // Move last 32 KB to front
+        self.history_buffer
+            .copy_within((history_ptr - HALF)..history_ptr, 0);
+
+        let history_offset = (history_ptr - HALF) as i32;
+
+        // Adjust hash table entries: subtract the offset shift
+        for entry in self.hash_table.iter_mut() {
+            let new_val = (*entry as i32) - history_offset;
+            *entry = if new_val <= 0 { 0 } else { new_val as u16 };
+        }
+
+        // Adjust match table entries (relocate first half)
+        const MATCH_HALF: usize = MATCH_TABLE_SIZE / 2;
+        for j in 0..MATCH_HALF {
+            let src_idx = (history_offset as usize) + j;
+            if src_idx >= MATCH_TABLE_SIZE {
+                continue;
+            }
+            let new_val = (self.match_table[src_idx] as i32) - history_offset;
+            self.match_table[j] = if new_val <= 0 { 0 } else { new_val as u16 };
+        }
+
+        // Zero upper half of match table
+        self.match_table[MATCH_HALF..MATCH_TABLE_SIZE].fill(0);
+
+        Ok(())
+    }
+
     /// Resets the NCRUSH context.
     ///
     /// Zeros the history buffer, offset cache, match table, and hash table.
@@ -871,5 +1114,196 @@ mod tests {
             test_data::TEST_BELLS_DATA,
             "NCrushDecompressBells: output mismatch"
         );
+    }
+
+    // --- Match-finding tests ---
+
+    #[test]
+    fn test_ncrush_hash_table_add_basic() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+
+        // Write "ABABAB..." into history at offset 100
+        let data = b"ABABABABAB"; // 10 bytes
+        ctx.hash_table_add(data, data.len(), 100);
+
+        // The 2-byte hash for "AB" is u16::from_le_bytes([0x41, 0x42]) = 0x4241
+        let hash_ab = u16::from_le_bytes([b'A', b'B']) as usize;
+
+        // The last occurrence of "AB" should be at the highest offset
+        // that was inserted. With src_size=10, end_offset = 100+10-8 = 102.
+        // So we insert at offsets 100, 101.
+        // "AB" appears at offset 100 (data[0..2]) only; offset 101 would
+        // hash "BA" which is different.
+        let hash_ba = u16::from_le_bytes([b'B', b'A']) as usize;
+
+        // hash_table[hash_ab] should point to offset 100
+        // (only "AB" at position 100 — the later "AB" at 102 is not inserted
+        //  because end_offset = 102 and the while condition is offset < end_offset)
+        // Actually let's trace: offset starts at 100, end = 102
+        //   offset=100: hash("AB")=0x4241, insert 100
+        //   offset=101: hash("BA")=0x4142, insert 101
+        //   offset=102: 102 >= 102, stop
+        // Wait, the condition is offset < end_offset, so:
+        //   100 < 102 → yes, process
+        //   101 < 102 → yes, process
+        //   102 < 102 → no, stop
+        // So only 2 positions are inserted.
+
+        // For hash "AB" (0x4241): hash_table[0x4241] = 100
+        assert_eq!(ctx.hash_table[hash_ab], 100);
+        // For hash "BA" (0x4142): hash_table[0x4142] = 101
+        assert_eq!(ctx.hash_table[hash_ba], 101);
+    }
+
+    #[test]
+    fn test_ncrush_hash_table_add_chain() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+
+        // Insert two blocks with the same starting bytes to create a chain
+        let data1 = b"XYXYXYXYXY"; // 10 bytes at offset 50
+        ctx.hash_table_add(data1, data1.len(), 50);
+
+        let data2 = b"XYXYXYXYXY"; // 10 bytes at offset 200
+        ctx.hash_table_add(data2, data2.len(), 200);
+
+        let hash_xy = u16::from_le_bytes([b'X', b'Y']) as usize;
+
+        // hash_table[hash_xy] should point to most recent (200)
+        assert_eq!(ctx.hash_table[hash_xy], 200);
+
+        // match_table[200] should chain back to 50
+        assert_eq!(ctx.match_table[200], 50);
+    }
+
+    #[test]
+    fn test_ncrush_find_match_length_basic() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+
+        // Write identical data at two positions
+        ctx.history_buffer[10] = b'A';
+        ctx.history_buffer[11] = b'B';
+        ctx.history_buffer[12] = b'C';
+        ctx.history_buffer[13] = b'D';
+        ctx.history_buffer[14] = b'X'; // mismatch
+
+        ctx.history_buffer[20] = b'A';
+        ctx.history_buffer[21] = b'B';
+        ctx.history_buffer[22] = b'C';
+        ctx.history_buffer[23] = b'D';
+        ctx.history_buffer[24] = b'Y'; // mismatch
+
+        ctx.history_offset = 30; // limit
+
+        // Match from offset 10 and 20: 4 bytes match (A, B, C, D), then mismatch
+        let len = ctx.find_match_length(10, 20, 30);
+        assert_eq!(len, 4);
+    }
+
+    #[test]
+    fn test_ncrush_find_match_length_limit() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+
+        // Write identical data at two positions
+        for i in 0..10 {
+            ctx.history_buffer[100 + i] = (i as u8) + 1;
+            ctx.history_buffer[200 + i] = (i as u8) + 1;
+        }
+
+        // With limit = 104, we can compare indices 100..104 (5 checks).
+        // All 5 bytes match, but then 105 > 104, so we break.
+        // Return: (105 - 100) - 1 = 4
+        let len = ctx.find_match_length(100, 200, 104);
+        assert_eq!(len, 4);
+    }
+
+    #[test]
+    fn test_ncrush_find_match_length_immediate_limit() {
+        let ctx = NCrushContext::new(true).unwrap();
+
+        // offset1 > limit immediately → returns -1
+        let len = ctx.find_match_length(10, 20, 5);
+        assert_eq!(len, -1);
+    }
+
+    #[test]
+    fn test_ncrush_find_best_match_no_chain() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+
+        // match_table[100] = 0 → no chain
+        let result = ctx.find_best_match(100).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_ncrush_find_best_match_simple() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+
+        // Set up: write "ABCDEF" at position 50 and "ABCDXY" at position 100
+        let pattern1 = b"ABCDEF";
+        let pattern2 = b"ABCDXY";
+        for (i, &b) in pattern1.iter().enumerate() {
+            ctx.history_buffer[50 + i] = b;
+        }
+        for (i, &b) in pattern2.iter().enumerate() {
+            ctx.history_buffer[100 + i] = b;
+        }
+
+        // Set history_offset (write cursor) past the data
+        ctx.history_offset = 110;
+
+        // Create a hash chain: match_table[100] = 50 (position 100 chains to 50)
+        ctx.match_table[100] = 50;
+
+        // The first 2 bytes match the hash; find_best_match starts comparing
+        // from offset+2. Bytes at 52,53 match 102,103 (C,D), then mismatch (E vs X).
+        // So match length = 4 (A,B,C,D).
+        let result = ctx.find_best_match(100).unwrap();
+        assert!(result.is_some());
+        let (length, offset) = result.unwrap();
+        assert_eq!(length, 4);
+        assert_eq!(offset, 50);
+    }
+
+    #[test]
+    fn test_ncrush_move_encoder_windows_basic() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+
+        // Write some data in the second half of the buffer
+        for i in 0..100 {
+            ctx.history_buffer[32768 + i] = (i as u8) + 1;
+        }
+
+        // Set up hash and match table entries pointing into second half
+        ctx.hash_table[0x1234] = 32800; // points to position 32800
+        ctx.match_table[32800] = 32790; // chains to position 32790
+
+        // Slide window: history_ptr = 32868 (100 bytes past the half point)
+        ctx.move_encoder_windows(32868).unwrap();
+
+        // Data should now be at the front: positions 32768..32868 → 0..100
+        // But actually, copy_within copies (32868 - 32768)..32868 = 100..32868
+        // Wait, let me recalculate.
+        // HALF = 32768, history_ptr = 32868
+        // Source: (32868 - 32768)..32868 = 100..32868
+        // Dest: 0..
+
+        // Actually, the function copies history_buffer[(history_ptr - HALF)..history_ptr]
+        // = history_buffer[100..32868] to position 0.
+        // history_offset = history_ptr - HALF = 100
+        // Hash table entries are adjusted: 32800 - 100 = 32700
+        assert_eq!(ctx.hash_table[0x1234], 32700);
+    }
+
+    #[test]
+    fn test_ncrush_move_encoder_windows_clamps_negative() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+
+        // Entry pointing before the offset should be clamped to 0
+        ctx.hash_table[42] = 50; // 50 < offset (say, 100)
+
+        ctx.move_encoder_windows(32868).unwrap();
+        // history_offset = 32868 - 32768 = 100
+        // 50 - 100 = -50 → clamped to 0
+        assert_eq!(ctx.hash_table[42], 0);
     }
 }

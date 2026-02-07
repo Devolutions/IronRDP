@@ -279,7 +279,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 1 day
 
 **Tasks**:
-- [ ] **TASK-025**: Implement NCRUSH hash-chain match finding
+- [x] **TASK-025**: Implement NCRUSH hash-chain match finding
   - **Acceptance Criteria**: 2-byte hash lookup with chain traversal, finds best match
   - **Dependencies**: TASK-022
   - **Risk**: Medium

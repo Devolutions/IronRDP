@@ -517,11 +517,12 @@ tasks:
     dependencies:
       - TASK-022
     risk: medium
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Ported hash_table_add, find_match_length, find_best_match, and move_encoder_windows. 9 new tests covering hash insertion, chain creation, match length computation, best-match search, and window sliding. 86 tests passing."
+    files_affected:
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
     estimated_hours: 2
 
   - id: TASK-026
