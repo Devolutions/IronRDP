@@ -7,7 +7,7 @@
 //! Ported from FreeRDP's `libfreerdp/codec/bulk.c`.
 
 #[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 
 use crate::error::BulkError;
 use crate::mppc::MppcContext;

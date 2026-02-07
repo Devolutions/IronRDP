@@ -387,7 +387,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 0.5 days
 
 **Tasks**:
-- [ ] **TASK-036**: Verify wasm32-unknown-unknown build
+- [x] **TASK-036**: Verify wasm32-unknown-unknown build
   - **Acceptance Criteria**: `cargo check --target wasm32-unknown-unknown -p ironrdp-bulk` succeeds
   - **Dependencies**: TASK-035
   - **Risk**: Low (crate is `no_std` + `alloc`)

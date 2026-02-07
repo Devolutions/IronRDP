@@ -742,11 +742,13 @@ tasks:
     dependencies:
       - TASK-035
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "wasm32-unknown-unknown builds succeed with both default features (std) and no_std+alloc. Fixed missing alloc imports (Vec, vec!) in bulk.rs and ncrush/mod.rs for no_std path. Zero platform-specific dependencies (no libc, fs, io, net, os, process, env, thread). All 130 tests still pass."
+    files_affected:
+      - "crates/ironrdp-bulk/src/bulk.rs"
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
     estimated_hours: 0.5
 
   - id: TASK-037

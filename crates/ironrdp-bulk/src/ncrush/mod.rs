@@ -11,7 +11,7 @@ mod test_data;
 pub(crate) mod tables;
 
 #[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec, vec::Vec};
 
 use crate::error::BulkError;
 
