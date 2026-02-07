@@ -1136,6 +1136,270 @@ impl NCrushContext {
         writer.write_bits(code, bit_length)
     }
 
+    // ---------------------------------------------------------------
+    // NCRUSH compress
+    // ---------------------------------------------------------------
+
+    /// Compresses `src_data` using the NCRUSH algorithm.
+    ///
+    /// `dst_buffer` must be at least `src_data.len()` bytes.
+    ///
+    /// On success returns `(compressed_size, flags)`.
+    /// - If `flags & PACKET_COMPRESSED != 0`: the compressed data is in
+    ///   `dst_buffer[..compressed_size]`.
+    /// - If `flags & PACKET_FLUSHED != 0` **and** `flags & PACKET_COMPRESSED == 0`:
+    ///   compression was abandoned (output would exceed input); the caller
+    ///   should transmit the original `src_data` uncompressed. The context
+    ///   has been reset.
+    ///
+    /// Ported from FreeRDP's `ncrush_compress`.
+    pub(crate) fn compress(
+        &mut self,
+        src_data: &[u8],
+        dst_buffer: &mut [u8],
+    ) -> Result<(usize, u32), BulkError> {
+        use crate::flags;
+
+        const COMPRESSION_LEVEL: u32 = 2; // NCRUSH compression type
+
+        let src_size = src_data.len();
+        if src_size == 0 {
+            return Ok((0, COMPRESSION_LEVEL));
+        }
+
+        let mut out_flags: u32 = 0;
+        let mut packet_at_front = false;
+        let mut packet_flushed = false;
+
+        // --- Window management: check if we need to slide or flush ---
+        // FreeRDP: if ((SrcSize + ncrush->HistoryOffset) >= 65529)
+        if src_size + self.history_offset >= 65529 {
+            if self.history_offset == self.history_buffer_size + 1 {
+                // Previously flushed — reset offset
+                self.history_offset = 0;
+                packet_flushed = true;
+            } else {
+                // Slide the encoder window
+                self.move_encoder_windows(self.history_offset)?;
+                self.history_offset = 32768;
+                packet_at_front = true;
+            }
+        }
+
+        if dst_buffer.len() < src_size {
+            return Err(BulkError::OutputBufferTooSmall {
+                required: src_size,
+                available: dst_buffer.len(),
+            });
+        }
+
+        let dst_size = src_size; // Compressed output must not exceed source size
+
+        // --- Populate hash chains and copy source into history buffer ---
+        let history_offset = self.history_offset;
+        self.hash_table_add(src_data, src_size, history_offset);
+
+        // Copy source data into the history buffer at the current offset
+        let hist_end = history_offset + src_size;
+        if hist_end > HISTORY_BUFFER_SIZE {
+            return Err(BulkError::HistoryBufferOverflow);
+        }
+        self.history_buffer[history_offset..hist_end].copy_from_slice(src_data);
+        let history_ptr_limit = hist_end; // End of valid data (for bounds check)
+
+        // Set history_offset to end of valid data — find_best_match reads
+        // self.history_offset as the limit for find_match_length.
+        // (FreeRDP: ncrush->HistoryPtr = &HistoryPtr[SrcSize])
+        self.history_offset = hist_end;
+
+        // --- Main compression loop ---
+        let mut writer = NCrushBitWriter::new(dst_buffer);
+        let mut src_pos: usize = 0;
+        let mut history_ptr: usize = history_offset; // Current position in history buffer
+
+        // Process all bytes except the last 2 (match needs at least 2 bytes ahead)
+        while src_pos < src_size.saturating_sub(2) {
+            let mut match_length: usize = 0;
+            let ho = history_ptr;
+
+            // Bounds check (FreeRDP: HistoryPtr > ncrush->HistoryPtr)
+            if ho > history_ptr_limit {
+                return Err(BulkError::InvalidCompressedData(
+                    "NCRUSH compress: history pointer past limit",
+                ));
+            }
+            if ho >= HISTORY_BUFFER_SIZE {
+                return Err(BulkError::InvalidCompressedData(
+                    "NCRUSH compress: history offset >= 65536",
+                ));
+            }
+
+            // Try to find a match via the hash chain
+            let mut match_offset: u16 = 0;
+            if self.match_table[ho] != 0 {
+                if let Some((mlen, moff)) = self.find_best_match(ho as u16)? {
+                    match_length = mlen;
+                    match_offset = moff;
+                }
+            }
+
+            // Compute CopyOffset if we found a match
+            let copy_offset = if match_length > 0 {
+                let dist = if history_ptr >= match_offset as usize {
+                    history_ptr - match_offset as usize
+                } else {
+                    // Wrap around
+                    history_ptr + HISTORY_BUFFER_SIZE - match_offset as usize
+                };
+                (self.history_buffer_size - 1) & dist
+            } else {
+                0
+            };
+
+            // FreeRDP: discard 2-byte match if offset >= 64
+            if match_length == 2 && copy_offset >= 64 {
+                match_length = 0;
+            }
+
+            if match_length == 0 {
+                // --- Encode literal ---
+                let literal = src_data[src_pos];
+                src_pos += 1;
+                history_ptr += 1;
+
+                // Check output space (PACKET_FLUSH #1)
+                if writer.would_overflow(2) {
+                    self.reset(true);
+                    return Ok((src_size, flags::PACKET_FLUSHED | COMPRESSION_LEVEL));
+                }
+
+                Self::encode_literal(&mut writer, literal)?;
+            } else {
+                // --- Encode match ---
+                history_ptr += match_length;
+                src_pos += match_length;
+
+                // Check output space (PACKET_FLUSH #2)
+                if writer.would_overflow(8) {
+                    self.reset(true);
+                    return Ok((src_size, flags::PACKET_FLUSHED | COMPRESSION_LEVEL));
+                }
+
+                // --- Offset cache management (LRU) ---
+                let mut offset_cache_index: usize = 5; // sentinel: not in cache
+
+                let copy_offset_u32 = copy_offset as u32;
+
+                if copy_offset_u32 == self.offset_cache[0]
+                    || copy_offset_u32 == self.offset_cache[1]
+                    || copy_offset_u32 == self.offset_cache[2]
+                    || copy_offset_u32 == self.offset_cache[3]
+                {
+                    if copy_offset_u32 == self.offset_cache[3] {
+                        let old = self.offset_cache[3];
+                        self.offset_cache[3] = self.offset_cache[0];
+                        self.offset_cache[0] = old;
+                        offset_cache_index = 3;
+                    } else if copy_offset_u32 == self.offset_cache[2] {
+                        let old = self.offset_cache[2];
+                        self.offset_cache[2] = self.offset_cache[0];
+                        self.offset_cache[0] = old;
+                        offset_cache_index = 2;
+                    } else if copy_offset_u32 == self.offset_cache[1] {
+                        let old = self.offset_cache[1];
+                        self.offset_cache[1] = self.offset_cache[0];
+                        self.offset_cache[0] = old;
+                        offset_cache_index = 1;
+                    } else {
+                        // copy_offset_u32 == self.offset_cache[0]
+                        offset_cache_index = 0;
+                    }
+                } else {
+                    // Not in cache — push new offset, shift others down
+                    self.offset_cache[3] = self.offset_cache[2];
+                    self.offset_cache[2] = self.offset_cache[1];
+                    self.offset_cache[1] = self.offset_cache[0];
+                    self.offset_cache[0] = copy_offset_u32;
+                }
+
+                let match_length_u32 = match_length as u32;
+
+                if offset_cache_index >= 4 {
+                    // CopyOffset NOT in cache
+                    self.encode_copy_offset(&mut writer, copy_offset_u32)?;
+                    self.encode_length_of_match(&mut writer, match_length_u32)?;
+                } else {
+                    // CopyOffset IS in cache
+                    Self::encode_offset_cache_hit(&mut writer, offset_cache_index)?;
+                    self.encode_length_of_match(&mut writer, match_length_u32)?;
+                }
+            }
+
+            // FreeRDP: if (HistoryPtr >= HistoryBufferEndPtr) return -1013;
+            if history_ptr >= HISTORY_BUFFER_SIZE {
+                return Err(BulkError::InvalidCompressedData(
+                    "NCRUSH compress: history pointer reached buffer end",
+                ));
+            }
+        }
+
+        // --- Encode remaining trailing literals (last 0-2 bytes) ---
+        while src_pos < src_size {
+            // Check output space (PACKET_FLUSH #3)
+            if writer.would_overflow(2) {
+                self.reset(true);
+                return Ok((src_size, flags::PACKET_FLUSHED | COMPRESSION_LEVEL));
+            }
+
+            let literal = src_data[src_pos];
+            src_pos += 1;
+            history_ptr += 1;
+
+            Self::encode_literal(&mut writer, literal)?;
+        }
+
+        // --- Check output space for EOS + finish (PACKET_FLUSH #4) ---
+        if writer.would_overflow(4) {
+            self.reset(true);
+            return Ok((src_size, flags::PACKET_FLUSHED | COMPRESSION_LEVEL));
+        }
+
+        // --- Encode end-of-stream marker ---
+        Self::encode_eos(&mut writer)?;
+        writer.finish()?;
+
+        let compressed_size = writer.bytes_written();
+
+        // If compressed output is larger than source, flush
+        if compressed_size > src_size {
+            self.reset(true);
+            return Ok((src_size, flags::PACKET_FLUSHED | COMPRESSION_LEVEL));
+        }
+
+        // --- Build flags ---
+        out_flags |= flags::PACKET_COMPRESSED;
+        out_flags |= COMPRESSION_LEVEL;
+
+        if packet_at_front {
+            out_flags |= flags::PACKET_AT_FRONT;
+        }
+
+        if packet_flushed {
+            out_flags |= flags::PACKET_FLUSHED;
+        }
+
+        // Update history offset for next call
+        self.history_offset = history_ptr;
+
+        if self.history_offset >= self.history_buffer_size {
+            return Err(BulkError::InvalidCompressedData(
+                "NCRUSH compress: final history offset out of range",
+            ));
+        }
+
+        Ok((compressed_size, out_flags))
+    }
+
     /// Resets the NCRUSH context.
     ///
     /// Zeros the history buffer, offset cache, match table, and hash table.
@@ -1762,5 +2026,83 @@ mod tests {
     fn test_ncrush_encode_would_overflow() {
         let mut writer = NCrushBitWriter::new(&mut []);
         assert!(writer.would_overflow(1));
+    }
+
+    // ---------------------------------------------------------------
+    // ncrush_compress tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_ncrush_compress_basic() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+        let data = b"hello world";
+        let mut dst = vec![0u8; 256];
+
+        let (size, flags_out) = ctx.compress(data, &mut dst).unwrap();
+
+        // Should produce compressed output (or flush if output > src)
+        // Either way, it should not error
+        assert!(size > 0);
+        // flags should include COMPRESSION_LEVEL (2)
+        assert_ne!(flags_out & 0x0F, 0); // compression type != 0
+    }
+
+    #[test]
+    fn test_ncrush_compress_with_repeats() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+        // Repetitive data should compress well
+        let data = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let mut dst = vec![0u8; 256];
+
+        let (size, flags_out) = ctx.compress(data, &mut dst).unwrap();
+        assert!(size > 0);
+
+        // With enough repetition, compression should succeed
+        if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
+            assert!(size < data.len());
+        }
+    }
+
+    #[test]
+    fn test_ncrush_compress_empty() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+        let data = b"";
+        let mut dst = vec![0u8; 256];
+
+        let (size, flags_out) = ctx.compress(data, &mut dst).unwrap();
+        assert_eq!(size, 0);
+        assert_eq!(flags_out, 2); // Just compression level
+    }
+
+    #[test]
+    fn test_ncrush_compress_updates_history_offset() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+        let data = b"some test data for ncrush compression";
+        let mut dst = vec![0u8; 256];
+
+        let initial_offset = ctx.history_offset;
+        let (_size, flags_out) = ctx.compress(data, &mut dst).unwrap();
+
+        if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
+            // History offset should have advanced by the source data length
+            assert_eq!(ctx.history_offset, initial_offset + data.len());
+        }
+    }
+
+    #[test]
+    fn test_ncrush_compress_offset_cache_updated() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+        // Use data with a repeated pattern to trigger back-references
+        let data = b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!";
+        let mut dst = vec![0u8; 256];
+
+        let (_size, flags_out) = ctx.compress(data, &mut dst).unwrap();
+
+        if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
+            // If compression succeeded, at least one offset cache entry
+            // should be non-zero (from back-references)
+            let any_cached = ctx.offset_cache.iter().any(|&x| x != 0);
+            assert!(any_cached, "Offset cache should have been updated");
+        }
     }
 }

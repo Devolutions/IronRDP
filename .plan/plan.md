@@ -287,7 +287,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Encodes literals, copy-offsets, offset-cache refs, and lengths using Huffman tables
   - **Dependencies**: TASK-005, TASK-025
   - **Risk**: High
-- [ ] **TASK-027**: Implement `ncrush_compress` function
+- [x] **TASK-027**: Implement `ncrush_compress` function
   - **Acceptance Criteria**: Complete compression with history management, window sliding
   - **Dependencies**: TASK-026
   - **Risk**: High

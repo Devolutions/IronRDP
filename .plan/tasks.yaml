@@ -558,11 +558,12 @@ tasks:
     dependencies:
       - TASK-026
     risk: high
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Implemented full ncrush_compress pipeline: window management (flush/slide), hash chain population, source copy into history, main compression loop with literal/match encoding, LRU offset cache updates, trailing literal encoding, EOS marker, and output size validation. Fixed critical bug where self.history_offset wasn't set to end of valid data before the loop."
+    files_affected:
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
     estimated_hours: 4
 
   - id: TASK-028
