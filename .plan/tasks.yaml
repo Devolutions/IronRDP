@@ -352,11 +352,12 @@ tasks:
     dependencies:
       - TASK-014
     risk: medium
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "Implemented update_hash, append_chunk, compute_signatures. 5 tests."
+    files_affected:
+      - crates/ironrdp-bulk/src/xcrush/mod.rs
     estimated_hours: 2
 
   - id: TASK-018

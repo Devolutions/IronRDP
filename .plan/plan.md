@@ -205,7 +205,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 1 day
 
 **Tasks**:
-- [ ] **TASK-017**: Implement XCRUSH chunk computation (rolling hash)
+- [x] **TASK-017**: Implement XCRUSH chunk computation (rolling hash)
   - **Acceptance Criteria**: Chunk boundaries computed using 32-byte rolling hash with rotation
   - **Dependencies**: TASK-014
   - **Risk**: Medium

@@ -441,6 +441,120 @@ impl XCrushContext {
         self.decompress_l1(&mppc_output_copy, level1_compr_flags)
     }
 
+    // ========================
+    // Chunk computation (compression helpers)
+    // ========================
+
+    /// Computes a hash over the first `min(32, size)` bytes of `data`.
+    ///
+    /// Ported from FreeRDP's `xcrush_update_hash`.
+    fn update_hash(data: &[u8], size: usize) -> u16 {
+        debug_assert!(size >= 4);
+
+        let (mut seed, process_size) = if size > 32 {
+            (5413u16, 32usize)
+        } else {
+            (5381u16, size)
+        };
+
+        let end = process_size.saturating_sub(4);
+        let mut i = 0;
+        while i < end {
+            let val = u16::from(data[i + 3] ^ data[i])
+                .wrapping_add(u16::from(data[i + 1]) << 8);
+            seed = seed.wrapping_add(val);
+            i += 4;
+        }
+
+        seed
+    }
+
+    /// Appends a chunk to the signatures array if the chunk is large enough.
+    ///
+    /// Returns `true` on success, `false` if the signature table is full
+    /// or the chunk size exceeds 65535.
+    ///
+    /// Ported from FreeRDP's `xcrush_append_chunk`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "size is bounded to <= 65535, fits in u16"
+    )]
+    fn append_chunk(&mut self, data: &[u8], beg: &mut usize, end: usize) -> bool {
+        if self.signature_index >= self.signature_count {
+            return false;
+        }
+
+        let size = end.saturating_sub(*beg);
+
+        if size > 65535 {
+            return false;
+        }
+
+        if size >= 15 {
+            let seed = Self::update_hash(&data[*beg..], size);
+            self.signatures[self.signature_index].size = size as u16;
+            self.signatures[self.signature_index].seed = seed;
+            self.signature_index += 1;
+            *beg = end;
+        }
+
+        true
+    }
+
+    /// Computes chunk boundaries using a 32-byte rolling hash.
+    ///
+    /// Splits `data` into variable-sized chunks based on where the rolling
+    /// hash accumulator satisfies `accumulator & 0x7F == 0`. Populates
+    /// the `signatures` array with hash seeds and chunk sizes.
+    ///
+    /// Returns the number of signatures computed, or 0 if the input is
+    /// too small (< 128 bytes) or an error occurs.
+    ///
+    /// Ported from FreeRDP's `xcrush_compute_chunks` + `xcrush_compute_signatures`.
+    pub(crate) fn compute_signatures(&mut self, data: &[u8]) -> usize {
+        self.signature_index = 0;
+
+        let size = data.len();
+        if size < 128 {
+            return 0;
+        }
+
+        // Initialize the rolling hash with the first 32 bytes
+        let mut accumulator: u32 = 0;
+        for byte in &data[..32] {
+            let rotation = accumulator.rotate_left(1);
+            accumulator = u32::from(*byte) ^ rotation;
+        }
+
+        let mut offset: usize = 0; // start of current chunk
+        let limit = size - 64;
+        let mut i: usize = 0;
+
+        // Process bytes in batches of 4 (matching FreeRDP's unrolled loop)
+        while i < limit {
+            for _ in 0..4 {
+                let rotation = accumulator.rotate_left(1);
+                accumulator = u32::from(data[i + 32]) ^ u32::from(data[i]) ^ rotation;
+
+                if accumulator & 0x7F == 0
+                    && !self.append_chunk(data, &mut offset, i + 32)
+                {
+                    return 0;
+                }
+
+                i += 1;
+            }
+        }
+
+        // Append final chunk (remaining bytes)
+        if offset < size && !self.append_chunk(data, &mut offset, size) {
+            return 0;
+        }
+
+        self.signature_index
+    }
+
     /// Resets the XCRUSH context.
     ///
     /// Zeros the signature, chunk, and match arrays.
@@ -648,5 +762,83 @@ mod tests {
         assert_eq!(result, b"test");
         // History should have been cleared
         assert_eq!(ctx.history_buffer[0], b't'); // first byte of "test"
+    }
+
+    // ========================
+    // Chunk computation tests
+    // ========================
+
+    #[test]
+    fn test_update_hash_small() {
+        // Deterministic: same input should give same hash
+        let data = [0x41u8, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48];
+        let h1 = XCrushContext::update_hash(&data, 8);
+        let h2 = XCrushContext::update_hash(&data, 8);
+        assert_eq!(h1, h2);
+        // Seed 5381 for size <= 32
+        assert_ne!(h1, 5381); // hash should have changed from seed
+    }
+
+    #[test]
+    fn test_update_hash_large_uses_different_seed() {
+        let data = [0xAA; 64];
+        let h_small = XCrushContext::update_hash(&data, 32);
+        let h_large = XCrushContext::update_hash(&data, 33); // > 32: seed 5413, only hashes first 32
+        // Different seeds should (very likely) produce different results
+        assert_ne!(h_small, h_large);
+    }
+
+    #[test]
+    fn test_compute_signatures_small_input() {
+        let mut ctx = XCrushContext::new(true);
+        // Input < 128 bytes: should return 0
+        let data = [0u8; 100];
+        let count = ctx.compute_signatures(&data);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_compute_signatures_128_bytes() {
+        let mut ctx = XCrushContext::new(true);
+        // Exactly 128 bytes: should produce at least 1 signature (the final chunk)
+        let mut data = [0u8; 128];
+        // Fill with some non-zero data to exercise the hash
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = u8::try_from(i & 0xFF).unwrap();
+        }
+        let count = ctx.compute_signatures(&data);
+        // Should have at least 1 signature (the trailing chunk)
+        assert!(count >= 1, "expected at least 1 signature, got {count}");
+    }
+
+    #[test]
+    fn test_compute_signatures_large_input() {
+        let mut ctx = XCrushContext::new(true);
+        // ~1 KB of sequential data
+        let mut data = [0u8; 1024];
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = u8::try_from(i.wrapping_mul(17) & 0xFF).unwrap();
+        }
+        let count = ctx.compute_signatures(&data);
+        // Should have some signatures (depends on rolling hash behavior)
+        assert!(count >= 1, "expected at least 1 signature, got {count}");
+        // All signatures should have non-zero size
+        for sig in &ctx.signatures[..count] {
+            assert!(sig.size > 0, "signature size should be > 0");
+        }
+    }
+
+    #[test]
+    fn test_compute_signatures_deterministic() {
+        let mut ctx1 = XCrushContext::new(true);
+        let mut ctx2 = XCrushContext::new(true);
+        let data = b"The quick brown fox jumps over the lazy dog repeatedly and repeatedly and repeatedly until we get enough data to reach the minimum threshold for xcrush chunk computation which is 128 bytes of input data.";
+        let count1 = ctx1.compute_signatures(data);
+        let count2 = ctx2.compute_signatures(data);
+        assert_eq!(count1, count2);
+        for i in 0..count1 {
+            assert_eq!(ctx1.signatures[i].seed, ctx2.signatures[i].seed);
+            assert_eq!(ctx1.signatures[i].size, ctx2.signatures[i].size);
+        }
     }
 }
