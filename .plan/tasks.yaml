@@ -453,11 +453,13 @@ tasks:
     dependencies:
       - TASK-021
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: "Large struct - consider Box allocation"
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "All large buffers Box-allocated. generate_tables() builds runtime HuffTableLOM and HuffTableCopyOffset from static LUTs. 6 tests."
+    files_affected:
+      - crates/ironrdp-bulk/src/ncrush/mod.rs
+      - crates/ironrdp-bulk/src/ncrush/test_data.rs
     estimated_hours: 1
 
   - id: TASK-023

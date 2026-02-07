@@ -246,7 +246,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: All static tables ported: `HuffTableLEC`, `HuffTableLOM`, `HuffTableMask`, `CopyOffsetBitsLUT`, `CopyOffsetBaseLUT`, `LOMBitsLUT`, `LOMBaseLUT`, Huffman code/length tables
   - **Dependencies**: TASK-003
   - **Risk**: Low (tedious but straightforward)
-- [ ] **TASK-022**: Implement NCRUSH context struct
+- [x] **TASK-022**: Implement NCRUSH context struct
   - **Acceptance Criteria**: `NCrushContext` with history buffer, hash table, match table, offset cache, Huffman tables
   - **Dependencies**: TASK-021
   - **Risk**: Low
