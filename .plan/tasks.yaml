@@ -764,9 +764,16 @@ tasks:
     dependencies:
       - TASK-036
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Removed all dead code: unused compressor fields from MppcContext/NCrushContext/XCrushContext, unused accessor methods, HuffTableMask, Rdp61MatchDetails, Rdp61CompressedData, block_buffer. Fixed 27 clippy warnings: 4 manual_swap→.swap(), 1 manual_range_contains, 1 unnecessary_box_returns, and added missing cast lint expectations. Updated crate-level doc with usage example (doctest passes). All public items have rustdoc. Zero warnings from cargo check, clippy, and doc. 129 tests pass."
+    files_affected:
+      - "crates/ironrdp-bulk/src/lib.rs"
+      - "crates/ironrdp-bulk/src/bitstream.rs"
+      - "crates/ironrdp-bulk/src/bulk.rs"
+      - "crates/ironrdp-bulk/src/mppc/mod.rs"
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
+      - "crates/ironrdp-bulk/src/ncrush/tables.rs"
+      - "crates/ironrdp-bulk/src/xcrush/mod.rs"
     estimated_hours: 1

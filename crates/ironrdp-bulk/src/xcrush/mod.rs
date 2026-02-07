@@ -73,36 +73,6 @@ pub(crate) struct XCrushSignature {
     pub(crate) size: u16,
 }
 
-/// Match detail entry in an RDP 6.1 compressed data block.
-///
-/// Ported from FreeRDP's `RDP61_MATCH_DETAILS`.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Rdp61MatchDetails {
-    /// Length of the match in bytes.
-    pub(crate) match_length: u16,
-    /// Offset in the decompressed output where the match is placed.
-    pub(crate) match_output_offset: u16,
-    /// Offset in the history buffer where the matching data is found.
-    pub(crate) match_history_offset: u32,
-}
-
-/// Parsed representation of an RDP 6.1 compressed data header.
-///
-/// Ported from FreeRDP's `RDP61_COMPRESSED_DATA`.
-#[derive(Debug)]
-pub(crate) struct Rdp61CompressedData<'a> {
-    /// Level-1 compression flags.
-    pub(crate) level1_compr_flags: u8,
-    /// Level-2 compression flags (MPPC flags).
-    pub(crate) level2_compr_flags: u8,
-    /// Number of match detail entries.
-    pub(crate) match_count: u16,
-    /// Slice of match detail entries parsed from the input.
-    pub(crate) match_details: &'a [u8],
-    /// Remaining literal data after the match details array.
-    pub(crate) literals: &'a [u8],
-}
-
 // ---------------------------------------------------------------------------
 // Main XCRUSH context
 // ---------------------------------------------------------------------------
@@ -114,8 +84,6 @@ pub(crate) struct Rdp61CompressedData<'a> {
 ///
 /// Ported from FreeRDP's `XCRUSH_CONTEXT` struct.
 pub(crate) struct XCrushContext {
-    /// Whether this context is for compression (`true`) or decompression (`false`).
-    compressor: bool,
     /// Inner MPPC context (RDP5 / 64K) for Level-2 compression/decompression.
     pub(crate) mppc: MppcContext,
     /// Current write position in the history buffer.
@@ -124,10 +92,6 @@ pub(crate) struct XCrushContext {
     pub(crate) history_buffer_size: usize,
     /// 2 MB sliding-window history buffer.
     pub(crate) history_buffer: Box<[u8; HISTORY_BUFFER_SIZE]>,
-    /// 16 KB temporary block buffer used during compression.
-    /// Currently allocated but not directly read — `compress()` uses a local
-    /// `Vec` instead to avoid overlapping borrows. Kept for parity with FreeRDP.
-    pub(crate) block_buffer: Box<[u8; BLOCK_BUFFER_SIZE]>,
     /// Level-2 (MPPC) compression flags carried over between calls.
     pub(crate) compression_flags: u32,
     /// Current index into the signatures array.
@@ -196,18 +160,14 @@ fn heap_default_array<T: Default + Clone + core::fmt::Debug, const N: usize>() -
 impl XCrushContext {
     /// Creates a new XCRUSH context.
     ///
-    /// `compressor`: `true` if used for compression, `false` for decompression.
-    ///
     /// Large buffers (2 MB history, 512 KB chunks, etc.) are allocated on the
     /// heap via `vec!` to avoid stack overflow.
-    pub(crate) fn new(compressor: bool) -> Self {
+    pub(crate) fn new() -> Self {
         let mut ctx = Self {
-            compressor,
-            mppc: MppcContext::new(1, compressor), // XCRUSH always uses RDP5 MPPC
+            mppc: MppcContext::new(1), // XCRUSH always uses RDP5 MPPC
             history_offset: 0,
             history_buffer_size: HISTORY_BUFFER_SIZE,
             history_buffer: heap_zeroed_u8_array::<HISTORY_BUFFER_SIZE>(),
-            block_buffer: heap_zeroed_u8_array::<BLOCK_BUFFER_SIZE>(),
             compression_flags: 0,
             signature_index: 0,
             signature_count: MAX_SIGNATURE_COUNT,
@@ -1281,7 +1241,7 @@ mod tests {
 
     #[test]
     fn test_xcrush_context_new_decompressor() {
-        let ctx = XCrushContext::new(false);
+        let ctx = XCrushContext::new();
         assert_eq!(ctx.history_buffer_size, HISTORY_BUFFER_SIZE);
         assert_eq!(ctx.history_offset, 0);
         assert_eq!(ctx.signature_index, 0);
@@ -1295,14 +1255,14 @@ mod tests {
 
     #[test]
     fn test_xcrush_context_new_compressor() {
-        let ctx = XCrushContext::new(true);
+        let ctx = XCrushContext::new();
         assert_eq!(ctx.history_buffer_size, HISTORY_BUFFER_SIZE);
         assert_eq!(ctx.history_offset, 0);
     }
 
     #[test]
     fn test_xcrush_context_reset_no_flush() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
         ctx.history_offset = 12345;
         ctx.signature_index = 42;
         ctx.chunk_head = 100;
@@ -1325,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_xcrush_context_reset_flush() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
         ctx.reset(true);
 
         assert_eq!(ctx.history_offset, HISTORY_BUFFER_SIZE + 1);
@@ -1340,7 +1300,7 @@ mod tests {
 
     #[test]
     fn test_decompress_l1_no_compression() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
         let data = b"hello, world!";
         let result = ctx
             .decompress_l1(data, flags::L1_NO_COMPRESSION | flags::L1_PACKET_AT_FRONT)
@@ -1351,7 +1311,7 @@ mod tests {
 
     #[test]
     fn test_decompress_l1_compressed_no_matches() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
         // Build a compressed packet with 0 matches: just literals
         // Format: [match_count: u16 LE] [match_details...] [literals...]
         let mut packet = Vec::new();
@@ -1365,7 +1325,7 @@ mod tests {
 
     #[test]
     fn test_decompress_l1_compressed_with_match() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
 
         // Pre-populate history buffer with "ABCDEFGH" at offset 0
         ctx.history_buffer[..8].copy_from_slice(b"ABCDEFGH");
@@ -1393,14 +1353,14 @@ mod tests {
 
     #[test]
     fn test_decompress_l1_empty_input_error() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
         let result = ctx.decompress_l1(&[], flags::L1_COMPRESSED);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_decompress_l1_invalid_flags_error() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
         // Neither L1_NO_COMPRESSION nor L1_COMPRESSED set
         let result = ctx.decompress_l1(b"data", 0);
         assert!(result.is_err());
@@ -1412,7 +1372,7 @@ mod tests {
 
     #[test]
     fn test_decompress_no_l2_no_l1_compression() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
         // Header: [L1_flags, L2_flags] + data
         // L1_NO_COMPRESSION(0x02) | L1_PACKET_AT_FRONT(0x04) = 0x06
         let mut packet = vec![0x06u8, 0x00u8];
@@ -1424,14 +1384,14 @@ mod tests {
 
     #[test]
     fn test_decompress_too_short_error() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
         let result = ctx.decompress(&[0x00], 0);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_decompress_flushed_clears_history() {
-        let mut ctx = XCrushContext::new(false);
+        let mut ctx = XCrushContext::new();
         // Write some data to history
         ctx.history_buffer[0] = 0xFF;
         ctx.history_offset = 100;
@@ -1472,7 +1432,7 @@ mod tests {
 
     #[test]
     fn test_compute_signatures_small_input() {
-        let mut ctx = XCrushContext::new(true);
+        let mut ctx = XCrushContext::new();
         // Input < 128 bytes: should return 0
         let data = [0u8; 100];
         let count = ctx.compute_signatures(&data);
@@ -1481,7 +1441,7 @@ mod tests {
 
     #[test]
     fn test_compute_signatures_128_bytes() {
-        let mut ctx = XCrushContext::new(true);
+        let mut ctx = XCrushContext::new();
         // Exactly 128 bytes: should produce at least 1 signature (the final chunk)
         let mut data = [0u8; 128];
         // Fill with some non-zero data to exercise the hash
@@ -1495,7 +1455,7 @@ mod tests {
 
     #[test]
     fn test_compute_signatures_large_input() {
-        let mut ctx = XCrushContext::new(true);
+        let mut ctx = XCrushContext::new();
         // ~1 KB of sequential data
         let mut data = [0u8; 1024];
         for (i, b) in data.iter_mut().enumerate() {
@@ -1512,8 +1472,8 @@ mod tests {
 
     #[test]
     fn test_compute_signatures_deterministic() {
-        let mut ctx1 = XCrushContext::new(true);
-        let mut ctx2 = XCrushContext::new(true);
+        let mut ctx1 = XCrushContext::new();
+        let mut ctx2 = XCrushContext::new();
         let data = b"The quick brown fox jumps over the lazy dog repeatedly and repeatedly and repeatedly until we get enough data to reach the minimum threshold for xcrush chunk computation which is 128 bytes of input data.";
         let count1 = ctx1.compute_signatures(data);
         let count2 = ctx2.compute_signatures(data);
@@ -1530,8 +1490,8 @@ mod tests {
 
     /// Helper: compress data with XCRUSH, then decompress, and verify round-trip.
     fn assert_xcrush_roundtrip(input: &[u8], label: &str) {
-        let mut compressor = XCrushContext::new(true);
-        let mut decompressor = XCrushContext::new(false);
+        let mut compressor = XCrushContext::new();
+        let mut decompressor = XCrushContext::new();
         let mut output_buf = vec![0u8; 65536];
 
         let (compressed_size, outer_flags) = compressor
@@ -1572,7 +1532,7 @@ mod tests {
     fn test_xcrush_compress_bells() {
         use super::test_data::{TEST_BELLS_DATA, TEST_BELLS_DATA_XCRUSH};
 
-        let mut ctx = XCrushContext::new(true);
+        let mut ctx = XCrushContext::new();
         let mut output_buf = vec![0u8; 65536];
 
         let (size, flags_out) = ctx.compress(TEST_BELLS_DATA, &mut output_buf).unwrap();
@@ -1597,7 +1557,7 @@ mod tests {
     fn test_xcrush_compress_island() {
         use super::test_data::{TEST_ISLAND_DATA, TEST_ISLAND_DATA_XCRUSH};
 
-        let mut ctx = XCrushContext::new(true);
+        let mut ctx = XCrushContext::new();
         let mut output_buf = vec![0u8; 65536];
 
         let (size, flags_out) = ctx.compress(TEST_ISLAND_DATA, &mut output_buf).unwrap();

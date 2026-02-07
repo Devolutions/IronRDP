@@ -74,12 +74,12 @@ impl BulkCompressor {
     pub fn new(compression_level: CompressionType) -> Result<Self, BulkError> {
         // FreeRDP creates MPPC with level 1 by default; the level is
         // adjusted dynamically per-call in compress/decompress.
-        let mppc_send = MppcContext::new(1, true);
-        let mppc_recv = MppcContext::new(1, false);
-        let ncrush_send = NCrushContext::new(true)?;
-        let ncrush_recv = NCrushContext::new(false)?;
-        let xcrush_send = XCrushContext::new(true);
-        let xcrush_recv = XCrushContext::new(false);
+        let mppc_send = MppcContext::new(1);
+        let mppc_recv = MppcContext::new(1);
+        let ncrush_send = NCrushContext::new()?;
+        let ncrush_recv = NCrushContext::new()?;
+        let xcrush_send = XCrushContext::new();
+        let xcrush_recv = XCrushContext::new();
 
         // Heap-allocate the 64KB output buffer to avoid stack overflow.
         // Vec length is exactly OUTPUT_BUFFER_SIZE, so the try_into is infallible.
@@ -112,41 +112,6 @@ impl BulkCompressor {
     /// FreeRDP skips compression for sizes <= 50 or >= 16384.
     pub fn should_skip_compression(src_size: usize) -> bool {
         src_size <= COMPRESS_MIN_SIZE || src_size >= COMPRESS_MAX_SIZE
-    }
-
-    /// Returns a mutable reference to the output buffer for compression.
-    pub(crate) fn output_buffer_mut(&mut self) -> &mut [u8; OUTPUT_BUFFER_SIZE] {
-        &mut self.output_buffer
-    }
-
-    /// Returns a reference to the MPPC send context.
-    pub(crate) fn mppc_send(&mut self) -> &mut MppcContext {
-        &mut self.mppc_send
-    }
-
-    /// Returns a reference to the MPPC receive context.
-    pub(crate) fn mppc_recv(&mut self) -> &mut MppcContext {
-        &mut self.mppc_recv
-    }
-
-    /// Returns a reference to the NCRUSH send context.
-    pub(crate) fn ncrush_send(&mut self) -> &mut NCrushContext {
-        &mut self.ncrush_send
-    }
-
-    /// Returns a reference to the NCRUSH receive context.
-    pub(crate) fn ncrush_recv(&mut self) -> &mut NCrushContext {
-        &mut self.ncrush_recv
-    }
-
-    /// Returns a reference to the XCRUSH send context.
-    pub(crate) fn xcrush_send(&mut self) -> &mut XCrushContext {
-        &mut self.xcrush_send
-    }
-
-    /// Returns a reference to the XCRUSH receive context.
-    pub(crate) fn xcrush_recv(&mut self) -> &mut XCrushContext {
-        &mut self.xcrush_recv
     }
 
     /// Decompresses bulk-compressed RDP data.
@@ -198,7 +163,7 @@ impl BulkCompressor {
     ///
     /// Returns `Ok((compressed_size, flags))` on success:
     /// - If `flags & PACKET_COMPRESSED != 0`: compressed data is available
-    ///   in the internal output buffer via [`compressed_data`].
+    ///   in the internal output buffer via [`Self::compressed_data`].
     /// - If compression was skipped (size out of range) or the algorithm
     ///   flushed (compressed output larger than input): `flags` will **not**
     ///   have `PACKET_COMPRESSED` set, and the caller should transmit the
@@ -237,7 +202,7 @@ impl BulkCompressor {
     }
 
     /// Returns a slice of the internal output buffer containing compressed
-    /// data from the most recent [`compress`] call.
+    /// data from the most recent [`Self::compress`] call.
     ///
     /// `size` should be the `compressed_size` value returned by `compress`.
     pub fn compressed_data(&self, size: usize) -> &[u8] {

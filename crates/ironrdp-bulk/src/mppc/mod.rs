@@ -24,8 +24,6 @@ use self::tables::{
 ///
 /// Ported from FreeRDP's `MPPC_CONTEXT` struct.
 pub(crate) struct MppcContext {
-    /// Whether this context is for compression (`true`) or decompression (`false`).
-    compressor: bool,
     /// Compression level: 0 = RDP4 (8K), 1 = RDP5 (64K).
     compression_level: u32,
     /// Effective history buffer size (8192 for RDP4, 65536 for RDP5).
@@ -46,8 +44,7 @@ impl MppcContext {
     /// Creates a new MPPC context.
     ///
     /// `compression_level`: 0 for RDP4 (8K history), 1 for RDP5 (64K history).
-    /// `compressor`: `true` if used for compression, `false` for decompression.
-    pub(crate) fn new(compression_level: u32, compressor: bool) -> Self {
+    pub(crate) fn new(compression_level: u32) -> Self {
         let (level, buffer_size, mask) = if compression_level < 1 {
             (0u32, HISTORY_BUFFER_SIZE_RDP4, HISTORY_MASK_RDP4)
         } else {
@@ -55,7 +52,6 @@ impl MppcContext {
         };
 
         let mut ctx = Self {
-            compressor,
             compression_level: level,
             history_buffer_size: buffer_size,
             history_mask: mask,
@@ -98,30 +94,6 @@ impl MppcContext {
             self.history_buffer_size = HISTORY_BUFFER_SIZE_RDP5;
             self.history_mask = HISTORY_MASK_RDP5;
         }
-    }
-
-    /// Returns the current compression level (0 = RDP4, 1 = RDP5).
-    #[inline]
-    pub(crate) fn compression_level(&self) -> u32 {
-        self.compression_level
-    }
-
-    /// Returns the effective history buffer size.
-    #[inline]
-    pub(crate) fn history_buffer_size(&self) -> usize {
-        self.history_buffer_size
-    }
-
-    /// Returns the history wrapping mask.
-    #[inline]
-    pub(crate) fn history_mask(&self) -> usize {
-        self.history_mask
-    }
-
-    /// Returns whether this context is a compressor.
-    #[inline]
-    pub(crate) fn is_compressor(&self) -> bool {
-        self.compressor
     }
 
     /// Decompresses MPPC-compressed data.
@@ -610,7 +582,7 @@ mod tests {
 
     #[test]
     fn test_decompress_uncompressed_passthrough() {
-        let mut ctx = MppcContext::new(0, false);
+        let mut ctx = MppcContext::new(0);
         let data = b"hello world";
         // No PACKET_COMPRESSED flag → should return source data directly
         let result = ctx.decompress(data, flags::PACKET_AT_FRONT).unwrap();
@@ -619,7 +591,7 @@ mod tests {
 
     #[test]
     fn test_decompress_flushed_resets_history() {
-        let mut ctx = MppcContext::new(0, false);
+        let mut ctx = MppcContext::new(0);
         // Write something into the history buffer first
         ctx.history_buffer[0] = 0xAA;
         ctx.history_buffer[1] = 0xBB;
@@ -641,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_decompress_at_front_resets_pointer() {
-        let mut ctx = MppcContext::new(1, false);
+        let mut ctx = MppcContext::new(1);
         ctx.history_ptr = 500;
         ctx.history_offset = 200;
 
@@ -659,7 +631,7 @@ mod tests {
     /// and verifies the output matches "for.whom.the.bell.tolls,.the.bell.tolls.for.thee!".
     #[test]
     fn test_mppc_decompress_bells_rdp4() {
-        let mut ctx = MppcContext::new(0, false);
+        let mut ctx = MppcContext::new(0);
         // Flags: PACKET_AT_FRONT | PACKET_COMPRESSED (RDP4 — compression level 0)
         let flags_value = flags::PACKET_AT_FRONT | flags::PACKET_COMPRESSED;
         let result = ctx
@@ -685,7 +657,7 @@ mod tests {
     /// and verifies the output matches "for.whom.the.bell.tolls,.the.bell.tolls.for.thee!".
     #[test]
     fn test_mppc_decompress_bells_rdp5() {
-        let mut ctx = MppcContext::new(1, false);
+        let mut ctx = MppcContext::new(1);
         // Flags: PACKET_AT_FRONT | PACKET_COMPRESSED | 1 (RDP5)
         let flags_value = flags::PACKET_AT_FRONT | flags::PACKET_COMPRESSED | 1;
         let result = ctx
@@ -711,7 +683,7 @@ mod tests {
     /// and verifies byte-for-byte match with the expected uncompressed data.
     #[test]
     fn test_mppc_decompress_buffer_rdp5() {
-        let mut ctx = MppcContext::new(1, false);
+        let mut ctx = MppcContext::new(1);
         // Flags: PACKET_AT_FRONT | PACKET_COMPRESSED | 1 (RDP5)
         let flags_value = flags::PACKET_AT_FRONT | flags::PACKET_COMPRESSED | 1;
         let result = ctx
@@ -741,7 +713,7 @@ mod tests {
     /// matches the expected compressed bytes byte-for-byte.
     #[test]
     fn test_mppc_compress_bells_rdp4() {
-        let mut ctx = MppcContext::new(0, true);
+        let mut ctx = MppcContext::new(0);
         let mut output = [0u8; 65536];
         let (size, result_flags) = ctx
             .compress(test_data::TEST_MPPC_BELLS, &mut output)
@@ -769,7 +741,7 @@ mod tests {
     /// matches the expected compressed bytes byte-for-byte.
     #[test]
     fn test_mppc_compress_bells_rdp5() {
-        let mut ctx = MppcContext::new(1, true);
+        let mut ctx = MppcContext::new(1);
         let mut output = [0u8; 65536];
         let (size, result_flags) = ctx
             .compress(test_data::TEST_MPPC_BELLS, &mut output)
@@ -797,7 +769,7 @@ mod tests {
     /// and verifies byte-for-byte match with the expected compressed output.
     #[test]
     fn test_mppc_compress_island_rdp5() {
-        let mut ctx = MppcContext::new(1, true);
+        let mut ctx = MppcContext::new(1);
         let mut output = [0u8; 65536];
         let (size, result_flags) = ctx
             .compress(test_data::TEST_ISLAND_DATA, &mut output)
@@ -825,7 +797,7 @@ mod tests {
     /// byte-for-byte match with the expected compressed output.
     #[test]
     fn test_mppc_compress_buffer_rdp5() {
-        let mut ctx = MppcContext::new(1, true);
+        let mut ctx = MppcContext::new(1);
         let mut output = [0u8; 65536];
         let (size, result_flags) = ctx
             .compress(test_data::TEST_RDP5_UNCOMPRESSED_DATA, &mut output)
@@ -853,7 +825,7 @@ mod tests {
 
     /// Helper: compress data, then decompress, and assert the round-trip matches.
     fn assert_roundtrip(compression_level: u32, input: &[u8], label: &str) {
-        let mut compressor = MppcContext::new(compression_level, true);
+        let mut compressor = MppcContext::new(compression_level);
         let mut compressed_buf = vec![0u8; 65536];
 
         let (compressed_size, compress_flags) = compressor
@@ -872,7 +844,7 @@ mod tests {
             input.len()
         );
 
-        let mut decompressor = MppcContext::new(compression_level, false);
+        let mut decompressor = MppcContext::new(compression_level);
         let decompressed = decompressor
             .decompress(&compressed_buf[..compressed_size], compress_flags)
             .unwrap_or_else(|e| panic!("{label}: decompress failed: {e:?}"));

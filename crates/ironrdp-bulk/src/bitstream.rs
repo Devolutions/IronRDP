@@ -55,43 +55,10 @@ impl<'a> BitStreamReader<'a> {
         self.accumulator
     }
 
-    /// Reads `nbits` bits from the stream and returns them.
-    ///
-    /// The returned value contains the bits right-aligned (in the lowest `nbits` bits).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `nbits` is 0 or greater than 32.
-    #[inline]
-    pub(crate) fn read_bits(&mut self, nbits: u32) -> u32 {
-        debug_assert!(nbits > 0 && nbits <= 32, "nbits must be 1..=32, got {nbits}");
-        let value = self.peek_bits(nbits);
-        self.shift(nbits);
-        value
-    }
-
-    /// Peeks at the top `nbits` bits of the accumulator without consuming them.
-    ///
-    /// The returned value contains the bits right-aligned.
-    #[inline]
-    pub(crate) fn peek_bits(&self, nbits: u32) -> u32 {
-        if nbits == 32 {
-            self.accumulator
-        } else {
-            self.accumulator >> (32 - nbits)
-        }
-    }
-
     /// Returns the number of bits remaining in the stream.
     #[inline]
     pub(crate) fn remaining_bits(&self) -> usize {
         self.total_bits.saturating_sub(self.bits_consumed)
-    }
-
-    /// Returns the total number of bits consumed so far.
-    #[inline]
-    pub(crate) fn bits_consumed(&self) -> usize {
-        self.bits_consumed
     }
 
     /// Advances the stream by `nbits` bits.
@@ -135,14 +102,6 @@ impl<'a> BitStreamReader<'a> {
                 self.prefetch <<= self.offset;
             }
         }
-    }
-
-    /// Shifts 32 bits by performing two 16-bit shifts.
-    ///
-    /// Equivalent to FreeRDP's `BitStream_Shift32`.
-    pub(crate) fn shift32(&mut self) {
-        self.shift(16);
-        self.shift(16);
     }
 
     /// Loads the accumulator with 4 bytes from the current position (big-endian)
@@ -306,6 +265,32 @@ impl<'a> BitStreamWriter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Test-only helpers for BitStreamReader (not part of the public API).
+    impl BitStreamReader<'_> {
+        fn read_bits(&mut self, nbits: u32) -> u32 {
+            let value = self.peek_bits(nbits);
+            self.shift(nbits);
+            value
+        }
+
+        fn peek_bits(&self, nbits: u32) -> u32 {
+            if nbits == 32 {
+                self.accumulator
+            } else {
+                self.accumulator >> (32 - nbits)
+            }
+        }
+
+        fn bits_consumed(&self) -> usize {
+            self.bits_consumed
+        }
+
+        fn shift32(&mut self) {
+            self.shift(16);
+            self.shift(16);
+        }
+    }
 
     // ========================
     // BitStreamReader tests

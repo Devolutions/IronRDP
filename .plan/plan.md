@@ -391,7 +391,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: `cargo check --target wasm32-unknown-unknown -p ironrdp-bulk` succeeds
   - **Dependencies**: TASK-035
   - **Risk**: Low (crate is `no_std` + `alloc`)
-- [ ] **TASK-037**: Final cleanup, documentation, and code review prep
+- [x] **TASK-037**: Final cleanup, documentation, and code review prep
   - **Acceptance Criteria**: All public items documented, README written, clippy clean, no dead code
   - **Dependencies**: TASK-036
   - **Risk**: Low

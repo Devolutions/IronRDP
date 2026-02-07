@@ -1,26 +1,52 @@
-#![doc = "Bulk compression algorithms (MPPC, XCRUSH, NCRUSH) for IronRDP"]
+#![doc = "Bulk compression algorithms (MPPC, XCRUSH, NCRUSH) for IronRDP."]
+//!
+//! This crate implements the RDP bulk compression algorithms, ported from
+//! [FreeRDP](https://github.com/FreeRDP/FreeRDP). It supports compression and
+//! decompression for all four RDP compression levels:
+//!
+//! | Level | Algorithm | History Buffer | RDP Version |
+//! |-------|-----------|---------------|-------------|
+//! | `Rdp4`  | MPPC      | 8 KB          | RDP 4.0     |
+//! | `Rdp5`  | MPPC      | 64 KB         | RDP 5.0     |
+//! | `Rdp6`  | NCRUSH    | 64 KB         | RDP 6.0     |
+//! | `Rdp61` | XCRUSH    | 2 MB          | RDP 6.1     |
+//!
+//! # Usage
+//!
+//! ```rust
+//! use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
+//!
+//! // Create sender (compressor) and receiver (decompressor)
+//! let mut sender = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+//! let mut receiver = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+//!
+//! let input = b"Hello world! Hello world! Hello world! Hello world! x";
+//!
+//! // Compress
+//! let (compressed_size, compress_flags) = sender.compress(input).unwrap();
+//!
+//! if compress_flags & flags::PACKET_COMPRESSED != 0 {
+//!     // Compressed data is available
+//!     let compressed = sender.compressed_data(compressed_size);
+//!     assert!(compressed.len() < input.len());
+//!
+//!     // Decompress
+//!     let decompressed = receiver.decompress(compressed, compress_flags).unwrap();
+//!     assert_eq!(decompressed, input);
+//! }
+//! ```
+//!
+//! # Features
+//!
+//! - **`std`** (default): Enables standard library support.
+//! - **`alloc`** (implied by `std`): Enables heap allocation without `std`,
+//!   suitable for `no_std` environments such as WebAssembly.
 //!
 //! # Safety
 //!
-//! This crate contains **zero `unsafe` code**. The `#![forbid(unsafe_code)]` attribute
-//! is set to enforce this invariant at compile time.
-//!
-//! ## Audit Summary (TASK-033)
-//!
-//! | Category                   | Count | Notes                                                  |
-//! |----------------------------|-------|--------------------------------------------------------|
-//! | `unsafe` blocks            | 0     | None in the entire crate                               |
-//! | Raw pointer usage          | 0     | No `*const`, `*mut`, `as_ptr()`, `as_mut_ptr()`        |
-//! | `transmute` / `unchecked`  | 0     | No `mem::transmute`, `get_unchecked`, etc.              |
-//! | `#[allow(unsafe_*)]`       | 0     | No safety lint suppression                             |
-//! | `as` numeric casts         | ~161  | Porting artifact from C; tracked for TASK-034          |
-//! | `wrapping_*` arithmetic    | 15    | All intentional for modular hash/offset computations   |
-//! | `unwrap_or_else(unreachable)` | 2  | Infallible `Vec→Box<[T;N]>` conversions               |
-//!
-//! The `as` casts (mostly `as usize` for indexing and `as u32`/`u8`/`u16` for
-//! bitstream operations) are the main area flagged for cleanup in TASK-034,
-//! where they can be replaced with `.into()`, `From`/`TryFrom`, or explicit
-//! truncation helpers as appropriate.
+//! This crate contains **zero `unsafe` code**. The `#![forbid(unsafe_code)]`
+//! attribute enforces this invariant at compile time. All numeric casts are
+//! documented with `#[expect]` attributes explaining their safety bounds.
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
