@@ -328,7 +328,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Correctly dispatches to MPPC (8K/64K), XCRUSH, or NCRUSH based on flags
   - **Dependencies**: TASK-030
   - **Risk**: Low
-- [ ] **TASK-032**: Unit tests for bulk coordinator
+- [x] **TASK-032**: Unit tests for bulk coordinator
   - **Acceptance Criteria**: Tests verify correct routing for each compression type
   - **Dependencies**: TASK-031
   - **Risk**: Low

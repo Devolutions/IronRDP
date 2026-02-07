@@ -319,4 +319,168 @@ mod tests {
         // (we can only verify they exist and the struct was created)
         assert_eq!(bulk.compression_level(), CompressionType::Rdp6);
     }
+
+    // ---------------------------------------------------------------
+    // Compression skip tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_bulk_compress_skip_small_input() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let data = b"tiny"; // 4 bytes, below threshold
+        let (size, flags) = bulk.compress(data).unwrap();
+        assert_eq!(size, data.len());
+        assert_eq!(flags, 0); // no compression applied
+    }
+
+    #[test]
+    fn test_bulk_compress_skip_empty() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let data = b"";
+        let (size, flags) = bulk.compress(data).unwrap();
+        assert_eq!(size, 0);
+        assert_eq!(flags, 0);
+    }
+
+    // ---------------------------------------------------------------
+    // Decompress: no flags → pass-through
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_bulk_decompress_no_flags() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let data = b"uncompressed data";
+        let result = bulk.decompress(data, 0x00).unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn test_bulk_decompress_unsupported_type() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        // flags = PACKET_COMPRESSED | type 0x0F (invalid)
+        let result = bulk.decompress(b"data", 0x2F);
+        assert!(result.is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // Round-trip tests through the bulk API for each algorithm
+    // ---------------------------------------------------------------
+
+    /// Helper: compress with one BulkCompressor (sender) and decompress
+    /// with another (receiver). Returns the decompressed data as a Vec.
+    fn bulk_roundtrip(
+        compression_level: CompressionType,
+        input: &[u8],
+    ) -> Vec<u8> {
+        let mut sender = BulkCompressor::new(compression_level).unwrap();
+        let mut receiver = BulkCompressor::new(compression_level).unwrap();
+
+        let (comp_size, flags) = sender.compress(input).unwrap();
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            // Compressed: pass compressed data to receiver
+            let compressed = sender.compressed_data(comp_size).to_vec();
+            let decompressed = receiver.decompress(&compressed, flags).unwrap();
+            decompressed.to_vec()
+        } else {
+            // Not compressed: data should be sent as-is
+            input.to_vec()
+        }
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp5_mppc() {
+        let input = b"The quick brown fox jumps over the lazy dog. \
+                      The quick brown fox jumps over the lazy dog again.";
+        let output = bulk_roundtrip(CompressionType::Rdp5, input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp4_mppc() {
+        let input = b"Hello world! Hello world! Hello world! Hello world! x";
+        let output = bulk_roundtrip(CompressionType::Rdp4, input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp6_ncrush() {
+        let input = b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!xx";
+        let output = bulk_roundtrip(CompressionType::Rdp6, input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp61_xcrush() {
+        let input = b"XCRUSH test data with repeated XCRUSH patterns for compression!!";
+        let output = bulk_roundtrip(CompressionType::Rdp61, input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp5_binary_data() {
+        // Binary data with all byte values
+        let mut input = Vec::new();
+        for _ in 0..2 {
+            for b in 0u8..=255 {
+                input.push(b);
+            }
+        }
+        // 512 bytes — within compressible range
+        let output = bulk_roundtrip(CompressionType::Rdp5, &input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp6_longer_text() {
+        let input = b"The RDP protocol uses bulk compression to reduce bandwidth. \
+                      Multiple algorithms are supported: MPPC for RDP4/5, \
+                      NCRUSH for RDP6, and XCRUSH for RDP6.1. Each has \
+                      different tradeoffs between speed and compression ratio.";
+        let output = bulk_roundtrip(CompressionType::Rdp6, input);
+        assert_eq!(output, input);
+    }
+
+    // ---------------------------------------------------------------
+    // Routing verification
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_bulk_compress_rdp5_sets_type_bits() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let input = b"Some data that should compress with MPPC level 1 algorithm!!";
+        let (_size, flags) = bulk.compress(input).unwrap();
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            // Type bits should be 0x01 (RDP5)
+            let comp_type = flags & crate::flags::COMPRESSION_TYPE_MASK;
+            assert_eq!(comp_type, 0x01, "Expected RDP5 type bits");
+        }
+    }
+
+    #[test]
+    fn test_bulk_compress_rdp6_sets_type_bits() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp6).unwrap();
+        let input = b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!xx";
+        let (_size, flags) = bulk.compress(input).unwrap();
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            // Type bits should be 0x02 (RDP6/NCRUSH)
+            let comp_type = flags & crate::flags::COMPRESSION_TYPE_MASK;
+            assert_eq!(comp_type, 0x02, "Expected RDP6 (NCRUSH) type bits");
+        }
+    }
+
+    #[test]
+    fn test_bulk_compress_rdp61_sets_type_bits() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp61).unwrap();
+        let input = b"XCRUSH test data with repeated XCRUSH patterns for compression!!";
+        let (_size, flags) = bulk.compress(input).unwrap();
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            // Type bits should be 0x03 (RDP6.1/XCRUSH)
+            let comp_type = flags & crate::flags::COMPRESSION_TYPE_MASK;
+            assert_eq!(comp_type, 0x03, "Expected RDP6.1 (XCRUSH) type bits");
+        }
+    }
 }

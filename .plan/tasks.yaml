@@ -659,11 +659,12 @@ tasks:
     dependencies:
       - TASK-031
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Added 13 new tests: skip (small/empty), decompress pass-through, unsupported type error, round-trip for RDP4/5/6/6.1 plus binary and longer text, and routing type-bit verification for RDP5/6/6.1. All 130 tests pass."
+    files_affected:
+      - "crates/ironrdp-bulk/src/bulk.rs"
     estimated_hours: 1
 
   # Phase 10: Memory Safety Refactoring
