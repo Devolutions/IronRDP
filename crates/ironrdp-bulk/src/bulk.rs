@@ -24,6 +24,10 @@ const COMPRESS_MIN_SIZE: usize = 50;
 /// Maximum input size for compression (above this, data is sent uncompressed).
 const COMPRESS_MAX_SIZE: usize = 16384;
 
+/// Mask for the compression control flags (COMPRESSED | AT_FRONT | FLUSHED).
+/// Corresponds to FreeRDP's `BULK_COMPRESSION_FLAGS_MASK`.
+const BULK_COMPRESSION_FLAGS_MASK: u32 = 0xE0;
+
 /// Bulk compression/decompression coordinator.
 ///
 /// Manages send (compression) and receive (decompression) context pairs
@@ -144,6 +148,101 @@ impl BulkCompressor {
     /// Returns a reference to the XCRUSH receive context.
     pub(crate) fn xcrush_recv(&mut self) -> &mut XCrushContext {
         &mut self.xcrush_recv
+    }
+
+    /// Decompresses bulk-compressed RDP data.
+    ///
+    /// `flags` contains the compression type (low 4 bits) and control flags
+    /// (`PACKET_COMPRESSED`, `PACKET_AT_FRONT`, `PACKET_FLUSHED`).
+    ///
+    /// If no compression flags are set, returns `src_data` unchanged.
+    /// Otherwise, routes to the appropriate algorithm based on the type bits:
+    /// - `0x00` (RDP4): MPPC with 8K buffer
+    /// - `0x01` (RDP5): MPPC with 64K buffer
+    /// - `0x02` (RDP6): NCRUSH
+    /// - `0x03` (RDP6.1): XCRUSH
+    ///
+    /// Ported from FreeRDP's `bulk_decompress`.
+    pub fn decompress<'a>(
+        &'a mut self,
+        src_data: &'a [u8],
+        flags: u32,
+    ) -> Result<&'a [u8], BulkError> {
+        let compression_flags = flags & BULK_COMPRESSION_FLAGS_MASK;
+
+        // If no compression flags are set, return source data unchanged
+        if compression_flags == 0 {
+            return Ok(src_data);
+        }
+
+        let comp_type = CompressionType::from_flags(flags)?;
+
+        match comp_type {
+            CompressionType::Rdp4 => {
+                self.mppc_recv.set_compression_level(0);
+                self.mppc_recv.decompress(src_data, flags)
+            }
+            CompressionType::Rdp5 => {
+                self.mppc_recv.set_compression_level(1);
+                self.mppc_recv.decompress(src_data, flags)
+            }
+            CompressionType::Rdp6 => {
+                self.ncrush_recv.decompress(src_data, flags)
+            }
+            CompressionType::Rdp61 => {
+                self.xcrush_recv.decompress(src_data, flags)
+            }
+        }
+    }
+
+    /// Compresses data using the configured compression algorithm.
+    ///
+    /// Returns `Ok((compressed_size, flags))` on success:
+    /// - If `flags & PACKET_COMPRESSED != 0`: compressed data is available
+    ///   in the internal output buffer via [`compressed_data`].
+    /// - If compression was skipped (size out of range) or the algorithm
+    ///   flushed (compressed output larger than input): `flags` will **not**
+    ///   have `PACKET_COMPRESSED` set, and the caller should transmit the
+    ///   original `src_data` uncompressed.
+    ///
+    /// FreeRDP skips compression for sizes ≤ 50 or ≥ 16384.
+    ///
+    /// Ported from FreeRDP's `bulk_compress`.
+    pub fn compress(
+        &mut self,
+        src_data: &[u8],
+    ) -> Result<(usize, u32), BulkError> {
+        let src_size = src_data.len();
+
+        // Skip compression for edge case sizes
+        if Self::should_skip_compression(src_size) {
+            return Ok((src_size, 0));
+        }
+
+        match self.compression_level {
+            CompressionType::Rdp4 => {
+                self.mppc_send.set_compression_level(0);
+                self.mppc_send.compress(src_data, &mut *self.output_buffer)
+            }
+            CompressionType::Rdp5 => {
+                self.mppc_send.set_compression_level(1);
+                self.mppc_send.compress(src_data, &mut *self.output_buffer)
+            }
+            CompressionType::Rdp6 => {
+                self.ncrush_send.compress(src_data, &mut *self.output_buffer)
+            }
+            CompressionType::Rdp61 => {
+                self.xcrush_send.compress(src_data, &mut *self.output_buffer)
+            }
+        }
+    }
+
+    /// Returns a slice of the internal output buffer containing compressed
+    /// data from the most recent [`compress`] call.
+    ///
+    /// `size` should be the `compressed_size` value returned by `compress`.
+    pub fn compressed_data(&self, size: usize) -> &[u8] {
+        &self.output_buffer[..size]
     }
 
     /// Resets all compression and decompression contexts.

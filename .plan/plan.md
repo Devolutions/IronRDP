@@ -324,7 +324,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Holds MPPC/XCRUSH/NCRUSH contexts, routes compress/decompress based on compression type
   - **Dependencies**: TASK-009, TASK-011, TASK-016, TASK-019, TASK-023, TASK-027
   - **Risk**: Low
-- [ ] **TASK-031**: Implement bulk compress/decompress routing
+- [x] **TASK-031**: Implement bulk compress/decompress routing
   - **Acceptance Criteria**: Correctly dispatches to MPPC (8K/64K), XCRUSH, or NCRUSH based on flags
   - **Dependencies**: TASK-030
   - **Risk**: Low

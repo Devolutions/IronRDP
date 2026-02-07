@@ -641,11 +641,12 @@ tasks:
     dependencies:
       - TASK-030
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Implemented decompress() routing based on type bits in flags (MPPC level 0/1, NCRUSH, XCRUSH). Implemented compress() routing based on compression_level with size-skip logic. Added compressed_data() accessor for output buffer."
+    files_affected:
+      - "crates/ironrdp-bulk/src/bulk.rs"
     estimated_hours: 1
 
   - id: TASK-032
