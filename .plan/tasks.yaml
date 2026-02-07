@@ -575,11 +575,12 @@ tasks:
     dependencies:
       - TASK-027
     risk: medium
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Byte-exact compression test passes on first try. Compressed output matches FreeRDP's TEST_BELLS_NCRUSH exactly (44 bytes). Also fixed unused variable and unused mut warnings."
+    files_affected:
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
     estimated_hours: 1
 
   - id: TASK-029

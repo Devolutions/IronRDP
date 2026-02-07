@@ -1193,7 +1193,7 @@ impl NCrushContext {
             });
         }
 
-        let dst_size = src_size; // Compressed output must not exceed source size
+        let _dst_size = src_size; // Compressed output must not exceed source size
 
         // --- Populate hash chains and copy source into history buffer ---
         let history_offset = self.history_offset;
@@ -2024,7 +2024,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_encode_would_overflow() {
-        let mut writer = NCrushBitWriter::new(&mut []);
+        let writer = NCrushBitWriter::new(&mut []);
         assert!(writer.would_overflow(1));
     }
 
@@ -2104,5 +2104,43 @@ mod tests {
             let any_cached = ctx.offset_cache.iter().any(|&x| x != 0);
             assert!(any_cached, "Offset cache should have been updated");
         }
+    }
+
+    /// Byte-exact compression test ported from FreeRDP's
+    /// `test_NCrushCompressBells` in `TestFreeRDPCodecNCrush.c`.
+    ///
+    /// Compresses the "bells" test string with a fresh compressor context
+    /// and verifies the output matches FreeRDP's expected compressed bytes
+    /// exactly.
+    #[test]
+    fn test_ncrush_compress_bells() {
+        let mut ctx = NCrushContext::new(true).unwrap();
+        let mut dst = vec![0u8; 65536];
+
+        let (size, flags_out) = ctx
+            .compress(test_data::TEST_BELLS_DATA, &mut dst)
+            .unwrap();
+
+        // Must be compressed
+        assert_ne!(
+            flags_out & crate::flags::PACKET_COMPRESSED,
+            0,
+            "Expected PACKET_COMPRESSED flag, got flags: {flags_out:#010x}"
+        );
+
+        // Size must match expected
+        assert_eq!(
+            size,
+            test_data::TEST_BELLS_NCRUSH.len(),
+            "Compressed size mismatch: got {size}, expected {}",
+            test_data::TEST_BELLS_NCRUSH.len()
+        );
+
+        // Content must match byte-for-byte
+        assert_eq!(
+            &dst[..size],
+            test_data::TEST_BELLS_NCRUSH,
+            "Compressed output does not match FreeRDP expected bytes"
+        );
     }
 }

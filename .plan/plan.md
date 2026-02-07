@@ -291,7 +291,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Complete compression with history management, window sliding
   - **Dependencies**: TASK-026
   - **Risk**: High
-- [ ] **TASK-028**: Port NCRUSH compression test
+- [x] **TASK-028**: Port NCRUSH compression test
   - **Acceptance Criteria**: `test_ncrush_compress_bells` passes
   - **Dependencies**: TASK-027
   - **Risk**: Medium
