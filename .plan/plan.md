@@ -177,11 +177,11 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: `XCrushContext`, `XCrushMatchInfo`, `XCrushChunk`, `XCrushSignature`, `Rdp61MatchDetails`, `Rdp61CompressedData` defined
   - **Dependencies**: TASK-003
   - **Risk**: Low
-- [ ] **TASK-015**: Implement XCRUSH Level 1 decompression
+- [x] **TASK-015**: Implement XCRUSH Level 1 decompression
   - **Acceptance Criteria**: Parses match details and reconstructs data from history + literals
   - **Dependencies**: TASK-014
   - **Risk**: High (complex two-level format)
-- [ ] **TASK-016**: Implement XCRUSH full decompression (Level 1 + Level 2/MPPC)
+- [x] **TASK-016**: Implement XCRUSH full decompression (Level 1 + Level 2/MPPC)
   - **Acceptance Criteria**: Full xcrush_decompress handling all flag combinations
   - **Dependencies**: TASK-009, TASK-015
   - **Risk**: Medium

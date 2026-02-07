@@ -311,11 +311,12 @@ tasks:
     dependencies:
       - TASK-014
     risk: high
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "Implemented decompress_l1 and decompress together since they are tightly coupled."
+    files_affected:
+      - crates/ironrdp-bulk/src/xcrush/mod.rs
     estimated_hours: 3
 
   - id: TASK-016
@@ -331,11 +332,12 @@ tasks:
       - TASK-009
       - TASK-015
     risk: medium
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "Implemented alongside TASK-015 since decompress is a thin wrapper over decompress_l1."
+    files_affected:
+      - crates/ironrdp-bulk/src/xcrush/mod.rs
     estimated_hours: 2
 
   # Phase 6: XCRUSH Compression & Tests

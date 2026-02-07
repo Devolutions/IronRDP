@@ -5,8 +5,10 @@
 //! Ported from FreeRDP's `libfreerdp/codec/xcrush.c`.
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 
+use crate::error::BulkError;
+use crate::flags;
 use crate::mppc::MppcContext;
 
 /// History buffer size for XCRUSH (2 MB).
@@ -219,6 +221,226 @@ impl XCrushContext {
         ctx
     }
 
+    /// Decompresses Level-1 (chunk-based matching) XCRUSH data.
+    ///
+    /// Parses the RDP 6.1 compressed data format: reads match count, match
+    /// details array, and literal data. Reconstructs output by interleaving
+    /// literal copies with history match copies.
+    ///
+    /// Ported from FreeRDP's `xcrush_decompress_l1`.
+    ///
+    /// Returns a reference to the decompressed data in the history buffer.
+    #[expect(
+        clippy::as_conversions,
+        reason = "LE wire format parsing requires conversions from u16/u32 to usize"
+    )]
+    pub(crate) fn decompress_l1<'a>(
+        &'a mut self,
+        src_data: &[u8],
+        l1_flags: u32,
+    ) -> Result<&'a [u8], BulkError> {
+        if src_data.is_empty() {
+            return Err(BulkError::InvalidCompressedData("XCRUSH L1: empty input"));
+        }
+
+        if l1_flags & flags::L1_PACKET_AT_FRONT != 0 {
+            self.history_offset = 0;
+        }
+
+        let history_buffer_size = self.history_buffer_size;
+        let mut history_ptr = self.history_offset;
+        let output_start = history_ptr;
+
+        // Track current position in the literal data
+        let mut literals_start: usize;
+
+        if l1_flags & flags::L1_NO_COMPRESSION != 0 {
+            // No L1 compression — entire input is literal data
+            literals_start = 0;
+        } else {
+            if l1_flags & flags::L1_COMPRESSED == 0 {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH L1: neither compressed nor uncompressed",
+                ));
+            }
+
+            if src_data.len() < 2 {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH L1: too short for match count",
+                ));
+            }
+
+            let match_count =
+                u16::from_le_bytes([src_data[0], src_data[1]]) as usize;
+
+            // Each RDP61_MATCH_DETAILS entry is 8 bytes (u16 + u16 + u32)
+            let match_details_end = 2 + match_count * 8;
+
+            if match_details_end > src_data.len() {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH L1: match details exceed input",
+                ));
+            }
+
+            literals_start = match_details_end;
+            let mut output_offset: usize = 0;
+
+            for i in 0..match_count {
+                let d = 2 + i * 8;
+                let match_length =
+                    u16::from_le_bytes([src_data[d], src_data[d + 1]]) as usize;
+                let match_output_offset =
+                    u16::from_le_bytes([src_data[d + 2], src_data[d + 3]]) as usize;
+                let match_history_offset = u32::from_le_bytes([
+                    src_data[d + 4],
+                    src_data[d + 5],
+                    src_data[d + 6],
+                    src_data[d + 7],
+                ]) as usize;
+
+                if match_output_offset < output_offset {
+                    return Err(BulkError::InvalidCompressedData(
+                        "XCRUSH L1: match output offset out of order",
+                    ));
+                }
+                if match_length > history_buffer_size {
+                    return Err(BulkError::InvalidCompressedData(
+                        "XCRUSH L1: match length exceeds history buffer",
+                    ));
+                }
+                if match_history_offset > history_buffer_size {
+                    return Err(BulkError::InvalidCompressedData(
+                        "XCRUSH L1: match history offset exceeds history buffer",
+                    ));
+                }
+
+                // Copy literal bytes between the previous output position and this match
+                let literal_length = match_output_offset - output_offset;
+
+                if literal_length > history_buffer_size {
+                    return Err(BulkError::InvalidCompressedData(
+                        "XCRUSH L1: literal gap exceeds history buffer",
+                    ));
+                }
+
+                if literal_length > 0 {
+                    let literals_end = literals_start + literal_length;
+
+                    if history_ptr + literal_length >= history_buffer_size
+                        || literals_start >= src_data.len()
+                        || literals_end > src_data.len()
+                    {
+                        return Err(BulkError::InvalidCompressedData(
+                            "XCRUSH L1: literal copy out of bounds",
+                        ));
+                    }
+
+                    self.history_buffer[history_ptr..history_ptr + literal_length]
+                        .copy_from_slice(&src_data[literals_start..literals_end]);
+                    history_ptr += literal_length;
+                    literals_start = literals_end;
+                    output_offset += literal_length;
+
+                    if literals_start > src_data.len() {
+                        return Err(BulkError::InvalidCompressedData(
+                            "XCRUSH L1: literals past end of input",
+                        ));
+                    }
+                }
+
+                // Copy match data from history buffer
+                if history_ptr + match_length >= history_buffer_size
+                    || match_history_offset + match_length >= history_buffer_size
+                {
+                    return Err(BulkError::InvalidCompressedData(
+                        "XCRUSH L1: match copy out of bounds",
+                    ));
+                }
+
+                // Same-buffer copy (may overlap — copy_within handles this)
+                self.history_buffer.copy_within(
+                    match_history_offset..match_history_offset + match_length,
+                    history_ptr,
+                );
+                output_offset += match_length;
+                history_ptr += match_length;
+            }
+        }
+
+        // Copy any remaining literals after all matches
+        if literals_start < src_data.len() {
+            let remaining = src_data.len() - literals_start;
+
+            if history_ptr + remaining >= history_buffer_size
+                || literals_start + remaining > src_data.len()
+            {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH L1: trailing literal copy out of bounds",
+                ));
+            }
+
+            self.history_buffer[history_ptr..history_ptr + remaining]
+                .copy_from_slice(&src_data[literals_start..]);
+            history_ptr += remaining;
+        }
+
+        self.history_offset = history_ptr;
+        let output_end = history_ptr;
+
+        Ok(&self.history_buffer[output_start..output_end])
+    }
+
+    /// Decompresses XCRUSH (RDP 6.1) data.
+    ///
+    /// Handles all flag combinations:
+    /// - Level-2 (MPPC) + Level-1 decompression
+    /// - Level-1 only decompression
+    /// - No compression passthrough
+    ///
+    /// Ported from FreeRDP's `xcrush_decompress`.
+    ///
+    /// Returns a reference to the decompressed data.
+    pub(crate) fn decompress<'a>(
+        &'a mut self,
+        src_data: &[u8],
+        outer_flags: u32,
+    ) -> Result<&'a [u8], BulkError> {
+        if src_data.len() < 2 {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: input too short for L1/L2 flags",
+            ));
+        }
+
+        let level1_compr_flags = u32::from(src_data[0]);
+        let level2_compr_flags = u32::from(src_data[1]);
+        let inner_data = &src_data[2..];
+
+        if outer_flags & flags::PACKET_FLUSHED != 0 {
+            self.history_buffer[..self.history_buffer_size].fill(0);
+            self.history_offset = 0;
+        }
+
+        if level2_compr_flags & flags::PACKET_COMPRESSED == 0 {
+            // No Level-2 (MPPC) compression — go straight to L1
+            return self.decompress_l1(inner_data, level1_compr_flags);
+        }
+
+        // Level-2 (MPPC) decompression first
+        let mppc_output = self
+            .mppc
+            .decompress(inner_data, level2_compr_flags)?;
+
+        // We need to copy the MPPC output to a temporary buffer because
+        // decompress_l1 borrows self mutably and the MPPC output lives
+        // in self.mppc.history_buffer.
+        //
+        // The MPPC output is at most 64K (MPPC history buffer size).
+        let mppc_output_copy: Vec<u8> = mppc_output.to_vec();
+
+        // Level-1 decompression on the MPPC output
+        self.decompress_l1(&mppc_output_copy, level1_compr_flags)
+    }
+
     /// Resets the XCRUSH context.
     ///
     /// Zeros the signature, chunk, and match arrays.
@@ -285,7 +507,6 @@ mod tests {
     #[test]
     fn test_xcrush_context_reset_no_flush() {
         let mut ctx = XCrushContext::new(false);
-        // Modify some state
         ctx.history_offset = 12345;
         ctx.signature_index = 42;
         ctx.chunk_head = 100;
@@ -311,10 +532,121 @@ mod tests {
         let mut ctx = XCrushContext::new(false);
         ctx.reset(true);
 
-        // Flush sets history_offset to buffer_size + 1 (sentinel)
         assert_eq!(ctx.history_offset, HISTORY_BUFFER_SIZE + 1);
         assert_eq!(ctx.signature_index, 0);
         assert_eq!(ctx.chunk_head, 1);
         assert_eq!(ctx.chunk_tail, 1);
+    }
+
+    // ========================
+    // L1 decompression tests
+    // ========================
+
+    #[test]
+    fn test_decompress_l1_no_compression() {
+        let mut ctx = XCrushContext::new(false);
+        let data = b"hello, world!";
+        let result = ctx
+            .decompress_l1(data, flags::L1_NO_COMPRESSION | flags::L1_PACKET_AT_FRONT)
+            .unwrap();
+        assert_eq!(result, b"hello, world!");
+        assert_eq!(ctx.history_offset, 13);
+    }
+
+    #[test]
+    fn test_decompress_l1_compressed_no_matches() {
+        let mut ctx = XCrushContext::new(false);
+        // Build a compressed packet with 0 matches: just literals
+        // Format: [match_count: u16 LE] [match_details...] [literals...]
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&0u16.to_le_bytes()); // 0 matches
+        packet.extend_from_slice(b"test data"); // all literals
+        let result = ctx
+            .decompress_l1(&packet, flags::L1_COMPRESSED | flags::L1_PACKET_AT_FRONT)
+            .unwrap();
+        assert_eq!(result, b"test data");
+    }
+
+    #[test]
+    fn test_decompress_l1_compressed_with_match() {
+        let mut ctx = XCrushContext::new(false);
+
+        // Pre-populate history buffer with "ABCDEFGH" at offset 0
+        ctx.history_buffer[..8].copy_from_slice(b"ABCDEFGH");
+        ctx.history_offset = 8;
+
+        // Build a compressed packet:
+        // - 1 match: length=4, output_offset=5, history_offset=2 (copies "CDEF" from history)
+        // - Literals: "Hello" (placed at output offset 0-4)
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&1u16.to_le_bytes()); // 1 match
+        // Match detail: MatchLength=4, MatchOutputOffset=5, MatchHistoryOffset=2
+        packet.extend_from_slice(&4u16.to_le_bytes());
+        packet.extend_from_slice(&5u16.to_le_bytes());
+        packet.extend_from_slice(&2u32.to_le_bytes());
+        // Literals: "Hello" (5 bytes before the match)
+        packet.extend_from_slice(b"Hello");
+
+        let result = ctx
+            .decompress_l1(&packet, flags::L1_COMPRESSED)
+            .unwrap();
+
+        // Expected output: "Hello" + "CDEF" = "HelloCDEF"
+        assert_eq!(result, b"HelloCDEF");
+    }
+
+    #[test]
+    fn test_decompress_l1_empty_input_error() {
+        let mut ctx = XCrushContext::new(false);
+        let result = ctx.decompress_l1(&[], flags::L1_COMPRESSED);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decompress_l1_invalid_flags_error() {
+        let mut ctx = XCrushContext::new(false);
+        // Neither L1_NO_COMPRESSION nor L1_COMPRESSED set
+        let result = ctx.decompress_l1(b"data", 0);
+        assert!(result.is_err());
+    }
+
+    // ========================
+    // Full decompress tests
+    // ========================
+
+    #[test]
+    fn test_decompress_no_l2_no_l1_compression() {
+        let mut ctx = XCrushContext::new(false);
+        // Header: [L1_flags, L2_flags] + data
+        // L1_NO_COMPRESSION(0x02) | L1_PACKET_AT_FRONT(0x04) = 0x06
+        let mut packet = vec![0x06u8, 0x00u8];
+        packet.extend_from_slice(b"raw data here");
+
+        let result = ctx.decompress(&packet, 0).unwrap();
+        assert_eq!(result, b"raw data here");
+    }
+
+    #[test]
+    fn test_decompress_too_short_error() {
+        let mut ctx = XCrushContext::new(false);
+        let result = ctx.decompress(&[0x00], 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decompress_flushed_clears_history() {
+        let mut ctx = XCrushContext::new(false);
+        // Write some data to history
+        ctx.history_buffer[0] = 0xFF;
+        ctx.history_offset = 100;
+
+        // L1_NO_COMPRESSION(0x02) | L1_PACKET_AT_FRONT(0x04) = 0x06
+        let mut packet = vec![0x06u8, 0x00u8];
+        packet.extend_from_slice(b"test");
+
+        let result = ctx.decompress(&packet, flags::PACKET_FLUSHED).unwrap();
+        assert_eq!(result, b"test");
+        // History should have been cleared
+        assert_eq!(ctx.history_buffer[0], b't'); // first byte of "test"
     }
 }

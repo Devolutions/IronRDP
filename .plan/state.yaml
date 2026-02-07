@@ -1,5 +1,5 @@
 project_name: "Port FreeRDP Bulk Compression to IronRDP"
-current_phase: 5
+current_phase: 6
 overall_status: in_progress
 started_at: "2026-02-06T00:00:00Z"
 
@@ -46,11 +46,11 @@ phases:
 
   - id: 5
     name: "XCRUSH Decompression"
-    status: in_progress
+    status: completed
     started_at: "2026-02-06T00:00:00Z"
-    completed_at: null
+    completed_at: "2026-02-06T00:00:00Z"
     tasks_total: 3
-    tasks_completed: 1
+    tasks_completed: 3
     blocked: false
     blocker_reason: null
 
@@ -115,9 +115,9 @@ phases:
     blocker_reason: null
 
 tasks_total: 37
-tasks_completed: 14
+tasks_completed: 16
 tasks_in_progress: 0
 tasks_blocked: 0
 last_updated: "2026-02-06T00:00:00Z"
-last_commit: "TASK-014: Port XCRUSH types and structures"
+last_commit: "TASK-015/016: XCRUSH L1 and full decompression"
 notes: []
