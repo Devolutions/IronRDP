@@ -839,4 +839,37 @@ mod tests {
             &src, &mut src_pos, &mut nbits, &mut bits
         ));
     }
+
+    /// Byte-exact decompression test ported from FreeRDP
+    /// `test_NCrushDecompressBells` in `TestFreeRDPCodecNCrush.c`.
+    ///
+    /// Verifies that NCRUSH decompression of the compressed "bells" data
+    /// produces the original plaintext byte-for-byte.
+    #[test]
+    fn test_ncrush_decompress_bells() {
+        use crate::flags;
+
+        let mut ctx = NCrushContext::new(false).unwrap();
+
+        // FreeRDP flags: PACKET_COMPRESSED | 2 (compression type NCRUSH)
+        let flags_value = flags::PACKET_COMPRESSED | 0x02;
+
+        let result = ctx
+            .decompress(test_data::TEST_BELLS_NCRUSH, flags_value)
+            .unwrap();
+
+        assert_eq!(
+            result.len(),
+            test_data::TEST_BELLS_DATA.len(),
+            "output size mismatch: got {}, expected {}",
+            result.len(),
+            test_data::TEST_BELLS_DATA.len()
+        );
+
+        assert_eq!(
+            result,
+            test_data::TEST_BELLS_DATA,
+            "NCrushDecompressBells: output mismatch"
+        );
+    }
 }

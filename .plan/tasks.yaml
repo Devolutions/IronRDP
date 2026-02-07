@@ -495,11 +495,13 @@ tasks:
     dependencies:
       - TASK-023
     risk: medium
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Ported TEST_BELLS_DATA and TEST_BELLS_NCRUSH test vectors. Decompression produces byte-exact match with FreeRDP expected output. 77 tests passing."
+    files_affected:
+      - "crates/ironrdp-bulk/src/ncrush/test_data.rs"
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
     estimated_hours: 1
 
   # Phase 8: NCRUSH Compression & Tests

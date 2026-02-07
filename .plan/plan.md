@@ -254,7 +254,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Decompresses NCRUSH data using Huffman decoding, offset cache, history buffer
   - **Dependencies**: TASK-004, TASK-022
   - **Risk**: High (Huffman decoding + offset cache + history management)
-- [ ] **TASK-024**: Port NCRUSH decompression test
+- [x] **TASK-024**: Port NCRUSH decompression test
   - **Acceptance Criteria**: `test_ncrush_decompress_bells` passes
   - **Dependencies**: TASK-023
   - **Risk**: Medium
