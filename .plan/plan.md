@@ -209,7 +209,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Chunk boundaries computed using 32-byte rolling hash with rotation
   - **Dependencies**: TASK-014
   - **Risk**: Medium
-- [ ] **TASK-018**: Implement XCRUSH match finding and optimization
+- [x] **TASK-018**: Implement XCRUSH match finding and optimization
   - **Acceptance Criteria**: Hash-based chunk matching with bidirectional extension and overlap removal
   - **Dependencies**: TASK-017
   - **Risk**: High

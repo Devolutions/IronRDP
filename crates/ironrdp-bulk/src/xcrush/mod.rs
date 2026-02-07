@@ -555,6 +555,495 @@ impl XCrushContext {
         self.signature_index
     }
 
+    // ========================
+    // Match finding and optimization (compression)
+    // ========================
+
+    /// Clears entries in the chunk hash table that fall within `[beg, end]`.
+    ///
+    /// Ported from FreeRDP's `xcrush_clear_hash_table_range`.
+    fn clear_hash_table_range(&mut self, beg: u32, end: u32) {
+        for entry in self.next_chunks.iter_mut() {
+            let v = u32::from(*entry);
+            if v >= beg && v <= end {
+                *entry = 0;
+            }
+        }
+        for chunk in self.chunks[..MAX_CHUNKS].iter_mut() {
+            if chunk.next >= beg && chunk.next <= end {
+                chunk.next = 0;
+            }
+        }
+    }
+
+    /// Finds the next chunk in the chain with a matching signature seed.
+    ///
+    /// Returns `Some(index)` of the next matching chunk, or `None` if
+    /// there is no next chunk or the chain is invalid.
+    ///
+    /// Ported from FreeRDP's `xcrush_find_next_matching_chunk`.
+    #[expect(
+        clippy::as_conversions,
+        reason = "u32 chunk indices safely converted to usize for array indexing"
+    )]
+    fn find_next_matching_chunk(&self, chunk_index: u32) -> Result<Option<u32>, BulkError> {
+        if chunk_index as usize >= MAX_CHUNKS {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: chunk index out of range",
+            ));
+        }
+
+        let chunk = &self.chunks[chunk_index as usize];
+        if chunk.next == 0 {
+            return Ok(None);
+        }
+
+        if chunk_index < self.chunk_head || chunk.next >= self.chunk_head {
+            if chunk.next as usize >= MAX_CHUNKS {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH: next chunk index out of range",
+                ));
+            }
+            return Ok(Some(chunk.next));
+        }
+
+        Ok(None)
+    }
+
+    /// Inserts a chunk into the hash table keyed by signature seed.
+    ///
+    /// Returns the index of a previously-existing chunk with the same seed
+    /// (for match finding), or `None` if no previous chunk exists.
+    ///
+    /// Ported from FreeRDP's `xcrush_insert_chunk`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "chunk indices bounded to < 65534, fit in u16/u32"
+    )]
+    fn insert_chunk(
+        &mut self,
+        signature: &XCrushSignature,
+        offset: u32,
+    ) -> Result<Option<u32>, BulkError> {
+        if self.chunk_head >= 65530 {
+            self.chunk_head = 1;
+            self.chunk_tail = 1;
+        }
+
+        if self.chunk_head >= self.chunk_tail {
+            self.clear_hash_table_range(self.chunk_tail, self.chunk_tail + 10000);
+            self.chunk_tail += 10000;
+        }
+
+        let index = self.chunk_head;
+        self.chunk_head += 1;
+
+        if self.chunk_head as usize >= MAX_CHUNKS {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: chunk head overflow",
+            ));
+        }
+
+        self.chunks[index as usize].offset = offset;
+        let seed = usize::from(signature.seed);
+        let prev_chunk_index = if self.next_chunks[seed] != 0 {
+            if usize::from(self.next_chunks[seed]) >= MAX_CHUNKS {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH: next_chunks index out of range",
+                ));
+            }
+            Some(u32::from(self.next_chunks[seed]))
+        } else {
+            None
+        };
+
+        self.chunks[index as usize].next = u32::from(self.next_chunks[seed]);
+        self.next_chunks[seed] = index as u16;
+        Ok(prev_chunk_index)
+    }
+
+    /// Finds the match length between two positions in the history buffer.
+    ///
+    /// Searches both forward and backward from the match point to find
+    /// the longest matching region.
+    ///
+    /// Returns the total match length (0 if < 11 bytes or a quick-reject
+    /// heuristic fails), or an error for invalid offsets.
+    ///
+    /// Ported from FreeRDP's `xcrush_find_match_length`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "offsets and lengths bounded by history buffer size (2MB), safely fit in u32"
+    )]
+    fn find_match_length(
+        &self,
+        match_offset: usize,
+        chunk_offset: usize,
+        history_offset: usize,
+        src_size: usize,
+        max_match_length: usize,
+    ) -> Result<Option<XCrushMatchInfo>, BulkError> {
+        let history_buffer_size = self.history_buffer_size;
+        let buf_end = history_offset + src_size;
+
+        if match_offset > history_buffer_size {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: match_offset exceeds history buffer",
+            ));
+        }
+        if chunk_offset > history_buffer_size {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: chunk_offset exceeds history buffer",
+            ));
+        }
+        if match_offset == chunk_offset {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: match_offset == chunk_offset",
+            ));
+        }
+
+        let buf = &*self.history_buffer;
+
+        // Quick-reject heuristic: if byte at max_match_length+1 doesn't match, skip
+        if match_offset + max_match_length + 1 < buf_end
+            && buf[match_offset + max_match_length + 1]
+                != buf[chunk_offset + max_match_length + 1]
+        {
+            return Ok(None);
+        }
+
+        // Forward matching
+        let mut forward_len: usize = 0;
+        let mut fm = match_offset;
+        let mut fc = chunk_offset;
+        loop {
+            if buf[fm] != buf[fc] {
+                break;
+            }
+            fm += 1;
+            fc += 1;
+            if fm > buf_end {
+                break;
+            }
+            forward_len += 1;
+        }
+
+        // Reverse matching
+        let mut reverse_len: usize = 0;
+        if match_offset > 0 && chunk_offset > 0 {
+            let mut rm = match_offset - 1;
+            let mut rc = chunk_offset - 1;
+            while rm > history_offset && rc > 0 && buf[rm] == buf[rc] {
+                reverse_len += 1;
+                if rm == 0 || rc == 0 {
+                    break;
+                }
+                rm -= 1;
+                rc -= 1;
+            }
+        }
+
+        let total_len = reverse_len + forward_len;
+        if total_len < 11 {
+            return Ok(None);
+        }
+
+        let match_start = match_offset - reverse_len;
+        let chunk_start = chunk_offset - reverse_len;
+
+        Ok(Some(XCrushMatchInfo {
+            match_offset: match_start as u32,
+            chunk_offset: chunk_start as u32,
+            match_length: total_len as u32,
+        }))
+    }
+
+    /// Finds all matches between computed signatures and existing chunks
+    /// in the hash table.
+    ///
+    /// Populates `original_matches` with the best match for each signature
+    /// position. Returns the number of matches found.
+    ///
+    /// Ported from FreeRDP's `xcrush_find_all_matches`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "index/offset arithmetic bounded by history buffer size and u32 match fields"
+    )]
+    fn find_all_matches(
+        &mut self,
+        signature_index: usize,
+        history_offset: usize,
+        src_size: usize,
+    ) -> Result<usize, BulkError> {
+        let mut j: usize = 0;
+        let mut src_offset: usize = 0;
+        let mut prev_match_end: usize = 0;
+
+        for i in 0..signature_index {
+            let sig_size = self.signatures[i].size;
+            if sig_size == 0 {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH: signature size is zero",
+                ));
+            }
+
+            let offset = (src_offset + history_offset) as u32;
+
+            // Make a copy of the signature for insert
+            let sig_copy = self.signatures[i];
+            let prev_chunk_idx = self.insert_chunk(&sig_copy, offset)?;
+
+            if let Some(mut chunk_idx) = prev_chunk_idx {
+                if src_offset + history_offset + sig_size as usize >= prev_match_end {
+                    let mut max_match_length: usize = 0;
+                    let mut best_match: Option<XCrushMatchInfo> = None;
+                    let mut chunk_count: usize = 0;
+
+                    loop {
+                        let chunk_offset = self.chunks[chunk_idx as usize].offset as usize;
+
+                        if chunk_offset < history_offset
+                            || chunk_offset < offset as usize
+                            || chunk_offset > src_size + history_offset
+                        {
+                            let result = self.find_match_length(
+                                offset as usize,
+                                chunk_offset,
+                                history_offset,
+                                src_size,
+                                max_match_length,
+                            )?;
+
+                            if let Some(info) = result {
+                                let match_len = info.match_length as usize;
+                                if match_len > max_match_length {
+                                    max_match_length = match_len;
+                                    best_match = Some(info);
+                                    if match_len > 256 {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        chunk_count += 1;
+                        if chunk_count > 4 {
+                            break;
+                        }
+
+                        match self.find_next_matching_chunk(chunk_idx)? {
+                            Some(next) => chunk_idx = next,
+                            None => break,
+                        }
+                    }
+
+                    if let Some(best) = best_match {
+                        self.original_matches[j] = best;
+
+                        if (self.original_matches[j].match_offset as usize) < history_offset {
+                            return Err(BulkError::InvalidCompressedData(
+                                "XCRUSH: match offset before history",
+                            ));
+                        }
+
+                        prev_match_end = self.original_matches[j].match_length as usize
+                            + self.original_matches[j].match_offset as usize;
+                        j += 1;
+
+                        if j >= MAX_MATCH_COUNT {
+                            return Err(BulkError::InvalidCompressedData(
+                                "XCRUSH: too many matches",
+                            ));
+                        }
+                    }
+                }
+            }
+
+            src_offset += sig_size as usize;
+            if src_offset > src_size {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH: src_offset exceeds src_size",
+                ));
+            }
+        }
+
+        if src_offset > src_size {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: final src_offset exceeds src_size",
+            ));
+        }
+
+        Ok(j)
+    }
+
+    /// Optimizes matches by removing overlaps and adjusting boundaries.
+    ///
+    /// Takes the raw matches from `original_matches` and produces a
+    /// non-overlapping set in `optimized_matches`.
+    ///
+    /// Returns the total match length across all optimized matches.
+    ///
+    /// Ported from FreeRDP's `xcrush_optimize_matches`.
+    #[expect(
+        clippy::as_conversions,
+        reason = "u32 match fields compared and arithmetically combined"
+    )]
+    fn optimize_matches(&mut self) -> Result<usize, BulkError> {
+        let mut j: usize = 0;
+        let mut prev_match_end: u32 = 0;
+        let mut total_match_length: usize = 0;
+        let original_match_count = self.original_match_count;
+
+        for i in 0..original_match_count {
+            let orig = self.original_matches[i];
+
+            if orig.match_offset <= prev_match_end {
+                // Overlapping: only include if the extension is large enough
+                if orig.match_offset < prev_match_end
+                    && orig.match_length + orig.match_offset > prev_match_end + 6
+                {
+                    let match_diff = prev_match_end - orig.match_offset;
+
+                    if orig.match_length <= match_diff {
+                        return Err(BulkError::InvalidCompressedData(
+                            "XCRUSH: optimized match length underflow",
+                        ));
+                    }
+                    if match_diff >= 20000 {
+                        return Err(BulkError::InvalidCompressedData(
+                            "XCRUSH: match diff too large",
+                        ));
+                    }
+
+                    self.optimized_matches[j] = XCrushMatchInfo {
+                        match_offset: orig.match_offset + match_diff,
+                        chunk_offset: orig.chunk_offset + match_diff,
+                        match_length: orig.match_length - match_diff,
+                    };
+
+                    prev_match_end = self.optimized_matches[j].match_length
+                        + self.optimized_matches[j].match_offset;
+                    total_match_length += self.optimized_matches[j].match_length as usize;
+                    j += 1;
+                }
+            } else {
+                // Non-overlapping: include as-is
+                self.optimized_matches[j] = orig;
+                prev_match_end = orig.match_length + orig.match_offset;
+                total_match_length += orig.match_length as usize;
+                j += 1;
+            }
+        }
+
+        self.optimized_match_count = j;
+        Ok(total_match_length)
+    }
+
+    /// Generates the Level-1 compressed output format.
+    ///
+    /// Writes the match count, match details array, and literal data into
+    /// the output buffer.
+    ///
+    /// Returns the total size of the compressed output.
+    ///
+    /// Ported from FreeRDP's `xcrush_generate_output`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "match fields bounded to u16/u32; output offsets bounded by buffer size"
+    )]
+    fn generate_output(
+        &self,
+        output_buffer: &mut [u8],
+        history_offset: usize,
+    ) -> Result<usize, BulkError> {
+        let match_count = self.optimized_match_count;
+        let output_size = output_buffer.len();
+
+        if output_size < 2 {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: output buffer too small for header",
+            ));
+        }
+
+        // Write match count (u16 LE)
+        let count_bytes = (match_count as u16).to_le_bytes();
+        output_buffer[0] = count_bytes[0];
+        output_buffer[1] = count_bytes[1];
+
+        // Match details start at offset 2, each entry is 8 bytes
+        let match_details_end = 2 + match_count * 8;
+        let mut literals_pos = match_details_end;
+
+        if literals_pos > output_size {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: match details exceed output buffer",
+            ));
+        }
+
+        // Write match detail entries
+        for mi in 0..match_count {
+            let d = 2 + mi * 8;
+            let m = &self.optimized_matches[mi];
+
+            let match_length = m.match_length as u16;
+            let match_output_offset = (m.match_offset as usize)
+                .checked_sub(history_offset)
+                .ok_or(BulkError::InvalidCompressedData(
+                    "XCRUSH: match offset before history",
+                ))? as u16;
+            let match_history_offset = m.chunk_offset;
+
+            output_buffer[d..d + 2].copy_from_slice(&match_length.to_le_bytes());
+            output_buffer[d + 2..d + 4].copy_from_slice(&match_output_offset.to_le_bytes());
+            output_buffer[d + 4..d + 8].copy_from_slice(&match_history_offset.to_le_bytes());
+        }
+
+        // Write literal data (bytes between and after matches)
+        let mut current_offset = history_offset;
+
+        for mi in 0..match_count {
+            let m = &self.optimized_matches[mi];
+            let match_offset = m.match_offset as usize;
+            let match_length = m.match_length as usize;
+
+            if match_offset > current_offset {
+                let literal_len = match_offset - current_offset;
+                if literals_pos + literal_len >= output_size {
+                    return Err(BulkError::InvalidCompressedData(
+                        "XCRUSH: literal data exceeds output buffer",
+                    ));
+                }
+                output_buffer[literals_pos..literals_pos + literal_len]
+                    .copy_from_slice(&self.history_buffer[current_offset..match_offset]);
+                literals_pos += literal_len;
+                current_offset = match_offset + match_length;
+            } else if match_offset == current_offset {
+                current_offset = match_offset + match_length;
+            } else {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH: match offset before current position",
+                ));
+            }
+        }
+
+        // Copy trailing literals
+        let trailing_len = self.history_offset - current_offset;
+        if literals_pos + trailing_len >= output_size {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: trailing literals exceed output buffer",
+            ));
+        }
+        output_buffer[literals_pos..literals_pos + trailing_len]
+            .copy_from_slice(&self.history_buffer[current_offset..self.history_offset]);
+        literals_pos += trailing_len;
+
+        Ok(literals_pos)
+    }
+
     /// Resets the XCRUSH context.
     ///
     /// Zeros the signature, chunk, and match arrays.
