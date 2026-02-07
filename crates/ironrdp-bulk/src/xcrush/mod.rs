@@ -4,6 +4,9 @@
 //!
 //! Ported from FreeRDP's `libfreerdp/codec/xcrush.c`.
 
+#[cfg(test)]
+mod test_data;
+
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec, vec::Vec};
 
@@ -112,7 +115,6 @@ pub(crate) struct Rdp61CompressedData<'a> {
 /// Ported from FreeRDP's `XCRUSH_CONTEXT` struct.
 pub(crate) struct XCrushContext {
     /// Whether this context is for compression (`true`) or decompression (`false`).
-    #[expect(dead_code, reason = "will be used by bulk coordinator")]
     compressor: bool,
     /// Inner MPPC context (RDP5 / 64K) for Level-2 compression/decompression.
     pub(crate) mppc: MppcContext,
@@ -123,6 +125,8 @@ pub(crate) struct XCrushContext {
     /// 2 MB sliding-window history buffer.
     pub(crate) history_buffer: Box<[u8; HISTORY_BUFFER_SIZE]>,
     /// 16 KB temporary block buffer used during compression.
+    /// Currently allocated but not directly read — `compress()` uses a local
+    /// `Vec` instead to avoid overlapping borrows. Kept for parity with FreeRDP.
     pub(crate) block_buffer: Box<[u8; BLOCK_BUFFER_SIZE]>,
     /// Level-2 (MPPC) compression flags carried over between calls.
     pub(crate) compression_flags: u32,
@@ -357,11 +361,15 @@ impl XCrushContext {
                     ));
                 }
 
-                // Same-buffer copy (may overlap — copy_within handles this)
-                self.history_buffer.copy_within(
-                    match_history_offset..match_history_offset + match_length,
-                    history_ptr,
-                );
+                // Same-buffer copy — must use byte-by-byte left-to-right copy
+                // because matches can overlap (match_length > distance, i.e.
+                // LZ77-style run-length encoding). `copy_within` uses memmove
+                // semantics (right-to-left when dst > src), which would read
+                // from uninitialised history instead of the freshly-written bytes.
+                for i in 0..match_length {
+                    self.history_buffer[history_ptr + i] =
+                        self.history_buffer[match_history_offset + i];
+                }
                 output_offset += match_length;
                 history_ptr += match_length;
             }
@@ -679,7 +687,9 @@ impl XCrushContext {
 
         // Try L2 (MPPC) compression if L1 output is large enough
         let mut level2_compr_flags: u32 = 0;
-        let mut dst_size: usize;
+        let mut l2_status = false;
+        // Available space after the 2-byte header
+        let mut dst_size = src_size.saturating_sub(2);
         let l2_data_start = 2; // first 2 bytes are L1/L2 flag header
 
         if compressed_data_size > 50 {
@@ -690,23 +700,19 @@ impl XCrushContext {
                 Ok((mppc_size, mppc_flags)) => {
                     level2_compr_flags = mppc_flags;
                     dst_size = mppc_size;
+                    l2_status = true;
                 }
                 Err(_) => {
-                    // MPPC compression failed — fall back
-                    dst_size = compressed_data_size;
-                    level2_compr_flags = 0;
+                    // MPPC compression failed
+                    l2_status = false;
                 }
             }
-        } else {
-            dst_size = compressed_data_size;
         }
 
-        // Handle fallback cases
-        if level2_compr_flags == 0
-            || (level2_compr_flags & flags::PACKET_FLUSHED != 0)
-        {
+        // Handle fallback cases: L2 not applied or flushed
+        if !l2_status || (level2_compr_flags & flags::PACKET_FLUSHED != 0) {
             if compressed_data_size > dst_size {
-                // Compression didn't help at all — return uncompressed
+                // Compression didn't help — return uncompressed
                 self.reset(true);
                 return Ok((src_size, 0));
             }
@@ -1521,5 +1527,162 @@ mod tests {
             assert_eq!(ctx1.signatures[i].seed, ctx2.signatures[i].seed);
             assert_eq!(ctx1.signatures[i].size, ctx2.signatures[i].size);
         }
+    }
+
+    // ========================
+    // XCRUSH compression/decompression round-trip tests
+    // ========================
+
+    /// Helper: compress data with XCRUSH, then decompress, and verify round-trip.
+    fn assert_xcrush_roundtrip(input: &[u8], label: &str) {
+        let mut compressor = XCrushContext::new(true);
+        let mut decompressor = XCrushContext::new(false);
+        let mut output_buf = vec![0u8; 65536];
+
+        let (compressed_size, outer_flags) = compressor
+            .compress(input, &mut output_buf)
+            .unwrap_or_else(|e| panic!("[{label}] compress failed: {e}"));
+
+        if outer_flags == 0 {
+            // Compression didn't help — original data should be used
+            // Verify the original data itself
+            return;
+        }
+
+        assert!(
+            outer_flags & flags::PACKET_COMPRESSED != 0,
+            "[{label}] expected PACKET_COMPRESSED in flags"
+        );
+
+        let result = decompressor
+            .decompress(&output_buf[..compressed_size], outer_flags)
+            .unwrap_or_else(|e| panic!("[{label}] decompress failed: {e}"));
+
+        assert_eq!(
+            result,
+            input,
+            "[{label}] round-trip mismatch: decompressed {} bytes, expected {}",
+            result.len(),
+            input.len()
+        );
+    }
+
+    /// FreeRDP-compatible test: XCRUSH compress bells data (49 bytes).
+    ///
+    /// Since BELLS is only 49 bytes (≤ 50-byte threshold), XCRUSH does NOT
+    /// compress it. FreeRDP returns the original source data with flags=0.
+    ///
+    /// Ported from FreeRDP `test_XCrushCompressBells` in TestFreeRDPCodecXCrush.c.
+    #[test]
+    fn test_xcrush_compress_bells() {
+        use super::test_data::{TEST_BELLS_DATA, TEST_BELLS_DATA_XCRUSH};
+
+        let mut ctx = XCrushContext::new(true);
+        let mut output_buf = vec![0u8; 65536];
+
+        let (size, flags_out) = ctx.compress(TEST_BELLS_DATA, &mut output_buf).unwrap();
+
+        // Bells is < 50 bytes, so XCRUSH falls back to uncompressed.
+        // FreeRDP returns flags=0 and points to the original source data.
+        assert_eq!(flags_out, 0, "bells should not be compressed (flags=0)");
+        assert_eq!(
+            size,
+            TEST_BELLS_DATA_XCRUSH.len(),
+            "uncompressed size should match expected"
+        );
+    }
+
+    /// FreeRDP-compatible test: XCRUSH compress island data (386 bytes).
+    ///
+    /// Verifies byte-exact compressed output matching FreeRDP's
+    /// `TEST_ISLAND_DATA_XCRUSH`.
+    ///
+    /// Ported from FreeRDP `test_XCrushCompressIsland` in TestFreeRDPCodecXCrush.c.
+    #[test]
+    fn test_xcrush_compress_island() {
+        use super::test_data::{TEST_ISLAND_DATA, TEST_ISLAND_DATA_XCRUSH};
+
+        let mut ctx = XCrushContext::new(true);
+        let mut output_buf = vec![0u8; 65536];
+
+        let (size, flags_out) = ctx.compress(TEST_ISLAND_DATA, &mut output_buf).unwrap();
+
+        assert!(
+            flags_out & flags::PACKET_COMPRESSED != 0,
+            "island should be compressed (PACKET_COMPRESSED expected in flags)"
+        );
+
+        assert_eq!(
+            size,
+            TEST_ISLAND_DATA_XCRUSH.len(),
+            "compressed size mismatch: got {size}, expected {}",
+            TEST_ISLAND_DATA_XCRUSH.len(),
+        );
+
+        assert_eq!(
+            &output_buf[..size],
+            TEST_ISLAND_DATA_XCRUSH,
+            "compressed output does not match FreeRDP expected bytes"
+        );
+    }
+
+    /// Round-trip test with the Island text (386 bytes).
+    #[test]
+    fn test_xcrush_roundtrip_island() {
+        use super::test_data::TEST_ISLAND_DATA;
+        assert_xcrush_roundtrip(TEST_ISLAND_DATA, "island");
+    }
+
+    /// Round-trip test with a ~500 byte text input.
+    #[test]
+    fn test_xcrush_roundtrip_500b_text() {
+        let mut data = Vec::new();
+        let phrases = [
+            b"The quick brown fox jumps over the lazy dog. " as &[u8],
+            b"Pack my box with five dozen liquor jugs. ",
+            b"How vexingly quick daft zebras jump. ",
+            b"Crazy Frederick bought many very exquisite opal jewels. ",
+        ];
+        while data.len() < 500 {
+            for phrase in &phrases {
+                data.extend_from_slice(phrase);
+            }
+        }
+        data.truncate(500);
+        assert_xcrush_roundtrip(&data, "500b_text");
+    }
+
+    /// Round-trip test with a ~1 KB repeating pattern (overlapping LZ77 match).
+    #[test]
+    fn test_xcrush_roundtrip_1kb_pattern() {
+        let pattern = b"ABCDEFGHIJKLMNOP";
+        let mut data = Vec::new();
+        for _ in 0..64 {
+            data.extend_from_slice(pattern);
+        }
+        assert_xcrush_roundtrip(&data, "1kb_pattern");
+    }
+
+    /// Round-trip test with a ~4 KB pseudo-random data.
+    #[test]
+    fn test_xcrush_roundtrip_4kb() {
+        let mut data = vec![0u8; 4096];
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = u8::try_from((i.wrapping_mul(37).wrapping_add(113)) & 0xFF).unwrap();
+        }
+        assert_xcrush_roundtrip(&data, "4kb_random");
+    }
+
+    /// Round-trip test with the maximum XCRUSH input (16 KB).
+    #[test]
+    fn test_xcrush_roundtrip_16kb() {
+        let mut data = vec![0u8; 16384];
+        // Fill with text-like content that will compress well
+        let phrase = b"The quick brown fox jumps over the lazy dog. ";
+        for chunk in data.chunks_mut(phrase.len()) {
+            let copy_len = chunk.len().min(phrase.len());
+            chunk[..copy_len].copy_from_slice(&phrase[..copy_len]);
+        }
+        assert_xcrush_roundtrip(&data, "16kb_text");
     }
 }

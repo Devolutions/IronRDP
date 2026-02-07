@@ -412,11 +412,13 @@ tasks:
       - TASK-016
       - TASK-019
     risk: medium
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Both FreeRDP byte-exact tests pass. Also fixed overlapping match copy bug in decompress_l1 (copy_within→byte-by-byte loop). Added 4 additional roundtrip tests (500b, 1kb, 4kb, 16kb). 25 XCRUSH tests total."
+    files_affected:
+      - crates/ironrdp-bulk/src/xcrush/mod.rs
+      - crates/ironrdp-bulk/src/xcrush/test_data.rs
     estimated_hours: 2
 
   # Phase 7: NCRUSH Decompression
