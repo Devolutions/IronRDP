@@ -1,6 +1,29 @@
 #![doc = "Bulk compression algorithms (MPPC, XCRUSH, NCRUSH) for IronRDP"]
+//!
+//! # Safety
+//!
+//! This crate contains **zero `unsafe` code**. The `#![forbid(unsafe_code)]` attribute
+//! is set to enforce this invariant at compile time.
+//!
+//! ## Audit Summary (TASK-033)
+//!
+//! | Category                   | Count | Notes                                                  |
+//! |----------------------------|-------|--------------------------------------------------------|
+//! | `unsafe` blocks            | 0     | None in the entire crate                               |
+//! | Raw pointer usage          | 0     | No `*const`, `*mut`, `as_ptr()`, `as_mut_ptr()`        |
+//! | `transmute` / `unchecked`  | 0     | No `mem::transmute`, `get_unchecked`, etc.              |
+//! | `#[allow(unsafe_*)]`       | 0     | No safety lint suppression                             |
+//! | `as` numeric casts         | ~161  | Porting artifact from C; tracked for TASK-034          |
+//! | `wrapping_*` arithmetic    | 15    | All intentional for modular hash/offset computations   |
+//! | `unwrap_or_else(unreachable)` | 2  | Infallible `Vec→Box<[T;N]>` conversions               |
+//!
+//! The `as` casts (mostly `as usize` for indexing and `as u32`/`u8`/`u16` for
+//! bitstream operations) are the main area flagged for cleanup in TASK-034,
+//! where they can be replaced with `.into()`, `From`/`TryFrom`, or explicit
+//! truncation helpers as appropriate.
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![cfg_attr(not(feature = "std"), no_std)]
+#![forbid(unsafe_code)]
 #![warn(clippy::std_instead_of_alloc)]
 #![warn(clippy::std_instead_of_core)]
 #![cfg_attr(doc, warn(missing_docs))]
