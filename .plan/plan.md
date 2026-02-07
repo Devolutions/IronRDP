@@ -173,7 +173,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 1 day
 
 **Tasks**:
-- [ ] **TASK-014**: Port XCRUSH types and structures
+- [x] **TASK-014**: Port XCRUSH types and structures
   - **Acceptance Criteria**: `XCrushContext`, `XCrushMatchInfo`, `XCrushChunk`, `XCrushSignature`, `Rdp61MatchDetails`, `Rdp61CompressedData` defined
   - **Dependencies**: TASK-003
   - **Risk**: Low

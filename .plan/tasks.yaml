@@ -291,11 +291,12 @@ tasks:
     dependencies:
       - TASK-003
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: "XCRUSH uses a 2MB history buffer - much larger than MPPC/NCRUSH"
-    files_affected: []
+    status: completed
+    started_at: "2026-02-06T00:00:00Z"
+    completed_at: "2026-02-06T00:00:00Z"
+    notes: "All structs ported. Large buffers (2MB history, 512KB chunks) allocated on heap via vec! to avoid stack overflow."
+    files_affected:
+      - crates/ironrdp-bulk/src/xcrush/mod.rs
     estimated_hours: 1
 
   - id: TASK-015
