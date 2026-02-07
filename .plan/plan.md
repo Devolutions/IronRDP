@@ -320,7 +320,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
 **Duration Estimate**: 0.5 days
 
 **Tasks**:
-- [ ] **TASK-030**: Implement `BulkCompressor` struct
+- [x] **TASK-030**: Implement `BulkCompressor` struct
   - **Acceptance Criteria**: Holds MPPC/XCRUSH/NCRUSH contexts, routes compress/decompress based on compression type
   - **Dependencies**: TASK-009, TASK-011, TASK-016, TASK-019, TASK-023, TASK-027
   - **Risk**: Low

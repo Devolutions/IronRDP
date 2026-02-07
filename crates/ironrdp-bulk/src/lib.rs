@@ -15,6 +15,7 @@ mod mppc;
 mod ncrush;
 mod xcrush;
 
+pub use self::bulk::BulkCompressor;
 pub use self::error::BulkError;
 
 /// RDP bulk compression type (low 4 bits of compression flags).

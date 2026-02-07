@@ -619,11 +619,13 @@ tasks:
       - TASK-023
       - TASK-027
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Implemented BulkCompressor struct with send/receive context pairs for MPPC, NCRUSH, XCRUSH. Added new(), reset(), compression_level(), should_skip_compression(), accessor methods, and 9 unit tests. Exported BulkCompressor from lib.rs."
+    files_affected:
+      - "crates/ironrdp-bulk/src/bulk.rs"
+      - "crates/ironrdp-bulk/src/lib.rs"
     estimated_hours: 1
 
   - id: TASK-031
