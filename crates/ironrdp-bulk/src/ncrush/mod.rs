@@ -50,6 +50,10 @@ impl<'a> NCrushBitWriter<'a> {
     /// flushed as 2 bytes (little-endian) to the output buffer.
     ///
     /// Returns `Err` if the output buffer overflows.
+    #[expect(
+        clippy::as_conversions,
+        reason = "intentional truncation: lower 16 bits of u32 accumulator flushed as u16 LE"
+    )]
     pub(crate) fn write_bits(&mut self, bits: u32, nbits: u32) -> Result<(), BulkError> {
         self.accumulator |= bits << self.offset;
         self.offset += nbits;
@@ -61,8 +65,9 @@ impl<'a> NCrushBitWriter<'a> {
                     available: self.dst.len(),
                 });
             }
-            self.dst[self.pos] = (self.accumulator & 0xFF) as u8;
-            self.dst[self.pos + 1] = ((self.accumulator >> 8) & 0xFF) as u8;
+            let le_bytes = (self.accumulator as u16).to_le_bytes();
+            self.dst[self.pos] = le_bytes[0];
+            self.dst[self.pos + 1] = le_bytes[1];
             self.pos += 2;
             self.accumulator >>= 16;
             self.offset -= 16;
@@ -74,6 +79,10 @@ impl<'a> NCrushBitWriter<'a> {
     /// Flushes any remaining bits in the accumulator to the output buffer.
     ///
     /// Always writes 2 bytes (the lower 16 bits of the accumulator).
+    #[expect(
+        clippy::as_conversions,
+        reason = "intentional truncation: lower 16 bits of u32 accumulator flushed as u16 LE"
+    )]
     pub(crate) fn finish(&mut self) -> Result<(), BulkError> {
         if self.pos + 2 > self.dst.len() {
             return Err(BulkError::OutputBufferTooSmall {
@@ -81,8 +90,9 @@ impl<'a> NCrushBitWriter<'a> {
                 available: self.dst.len(),
             });
         }
-        self.dst[self.pos] = (self.accumulator & 0xFF) as u8;
-        self.dst[self.pos + 1] = ((self.accumulator >> 8) & 0xFF) as u8;
+        let le_bytes = (self.accumulator as u16).to_le_bytes();
+        self.dst[self.pos] = le_bytes[0];
+        self.dst[self.pos + 1] = le_bytes[1];
         self.pos += 2;
         Ok(())
     }
@@ -199,13 +209,17 @@ impl NCrushContext {
     /// `huff_table_copy_offset` from `CopyOffsetBitsLUT`.
     ///
     /// Ported from FreeRDP's `ncrush_generate_tables`.
+    #[expect(
+        clippy::as_conversions,
+        reason = "table generation: k (usize ≤4096) safely cast to u32 for verification"
+    )]
     fn generate_tables(&mut self) -> Result<(), BulkError> {
         // --- Generate HuffTableLOM ---
         // For each LOM index i (0..28), fill entries for all values that
         // map to that index (based on LOMBitsLUT).
         let mut cnt: usize = 0;
         for i in 0u8..28 {
-            let bits = tables::LOMBitsLUT[i as usize];
+            let bits = tables::LOMBitsLUT[usize::from(i)];
             let num_entries = 1usize << bits;
             for _j in 0..num_entries {
                 let l = cnt + 2;
@@ -220,7 +234,7 @@ impl NCrushContext {
         // the round-trip: LOMBaseLUT[index] + (k-2) & mask == k.
         for k in 2..HUFF_TABLE_LOM_SIZE {
             let i = if (k - 2) < 768 {
-                self.huff_table_lom[k] as usize
+                usize::from(self.huff_table_lom[k])
             } else {
                 28usize
             };
@@ -245,7 +259,7 @@ impl NCrushContext {
         // First 16 indices: direct mapping (no shift)
         let mut k: usize = 0;
         for i in 0u8..16 {
-            let bits = tables::CopyOffsetBitsLUT[i as usize];
+            let bits = tables::CopyOffsetBitsLUT[usize::from(i)];
             let num_entries = 1usize << bits;
             for _j in 0..num_entries {
                 let l = k + 2;
@@ -259,7 +273,7 @@ impl NCrushContext {
         // Indices 16..32: shifted by 7 bits (>> 7)
         k /= 128;
         for i in 16u8..32 {
-            let bits = tables::CopyOffsetBitsLUT[i as usize];
+            let bits = tables::CopyOffsetBitsLUT[usize::from(i)];
             // bits >= 7 for indices 16..32
             let shift = bits.saturating_sub(7);
             let num_entries = 1usize << shift;
@@ -292,6 +306,10 @@ impl NCrushContext {
     /// (irrecoverable underflow). Returns `true` otherwise.
     ///
     /// Ported from FreeRDP's `NCrushFetchBits`.
+    #[expect(
+        clippy::as_conversions,
+        reason = "*nbits (i32) cast to u32 for shift; always non-negative when used"
+    )]
     fn fetch_bits(src: &[u8], src_pos: &mut usize, nbits: &mut i32, bits: &mut u32) -> bool {
         if *nbits < 16 {
             let remaining = src.len().saturating_sub(*src_pos);
@@ -303,7 +321,7 @@ impl NCrushContext {
                 }
                 1 => {
                     // Single byte available
-                    let byte_val = src[*src_pos] as u32;
+                    let byte_val = u32::from(src[*src_pos]);
                     *src_pos += 1;
                     if *nbits >= 0 {
                         *bits = bits.wrapping_add(byte_val << (*nbits as u32));
@@ -312,9 +330,9 @@ impl NCrushContext {
                 }
                 _ => {
                     // Two or more bytes available — read a 16-bit word (LE)
-                    let lo = src[*src_pos] as u32;
+                    let lo = u32::from(src[*src_pos]);
                     *src_pos += 1;
-                    let hi = src[*src_pos] as u32;
+                    let hi = u32::from(src[*src_pos]);
                     *src_pos += 1;
                     let word = lo | (hi << 8);
                     *bits = bits.wrapping_add(word << (*nbits as u32));
@@ -336,6 +354,13 @@ impl NCrushContext {
     /// into the internal history buffer.
     ///
     /// Ported from FreeRDP's `ncrush_decompress`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "Huffman decode: masked u32 values safely narrowed to u8/usize; \
+                  bit_length/lom_bits (u32, ≤15) safely cast to i32; \
+                  copy_offset/length_of_match (u32 ≤65535) safely widen to usize"
+    )]
     pub(crate) fn decompress<'a>(
         &'a mut self,
         src_data: &'a [u8],
@@ -410,8 +435,8 @@ impl NCrushContext {
                 }
 
                 let lec_entry = tables::HuffTableLEC[masked_bits];
-                index_lec = (lec_entry & 0xFFF) as u32;
-                let bit_length = (lec_entry >> 12) as u32;
+                index_lec = u32::from(lec_entry & 0xFFF);
+                let bit_length = u32::from(lec_entry >> 12);
                 bits >>= bit_length;
                 nbits -= bit_length as i32;
 
@@ -428,7 +453,7 @@ impl NCrushContext {
                     return Err(BulkError::HistoryBufferOverflow);
                 }
 
-                self.history_buffer[history_ptr] = (lec_entry & 0xFF) as u8;
+                self.history_buffer[history_ptr] = lec_entry as u8; // lower 8 bits of u16
                 history_ptr += 1;
             }
 
@@ -462,8 +487,8 @@ impl NCrushContext {
                     ));
                 }
                 let lom_entry = tables::HuffTableLOM[lom_masked];
-                let length_of_match_idx = (lom_entry & 0xFFF) as usize;
-                let bit_length = (lom_entry >> 12) as u32;
+                let length_of_match_idx = usize::from(lom_entry & 0xFFF);
+                let bit_length = u32::from(lom_entry >> 12);
                 bits >>= bit_length;
                 nbits -= bit_length as i32;
 
@@ -542,8 +567,8 @@ impl NCrushContext {
                     ));
                 }
                 let lom_entry = tables::HuffTableLOM[lom_masked];
-                let length_of_match_idx = (lom_entry & 0xFFF) as usize;
-                let bit_length = (lom_entry >> 12) as u32;
+                let length_of_match_idx = usize::from(lom_entry & 0xFFF);
+                let bit_length = u32::from(lom_entry >> 12);
                 bits >>= bit_length;
                 nbits -= bit_length as i32;
 
@@ -712,6 +737,11 @@ impl NCrushContext {
     /// - Updates `hash_table[hash]` with the new position.
     ///
     /// Ported from FreeRDP's `ncrush_hash_table_add`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "offset bounded by 65536 (fits u16); hash from u16::from_le_bytes widens to usize"
+    )]
     pub(crate) fn hash_table_add(
         &mut self,
         src_data: &[u8],
@@ -727,7 +757,7 @@ impl NCrushContext {
 
         while offset < end_offset {
             let hash =
-                u16::from_le_bytes([src_data[src_idx], src_data[src_idx + 1]]) as usize;
+                usize::from(u16::from_le_bytes([src_data[src_idx], src_data[src_idx + 1]]));
             let old_entry = self.hash_table[hash];
             self.hash_table[hash] = offset as u16;
             self.match_table[offset] = old_entry;
@@ -744,6 +774,10 @@ impl NCrushContext {
     /// immediately, indicating no valid comparison was possible).
     ///
     /// Ported from FreeRDP's `ncrush_find_match_length`.
+    #[expect(
+        clippy::as_conversions,
+        reason = "usize→i32: offsets bounded by 64KB history buffer, always fit in i32"
+    )]
     fn find_match_length(&self, offset1: usize, offset2: usize, limit: usize) -> i32 {
         let buf = &*self.history_buffer;
         let start = offset1;
@@ -779,11 +813,16 @@ impl NCrushContext {
     /// search early.
     ///
     /// Ported from FreeRDP's `ncrush_find_best_match`.
+    #[expect(
+        clippy::as_conversions,
+        reason = "i32→usize: find_match_length returns i32 bounded by 64KB buffer; \
+                  u16 offsets widen to usize for array indexing"
+    )]
     pub(crate) fn find_best_match(
         &mut self,
         history_offset: u16,
     ) -> Result<Option<(usize, u16)>, BulkError> {
-        let ho = history_offset as usize;
+        let ho = usize::from(history_offset);
 
         if self.match_table[ho] == 0 {
             return Ok(None);
@@ -796,7 +835,7 @@ impl NCrushContext {
         // Sentinel: allows the chain-following logic to work at position 0
         self.match_table[0] = history_offset;
         let mut match_offset: u16 = self.match_table[ho];
-        let mut next_offset: u16 = self.match_table[offset as usize];
+        let mut next_offset: u16 = self.match_table[usize::from(offset)];
 
         for _i in 0..4 {
             let mut j: i32 = -1;
@@ -809,38 +848,38 @@ impl NCrushContext {
             let target_byte = self.history_buffer[ho + match_length];
 
             if j < 0 {
-                offset = self.match_table[next_offset as usize];
-                if self.history_buffer[match_length + next_offset as usize] == target_byte {
+                offset = self.match_table[usize::from(next_offset)];
+                if self.history_buffer[match_length + usize::from(next_offset)] == target_byte {
                     j = 0;
                 }
             }
             if j < 0 {
-                next_offset = self.match_table[offset as usize];
-                if self.history_buffer[match_length + offset as usize] == target_byte {
+                next_offset = self.match_table[usize::from(offset)];
+                if self.history_buffer[match_length + usize::from(offset)] == target_byte {
                     j = 1;
                 }
             }
             if j < 0 {
-                offset = self.match_table[next_offset as usize];
-                if self.history_buffer[match_length + next_offset as usize] == target_byte {
+                offset = self.match_table[usize::from(next_offset)];
+                if self.history_buffer[match_length + usize::from(next_offset)] == target_byte {
                     j = 2;
                 }
             }
             if j < 0 {
-                next_offset = self.match_table[offset as usize];
-                if self.history_buffer[match_length + offset as usize] == target_byte {
+                next_offset = self.match_table[usize::from(offset)];
+                if self.history_buffer[match_length + usize::from(offset)] == target_byte {
                     j = 3;
                 }
             }
             if j < 0 {
-                offset = self.match_table[next_offset as usize];
-                if self.history_buffer[match_length + next_offset as usize] == target_byte {
+                offset = self.match_table[usize::from(next_offset)];
+                if self.history_buffer[match_length + usize::from(next_offset)] == target_byte {
                     j = 4;
                 }
             }
             if j < 0 {
-                next_offset = self.match_table[offset as usize];
-                if self.history_buffer[match_length + offset as usize] == target_byte {
+                next_offset = self.match_table[usize::from(offset)];
+                if self.history_buffer[match_length + usize::from(offset)] == target_byte {
                     j = 5;
                 }
             }
@@ -854,7 +893,7 @@ impl NCrushContext {
                 if (offset != history_offset) && (offset != 0) {
                     let len = self.find_match_length(
                         ho + 2,
-                        offset as usize + 2,
+                        usize::from(offset) + 2,
                         history_ptr,
                     );
                     let length = (len + 2) as usize;
@@ -880,7 +919,7 @@ impl NCrushContext {
                     }
 
                     if (length <= match_length) || (ho + 2 < history_ptr) {
-                        next_offset = self.match_table[offset as usize];
+                        next_offset = self.match_table[usize::from(offset)];
                         // match_length may have changed; next iteration
                         // will recompute target_byte
                         continue;
@@ -905,6 +944,12 @@ impl NCrushContext {
     /// while preserving the most recent 32 KB for back-references.
     ///
     /// Ported from FreeRDP's `ncrush_move_encoder_windows`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "history_ptr bounded by 65536; i32 arithmetic for offset adjustment; \
+                  hash/match table entries are u16 (< 65536)"
+    )]
     pub(crate) fn move_encoder_windows(
         &mut self,
         history_ptr: usize,
@@ -925,7 +970,7 @@ impl NCrushContext {
 
         // Adjust hash table entries: subtract the offset shift
         for entry in self.hash_table.iter_mut() {
-            let new_val = (*entry as i32) - history_offset;
+            let new_val = i32::from(*entry) - history_offset;
             *entry = if new_val <= 0 { 0 } else { new_val as u16 };
         }
 
@@ -936,7 +981,7 @@ impl NCrushContext {
             if src_idx >= MATCH_TABLE_SIZE {
                 continue;
             }
-            let new_val = (self.match_table[src_idx] as i32) - history_offset;
+            let new_val = i32::from(self.match_table[src_idx]) - history_offset;
             self.match_table[j] = if new_val <= 0 { 0 } else { new_val as u16 };
         }
 
@@ -960,8 +1005,8 @@ impl NCrushContext {
         if byte_index + 1 >= tables::HuffCodeLEC.len() {
             return Err(BulkError::InvalidCompressedData("HuffCodeLEC index out of bounds"));
         }
-        let lo = tables::HuffCodeLEC[byte_index] as u32;
-        let hi = tables::HuffCodeLEC[byte_index + 1] as u32;
+        let lo = u32::from(tables::HuffCodeLEC[byte_index]);
+        let hi = u32::from(tables::HuffCodeLEC[byte_index + 1]);
         Ok(lo | (hi << 8))
     }
 
@@ -971,11 +1016,11 @@ impl NCrushContext {
     ///
     /// Ported from FreeRDP's literal encoding in `ncrush_compress`.
     pub(crate) fn encode_literal(writer: &mut NCrushBitWriter<'_>, literal: u8) -> Result<(), BulkError> {
-        let index = literal as usize;
+        let index = usize::from(literal);
         if index >= tables::HuffLengthLEC.len() {
             return Err(BulkError::InvalidCompressedData("Literal index out of HuffLengthLEC range"));
         }
-        let bit_length = tables::HuffLengthLEC[index] as u32;
+        let bit_length = u32::from(tables::HuffLengthLEC[index]);
         if bit_length > 15 {
             return Err(BulkError::InvalidCompressedData("Literal Huffman code length exceeds 15"));
         }
@@ -990,6 +1035,10 @@ impl NCrushContext {
     /// 3. Writes the extra low-order bits of the raw copy-offset.
     ///
     /// Ported from FreeRDP's non-cache CopyOffset encoding in `ncrush_compress`.
+    #[expect(
+        clippy::as_conversions,
+        reason = "copy_offset >> 7 + 256 bounded by table size; lookup_idx usize for indexing"
+    )]
     pub(crate) fn encode_copy_offset(
         &self,
         writer: &mut NCrushBitWriter<'_>,
@@ -1007,7 +1056,7 @@ impl NCrushContext {
             return Err(BulkError::InvalidCompressedData("CopyOffset lookup index out of range"));
         }
 
-        let copy_offset_index = self.huff_table_copy_offset[lookup_idx] as usize;
+        let copy_offset_index = usize::from(self.huff_table_copy_offset[lookup_idx]);
 
         if copy_offset_index >= tables::CopyOffsetBitsLUT.len() {
             return Err(BulkError::InvalidCompressedData("CopyOffsetIndex out of CopyOffsetBitsLUT range"));
@@ -1018,7 +1067,7 @@ impl NCrushContext {
         if index_lec >= tables::HuffLengthLEC.len() {
             return Err(BulkError::InvalidCompressedData("CopyOffset LEC index out of HuffLengthLEC range"));
         }
-        let bit_length = tables::HuffLengthLEC[index_lec] as u32;
+        let bit_length = u32::from(tables::HuffLengthLEC[index_lec]);
         if bit_length > 15 {
             return Err(BulkError::InvalidCompressedData("CopyOffset Huffman code length exceeds 15"));
         }
@@ -1052,7 +1101,7 @@ impl NCrushContext {
         if index_lec >= tables::HuffLengthLEC.len() {
             return Err(BulkError::InvalidCompressedData("OffsetCache LEC index out of HuffLengthLEC range"));
         }
-        let bit_length = tables::HuffLengthLEC[index_lec] as u32;
+        let bit_length = u32::from(tables::HuffLengthLEC[index_lec]);
         if bit_length >= 15 {
             return Err(BulkError::InvalidCompressedData("OffsetCache Huffman code length >= 15"));
         }
@@ -1071,6 +1120,10 @@ impl NCrushContext {
     /// `MatchLength` for the extra-bits calculation.
     ///
     /// Ported from FreeRDP's LOM encoding in `ncrush_compress`.
+    #[expect(
+        clippy::as_conversions,
+        reason = "match_length bounded by 4096 (fits usize); huff_table_lom entries are u8→usize"
+    )]
     pub(crate) fn encode_length_of_match(
         &self,
         writer: &mut NCrushBitWriter<'_>,
@@ -1083,23 +1136,23 @@ impl NCrushContext {
             if (match_length as usize) >= HUFF_TABLE_LOM_SIZE {
                 return Err(BulkError::InvalidCompressedData("MatchLength out of HuffTableLOM range"));
             }
-            self.huff_table_lom[match_length as usize] as usize
+            usize::from(self.huff_table_lom[match_length as usize])
         };
 
         if index_co >= tables::HuffLengthLOM.len() {
             return Err(BulkError::InvalidCompressedData("LOM IndexCO out of HuffLengthLOM range"));
         }
-        let bit_length = tables::HuffLengthLOM[index_co] as u32;
+        let bit_length = u32::from(tables::HuffLengthLOM[index_co]);
 
         if index_co >= tables::LOMBitsLUT.len() {
             return Err(BulkError::InvalidCompressedData("LOM IndexCO out of LOMBitsLUT range"));
         }
-        let lom_bits = tables::LOMBitsLUT[index_co] as u32;
+        let lom_bits = tables::LOMBitsLUT[index_co];
 
         if index_co >= tables::HuffCodeLOM.len() {
             return Err(BulkError::InvalidCompressedData("LOM IndexCO out of HuffCodeLOM range"));
         }
-        writer.write_bits(tables::HuffCodeLOM[index_co] as u32, bit_length)?;
+        writer.write_bits(u32::from(tables::HuffCodeLOM[index_co]), bit_length)?;
 
         // Write extra bits: (MatchLength - 2) & mask
         if lom_bits > 0 {
@@ -1110,7 +1163,7 @@ impl NCrushContext {
             if index_co >= tables::LOMBaseLUT.len() {
                 return Err(BulkError::InvalidCompressedData("LOM IndexCO out of LOMBaseLUT range"));
             }
-            if masked_bits + tables::LOMBaseLUT[index_co] as u32 != match_length {
+            if masked_bits + tables::LOMBaseLUT[index_co] != match_length {
                 return Err(BulkError::InvalidCompressedData("LOM encoding inconsistency: MaskedBits + LOMBase != MatchLength"));
             }
 
@@ -1128,7 +1181,7 @@ impl NCrushContext {
         if index >= tables::HuffLengthLEC.len() {
             return Err(BulkError::InvalidCompressedData("EOS index out of HuffLengthLEC range"));
         }
-        let bit_length = tables::HuffLengthLEC[index] as u32;
+        let bit_length = u32::from(tables::HuffLengthLEC[index]);
         if bit_length > 15 {
             return Err(BulkError::InvalidCompressedData("EOS Huffman code length exceeds 15"));
         }
@@ -1153,6 +1206,13 @@ impl NCrushContext {
     ///   has been reset.
     ///
     /// Ported from FreeRDP's `ncrush_compress`.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "history offsets bounded by 65536 (fit u16/u32); \
+                  copy_offset bounded by history_buffer_size-1 (fits u32); \
+                  match_length bounded by history buffer (fits u32)"
+    )]
     pub(crate) fn compress(
         &mut self,
         src_data: &[u8],
@@ -1245,11 +1305,12 @@ impl NCrushContext {
 
             // Compute CopyOffset if we found a match
             let copy_offset = if match_length > 0 {
-                let dist = if history_ptr >= match_offset as usize {
-                    history_ptr - match_offset as usize
+                let match_offset_usize = usize::from(match_offset);
+                let dist = if history_ptr >= match_offset_usize {
+                    history_ptr - match_offset_usize
                 } else {
                     // Wrap around
-                    history_ptr + HISTORY_BUFFER_SIZE - match_offset as usize
+                    history_ptr + HISTORY_BUFFER_SIZE - match_offset_usize
                 };
                 (self.history_buffer_size - 1) & dist
             } else {
@@ -1288,6 +1349,7 @@ impl NCrushContext {
                 // --- Offset cache management (LRU) ---
                 let mut offset_cache_index: usize = 5; // sentinel: not in cache
 
+                // copy_offset is bounded by (history_buffer_size - 1) = 65535, fits in u32
                 let copy_offset_u32 = copy_offset as u32;
 
                 if copy_offset_u32 == self.offset_cache[0]

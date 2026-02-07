@@ -236,7 +236,7 @@ impl XCrushContext {
     /// Returns a reference to the decompressed data in the history buffer.
     #[expect(
         clippy::as_conversions,
-        reason = "LE wire format parsing requires conversions from u16/u32 to usize"
+        reason = "u32::from_le_bytes for match_history_offset: bounded by history buffer size (2MB)"
     )]
     pub(crate) fn decompress_l1<'a>(
         &'a mut self,
@@ -275,7 +275,7 @@ impl XCrushContext {
             }
 
             let match_count =
-                u16::from_le_bytes([src_data[0], src_data[1]]) as usize;
+                usize::from(u16::from_le_bytes([src_data[0], src_data[1]]));
 
             // Each RDP61_MATCH_DETAILS entry is 8 bytes (u16 + u16 + u32)
             let match_details_end = 2 + match_count * 8;
@@ -292,9 +292,9 @@ impl XCrushContext {
             for i in 0..match_count {
                 let d = 2 + i * 8;
                 let match_length =
-                    u16::from_le_bytes([src_data[d], src_data[d + 1]]) as usize;
+                    usize::from(u16::from_le_bytes([src_data[d], src_data[d + 1]]));
                 let match_output_offset =
-                    u16::from_le_bytes([src_data[d + 2], src_data[d + 3]]) as usize;
+                    usize::from(u16::from_le_bytes([src_data[d + 2], src_data[d + 3]]));
                 let match_history_offset = u32::from_le_bytes([
                     src_data[d + 4],
                     src_data[d + 5],
@@ -486,7 +486,7 @@ impl XCrushContext {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        reason = "size is bounded to <= 65535, fits in u16"
+        reason = "size is checked to be <= 65535 before truncation to u16"
     )]
     fn append_chunk(&mut self, data: &[u8], beg: &mut usize, end: usize) -> bool {
         if self.signature_index >= self.signature_count {
@@ -780,10 +780,7 @@ impl XCrushContext {
     /// there is no next chunk or the chain is invalid.
     ///
     /// Ported from FreeRDP's `xcrush_find_next_matching_chunk`.
-    #[expect(
-        clippy::as_conversions,
-        reason = "u32 chunk indices safely converted to usize for array indexing"
-    )]
+    #[expect(clippy::as_conversions, reason = "u32 chunk indices widen to usize for array indexing")]
     fn find_next_matching_chunk(&self, chunk_index: u32) -> Result<Option<u32>, BulkError> {
         if chunk_index as usize >= MAX_CHUNKS {
             return Err(BulkError::InvalidCompressedData(
@@ -817,7 +814,7 @@ impl XCrushContext {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        reason = "chunk indices bounded to < 65534, fit in u16/u32"
+        reason = "chunk indices bounded to < 65534, fit in u16; offsets bounded by 2MB history"
     )]
     fn insert_chunk(
         &mut self,
@@ -873,7 +870,7 @@ impl XCrushContext {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        reason = "offsets and lengths bounded by history buffer size (2MB), safely fit in u32"
+        reason = "offsets and lengths bounded by history buffer size (2MB), fit in u32"
     )]
     fn find_match_length(
         &self,
@@ -968,7 +965,7 @@ impl XCrushContext {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        reason = "index/offset arithmetic bounded by history buffer size and u32 match fields"
+        reason = "offsets bounded by 2MB history buffer, fit in u32; u16 sig sizes widen to usize"
     )]
     fn find_all_matches(
         &mut self,
@@ -995,7 +992,7 @@ impl XCrushContext {
             let prev_chunk_idx = self.insert_chunk(&sig_copy, offset)?;
 
             if let Some(mut chunk_idx) = prev_chunk_idx {
-                if src_offset + history_offset + sig_size as usize >= prev_match_end {
+                if src_offset + history_offset + usize::from(sig_size) >= prev_match_end {
                     let mut max_match_length: usize = 0;
                     let mut best_match: Option<XCrushMatchInfo> = None;
                     let mut chunk_count: usize = 0;
@@ -1060,7 +1057,7 @@ impl XCrushContext {
                 }
             }
 
-            src_offset += sig_size as usize;
+            src_offset += usize::from(sig_size);
             if src_offset > src_size {
                 return Err(BulkError::InvalidCompressedData(
                     "XCRUSH: src_offset exceeds src_size",
@@ -1085,10 +1082,7 @@ impl XCrushContext {
     /// Returns the total match length across all optimized matches.
     ///
     /// Ported from FreeRDP's `xcrush_optimize_matches`.
-    #[expect(
-        clippy::as_conversions,
-        reason = "u32 match fields compared and arithmetically combined"
-    )]
+    #[expect(clippy::as_conversions, reason = "u32 match_length widen to usize for total")]
     fn optimize_matches(&mut self) -> Result<usize, BulkError> {
         let mut j: usize = 0;
         let mut prev_match_end: u32 = 0;
@@ -1151,7 +1145,8 @@ impl XCrushContext {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        reason = "match fields bounded to u16/u32; output offsets bounded by buffer size"
+        reason = "match count fits u16 (< MAX_MATCH_COUNT=1000); \
+                  match_offset-history_offset fits u16; u32 match fields widen to usize"
     )]
     fn generate_output(
         &self,

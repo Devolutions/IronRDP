@@ -137,7 +137,7 @@ impl MppcContext {
     /// Ported from FreeRDP's `mppc_decompress()` in `libfreerdp/codec/mppc.c`.
     #[expect(
         clippy::as_conversions,
-        reason = "bit manipulation requires u32-to-u8/usize casts matching FreeRDP's C code"
+        reason = "bit manipulation requires masked u32-to-u8/usize casts; values are bounded by masks"
     )]
     pub(crate) fn decompress<'a>(
         &'a mut self,
@@ -353,9 +353,9 @@ impl MppcContext {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        reason = "bit manipulation and index arithmetic matching FreeRDP's C code; \
-                  values are bounded: local_ptr fits u16 (max 65535), \
-                  copy_offset and length_of_match fit u32"
+        reason = "narrowing casts are bounded: local_ptr < 65536 (fits u16), \
+                  copy_offset < history_buffer_size (fits u32), \
+                  length_of_match < 65536 (fits u32)"
     )]
     pub(crate) fn compress(
         &mut self,
@@ -421,7 +421,7 @@ impl MppcContext {
 
             // Hash the 3-byte window
             let match_index = tables::mppc_match_index(sym1, sym2, sym3);
-            let match_pos = self.match_buffer[match_index] as usize;
+            let match_pos = usize::from(self.match_buffer[match_index]);
 
             // Update hash table if it doesn't already point here
             if match_pos != local_ptr - 1 {
@@ -569,12 +569,12 @@ impl MppcContext {
                 ));
             }
 
-            let accumulator = u32::from(src_data[src_idx]);
-            if accumulator < 0x80 {
-                bs.write_bits(accumulator, 8);
-            } else {
-                bs.write_bits(0x100 | (accumulator & 0x7F), 9);
-            }
+                let lit = u32::from(src_data[src_idx]);
+                if lit < 0x80 {
+                    bs.write_bits(lit, 8);
+                } else {
+                    bs.write_bits(0x100 | (lit & 0x7F), 9);
+                }
 
             self.history_buffer[local_ptr] = src_data[src_idx];
             local_ptr += 1;

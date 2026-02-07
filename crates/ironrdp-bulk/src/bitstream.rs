@@ -100,6 +100,7 @@ impl<'a> BitStreamReader<'a> {
     /// It shifts the accumulator left and fills from the prefetch buffer.
     /// When crossing a 32-bit boundary, it advances the byte pointer
     /// and re-prefetches.
+    #[expect(clippy::as_conversions, reason = "nbits (u32 ≤ 31) always fits in usize")]
     pub(crate) fn shift(&mut self, nbits: u32) {
         if nbits == 0 {
             return;
@@ -108,10 +109,7 @@ impl<'a> BitStreamReader<'a> {
         debug_assert!(nbits < 32, "use shift32() for shifting 32 bits");
 
         self.accumulator <<= nbits;
-        #[expect(clippy::as_conversions, reason = "nbits is always <= 31, fits in usize")]
-        {
-            self.bits_consumed += nbits as usize;
-        }
+        self.bits_consumed += nbits as usize;
         self.offset += nbits;
 
         if self.offset < 32 {
@@ -228,11 +226,9 @@ impl<'a> BitStreamWriter<'a> {
     /// accumulator fills 32 bits, it is flushed to the buffer.
     ///
     /// This is the Rust equivalent of FreeRDP's `BitStream_Write_Bits`.
+    #[expect(clippy::as_conversions, reason = "nbits (u32 ≤ 32) always fits in usize")]
     pub(crate) fn write_bits(&mut self, value: u32, nbits: u32) {
-        #[expect(clippy::as_conversions, reason = "nbits is always <= 32, fits in usize")]
-        {
-            self.bits_written += nbits as usize;
-        }
+        self.bits_written += nbits as usize;
         self.offset += nbits;
 
         if self.offset < 32 {
@@ -287,22 +283,22 @@ impl<'a> BitStreamWriter<'a> {
     }
 
     /// Writes the accumulator bytes to the buffer in big-endian order.
-    #[expect(clippy::as_conversions, reason = "intentional byte extraction from u32 via masking")]
     fn do_flush(&mut self) {
         let pos = self.byte_position;
         let cap = self.buffer.len();
+        let bytes = self.accumulator.to_be_bytes();
 
         if pos < cap {
-            self.buffer[pos] = ((self.accumulator >> 24) & 0xFF) as u8;
+            self.buffer[pos] = bytes[0];
         }
         if pos + 1 < cap {
-            self.buffer[pos + 1] = ((self.accumulator >> 16) & 0xFF) as u8;
+            self.buffer[pos + 1] = bytes[1];
         }
         if pos + 2 < cap {
-            self.buffer[pos + 2] = ((self.accumulator >> 8) & 0xFF) as u8;
+            self.buffer[pos + 2] = bytes[2];
         }
         if pos + 3 < cap {
-            self.buffer[pos + 3] = (self.accumulator & 0xFF) as u8;
+            self.buffer[pos + 3] = bytes[3];
         }
     }
 }

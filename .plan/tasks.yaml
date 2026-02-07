@@ -699,11 +699,17 @@ tasks:
     dependencies:
       - TASK-033
     risk: medium
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: "May need to restructure some hot paths for performance"
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Replaced ~60 widening `as` casts with `From`/`into()` (u8→usize, u8→u32, u16→usize, u16→u32, u16→i32). Replaced byte extraction patterns with `to_be_bytes()`/`to_le_bytes()` in bitstream.rs and NCrushBitWriter. All remaining narrowing casts documented with `#[expect(clippy::as_conversions)]` and reason strings explaining why each is bounded. Zero clippy `as_conversions` warnings remain. All 130 tests pass with byte-exact output preserved."
+    files_affected:
+      - "crates/ironrdp-bulk/src/bitstream.rs"
+      - "crates/ironrdp-bulk/src/mppc/mod.rs"
+      - "crates/ironrdp-bulk/src/mppc/tables.rs"
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
+      - "crates/ironrdp-bulk/src/xcrush/mod.rs"
+      - "crates/ironrdp-bulk/src/bulk.rs"
     estimated_hours: 4
 
   - id: TASK-035

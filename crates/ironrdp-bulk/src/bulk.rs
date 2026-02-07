@@ -81,12 +81,11 @@ impl BulkCompressor {
         let xcrush_send = XCrushContext::new(true);
         let xcrush_recv = XCrushContext::new(false);
 
-        // Heap-allocate the 64KB output buffer to avoid stack overflow
+        // Heap-allocate the 64KB output buffer to avoid stack overflow.
+        // Vec length is exactly OUTPUT_BUFFER_SIZE, so the try_into is infallible.
         let output_buffer = {
-            let v: alloc::vec::Vec<u8> = alloc::vec![0u8; OUTPUT_BUFFER_SIZE];
-            let boxed_slice = v.into_boxed_slice();
-            // SAFETY: Vec was created with exactly OUTPUT_BUFFER_SIZE elements
-            boxed_slice
+            let v: Vec<u8> = alloc::vec![0u8; OUTPUT_BUFFER_SIZE];
+            v.into_boxed_slice()
                 .try_into()
                 .unwrap_or_else(|_| unreachable!())
         };

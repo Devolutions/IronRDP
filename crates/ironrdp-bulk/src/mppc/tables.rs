@@ -25,12 +25,12 @@ pub(crate) const HISTORY_MASK_RDP5: usize = 0xFFFF;
 ///     ((((MPPC_MATCH_TABLE[_sym3] << 16) + (MPPC_MATCH_TABLE[_sym2] << 8) +
 ///        MPPC_MATCH_TABLE[_sym1]) & 0x07FFF000) >> 12)
 /// ```
-#[expect(clippy::as_conversions, reason = "index values are u8, result is masked to 15 bits")]
+#[expect(clippy::as_conversions, reason = "result masked to 15 bits, always fits in usize")]
 pub(crate) fn mppc_match_index(sym1: u8, sym2: u8, sym3: u8) -> usize {
-    let val = MPPC_MATCH_TABLE[sym3 as usize]
+    let val = MPPC_MATCH_TABLE[usize::from(sym3)]
         .wrapping_shl(16)
-        .wrapping_add(MPPC_MATCH_TABLE[sym2 as usize].wrapping_shl(8))
-        .wrapping_add(MPPC_MATCH_TABLE[sym1 as usize]);
+        .wrapping_add(MPPC_MATCH_TABLE[usize::from(sym2)].wrapping_shl(8))
+        .wrapping_add(MPPC_MATCH_TABLE[usize::from(sym1)]);
     ((val & 0x07FFF000) >> 12) as usize
 }
 
