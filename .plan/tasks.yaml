@@ -594,11 +594,12 @@ tasks:
       - TASK-023
       - TASK-027
     risk: low
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: ""
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Added 5 round-trip tests: bells data, repetitive pattern, prose text, binary data (all 256 byte values), and sequential multi-message compression. All pass."
+    files_affected:
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
     estimated_hours: 1
 
   # Phase 9: Bulk Compressor Coordinator

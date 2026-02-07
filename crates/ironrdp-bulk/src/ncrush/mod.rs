@@ -2143,4 +2143,134 @@ mod tests {
             "Compressed output does not match FreeRDP expected bytes"
         );
     }
+
+    // ---------------------------------------------------------------
+    // NCRUSH round-trip tests
+    // ---------------------------------------------------------------
+
+    /// Round-trip test with the FreeRDP "bells" test data.
+    /// Compress → decompress → verify output matches original input.
+    #[test]
+    fn test_ncrush_roundtrip_bells() {
+        let mut compressor = NCrushContext::new(true).unwrap();
+        let mut decompressor = NCrushContext::new(false).unwrap();
+
+        let input = test_data::TEST_BELLS_DATA;
+        let mut compressed = vec![0u8; 65536];
+
+        // Compress
+        let (comp_size, flags_out) = compressor.compress(input, &mut compressed).unwrap();
+        assert_ne!(
+            flags_out & crate::flags::PACKET_COMPRESSED,
+            0,
+            "Expected compression to succeed"
+        );
+
+        // Decompress
+        let decompressed = decompressor
+            .decompress(&compressed[..comp_size], flags_out)
+            .unwrap();
+
+        // Verify byte-for-byte match
+        assert_eq!(
+            decompressed, input,
+            "Round-trip failed: decompressed output does not match original input"
+        );
+    }
+
+    /// Round-trip test with a short repetitive pattern.
+    #[test]
+    fn test_ncrush_roundtrip_repetitive() {
+        let mut compressor = NCrushContext::new(true).unwrap();
+        let mut decompressor = NCrushContext::new(false).unwrap();
+
+        let input = b"ABCABCABCABCABCABCABCABCABCABCABCABC";
+        let mut compressed = vec![0u8; 65536];
+
+        let (comp_size, flags_out) = compressor.compress(input, &mut compressed).unwrap();
+
+        if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
+            let decompressed = decompressor
+                .decompress(&compressed[..comp_size], flags_out)
+                .unwrap();
+            assert_eq!(decompressed, &input[..]);
+        }
+    }
+
+    /// Round-trip test with a longer text block containing varied content.
+    #[test]
+    fn test_ncrush_roundtrip_prose() {
+        let mut compressor = NCrushContext::new(true).unwrap();
+        let mut decompressor = NCrushContext::new(false).unwrap();
+
+        let input = b"The quick brown fox jumps over the lazy dog. \
+                       The quick brown fox jumps over the lazy dog again. \
+                       And once more, the quick brown fox jumps.";
+        let mut compressed = vec![0u8; 65536];
+
+        let (comp_size, flags_out) = compressor.compress(input, &mut compressed).unwrap();
+
+        if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
+            let decompressed = decompressor
+                .decompress(&compressed[..comp_size], flags_out)
+                .unwrap();
+            assert_eq!(decompressed, &input[..]);
+        }
+    }
+
+    /// Round-trip test with binary-like data (all byte values 0-255).
+    #[test]
+    fn test_ncrush_roundtrip_binary() {
+        let mut compressor = NCrushContext::new(true).unwrap();
+        let mut decompressor = NCrushContext::new(false).unwrap();
+
+        // Create a pattern with all 256 byte values repeated
+        let mut input = Vec::new();
+        for _ in 0..2 {
+            for b in 0u8..=255 {
+                input.push(b);
+            }
+        }
+        let mut compressed = vec![0u8; 65536];
+
+        let (comp_size, flags_out) = compressor.compress(&input, &mut compressed).unwrap();
+
+        if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
+            let decompressed = decompressor
+                .decompress(&compressed[..comp_size], flags_out)
+                .unwrap();
+            assert_eq!(decompressed, &input[..]);
+        }
+    }
+
+    /// Round-trip test with multiple sequential compressions on the same context
+    /// (tests that history buffer state carries across calls).
+    #[test]
+    fn test_ncrush_roundtrip_sequential() {
+        let mut compressor = NCrushContext::new(true).unwrap();
+        let mut decompressor = NCrushContext::new(false).unwrap();
+
+        let inputs: &[&[u8]] = &[
+            b"first.message.to.compress",
+            b"second.message.with.some.overlap.to.compress",
+            b"third.message.compress.compress.compress",
+        ];
+
+        for input in inputs {
+            let mut compressed = vec![0u8; 65536];
+
+            let (comp_size, flags_out) = compressor.compress(input, &mut compressed).unwrap();
+
+            if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
+                let decompressed = decompressor
+                    .decompress(&compressed[..comp_size], flags_out)
+                    .unwrap();
+                assert_eq!(
+                    decompressed, *input,
+                    "Sequential round-trip failed for input: {:?}",
+                    core::str::from_utf8(input)
+                );
+            }
+        }
+    }
 }

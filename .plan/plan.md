@@ -295,7 +295,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: `test_ncrush_compress_bells` passes
   - **Dependencies**: TASK-027
   - **Risk**: Medium
-- [ ] **TASK-029**: NCRUSH round-trip validation
+- [x] **TASK-029**: NCRUSH round-trip validation
   - **Acceptance Criteria**: compress → decompress round-trip produces identical output
   - **Dependencies**: TASK-023, TASK-027
   - **Risk**: Low
