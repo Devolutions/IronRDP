@@ -213,7 +213,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: Hash-based chunk matching with bidirectional extension and overlap removal
   - **Dependencies**: TASK-017
   - **Risk**: High
-- [ ] **TASK-019**: Implement XCRUSH full compression (Level 1 + Level 2/MPPC)
+- [x] **TASK-019**: Implement XCRUSH full compression (Level 1 + Level 2/MPPC)
   - **Acceptance Criteria**: Complete xcrush_compress producing valid output
   - **Dependencies**: TASK-011, TASK-018
   - **Risk**: High

@@ -556,7 +556,199 @@ impl XCrushContext {
     }
 
     // ========================
-    // Match finding and optimization (compression)
+    // Compression (L1 + L2/MPPC)
+    // ========================
+
+    /// Performs Level-1 (chunk-based) compression.
+    ///
+    /// Copies `src_data` into the history buffer, computes chunk signatures,
+    /// finds and optimizes matches, and generates the L1 compressed output
+    /// format. If no matches are found or the data is too small (≤ 50 bytes),
+    /// falls back to no-compression mode.
+    ///
+    /// Returns `(compressed_size, l1_flags)`.
+    ///
+    /// Ported from FreeRDP's `xcrush_compress_l1`.
+    pub(crate) fn compress_l1(
+        &mut self,
+        src_data: &[u8],
+        dst_data: &mut [u8],
+    ) -> Result<(usize, u32), BulkError> {
+        let src_size = src_data.len();
+        let mut l1_flags: u32 = 0;
+
+        // Check if we need to wrap around the history buffer
+        if self.history_offset + src_size + 8 > self.history_buffer_size {
+            self.history_offset = 0;
+            l1_flags |= flags::L1_PACKET_AT_FRONT;
+        }
+
+        let history_offset = self.history_offset;
+
+        // Copy source data into the history buffer
+        self.history_buffer[history_offset..history_offset + src_size]
+            .copy_from_slice(src_data);
+        self.history_offset += src_size;
+
+        if src_size > 50 {
+            let sig_index = self.compute_signatures(src_data);
+
+            if sig_index > 0 {
+                let match_count =
+                    self.find_all_matches(sig_index, history_offset, src_size)?;
+
+                self.original_match_count = match_count;
+                self.optimized_match_count = 0;
+
+                if self.original_match_count > 0 {
+                    self.optimize_matches()?;
+                }
+
+                if self.optimized_match_count > 0 {
+                    let compressed_size =
+                        self.generate_output(dst_data, history_offset)?;
+
+                    l1_flags |= flags::L1_COMPRESSED;
+                    return Ok((compressed_size, l1_flags));
+                }
+            }
+        }
+
+        // No compression: output is same as input
+        l1_flags |= flags::L1_NO_COMPRESSION;
+        Ok((src_size, l1_flags))
+    }
+
+    /// Performs full XCRUSH (RDP 6.1) compression: Level-1 then Level-2 (MPPC).
+    ///
+    /// 1. Applies Level-1 chunk-based compression
+    /// 2. If L1 output > 50 bytes, applies Level-2 MPPC compression
+    /// 3. Handles fallback to uncompressed if compression doesn't help
+    /// 4. Writes the 2-byte [L1_flags, L2_flags] header into the output
+    ///
+    /// Returns `(output_size, outer_flags)` where `output_size` is the total
+    /// compressed size including the 2-byte header, and `outer_flags` contains
+    /// `PACKET_COMPRESSED | CompressionLevel(3)`.
+    ///
+    /// If compression fails to reduce size, returns `(src_size, 0)` indicating
+    /// the caller should use the original data.
+    ///
+    /// Ported from FreeRDP's `xcrush_compress`.
+    pub(crate) fn compress(
+        &mut self,
+        src_data: &[u8],
+        output_buffer: &mut [u8],
+    ) -> Result<(usize, u32), BulkError> {
+        let src_size = src_data.len();
+
+        if src_size > BLOCK_BUFFER_SIZE {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: input exceeds 16KB limit",
+            ));
+        }
+
+        if src_size + 2 > output_buffer.len() {
+            return Err(BulkError::OutputBufferTooSmall {
+                required: src_size + 2,
+                available: output_buffer.len(),
+            });
+        }
+
+        // L1 compression into a temporary buffer (cannot borrow block_buffer
+        // while also mutably borrowing self for compress_l1)
+        let mut l1_buffer = vec![0u8; BLOCK_BUFFER_SIZE];
+        let (compressed_data_size, l1_flags) =
+            self.compress_l1(src_data, &mut l1_buffer)?;
+
+        // Determine the L1-compressed (or original) data for L2 input
+        let l1_output: Vec<u8> = if l1_flags & flags::L1_COMPRESSED != 0 {
+            if compressed_data_size > src_size {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH: L1 compressed larger than input",
+                ));
+            }
+            l1_buffer[..compressed_data_size].to_vec()
+        } else {
+            if compressed_data_size != src_size {
+                return Err(BulkError::InvalidCompressedData(
+                    "XCRUSH: L1 uncompressed size mismatch",
+                ));
+            }
+            src_data.to_vec()
+        };
+
+        // Try L2 (MPPC) compression if L1 output is large enough
+        let mut level2_compr_flags: u32 = 0;
+        let mut dst_size: usize;
+        let l2_data_start = 2; // first 2 bytes are L1/L2 flag header
+
+        if compressed_data_size > 50 {
+            let mppc_output_buf = &mut output_buffer[l2_data_start..];
+            let result = self.mppc.compress(&l1_output, mppc_output_buf);
+
+            match result {
+                Ok((mppc_size, mppc_flags)) => {
+                    level2_compr_flags = mppc_flags;
+                    dst_size = mppc_size;
+                }
+                Err(_) => {
+                    // MPPC compression failed — fall back
+                    dst_size = compressed_data_size;
+                    level2_compr_flags = 0;
+                }
+            }
+        } else {
+            dst_size = compressed_data_size;
+        }
+
+        // Handle fallback cases
+        if level2_compr_flags == 0
+            || (level2_compr_flags & flags::PACKET_FLUSHED != 0)
+        {
+            if compressed_data_size > dst_size {
+                // Compression didn't help at all — return uncompressed
+                self.reset(true);
+                return Ok((src_size, 0));
+            }
+
+            dst_size = compressed_data_size;
+            output_buffer[l2_data_start..l2_data_start + compressed_data_size]
+                .copy_from_slice(&l1_output[..compressed_data_size]);
+        }
+
+        // Handle compression flags carry-over
+        if level2_compr_flags & flags::PACKET_COMPRESSED != 0 {
+            level2_compr_flags |= self.compression_flags;
+            self.compression_flags = 0;
+        } else if level2_compr_flags & flags::PACKET_FLUSHED != 0 {
+            self.compression_flags = flags::PACKET_FLUSHED;
+        }
+
+        // Write L1/L2 flag header
+        // L1 flags fit in a single byte (max value 0x17 = all flags set)
+        let final_l1_flags = l1_flags | flags::L1_INNER_COMPRESSION;
+        output_buffer[0] = u8::try_from(final_l1_flags & 0xFF)
+            .expect("L1 flags fit in u8");
+        output_buffer[1] = u8::try_from(level2_compr_flags & 0xFF)
+            .expect("L2 flags fit in u8");
+
+        let total_size = dst_size + 2;
+
+        if total_size > output_buffer.len() {
+            return Err(BulkError::OutputBufferTooSmall {
+                required: total_size,
+                available: output_buffer.len(),
+            });
+        }
+
+        // XCRUSH uses compression level 3 (RDP 6.1)
+        let outer_flags = flags::PACKET_COMPRESSED | 0x03;
+
+        Ok((total_size, outer_flags))
+    }
+
+    // ========================
+    // Match finding and optimization (compression helpers)
     // ========================
 
     /// Clears entries in the chunk hash table that fall within `[beg, end]`.
