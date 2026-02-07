@@ -250,7 +250,7 @@ Port FreeRDP's bulk compressor support (MPPC, XCRUSH, NCRUSH) from C to Rust wit
   - **Acceptance Criteria**: `NCrushContext` with history buffer, hash table, match table, offset cache, Huffman tables
   - **Dependencies**: TASK-021
   - **Risk**: Low
-- [ ] **TASK-023**: Implement `ncrush_decompress` function
+- [x] **TASK-023**: Implement `ncrush_decompress` function
   - **Acceptance Criteria**: Decompresses NCRUSH data using Huffman decoding, offset cache, history buffer
   - **Dependencies**: TASK-004, TASK-022
   - **Risk**: High (Huffman decoding + offset cache + history management)

@@ -477,11 +477,12 @@ tasks:
       - TASK-004
       - TASK-022
     risk: high
-    status: pending
-    started_at: null
-    completed_at: null
-    notes: "Complex state machine with multiple symbol types"
-    files_affected: []
+    status: completed
+    started_at: "2026-02-07T00:00:00Z"
+    completed_at: "2026-02-07T00:00:00Z"
+    notes: "Ported full ncrush_decompress with LSB-first bit reading (custom fetch_bits, not BitStreamReader), Huffman LEC/LOM decoding, CopyOffset with extra bits, LRU offset cache, and history buffer copy with overlap/wrap handling. Added 7 unit tests for decompress edge cases and fetch_bits helper. 76 tests passing."
+    files_affected:
+      - "crates/ironrdp-bulk/src/ncrush/mod.rs"
     estimated_hours: 4
 
   - id: TASK-024
