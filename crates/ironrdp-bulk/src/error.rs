@@ -31,10 +31,7 @@ impl fmt::Display for BulkError {
             Self::InvalidCompressedData(detail) => {
                 write!(f, "invalid compressed data: {detail}")
             }
-            Self::OutputBufferTooSmall {
-                required,
-                available,
-            } => {
+            Self::OutputBufferTooSmall { required, available } => {
                 write!(
                     f,
                     "output buffer too small: need {required} bytes, but only {available} available"

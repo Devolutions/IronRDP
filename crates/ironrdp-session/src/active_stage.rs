@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use ironrdp_bulk::BulkCompressor;
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
 use ironrdp_core::WriteBuf;
@@ -8,14 +9,25 @@ use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::{mcs, Action};
 use ironrdp_svc::{SvcMessage, SvcProcessor, SvcProcessorMessages};
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::{fast_path, x224, SessionError, SessionErrorExt as _, SessionResult};
+
+/// Converts the PDU-layer compression type to the bulk crate's compression type.
+fn to_bulk_compression_type(ct: PduCompressionType) -> ironrdp_bulk::CompressionType {
+    match ct {
+        PduCompressionType::K8 => ironrdp_bulk::CompressionType::Rdp4,
+        PduCompressionType::K64 => ironrdp_bulk::CompressionType::Rdp5,
+        PduCompressionType::Rdp6 => ironrdp_bulk::CompressionType::Rdp6,
+        PduCompressionType::Rdp61 => ironrdp_bulk::CompressionType::Rdp61,
+    }
+}
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,
@@ -32,11 +44,27 @@ impl ActiveStage {
             connection_result.connection_activation,
         );
 
+        // Create bulk decompressor if compression was negotiated
+        let bulk_decompressor = connection_result.compression_type.and_then(|ct| {
+            let bulk_ct = to_bulk_compression_type(ct);
+            match BulkCompressor::new(bulk_ct) {
+                Ok(compressor) => {
+                    info!(compression_type = %bulk_ct, "Bulk decompressor initialized for FastPath");
+                    Some(compressor)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create bulk decompressor, compression disabled");
+                    None
+                }
+            }
+        });
+
         let fast_path_processor = fast_path::ProcessorBuilder {
             io_channel_id: connection_result.io_channel_id,
             user_channel_id: connection_result.user_channel_id,
             enable_server_pointer: connection_result.enable_server_pointer,
             pointer_software_rendering: connection_result.pointer_software_rendering,
+            bulk_decompressor,
         }
         .build();
 

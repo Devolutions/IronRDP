@@ -2813,6 +2813,7 @@ dependencies = [
 name = "ironrdp-session"
 version = "0.8.0"
 dependencies = [
+ "ironrdp-bulk",
  "ironrdp-connector",
  "ironrdp-core",
  "ironrdp-displaycontrol",

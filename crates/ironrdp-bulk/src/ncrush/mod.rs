@@ -171,9 +171,7 @@ pub(crate) struct NCrushContext {
 fn heap_zeroed_array<const N: usize, T: Default + Copy>() -> Box<[T; N]> {
     // Use vec to avoid stack allocation, then convert to boxed array
     let v: Vec<T> = vec![T::default(); N];
-    v.into_boxed_slice()
-        .try_into()
-        .unwrap_or_else(|_| unreachable!())
+    v.into_boxed_slice().try_into().unwrap_or_else(|_| unreachable!())
 }
 
 impl NCrushContext {
@@ -365,17 +363,11 @@ impl NCrushContext {
                   bit_length/lom_bits (u32, ≤15) safely cast to i32; \
                   copy_offset/length_of_match (u32 ≤65535) safely widen to usize"
     )]
-    pub(crate) fn decompress<'a>(
-        &'a mut self,
-        src_data: &'a [u8],
-        flags_value: u32,
-    ) -> Result<&'a [u8], BulkError> {
+    pub(crate) fn decompress<'a>(&'a mut self, src_data: &'a [u8], flags_value: u32) -> Result<&'a [u8], BulkError> {
         use crate::flags;
 
         if self.history_end_offset != HISTORY_BUFFER_SIZE - 1 {
-            return Err(BulkError::InvalidCompressedData(
-                "NCRUSH: invalid history end offset",
-            ));
+            return Err(BulkError::InvalidCompressedData("NCRUSH: invalid history end offset"));
         }
 
         let history_end = self.history_end_offset; // 65535
@@ -388,8 +380,7 @@ impl NCrushContext {
                 ));
             }
             let src_start = self.history_offset - 32768;
-            self.history_buffer
-                .copy_within(src_start..src_start + 32768, 0);
+            self.history_buffer.copy_within(src_start..src_start + 32768, 0);
             self.history_offset = 32768;
             self.history_buffer[32768..HISTORY_BUFFER_SIZE].fill(0);
         }
@@ -416,8 +407,7 @@ impl NCrushContext {
         let mut history_ptr = self.history_offset;
 
         // --- Bit accumulator initialisation (first 4 bytes, little-endian) ---
-        let mut bits =
-            u32::from_le_bytes([src_data[0], src_data[1], src_data[2], src_data[3]]);
+        let mut bits = u32::from_le_bytes([src_data[0], src_data[1], src_data[2], src_data[3]]);
         let mut nbits: i32 = 32;
         let mut src_pos: usize = 4;
 
@@ -433,9 +423,7 @@ impl NCrushContext {
             loop {
                 let masked_bits = (bits & LEC_MASK) as usize;
                 if masked_bits >= tables::HuffTableLEC.len() {
-                    return Err(BulkError::InvalidCompressedData(
-                        "NCRUSH: LEC masked bits out of range",
-                    ));
+                    return Err(BulkError::InvalidCompressedData("NCRUSH: LEC masked bits out of range"));
                 }
 
                 let lec_entry = tables::HuffTableLEC[masked_bits];
@@ -500,12 +488,8 @@ impl NCrushContext {
                     return Err(BulkError::UnexpectedEndOfInput);
                 }
 
-                if length_of_match_idx >= tables::LOMBitsLUT.len()
-                    || length_of_match_idx >= tables::LOMBaseLUT.len()
-                {
-                    return Err(BulkError::InvalidCompressedData(
-                        "NCRUSH: LOM lookup out of range",
-                    ));
+                if length_of_match_idx >= tables::LOMBitsLUT.len() || length_of_match_idx >= tables::LOMBaseLUT.len() {
+                    return Err(BulkError::InvalidCompressedData("NCRUSH: LOM lookup out of range"));
                 }
 
                 let lom_bits = tables::LOMBitsLUT[length_of_match_idx];
@@ -529,9 +513,7 @@ impl NCrushContext {
             } else {
                 // --- Regular CopyOffset (LEC symbols 257–288) ---
                 let coi = copy_offset_index as usize;
-                if coi >= tables::CopyOffsetBitsLUT.len()
-                    || coi >= tables::CopyOffsetBaseLUT.len()
-                {
+                if coi >= tables::CopyOffsetBitsLUT.len() || coi >= tables::CopyOffsetBaseLUT.len() {
                     return Err(BulkError::InvalidCompressedData(
                         "NCRUSH: CopyOffset lookup out of range",
                     ));
@@ -545,9 +527,7 @@ impl NCrushContext {
                     let extra = bits & extra_mask;
                     let tmp = co_base + extra;
                     if tmp < 1 {
-                        return Err(BulkError::InvalidCompressedData(
-                            "NCRUSH: CopyOffset underflow",
-                        ));
+                        return Err(BulkError::InvalidCompressedData("NCRUSH: CopyOffset underflow"));
                     }
                     bits >>= co_bits;
                     nbits -= co_bits as i32;
@@ -578,12 +558,8 @@ impl NCrushContext {
                     return Err(BulkError::UnexpectedEndOfInput);
                 }
 
-                if length_of_match_idx >= tables::LOMBitsLUT.len()
-                    || length_of_match_idx >= tables::LOMBaseLUT.len()
-                {
-                    return Err(BulkError::InvalidCompressedData(
-                        "NCRUSH: LOM lookup out of range",
-                    ));
+                if length_of_match_idx >= tables::LOMBitsLUT.len() || length_of_match_idx >= tables::LOMBaseLUT.len() {
+                    return Err(BulkError::InvalidCompressedData("NCRUSH: LOM lookup out of range"));
                 }
 
                 let lom_bits = tables::LOMBitsLUT[length_of_match_idx];
@@ -614,9 +590,7 @@ impl NCrushContext {
             let copy_offset_usize = copy_offset as usize;
 
             if length_of_match < 2 {
-                return Err(BulkError::InvalidCompressedData(
-                    "NCRUSH: match length < 2",
-                ));
+                return Err(BulkError::InvalidCompressedData("NCRUSH: match length < 2"));
             }
 
             // Bounds check (ported from FreeRDP's -1006 error).
@@ -655,8 +629,7 @@ impl NCrushContext {
                         if idx >= copy_offset_usize {
                             idx = 0;
                         }
-                        self.history_buffer[history_ptr] =
-                            self.history_buffer[pattern_start + idx];
+                        self.history_buffer[history_ptr] = self.history_buffer[pattern_start + idx];
                         history_ptr += 1;
                         idx += 1;
                         remaining -= 1;
@@ -668,8 +641,7 @@ impl NCrushContext {
                 // meaning the reference reaches back past the start of
                 // the current write position (into data from a previous
                 // packet, placed by PACKET_AT_FRONT).
-                let wrap_src =
-                    history_end - (copy_offset_usize - history_ptr) + 1;
+                let wrap_src = history_end - (copy_offset_usize - history_ptr) + 1;
 
                 let mut src_idx = wrap_src;
                 let mut cl = copy_length;
@@ -744,12 +716,7 @@ impl NCrushContext {
         clippy::cast_possible_truncation,
         reason = "offset bounded by 65536 (fits u16); hash from u16::from_le_bytes widens to usize"
     )]
-    pub(crate) fn hash_table_add(
-        &mut self,
-        src_data: &[u8],
-        src_size: usize,
-        history_offset: usize,
-    ) {
+    pub(crate) fn hash_table_add(&mut self, src_data: &[u8], src_size: usize, history_offset: usize) {
         if src_size < 8 {
             return;
         }
@@ -758,8 +725,7 @@ impl NCrushContext {
         let mut src_idx = 0usize;
 
         while offset < end_offset {
-            let hash =
-                usize::from(u16::from_le_bytes([src_data[src_idx], src_data[src_idx + 1]]));
+            let hash = usize::from(u16::from_le_bytes([src_data[src_idx], src_data[src_idx + 1]]));
             let old_entry = self.hash_table[hash];
             self.hash_table[hash] = offset as u16;
             self.match_table[offset] = old_entry;
@@ -823,10 +789,7 @@ impl NCrushContext {
         reason = "i32→usize: find_match_length returns i32 bounded by 64KB buffer; \
                   u16 offsets widen to usize for array indexing"
     )]
-    pub(crate) fn find_best_match(
-        &mut self,
-        history_offset: u16,
-    ) -> Result<Option<(usize, u16)>, BulkError> {
+    pub(crate) fn find_best_match(&mut self, history_offset: u16) -> Result<Option<(usize, u16)>, BulkError> {
         let ho = usize::from(history_offset);
 
         if self.match_table[ho] == 0 {
@@ -896,11 +859,7 @@ impl NCrushContext {
                 }
 
                 if (offset != history_offset) && (offset != 0) {
-                    let len = self.find_match_length(
-                        ho + 2,
-                        usize::from(offset) + 2,
-                        history_ptr,
-                    );
+                    let len = self.find_match_length(ho + 2, usize::from(offset) + 2, history_ptr);
                     let length = (len + 2) as usize;
 
                     if (len + 2) < 2 {
@@ -957,10 +916,7 @@ impl NCrushContext {
         reason = "history_ptr bounded by 65536; i32 arithmetic for offset adjustment; \
                   hash/match table entries are u16 (< 65536)"
     )]
-    pub(crate) fn move_encoder_windows(
-        &mut self,
-        history_ptr: usize,
-    ) -> Result<(), BulkError> {
+    pub(crate) fn move_encoder_windows(&mut self, history_ptr: usize) -> Result<(), BulkError> {
         const HALF: usize = HISTORY_BUFFER_SIZE / 2; // 32768
 
         if !(HALF..=HISTORY_BUFFER_SIZE).contains(&history_ptr) {
@@ -970,8 +926,7 @@ impl NCrushContext {
         }
 
         // Move last 32 KB to front
-        self.history_buffer
-            .copy_within((history_ptr - HALF)..history_ptr, 0);
+        self.history_buffer.copy_within((history_ptr - HALF)..history_ptr, 0);
 
         let history_offset = (history_ptr - HALF) as i32;
 
@@ -1025,11 +980,15 @@ impl NCrushContext {
     pub(crate) fn encode_literal(writer: &mut NCrushBitWriter<'_>, literal: u8) -> Result<(), BulkError> {
         let index = usize::from(literal);
         if index >= tables::HuffLengthLEC.len() {
-            return Err(BulkError::InvalidCompressedData("Literal index out of HuffLengthLEC range"));
+            return Err(BulkError::InvalidCompressedData(
+                "Literal index out of HuffLengthLEC range",
+            ));
         }
         let bit_length = u32::from(tables::HuffLengthLEC[index]);
         if bit_length > 15 {
-            return Err(BulkError::InvalidCompressedData("Literal Huffman code length exceeds 15"));
+            return Err(BulkError::InvalidCompressedData(
+                "Literal Huffman code length exceeds 15",
+            ));
         }
         let code = Self::get_lec_code(index)?;
         writer.write_bits(code, bit_length)
@@ -1066,17 +1025,23 @@ impl NCrushContext {
         let copy_offset_index = usize::from(self.huff_table_copy_offset[lookup_idx]);
 
         if copy_offset_index >= tables::CopyOffsetBitsLUT.len() {
-            return Err(BulkError::InvalidCompressedData("CopyOffsetIndex out of CopyOffsetBitsLUT range"));
+            return Err(BulkError::InvalidCompressedData(
+                "CopyOffsetIndex out of CopyOffsetBitsLUT range",
+            ));
         }
         let copy_offset_bits = tables::CopyOffsetBitsLUT[copy_offset_index];
 
         let index_lec = 257 + copy_offset_index;
         if index_lec >= tables::HuffLengthLEC.len() {
-            return Err(BulkError::InvalidCompressedData("CopyOffset LEC index out of HuffLengthLEC range"));
+            return Err(BulkError::InvalidCompressedData(
+                "CopyOffset LEC index out of HuffLengthLEC range",
+            ));
         }
         let bit_length = u32::from(tables::HuffLengthLEC[index_lec]);
         if bit_length > 15 {
-            return Err(BulkError::InvalidCompressedData("CopyOffset Huffman code length exceeds 15"));
+            return Err(BulkError::InvalidCompressedData(
+                "CopyOffset Huffman code length exceeds 15",
+            ));
         }
         if copy_offset_bits > 18 {
             return Err(BulkError::InvalidCompressedData("CopyOffset extra bits exceed 18"));
@@ -1106,11 +1071,15 @@ impl NCrushContext {
     ) -> Result<(), BulkError> {
         let index_lec = 289 + cache_index;
         if index_lec >= tables::HuffLengthLEC.len() {
-            return Err(BulkError::InvalidCompressedData("OffsetCache LEC index out of HuffLengthLEC range"));
+            return Err(BulkError::InvalidCompressedData(
+                "OffsetCache LEC index out of HuffLengthLEC range",
+            ));
         }
         let bit_length = u32::from(tables::HuffLengthLEC[index_lec]);
         if bit_length >= 15 {
-            return Err(BulkError::InvalidCompressedData("OffsetCache Huffman code length >= 15"));
+            return Err(BulkError::InvalidCompressedData(
+                "OffsetCache Huffman code length >= 15",
+            ));
         }
         let code = Self::get_lec_code(index_lec)?;
         writer.write_bits(code, bit_length)
@@ -1141,13 +1110,17 @@ impl NCrushContext {
             28usize
         } else {
             if (match_length as usize) >= HUFF_TABLE_LOM_SIZE {
-                return Err(BulkError::InvalidCompressedData("MatchLength out of HuffTableLOM range"));
+                return Err(BulkError::InvalidCompressedData(
+                    "MatchLength out of HuffTableLOM range",
+                ));
             }
             usize::from(self.huff_table_lom[match_length as usize])
         };
 
         if index_co >= tables::HuffLengthLOM.len() {
-            return Err(BulkError::InvalidCompressedData("LOM IndexCO out of HuffLengthLOM range"));
+            return Err(BulkError::InvalidCompressedData(
+                "LOM IndexCO out of HuffLengthLOM range",
+            ));
         }
         let bit_length = u32::from(tables::HuffLengthLOM[index_co]);
 
@@ -1171,7 +1144,9 @@ impl NCrushContext {
                 return Err(BulkError::InvalidCompressedData("LOM IndexCO out of LOMBaseLUT range"));
             }
             if masked_bits + tables::LOMBaseLUT[index_co] != match_length {
-                return Err(BulkError::InvalidCompressedData("LOM encoding inconsistency: MaskedBits + LOMBase != MatchLength"));
+                return Err(BulkError::InvalidCompressedData(
+                    "LOM encoding inconsistency: MaskedBits + LOMBase != MatchLength",
+                ));
             }
 
             writer.write_bits(masked_bits, lom_bits)?;
@@ -1220,11 +1195,7 @@ impl NCrushContext {
                   copy_offset bounded by history_buffer_size-1 (fits u32); \
                   match_length bounded by history buffer (fits u32)"
     )]
-    pub(crate) fn compress(
-        &mut self,
-        src_data: &[u8],
-        dst_buffer: &mut [u8],
-    ) -> Result<(usize, u32), BulkError> {
+    pub(crate) fn compress(&mut self, src_data: &[u8], dst_buffer: &mut [u8]) -> Result<(usize, u32), BulkError> {
         use crate::flags;
 
         const COMPRESSION_LEVEL: u32 = 2; // NCRUSH compression type
@@ -1559,9 +1530,7 @@ mod tests {
         let data = b"hello world";
 
         // No PACKET_COMPRESSED flag → should return source data directly
-        let result = ctx
-            .decompress(data, flags::PACKET_FLUSHED)
-            .unwrap();
+        let result = ctx.decompress(data, flags::PACKET_FLUSHED).unwrap();
         assert_eq!(result, b"hello world");
         // History offset should remain 0 (no decompression occurred)
         assert_eq!(ctx.history_offset, 0);
@@ -1577,9 +1546,7 @@ mod tests {
         ctx.history_buffer[500] = 0xFF;
 
         let data = b"test";
-        let _result = ctx
-            .decompress(data, flags::PACKET_FLUSHED)
-            .unwrap();
+        let _result = ctx.decompress(data, flags::PACKET_FLUSHED).unwrap();
 
         // PACKET_FLUSHED should clear history and offset cache
         assert_eq!(ctx.history_offset, 0);
@@ -1610,17 +1577,13 @@ mod tests {
         let mut nbits2: i32 = 20;
         let mut bits2: u32 = 0x12345;
         let mut src_pos2 = 0usize;
-        assert!(NCrushContext::fetch_bits(
-            &src, &mut src_pos2, &mut nbits2, &mut bits2
-        ));
+        assert!(NCrushContext::fetch_bits(&src, &mut src_pos2, &mut nbits2, &mut bits2));
         assert_eq!(nbits2, 20); // unchanged
         assert_eq!(bits2, 0x12345); // unchanged
         assert_eq!(src_pos2, 0); // no bytes consumed
 
         // nbits < 16, fetch 2 bytes
-        assert!(NCrushContext::fetch_bits(
-            &src, &mut src_pos, &mut nbits, &mut bits
-        ));
+        assert!(NCrushContext::fetch_bits(&src, &mut src_pos, &mut nbits, &mut bits));
         assert_eq!(nbits, 24); // 8 + 16
         assert_eq!(src_pos, 2);
         // bits = 0x12 + (0xAA | (0xBB << 8)) << 8
@@ -1637,9 +1600,7 @@ mod tests {
         let mut nbits: i32 = 5;
         let mut bits: u32 = 0x1F;
 
-        assert!(NCrushContext::fetch_bits(
-            &src, &mut src_pos, &mut nbits, &mut bits
-        ));
+        assert!(NCrushContext::fetch_bits(&src, &mut src_pos, &mut nbits, &mut bits));
         assert_eq!(nbits, 13); // 5 + 8
         assert_eq!(src_pos, 1);
         // bits = 0x1F + (0x42 << 5)
@@ -1656,9 +1617,7 @@ mod tests {
         let mut bits: u32 = 0x1F;
 
         // No more data but nbits >= 0 → ok
-        assert!(NCrushContext::fetch_bits(
-            &src, &mut src_pos, &mut nbits, &mut bits
-        ));
+        assert!(NCrushContext::fetch_bits(&src, &mut src_pos, &mut nbits, &mut bits));
         assert_eq!(nbits, 5); // unchanged
     }
 
@@ -1670,9 +1629,7 @@ mod tests {
         let mut bits: u32 = 0;
 
         // No more data and nbits < 0 → fail
-        assert!(!NCrushContext::fetch_bits(
-            &src, &mut src_pos, &mut nbits, &mut bits
-        ));
+        assert!(!NCrushContext::fetch_bits(&src, &mut src_pos, &mut nbits, &mut bits));
     }
 
     /// Byte-exact decompression test ported from FreeRDP
@@ -1689,9 +1646,7 @@ mod tests {
         // FreeRDP flags: PACKET_COMPRESSED | 2 (compression type NCRUSH)
         let flags_value = flags::PACKET_COMPRESSED | 0x02;
 
-        let result = ctx
-            .decompress(test_data::TEST_BELLS_NCRUSH, flags_value)
-            .unwrap();
+        let result = ctx.decompress(test_data::TEST_BELLS_NCRUSH, flags_value).unwrap();
 
         assert_eq!(
             result.len(),
@@ -2172,9 +2127,7 @@ mod tests {
         let mut ctx = NCrushContext::new().unwrap();
         let mut dst = vec![0u8; 65536];
 
-        let (size, flags_out) = ctx
-            .compress(test_data::TEST_BELLS_DATA, &mut dst)
-            .unwrap();
+        let (size, flags_out) = ctx.compress(test_data::TEST_BELLS_DATA, &mut dst).unwrap();
 
         // Must be compressed
         assert_ne!(
@@ -2222,9 +2175,7 @@ mod tests {
         );
 
         // Decompress
-        let decompressed = decompressor
-            .decompress(&compressed[..comp_size], flags_out)
-            .unwrap();
+        let decompressed = decompressor.decompress(&compressed[..comp_size], flags_out).unwrap();
 
         // Verify byte-for-byte match
         assert_eq!(
@@ -2245,9 +2196,7 @@ mod tests {
         let (comp_size, flags_out) = compressor.compress(input, &mut compressed).unwrap();
 
         if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
-            let decompressed = decompressor
-                .decompress(&compressed[..comp_size], flags_out)
-                .unwrap();
+            let decompressed = decompressor.decompress(&compressed[..comp_size], flags_out).unwrap();
             assert_eq!(decompressed, &input[..]);
         }
     }
@@ -2266,9 +2215,7 @@ mod tests {
         let (comp_size, flags_out) = compressor.compress(input, &mut compressed).unwrap();
 
         if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
-            let decompressed = decompressor
-                .decompress(&compressed[..comp_size], flags_out)
-                .unwrap();
+            let decompressed = decompressor.decompress(&compressed[..comp_size], flags_out).unwrap();
             assert_eq!(decompressed, &input[..]);
         }
     }
@@ -2291,9 +2238,7 @@ mod tests {
         let (comp_size, flags_out) = compressor.compress(&input, &mut compressed).unwrap();
 
         if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
-            let decompressed = decompressor
-                .decompress(&compressed[..comp_size], flags_out)
-                .unwrap();
+            let decompressed = decompressor.decompress(&compressed[..comp_size], flags_out).unwrap();
             assert_eq!(decompressed, &input[..]);
         }
     }
@@ -2317,11 +2262,10 @@ mod tests {
             let (comp_size, flags_out) = compressor.compress(input, &mut compressed).unwrap();
 
             if flags_out & crate::flags::PACKET_COMPRESSED != 0 {
-                let decompressed = decompressor
-                    .decompress(&compressed[..comp_size], flags_out)
-                    .unwrap();
+                let decompressed = decompressor.decompress(&compressed[..comp_size], flags_out).unwrap();
                 assert_eq!(
-                    decompressed, *input,
+                    decompressed,
+                    *input,
                     "Sequential round-trip failed for input: {:?}",
                     core::str::from_utf8(input)
                 );

@@ -7,8 +7,7 @@
 //   Licensed under the Apache License, Version 2.0
 
 /// Plaintext "bells" test string used by both compress and decompress tests.
-pub(super) const TEST_BELLS_DATA: &[u8] =
-    b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!";
+pub(super) const TEST_BELLS_DATA: &[u8] = b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!";
 
 /// NCRUSH-compressed form of `TEST_BELLS_DATA`.
 ///

@@ -44,6 +44,30 @@ pub enum ClipboardType {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum CompressionLevel {
+    /// MPPC with 8 KB history buffer (RDP 4.0)
+    Rdp4,
+    /// MPPC with 64 KB history buffer (RDP 5.0)
+    Rdp5,
+    /// NCRUSH compression (RDP 6.0)
+    Rdp6,
+    /// XCRUSH compression (RDP 6.1)
+    Rdp61,
+}
+
+impl CompressionLevel {
+    fn to_pdu_compression_type(self) -> ironrdp::pdu::rdp::client_info::CompressionType {
+        use ironrdp::pdu::rdp::client_info::CompressionType;
+        match self {
+            CompressionLevel::Rdp4 => CompressionType::K8,
+            CompressionLevel::Rdp5 => CompressionType::K64,
+            CompressionLevel::Rdp6 => CompressionType::Rdp6,
+            CompressionLevel::Rdp61 => CompressionType::Rdp61,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum KeyboardType {
     IbmPcXt,
     OlivettiIco,
@@ -288,6 +312,17 @@ struct Args {
     #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
 
+    /// Bulk compression level to negotiate with the server.
+    ///
+    /// When set, the client advertises support for bulk compression and the
+    /// server may send compressed PDUs. Valid values:
+    ///   rdp4  — MPPC with 8 KB history (RDP 4.0)
+    ///   rdp5  — MPPC with 64 KB history (RDP 5.0)
+    ///   rdp6  — NCRUSH (RDP 6.0)
+    ///   rdp61 — XCRUSH (RDP 6.1)
+    #[clap(long, value_enum)]
+    compression: Option<CompressionLevel>,
+
     /// Add DVC channel named pipe proxy
     ///
     /// The format is `<name>=<pipe>`, e.g., `ChannelName=PipeName` where `ChannelName` is the name of the channel,
@@ -461,6 +496,7 @@ impl Config {
             enable_audio_playback: true,
             request_data: None,
             pointer_software_rendering: false,
+            compression_type: args.compression.map(|c| c.to_pdu_compression_type()),
             performance_flags: PerformanceFlags::default(),
             timezone_info: TimezoneInfo::default(),
         };

@@ -12,12 +12,10 @@ pub(super) const TEST_BELLS_DATA: &[u8] = b"for.whom.the.bell.tolls,.the.bell.to
 /// Since BELLS is only 49 bytes (≤ 50-byte threshold), XCRUSH does NOT
 /// compress it. FreeRDP returns the original source data with flags=0.
 /// The "expected output" is therefore identical to the input.
-pub(super) const TEST_BELLS_DATA_XCRUSH: &[u8] =
-    b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!";
+pub(super) const TEST_BELLS_DATA_XCRUSH: &[u8] = b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!";
 
 /// Island text (386 bytes) used as XCRUSH compression test input.
-pub(super) const TEST_ISLAND_DATA: &[u8] =
-    b"No man is an island entire of itself; every man \
+pub(super) const TEST_ISLAND_DATA: &[u8] = b"No man is an island entire of itself; every man \
 is a piece of the continent, a part of the main; \
 if a clod be washed away by the sea, Europe \
 is the less, as well as if a promontory were, as\

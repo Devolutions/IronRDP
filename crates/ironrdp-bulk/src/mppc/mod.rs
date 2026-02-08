@@ -12,8 +12,7 @@ use crate::error::BulkError;
 use crate::flags;
 
 use self::tables::{
-    HISTORY_BUFFER_SIZE_RDP4, HISTORY_BUFFER_SIZE_RDP5, HISTORY_MASK_RDP4, HISTORY_MASK_RDP5,
-    MATCH_BUFFER_SIZE,
+    HISTORY_BUFFER_SIZE_RDP4, HISTORY_BUFFER_SIZE_RDP5, HISTORY_MASK_RDP4, HISTORY_MASK_RDP5, MATCH_BUFFER_SIZE,
 };
 
 /// MPPC compression/decompression context.
@@ -111,11 +110,7 @@ impl MppcContext {
         clippy::as_conversions,
         reason = "bit manipulation requires masked u32-to-u8/usize casts; values are bounded by masks"
     )]
-    pub(crate) fn decompress<'a>(
-        &'a mut self,
-        src_data: &'a [u8],
-        flags_value: u32,
-    ) -> Result<&'a [u8], BulkError> {
+    pub(crate) fn decompress<'a>(&'a mut self, src_data: &'a [u8], flags_value: u32) -> Result<&'a [u8], BulkError> {
         let history_buffer_size = self.history_buffer_size;
         let compression_level = self.compression_level;
         let history_mask = self.history_mask;
@@ -279,9 +274,7 @@ impl MppcContext {
                 length_of_match = ((accumulator >> 2) & 0x7FFF) as usize + 32768;
                 bs.shift(30);
             } else {
-                return Err(BulkError::InvalidCompressedData(
-                    "invalid LengthOfMatch encoding",
-                ));
+                return Err(BulkError::InvalidCompressedData("invalid LengthOfMatch encoding"));
             }
 
             // Check that the copy won't overflow the history buffer
@@ -329,11 +322,7 @@ impl MppcContext {
                   copy_offset < history_buffer_size (fits u32), \
                   length_of_match < 65536 (fits u32)"
     )]
-    pub(crate) fn compress(
-        &mut self,
-        src_data: &[u8],
-        output_buffer: &mut [u8],
-    ) -> Result<(usize, u32), BulkError> {
+    pub(crate) fn compress(&mut self, src_data: &[u8], output_buffer: &mut [u8]) -> Result<(usize, u32), BulkError> {
         let history_buffer_size = self.history_buffer_size;
         let compression_level = self.compression_level;
         let mut history_offset = self.history_offset;
@@ -342,18 +331,17 @@ impl MppcContext {
 
         // Determine whether the history buffer has room for this data.
         // If not (or first call), reset to position 0.
-        let packet_at_front = if history_offset != 0
-            && (history_offset + src_data.len()) < history_buffer_size.saturating_sub(3)
-        {
-            false
-        } else {
-            // Sentinel value from reset(flush=true) means prior call flushed
-            if history_offset == history_buffer_size + 1 {
-                packet_flushed = true;
-            }
-            history_offset = 0;
-            true
-        };
+        let packet_at_front =
+            if history_offset != 0 && (history_offset + src_data.len()) < history_buffer_size.saturating_sub(3) {
+                false
+            } else {
+                // Sentinel value from reset(flush=true) means prior call flushed
+                if history_offset == history_buffer_size + 1 {
+                    packet_flushed = true;
+                }
+                history_offset = 0;
+                true
+            };
 
         let mut local_ptr = history_offset; // local write position in history buffer
 
@@ -420,10 +408,7 @@ impl MppcContext {
                 // Overflow check: literal needs at most 9 bits (~2 bytes)
                 if (bs.bits_written() / 8) + 2 > dst_size - 1 {
                     self.reset(true);
-                    return Ok((
-                        src_data.len(),
-                        flags::PACKET_FLUSHED | compression_level,
-                    ));
+                    return Ok((src_data.len(), flags::PACKET_FLUSHED | compression_level));
                 }
 
                 let accumulator = u32::from(sym1);
@@ -437,8 +422,7 @@ impl MppcContext {
             } else {
                 // --- Found a match ---
 
-                let copy_offset =
-                    (history_buffer_size - 1) & local_ptr.wrapping_sub(match_pos);
+                let copy_offset = (history_buffer_size - 1) & local_ptr.wrapping_sub(match_pos);
 
                 // Copy Sym2, Sym3 to history
                 self.history_buffer[local_ptr] = sym2;
@@ -465,10 +449,7 @@ impl MppcContext {
                 // Overflow check: match encoding can use up to ~51 bits (~7 bytes)
                 if (bs.bits_written() / 8) + 7 > dst_size - 1 {
                     self.reset(true);
-                    return Ok((
-                        src_data.len(),
-                        flags::PACKET_FLUSHED | compression_level,
-                    ));
+                    return Ok((src_data.len(), flags::PACKET_FLUSHED | compression_level));
                 }
 
                 // --- Encode CopyOffset ---
@@ -535,18 +516,15 @@ impl MppcContext {
         while src_idx < src_len {
             if (bs.bits_written() / 8) + 2 > dst_size - 1 {
                 self.reset(true);
-                return Ok((
-                    src_data.len(),
-                    flags::PACKET_FLUSHED | compression_level,
-                ));
+                return Ok((src_data.len(), flags::PACKET_FLUSHED | compression_level));
             }
 
-                let lit = u32::from(src_data[src_idx]);
-                if lit < 0x80 {
-                    bs.write_bits(lit, 8);
-                } else {
-                    bs.write_bits(0x100 | (lit & 0x7F), 9);
-                }
+            let lit = u32::from(src_data[src_idx]);
+            if lit < 0x80 {
+                bs.write_bits(lit, 8);
+            } else {
+                bs.write_bits(0x100 | (lit & 0x7F), 9);
+            }
 
             self.history_buffer[local_ptr] = src_data[src_idx];
             local_ptr += 1;
@@ -634,9 +612,7 @@ mod tests {
         let mut ctx = MppcContext::new(0);
         // Flags: PACKET_AT_FRONT | PACKET_COMPRESSED (RDP4 — compression level 0)
         let flags_value = flags::PACKET_AT_FRONT | flags::PACKET_COMPRESSED;
-        let result = ctx
-            .decompress(test_data::TEST_MPPC_BELLS_RDP4, flags_value)
-            .unwrap();
+        let result = ctx.decompress(test_data::TEST_MPPC_BELLS_RDP4, flags_value).unwrap();
         assert_eq!(
             result.len(),
             test_data::TEST_MPPC_BELLS.len(),
@@ -660,9 +636,7 @@ mod tests {
         let mut ctx = MppcContext::new(1);
         // Flags: PACKET_AT_FRONT | PACKET_COMPRESSED | 1 (RDP5)
         let flags_value = flags::PACKET_AT_FRONT | flags::PACKET_COMPRESSED | 1;
-        let result = ctx
-            .decompress(test_data::TEST_MPPC_BELLS_RDP5, flags_value)
-            .unwrap();
+        let result = ctx.decompress(test_data::TEST_MPPC_BELLS_RDP5, flags_value).unwrap();
         assert_eq!(
             result.len(),
             test_data::TEST_MPPC_BELLS.len(),
@@ -715,9 +689,7 @@ mod tests {
     fn test_mppc_compress_bells_rdp4() {
         let mut ctx = MppcContext::new(0);
         let mut output = [0u8; 65536];
-        let (size, result_flags) = ctx
-            .compress(test_data::TEST_MPPC_BELLS, &mut output)
-            .unwrap();
+        let (size, result_flags) = ctx.compress(test_data::TEST_MPPC_BELLS, &mut output).unwrap();
         assert!(
             result_flags & flags::PACKET_COMPRESSED != 0,
             "expected PACKET_COMPRESSED flag, got 0x{result_flags:08X}"
@@ -743,9 +715,7 @@ mod tests {
     fn test_mppc_compress_bells_rdp5() {
         let mut ctx = MppcContext::new(1);
         let mut output = [0u8; 65536];
-        let (size, result_flags) = ctx
-            .compress(test_data::TEST_MPPC_BELLS, &mut output)
-            .unwrap();
+        let (size, result_flags) = ctx.compress(test_data::TEST_MPPC_BELLS, &mut output).unwrap();
         assert!(
             result_flags & flags::PACKET_COMPRESSED != 0,
             "expected PACKET_COMPRESSED flag, got 0x{result_flags:08X}"
@@ -771,9 +741,7 @@ mod tests {
     fn test_mppc_compress_island_rdp5() {
         let mut ctx = MppcContext::new(1);
         let mut output = [0u8; 65536];
-        let (size, result_flags) = ctx
-            .compress(test_data::TEST_ISLAND_DATA, &mut output)
-            .unwrap();
+        let (size, result_flags) = ctx.compress(test_data::TEST_ISLAND_DATA, &mut output).unwrap();
         assert!(
             result_flags & flags::PACKET_COMPRESSED != 0,
             "expected PACKET_COMPRESSED flag, got 0x{result_flags:08X}"
@@ -881,11 +849,7 @@ mod tests {
     /// Round-trip test: large binary input (~6.5 KB) with RDP5.
     #[test]
     fn test_roundtrip_large_rdp5() {
-        assert_roundtrip(
-            1,
-            test_data::TEST_RDP5_UNCOMPRESSED_DATA,
-            "roundtrip_large_rdp5",
-        );
+        assert_roundtrip(1, test_data::TEST_RDP5_UNCOMPRESSED_DATA, "roundtrip_large_rdp5");
     }
 
     /// Round-trip test: ~16 KB repetitive pattern with RDP5.

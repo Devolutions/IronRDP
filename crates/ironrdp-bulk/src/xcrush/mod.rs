@@ -127,10 +127,11 @@ pub(crate) struct XCrushContext {
     reason = "returning Box is intentional — avoids placing large arrays on the stack"
 )]
 fn heap_zeroed_u8_array<const N: usize>() -> Box<[u8; N]> {
+    // Vec length is exactly N, so the try_into is infallible.
     vec![0u8; N]
         .into_boxed_slice()
         .try_into()
-        .expect("vec length equals array length")
+        .unwrap_or_else(|_| unreachable!())
 }
 
 /// Allocates a zeroed `Box<[u16; N]>` on the heap without touching the stack.
@@ -139,10 +140,11 @@ fn heap_zeroed_u8_array<const N: usize>() -> Box<[u8; N]> {
     reason = "returning Box is intentional — avoids placing large arrays on the stack"
 )]
 fn heap_zeroed_u16_array<const N: usize>() -> Box<[u16; N]> {
+    // Vec length is exactly N, so the try_into is infallible.
     vec![0u16; N]
         .into_boxed_slice()
         .try_into()
-        .expect("vec length equals array length")
+        .unwrap_or_else(|_| unreachable!())
 }
 
 /// Allocates a `Box<[T; N]>` filled with `T::default()` on the heap.
@@ -151,10 +153,11 @@ fn heap_zeroed_u16_array<const N: usize>() -> Box<[u16; N]> {
     reason = "returning Box is intentional — avoids placing large arrays on the stack"
 )]
 fn heap_default_array<T: Default + Clone + core::fmt::Debug, const N: usize>() -> Box<[T; N]> {
+    // Vec length is exactly N, so the try_into is infallible.
     vec![T::default(); N]
         .into_boxed_slice()
         .try_into()
-        .expect("vec length equals array length")
+        .unwrap_or_else(|_| unreachable!())
 }
 
 impl XCrushContext {
@@ -198,11 +201,7 @@ impl XCrushContext {
         clippy::as_conversions,
         reason = "u32::from_le_bytes for match_history_offset: bounded by history buffer size (2MB)"
     )]
-    pub(crate) fn decompress_l1<'a>(
-        &'a mut self,
-        src_data: &[u8],
-        l1_flags: u32,
-    ) -> Result<&'a [u8], BulkError> {
+    pub(crate) fn decompress_l1<'a>(&'a mut self, src_data: &[u8], l1_flags: u32) -> Result<&'a [u8], BulkError> {
         if src_data.is_empty() {
             return Err(BulkError::InvalidCompressedData("XCRUSH L1: empty input"));
         }
@@ -229,13 +228,10 @@ impl XCrushContext {
             }
 
             if src_data.len() < 2 {
-                return Err(BulkError::InvalidCompressedData(
-                    "XCRUSH L1: too short for match count",
-                ));
+                return Err(BulkError::InvalidCompressedData("XCRUSH L1: too short for match count"));
             }
 
-            let match_count =
-                usize::from(u16::from_le_bytes([src_data[0], src_data[1]]));
+            let match_count = usize::from(u16::from_le_bytes([src_data[0], src_data[1]]));
 
             // Each RDP61_MATCH_DETAILS entry is 8 bytes (u16 + u16 + u32)
             let match_details_end = 2 + match_count * 8;
@@ -251,16 +247,10 @@ impl XCrushContext {
 
             for i in 0..match_count {
                 let d = 2 + i * 8;
-                let match_length =
-                    usize::from(u16::from_le_bytes([src_data[d], src_data[d + 1]]));
-                let match_output_offset =
-                    usize::from(u16::from_le_bytes([src_data[d + 2], src_data[d + 3]]));
-                let match_history_offset = u32::from_le_bytes([
-                    src_data[d + 4],
-                    src_data[d + 5],
-                    src_data[d + 6],
-                    src_data[d + 7],
-                ]) as usize;
+                let match_length = usize::from(u16::from_le_bytes([src_data[d], src_data[d + 1]]));
+                let match_output_offset = usize::from(u16::from_le_bytes([src_data[d + 2], src_data[d + 3]]));
+                let match_history_offset =
+                    u32::from_le_bytes([src_data[d + 4], src_data[d + 5], src_data[d + 6], src_data[d + 7]]) as usize;
 
                 if match_output_offset < output_offset {
                     return Err(BulkError::InvalidCompressedData(
@@ -316,9 +306,7 @@ impl XCrushContext {
                 if history_ptr + match_length >= history_buffer_size
                     || match_history_offset + match_length >= history_buffer_size
                 {
-                    return Err(BulkError::InvalidCompressedData(
-                        "XCRUSH L1: match copy out of bounds",
-                    ));
+                    return Err(BulkError::InvalidCompressedData("XCRUSH L1: match copy out of bounds"));
                 }
 
                 // Same-buffer copy — must use byte-by-byte left-to-right copy
@@ -327,8 +315,7 @@ impl XCrushContext {
                 // semantics (right-to-left when dst > src), which would read
                 // from uninitialised history instead of the freshly-written bytes.
                 for i in 0..match_length {
-                    self.history_buffer[history_ptr + i] =
-                        self.history_buffer[match_history_offset + i];
+                    self.history_buffer[history_ptr + i] = self.history_buffer[match_history_offset + i];
                 }
                 output_offset += match_length;
                 history_ptr += match_length;
@@ -339,16 +326,13 @@ impl XCrushContext {
         if literals_start < src_data.len() {
             let remaining = src_data.len() - literals_start;
 
-            if history_ptr + remaining >= history_buffer_size
-                || literals_start + remaining > src_data.len()
-            {
+            if history_ptr + remaining >= history_buffer_size || literals_start + remaining > src_data.len() {
                 return Err(BulkError::InvalidCompressedData(
                     "XCRUSH L1: trailing literal copy out of bounds",
                 ));
             }
 
-            self.history_buffer[history_ptr..history_ptr + remaining]
-                .copy_from_slice(&src_data[literals_start..]);
+            self.history_buffer[history_ptr..history_ptr + remaining].copy_from_slice(&src_data[literals_start..]);
             history_ptr += remaining;
         }
 
@@ -368,11 +352,7 @@ impl XCrushContext {
     /// Ported from FreeRDP's `xcrush_decompress`.
     ///
     /// Returns a reference to the decompressed data.
-    pub(crate) fn decompress<'a>(
-        &'a mut self,
-        src_data: &[u8],
-        outer_flags: u32,
-    ) -> Result<&'a [u8], BulkError> {
+    pub(crate) fn decompress<'a>(&'a mut self, src_data: &[u8], outer_flags: u32) -> Result<&'a [u8], BulkError> {
         if src_data.len() < 2 {
             return Err(BulkError::InvalidCompressedData(
                 "XCRUSH: input too short for L1/L2 flags",
@@ -394,9 +374,7 @@ impl XCrushContext {
         }
 
         // Level-2 (MPPC) decompression first
-        let mppc_output = self
-            .mppc
-            .decompress(inner_data, level2_compr_flags)?;
+        let mppc_output = self.mppc.decompress(inner_data, level2_compr_flags)?;
 
         // We need to copy the MPPC output to a temporary buffer because
         // decompress_l1 borrows self mutably and the MPPC output lives
@@ -419,17 +397,12 @@ impl XCrushContext {
     fn update_hash(data: &[u8], size: usize) -> u16 {
         debug_assert!(size >= 4);
 
-        let (mut seed, process_size) = if size > 32 {
-            (5413u16, 32usize)
-        } else {
-            (5381u16, size)
-        };
+        let (mut seed, process_size) = if size > 32 { (5413u16, 32usize) } else { (5381u16, size) };
 
         let end = process_size.saturating_sub(4);
         let mut i = 0;
         while i < end {
-            let val = u16::from(data[i + 3] ^ data[i])
-                .wrapping_add(u16::from(data[i + 1]) << 8);
+            let val = u16::from(data[i + 3] ^ data[i]).wrapping_add(u16::from(data[i + 1]) << 8);
             seed = seed.wrapping_add(val);
             i += 4;
         }
@@ -505,9 +478,7 @@ impl XCrushContext {
                 let rotation = accumulator.rotate_left(1);
                 accumulator = u32::from(data[i + 32]) ^ u32::from(data[i]) ^ rotation;
 
-                if accumulator & 0x7F == 0
-                    && !self.append_chunk(data, &mut offset, i + 32)
-                {
+                if accumulator & 0x7F == 0 && !self.append_chunk(data, &mut offset, i + 32) {
                     return 0;
                 }
 
@@ -537,11 +508,7 @@ impl XCrushContext {
     /// Returns `(compressed_size, l1_flags)`.
     ///
     /// Ported from FreeRDP's `xcrush_compress_l1`.
-    pub(crate) fn compress_l1(
-        &mut self,
-        src_data: &[u8],
-        dst_data: &mut [u8],
-    ) -> Result<(usize, u32), BulkError> {
+    pub(crate) fn compress_l1(&mut self, src_data: &[u8], dst_data: &mut [u8]) -> Result<(usize, u32), BulkError> {
         let src_size = src_data.len();
         let mut l1_flags: u32 = 0;
 
@@ -554,16 +521,14 @@ impl XCrushContext {
         let history_offset = self.history_offset;
 
         // Copy source data into the history buffer
-        self.history_buffer[history_offset..history_offset + src_size]
-            .copy_from_slice(src_data);
+        self.history_buffer[history_offset..history_offset + src_size].copy_from_slice(src_data);
         self.history_offset += src_size;
 
         if src_size > 50 {
             let sig_index = self.compute_signatures(src_data);
 
             if sig_index > 0 {
-                let match_count =
-                    self.find_all_matches(sig_index, history_offset, src_size)?;
+                let match_count = self.find_all_matches(sig_index, history_offset, src_size)?;
 
                 self.original_match_count = match_count;
                 self.optimized_match_count = 0;
@@ -573,8 +538,7 @@ impl XCrushContext {
                 }
 
                 if self.optimized_match_count > 0 {
-                    let compressed_size =
-                        self.generate_output(dst_data, history_offset)?;
+                    let compressed_size = self.generate_output(dst_data, history_offset)?;
 
                     l1_flags |= flags::L1_COMPRESSED;
                     return Ok((compressed_size, l1_flags));
@@ -602,17 +566,11 @@ impl XCrushContext {
     /// the caller should use the original data.
     ///
     /// Ported from FreeRDP's `xcrush_compress`.
-    pub(crate) fn compress(
-        &mut self,
-        src_data: &[u8],
-        output_buffer: &mut [u8],
-    ) -> Result<(usize, u32), BulkError> {
+    pub(crate) fn compress(&mut self, src_data: &[u8], output_buffer: &mut [u8]) -> Result<(usize, u32), BulkError> {
         let src_size = src_data.len();
 
         if src_size > BLOCK_BUFFER_SIZE {
-            return Err(BulkError::InvalidCompressedData(
-                "XCRUSH: input exceeds 16KB limit",
-            ));
+            return Err(BulkError::InvalidCompressedData("XCRUSH: input exceeds 16KB limit"));
         }
 
         if src_size + 2 > output_buffer.len() {
@@ -625,8 +583,7 @@ impl XCrushContext {
         // L1 compression into a temporary buffer (cannot borrow block_buffer
         // while also mutably borrowing self for compress_l1)
         let mut l1_buffer = vec![0u8; BLOCK_BUFFER_SIZE];
-        let (compressed_data_size, l1_flags) =
-            self.compress_l1(src_data, &mut l1_buffer)?;
+        let (compressed_data_size, l1_flags) = self.compress_l1(src_data, &mut l1_buffer)?;
 
         // Determine the L1-compressed (or original) data for L2 input
         let l1_output: Vec<u8> = if l1_flags & flags::L1_COMPRESSED != 0 {
@@ -693,10 +650,9 @@ impl XCrushContext {
         // Write L1/L2 flag header
         // L1 flags fit in a single byte (max value 0x17 = all flags set)
         let final_l1_flags = l1_flags | flags::L1_INNER_COMPRESSION;
-        output_buffer[0] = u8::try_from(final_l1_flags & 0xFF)
-            .expect("L1 flags fit in u8");
-        output_buffer[1] = u8::try_from(level2_compr_flags & 0xFF)
-            .expect("L2 flags fit in u8");
+        // Mask with 0xFF guarantees the value fits in u8, so try_from is infallible.
+        output_buffer[0] = u8::try_from(final_l1_flags & 0xFF).unwrap_or_else(|_| unreachable!());
+        output_buffer[1] = u8::try_from(level2_compr_flags & 0xFF).unwrap_or_else(|_| unreachable!());
 
         let total_size = dst_size + 2;
 
@@ -740,12 +696,13 @@ impl XCrushContext {
     /// there is no next chunk or the chain is invalid.
     ///
     /// Ported from FreeRDP's `xcrush_find_next_matching_chunk`.
-    #[expect(clippy::as_conversions, reason = "u32 chunk indices widen to usize for array indexing")]
+    #[expect(
+        clippy::as_conversions,
+        reason = "u32 chunk indices widen to usize for array indexing"
+    )]
     fn find_next_matching_chunk(&self, chunk_index: u32) -> Result<Option<u32>, BulkError> {
         if chunk_index as usize >= MAX_CHUNKS {
-            return Err(BulkError::InvalidCompressedData(
-                "XCRUSH: chunk index out of range",
-            ));
+            return Err(BulkError::InvalidCompressedData("XCRUSH: chunk index out of range"));
         }
 
         let chunk = &self.chunks[chunk_index as usize];
@@ -776,11 +733,7 @@ impl XCrushContext {
         clippy::cast_possible_truncation,
         reason = "chunk indices bounded to < 65534, fit in u16; offsets bounded by 2MB history"
     )]
-    fn insert_chunk(
-        &mut self,
-        signature: &XCrushSignature,
-        offset: u32,
-    ) -> Result<Option<u32>, BulkError> {
+    fn insert_chunk(&mut self, signature: &XCrushSignature, offset: u32) -> Result<Option<u32>, BulkError> {
         if self.chunk_head >= 65530 {
             self.chunk_head = 1;
             self.chunk_tail = 1;
@@ -795,9 +748,7 @@ impl XCrushContext {
         self.chunk_head += 1;
 
         if self.chunk_head as usize >= MAX_CHUNKS {
-            return Err(BulkError::InvalidCompressedData(
-                "XCRUSH: chunk head overflow",
-            ));
+            return Err(BulkError::InvalidCompressedData("XCRUSH: chunk head overflow"));
         }
 
         self.chunks[index as usize].offset = offset;
@@ -854,17 +805,14 @@ impl XCrushContext {
             ));
         }
         if match_offset == chunk_offset {
-            return Err(BulkError::InvalidCompressedData(
-                "XCRUSH: match_offset == chunk_offset",
-            ));
+            return Err(BulkError::InvalidCompressedData("XCRUSH: match_offset == chunk_offset"));
         }
 
         let buf = &*self.history_buffer;
 
         // Quick-reject heuristic: if byte at max_match_length+1 doesn't match, skip
         if match_offset + max_match_length + 1 < buf_end
-            && buf[match_offset + max_match_length + 1]
-                != buf[chunk_offset + max_match_length + 1]
+            && buf[match_offset + max_match_length + 1] != buf[chunk_offset + max_match_length + 1]
         {
             return Ok(None);
         }
@@ -940,9 +888,7 @@ impl XCrushContext {
         for i in 0..signature_index {
             let sig_size = self.signatures[i].size;
             if sig_size == 0 {
-                return Err(BulkError::InvalidCompressedData(
-                    "XCRUSH: signature size is zero",
-                ));
+                return Err(BulkError::InvalidCompressedData("XCRUSH: signature size is zero"));
             }
 
             let offset = (src_offset + history_offset) as u32;
@@ -999,9 +945,7 @@ impl XCrushContext {
                         self.original_matches[j] = best;
 
                         if (self.original_matches[j].match_offset as usize) < history_offset {
-                            return Err(BulkError::InvalidCompressedData(
-                                "XCRUSH: match offset before history",
-                            ));
+                            return Err(BulkError::InvalidCompressedData("XCRUSH: match offset before history"));
                         }
 
                         prev_match_end = self.original_matches[j].match_length as usize
@@ -1009,9 +953,7 @@ impl XCrushContext {
                         j += 1;
 
                         if j >= MAX_MATCH_COUNT {
-                            return Err(BulkError::InvalidCompressedData(
-                                "XCRUSH: too many matches",
-                            ));
+                            return Err(BulkError::InvalidCompressedData("XCRUSH: too many matches"));
                         }
                     }
                 }
@@ -1019,9 +961,7 @@ impl XCrushContext {
 
             src_offset += usize::from(sig_size);
             if src_offset > src_size {
-                return Err(BulkError::InvalidCompressedData(
-                    "XCRUSH: src_offset exceeds src_size",
-                ));
+                return Err(BulkError::InvalidCompressedData("XCRUSH: src_offset exceeds src_size"));
             }
         }
 
@@ -1054,9 +994,7 @@ impl XCrushContext {
 
             if orig.match_offset <= prev_match_end {
                 // Overlapping: only include if the extension is large enough
-                if orig.match_offset < prev_match_end
-                    && orig.match_length + orig.match_offset > prev_match_end + 6
-                {
+                if orig.match_offset < prev_match_end && orig.match_length + orig.match_offset > prev_match_end + 6 {
                     let match_diff = prev_match_end - orig.match_offset;
 
                     if orig.match_length <= match_diff {
@@ -1065,9 +1003,7 @@ impl XCrushContext {
                         ));
                     }
                     if match_diff >= 20000 {
-                        return Err(BulkError::InvalidCompressedData(
-                            "XCRUSH: match diff too large",
-                        ));
+                        return Err(BulkError::InvalidCompressedData("XCRUSH: match diff too large"));
                     }
 
                     self.optimized_matches[j] = XCrushMatchInfo {
@@ -1076,8 +1012,7 @@ impl XCrushContext {
                         match_length: orig.match_length - match_diff,
                     };
 
-                    prev_match_end = self.optimized_matches[j].match_length
-                        + self.optimized_matches[j].match_offset;
+                    prev_match_end = self.optimized_matches[j].match_length + self.optimized_matches[j].match_offset;
                     total_match_length += self.optimized_matches[j].match_length as usize;
                     j += 1;
                 }
@@ -1108,11 +1043,7 @@ impl XCrushContext {
         reason = "match count fits u16 (< MAX_MATCH_COUNT=1000); \
                   match_offset-history_offset fits u16; u32 match fields widen to usize"
     )]
-    fn generate_output(
-        &self,
-        output_buffer: &mut [u8],
-        history_offset: usize,
-    ) -> Result<usize, BulkError> {
+    fn generate_output(&self, output_buffer: &mut [u8], history_offset: usize) -> Result<usize, BulkError> {
         let match_count = self.optimized_match_count;
         let output_size = output_buffer.len();
 
@@ -1145,9 +1076,8 @@ impl XCrushContext {
             let match_length = m.match_length as u16;
             let match_output_offset = (m.match_offset as usize)
                 .checked_sub(history_offset)
-                .ok_or(BulkError::InvalidCompressedData(
-                    "XCRUSH: match offset before history",
-                ))? as u16;
+                .ok_or(BulkError::InvalidCompressedData("XCRUSH: match offset before history"))?
+                as u16;
             let match_history_offset = m.chunk_offset;
 
             output_buffer[d..d + 2].copy_from_slice(&match_length.to_le_bytes());
@@ -1336,16 +1266,14 @@ mod tests {
         // - Literals: "Hello" (placed at output offset 0-4)
         let mut packet = Vec::new();
         packet.extend_from_slice(&1u16.to_le_bytes()); // 1 match
-        // Match detail: MatchLength=4, MatchOutputOffset=5, MatchHistoryOffset=2
+                                                       // Match detail: MatchLength=4, MatchOutputOffset=5, MatchHistoryOffset=2
         packet.extend_from_slice(&4u16.to_le_bytes());
         packet.extend_from_slice(&5u16.to_le_bytes());
         packet.extend_from_slice(&2u32.to_le_bytes());
         // Literals: "Hello" (5 bytes before the match)
         packet.extend_from_slice(b"Hello");
 
-        let result = ctx
-            .decompress_l1(&packet, flags::L1_COMPRESSED)
-            .unwrap();
+        let result = ctx.decompress_l1(&packet, flags::L1_COMPRESSED).unwrap();
 
         // Expected output: "Hello" + "CDEF" = "HelloCDEF"
         assert_eq!(result, b"HelloCDEF");
@@ -1426,7 +1354,7 @@ mod tests {
         let data = [0xAA; 64];
         let h_small = XCrushContext::update_hash(&data, 32);
         let h_large = XCrushContext::update_hash(&data, 33); // > 32: seed 5413, only hashes first 32
-        // Different seeds should (very likely) produce different results
+                                                             // Different seeds should (very likely) produce different results
         assert_ne!(h_small, h_large);
     }
 

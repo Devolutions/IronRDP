@@ -617,8 +617,7 @@ pub(super) const TEST_RDP5_UNCOMPRESSED_DATA: &[u8] = &[
 ///
 /// Note: the original FreeRDP test data concatenates "were, as" and "well as"
 /// without a space (matching the exact C string literal concatenation).
-pub(super) const TEST_ISLAND_DATA: &[u8] =
-    b"No man is an island entire of itself; every man \
+pub(super) const TEST_ISLAND_DATA: &[u8] = b"No man is an island entire of itself; every man \
 is a piece of the continent, a part of the main; \
 if a clod be washed away by the sea, Europe \
 is the less, as well as if a promontory were, as\

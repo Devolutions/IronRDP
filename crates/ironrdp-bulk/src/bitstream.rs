@@ -541,8 +541,7 @@ mod tests {
     #[test]
     fn roundtrip_multiple_values() {
         let mut buf = [0u8; 16];
-        let (byte_len, total_bits) =
-            write_and_flush(&mut buf, &[(0b110, 3), (0xFF, 8), (0b10101, 5), (0xCAFE, 16)]);
+        let (byte_len, total_bits) = write_and_flush(&mut buf, &[(0b110, 3), (0xFF, 8), (0b10101, 5), (0xCAFE, 16)]);
 
         let mut reader = BitStreamReader::new(&buf[..byte_len]);
         assert_eq!(reader.read_bits(3), 0b110);
@@ -555,8 +554,7 @@ mod tests {
     #[test]
     fn roundtrip_across_boundary() {
         let mut buf = [0u8; 16];
-        let (byte_len, _) =
-            write_and_flush(&mut buf, &[(0x1234, 16), (0x5678, 16), (0x9ABC, 16), (0xDEF0, 16)]);
+        let (byte_len, _) = write_and_flush(&mut buf, &[(0x1234, 16), (0x5678, 16), (0x9ABC, 16), (0xDEF0, 16)]);
 
         let mut reader = BitStreamReader::new(&buf[..byte_len]);
         assert_eq!(reader.read_bits(16), 0x1234);

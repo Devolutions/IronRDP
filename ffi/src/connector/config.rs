@@ -213,6 +213,7 @@ pub mod ffi {
                 autologon: self.autologon.unwrap_or(false),
                 enable_audio_playback: self.no_audio_playback.unwrap_or(true),
                 request_data: None,
+                compression_type: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
                 desktop_scale_factor: 0,
