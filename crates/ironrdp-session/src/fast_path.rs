@@ -71,7 +71,26 @@ impl Processor {
         let header = decode_cursor::<FastPathHeader>(&mut input).map_err(SessionError::decode)?;
         trace!(fast_path_header = ?header, "Received Fast-Path packet");
 
-        let update_pdu = decode_cursor::<FastPathUpdatePdu<'_>>(&mut input).map_err(SessionError::decode)?;
+        // A single FastPath output PDU can contain multiple updates.
+        // Loop over all updates within the PDU payload.
+        while !input.is_empty() {
+            let update_result = self.process_single_update(&mut input, image, output)?;
+            processor_updates.extend(update_result);
+        }
+
+        Ok(processor_updates)
+    }
+
+    /// Process a single FastPath update from the cursor, advancing past it.
+    fn process_single_update(
+        &mut self,
+        input: &mut ReadCursor<'_>,
+        image: &mut DecodedImage,
+        output: &mut WriteBuf,
+    ) -> SessionResult<Vec<UpdateKind>> {
+        let mut processor_updates = Vec::new();
+
+        let update_pdu = decode_cursor::<FastPathUpdatePdu<'_>>(input).map_err(SessionError::decode)?;
         trace!(fast_path_update_fragmentation = ?update_pdu.fragmentation);
 
         // Decompress the payload if the server sent it compressed.
@@ -116,7 +135,7 @@ impl Processor {
         let update_code = update_pdu.update_code;
 
         let Some(data) = processed_complete_data else {
-            return Ok(Vec::new());
+            return Ok(processor_updates);
         };
 
         let update = FastPathUpdate::decode_with_code(data.as_slice(), update_code);
