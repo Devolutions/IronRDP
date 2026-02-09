@@ -1,0 +1,31 @@
+[package]
+name = "ironrdp-bulk"
+version = "0.1.0"
+description = "Bulk compression algorithms (MPPC, XCRUSH, NCRUSH) for IronRDP"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+default = ["std"]
+std = ["alloc"]
+alloc = []
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "bulk_compression"
+harness = false
+
+[lints]
+workspace = true

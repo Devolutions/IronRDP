@@ -20,7 +20,7 @@ use std::sync::Arc;
 use ironrdp_core::{encode_buf, encode_vec, Encode, WriteBuf};
 use ironrdp_pdu::nego::NegoRequestData;
 use ironrdp_pdu::rdp::capability_sets::{self, BitmapCodecs};
-use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp_pdu::rdp::client_info::{self, PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{gcc, x224, PduHint};
 pub use sspi;
@@ -231,6 +231,20 @@ pub struct Config {
 
     // For Timezone Redirection to sync the server's timezone with the client's.
     pub timezone_info: TimezoneInfo,
+
+    /// Bulk compression type to negotiate with the server.
+    ///
+    /// When set, the `INFO_COMPRESSION` flag is included in the Client Info PDU
+    /// and the specified compression type is advertised. The server may then
+    /// send compressed PDUs (FastPath or Share Data) using any compression
+    /// algorithm up to and including this level.
+    ///
+    /// - `None` — no compression (default)
+    /// - `Some(K8)` — MPPC with 8 KB history (RDP 4.0)
+    /// - `Some(K64)` — MPPC with 64 KB history (RDP 5.0)
+    /// - `Some(Rdp6)` — NCRUSH (RDP 6.0)
+    /// - `Some(Rdp61)` — XCRUSH (RDP 6.1)
+    pub compression_type: Option<client_info::CompressionType>,
 
     // FIXME(@CBenoit): these are client-only options, not part of the connector.
     pub enable_server_pointer: bool,

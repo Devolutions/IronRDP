@@ -750,6 +750,7 @@ impl iron_remote_desktop::Session for Session {
                                         user_channel_id,
                                         enable_server_pointer,
                                         pointer_software_rendering,
+                                        bulk_decompressor: None,
                                     }
                                     .build(),
                                 );
@@ -899,6 +900,7 @@ fn build_config(
         // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
+        compression_type: None,
         enable_server_pointer: false,
         autologon: false,
         enable_audio_playback: false,

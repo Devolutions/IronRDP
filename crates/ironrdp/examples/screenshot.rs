@@ -30,7 +30,7 @@ use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
-use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp_pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
 use tracing::{debug, info, trace};
@@ -40,6 +40,7 @@ USAGE:
   cargo run --example=screenshot -- --host <HOSTNAME> --port <PORT>
                                     -u/--username <USERNAME> -p/--password <PASSWORD>
                                     [-o/--output <OUTPUT_FILE>] [-d/--domain <DOMAIN>]
+                                    [--compression-enabled <true|false>] [--compression-level <0..3>]
 ";
 
 fn main() -> anyhow::Result<()> {
@@ -65,11 +66,43 @@ fn main() -> anyhow::Result<()> {
             password,
             output,
             domain,
+            compression_enabled,
+            compression_level,
         } => {
-            info!(host, port, username, password, output = %output.display(), domain, "run");
-            run(host, port, username, password, output, domain)
+            info!(
+                host,
+                port,
+                username,
+                output = %output.display(),
+                domain,
+                compression_enabled,
+                compression_level,
+                "run"
+            );
+            run(RunConfig {
+                host,
+                port,
+                username,
+                password,
+                output,
+                domain,
+                compression_enabled,
+                compression_level,
+            })
         }
     }
+}
+
+#[derive(Debug)]
+struct RunConfig {
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    output: PathBuf,
+    domain: Option<String>,
+    compression_enabled: bool,
+    compression_level: u32,
 }
 
 #[derive(Debug)]
@@ -82,6 +115,8 @@ enum Action {
         password: String,
         output: PathBuf,
         domain: Option<String>,
+        compression_enabled: bool,
+        compression_level: u32,
     },
 }
 
@@ -99,6 +134,12 @@ fn parse_args() -> anyhow::Result<Action> {
             .opt_value_from_str(["-o", "--output"])?
             .unwrap_or_else(|| PathBuf::from("out.png"));
         let domain = args.opt_value_from_str(["-d", "--domain"])?;
+        let compression_enabled = args.opt_value_from_str("--compression-enabled")?.unwrap_or(true);
+        let compression_level = args.opt_value_from_str("--compression-level")?.unwrap_or(3);
+
+        if compression_level > 3 {
+            anyhow::bail!("Invalid compression level. Valid values are 0, 1, 2, 3.");
+        }
 
         Action::Run {
             host,
@@ -107,6 +148,8 @@ fn parse_args() -> anyhow::Result<Action> {
             password,
             output,
             domain,
+            compression_enabled,
+            compression_level,
         }
     };
 
@@ -134,17 +177,17 @@ fn setup_logging() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run(
-    server_name: String,
-    port: u16,
-    username: String,
-    password: String,
-    output: PathBuf,
-    domain: Option<String>,
-) -> anyhow::Result<()> {
-    let config = build_config(username, password, domain);
+fn run(config: RunConfig) -> anyhow::Result<()> {
+    let connector_config = build_config(
+        config.username,
+        config.password,
+        config.domain,
+        config.compression_enabled,
+        config.compression_level,
+    )?;
 
-    let (connection_result, framed) = connect(config, server_name, port).context("connect")?;
+    let (connection_result, framed) = connect(connector_config, config.host, config.port).context("connect")?;
+    info!(compression_type = ?connection_result.compression_type, "Negotiated compression");
 
     let mut image = DecodedImage::new(
         ironrdp_graphics::image_processing::PixelFormat::RgbA32,
@@ -158,13 +201,25 @@ fn run(
         image::ImageBuffer::from_raw(u32::from(image.width()), u32::from(image.height()), image.data())
             .context("invalid image")?;
 
-    img.save(output).context("save image to disk")?;
+    img.save(config.output).context("save image to disk")?;
 
     Ok(())
 }
 
-fn build_config(username: String, password: String, domain: Option<String>) -> connector::Config {
-    connector::Config {
+fn build_config(
+    username: String,
+    password: String,
+    domain: Option<String>,
+    compression_enabled: bool,
+    compression_level: u32,
+) -> anyhow::Result<connector::Config> {
+    let compression_type = if compression_enabled {
+        Some(compression_type_from_level(compression_level)?)
+    } else {
+        None
+    };
+
+    Ok(connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
         enable_tls: false, // This example does not expose any frontend.
@@ -207,12 +262,23 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         request_data: None,
         autologon: false,
         enable_audio_playback: false,
+        compression_type,
         pointer_software_rendering: true,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
+    })
+}
+
+fn compression_type_from_level(level: u32) -> anyhow::Result<CompressionType> {
+    match level {
+        0 => Ok(CompressionType::K8),
+        1 => Ok(CompressionType::K64),
+        2 => Ok(CompressionType::Rdp6),
+        3 => Ok(CompressionType::Rdp61),
+        _ => anyhow::bail!("Invalid compression level. Valid values are 0, 1, 2, 3."),
     }
 }
 

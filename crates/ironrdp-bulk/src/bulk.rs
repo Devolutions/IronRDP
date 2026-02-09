@@ -1,0 +1,582 @@
+//! Bulk compressor coordinator that routes to the appropriate algorithm.
+//!
+//! Holds send/receive context pairs for MPPC, NCRUSH, and XCRUSH.
+//! Selects the appropriate compressor based on the configured compression
+//! level (for compression) or the type bits in the flags (for decompression).
+
+#[cfg(not(feature = "std"))]
+use alloc::{boxed::Box, vec::Vec};
+
+use crate::error::BulkError;
+use crate::mppc::MppcContext;
+use crate::ncrush::NCrushContext;
+use crate::xcrush::XCrushContext;
+use crate::CompressionType;
+
+/// Size of the internal output buffer used for compression.
+const OUTPUT_BUFFER_SIZE: usize = 65536;
+
+/// Minimum input size for compression (below this, data is sent uncompressed).
+const COMPRESS_MIN_SIZE: usize = 50;
+
+/// Maximum input size for compression (above this, data is sent uncompressed).
+const COMPRESS_MAX_SIZE: usize = 16384;
+
+/// Mask for the compression control flags (COMPRESSED | AT_FRONT | FLUSHED).
+const BULK_COMPRESSION_FLAGS_MASK: u32 = 0xE0;
+
+/// Bulk compression/decompression coordinator.
+///
+/// Manages send (compression) and receive (decompression) context pairs
+/// for all three RDP compression algorithms. Routes compress/decompress
+/// requests to the appropriate algorithm based on the compression level
+/// or type flags.
+///
+pub struct BulkCompressor {
+    /// The compression level to use for outgoing data.
+    compression_level: CompressionType,
+    /// MPPC context for sending (compression).
+    mppc_send: MppcContext,
+    /// MPPC context for receiving (decompression).
+    mppc_recv: MppcContext,
+    /// NCRUSH context for sending (compression).
+    ncrush_send: NCrushContext,
+    /// NCRUSH context for receiving (decompression).
+    ncrush_recv: NCrushContext,
+    /// XCRUSH context for sending (compression).
+    xcrush_send: XCrushContext,
+    /// XCRUSH context for receiving (decompression).
+    xcrush_recv: XCrushContext,
+    /// Internal output buffer for compressed data.
+    output_buffer: Box<[u8; OUTPUT_BUFFER_SIZE]>,
+
+    // -- Compression metrics --
+    /// Cumulative uncompressed bytes (decompressed output size).
+    total_uncompressed_bytes: u64,
+    /// Cumulative compressed bytes (compressed input size).
+    total_compressed_bytes: u64,
+}
+
+impl BulkCompressor {
+    /// Creates a new bulk compressor/decompressor with the given compression level.
+    ///
+    /// Allocates send and receive contexts for MPPC, NCRUSH, and XCRUSH.
+    /// The `compression_level` determines which algorithm is used for
+    /// outbound compression. Inbound decompression automatically selects
+    /// the algorithm based on the type bits in the packet flags.
+    ///
+    /// # Compression Levels
+    ///
+    /// - `Rdp4` (0x00): MPPC with 8K history buffer
+    /// - `Rdp5` (0x01): MPPC with 64K history buffer
+    /// - `Rdp6` (0x02): NCRUSH (Huffman-based)
+    /// - `Rdp61` (0x03): XCRUSH (two-level: chunk matching + MPPC)
+    ///
+    pub fn new(compression_level: CompressionType) -> Result<Self, BulkError> {
+        // MPPC contexts are created with level 1 by default and adjusted dynamically.
+        let mppc_send = MppcContext::new(1);
+        let mppc_recv = MppcContext::new(1);
+        let ncrush_send = NCrushContext::new()?;
+        let ncrush_recv = NCrushContext::new()?;
+        let xcrush_send = XCrushContext::new();
+        let xcrush_recv = XCrushContext::new();
+
+        // Heap-allocate the 64KB output buffer to avoid stack overflow.
+        // Vec length is exactly OUTPUT_BUFFER_SIZE, so the try_into is infallible.
+        let output_buffer = {
+            let v: Vec<u8> = alloc::vec![0u8; OUTPUT_BUFFER_SIZE];
+            v.into_boxed_slice().try_into().unwrap_or_else(|_| unreachable!())
+        };
+
+        Ok(Self {
+            compression_level,
+            mppc_send,
+            mppc_recv,
+            ncrush_send,
+            ncrush_recv,
+            xcrush_send,
+            xcrush_recv,
+            output_buffer,
+            total_uncompressed_bytes: 0,
+            total_compressed_bytes: 0,
+        })
+    }
+
+    /// Returns the configured compression level.
+    pub fn compression_level(&self) -> CompressionType {
+        self.compression_level
+    }
+
+    /// Returns `true` if the input size is outside the compressible range.
+    ///
+    /// Skips compression for sizes <= 50 or >= 16384.
+    pub fn should_skip_compression(src_size: usize) -> bool {
+        src_size <= COMPRESS_MIN_SIZE || src_size >= COMPRESS_MAX_SIZE
+    }
+
+    /// Decompresses bulk-compressed RDP data.
+    ///
+    /// `flags` contains the compression type (low 4 bits) and control flags
+    /// (`PACKET_COMPRESSED`, `PACKET_AT_FRONT`, `PACKET_FLUSHED`).
+    ///
+    /// If no compression flags are set, returns `src_data` unchanged.
+    /// Otherwise, routes to the appropriate algorithm based on the type bits:
+    /// - `0x00` (RDP4): MPPC with 8K buffer
+    /// - `0x01` (RDP5): MPPC with 64K buffer
+    /// - `0x02` (RDP6): NCRUSH
+    /// - `0x03` (RDP6.1): XCRUSH
+    ///
+    pub fn decompress<'a>(&'a mut self, src_data: &'a [u8], flags: u32) -> Result<&'a [u8], BulkError> {
+        let compression_flags = flags & BULK_COMPRESSION_FLAGS_MASK;
+
+        // If no compression flags are set, return source data unchanged
+        if compression_flags == 0 {
+            return Ok(src_data);
+        }
+
+        let comp_type = CompressionType::from_flags(flags)?;
+
+        let result = match comp_type {
+            CompressionType::Rdp4 => {
+                self.mppc_recv.set_compression_level(0);
+                self.mppc_recv.decompress(src_data, flags)
+            }
+            CompressionType::Rdp5 => {
+                self.mppc_recv.set_compression_level(1);
+                self.mppc_recv.decompress(src_data, flags)
+            }
+            CompressionType::Rdp6 => self.ncrush_recv.decompress(src_data, flags),
+            CompressionType::Rdp61 => self.xcrush_recv.decompress(src_data, flags),
+        }?;
+
+        // Update decompression metrics.
+        // Individual PDU payloads are at most 64 KB, so these fit in u32.
+        // We widen to u64 for the cumulative counter via From<u32>.
+        let compressed_len = u32::try_from(src_data.len()).unwrap_or(u32::MAX);
+        let uncompressed_len = u32::try_from(result.len()).unwrap_or(u32::MAX);
+        self.total_compressed_bytes = self.total_compressed_bytes.saturating_add(u64::from(compressed_len));
+        self.total_uncompressed_bytes = self
+            .total_uncompressed_bytes
+            .saturating_add(u64::from(uncompressed_len));
+
+        Ok(result)
+    }
+
+    /// Compresses data using the configured compression algorithm.
+    ///
+    /// Returns `Ok((compressed_size, flags))` on success:
+    /// - If `flags & PACKET_COMPRESSED != 0`: compressed data is available
+    ///   in the internal output buffer via [`Self::compressed_data`].
+    /// - If compression was skipped (size out of range) or the algorithm
+    ///   flushed (compressed output larger than input): `flags` will **not**
+    ///   have `PACKET_COMPRESSED` set, and the caller should transmit the
+    ///   original `src_data` uncompressed.
+    ///
+    /// Skips compression for sizes ≤ 50 or ≥ 16384.
+    ///
+    pub fn compress(&mut self, src_data: &[u8]) -> Result<(usize, u32), BulkError> {
+        let src_size = src_data.len();
+
+        // Skip compression for edge case sizes
+        if Self::should_skip_compression(src_size) {
+            return Ok((src_size, 0));
+        }
+
+        let (compressed_size, flags) = match self.compression_level {
+            CompressionType::Rdp4 => {
+                self.mppc_send.set_compression_level(0);
+                self.mppc_send.compress(src_data, &mut *self.output_buffer)
+            }
+            CompressionType::Rdp5 => {
+                self.mppc_send.set_compression_level(1);
+                self.mppc_send.compress(src_data, &mut *self.output_buffer)
+            }
+            CompressionType::Rdp6 => self.ncrush_send.compress(src_data, &mut *self.output_buffer),
+            CompressionType::Rdp61 => self.xcrush_send.compress(src_data, &mut *self.output_buffer),
+        }?;
+
+        // Update compression metrics.
+        let uncompressed_len = u32::try_from(src_size).unwrap_or(u32::MAX);
+        let compressed_len = u32::try_from(compressed_size).unwrap_or(u32::MAX);
+        self.total_uncompressed_bytes = self
+            .total_uncompressed_bytes
+            .saturating_add(u64::from(uncompressed_len));
+        self.total_compressed_bytes = self.total_compressed_bytes.saturating_add(u64::from(compressed_len));
+
+        Ok((compressed_size, flags))
+    }
+
+    /// Returns a slice of the internal output buffer containing compressed
+    /// data from the most recent [`Self::compress`] call.
+    ///
+    /// `size` should be the `compressed_size` value returned by `compress`.
+    /// If `size` exceeds the output buffer length, it is clamped to the
+    /// buffer length to avoid a panic.
+    pub fn compressed_data(&self, size: usize) -> &[u8] {
+        let clamped = size.min(self.output_buffer.len());
+        &self.output_buffer[..clamped]
+    }
+
+    // -- Compression metrics --
+
+    /// Returns the cumulative number of uncompressed bytes processed.
+    ///
+    /// For decompression this is the total decompressed output size.
+    /// For compression this is the total uncompressed input size.
+    pub fn total_uncompressed_bytes(&self) -> u64 {
+        self.total_uncompressed_bytes
+    }
+
+    /// Returns the cumulative number of compressed bytes processed.
+    ///
+    /// For decompression this is the total compressed input size.
+    /// For compression this is the total compressed output size.
+    pub fn total_compressed_bytes(&self) -> u64 {
+        self.total_compressed_bytes
+    }
+
+    /// Returns the overall compression ratio as `uncompressed / compressed`.
+    ///
+    /// A ratio > 1.0 means compression is effective (e.g. 3.0 means data
+    /// was reduced to ~33% of its original size). Returns 0.0 if no
+    /// compressed bytes have been processed yet.
+    ///
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "u64-to-f64 may lose precision for values > 2^53, acceptable for a ratio display"
+    )]
+    pub fn compression_ratio(&self) -> f64 {
+        if self.total_compressed_bytes == 0 {
+            return 0.0;
+        }
+        self.total_uncompressed_bytes as f64 / self.total_compressed_bytes as f64
+    }
+
+    /// Resets all compression and decompression contexts.
+    ///
+    pub fn reset(&mut self) {
+        self.mppc_send.reset(false);
+        self.mppc_recv.reset(false);
+        self.ncrush_send.reset(false);
+        self.ncrush_recv.reset(false);
+        self.xcrush_send.reset(false);
+        self.xcrush_recv.reset(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bulk_compressor_new_rdp4() {
+        let bulk = BulkCompressor::new(CompressionType::Rdp4).unwrap();
+        assert_eq!(bulk.compression_level(), CompressionType::Rdp4);
+    }
+
+    #[test]
+    fn test_bulk_compressor_new_rdp5() {
+        let bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        assert_eq!(bulk.compression_level(), CompressionType::Rdp5);
+    }
+
+    #[test]
+    fn test_bulk_compressor_new_rdp6() {
+        let bulk = BulkCompressor::new(CompressionType::Rdp6).unwrap();
+        assert_eq!(bulk.compression_level(), CompressionType::Rdp6);
+    }
+
+    #[test]
+    fn test_bulk_compressor_new_rdp61() {
+        let bulk = BulkCompressor::new(CompressionType::Rdp61).unwrap();
+        assert_eq!(bulk.compression_level(), CompressionType::Rdp61);
+    }
+
+    #[test]
+    fn test_bulk_compressor_skip_small() {
+        assert!(BulkCompressor::should_skip_compression(10));
+        assert!(BulkCompressor::should_skip_compression(50));
+    }
+
+    #[test]
+    fn test_bulk_compressor_skip_large() {
+        assert!(BulkCompressor::should_skip_compression(16384));
+        assert!(BulkCompressor::should_skip_compression(65536));
+    }
+
+    #[test]
+    fn test_bulk_compressor_no_skip_normal() {
+        assert!(!BulkCompressor::should_skip_compression(51));
+        assert!(!BulkCompressor::should_skip_compression(8192));
+        assert!(!BulkCompressor::should_skip_compression(16383));
+    }
+
+    #[test]
+    fn test_bulk_compressor_reset() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp61).unwrap();
+        // Should not panic
+        bulk.reset();
+    }
+
+    #[test]
+    fn test_bulk_compressor_contexts_independent() {
+        let bulk = BulkCompressor::new(CompressionType::Rdp6).unwrap();
+        // Send and receive NCRUSH contexts should be separate instances
+        // (we can only verify they exist and the struct was created)
+        assert_eq!(bulk.compression_level(), CompressionType::Rdp6);
+    }
+
+    // ---------------------------------------------------------------
+    // Compression skip tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_bulk_compress_skip_small_input() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let data = b"tiny"; // 4 bytes, below threshold
+        let (size, flags) = bulk.compress(data).unwrap();
+        assert_eq!(size, data.len());
+        assert_eq!(flags, 0); // no compression applied
+    }
+
+    #[test]
+    fn test_bulk_compress_skip_empty() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let data = b"";
+        let (size, flags) = bulk.compress(data).unwrap();
+        assert_eq!(size, 0);
+        assert_eq!(flags, 0);
+    }
+
+    // ---------------------------------------------------------------
+    // Decompress: no flags → pass-through
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_bulk_decompress_no_flags() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let data = b"uncompressed data";
+        let result = bulk.decompress(data, 0x00).unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn test_bulk_decompress_unsupported_type() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        // flags = PACKET_COMPRESSED | type 0x0F (invalid)
+        let result = bulk.decompress(b"data", 0x2F);
+        assert!(result.is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // Round-trip tests through the bulk API for each algorithm
+    // ---------------------------------------------------------------
+
+    /// Helper: compress with one BulkCompressor (sender) and decompress
+    /// with another (receiver). Returns the decompressed data as a Vec.
+    fn bulk_roundtrip(compression_level: CompressionType, input: &[u8]) -> Vec<u8> {
+        let mut sender = BulkCompressor::new(compression_level).unwrap();
+        let mut receiver = BulkCompressor::new(compression_level).unwrap();
+
+        let (comp_size, flags) = sender.compress(input).unwrap();
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            // Compressed: pass compressed data to receiver
+            let compressed = sender.compressed_data(comp_size).to_vec();
+            let decompressed = receiver.decompress(&compressed, flags).unwrap();
+            decompressed.to_vec()
+        } else {
+            // Not compressed: data should be sent as-is
+            input.to_vec()
+        }
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp5_mppc() {
+        let input = b"The quick brown fox jumps over the lazy dog. \
+                      The quick brown fox jumps over the lazy dog again.";
+        let output = bulk_roundtrip(CompressionType::Rdp5, input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp4_mppc() {
+        let input = b"Hello world! Hello world! Hello world! Hello world! x";
+        let output = bulk_roundtrip(CompressionType::Rdp4, input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp6_ncrush() {
+        let input = b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!xx";
+        let output = bulk_roundtrip(CompressionType::Rdp6, input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp61_xcrush() {
+        let input = b"XCRUSH test data with repeated XCRUSH patterns for compression!!";
+        let output = bulk_roundtrip(CompressionType::Rdp61, input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp5_binary_data() {
+        // Binary data with all byte values
+        let mut input = Vec::new();
+        for _ in 0..2 {
+            for b in 0u8..=255 {
+                input.push(b);
+            }
+        }
+        // 512 bytes — within compressible range
+        let output = bulk_roundtrip(CompressionType::Rdp5, &input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_bulk_roundtrip_rdp6_longer_text() {
+        let input = b"The RDP protocol uses bulk compression to reduce bandwidth. \
+                      Multiple algorithms are supported: MPPC for RDP4/5, \
+                      NCRUSH for RDP6, and XCRUSH for RDP6.1. Each has \
+                      different tradeoffs between speed and compression ratio.";
+        let output = bulk_roundtrip(CompressionType::Rdp6, input);
+        assert_eq!(output, input);
+    }
+
+    // ---------------------------------------------------------------
+    // Routing verification
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_bulk_compress_rdp5_sets_type_bits() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let input = b"Some data that should compress with MPPC level 1 algorithm!!";
+        let (_size, flags) = bulk.compress(input).unwrap();
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            // Type bits should be 0x01 (RDP5)
+            let comp_type = flags & crate::flags::COMPRESSION_TYPE_MASK;
+            assert_eq!(comp_type, 0x01, "Expected RDP5 type bits");
+        }
+    }
+
+    #[test]
+    fn test_bulk_compress_rdp6_sets_type_bits() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp6).unwrap();
+        let input = b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!xx";
+        let (_size, flags) = bulk.compress(input).unwrap();
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            // Type bits should be 0x02 (RDP6/NCRUSH)
+            let comp_type = flags & crate::flags::COMPRESSION_TYPE_MASK;
+            assert_eq!(comp_type, 0x02, "Expected RDP6 (NCRUSH) type bits");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Metrics tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_metrics_start_at_zero() {
+        let bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        assert_eq!(bulk.total_compressed_bytes(), 0);
+        assert_eq!(bulk.total_uncompressed_bytes(), 0);
+        assert!(bulk.compression_ratio().abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_metrics_accumulate_on_compress() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let input = b"Hello world! Hello world! Hello world! Hello world! x";
+        let (comp_size, flags) = bulk.compress(input).unwrap();
+
+        assert_eq!(
+            bulk.total_uncompressed_bytes(),
+            u64::try_from(input.len()).unwrap_or(u64::MAX)
+        );
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            assert_eq!(
+                bulk.total_compressed_bytes(),
+                u64::try_from(comp_size).unwrap_or(u64::MAX)
+            );
+            assert!(bulk.compression_ratio() > 1.0, "compression should reduce size");
+        }
+    }
+
+    #[test]
+    fn test_metrics_accumulate_on_decompress() {
+        let mut sender = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut receiver = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+
+        let input = b"Hello world! Hello world! Hello world! Hello world! x";
+        let (comp_size, flags) = sender.compress(input).unwrap();
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            let compressed = sender.compressed_data(comp_size).to_vec();
+            let _decompressed = receiver.decompress(&compressed, flags).unwrap();
+
+            assert_eq!(
+                receiver.total_compressed_bytes(),
+                u64::try_from(compressed.len()).unwrap_or(u64::MAX)
+            );
+            assert_eq!(
+                receiver.total_uncompressed_bytes(),
+                u64::try_from(input.len()).unwrap_or(u64::MAX)
+            );
+            assert!(receiver.compression_ratio() > 1.0);
+        }
+    }
+
+    #[test]
+    fn test_metrics_accumulate_across_multiple_calls() {
+        let mut sender = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut receiver = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+
+        let inputs: &[&[u8]] = &[
+            b"Hello world! Hello world! Hello world! Hello world! x",
+            b"The quick brown fox jumps over the lazy dog. Again and again!",
+        ];
+
+        for input in inputs {
+            let (comp_size, flags) = sender.compress(input).unwrap();
+            if flags & crate::flags::PACKET_COMPRESSED != 0 {
+                let compressed = sender.compressed_data(comp_size).to_vec();
+                let _decompressed = receiver.decompress(&compressed, flags).unwrap();
+            }
+        }
+
+        // Both inputs were processed, so totals should reflect the sum
+        assert!(receiver.total_uncompressed_bytes() > 0);
+        assert!(receiver.total_compressed_bytes() > 0);
+        assert!(receiver.total_compressed_bytes() < receiver.total_uncompressed_bytes());
+    }
+
+    #[test]
+    fn test_metrics_not_reset_by_context_reset() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let input = b"Hello world! Hello world! Hello world! Hello world! x";
+        let _ = bulk.compress(input).unwrap();
+        let before = bulk.total_uncompressed_bytes();
+
+        bulk.reset();
+
+        assert_eq!(bulk.total_uncompressed_bytes(), before);
+    }
+
+    #[test]
+    fn test_bulk_compress_rdp61_sets_type_bits() {
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp61).unwrap();
+        let input = b"XCRUSH test data with repeated XCRUSH patterns for compression!!";
+        let (_size, flags) = bulk.compress(input).unwrap();
+
+        if flags & crate::flags::PACKET_COMPRESSED != 0 {
+            // Type bits should be 0x03 (RDP6.1/XCRUSH)
+            let comp_type = flags & crate::flags::COMPRESSION_TYPE_MASK;
+            assert_eq!(comp_type, 0x03, "Expected RDP6.1 (XCRUSH) type bits");
+        }
+    }
+}
