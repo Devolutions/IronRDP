@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use ironrdp_bulk::BulkCompressor;
 use ironrdp_core::{decode_cursor, DecodeErrorKind, ReadCursor, WriteBuf};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
@@ -10,7 +11,7 @@ use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, 
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
 use ironrdp_pdu::rdp::capability_sets::{CodecId, CODEC_ID_NONE, CODEC_ID_REMOTEFX};
-use ironrdp_pdu::rdp::headers::ShareDataPdu;
+use ironrdp_pdu::rdp::headers::{CompressionFlags, ShareDataPdu};
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
 use tracing::{debug, trace, warn};
 
@@ -38,6 +39,9 @@ pub struct Processor {
     mouse_pos_update: Option<(u16, u16)>,
     enable_server_pointer: bool,
     pointer_software_rendering: bool,
+    /// Bulk decompressor for server-to-client compressed PDUs.
+    /// `None` when compression was not negotiated.
+    bulk_decompressor: Option<BulkCompressor>,
     #[cfg(feature = "qoiz")]
     zdctx: zstd_safe::DCtx<'static>,
 }
@@ -67,17 +71,71 @@ impl Processor {
         let header = decode_cursor::<FastPathHeader>(&mut input).map_err(SessionError::decode)?;
         trace!(fast_path_header = ?header, "Received Fast-Path packet");
 
-        let update_pdu = decode_cursor::<FastPathUpdatePdu<'_>>(&mut input).map_err(SessionError::decode)?;
+        // A single FastPath output PDU can contain multiple updates.
+        // Loop over all updates within the PDU payload.
+        while !input.is_empty() {
+            let update_result = self.process_single_update(&mut input, image, output)?;
+            processor_updates.extend(update_result);
+        }
+
+        Ok(processor_updates)
+    }
+
+    /// Process a single FastPath update from the cursor, advancing past it.
+    fn process_single_update(
+        &mut self,
+        input: &mut ReadCursor<'_>,
+        image: &mut DecodedImage,
+        output: &mut WriteBuf,
+    ) -> SessionResult<Vec<UpdateKind>> {
+        let mut processor_updates = Vec::new();
+
+        let update_pdu = decode_cursor::<FastPathUpdatePdu<'_>>(input).map_err(SessionError::decode)?;
         trace!(fast_path_update_fragmentation = ?update_pdu.fragmentation);
 
-        let processed_complete_data = self
-            .complete_data
-            .process_data(update_pdu.data, update_pdu.fragmentation);
+        // Decompress the payload if the server sent it compressed.
+        let decompressed_data;
+        let payload = if let Some(flags) = update_pdu.compression_flags {
+            if flags.contains(CompressionFlags::COMPRESSED) || flags.contains(CompressionFlags::FLUSHED) {
+                let bulk_flags =
+                    u32::from(flags.bits()) | u32::from(update_pdu.compression_type.map_or(0, |ct| ct.as_u8()));
+
+                if let Some(ref mut decompressor) = self.bulk_decompressor {
+                    let decompressed = decompressor
+                        .decompress(update_pdu.data, bulk_flags)
+                        .map_err(|e| reason_err!("FastPath", "bulk decompression failed: {}", e))?;
+                    // Copy decompressed data before accessing metrics (releases the mutable borrow).
+                    decompressed_data = decompressed.to_vec();
+                    debug!(
+                        compressed_size = update_pdu.data.len(),
+                        decompressed_size = decompressed_data.len(),
+                        compression_type = ?update_pdu.compression_type,
+                        compression_ratio = format_args!("{:.2}x", decompressor.compression_ratio()),
+                        total_compressed = decompressor.total_compressed_bytes(),
+                        total_uncompressed = decompressor.total_uncompressed_bytes(),
+                        "Decompressed FastPath update"
+                    );
+                    decompressed_data.as_slice()
+                } else {
+                    warn!("Received compressed FastPath data but no decompressor is configured");
+                    update_pdu.data
+                }
+            } else {
+                // Compression flags present but COMPRESSED bit not set — pass data through.
+                // Still need to inform the decompressor of FLUSHED/AT_FRONT flags even
+                // without compressed payload.
+                update_pdu.data
+            }
+        } else {
+            update_pdu.data
+        };
+
+        let processed_complete_data = self.complete_data.process_data(payload, update_pdu.fragmentation);
 
         let update_code = update_pdu.update_code;
 
         let Some(data) = processed_complete_data else {
-            return Ok(Vec::new());
+            return Ok(processor_updates);
         };
 
         let update = FastPathUpdate::decode_with_code(data.as_slice(), update_code);
@@ -451,6 +509,9 @@ pub struct ProcessorBuilder {
     /// `UpdateKind::PointerBitmap` will not be generated. Remote pointer will be drawn
     /// via software rendering on top of the output image.
     pub pointer_software_rendering: bool,
+    /// Bulk decompressor for server-to-client compressed PDUs.
+    /// `None` when compression was not negotiated.
+    pub bulk_decompressor: Option<BulkCompressor>,
 }
 
 impl ProcessorBuilder {
@@ -465,6 +526,7 @@ impl ProcessorBuilder {
             mouse_pos_update: None,
             enable_server_pointer: self.enable_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
+            bulk_decompressor: self.bulk_decompressor,
             #[cfg(feature = "qoiz")]
             zdctx: zstd_safe::DCtx::default(),
         }

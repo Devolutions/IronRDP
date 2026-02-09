@@ -39,6 +39,14 @@ extend-ignore-re = [
    "cll",
    "CLL",
 
+   # False-positive fix for compression length variable in ironrdp-bulk benchmarks:
+   "\\bclen\\b",
+
+   # False-positive fix for literal test data "BA" in ironrdp-bulk tests:
+   "\\bBA\\b",
+   "\\bba\\b",
+   "hash_ba",
+
    # Commit hashes in CHANGELOG.md files.
    "\\b[0-9a-f]{7,40}\\b",
 ]

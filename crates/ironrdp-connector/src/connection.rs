@@ -27,6 +27,8 @@ pub struct ConnectionResult {
     pub enable_server_pointer: bool,
     pub pointer_software_rendering: bool,
     pub connection_activation: ConnectionActivationSequence,
+    /// The bulk compression type that was negotiated, if any.
+    pub compression_type: Option<rdp::client_info::CompressionType>,
 }
 
 #[derive(Default, Debug)]
@@ -589,6 +591,7 @@ impl Sequence for ClientConnector {
                                 enable_server_pointer,
                                 pointer_software_rendering,
                                 connection_activation,
+                                compression_type: self.config.compression_type,
                             },
                         },
                         _ => return Err(general_err!("invalid state (this is a bug)")),
@@ -766,6 +769,15 @@ fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::Cli
         flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 
+    // Advertise bulk compression support if configured
+    let compression_type = if let Some(ct) = config.compression_type {
+        flags |= ClientInfoFlags::COMPRESSION;
+        info!(compression_type = ?ct, "Advertising bulk compression in Client Info PDU");
+        ct
+    } else {
+        CompressionType::K8 // ignored if ClientInfoFlags::COMPRESSION is not set
+    };
+
     let client_info = ClientInfo {
         credentials: Credentials {
             username: config.credentials.username().unwrap_or("").to_owned(),
@@ -774,7 +786,7 @@ fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::Cli
         },
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags,
-        compression_type: CompressionType::K8, // ignored if ClientInfoFlags::COMPRESSION is not set
+        compression_type,
         alternate_shell: String::new(),
         work_dir: String::new(),
         extra_info: ExtendedClientInfo {

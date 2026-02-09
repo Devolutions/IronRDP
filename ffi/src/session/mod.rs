@@ -173,6 +173,7 @@ pub mod ffi {
                     user_channel_id,
                     enable_server_pointer,
                     pointer_software_rendering,
+                    bulk_decompressor: None,
                 }
                 .build(),
             );

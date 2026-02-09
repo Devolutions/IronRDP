@@ -99,6 +99,7 @@ async fn test_deactivation_reactivation() {
                                     user_channel_id,
                                     enable_server_pointer,
                                     pointer_software_rendering,
+                                    bulk_decompressor: None,
                                 }
                                 .build(),
                             );
@@ -302,6 +303,7 @@ fn default_client_config() -> connector::Config {
         autologon: false,
         enable_audio_playback: true,
         license_cache: None,
+        compression_type: None,
         enable_server_pointer: true,
         pointer_software_rendering: true,
         performance_flags: Default::default(),
