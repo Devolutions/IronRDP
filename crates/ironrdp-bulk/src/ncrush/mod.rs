@@ -610,19 +610,21 @@ impl NCrushContext {
                 // --- No-wrap case: source is within the current buffer ---
                 let src_start = history_ptr - copy_offset_usize;
 
-                // Copy first min(length, offset) bytes.
-                // Byte-by-byte for correct LZ77 overlap semantics.
-                for i in 0..copy_length {
-                    self.history_buffer[history_ptr] = self.history_buffer[src_start + i];
-                    history_ptr += 1;
-                }
+                if length_of_match <= copy_offset_usize {
+                    // Fast path: no overlap — bulk copy.
+                    self.history_buffer
+                        .copy_within(src_start..src_start + copy_length, history_ptr);
+                    history_ptr += copy_length;
+                } else {
+                    // Slow path: LZ77 overlap (length > offset).
+                    // Must copy byte-by-byte: earlier output feeds later input.
+                    for i in 0..copy_length {
+                        self.history_buffer[history_ptr] = self.history_buffer[src_start + i];
+                        history_ptr += 1;
+                    }
 
-                // Handle repeating pattern (LZ77 overlap: length > offset).
-                // After the first copy, the freshly written bytes at
-                // [match_start .. match_start + offset] form the pattern
-                // that repeats cyclically.
-                if length_of_match > copy_offset_usize {
-                    let pattern_start = src_start + copy_offset_usize; // = original history_ptr
+                    // Handle repeating pattern (overlap).
+                    let pattern_start = src_start + copy_offset_usize;
                     let mut idx = 0usize;
                     let mut remaining = length_of_match;
                     while remaining > copy_offset_usize {
@@ -754,6 +756,25 @@ impl NCrushContext {
         let mut i1 = offset1;
         let mut i2 = offset2;
 
+        // Fast path: compare 8 bytes at a time using u64 XOR.
+        while i1 + 8 <= limit && i2 + 8 < buf.len() {
+            let a = u64::from_ne_bytes(buf[i1..i1 + 8].try_into().unwrap_or_else(|_| unreachable!()));
+            let b = u64::from_ne_bytes(buf[i2..i2 + 8].try_into().unwrap_or_else(|_| unreachable!()));
+            if a != b {
+                let xor = a ^ b;
+                let diff_byte = if cfg!(target_endian = "little") {
+                    xor.trailing_zeros() / 8
+                } else {
+                    xor.leading_zeros() / 8
+                } as usize;
+                i1 += diff_byte + 1;
+                return (i1 as i32) - (start as i32) - 1;
+            }
+            i1 += 8;
+            i2 += 8;
+        }
+
+        // Slow path: byte-by-byte for remaining bytes.
         loop {
             if i1 > limit {
                 break;

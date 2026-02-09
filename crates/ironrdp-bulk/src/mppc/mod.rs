@@ -282,12 +282,22 @@ impl MppcContext {
                 return Err(BulkError::HistoryBufferOverflow);
             }
 
-            // Copy from history buffer at (current - copy_offset) with wrapping
-            let mut src_index = (history_ptr.wrapping_sub(copy_offset)) & history_mask;
-            for _ in 0..length_of_match {
-                self.history_buffer[history_ptr] = self.history_buffer[src_index];
-                history_ptr += 1;
-                src_index = (src_index + 1) & history_mask;
+            // Copy from history buffer at (current - copy_offset) with wrapping.
+            let src_start = (history_ptr.wrapping_sub(copy_offset)) & history_mask;
+
+            if copy_offset >= length_of_match && src_start + length_of_match <= history_buffer_size {
+                // Fast path: no overlap and no wrap-around — bulk copy.
+                self.history_buffer
+                    .copy_within(src_start..src_start + length_of_match, history_ptr);
+                history_ptr += length_of_match;
+            } else {
+                // Slow path: overlapping (LZ77 repeat) or wrapping around the ring buffer.
+                let mut src_index = src_start;
+                for _ in 0..length_of_match {
+                    self.history_buffer[history_ptr] = self.history_buffer[src_index];
+                    history_ptr += 1;
+                    src_index = (src_index + 1) & history_mask;
+                }
             }
         }
 

@@ -309,13 +309,18 @@ impl XCrushContext {
                     return Err(BulkError::InvalidCompressedData("XCRUSH L1: match copy out of bounds"));
                 }
 
-                // Same-buffer copy — must use byte-by-byte left-to-right copy
-                // because matches can overlap (match_length > distance, i.e.
-                // LZ77-style run-length encoding). `copy_within` uses memmove
-                // semantics (right-to-left when dst > src), which would read
-                // from uninitialised history instead of the freshly-written bytes.
-                for i in 0..match_length {
-                    self.history_buffer[history_ptr + i] = self.history_buffer[match_history_offset + i];
+                // Copy match data from history buffer.
+                let distance = history_ptr.saturating_sub(match_history_offset);
+                if distance >= match_length {
+                    // Fast path: no overlap — bulk copy.
+                    self.history_buffer
+                        .copy_within(match_history_offset..match_history_offset + match_length, history_ptr);
+                } else {
+                    // Slow path: overlapping (LZ77-style). Must copy left-to-right
+                    // so earlier output feeds later reads.
+                    for i in 0..match_length {
+                        self.history_buffer[history_ptr + i] = self.history_buffer[match_history_offset + i];
+                    }
                 }
                 output_offset += match_length;
                 history_ptr += match_length;
@@ -817,19 +822,46 @@ impl XCrushContext {
             return Ok(None);
         }
 
-        // Forward matching
+        // Forward matching — compare in 8-byte chunks when possible,
+        // then fall back to byte-by-byte for the tail.
         let mut forward_len: usize = 0;
         let mut fm = match_offset;
         let mut fc = chunk_offset;
+
+        // Fast path: compare 8 bytes at a time using u64 XOR + trailing zeros.
+        while fm + 8 <= buf_end && fc + 8 < buf.len() {
+            let a = u64::from_ne_bytes(buf[fm..fm + 8].try_into().unwrap_or_else(|_| unreachable!()));
+            let b = u64::from_ne_bytes(buf[fc..fc + 8].try_into().unwrap_or_else(|_| unreachable!()));
+            if a != b {
+                // Find the first differing byte using XOR + leading/trailing zeros.
+                let xor = a ^ b;
+                let diff_byte = if cfg!(target_endian = "little") {
+                    xor.trailing_zeros() / 8
+                } else {
+                    xor.leading_zeros() / 8
+                } as usize;
+                forward_len += diff_byte;
+                // Advance fm/fc past the matched portion so the byte-by-byte
+                // fallback loop doesn't double-count these bytes.
+                fm += diff_byte;
+                fc += diff_byte;
+                break;
+            }
+            fm += 8;
+            fc += 8;
+            forward_len += 8;
+        }
+
+        // Slow path: byte-by-byte for remaining bytes.
         loop {
+            if fm > buf_end {
+                break;
+            }
             if buf[fm] != buf[fc] {
                 break;
             }
             fm += 1;
             fc += 1;
-            if fm > buf_end {
-                break;
-            }
             forward_len += 1;
         }
 
