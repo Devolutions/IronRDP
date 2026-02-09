@@ -1,0 +1,34 @@
+[package]
+name = "ironrdp-replay-player"
+version = "0.1.0"
+description = "WebAssembly replay player for recorded RDP sessions"
+publish = false
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+
+# IndexedDB
+idb = "0.6"
+
+# IronRDP - just PDU parsing for now
+ironrdp-pdu = { path = "../ironrdp-pdu" }
+
+# Logging
+tracing = { version = "0.1", features = ["log"] }
+
+[lints]
+workspace = true
