@@ -308,5 +308,7 @@ fn default_client_config() -> connector::Config {
         pointer_software_rendering: true,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
+        alternate_shell: String::new(),
+        work_dir: String::new(),
     }
 }

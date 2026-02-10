@@ -269,6 +269,8 @@ fn build_config(
         hardware_id: None,
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
+        alternate_shell: String::new(),
+        work_dir: String::new(),
     })
 }
 

@@ -209,6 +209,12 @@ pub struct Config {
     pub bitmap: Option<BitmapConfig>,
     pub dig_product_id: String,
     pub client_dir: String,
+    /// Alternate shell to execute on the remote server (e.g., specific application instead of desktop)
+    ///
+    /// Used by CyberArk PSM for privileged session tokens and remote application scenarios.
+    pub alternate_shell: String,
+    /// Working directory for the alternate shell
+    pub work_dir: String,
     pub platform: capability_sets::MajorPlatformType,
     /// Unique identifier for the computer
     ///
