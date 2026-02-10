@@ -32,6 +32,13 @@ pub struct Config {
     /// server, which will be used for proxying DVC messages to/from user-defined DVC logic
     /// implemented as named pipe clients (either in the same process or in a different process).
     pub dvc_pipe_proxies: Vec<DvcProxyInfo>,
+
+    /// Paths to DVC client plugin DLLs to load (Windows only).
+    ///
+    /// Each DLL is loaded via `LoadLibraryW` and its `VirtualChannelGetInstance` export is called
+    /// to obtain DVC plugin COM objects. Example: `C:\Windows\System32\webauthn.dll`.
+    #[cfg(windows)]
+    pub dvc_plugins: Vec<PathBuf>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -325,6 +332,13 @@ struct Args {
     /// `<pipe>` will automatically be prefixed with `\\.\pipe\` on Windows.
     #[clap(long)]
     dvc_proxy: Vec<DvcProxyInfo>,
+    /// Load a DVC client plugin DLL (Windows only).
+    ///
+    /// Path to a DVC plugin DLL that exports VirtualChannelGetInstance.
+    /// Example: C:\Windows\System32\webauthn.dll
+    #[cfg(windows)]
+    #[clap(long)]
+    dvc_plugin: Vec<PathBuf>,
 }
 
 impl Config {
@@ -515,6 +529,8 @@ impl Config {
             clipboard_type,
             rdcleanpath,
             dvc_pipe_proxies: args.dvc_proxy,
+            #[cfg(windows)]
+            dvc_plugins: args.dvc_plugin,
         })
     }
 }

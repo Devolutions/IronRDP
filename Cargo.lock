@@ -2529,6 +2529,7 @@ dependencies = [
  "ironrdp-cfg",
  "ironrdp-cliprdr-native",
  "ironrdp-core",
+ "ironrdp-dvc-com-plugin",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-mstsgu",
  "ironrdp-propertyset",
@@ -2631,6 +2632,19 @@ dependencies = [
  "ironrdp-svc",
  "slab",
  "tracing",
+]
+
+[[package]]
+name = "ironrdp-dvc-com-plugin"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
