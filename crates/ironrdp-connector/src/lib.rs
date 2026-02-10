@@ -249,6 +249,12 @@ pub struct Config {
     // FIXME(@CBenoit): these are client-only options, not part of the connector.
     pub enable_server_pointer: bool,
     pub pointer_software_rendering: bool,
+
+    /// Flags to advertise in the [`MultiTransportChannelData`] GCC block.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.1.3.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/861f2bbb-6ca2-4c5a-8c44-0714fa901e70
+    /// [`MultiTransportChannelData`]: ironrdp_pdu::gcc::MultiTransportChannelData
+    pub multitransport_flags: Option<gcc::MultiTransportFlags>,
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);

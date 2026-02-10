@@ -215,6 +215,7 @@ pub mod ffi {
                 request_data: None,
                 compression_type: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
+                multitransport_flags: None,
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
                 desktop_scale_factor: 0,
                 hardware_id: None,

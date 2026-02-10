@@ -497,6 +497,7 @@ impl Config {
             enable_audio_playback: true,
             request_data: None,
             pointer_software_rendering: false,
+            multitransport_flags: None,
             compression_type,
             performance_flags: PerformanceFlags::default(),
             timezone_info: TimezoneInfo::default(),

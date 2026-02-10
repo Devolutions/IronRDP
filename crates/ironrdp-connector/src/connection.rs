@@ -728,8 +728,9 @@ fn create_gcc_blocks<'a>(
         monitor: None,
         // TODO(#140): support for Client Message Channel Data (https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f50e791c-de03-4b25-b17e-e914c9020bc3)
         message_channel: None,
-        // TODO(#140): support for Some(MultiTransportChannelData { flags: MultiTransportFlags::empty(), })
-        multi_transport_channel: None,
+        multi_transport_channel: config
+            .multitransport_flags
+            .map(|flags| gcc::MultiTransportChannelData { flags }),
         monitor_extended: None,
     })
 }

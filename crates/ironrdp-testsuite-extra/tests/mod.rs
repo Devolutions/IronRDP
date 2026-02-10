@@ -306,6 +306,7 @@ fn default_client_config() -> connector::Config {
         compression_type: None,
         enable_server_pointer: true,
         pointer_software_rendering: true,
+        multitransport_flags: None,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
     }
