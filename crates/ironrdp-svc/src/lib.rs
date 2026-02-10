@@ -98,6 +98,14 @@ impl SvcMessage {
         self.flags |= flags;
         self
     }
+
+    /// Encodes the inner PDU without SVC channel headers.
+    ///
+    /// Returns the raw PDU bytes for transports that handle their own framing
+    /// (e.g. RDPEMT tunnel data for UDP transport).
+    pub fn encode_raw(&self) -> EncodeResult<Vec<u8>> {
+        ironrdp_core::encode_vec(self.pdu.as_ref())
+    }
 }
 
 impl<T> From<T> for SvcMessage
