@@ -89,6 +89,7 @@ url = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation"] }
+ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin" }
 
 [lints]
 workspace = true

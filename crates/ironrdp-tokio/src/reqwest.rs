@@ -61,7 +61,10 @@ impl ReqwestNetworkClient {
             .map_err(|_| general_err!("invalid buffer length: out of range integral type conversion"))?;
 
         let mut buf = vec![0; len + 4];
-        buf[0..4].copy_from_slice(&(len.to_be_bytes()));
+        // Write the length prefix back as a big-endian u32 (matching the wire format).
+        // `len` was originally read as a `u32` so this conversion cannot fail.
+        let len_u32 = u32::try_from(len).map_err(|_| general_err!("KDC TCP response length overflows u32"))?;
+        buf[0..4].copy_from_slice(&len_u32.to_be_bytes());
 
         stream
             .read_exact(&mut buf[4..])

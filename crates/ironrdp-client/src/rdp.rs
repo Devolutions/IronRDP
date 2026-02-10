@@ -6,6 +6,8 @@ use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
+#[cfg(windows)]
+use ironrdp::dvc::DvcProcessor as _;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::graphics::pointer::DecodedPointer;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
@@ -15,6 +17,8 @@ use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDiscon
 use ironrdp::svc::SvcMessage;
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_core::WriteBuf;
+#[cfg(windows)]
+use ironrdp_dvc_com_plugin::load_dvc_plugin;
 use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 use ironrdp_rdpsnd_native::cpal;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
@@ -90,6 +94,11 @@ impl DvcPipeProxyFactory {
 
             Ok(())
         })
+    }
+
+    /// Get a clone of the underlying RDP input event sender.
+    pub fn input_sender(&self) -> mpsc::UnboundedSender<RdpInputEvent> {
+        self.rdp_input_sender.clone()
     }
 }
 
@@ -209,6 +218,36 @@ async fn connect(
         drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
     }
 
+    // Load DVC COM plugins (Windows only)
+    #[cfg(windows)]
+    {
+        let sender = dvc_pipe_proxy_factory.input_sender();
+        for plugin_path in config.dvc_plugins.iter() {
+            info!(dll = %plugin_path.display(), "Loading DVC COM plugin");
+
+            let sender_clone = sender.clone();
+            match load_dvc_plugin(plugin_path, move || {
+                let sender = sender_clone.clone();
+                Box::new(move |channel_id, messages| {
+                    sender
+                        .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                        .map_err(|_error| pdu_other_err!("send COM DVC messages to the event loop"))?;
+                    Ok(())
+                })
+            }) {
+                Ok(channels) => {
+                    for channel in channels {
+                        info!(channel_name = %channel.channel_name(), "Registered COM DVC channel");
+                        drdynvc = drdynvc.with_dynamic_channel(channel);
+                    }
+                }
+                Err(e) => {
+                    error!(dll = %plugin_path.display(), error = %e, "Failed to load DVC COM plugin");
+                }
+            }
+        }
+    }
+
     let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
         .with_static_channel(drdynvc)
         .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
@@ -300,6 +339,36 @@ async fn connect_ws(
         trace!(%channel_name, %pipe_name, "Creating DVC proxy");
 
         drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
+    }
+
+    // Load DVC COM plugins (Windows only)
+    #[cfg(windows)]
+    {
+        let sender = dvc_pipe_proxy_factory.input_sender();
+        for plugin_path in config.dvc_plugins.iter() {
+            info!(dll = %plugin_path.display(), "Loading DVC COM plugin");
+
+            let sender_clone = sender.clone();
+            match load_dvc_plugin(plugin_path, move || {
+                let sender = sender_clone.clone();
+                Box::new(move |channel_id, messages| {
+                    sender
+                        .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                        .map_err(|_error| pdu_other_err!("send COM DVC messages to the event loop"))?;
+                    Ok(())
+                })
+            }) {
+                Ok(channels) => {
+                    for channel in channels {
+                        info!(channel_name = %channel.channel_name(), "Registered COM DVC channel");
+                        drdynvc = drdynvc.with_dynamic_channel(channel);
+                    }
+                }
+                Err(e) => {
+                    error!(dll = %plugin_path.display(), error = %e, "Failed to load DVC COM plugin");
+                }
+            }
+        }
     }
 
     let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
