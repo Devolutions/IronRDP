@@ -1,6 +1,8 @@
 //! ZGFX (RDP8) Bulk Data Compression
 
+mod api;
 mod circular_buffer;
+mod compressor;
 mod control_messages;
 mod wrapper;
 
@@ -9,11 +11,13 @@ pub use wrapper::{wrap_compressed, wrap_uncompressed};
 use std::io::{self, Write as _};
 use std::sync::LazyLock;
 
+pub use api::{compress_and_wrap_egfx, CompressionMode};
 use bitvec::bits;
 use bitvec::field::BitField as _;
 use bitvec::order::Msb0;
 use bitvec::slice::BitSlice;
 use byteorder::WriteBytesExt as _;
+pub use compressor::Compressor;
 
 use self::circular_buffer::FixedCircularBuffer;
 use self::control_messages::{BulkEncodedData, CompressionFlags, SegmentedDataPdu};
