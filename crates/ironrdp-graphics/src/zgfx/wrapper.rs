@@ -1,13 +1,13 @@
-//! ZGFX Uncompressed Wrapper
+//! ZGFX Segment Wrapper
 //!
-//! Provides utilities to wrap data in ZGFX segment structure without actual compression.
-//! This is spec-compliant per MS-RDPEGFX specification and allows clients to process
-//! EGFX PDUs that aren't compressed.
+//! Provides utilities to wrap data in ZGFX segment structure for transmission over
+//! DVC channels. Supports both uncompressed wrapping (data sent as-is) and compressed
+//! wrapping (data already ZGFX-compressed by [`super::Compressor`]).
 //!
 //! # Specification
 //!
-//! According to MS-RDPEGFX section 2.2.1.1, ZGFX segments can be sent uncompressed by
-//! setting the compression type to RDP8 (0x04) and NOT setting the COMPRESSED flag (0x02).
+//! Per MS-RDPEGFX section 2.2.1.1, ZGFX segments use RDP8 (0x04) compression type.
+//! The COMPRESSED flag (0x02) distinguishes raw from compressed payloads.
 //!
 //! ## Single Segment Format
 //!
@@ -81,25 +81,28 @@ pub fn wrap_uncompressed(data: &[u8]) -> Vec<u8> {
     }
 }
 
-/// Wrap already-compressed data in ZGFX segment structure
+/// Wrap already-compressed data in a single ZGFX segment
 ///
-/// This creates a ZGFX packet for data that has already been ZGFX-compressed.
-/// The COMPRESSED flag (0x02) IS set, indicating to the client to decompress
-/// the data using the ZGFX algorithm.
+/// The COMPRESSED flag is set, telling the client to decompress using ZGFX.
 ///
-/// # Arguments
+/// Only single-segment wrapping is supported for compressed data because a ZGFX
+/// compressed bitstream cannot be split at arbitrary byte boundaries — each segment
+/// must be an independently decodable stream. If multi-segment compressed output is
+/// needed, the compressor must emit pre-segmented output.
 ///
-/// * `compressed_data` - ZGFX-compressed data (from Compressor::compress())
+/// # Panics
 ///
-/// # Returns
-///
-/// ZGFX segment-wrapped compressed data ready for transmission
+/// Panics if `compressed_data` exceeds [`ZGFX_SEGMENTED_MAXSIZE`] (65535 bytes).
 pub fn wrap_compressed(compressed_data: &[u8]) -> Vec<u8> {
-    if compressed_data.len() <= ZGFX_SEGMENTED_MAXSIZE {
-        wrap_single_segment(compressed_data, true)
-    } else {
-        wrap_multipart_segments(compressed_data, true)
-    }
+    assert!(
+        compressed_data.len() <= ZGFX_SEGMENTED_MAXSIZE,
+        "compressed data ({} bytes) exceeds single-segment limit ({}); \
+         the compressor must emit pre-segmented output for larger payloads",
+        compressed_data.len(),
+        ZGFX_SEGMENTED_MAXSIZE,
+    );
+
+    wrap_single_segment(compressed_data, true)
 }
 
 /// Wrap data in a single ZGFX segment
@@ -136,28 +139,23 @@ fn wrap_single_segment(data: &[u8], compressed: bool) -> Vec<u8> {
 /// * `data` - Data to wrap
 /// * `compressed` - Whether the data is already ZGFX-compressed
 fn wrap_multipart_segments(data: &[u8], compressed: bool) -> Vec<u8> {
-    let segments: Vec<&[u8]> = data.chunks(ZGFX_SEGMENTED_MAXSIZE).collect();
-    let segment_count = segments.len();
+    let segment_count = data.len().div_ceil(ZGFX_SEGMENTED_MAXSIZE);
 
-    // Estimate size: descriptor(1) + count(2) + uncompressed_size(4) +
-    //                segments * (size(4) + flags(1)) + data
+    // Header: descriptor(1) + count(2) + uncompressed_size(4)
+    // Per segment: size(4) + flags(1) + data
     let mut output = Vec::with_capacity(data.len() + 7 + segment_count * 5);
 
-    // Descriptor
     output.push(ZGFX_SEGMENTED_MULTIPART);
 
-    // Segment count (LE u16) - bounded by ZGFX_SEGMENTED_MAXSIZE chunking
     output
         .write_u16::<LittleEndian>(u16::try_from(segment_count).expect("segment count exceeds u16"))
         .expect("write to Vec cannot fail");
 
-    // Total uncompressed size (LE u32) - protocol limit per MS-RDPEGFX
     output
         .write_u32::<LittleEndian>(u32::try_from(data.len()).expect("data exceeds u32"))
         .expect("write to Vec cannot fail");
 
-    // Each segment
-    for segment in segments {
+    for segment in data.chunks(ZGFX_SEGMENTED_MAXSIZE) {
         // Segment size (includes flags byte) - max ZGFX_SEGMENTED_MAXSIZE + 1
         output
             .write_u32::<LittleEndian>(u32::try_from(segment.len() + 1).expect("segment size exceeds u32"))
@@ -273,6 +271,23 @@ mod tests {
         decompressor.decompress(&wrapped, &mut output).unwrap();
 
         assert_eq!(output, data);
+    }
+
+    #[test]
+    fn test_wrap_compressed_single_segment() {
+        let fake_compressed = vec![0xFF; 128];
+        let wrapped = wrap_compressed(&fake_compressed);
+
+        assert_eq!(wrapped[0], 0xE0); // Single segment
+        assert_eq!(wrapped[1], 0x24); // RDP8 (0x04) | COMPRESSED (0x02 << 4)
+        assert_eq!(&wrapped[2..], &fake_compressed[..]);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds single-segment limit")]
+    fn test_wrap_compressed_rejects_oversized() {
+        let too_large = vec![0xFF; ZGFX_SEGMENTED_MAXSIZE + 1];
+        wrap_compressed(&too_large);
     }
 
     #[test]
