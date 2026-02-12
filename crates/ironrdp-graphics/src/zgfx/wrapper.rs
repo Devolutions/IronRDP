@@ -280,7 +280,7 @@ mod tests {
 
         assert_eq!(wrapped[0], 0xE0); // Single segment
         assert_eq!(wrapped[1], 0x24); // RDP8 (0x04) | COMPRESSED (0x02 << 4)
-        assert_eq!(&wrapped[2..], &fake_compressed[..]);
+        assert_eq!(&wrapped[2..], &*fake_compressed);
     }
 
     #[test]
