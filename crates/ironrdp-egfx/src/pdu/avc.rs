@@ -85,6 +85,9 @@ impl Encode for Avc420BitmapStream<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
+        // INVARIANT: rectangles.len() == quant_qual_vals.len()
+        debug_assert_eq!(self.rectangles.len(), self.quant_qual_vals.len());
+
         dst.write_u32(cast_length!("len", self.rectangles.len())?);
         for rectangle in &self.rectangles {
             rectangle.encode(dst)?;
@@ -190,7 +193,12 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
         let stream_info = src.read_u32();
         let stream_len = stream_info.get_bits(0..30);
         #[expect(clippy::unwrap_used, reason = "2-bit extraction always fits in u8")]
-        let encoding = Encoding::from_bits_truncate(stream_info.get_bits(30..32).try_into().unwrap());
+        let encoding_raw: u8 = stream_info.get_bits(30..32).try_into().unwrap();
+        // Only 0x00 (LUMA_AND_CHROMA), 0x01 (LUMA), 0x02 (CHROMA) are defined.
+        if encoding_raw > 2 {
+            return Err(invalid_field_err!("encoding", "reserved encoding value"));
+        }
+        let encoding = Encoding::from_bits_truncate(encoding_raw);
 
         if stream_len == 0 {
             if encoding == Encoding::LUMA_AND_CHROMA {

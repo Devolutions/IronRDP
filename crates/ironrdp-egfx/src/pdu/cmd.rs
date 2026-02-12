@@ -1177,7 +1177,10 @@ impl<'a> Decode<'a> for ResetGraphicsPdu {
 
         let monitor_count = src.read_u32();
         if monitor_count > MONITOR_COUNT_MAX {
-            return Err(invalid_field_err!("height", "invalid reset graphics monitor count"));
+            return Err(invalid_field_err!(
+                "monitor_count",
+                "invalid reset graphics monitor count"
+            ));
         }
 
         #[expect(clippy::as_conversions, reason = "monitor_count validated above")]
@@ -1802,6 +1805,8 @@ impl MapSurfaceToWindowPdu {
 
 impl Encode for MapSurfaceToWindowPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         dst.write_u16(self.surface_id);
         dst.write_u64(self.window_id);
         dst.write_u32(self.mapped_width);
@@ -1913,6 +1918,8 @@ impl MapSurfaceToScaledOutputPdu {
 
 impl Encode for MapSurfaceToScaledOutputPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         dst.write_u16(self.surface_id);
         dst.write_u16(0); // reserved
         dst.write_u32(self.output_origin_x);
@@ -1974,6 +1981,8 @@ impl MapSurfaceToScaledWindowPdu {
 
 impl Encode for MapSurfaceToScaledWindowPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         dst.write_u16(self.surface_id);
         dst.write_u64(self.window_id);
         dst.write_u32(self.mapped_width);

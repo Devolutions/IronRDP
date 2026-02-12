@@ -143,6 +143,7 @@ impl Surfaces {
     /// Allocate a new surface ID
     pub fn allocate_id(&mut self) -> u16 {
         let id = self.next_surface_id;
+        debug_assert!(!self.surfaces.contains_key(&id), "surface ID {id} already in use");
         self.next_surface_id = self.next_surface_id.wrapping_add(1);
         id
     }
@@ -456,12 +457,46 @@ fn negotiate_capabilities(client_caps: &[CapabilitySet], server_caps: &[Capabili
     for server_cap in server_sorted {
         for client_cap in client_caps {
             if core::mem::discriminant(client_cap) == core::mem::discriminant(server_cap) {
-                return Some(server_cap.clone());
+                return Some(intersect_flags(client_cap, server_cap));
             }
         }
     }
 
     None
+}
+
+/// Intersect flags for matching capability set versions
+fn intersect_flags(client: &CapabilitySet, server: &CapabilitySet) -> CapabilitySet {
+    match (client, server) {
+        (CapabilitySet::V8 { flags: cf }, CapabilitySet::V8 { flags: sf }) => CapabilitySet::V8 { flags: *cf & *sf },
+        (CapabilitySet::V8_1 { flags: cf }, CapabilitySet::V8_1 { flags: sf }) => {
+            CapabilitySet::V8_1 { flags: *cf & *sf }
+        }
+        (CapabilitySet::V10 { flags: cf }, CapabilitySet::V10 { flags: sf }) => CapabilitySet::V10 { flags: *cf & *sf },
+        (CapabilitySet::V10_2 { flags: cf }, CapabilitySet::V10_2 { flags: sf }) => {
+            CapabilitySet::V10_2 { flags: *cf & *sf }
+        }
+        (CapabilitySet::V10_3 { flags: cf }, CapabilitySet::V10_3 { flags: sf }) => {
+            CapabilitySet::V10_3 { flags: *cf & *sf }
+        }
+        (CapabilitySet::V10_4 { flags: cf }, CapabilitySet::V10_4 { flags: sf }) => {
+            CapabilitySet::V10_4 { flags: *cf & *sf }
+        }
+        (CapabilitySet::V10_5 { flags: cf }, CapabilitySet::V10_5 { flags: sf }) => {
+            CapabilitySet::V10_5 { flags: *cf & *sf }
+        }
+        (CapabilitySet::V10_6 { flags: cf }, CapabilitySet::V10_6 { flags: sf }) => {
+            CapabilitySet::V10_6 { flags: *cf & *sf }
+        }
+        (CapabilitySet::V10_6Err { flags: cf }, CapabilitySet::V10_6Err { flags: sf }) => {
+            CapabilitySet::V10_6Err { flags: *cf & *sf }
+        }
+        (CapabilitySet::V10_7 { flags: cf }, CapabilitySet::V10_7 { flags: sf }) => {
+            CapabilitySet::V10_7 { flags: *cf & *sf }
+        }
+        // V10_1 has no flags; Unknown and mismatched variants return server as-is.
+        _ => server.clone(),
+    }
 }
 
 // ============================================================================
@@ -741,6 +776,15 @@ impl GraphicsPipelineServer {
             return;
         }
 
+        // RDPGFX_RESET_GRAPHICS_PDU is fixed at 340 bytes, limiting to 16 monitors.
+        if monitors.len() > 16 {
+            warn!(
+                count = monitors.len(),
+                "Too many monitors for ResetGraphicsPdu (max 16)"
+            );
+            return;
+        }
+
         debug!(width, height, monitors = monitors.len(), "Initiating resize");
 
         self.state = ServerState::Resizing;
@@ -997,12 +1041,16 @@ impl GraphicsPipelineServer {
         self.handler.capabilities_advertise(&pdu);
         let server_caps = self.handler.preferred_capabilities();
 
-        // V8.1 fallback ensures minimum AVC420 support when negotiation fails
+        // When no version overlaps with server preferences, confirm the client's
+        // highest-priority capability to avoid confirming a version the client
+        // did not advertise.
         let negotiated = negotiate_capabilities(&pdu.0, &server_caps).unwrap_or_else(|| {
-            warn!("No capability match, falling back to V8.1");
-            CapabilitySet::V8_1 {
-                flags: CapabilitiesV81Flags::AVC420_ENABLED,
-            }
+            warn!("No capability match with server preferences, selecting client's highest version");
+            let mut client_sorted = pdu.0.clone();
+            client_sorted.sort_by_key(|cap| core::cmp::Reverse(capability_priority(cap)));
+            client_sorted.into_iter().next().unwrap_or(CapabilitySet::V8 {
+                flags: CapabilitiesV8Flags::empty(),
+            })
         });
 
         self.codec_caps = CodecCapabilities::from_capability_set(&negotiated);
