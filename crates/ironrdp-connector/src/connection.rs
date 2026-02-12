@@ -788,8 +788,8 @@ fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::Cli
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags,
         compression_type,
-        alternate_shell: String::new(),
-        work_dir: String::new(),
+        alternate_shell: config.alternate_shell.clone(),
+        work_dir: config.work_dir.clone(),
         extra_info: ExtendedClientInfo {
             address_family: match client_addr {
                 SocketAddr::V4(_) => AddressFamily::INET,

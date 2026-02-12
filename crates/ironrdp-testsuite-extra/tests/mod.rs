@@ -309,5 +309,7 @@ fn default_client_config() -> connector::Config {
         multitransport_flags: None,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
+        alternate_shell: String::new(),
+        work_dir: String::new(),
     }
 }

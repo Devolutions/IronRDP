@@ -221,6 +221,8 @@ pub mod ffi {
                 hardware_id: None,
                 license_cache: None,
                 timezone_info: self.timezone_info.clone().unwrap_or_default(),
+                alternate_shell: String::new(),
+                work_dir: String::new(),
             };
             let dvc_pipe_proxy = self.dvc_pipe_proxy.clone();
 

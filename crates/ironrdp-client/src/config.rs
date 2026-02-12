@@ -515,6 +515,8 @@ impl Config {
             compression_type,
             performance_flags: PerformanceFlags::default(),
             timezone_info: TimezoneInfo::default(),
+            alternate_shell: String::new(),
+            work_dir: String::new(),
         };
 
         let rdcleanpath = args
