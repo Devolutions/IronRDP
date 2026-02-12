@@ -44,7 +44,7 @@ const ZGFX_PACKET_COMPR_TYPE_RDP8: u8 = 0x04;
 const ZGFX_PACKET_COMPRESSED: u8 = 0x02;
 
 /// Maximum size for a single ZGFX segment (65535 bytes)
-const ZGFX_SEGMENTED_MAXSIZE: usize = 65535;
+pub(crate) const ZGFX_SEGMENTED_MAXSIZE: usize = 65535;
 
 /// Wrap data in ZGFX segment structure (uncompressed)
 ///

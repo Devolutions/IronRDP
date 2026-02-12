@@ -11,9 +11,7 @@ use std::collections::HashMap;
 
 use bitvec::prelude::*;
 
-use super::{ZgfxError, TOKEN_TABLE};
-
-const HISTORY_SIZE: usize = 2_500_000;
+use super::{ZgfxError, HISTORY_SIZE, TOKEN_TABLE};
 const MIN_MATCH_LENGTH: usize = 3;
 const MAX_MATCH_LENGTH: usize = 65535;
 /// Maximum back-reference distance (last token in MS-RDPEGFX table)
@@ -118,23 +116,18 @@ impl Compressor {
 
         // Index positions spanning the old/new data boundary so matches
         // that straddle the append point can be found
-        if base_pos >= 2 && !bytes.is_empty() {
-            let pos = base_pos - 2;
-            if pos + MIN_MATCH_LENGTH <= self.history.len() {
-                let prefix = [self.history[pos], self.history[pos + 1], self.history[pos + 2]];
-                let entry = self.match_table.entry(prefix).or_default();
-                if entry.last() != Some(&pos) {
-                    entry.push(pos);
-                }
-            }
-        }
-        if base_pos >= 1 && bytes.len() >= 2 {
-            let pos = base_pos - 1;
-            if pos + MIN_MATCH_LENGTH <= self.history.len() {
-                let prefix = [self.history[pos], self.history[pos + 1], self.history[pos + 2]];
-                let entry = self.match_table.entry(prefix).or_default();
-                if entry.last() != Some(&pos) {
-                    entry.push(pos);
+        for offset in [2, 1] {
+            if base_pos >= offset && bytes.len() + offset > 2 {
+                let pos = base_pos - offset;
+                if pos + MIN_MATCH_LENGTH <= self.history.len() {
+                    let prefix = [self.history[pos], self.history[pos + 1], self.history[pos + 2]];
+                    let entry = self.match_table.entry(prefix).or_default();
+                    if entry.last() != Some(&pos) {
+                        if entry.len() >= MAX_POSITIONS_PER_PREFIX {
+                            entry.remove(0);
+                        }
+                        entry.push(pos);
+                    }
                 }
             }
         }

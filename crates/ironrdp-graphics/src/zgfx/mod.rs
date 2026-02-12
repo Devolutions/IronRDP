@@ -23,7 +23,8 @@ use self::circular_buffer::FixedCircularBuffer;
 use self::control_messages::{BulkEncodedData, CompressionFlags, SegmentedDataPdu};
 use crate::utils::Bits;
 
-const HISTORY_SIZE: usize = 2_500_000;
+/// Sliding window size shared by compressor and decompressor.
+pub(crate) const HISTORY_SIZE: usize = 2_500_000;
 
 pub struct Decompressor {
     history: FixedCircularBuffer,

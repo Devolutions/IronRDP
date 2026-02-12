@@ -1,7 +1,7 @@
 //! High-level ZGFX compression API for EGFX PDU preparation.
 
 use super::compressor::Compressor;
-use super::wrapper::{wrap_compressed, wrap_uncompressed};
+use super::wrapper::{wrap_compressed, wrap_uncompressed, ZGFX_SEGMENTED_MAXSIZE};
 use super::ZgfxError;
 
 /// Controls whether ZGFX compression is applied.
@@ -29,18 +29,33 @@ pub fn compress_and_wrap_egfx(
         CompressionMode::Never => Ok(wrap_uncompressed(data)),
         CompressionMode::Auto => {
             let compressed = compressor.compress(data)?;
-            let wrapped_compressed = wrap_compressed(&compressed);
-            let wrapped_uncompressed = wrap_uncompressed(data);
 
-            if wrapped_compressed.len() < wrapped_uncompressed.len() {
-                Ok(wrapped_compressed)
+            // Only use compressed wrapping if it fits a single segment.
+            // Incompressible data can expand beyond the limit; fall back
+            // to uncompressed which handles multipart natively.
+            if compressed.len() <= ZGFX_SEGMENTED_MAXSIZE {
+                let wrapped_compressed = wrap_compressed(&compressed);
+                let wrapped_uncompressed = wrap_uncompressed(data);
+
+                if wrapped_compressed.len() < wrapped_uncompressed.len() {
+                    Ok(wrapped_compressed)
+                } else {
+                    Ok(wrapped_uncompressed)
+                }
             } else {
-                Ok(wrapped_uncompressed)
+                Ok(wrap_uncompressed(data))
             }
         }
         CompressionMode::Always => {
             let compressed = compressor.compress(data)?;
-            Ok(wrap_compressed(&compressed))
+
+            if compressed.len() <= ZGFX_SEGMENTED_MAXSIZE {
+                Ok(wrap_compressed(&compressed))
+            } else {
+                // Compressed output too large for single segment;
+                // send uncompressed to avoid invalid segmentation
+                Ok(wrap_uncompressed(data))
+            }
         }
     }
 }
