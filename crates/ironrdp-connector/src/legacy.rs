@@ -2,7 +2,8 @@ use std::borrow::Cow;
 
 use ironrdp_core::{decode, encode_vec, Decode, Encode, WriteBuf};
 use ironrdp_pdu::rdp;
-use ironrdp_pdu::rdp::headers::ServerDeactivateAll;
+use ironrdp_pdu::rdp::headers::{BasicSecurityHeaderFlags, ServerDeactivateAll, BASIC_SECURITY_HEADER_SIZE};
+use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::x224::X224;
 
 use crate::{general_err, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult};
@@ -165,9 +166,26 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<Shar
 pub enum IoChannelPdu {
     Data(ShareDataCtx),
     DeactivateAll(ServerDeactivateAll),
+    /// Server Initiate Multitransport Request PDU.
+    ///
+    /// Received when the server wants the client to establish a sideband UDP transport.
+    MultitransportRequest(MultitransportRequestPdu),
 }
 
 pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<IoChannelPdu> {
+    // Multitransport PDUs use BasicSecurityHeader (flags:u16, flagsHi:u16) instead
+    // of the ShareControlHeader (totalLength:u16, pduType:u16, ...) used by all
+    // other IO channel PDUs.
+    if ctx.user_data.len() >= BASIC_SECURITY_HEADER_SIZE {
+        let flags_raw = u16::from_le_bytes([ctx.user_data[0], ctx.user_data[1]]);
+        let flags = BasicSecurityHeaderFlags::from_bits_truncate(flags_raw);
+
+        if flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ) {
+            let pdu = decode::<MultitransportRequestPdu>(ctx.user_data).map_err(ConnectorError::decode)?;
+            return Ok(IoChannelPdu::MultitransportRequest(pdu));
+        }
+    }
+
     let ctx = decode_share_control(ctx)?;
 
     match ctx.pdu {

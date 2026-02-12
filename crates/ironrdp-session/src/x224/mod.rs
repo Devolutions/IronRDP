@@ -4,6 +4,7 @@ use ironrdp_core::WriteBuf;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
+use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{client_encode_svc_messages, StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
@@ -23,6 +24,15 @@ pub enum ProcessorOutput {
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     DeactivateAll(Box<ConnectionActivationSequence>),
+    /// Server Initiate Multitransport Request. The application should establish a
+    /// sideband UDP transport using the request ID and security cookie, then send
+    /// a [`MultitransportResponsePdu`] back on the IO channel.
+    ///
+    /// See [\[MS-RDPBCGR\] 2.2.15.1].
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
+    /// [`MultitransportResponsePdu`]: ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu
+    MultitransportRequest(MultitransportRequestPdu),
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +180,13 @@ impl Processor {
                         ctx.pdu.as_short_name()
                     )),
                 }
+            }
+            ironrdp_connector::legacy::IoChannelPdu::MultitransportRequest(pdu) => {
+                debug!(
+                    "Received Initiate Multitransport Request: request_id={}",
+                    pdu.request_id
+                );
+                Ok(vec![ProcessorOutput::MultitransportRequest(pdu)])
             }
             ironrdp_connector::legacy::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll(
                 Box::new(self.connection_activation.reset_clone()),

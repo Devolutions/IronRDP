@@ -193,6 +193,7 @@ pub mod ffi {
         PointerBitmap,
         Terminate,
         DeactivateAll,
+        MultitransportRequest,
     }
 
     impl ActiveStageOutput {
@@ -206,6 +207,9 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::PointerBitmap { .. } => ActiveStageOutputType::PointerBitmap,
                 ironrdp::session::ActiveStageOutput::Terminate { .. } => ActiveStageOutputType::Terminate,
                 ironrdp::session::ActiveStageOutput::DeactivateAll { .. } => ActiveStageOutputType::DeactivateAll,
+                ironrdp::session::ActiveStageOutput::MultitransportRequest { .. } => {
+                    ActiveStageOutputType::MultitransportRequest
+                }
             }
         }
 

@@ -11,6 +11,7 @@ use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
+use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::{mcs, Action};
 use ironrdp_svc::{SvcMessage, SvcProcessor, SvcProcessorMessages};
 use tracing::{debug, info};
@@ -289,10 +290,20 @@ pub enum ActiveStageOutput {
     GraphicsUpdate(InclusiveRectangle),
     PointerDefault,
     PointerHidden,
-    PointerPosition { x: u16, y: u16 },
+    PointerPosition {
+        x: u16,
+        y: u16,
+    },
     PointerBitmap(Arc<DecodedPointer>),
     Terminate(GracefulDisconnectReason),
     DeactivateAll(Box<ConnectionActivationSequence>),
+    /// Server Initiate Multitransport Request. The application should establish a
+    /// sideband UDP transport using the provided request parameters.
+    ///
+    /// See [\[MS-RDPBCGR\] 2.2.15.1].
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
+    MultitransportRequest(MultitransportRequestPdu),
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
@@ -314,6 +325,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
                 Ok(Self::Terminate(desc))
             }
             x224::ProcessorOutput::DeactivateAll(cas) => Ok(Self::DeactivateAll(cas)),
+            x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
         }
     }
 }
