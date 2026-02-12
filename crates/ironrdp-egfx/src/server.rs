@@ -58,8 +58,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use ironrdp_core::{decode, impl_as_any};
-use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
+use ironrdp_core::{decode, impl_as_any, Encode, EncodeResult, WriteCursor};
+use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_pdu::gcc::Monitor;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::{decode_err, PduResult};
@@ -84,6 +84,81 @@ const DEFAULT_MAX_FRAMES_IN_FLIGHT: u32 = 3;
 
 /// Special queue depth value indicating client has disabled acknowledgments
 const SUSPEND_FRAME_ACK_QUEUE_DEPTH: u32 = 0xFFFFFFFF;
+
+// ============================================================================
+// ZGFX Segment Wrapping
+// ============================================================================
+
+/// Maximum data per ZGFX segment (MS-RDPEGFX 2.2.5)
+const ZGFX_SEGMENT_MAXSIZE: usize = 65535;
+
+/// Single-segment descriptor (MS-RDPEGFX 2.2.5.1)
+const DESCRIPTOR_SINGLE: u8 = 0xE0;
+
+/// Multi-segment descriptor (MS-RDPEGFX 2.2.5.1)
+const DESCRIPTOR_MULTIPART: u8 = 0xE1;
+
+/// RDP8_BULK_ENCODED_DATA with no compression (CompressionType = RDP8 | no flags)
+const BULK_ENCODED_UNCOMPRESSED: u8 = 0x04;
+
+/// Wrap raw data in ZGFX uncompressed segment format.
+///
+/// Produces the wire format that `Decompressor::decompress()` expects:
+/// single-segment for small data, multi-segment for data exceeding 65535 bytes.
+fn wrap_zgfx_uncompressed(data: &[u8]) -> Vec<u8> {
+    if data.len() <= ZGFX_SEGMENT_MAXSIZE {
+        let mut out = Vec::with_capacity(2 + data.len());
+        out.push(DESCRIPTOR_SINGLE);
+        out.push(BULK_ENCODED_UNCOMPRESSED);
+        out.extend_from_slice(data);
+        out
+    } else {
+        let segment_count = data.len().div_ceil(ZGFX_SEGMENT_MAXSIZE);
+        // Header: descriptor(1) + segment_count(2) + uncompressed_size(4) + per-segment: size(4) + flag(1) + data
+        let header_size = 1 + 2 + 4 + segment_count * 4;
+        let mut out = Vec::with_capacity(header_size + segment_count + data.len());
+
+        out.push(DESCRIPTOR_MULTIPART);
+        out.extend_from_slice(&u16::try_from(segment_count).unwrap_or(u16::MAX).to_le_bytes());
+        out.extend_from_slice(&u32::try_from(data.len()).unwrap_or(u32::MAX).to_le_bytes());
+
+        for chunk in data.chunks(ZGFX_SEGMENT_MAXSIZE) {
+            // segment_size includes the 1-byte bulk header
+            let segment_size = u32::try_from(chunk.len() + 1).unwrap_or(u32::MAX);
+            out.extend_from_slice(&segment_size.to_le_bytes());
+            out.push(BULK_ENCODED_UNCOMPRESSED);
+            out.extend_from_slice(chunk);
+        }
+
+        out
+    }
+}
+
+/// Pre-encoded ZGFX-wrapped bytes for DVC transmission.
+///
+/// `Encode::encode()` takes `&self`, but ZGFX wrapping is done in `drain_output()`
+/// where `&mut self` is available. This type holds the already-wrapped bytes.
+struct ZgfxWrappedBytes {
+    bytes: Vec<u8>,
+    pdu_name: &'static str,
+}
+
+impl Encode for ZgfxWrappedBytes {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        dst.write_slice(&self.bytes);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        self.pdu_name
+    }
+
+    fn size(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
+impl DvcEncode for ZgfxWrappedBytes {}
 
 // ============================================================================
 // Surface Management
@@ -607,7 +682,12 @@ pub struct GraphicsPipelineServer {
 
     output_width: u16,
     output_height: u16,
+    /// MS-RDPEGFX requires ResetGraphics before any CreateSurface
+    reset_graphics_sent: bool,
     output_queue: VecDeque<GfxPdu>,
+
+    /// Stored from DvcProcessor::start() for proactive frame encoding
+    channel_id: Option<u32>,
 }
 
 impl GraphicsPipelineServer {
@@ -626,8 +706,27 @@ impl GraphicsPipelineServer {
             frames,
             output_width: 0,
             output_height: 0,
+            reset_graphics_sent: false,
             output_queue: VecDeque::new(),
+            channel_id: None,
         }
+    }
+
+    /// Set desktop output dimensions for ResetGraphics.
+    ///
+    /// Call before `create_surface()` when the desktop size differs from
+    /// the surface size (e.g. 16-pixel alignment padding).
+    pub fn set_output_dimensions(&mut self, width: u16, height: u16) {
+        self.output_width = width;
+        self.output_height = height;
+    }
+
+    /// DVC channel ID assigned by DRDYNVC.
+    ///
+    /// Returns `None` before the channel has been started.
+    #[must_use]
+    pub fn channel_id(&self) -> Option<u32> {
+        self.channel_id
     }
 
     // ========================================================================
@@ -686,6 +785,31 @@ impl GraphicsPipelineServer {
     pub fn create_surface_with_format(&mut self, width: u16, height: u16, pixel_format: PixelFormat) -> Option<u16> {
         if self.state != ServerState::Ready && self.state != ServerState::Resizing {
             return None;
+        }
+
+        // MS-RDPEGFX: ResetGraphics MUST precede any CreateSurface.
+        // Auto-send on first surface creation if not explicitly sent via resize().
+        if !self.reset_graphics_sent {
+            let desktop_width = if self.output_width > 0 {
+                self.output_width
+            } else {
+                width
+            };
+            let desktop_height = if self.output_height > 0 {
+                self.output_height
+            } else {
+                height
+            };
+
+            self.output_queue.push_back(GfxPdu::ResetGraphics(ResetGraphicsPdu {
+                width: u32::from(desktop_width),
+                height: u32::from(desktop_height),
+                monitors: Vec::new(),
+            }));
+
+            self.output_width = desktop_width;
+            self.output_height = desktop_height;
+            self.reset_graphics_sent = true;
         }
 
         let surface_id = self.surfaces.allocate_id();
@@ -804,6 +928,7 @@ impl GraphicsPipelineServer {
             monitors,
         }));
 
+        self.reset_graphics_sent = true;
         self.state = ServerState::Ready;
     }
 
@@ -1016,14 +1141,34 @@ impl GraphicsPipelineServer {
     // Output Management
     // ========================================================================
 
-    /// Drain the output queue and return PDUs to send
+    /// Drain the output queue, ZGFX-wrapping each PDU for DVC transmission.
     ///
-    /// Call this method to get pending PDUs that need to be sent to the client.
+    /// Each `GfxPdu` is encoded to bytes then wrapped in uncompressed ZGFX
+    /// segment format. Windows clients expect this wrapping on the EGFX DVC.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a `GfxPdu` fails to encode. This indicates a bug in the PDU
+    /// encoding logic, not a runtime condition.
     #[expect(clippy::as_conversions, reason = "Box<T> to Box<dyn Trait> coercion")]
     pub fn drain_output(&mut self) -> Vec<DvcMessage> {
         self.output_queue
             .drain(..)
-            .map(|pdu| Box::new(pdu) as DvcMessage)
+            .map(|pdu| {
+                let pdu_name = pdu.name();
+                let pdu_size = pdu.size();
+                let mut pdu_bytes = vec![0u8; pdu_size];
+                let mut cursor = WriteCursor::new(&mut pdu_bytes);
+                pdu.encode(&mut cursor).expect("GfxPdu encoding should not fail");
+
+                let wrapped = wrap_zgfx_uncompressed(&pdu_bytes);
+                trace!(pdu_name, pdu_size, wrapped = wrapped.len(), "ZGFX wrapped");
+
+                Box::new(ZgfxWrappedBytes {
+                    bytes: wrapped,
+                    pdu_name,
+                }) as DvcMessage
+            })
             .collect()
     }
 
@@ -1099,13 +1244,16 @@ impl DvcProcessor for GraphicsPipelineServer {
         CHANNEL_NAME
     }
 
-    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        // Server waits for client CapabilitiesAdvertise before sending anything
+    fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        self.channel_id = Some(channel_id);
+        debug!(channel_id, "EGFX channel started");
         Ok(vec![])
     }
 
     fn close(&mut self, _channel_id: u32) {
+        debug!("EGFX channel closed");
         self.state = ServerState::Closed;
+        self.reset_graphics_sent = false;
         self.handler.on_close();
     }
 
@@ -1142,7 +1290,7 @@ impl DvcServerProcessor for GraphicsPipelineServer {}
 
 /// Encode an AVC444 bitmap stream to bytes
 fn encode_avc444_bitmap_stream(stream: &Avc444BitmapStream<'_>) -> Vec<u8> {
-    use ironrdp_pdu::{Encode as _, WriteCursor};
+    use ironrdp_pdu::Encode as _;
 
     let size = stream.size();
     let mut buf = vec![0u8; size];
