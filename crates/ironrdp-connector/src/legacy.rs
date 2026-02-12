@@ -175,14 +175,21 @@ pub enum IoChannelPdu {
 pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<IoChannelPdu> {
     // Multitransport PDUs use BasicSecurityHeader (flags:u16, flagsHi:u16) instead
     // of the ShareControlHeader (totalLength:u16, pduType:u16, ...) used by all
-    // other IO channel PDUs.
+    // other IO channel PDUs. We discriminate by checking flagsHi == 0 (ShareControl
+    // has pduType there, which is always non-zero) and requiring flags to be a valid
+    // BasicSecurityHeaderFlags combination.
     if ctx.user_data.len() >= BASIC_SECURITY_HEADER_SIZE {
         let flags_raw = u16::from_le_bytes([ctx.user_data[0], ctx.user_data[1]]);
-        let flags = BasicSecurityHeaderFlags::from_bits_truncate(flags_raw);
+        let flags_hi = u16::from_le_bytes([ctx.user_data[2], ctx.user_data[3]]);
 
-        if flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ) {
-            let pdu = decode::<MultitransportRequestPdu>(ctx.user_data).map_err(ConnectorError::decode)?;
-            return Ok(IoChannelPdu::MultitransportRequest(pdu));
+        if flags_hi == 0 {
+            if let Some(flags) = BasicSecurityHeaderFlags::from_bits(flags_raw) {
+                if flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ) {
+                    if let Ok(pdu) = decode::<MultitransportRequestPdu>(ctx.user_data) {
+                        return Ok(IoChannelPdu::MultitransportRequest(pdu));
+                    }
+                }
+            }
         }
     }
 

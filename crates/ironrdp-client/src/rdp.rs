@@ -769,7 +769,11 @@ async fn active_session(
                     }
                 }
                 ActiveStageOutput::MultitransportRequest(pdu) => {
-                    debug!(?pdu, "Multitransport request received (UDP transport not implemented)");
+                    debug!(
+                        request_id = pdu.request_id,
+                        requested_protocol = ?pdu.requested_protocol,
+                        "Multitransport request received (UDP transport not implemented)"
+                    );
                 }
                 ActiveStageOutput::Terminate(reason) => break 'outer reason,
             }
