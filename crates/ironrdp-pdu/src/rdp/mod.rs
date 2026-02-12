@@ -16,6 +16,7 @@ pub mod capability_sets;
 pub mod client_info;
 pub mod finalization_messages;
 pub mod headers;
+pub mod multitransport;
 pub mod refresh_rectangle;
 pub mod server_error_info;
 pub mod server_license;
