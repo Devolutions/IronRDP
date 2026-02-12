@@ -264,6 +264,7 @@ fn build_config(
         enable_audio_playback: false,
         compression_type,
         pointer_software_rendering: true,
+        multitransport_flags: None,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
         hardware_id: None,
