@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-async"
-version = "0.8.0"
+version = "0.8.1"
 readme = "README.md"
 description = "Provides `Future`s wrapping the IronRDP state machines conveniently"
 edition.workspace = true
@@ -16,7 +16,7 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-connector = { path = "../ironrdp-connector", version = "0.8" } # public
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.9" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
 tracing = { version = "0.1", features = ["log"] }
