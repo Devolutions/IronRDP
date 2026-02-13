@@ -759,6 +759,13 @@ impl iron_remote_desktop::Session for Session {
                             }
                         }
                     }
+                    ActiveStageOutput::MultitransportRequest(pdu) => {
+                        debug!(
+                            request_id = pdu.request_id,
+                            requested_protocol = ?pdu.requested_protocol,
+                            "Multitransport request received (UDP transport not implemented)"
+                        );
+                    }
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
             }

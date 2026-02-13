@@ -193,6 +193,7 @@ pub mod ffi {
         PointerBitmap,
         Terminate,
         DeactivateAll,
+        MultitransportRequest,
     }
 
     impl ActiveStageOutput {
@@ -206,6 +207,9 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::PointerBitmap { .. } => ActiveStageOutputType::PointerBitmap,
                 ironrdp::session::ActiveStageOutput::Terminate { .. } => ActiveStageOutputType::Terminate,
                 ironrdp::session::ActiveStageOutput::DeactivateAll { .. } => ActiveStageOutputType::DeactivateAll,
+                ironrdp::session::ActiveStageOutput::MultitransportRequest { .. } => {
+                    ActiveStageOutputType::MultitransportRequest
+                }
             }
         }
 
@@ -271,6 +275,31 @@ pub mod ffi {
             }
             .map(Box::new)
         }
+
+        /// Returns the multitransport request ID and requested protocol.
+        ///
+        /// The security cookie is intentionally not exposed — it is sensitive
+        /// and only needed internally for transport binding.
+        #[expect(
+            clippy::as_conversions,
+            reason = "RequestedProtocol is #[repr(u16)], cast is lossless"
+        )]
+        pub fn get_multitransport_request(&self) -> Result<MultitransportRequest, Box<IronRdpError>> {
+            match &self.0 {
+                ironrdp::session::ActiveStageOutput::MultitransportRequest(pdu) => Ok(MultitransportRequest {
+                    request_id: pdu.request_id,
+                    requested_protocol: pdu.requested_protocol as u16,
+                }),
+                _ => Err(IncorrectEnumTypeError::on_variant("MultitransportRequest")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
+            }
+        }
+    }
+
+    pub struct MultitransportRequest {
+        pub request_id: u32,
+        pub requested_protocol: u16,
     }
 
     #[diplomat::opaque]
