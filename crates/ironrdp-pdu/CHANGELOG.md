@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.7.0...ironrdp-pdu-v0.7.1)] - 2026-02-13
+
+### <!-- 1 -->Features
+
+- Add Initiate Multitransport Request/Response PDU types ([#1091](https://github.com/Devolutions/IronRDP/issues/1091)) ([5a50f4099b](https://github.com/Devolutions/IronRDP/commit/5a50f4099b8f8173c5c067089a0d372402dbb52d)) 
+
+  Add MultitransportRequestPdu and MultitransportResponsePdu types for the
+  sideband UDP transport bootstrapping PDUs defined in MS-RDPBCGR
+  2.2.15.1 and 2.2.15.2. Needed to decode/encode the IO channel messages that
+  initiate UDP transport setup.
+
+
+
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.5.0...ironrdp-pdu-v0.6.0)] - 2025-08-29
 
 ### <!-- 1 -->Features
