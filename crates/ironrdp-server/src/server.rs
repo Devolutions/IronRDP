@@ -221,6 +221,8 @@ pub struct RdpServer {
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
+    #[cfg(feature = "egfx")]
+    gfx_handle: Option<crate::gfx::GfxServerHandle>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -262,7 +264,7 @@ impl RdpServer {
         display: Box<dyn RdpServerDisplay>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
-        #[cfg(feature = "egfx")] gfx_factory: Option<Box<dyn GfxServerFactory>>,
+        #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -270,6 +272,10 @@ impl RdpServer {
         }
         if let Some(snd) = sound_factory.as_mut() {
             snd.set_sender(ev_sender.clone());
+        }
+        #[cfg(feature = "egfx")]
+        if let Some(gfx) = gfx_factory.as_mut() {
+            gfx.set_sender(ev_sender.clone());
         }
         Self {
             opts,
@@ -280,6 +286,8 @@ impl RdpServer {
             cliprdr_factory,
             #[cfg(feature = "egfx")]
             gfx_factory,
+            #[cfg(feature = "egfx")]
+            gfx_handle: None,
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -293,6 +301,17 @@ impl RdpServer {
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Returns the shared EGFX server handle for proactive frame submission.
+    ///
+    /// Available after `build_server_with_handle()` returns `Some` during
+    /// channel setup. Display handlers use this to call
+    /// `send_avc420_frame()` / `send_avc444_frame()` and then signal the
+    /// event loop via `ServerEvent::Egfx`.
+    #[cfg(feature = "egfx")]
+    pub fn gfx_handle(&self) -> Option<&crate::gfx::GfxServerHandle> {
+        self.gfx_handle.as_ref()
     }
 
     fn attach_channels(&mut self, acceptor: &mut Acceptor) {
@@ -321,7 +340,8 @@ impl RdpServer {
         let dvc = {
             let mut dvc = dvc;
             if let Some(gfx_factory) = self.gfx_factory.as_deref() {
-                if let Some((bridge, _handle)) = gfx_factory.build_server_with_handle() {
+                if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
+                    self.gfx_handle = Some(handle);
                     dvc = dvc.with_dynamic_channel(bridge);
                 } else {
                     let handler = gfx_factory.build_gfx_handler();
@@ -597,7 +617,7 @@ impl RdpServer {
                 }
                 #[cfg(feature = "egfx")]
                 ServerEvent::Egfx(msg) => match msg {
-                    EgfxServerMessage::SendMessages { messages, .. } => {
+                    EgfxServerMessage::SendMessages { messages } => {
                         let drdynvc_channel_id = self
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
                             .ok_or_else(|| anyhow!("DRDYNVC channel not found"))?;

@@ -60,6 +60,7 @@ use std::time::Instant;
 
 use ironrdp_core::{decode, impl_as_any, Encode, EncodeResult, WriteCursor};
 use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
+use ironrdp_graphics::zgfx::wrap_uncompressed;
 use ironrdp_pdu::gcc::Monitor;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::{decode_err, PduResult};
@@ -84,55 +85,6 @@ const DEFAULT_MAX_FRAMES_IN_FLIGHT: u32 = 3;
 
 /// Special queue depth value indicating client has disabled acknowledgments
 const SUSPEND_FRAME_ACK_QUEUE_DEPTH: u32 = 0xFFFFFFFF;
-
-// ============================================================================
-// ZGFX Segment Wrapping
-// ============================================================================
-
-/// Maximum data per ZGFX segment (MS-RDPEGFX 2.2.5)
-const ZGFX_SEGMENT_MAXSIZE: usize = 65535;
-
-/// Single-segment descriptor (MS-RDPEGFX 2.2.5.1)
-const DESCRIPTOR_SINGLE: u8 = 0xE0;
-
-/// Multi-segment descriptor (MS-RDPEGFX 2.2.5.1)
-const DESCRIPTOR_MULTIPART: u8 = 0xE1;
-
-/// RDP8_BULK_ENCODED_DATA with no compression (CompressionType = RDP8 | no flags)
-const BULK_ENCODED_UNCOMPRESSED: u8 = 0x04;
-
-/// Wrap raw data in ZGFX uncompressed segment format.
-///
-/// Produces the wire format that `Decompressor::decompress()` expects:
-/// single-segment for small data, multi-segment for data exceeding 65535 bytes.
-fn wrap_zgfx_uncompressed(data: &[u8]) -> Vec<u8> {
-    if data.len() <= ZGFX_SEGMENT_MAXSIZE {
-        let mut out = Vec::with_capacity(2 + data.len());
-        out.push(DESCRIPTOR_SINGLE);
-        out.push(BULK_ENCODED_UNCOMPRESSED);
-        out.extend_from_slice(data);
-        out
-    } else {
-        let segment_count = data.len().div_ceil(ZGFX_SEGMENT_MAXSIZE);
-        // Header: descriptor(1) + segment_count(2) + uncompressed_size(4) + per-segment: size(4) + flag(1) + data
-        let header_size = 1 + 2 + 4 + segment_count * 4;
-        let mut out = Vec::with_capacity(header_size + segment_count + data.len());
-
-        out.push(DESCRIPTOR_MULTIPART);
-        out.extend_from_slice(&u16::try_from(segment_count).unwrap_or(u16::MAX).to_le_bytes());
-        out.extend_from_slice(&u32::try_from(data.len()).unwrap_or(u32::MAX).to_le_bytes());
-
-        for chunk in data.chunks(ZGFX_SEGMENT_MAXSIZE) {
-            // segment_size includes the 1-byte bulk header
-            let segment_size = u32::try_from(chunk.len() + 1).unwrap_or(u32::MAX);
-            out.extend_from_slice(&segment_size.to_le_bytes());
-            out.push(BULK_ENCODED_UNCOMPRESSED);
-            out.extend_from_slice(chunk);
-        }
-
-        out
-    }
-}
 
 /// Pre-encoded ZGFX-wrapped bytes for DVC transmission.
 ///
@@ -1161,7 +1113,7 @@ impl GraphicsPipelineServer {
                 let mut cursor = WriteCursor::new(&mut pdu_bytes);
                 pdu.encode(&mut cursor).expect("GfxPdu encoding should not fail");
 
-                let wrapped = wrap_zgfx_uncompressed(&pdu_bytes);
+                let wrapped = wrap_uncompressed(&pdu_bytes);
                 trace!(pdu_name, pdu_size, wrapped = wrapped.len(), "ZGFX wrapped");
 
                 Box::new(ZgfxWrappedBytes {

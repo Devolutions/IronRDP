@@ -15,6 +15,8 @@ use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer};
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::SvcMessage;
 
+use crate::server::ServerEventSender;
+
 /// Shared handle to a `GraphicsPipelineServer`.
 ///
 /// Uses `std::sync::Mutex` (not tokio) because `DvcProcessor` trait methods
@@ -23,8 +25,9 @@ pub type GfxServerHandle = Arc<Mutex<GraphicsPipelineServer>>;
 
 /// Factory for creating EGFX graphics pipeline handlers.
 ///
-/// Follows the same pattern as `CliprdrServerFactory` and `SoundServerFactory`.
-pub trait GfxServerFactory: Send {
+/// Implements `ServerEventSender` so the factory can signal the server event loop
+/// when EGFX frames are ready to be drained and sent.
+pub trait GfxServerFactory: ServerEventSender + Send {
     /// Create a handler for EGFX callbacks (caps negotiation, frame acks).
     fn build_gfx_handler(&self) -> Box<dyn GraphicsPipelineHandler>;
 
@@ -91,14 +94,14 @@ impl DvcServerProcessor for GfxDvcBridge {}
 #[derive(Debug)]
 pub enum EgfxServerMessage {
     /// Pre-encoded DVC messages from `GraphicsPipelineServer::drain_output()`.
-    SendMessages { channel_id: u32, messages: Vec<SvcMessage> },
+    SendMessages { messages: Vec<SvcMessage> },
 }
 
 impl core::fmt::Display for EgfxServerMessage {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::SendMessages { channel_id, messages } => {
-                write!(f, "SendMessages(channel={channel_id}, count={})", messages.len())
+            Self::SendMessages { messages } => {
+                write!(f, "SendMessages(count={})", messages.len())
             }
         }
     }
