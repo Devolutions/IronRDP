@@ -50,10 +50,10 @@ fn extract_smallest_rectangle(
 
         let target_begin = region_stride * row;
         let target_end = target_begin + region_stride;
-        let target_slice = dst
-            .get_mut(target_begin..target_end)
-            .expect("destination buffer sized correctly based on region dimensions; \
-                     target slice indices must be in-bounds");
+        let target_slice = dst.get_mut(target_begin..target_end).expect(
+            "destination buffer sized correctly based on region dimensions; \
+                     target slice indices must be in-bounds",
+        );
 
         target_slice.copy_from_slice(src_slice);
     }
