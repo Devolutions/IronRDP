@@ -44,7 +44,7 @@ const ZGFX_PACKET_COMPR_TYPE_RDP8: u8 = 0x04;
 const ZGFX_PACKET_COMPRESSED: u8 = 0x02;
 
 /// Maximum size for a single ZGFX segment (65535 bytes)
-const ZGFX_SEGMENTED_MAXSIZE: usize = 65535;
+pub(crate) const ZGFX_SEGMENTED_MAXSIZE: usize = 65535;
 
 /// Wrap data in ZGFX segment structure (uncompressed)
 ///
@@ -86,7 +86,7 @@ pub fn wrap_uncompressed(data: &[u8]) -> Vec<u8> {
 /// The COMPRESSED flag is set, telling the client to decompress using ZGFX.
 ///
 /// Only single-segment wrapping is supported for compressed data because a ZGFX
-/// compressed bitstream cannot be split at arbitrary byte boundaries — each segment
+/// compressed bitstream cannot be split at arbitrary byte boundaries -- each segment
 /// must be an independently decodable stream. If multi-segment compressed output is
 /// needed, the compressor must emit pre-segmented output.
 ///
@@ -312,5 +312,44 @@ mod tests {
         // Should produce 2 segments
         let segment_count = u16::from_le_bytes([wrapped[1], wrapped[2]]);
         assert_eq!(segment_count, 2);
+    }
+
+    #[test]
+    fn test_wrap_compressed_data() {
+        use crate::zgfx::Compressor;
+
+        let mut compressor = Compressor::new();
+        let data = b"Test data with some patterns for compression";
+
+        let compressed = compressor.compress(data).unwrap();
+        let wrapped = wrap_compressed(&compressed);
+
+        // Should have COMPRESSED flag set
+        assert_eq!(wrapped[0], 0xE0); // Single segment
+        assert_eq!(wrapped[1], 0x24); // 0x04 (RDP8) | (0x02 << 4) = 0x24
+
+        use crate::zgfx::Decompressor;
+        let mut decompressor = Decompressor::new();
+        let mut output = Vec::new();
+        decompressor.decompress(&wrapped, &mut output).unwrap();
+
+        assert_eq!(&output, data);
+    }
+
+    #[test]
+    fn test_compress_and_wrap_full_pipeline() {
+        use crate::zgfx::{Compressor, Decompressor};
+
+        let mut compressor = Compressor::new();
+        let data = b"This is test data that will be compressed using ZGFX algorithm and then wrapped";
+
+        let compressed_data = compressor.compress(data).unwrap();
+        let wrapped = wrap_compressed(&compressed_data);
+
+        let mut decompressor = Decompressor::new();
+        let mut output = Vec::new();
+        decompressor.decompress(&wrapped, &mut output).unwrap();
+
+        assert_eq!(&output, data);
     }
 }
