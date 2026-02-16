@@ -22,7 +22,14 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.5" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.7" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
+openh264 = { version = "0.6", optional = true, default-features = false, features = ["libloading"] }
 tracing = { version = "0.1", features = ["log"] }
+
+[features]
+openh264 = ["dep:openh264"]
+# Development/testing only: compile OpenH264 from source (no patent coverage from Cisco).
+# Do NOT use this in any shipped product. See OPENH264-LICENSING.md for details.
+openh264-source = ["dep:openh264", "openh264/source"]
 
 [lints]
 workspace = true
