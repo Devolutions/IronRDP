@@ -7,7 +7,9 @@ use ironrdp_graphics::diff::{find_different_rects_sub, Rect};
 use ironrdp_pdu::encode_vec;
 use ironrdp_pdu::fast_path::UpdateCode;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
-use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerPositionAttribute};
+use ironrdp_pdu::pointer::{
+    CachedPointerAttribute, ColorPointerAttribute, Point16, PointerAttribute, PointerPositionAttribute,
+};
 use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
 use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
 use tracing::{debug, warn};
@@ -157,7 +159,7 @@ impl UpdateEncoder {
             y: ptr.hot_y,
         };
         let color_pointer = ColorPointerAttribute {
-            cache_index: 0,
+            cache_index: ptr.cache_index,
             hot_spot,
             width: ptr.width,
             height: ptr.height,
@@ -177,7 +179,7 @@ impl UpdateEncoder {
             y: ptr.hot_y,
         };
         let ptr = ColorPointerAttribute {
-            cache_index: 0,
+            cache_index: ptr.cache_index,
             hot_spot,
             width: ptr.width,
             height: ptr.height,
@@ -185,6 +187,11 @@ impl UpdateEncoder {
             and_mask: &ptr.and_mask,
         };
         Ok(UpdateFragmenter::new(UpdateCode::ColorPointer, encode_vec(&ptr)?))
+    }
+
+    fn cached_pointer(cache_index: u16) -> Result<UpdateFragmenter> {
+        let ptr = CachedPointerAttribute { cache_index };
+        Ok(UpdateFragmenter::new(UpdateCode::CachedPointer, encode_vec(&ptr)?))
     }
 
     fn default_pointer() -> Result<UpdateFragmenter> {
@@ -302,6 +309,7 @@ impl EncoderIter<'_> {
                     DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),
                     DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),
                     DisplayUpdate::DefaultPointer => UpdateEncoder::default_pointer(),
+                    DisplayUpdate::CachedPointer(idx) => UpdateEncoder::cached_pointer(idx),
                     DisplayUpdate::Resize(_) => return None,
                 },
                 State::BitmapDiffs { diffs, bitmap, pos } => {
