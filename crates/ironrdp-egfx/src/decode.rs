@@ -141,3 +141,233 @@ pub trait H264Decoder: Send {
         // Default: no-op
     }
 }
+
+// ============================================================================
+// OpenH264 Implementation
+// ============================================================================
+
+#[cfg(feature = "openh264")]
+mod openh264_impl {
+    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+    use tracing::warn;
+
+    /// H.264 decoder backed by Cisco's OpenH264 library
+    ///
+    /// This decoder converts AVC-format NAL units to Annex B format
+    /// (as required by OpenH264), decodes to YUV420p, then converts
+    /// to RGBA for the client pipeline.
+    ///
+    /// # Feature Gate
+    ///
+    /// Requires the `openh264` feature to be enabled.
+    pub struct OpenH264Decoder {
+        decoder: openh264::decoder::Decoder,
+        annex_b_buffer: Vec<u8>,
+    }
+
+    impl OpenH264Decoder {
+        /// Create a new OpenH264 decoder
+        pub fn new() -> DecoderResult<Self> {
+            let decoder = openh264::decoder::Decoder::new()
+                .map_err(|e| DecoderError::new("failed to create OpenH264 decoder", e))?;
+
+            Ok(Self {
+                decoder,
+                annex_b_buffer: Vec::new(),
+            })
+        }
+
+        /// Convert AVC format (4-byte BE length prefix) to Annex B (start codes)
+        fn avc_to_annex_b(&mut self, data: &[u8]) {
+            self.annex_b_buffer.clear();
+            let mut offset = 0;
+
+            while offset + 4 <= data.len() {
+                let nal_len = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+
+                #[expect(clippy::as_conversions, reason = "NAL length from wire format")]
+                let nal_len = nal_len as usize;
+                offset += 4;
+
+                // Use checked addition to prevent overflow on malicious input
+                let Some(end) = offset.checked_add(nal_len) else {
+                    break;
+                };
+                if end > data.len() {
+                    break;
+                }
+
+                // Annex B start code
+                self.annex_b_buffer.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                self.annex_b_buffer.extend_from_slice(&data[offset..offset + nal_len]);
+                offset += nal_len;
+            }
+        }
+    }
+
+    impl H264Decoder for OpenH264Decoder {
+        fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+            self.avc_to_annex_b(data);
+
+            let yuv = self
+                .decoder
+                .decode(&self.annex_b_buffer)
+                .map_err(|e| DecoderError::new("OpenH264 decode failed", e))?
+                .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))?;
+
+            let (width, height) = openh264::formats::YUVSource::dimensions(&yuv);
+
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                reason = "H.264 frame dimensions are always within u32 range"
+            )]
+            let (w32, h32) = (width as u32, height as u32);
+
+            let mut rgba = vec![0u8; width * height * 4];
+            yuv.write_rgba8(&mut rgba);
+
+            Ok(DecodedFrame {
+                data: rgba,
+                width: w32,
+                height: h32,
+            })
+        }
+
+        fn reset(&mut self) {
+            match openh264::decoder::Decoder::new() {
+                Ok(new_decoder) => self.decoder = new_decoder,
+                Err(e) => warn!("Failed to reset OpenH264 decoder, reusing existing state: {e}"),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "openh264")]
+pub use openh264_impl::OpenH264Decoder;
+
+// ============================================================================
+// OpenH264 Tests
+// ============================================================================
+
+#[cfg(all(test, feature = "openh264"))]
+mod openh264_tests {
+    use super::{H264Decoder, OpenH264Decoder};
+
+    /// Generate a minimal AVC-format H.264 bitstream by encoding a black 16x16 frame
+    ///
+    /// The encoder produces Annex B format (start code prefixed). This function
+    /// converts the output to AVC format (4-byte BE length prefixed) to exercise
+    /// the full decode pipeline including AVC-to-Annex-B conversion.
+    fn generate_test_avc_bitstream() -> Vec<u8> {
+        use openh264::encoder::Encoder;
+        use openh264::formats::YUVBuffer;
+
+        let mut encoder = Encoder::new().expect("encoder should initialize");
+
+        // Black 16x16 YUV420p frame (all zeros)
+        let yuv = YUVBuffer::new(16, 16);
+        let bitstream = encoder.encode(&yuv).expect("encode should succeed");
+        let annex_b = bitstream.to_vec();
+
+        // Convert Annex B (0x00 0x00 0x00 0x01 | 0x00 0x00 0x01) to AVC (4-byte BE length prefix)
+        annex_b_to_avc(&annex_b)
+    }
+
+    /// Convert Annex B format NAL units to AVC format (4-byte BE length prefix)
+    fn annex_b_to_avc(data: &[u8]) -> Vec<u8> {
+        let mut avc = Vec::new();
+        let mut i = 0;
+
+        // Find NAL unit boundaries by scanning for start codes
+        let mut nal_starts = Vec::new();
+        while i < data.len() {
+            if i + 3 < data.len() && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 {
+                nal_starts.push(i + 4);
+                i += 4;
+            } else if i + 2 < data.len() && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+                nal_starts.push(i + 3);
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+
+        for (idx, &start) in nal_starts.iter().enumerate() {
+            let end = if idx + 1 < nal_starts.len() {
+                // Find the start code before the next NAL
+                let next_start = nal_starts[idx + 1];
+                // Back up past the start code prefix
+                if next_start >= 4
+                    && data[next_start - 4] == 0
+                    && data[next_start - 3] == 0
+                    && data[next_start - 2] == 0
+                {
+                    next_start - 4
+                } else {
+                    next_start - 3
+                }
+            } else {
+                data.len()
+            };
+
+            let nal_data = &data[start..end];
+
+            #[expect(clippy::as_conversions, reason = "NAL unit length for test data")]
+            let len = nal_data.len() as u32;
+            avc.extend_from_slice(&len.to_be_bytes());
+            avc.extend_from_slice(nal_data);
+        }
+
+        avc
+    }
+
+    #[test]
+    fn test_openh264_decoder_init() {
+        let _decoder = OpenH264Decoder::new().expect("decoder should initialize");
+    }
+
+    #[test]
+    fn test_openh264_decode_sps_pps() {
+        // Generate a full bitstream (SPS + PPS + IDR) and verify decode succeeds
+        // SPS and PPS are always delivered together with the first I-frame
+        // in RFX_AVC420_BITMAP_STREAM payloads
+        let avc_data = generate_test_avc_bitstream();
+        assert!(!avc_data.is_empty(), "encoder should produce output");
+
+        let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+        let frame = decoder.decode(&avc_data).expect("decode should succeed");
+        assert!(frame.width >= 16, "decoded width should be at least 16");
+        assert!(frame.height >= 16, "decoded height should be at least 16");
+    }
+
+    #[test]
+    fn test_openh264_decode_iframe() {
+        let avc_data = generate_test_avc_bitstream();
+
+        let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+        let frame = decoder.decode(&avc_data).expect("decode should succeed");
+
+        // Verify RGBA output dimensions and data
+        assert_eq!(frame.width, 16);
+        assert_eq!(frame.height, 16);
+        assert_eq!(frame.data.len(), 16 * 16 * 4, "RGBA data should be 16x16x4 bytes");
+    }
+
+    #[test]
+    fn test_openh264_decoder_reset() {
+        let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+
+        // Decode a frame to populate internal state
+        let avc_data = generate_test_avc_bitstream();
+        let _ = decoder.decode(&avc_data);
+
+        // Reset should not panic
+        decoder.reset();
+
+        // Decoder should still be usable after reset
+        let frame = decoder.decode(&avc_data).expect("decode after reset should succeed");
+        assert_eq!(frame.width, 16);
+        assert_eq!(frame.height, 16);
+    }
+}
