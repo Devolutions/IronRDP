@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ironrdp_core::assert_impl;
 use ironrdp_graphics::color_conversion::rdp_16bit_to_rgb;
-use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
+use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelFormat, Rgba};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
@@ -535,7 +535,6 @@ impl DecodedImage {
         Ok(update_rectangle)
     }
 
-    // FIXME: this assumes PixelFormat::RgbA32
     pub(crate) fn apply_rgb16_bitmap(
         &mut self,
         rgb16: &[u8],
@@ -548,6 +547,7 @@ impl DecodedImage {
         let rectangle_width = usize::from(update_rectangle.width());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
+        let pixel_format = self.pixel_format;
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
@@ -567,10 +567,9 @@ impl DecodedImage {
                         let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
                         let [r, g, b] = rdp_16bit_to_rgb(rgb16_value);
-                        self.data[dst_idx] = r;
-                        self.data[dst_idx + 1] = g;
-                        self.data[dst_idx + 2] = b;
-                        self.data[dst_idx + 3] = 0xff;
+                        let color = Rgba { r, g, b, a: 0xff };
+                        // write_color only fails on short buffers, which can't happen here
+                        let _ = pixel_format.write_color(color, &mut self.data[dst_idx..dst_idx + DST_COLOR_DEPTH]);
                     })
             });
 
@@ -579,7 +578,6 @@ impl DecodedImage {
         Ok(update_rectangle)
     }
 
-    // FIXME: this assumes PixelFormat::RgbA32
     fn apply_rgb24_iter<'a, I>(
         &mut self,
         rgb24: I,
@@ -594,6 +592,7 @@ impl DecodedImage {
         let image_width = usize::from(self.width);
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
+        let pixel_format = self.pixel_format;
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
@@ -603,10 +602,14 @@ impl DecodedImage {
                 .for_each(|(col_idx, src_pixel)| {
                     let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                    // Copy RGB channels as is
-                    self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
-                    // Set alpha channel to opaque(0xFF)
-                    self.data[dst_idx + 3] = 0xFF;
+                    let color = Rgba {
+                        r: src_pixel[0],
+                        g: src_pixel[1],
+                        b: src_pixel[2],
+                        a: 0xFF,
+                    };
+                    // write_color only fails on short buffers, which can't happen here
+                    let _ = pixel_format.write_color(color, &mut self.data[dst_idx..dst_idx + DST_COLOR_DEPTH]);
                 })
         });
 
@@ -631,7 +634,6 @@ impl DecodedImage {
         }
     }
 
-    // FIXME: this assumes PixelFormat::RgbA32
     pub(crate) fn apply_rgb32_bitmap(
         &mut self,
         rgb32: &[u8],
@@ -663,6 +665,7 @@ impl DecodedImage {
                         })
                 });
         } else {
+            let pixel_format = self.pixel_format;
             rgb32
                 .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
                 .rev()
@@ -676,7 +679,10 @@ impl DecodedImage {
                             let c = format
                                 .read_color(src_pixel)
                                 .map_err(|err| custom_err!("read color", err))?;
-                            self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(&[c.r, c.g, c.b, c.a]);
+
+                            pixel_format
+                                .write_color(c, &mut self.data[dst_idx..dst_idx + DST_COLOR_DEPTH])
+                                .map_err(|err| custom_err!("write color", err))?;
 
                             Ok(())
                         })?;
