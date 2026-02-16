@@ -42,9 +42,20 @@ pub struct RdpServerOptions {
     pub addr: SocketAddr,
     pub security: RdpServerSecurity,
     pub codecs: BitmapCodecs,
+    pub max_request_size: u32,
 }
 
 impl RdpServerOptions {
+    /// Default [MultifragmentUpdate] max reassembly buffer size (8 MB).
+    ///
+    /// Advertised to the client during capability exchange as the largest
+    /// reassembled Fast-Path Update the server can accept.
+    /// Values that are too large cause certain clients (notably mstsc)
+    /// to reject the connection.
+    ///
+    /// [MultifragmentUpdate]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
+    pub const DEFAULT_MAX_REQUEST_SIZE: u32 = 8 * 1024 * 1024;
+
     fn has_image_remote_fx(&self) -> bool {
         self.codecs
             .0

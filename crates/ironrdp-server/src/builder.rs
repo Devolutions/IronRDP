@@ -29,6 +29,7 @@ pub struct BuilderDone {
     addr: SocketAddr,
     security: RdpServerSecurity,
     codecs: BitmapCodecs,
+    max_request_size: u32,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
@@ -128,6 +129,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 sound_factory: None,
                 cliprdr_factory: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
+                max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
             },
@@ -144,6 +146,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 sound_factory: None,
                 cliprdr_factory: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
+                max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
             },
@@ -174,12 +177,18 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    pub fn with_max_request_size(mut self, max_request_size: u32) -> Self {
+        self.state.max_request_size = max_request_size;
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         RdpServer::new(
             RdpServerOptions {
                 addr: self.state.addr,
                 security: self.state.security,
                 codecs: self.state.codecs,
+                max_request_size: self.state.max_request_size,
             },
             self.state.handler,
             self.state.display,
