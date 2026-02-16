@@ -2,7 +2,7 @@ use core::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::backend::ClipboardMessage;
@@ -584,7 +584,7 @@ impl RdpServer {
                     .context("failed to send rdpsnd event")?;
                     let channel_id = self
                         .get_channel_id_by_type::<RdpsndServer>()
-                        .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                        .context("SVC channel not found")?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
                     writer.write_all(&data).await?;
                 }
@@ -611,7 +611,7 @@ impl RdpServer {
                     .context("failed to send clipboard event")?;
                     let channel_id = self
                         .get_channel_id_by_type::<CliprdrServer>()
-                        .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                        .context("SVC channel not found")?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
                     writer.write_all(&data).await?;
                 }
@@ -620,7 +620,7 @@ impl RdpServer {
                     EgfxServerMessage::SendMessages { messages } => {
                         let drdynvc_channel_id = self
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
-                            .ok_or_else(|| anyhow!("DRDYNVC channel not found"))?;
+                            .context("DRDYNVC channel not found")?;
                         let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
                         writer.write_all(&data).await?;
                     }
