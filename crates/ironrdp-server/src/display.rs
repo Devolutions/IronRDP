@@ -25,10 +25,12 @@ pub enum DisplayUpdate {
     RGBAPointer(RGBAPointer),
     HidePointer,
     DefaultPointer,
+    CachedPointer(u16),
 }
 
 #[derive(Clone)]
 pub struct RGBAPointer {
+    pub cache_index: u16,
     pub width: u16,
     pub height: u16,
     pub hot_x: u16,
@@ -50,6 +52,7 @@ impl core::fmt::Debug for RGBAPointer {
 
 #[derive(Debug, Clone)]
 pub struct ColorPointer {
+    pub cache_index: u16,
     pub width: u16,
     pub height: u16,
     pub hot_x: u16,
