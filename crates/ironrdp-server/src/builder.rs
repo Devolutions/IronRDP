@@ -177,6 +177,12 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Sets the [MultifragmentUpdate] maximum reassembly buffer size advertised
+    /// during capability exchange.
+    ///
+    /// Defaults to [`RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE`] (8 MB).
+    ///
+    /// [MultifragmentUpdate]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
     pub fn with_max_request_size(mut self, max_request_size: u32) -> Self {
         self.state.max_request_size = max_request_size;
         self

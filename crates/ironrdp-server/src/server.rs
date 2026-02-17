@@ -54,7 +54,7 @@ impl RdpServerOptions {
     /// to reject the connection.
     ///
     /// [MultifragmentUpdate]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
-    pub const DEFAULT_MAX_REQUEST_SIZE: u32 = 8 * 1024 * 1024;
+    pub(crate) const DEFAULT_MAX_REQUEST_SIZE: u32 = 8 * 1024 * 1024;
 
     fn has_image_remote_fx(&self) -> bool {
         self.codecs
