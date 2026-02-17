@@ -1,0 +1,25 @@
+[package]
+name = "ironrdp-echo"
+version = "0.1.0"
+readme = "README.md"
+description = "Virtual channel echo extension implementation"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.5" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
+tracing = { version = "0.1", features = ["log"] }
+
+[lints]
+workspace = true

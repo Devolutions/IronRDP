@@ -14,7 +14,7 @@ categories.workspace = true
 [dev-dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "connector"] }
+ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "dvc", "echo"] }
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }

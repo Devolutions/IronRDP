@@ -29,6 +29,7 @@ rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots", "ir
 native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls", "ironrdp-mstsgu/native-tls"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
+echo = ["ironrdp/echo"]
 
 [dependencies]
 # Protocols

@@ -74,6 +74,19 @@ impl DrdynvcServer {
         }
     }
 
+    pub fn get_dvc_channel_id_by_type<T>(&self) -> Option<u32>
+    where
+        T: DvcServerProcessor + 'static,
+    {
+        self.dynamic_channels.iter().find_map(|(id, channel)| {
+            if channel.state != ChannelState::Opened || !channel.processor.as_any().is::<T>() {
+                return None;
+            }
+
+            id.try_into().ok()
+        })
+    }
+
     // FIXME(#61): it’s likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
 
     #[must_use]

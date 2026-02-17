@@ -2,6 +2,8 @@ use core::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[cfg(feature = "echo")]
+use crate::echo::{build_echo_request, EchoDvcBridge, EchoServerHandle, EchoServerMessage};
 use anyhow::{bail, Context as _, Result};
 use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::Framed;
@@ -18,7 +20,7 @@ pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{decode_err, mcs, nego, rdp, Action, PduResult};
-use ironrdp_svc::{server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
+use ironrdp_svc::{server_encode_svc_messages, ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor};
 use ironrdp_tokio::{split_tokio_framed, unsplit_tokio_framed, FramedRead, FramedWrite, TokioFramed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
@@ -219,6 +221,8 @@ pub struct RdpServer {
     static_channels: StaticChannelSet,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+    #[cfg(feature = "echo")]
+    echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "egfx")]
@@ -234,6 +238,8 @@ pub enum ServerEvent {
     Quit(String),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
+    #[cfg(feature = "echo")]
+    Echo(EchoServerMessage),
     SetCredentials(Credentials),
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
     #[cfg(feature = "egfx")]
@@ -284,6 +290,8 @@ impl RdpServer {
             static_channels: StaticChannelSet::new(),
             sound_factory,
             cliprdr_factory,
+            #[cfg(feature = "echo")]
+            echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
             gfx_factory,
             #[cfg(feature = "egfx")]
@@ -301,6 +309,12 @@ impl RdpServer {
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
+    #[cfg(feature = "echo")]
+    pub fn echo_handle(&self) -> &EchoServerHandle {
+        &self.echo_handle
     }
 
     /// Returns the shared EGFX server handle for proactive frame submission.
@@ -335,6 +349,12 @@ impl RdpServer {
                 handler: Arc::clone(&self.handler),
             })
             .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+
+        #[cfg(feature = "echo")]
+        let dvc = {
+            let echo_handle = self.echo_handle.clone();
+            dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
+        };
 
         #[cfg(feature = "egfx")]
         let dvc = {
@@ -615,6 +635,33 @@ impl RdpServer {
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
                     writer.write_all(&data).await?;
                 }
+                #[cfg(feature = "echo")]
+                ServerEvent::Echo(msg) => match msg {
+                    EchoServerMessage::SendRequest { payload } => {
+                        let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                            warn!("No drdynvc channel, dropping ECHO request");
+                            continue;
+                        };
+
+                        let Some(echo_channel_id) = drdynvc.get_dvc_channel_id_by_type::<EchoDvcBridge>() else {
+                            warn!("No ECHO dynamic channel, dropping ECHO request");
+                            continue;
+                        };
+
+                        self.echo_handle.on_request_sent(&payload);
+
+                        let request = build_echo_request(payload)?;
+                        let messages =
+                            dvc::encode_dvc_messages(echo_channel_id, vec![request], ChannelFlags::SHOW_PROTOCOL)?;
+
+                        let drdynvc_channel_id = self
+                            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                            .context("DRDYNVC channel not found")?;
+
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
+                        writer.write_all(&data).await?;
+                    }
+                },
                 #[cfg(feature = "egfx")]
                 ServerEvent::Egfx(msg) => match msg {
                     EgfxServerMessage::SendMessages { messages } => {
