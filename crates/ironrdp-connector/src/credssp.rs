@@ -4,7 +4,6 @@ use picky::key::PrivateKey;
 use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
-use sspi::negotiate::ProtocolConfig;
 use sspi::Secret;
 use sspi::Username;
 use tracing::debug;
@@ -144,23 +143,24 @@ impl CredsspSequence {
 
         let service_principal_name = format!("TERMSRV/{}", &server_name);
 
-        let credssp_config: Box<dyn ProtocolConfig>;
-        if let Some(ref krb_config) = kerberos_config {
-            credssp_config = Box::new(Into::<sspi::KerberosConfig>::into(krb_config.clone()));
-        } else {
-            credssp_config = Box::<sspi::ntlm::NtlmConfig>::default();
-        }
-        debug!(?credssp_config);
+        let client_mode = match kerberos_config {
+            Some(ref krb_config) => {
+                let credssp_config = Box::new(Into::<sspi::KerberosConfig>::into(krb_config.clone()));
+                debug!(?credssp_config);
+                credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
+                    protocol_config: credssp_config,
+                    package_list: None,
+                    client_computer_name: server_name,
+                })
+            }
+            None => credssp::ClientMode::Ntlm(sspi::ntlm::NtlmConfig::default()),
+        };
 
         let client = CredSspClient::new(
             server_public_key,
             credentials,
             credssp::CredSspMode::WithCredentials,
-            credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
-                protocol_config: credssp_config,
-                package_list: None,
-                client_computer_name: server_name,
-            }),
+            client_mode,
             service_principal_name,
         )
         .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
