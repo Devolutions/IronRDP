@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ironrdp_core::assert_impl;
 use ironrdp_graphics::color_conversion::rdp_16bit_to_rgb;
-use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelFormat, Rgba};
+use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
@@ -547,7 +547,7 @@ impl DecodedImage {
         let rectangle_width = usize::from(update_rectangle.width());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
-        let pixel_format = self.pixel_format;
+        let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
@@ -567,9 +567,10 @@ impl DecodedImage {
                         let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
                         let [r, g, b] = rdp_16bit_to_rgb(rgb16_value);
-                        let color = Rgba { r, g, b, a: 0xff };
-                        // write_color only fails on short buffers, which can't happen here
-                        let _ = pixel_format.write_color(color, &mut self.data[dst_idx..dst_idx + DST_COLOR_DEPTH]);
+                        self.data[dst_idx + ri] = r;
+                        self.data[dst_idx + gi] = g;
+                        self.data[dst_idx + bi] = b;
+                        self.data[dst_idx + ai] = 0xff;
                     })
             });
 
@@ -592,7 +593,7 @@ impl DecodedImage {
         let image_width = usize::from(self.width);
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
-        let pixel_format = self.pixel_format;
+        let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
@@ -602,14 +603,10 @@ impl DecodedImage {
                 .for_each(|(col_idx, src_pixel)| {
                     let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                    let color = Rgba {
-                        r: src_pixel[0],
-                        g: src_pixel[1],
-                        b: src_pixel[2],
-                        a: 0xFF,
-                    };
-                    // write_color only fails on short buffers, which can't happen here
-                    let _ = pixel_format.write_color(color, &mut self.data[dst_idx..dst_idx + DST_COLOR_DEPTH]);
+                    self.data[dst_idx + ri] = src_pixel[0];
+                    self.data[dst_idx + gi] = src_pixel[1];
+                    self.data[dst_idx + bi] = src_pixel[2];
+                    self.data[dst_idx + ai] = 0xFF;
                 })
         });
 
@@ -665,7 +662,7 @@ impl DecodedImage {
                         })
                 });
         } else {
-            let pixel_format = self.pixel_format;
+            let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
             rgb32
                 .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
                 .rev()
@@ -680,9 +677,10 @@ impl DecodedImage {
                                 .read_color(src_pixel)
                                 .map_err(|err| custom_err!("read color", err))?;
 
-                            pixel_format
-                                .write_color(c, &mut self.data[dst_idx..dst_idx + DST_COLOR_DEPTH])
-                                .map_err(|err| custom_err!("write color", err))?;
+                            self.data[dst_idx + ri] = c.r;
+                            self.data[dst_idx + gi] = c.g;
+                            self.data[dst_idx + bi] = c.b;
+                            self.data[dst_idx + ai] = c.a;
 
                             Ok(())
                         })?;
