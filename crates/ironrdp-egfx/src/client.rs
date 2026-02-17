@@ -209,20 +209,13 @@ pub struct BitmapUpdate {
 pub trait GraphicsPipelineHandler: Send {
     /// Returns the capability sets to advertise to the server
     ///
-    /// The default advertises V10.7 (AVC420+AVC444), V8.1 (AVC420 only),
-    /// and V8 (no AVC) as fallback.
+    /// The default advertises V8 only (no H.264). Override this or use
+    /// [`capabilities_with_avc420`] to advertise AVC420/AVC444 support
+    /// when an H.264 decoder is available.
     fn capabilities(&self) -> Vec<CapabilitySet> {
-        vec![
-            CapabilitySet::V10_7 {
-                flags: CapabilitiesV107Flags::SMALL_CACHE,
-            },
-            CapabilitySet::V8_1 {
-                flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
-            },
-            CapabilitySet::V8 {
-                flags: CapabilitiesV8Flags::SMALL_CACHE,
-            },
-        ]
+        vec![CapabilitySet::V8 {
+            flags: CapabilitiesV8Flags::SMALL_CACHE,
+        }]
     }
 
     /// Called when the server confirms negotiated capabilities
@@ -261,6 +254,25 @@ pub trait GraphicsPipelineHandler: Send {
     /// `CacheToSurface`, `EvictCacheEntry`, and other PDUs not
     /// directly handled by the client core.
     fn on_unhandled_pdu(&mut self, _pdu: &GfxPdu) {}
+}
+
+/// Returns capability sets advertising AVC420 (H.264) support
+///
+/// Use this when an H.264 decoder is available. Advertises V10.7
+/// (AVC420+AVC444), V8.1 (AVC420 only), and V8 (no AVC) as fallback.
+#[must_use]
+pub fn capabilities_with_avc420() -> Vec<CapabilitySet> {
+    vec![
+        CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::SMALL_CACHE,
+        },
+        CapabilitySet::V8_1 {
+            flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
+        },
+        CapabilitySet::V8 {
+            flags: CapabilitiesV8Flags::SMALL_CACHE,
+        },
+    ]
 }
 
 // ============================================================================
@@ -432,6 +444,11 @@ impl GraphicsPipelineClient {
     }
 
     fn handle_create_surface(&mut self, surface_id: u16, width: u16, height: u16, pixel_format: PixelFormat) {
+        if width == 0 || height == 0 {
+            warn!(surface_id, width, height, "CreateSurface with zero dimension, ignoring");
+            return;
+        }
+
         let surface = Surface {
             id: surface_id,
             width,
@@ -666,6 +683,14 @@ fn crop_decoded_frame(
         let src_end = src_start.saturating_add(copy_len);
         if src_end <= data.len() {
             cropped.extend_from_slice(&data[src_start..src_end]);
+        } else {
+            warn!(
+                row,
+                src_end,
+                data_len = data.len(),
+                "Crop: source data shorter than expected, truncating frame"
+            );
+            break;
         }
     }
 

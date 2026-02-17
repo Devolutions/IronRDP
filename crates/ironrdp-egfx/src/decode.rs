@@ -212,16 +212,11 @@ mod openh264_impl {
     ///
     /// Controls how and where the OpenH264 binary is loaded from.
     /// The binary must be Cisco's precompiled release for patent compliance.
+    #[derive(Default)]
     pub struct OpenH264DecoderConfig {
         /// Explicit path to the OpenH264 shared library.
         /// When set, only this path is tried (no system search).
         pub library_path: Option<String>,
-    }
-
-    impl Default for OpenH264DecoderConfig {
-        fn default() -> Self {
-            Self { library_path: None }
-        }
     }
 
     /// H.264 decoder backed by Cisco's OpenH264 library (loaded dynamically)
@@ -325,9 +320,19 @@ mod openh264_impl {
 
                 // Use checked addition to prevent overflow on malicious input
                 let Some(end) = offset.checked_add(nal_len) else {
+                    warn!(
+                        offset,
+                        nal_len, "AVC-to-Annex B: NAL length overflow, emitting partial output"
+                    );
                     break;
                 };
                 if end > data.len() {
+                    warn!(
+                        offset,
+                        nal_len,
+                        data_len = data.len(),
+                        "AVC-to-Annex B: NAL extends beyond buffer, emitting partial output"
+                    );
                     break;
                 }
 
@@ -358,7 +363,11 @@ mod openh264_impl {
             )]
             let (w32, h32) = (width as u32, height as u32);
 
-            let mut rgba = vec![0u8; width * height * 4];
+            let rgba_len = width
+                .checked_mul(height)
+                .and_then(|n| n.checked_mul(4))
+                .ok_or_else(|| DecoderError::msg("RGBA allocation overflow: frame dimensions too large"))?;
+            let mut rgba = vec![0u8; rgba_len];
             yuv.write_rgba8(&mut rgba);
 
             Ok(DecodedFrame {
