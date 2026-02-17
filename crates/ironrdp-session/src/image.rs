@@ -535,7 +535,6 @@ impl DecodedImage {
         Ok(update_rectangle)
     }
 
-    // FIXME: this assumes PixelFormat::RgbA32
     pub(crate) fn apply_rgb16_bitmap(
         &mut self,
         rgb16: &[u8],
@@ -548,6 +547,7 @@ impl DecodedImage {
         let rectangle_width = usize::from(update_rectangle.width());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
+        let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
@@ -567,10 +567,10 @@ impl DecodedImage {
                         let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
                         let [r, g, b] = rdp_16bit_to_rgb(rgb16_value);
-                        self.data[dst_idx] = r;
-                        self.data[dst_idx + 1] = g;
-                        self.data[dst_idx + 2] = b;
-                        self.data[dst_idx + 3] = 0xff;
+                        self.data[dst_idx + ri] = r;
+                        self.data[dst_idx + gi] = g;
+                        self.data[dst_idx + bi] = b;
+                        self.data[dst_idx + ai] = 0xff;
                     })
             });
 
@@ -579,7 +579,6 @@ impl DecodedImage {
         Ok(update_rectangle)
     }
 
-    // FIXME: this assumes PixelFormat::RgbA32
     fn apply_rgb24_iter<'a, I>(
         &mut self,
         rgb24: I,
@@ -594,6 +593,7 @@ impl DecodedImage {
         let image_width = usize::from(self.width);
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
+        let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
@@ -603,10 +603,10 @@ impl DecodedImage {
                 .for_each(|(col_idx, src_pixel)| {
                     let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                    // Copy RGB channels as is
-                    self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
-                    // Set alpha channel to opaque(0xFF)
-                    self.data[dst_idx + 3] = 0xFF;
+                    self.data[dst_idx + ri] = src_pixel[0];
+                    self.data[dst_idx + gi] = src_pixel[1];
+                    self.data[dst_idx + bi] = src_pixel[2];
+                    self.data[dst_idx + ai] = 0xFF;
                 })
         });
 
@@ -631,7 +631,6 @@ impl DecodedImage {
         }
     }
 
-    // FIXME: this assumes PixelFormat::RgbA32
     pub(crate) fn apply_rgb32_bitmap(
         &mut self,
         rgb32: &[u8],
@@ -663,6 +662,7 @@ impl DecodedImage {
                         })
                 });
         } else {
+            let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
             rgb32
                 .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
                 .rev()
@@ -676,7 +676,11 @@ impl DecodedImage {
                             let c = format
                                 .read_color(src_pixel)
                                 .map_err(|err| custom_err!("read color", err))?;
-                            self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(&[c.r, c.g, c.b, c.a]);
+
+                            self.data[dst_idx + ri] = c.r;
+                            self.data[dst_idx + gi] = c.g;
+                            self.data[dst_idx + bi] = c.b;
+                            self.data[dst_idx + ai] = c.a;
 
                             Ok(())
                         })?;

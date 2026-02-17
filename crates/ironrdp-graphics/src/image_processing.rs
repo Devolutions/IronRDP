@@ -1,7 +1,6 @@
 use core::{cmp, fmt};
 use std::io;
 
-use byteorder::WriteBytesExt as _;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 
 const ALPHA_OPAQUE: u8 = 0xff;
@@ -160,131 +159,54 @@ impl PixelFormat {
         (self.as_u32() & mask) == (other.as_u32() & mask)
     }
 
-    pub fn read_color(self, buffer: &[u8]) -> io::Result<Rgba> {
+    /// Returns the byte offsets for the (r, g, b, a) channels within a pixel.
+    pub const fn channel_offsets(self) -> [usize; 4] {
         match self {
-            Self::ARgb32
-            | Self::XRgb32
-            | Self::ABgr32
-            | Self::XBgr32
-            | Self::BgrA32
-            | Self::BgrX32
-            | Self::RgbA32
-            | Self::RgbX32 => {
-                if buffer.len() < 4 {
-                    Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "input buffer is not large enough (this is a bug)",
-                    ))
-                } else {
-                    let color = &buffer[..4];
-
-                    match self {
-                        Self::ARgb32 => Ok(Rgba {
-                            a: color[0],
-                            r: color[1],
-                            g: color[2],
-                            b: color[3],
-                        }),
-                        Self::XRgb32 => Ok(Rgba {
-                            a: ALPHA_OPAQUE,
-                            r: color[1],
-                            g: color[2],
-                            b: color[3],
-                        }),
-                        Self::ABgr32 => Ok(Rgba {
-                            a: color[0],
-                            b: color[1],
-                            g: color[2],
-                            r: color[3],
-                        }),
-                        Self::XBgr32 => Ok(Rgba {
-                            a: ALPHA_OPAQUE,
-                            b: color[1],
-                            g: color[2],
-                            r: color[3],
-                        }),
-                        Self::BgrA32 => Ok(Rgba {
-                            b: color[0],
-                            g: color[1],
-                            r: color[2],
-                            a: color[3],
-                        }),
-                        Self::BgrX32 => Ok(Rgba {
-                            b: color[0],
-                            g: color[1],
-                            r: color[2],
-                            a: ALPHA_OPAQUE,
-                        }),
-                        Self::RgbA32 => Ok(Rgba {
-                            r: color[0],
-                            g: color[1],
-                            b: color[2],
-                            a: color[3],
-                        }),
-                        Self::RgbX32 => Ok(Rgba {
-                            r: color[0],
-                            g: color[1],
-                            b: color[2],
-                            a: ALPHA_OPAQUE,
-                        }),
-                    }
-                }
-            }
+            Self::ARgb32 | Self::XRgb32 => [1, 2, 3, 0],
+            Self::ABgr32 | Self::XBgr32 => [3, 2, 1, 0],
+            Self::BgrA32 | Self::BgrX32 => [2, 1, 0, 3],
+            Self::RgbA32 | Self::RgbX32 => [0, 1, 2, 3],
         }
     }
 
-    pub fn write_color(self, color: Rgba, mut buffer: &mut [u8]) -> io::Result<()> {
+    /// Returns `true` if this format carries an alpha channel, `false` for X (padding) formats.
+    pub const fn has_alpha(self) -> bool {
         match self {
-            Self::ARgb32 => {
-                buffer.write_u8(color.a)?;
-                buffer.write_u8(color.r)?;
-                buffer.write_u8(color.g)?;
-                buffer.write_u8(color.b)?;
-            }
-            Self::XRgb32 => {
-                buffer.write_u8(ALPHA_OPAQUE)?;
-                buffer.write_u8(color.r)?;
-                buffer.write_u8(color.g)?;
-                buffer.write_u8(color.b)?;
-            }
-            Self::ABgr32 => {
-                buffer.write_u8(color.a)?;
-                buffer.write_u8(color.b)?;
-                buffer.write_u8(color.g)?;
-                buffer.write_u8(color.r)?;
-            }
-            Self::XBgr32 => {
-                buffer.write_u8(ALPHA_OPAQUE)?;
-                buffer.write_u8(color.b)?;
-                buffer.write_u8(color.g)?;
-                buffer.write_u8(color.r)?;
-            }
-            Self::BgrA32 => {
-                buffer.write_u8(color.b)?;
-                buffer.write_u8(color.g)?;
-                buffer.write_u8(color.r)?;
-                buffer.write_u8(color.a)?;
-            }
-            Self::BgrX32 => {
-                buffer.write_u8(color.b)?;
-                buffer.write_u8(color.g)?;
-                buffer.write_u8(color.r)?;
-                buffer.write_u8(ALPHA_OPAQUE)?;
-            }
-            Self::RgbA32 => {
-                buffer.write_u8(color.r)?;
-                buffer.write_u8(color.g)?;
-                buffer.write_u8(color.b)?;
-                buffer.write_u8(color.a)?;
-            }
-            Self::RgbX32 => {
-                buffer.write_u8(color.r)?;
-                buffer.write_u8(color.g)?;
-                buffer.write_u8(color.b)?;
-                buffer.write_u8(ALPHA_OPAQUE)?;
-            }
+            Self::ARgb32 | Self::ABgr32 | Self::BgrA32 | Self::RgbA32 => true,
+            Self::XRgb32 | Self::XBgr32 | Self::BgrX32 | Self::RgbX32 => false,
+        }
+    }
+
+    pub fn read_color(self, buffer: &[u8]) -> io::Result<Rgba> {
+        if buffer.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "input buffer is not large enough (this is a bug)",
+            ));
         }
 
+        let [ri, gi, bi, ai] = self.channel_offsets();
+        Ok(Rgba {
+            r: buffer[ri],
+            g: buffer[gi],
+            b: buffer[bi],
+            a: if self.has_alpha() { buffer[ai] } else { ALPHA_OPAQUE },
+        })
+    }
+
+    pub fn write_color(self, color: Rgba, buffer: &mut [u8]) -> io::Result<()> {
+        if buffer.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "output buffer is not large enough (this is a bug)",
+            ));
+        }
+
+        let [ri, gi, bi, ai] = self.channel_offsets();
+        buffer[ri] = color.r;
+        buffer[gi] = color.g;
+        buffer[bi] = color.b;
+        buffer[ai] = if self.has_alpha() { color.a } else { ALPHA_OPAQUE };
         Ok(())
     }
 }
