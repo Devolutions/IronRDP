@@ -24,13 +24,13 @@ pub enum ProcessorOutput {
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     DeactivateAll(Box<ConnectionActivationSequence>),
-    /// Server Initiate Multitransport Request. The application should establish a
-    /// sideband UDP transport using the request ID and security cookie, then send
-    /// a [`MultitransportResponsePdu`] back on the IO channel.
+    /// [2.2.15.1] Server Initiate Multitransport Request PDU
     ///
-    /// See [\[MS-RDPBCGR\] 2.2.15.1].
+    /// The application should establish a sideband UDP transport using the
+    /// request ID and security cookie, then send a [`MultitransportResponsePdu`]
+    /// back on the IO channel.
     ///
-    /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
+    /// [2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
     /// [`MultitransportResponsePdu`]: ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu
     MultitransportRequest(MultitransportRequestPdu),
 }
@@ -183,8 +183,9 @@ impl Processor {
             }
             ironrdp_connector::legacy::IoChannelPdu::MultitransportRequest(pdu) => {
                 debug!(
-                    "Received Initiate Multitransport Request: request_id={}",
-                    pdu.request_id
+                    request_id = pdu.request_id,
+                    protocol = ?pdu.requested_protocol,
+                    "Received Initiate Multitransport Request"
                 );
                 Ok(vec![ProcessorOutput::MultitransportRequest(pdu)])
             }
