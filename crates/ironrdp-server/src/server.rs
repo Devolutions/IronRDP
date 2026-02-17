@@ -2,7 +2,7 @@ use core::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::backend::ClipboardMessage;
@@ -32,6 +32,8 @@ use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
+#[cfg(feature = "egfx")]
+use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
 use crate::{builder, capabilities, SoundServerFactory};
 
@@ -217,6 +219,10 @@ pub struct RdpServer {
     static_channels: StaticChannelSet,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+    #[cfg(feature = "egfx")]
+    gfx_factory: Option<Box<dyn GfxServerFactory>>,
+    #[cfg(feature = "egfx")]
+    gfx_handle: Option<crate::gfx::GfxServerHandle>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -230,6 +236,8 @@ pub enum ServerEvent {
     Rdpsnd(RdpsndServerMessage),
     SetCredentials(Credentials),
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
+    #[cfg(feature = "egfx")]
+    Egfx(EgfxServerMessage),
 }
 
 pub trait ServerEventSender {
@@ -256,6 +264,7 @@ impl RdpServer {
         display: Box<dyn RdpServerDisplay>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+        #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -264,6 +273,10 @@ impl RdpServer {
         if let Some(snd) = sound_factory.as_mut() {
             snd.set_sender(ev_sender.clone());
         }
+        #[cfg(feature = "egfx")]
+        if let Some(gfx) = gfx_factory.as_mut() {
+            gfx.set_sender(ev_sender.clone());
+        }
         Self {
             opts,
             handler: Arc::new(Mutex::new(handler)),
@@ -271,6 +284,10 @@ impl RdpServer {
             static_channels: StaticChannelSet::new(),
             sound_factory,
             cliprdr_factory,
+            #[cfg(feature = "egfx")]
+            gfx_factory,
+            #[cfg(feature = "egfx")]
+            gfx_handle: None,
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -284,6 +301,17 @@ impl RdpServer {
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Returns the shared EGFX server handle for proactive frame submission.
+    ///
+    /// Available after `build_server_with_handle()` returns `Some` during
+    /// channel setup. Display handlers use this to call
+    /// `send_avc420_frame()` / `send_avc444_frame()` and then signal the
+    /// event loop via `ServerEvent::Egfx`.
+    #[cfg(feature = "egfx")]
+    pub fn gfx_handle(&self) -> Option<&crate::gfx::GfxServerHandle> {
+        self.gfx_handle.as_ref()
     }
 
     fn attach_channels(&mut self, acceptor: &mut Acceptor) {
@@ -307,6 +335,23 @@ impl RdpServer {
                 handler: Arc::clone(&self.handler),
             })
             .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+
+        #[cfg(feature = "egfx")]
+        let dvc = {
+            let mut dvc = dvc;
+            if let Some(gfx_factory) = self.gfx_factory.as_deref() {
+                if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
+                    self.gfx_handle = Some(handle);
+                    dvc = dvc.with_dynamic_channel(bridge);
+                } else {
+                    let handler = gfx_factory.build_gfx_handler();
+                    let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
+                    dvc = dvc.with_dynamic_channel(gfx_server);
+                }
+            }
+            dvc
+        };
+
         acceptor.attach_static_channel(dvc);
     }
 
@@ -539,7 +584,7 @@ impl RdpServer {
                     .context("failed to send rdpsnd event")?;
                     let channel_id = self
                         .get_channel_id_by_type::<RdpsndServer>()
-                        .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                        .context("SVC channel not found")?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
                     writer.write_all(&data).await?;
                 }
@@ -566,10 +611,20 @@ impl RdpServer {
                     .context("failed to send clipboard event")?;
                     let channel_id = self
                         .get_channel_id_by_type::<CliprdrServer>()
-                        .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                        .context("SVC channel not found")?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
                     writer.write_all(&data).await?;
                 }
+                #[cfg(feature = "egfx")]
+                ServerEvent::Egfx(msg) => match msg {
+                    EgfxServerMessage::SendMessages { messages } => {
+                        let drdynvc_channel_id = self
+                            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                            .context("DRDYNVC channel not found")?;
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
+                        writer.write_all(&data).await?;
+                    }
+                },
             }
         }
 

@@ -11,6 +11,8 @@ mod capabilities;
 mod clipboard;
 mod display;
 mod encoder;
+#[cfg(feature = "egfx")]
+mod gfx;
 mod handler;
 #[cfg(feature = "helper")]
 mod helper;
@@ -19,6 +21,8 @@ mod sound;
 
 pub use clipboard::*;
 pub use display::*;
+#[cfg(feature = "egfx")]
+pub use gfx::*;
 pub use handler::*;
 #[cfg(feature = "helper")]
 pub use helper::*;

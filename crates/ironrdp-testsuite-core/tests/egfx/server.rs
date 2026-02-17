@@ -179,9 +179,10 @@ fn test_surface_lifecycle() {
     assert!(server.delete_surface(sid));
     assert!(server.get_surface(sid).is_none());
 
-    // Drain output (should have CreateSurface, MapSurfaceToOutput, DeleteSurface PDUs)
+    // Drain output: ResetGraphics (auto-sent before first surface), CreateSurface,
+    // MapSurfaceToOutput, DeleteSurface
     let output = server.drain_output();
-    assert_eq!(output.len(), 3);
+    assert_eq!(output.len(), 4);
 }
 
 #[test]
