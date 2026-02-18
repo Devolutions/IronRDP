@@ -3,7 +3,6 @@ use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_echo::client::EchoClient;
 use ironrdp_echo::pdu::{EchoRequestPdu, EchoResponsePdu};
 use ironrdp_echo::server::EchoServer;
-use {ironrdp_pdu as _, tracing as _};
 
 #[test]
 fn request_pdu_roundtrip() {
