@@ -10,7 +10,6 @@ mod builder;
 mod capabilities;
 mod clipboard;
 mod display;
-#[cfg(feature = "echo")]
 mod echo;
 mod encoder;
 #[cfg(feature = "egfx")]
@@ -21,9 +20,9 @@ mod helper;
 mod server;
 mod sound;
 
+// FIXME: too much wildcards here.
 pub use clipboard::*;
 pub use display::*;
-#[cfg(feature = "echo")]
 pub use echo::*;
 #[cfg(feature = "egfx")]
 pub use gfx::*;

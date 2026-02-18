@@ -8,7 +8,6 @@ use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 #[cfg(windows)]
 use ironrdp::dvc::DvcProcessor as _;
-#[cfg(feature = "echo")]
 use ironrdp::echo::client::EchoClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::graphics::pointer::DecodedPointer;
@@ -207,13 +206,9 @@ async fn connect(
     };
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
-    let mut drdynvc =
-        ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
-
-    #[cfg(feature = "echo")]
-    {
-        drdynvc = drdynvc.with_dynamic_channel(EchoClient::new());
-    }
+    let mut drdynvc = ironrdp::dvc::DrdynvcClient::new()
+        .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
+        .with_dynamic_channel(EchoClient::new());
 
     // Instantiate all DVC proxies
     for proxy in config.dvc_pipe_proxies.iter() {
@@ -335,13 +330,9 @@ async fn connect_ws(
 
     let mut framed = ironrdp_tokio::TokioFramed::new(ws);
 
-    let mut drdynvc =
-        ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
-
-    #[cfg(feature = "echo")]
-    {
-        drdynvc = drdynvc.with_dynamic_channel(EchoClient::new());
-    }
+    let mut drdynvc = ironrdp::dvc::DrdynvcClient::new()
+        .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
+        .with_dynamic_channel(EchoClient::new());
 
     // Instantiate all DVC proxies
     for proxy in config.dvc_pipe_proxies.iter() {

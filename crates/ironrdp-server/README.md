@@ -35,7 +35,6 @@ use ironrdp_server::RdpServer;
 
 # async fn demo(mut server: RdpServer) -> anyhow::Result<()> {
 // Grab and clone the shared handle before moving the server into a task.
-#[cfg(feature = "echo")]
 let echo = server.echo_handle().clone();
 
 let local = tokio::task::LocalSet::new();
@@ -43,7 +42,6 @@ local
 	.run_until(async move {
 		let server_task = tokio::task::spawn_local(async move { server.run().await });
 
-		#[cfg(feature = "echo")]
 		{
 			echo.send_request(b"ping".to_vec())?;
 

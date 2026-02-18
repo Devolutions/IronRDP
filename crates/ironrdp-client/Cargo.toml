@@ -29,7 +29,6 @@ rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots", "ir
 native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls", "ironrdp-mstsgu/native-tls"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
-echo = ["ironrdp/echo"]
 
 [dependencies]
 # Protocols
@@ -44,6 +43,7 @@ ironrdp = { path = "../ironrdp", version = "0.14", features = [
     "cliprdr",
     "displaycontrol",
     "connector",
+    "echo",
 ] }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.5" }
