@@ -3,6 +3,7 @@ name = "ironrdp-egfx"
 version = "0.1.0"
 readme = "README.md"
 description = "Graphics pipeline dynamic channel extension implementation"
+publish = false # TODO: publish
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true
@@ -13,7 +14,7 @@ categories.workspace = true
 
 [lib]
 doctest = false
-# test = false
+# test = false # FIXME: turn off and keep tests in testsuite crates
 
 [dependencies]
 bit_field = "0.10"
