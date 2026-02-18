@@ -6,10 +6,11 @@ use ironrdp_client::config::{ClipboardType, Config};
 use ironrdp_client::rdp::{DvcPipeProxyFactory, RdpClient, RdpInputEvent, RdpOutputEvent};
 use tokio::runtime;
 use tracing::debug;
+use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 
 fn main() -> anyhow::Result<()> {
-    let mut config = Config::parse_args().context("CLI arguments parsing")?;
+    let config = Config::parse_args().context("CLI arguments parsing")?;
 
     setup_logging(config.log_file.as_deref()).context("unable to initialize logging")?;
 
@@ -17,13 +18,12 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
-    let mut app = App::new(&event_loop, &input_event_sender).context("unable to initialize App")?;
-
-    // TODO: get window size & scale factor from GUI/App
-    let window_size = (1024, 768);
-    config.connector.desktop_scale_factor = 0;
-    config.connector.desktop_size.width = window_size.0;
-    config.connector.desktop_size.height = window_size.1;
+    let initial_window_size = PhysicalSize::new(
+        u32::from(config.connector.desktop_size.width),
+        u32::from(config.connector.desktop_size.height),
+    );
+    let mut app =
+        App::new(&event_loop, &input_event_sender, initial_window_size).context("unable to initialize App")?;
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()

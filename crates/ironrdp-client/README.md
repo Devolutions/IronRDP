@@ -12,6 +12,43 @@ and winit for windowing.
 ironrdp-client <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
+## `.rdp` file support
+
+You can load a `.rdp` file with `--rdp-file <PATH>`.
+
+Currently supported properties:
+
+- `full address:s:<value>`
+- `alternate full address:s:<value>`
+- `server port:i:<value>`
+- `username:s:<value>`
+- `domain:s:<value>`
+- `enablecredsspsupport:i:<0|1>`
+- `gatewayhostname:s:<value>`
+- `gatewayusagemethod:i:<value>`
+- `gatewaycredentialssource:i:<value>`
+- `gatewayusername:s:<value>`
+- `GatewayPassword:s:<value>`
+- `kdcproxyname:s:<value>`
+- `KDCProxyURL:s:<value>`
+- `alternate shell:s:<value>`
+- `shell working directory:s:<value>`
+- `redirectclipboard:i:<0|1>`
+- `audiomode:i:<0|1|2>`
+- `desktopwidth:i:<value>`
+- `desktopheight:i:<value>`
+- `desktopscalefactor:i:<value>`
+- `compression:i:<0|1>`
+- `ClearTextPassword:s:<value>`
+
+Property precedence is:
+
+1. CLI options
+2. `.rdp` file values
+3. Defaults and interactive prompts
+
+Unknown or unsupported `.rdp` properties are ignored and do not fail parsing. Parse issues and skipped properties are logged at debug level.
+
 ## Configuring log filter directives
 
 The `IRONRDP_LOG` environment variable is used to set the log filter directives. 
