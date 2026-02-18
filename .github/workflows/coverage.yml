@@ -25,6 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install devel packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get -y install libasound2-dev
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.7.3
 
