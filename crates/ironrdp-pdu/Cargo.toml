@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-pdu"
-version = "0.7.0"
+version = "0.7.1"
 readme = "README.md"
 description = "RDP PDU encoding and decoding"
 edition.workspace = true
@@ -25,7 +25,7 @@ qoiz = ["qoi"]
 [dependencies]
 bitflags = "2.9"
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] } # public
-ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
+ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
 tap = "1"
 
 # TODO: get rid of these dependencies (related code should probably go into another crate)
