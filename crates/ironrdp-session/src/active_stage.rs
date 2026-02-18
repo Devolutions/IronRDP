@@ -297,12 +297,12 @@ pub enum ActiveStageOutput {
     PointerBitmap(Arc<DecodedPointer>),
     Terminate(GracefulDisconnectReason),
     DeactivateAll(Box<ConnectionActivationSequence>),
-    /// Server Initiate Multitransport Request. The application should establish a
-    /// sideband UDP transport using the provided request parameters.
+    /// [2.2.15.1] Server Initiate Multitransport Request PDU
     ///
-    /// See [\[MS-RDPBCGR\] 2.2.15.1].
+    /// The application should establish a sideband UDP transport using the
+    /// provided request parameters.
     ///
-    /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
+    /// [2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
     MultitransportRequest(MultitransportRequestPdu),
 }
 

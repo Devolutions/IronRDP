@@ -278,8 +278,9 @@ pub mod ffi {
 
         /// Returns the multitransport request ID and requested protocol.
         ///
-        /// The security cookie is intentionally not exposed — it is sensitive
-        /// and only needed internally for transport binding.
+        /// The security cookie is not yet exposed because UDP transport is not
+        /// currently implemented. It will be added when full multitransport
+        /// support is available.
         #[expect(
             clippy::as_conversions,
             reason = "RequestedProtocol is #[repr(u16)], cast is lossless"

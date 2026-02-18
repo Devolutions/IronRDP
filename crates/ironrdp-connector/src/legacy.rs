@@ -173,24 +173,35 @@ pub enum IoChannelPdu {
 }
 
 pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<IoChannelPdu> {
-    // Multitransport PDUs use BasicSecurityHeader (flags:u16, flagsHi:u16) instead
-    // of the ShareControlHeader (totalLength:u16, pduType:u16, ...) used by all
-    // other IO channel PDUs. We discriminate by checking flagsHi == 0 (ShareControl
-    // has pduType there, which is always non-zero) and requiring flags to be a valid
-    // BasicSecurityHeaderFlags combination.
-    if ctx.user_data.len() >= BASIC_SECURITY_HEADER_SIZE {
-        let flags_raw = u16::from_le_bytes([ctx.user_data[0], ctx.user_data[1]]);
-        let flags_hi = u16::from_le_bytes([ctx.user_data[2], ctx.user_data[3]]);
-
-        if flags_hi == 0 {
-            if let Some(flags) = BasicSecurityHeaderFlags::from_bits(flags_raw) {
-                if flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ) {
-                    if let Ok(pdu) = decode::<MultitransportRequestPdu>(ctx.user_data) {
-                        return Ok(IoChannelPdu::MultitransportRequest(pdu));
-                    }
-                }
-            }
+    fn try_decode_multitransport(data: &[u8]) -> Option<MultitransportRequestPdu> {
+        if data.len() < BASIC_SECURITY_HEADER_SIZE {
+            return None;
         }
+
+        let flags_raw = u16::from_le_bytes([data[0], data[1]]);
+        let flags_hi = u16::from_le_bytes([data[2], data[3]]);
+
+        // ShareControlHeader always has pduType | PROTOCOL_VERSION (>= 0x11) at bytes [2..4].
+        // BasicSecurityHeader has flagsHi == 0 for non-encrypted PDUs.
+        if flags_hi != 0 {
+            return None;
+        }
+
+        let flags = BasicSecurityHeaderFlags::from_bits(flags_raw)?;
+
+        if !flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ) {
+            return None;
+        }
+
+        decode::<MultitransportRequestPdu>(data).ok()
+    }
+
+    // Multitransport PDUs use BasicSecurityHeader (flags:u16, flagsHi:u16) instead
+    // of the ShareControlHeader (totalLength:u16, pduType_with_version:u16, ...) used
+    // by all other IO channel PDUs. We discriminate by checking bytes [2..4] == 0:
+    // ShareControl always has pduType | PROTOCOL_VERSION (>= 0x11) at that offset.
+    if let Some(pdu) = try_decode_multitransport(ctx.user_data) {
+        return Ok(IoChannelPdu::MultitransportRequest(pdu));
     }
 
     let ctx = decode_share_control(ctx)?;
