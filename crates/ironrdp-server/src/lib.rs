@@ -10,6 +10,8 @@ mod builder;
 mod capabilities;
 mod clipboard;
 mod display;
+#[cfg(feature = "echo")]
+mod echo;
 mod encoder;
 #[cfg(feature = "egfx")]
 mod gfx;
@@ -21,6 +23,8 @@ mod sound;
 
 pub use clipboard::*;
 pub use display::*;
+#[cfg(feature = "echo")]
+pub use echo::*;
 #[cfg(feature = "egfx")]
 pub use gfx::*;
 pub use handler::*;

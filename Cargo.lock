@@ -2428,6 +2428,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
+ "ironrdp-echo",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
@@ -2659,6 +2660,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-echo"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-egfx"
 version = "0.1.0"
 dependencies = [
@@ -2857,6 +2868,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
+ "ironrdp-echo",
  "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-pdu",

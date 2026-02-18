@@ -28,6 +28,10 @@ pub use ironrdp_core as core;
 #[doc(inline)]
 pub use ironrdp_displaycontrol as displaycontrol;
 
+#[cfg(feature = "echo")]
+#[doc(inline)]
+pub use ironrdp_echo as echo;
+
 #[cfg(feature = "dvc")]
 #[doc(inline)]
 pub use ironrdp_dvc as dvc;
