@@ -659,6 +659,11 @@ impl RdpServer {
                             continue;
                         };
 
+                        if !drdynvc.is_channel_opened(echo_channel_id) {
+                            warn!("ECHO dynamic channel not yet opened, dropping ECHO request");
+                            continue;
+                        }
+
                         self.echo_handle.on_request_sent(&payload);
 
                         let request = build_echo_request(payload)?;

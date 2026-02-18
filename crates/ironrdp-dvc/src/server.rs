@@ -85,6 +85,17 @@ impl DrdynvcServer {
         self.type_id_to_channel_id.get(&TypeId::of::<T>()).copied()
     }
 
+    /// Returns `true` if the DVC channel with the given ID has completed
+    /// its creation handshake and is in the `Opened` state.
+    pub fn is_channel_opened(&self, channel_id: u32) -> bool {
+        let Ok(id) = usize::try_from(channel_id) else {
+            return false;
+        };
+        self.dynamic_channels
+            .get(id)
+            .is_some_and(|c| c.state == ChannelState::Opened)
+    }
+
     // FIXME(#61): it’s likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
 
     #[must_use]
@@ -94,9 +105,8 @@ impl DrdynvcServer {
     {
         let id = self.dynamic_channels.insert(DynamicChannel::new(channel));
         // The slab index is used as the DVC channel ID (a u32).
-        if let Ok(channel_id) = u32::try_from(id) {
-            self.type_id_to_channel_id.insert(TypeId::of::<T>(), channel_id);
-        }
+        let channel_id = u32::try_from(id).expect("DVC channel count should not exceed u32::MAX");
+        self.type_id_to_channel_id.insert(TypeId::of::<T>(), channel_id);
         self
     }
 
