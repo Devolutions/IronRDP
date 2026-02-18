@@ -31,7 +31,7 @@ dvc = ["dep:ironrdp-dvc"]
 rdpdr = ["dep:ironrdp-rdpdr"]
 rdpsnd = ["dep:ironrdp-rdpsnd"]
 displaycontrol = ["dep:ironrdp-displaycontrol"]
-echo = ["dep:ironrdp-echo", "ironrdp-server?/echo"]
+echo = ["dep:ironrdp-echo"]
 qoi = ["ironrdp-server?/qoi", "ironrdp-pdu?/qoi", "ironrdp-connector?/qoi", "ironrdp-session?/qoi"]
 qoiz = ["ironrdp-server?/qoiz", "ironrdp-pdu?/qoiz", "ironrdp-connector?/qoiz", "ironrdp-session?/qoiz"]
 # Internal (PRIVATE!) features used to aid testing.

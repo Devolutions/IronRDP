@@ -22,7 +22,6 @@ rayon = ["dep:rayon"]
 qoi = ["dep:qoicoubeh", "ironrdp-pdu/qoi"]
 qoiz = ["dep:zstd-safe", "qoi", "ironrdp-pdu/qoiz"]
 egfx = ["dep:ironrdp-egfx"]
-echo = ["dep:ironrdp-echo"]
 
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
@@ -40,7 +39,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.5" } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.5" } # public
-ironrdp-echo = { path = "../ironrdp-echo", version = "0.1", optional = true } # public
+ironrdp-echo = { path = "../ironrdp-echo", version = "0.1" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.5" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.8", features = ["reqwest"] }
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.8" } # public

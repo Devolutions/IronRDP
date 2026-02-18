@@ -2,7 +2,6 @@ use core::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 
-#[cfg(feature = "echo")]
 use crate::echo::{build_echo_request, EchoDvcBridge, EchoServerHandle, EchoServerMessage};
 use anyhow::{bail, Context as _, Result};
 use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
@@ -232,7 +231,6 @@ pub struct RdpServer {
     static_channels: StaticChannelSet,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
-    #[cfg(feature = "echo")]
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
@@ -249,7 +247,6 @@ pub enum ServerEvent {
     Quit(String),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
-    #[cfg(feature = "echo")]
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
@@ -301,7 +298,6 @@ impl RdpServer {
             static_channels: StaticChannelSet::new(),
             sound_factory,
             cliprdr_factory,
-            #[cfg(feature = "echo")]
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
             gfx_factory,
@@ -323,7 +319,6 @@ impl RdpServer {
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
-    #[cfg(feature = "echo")]
     pub fn echo_handle(&self) -> &EchoServerHandle {
         &self.echo_handle
     }
@@ -361,7 +356,6 @@ impl RdpServer {
             })
             .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
 
-        #[cfg(feature = "echo")]
         let dvc = {
             let echo_handle = self.echo_handle.clone();
             dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
@@ -646,7 +640,6 @@ impl RdpServer {
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
                     writer.write_all(&data).await?;
                 }
-                #[cfg(feature = "echo")]
                 ServerEvent::Echo(msg) => match msg {
                     EchoServerMessage::SendRequest { payload } => {
                         let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
