@@ -1,5 +1,7 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::any::TypeId;
 use core::fmt;
 
 use ironrdp_core::{cast_length, impl_as_any, invalid_field_err, Decode as _, DecodeResult, ReadCursor};
@@ -48,6 +50,7 @@ impl DynamicChannel {
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcServer {
     dynamic_channels: Slab<DynamicChannel>,
+    type_id_to_channel_id: BTreeMap<TypeId, u32>,
 }
 
 impl fmt::Debug for DrdynvcServer {
@@ -71,20 +74,15 @@ impl DrdynvcServer {
     pub fn new() -> Self {
         Self {
             dynamic_channels: Slab::new(),
+            type_id_to_channel_id: BTreeMap::new(),
         }
     }
 
-    pub fn get_dvc_channel_id_by_type<T>(&self) -> Option<u32>
+    pub fn get_channel_id_by_type<T>(&self) -> Option<u32>
     where
         T: DvcServerProcessor + 'static,
     {
-        self.dynamic_channels.iter().find_map(|(id, channel)| {
-            if channel.state != ChannelState::Opened || !channel.processor.as_any().is::<T>() {
-                return None;
-            }
-
-            id.try_into().ok()
-        })
+        self.type_id_to_channel_id.get(&TypeId::of::<T>()).copied()
     }
 
     // FIXME(#61): it’s likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
@@ -94,7 +92,11 @@ impl DrdynvcServer {
     where
         T: DvcServerProcessor + 'static,
     {
-        self.dynamic_channels.insert(DynamicChannel::new(channel));
+        let id = self.dynamic_channels.insert(DynamicChannel::new(channel));
+        // The slab index is used as the DVC channel ID (a u32).
+        if let Ok(channel_id) = u32::try_from(id) {
+            self.type_id_to_channel_id.insert(TypeId::of::<T>(), channel_id);
+        }
         self
     }
 
