@@ -647,10 +647,15 @@ impl RdpServer {
                             continue;
                         };
 
-                        let Some(echo_channel_id) = drdynvc.get_dvc_channel_id_by_type::<EchoDvcBridge>() else {
+                        let Some(echo_channel_id) = drdynvc.get_channel_id_by_type::<EchoDvcBridge>() else {
                             warn!("No ECHO dynamic channel, dropping ECHO request");
                             continue;
                         };
+
+                        if !drdynvc.is_channel_opened(echo_channel_id) {
+                            warn!("ECHO dynamic channel not yet opened, dropping ECHO request");
+                            continue;
+                        }
 
                         self.echo_handle.on_request_sent(&payload);
 

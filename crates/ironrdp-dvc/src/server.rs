@@ -1,5 +1,7 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::any::TypeId;
 use core::fmt;
 
 use ironrdp_core::{cast_length, impl_as_any, invalid_field_err, Decode as _, DecodeResult, ReadCursor};
@@ -48,6 +50,7 @@ impl DynamicChannel {
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcServer {
     dynamic_channels: Slab<DynamicChannel>,
+    type_id_to_channel_id: BTreeMap<TypeId, u32>,
 }
 
 impl fmt::Debug for DrdynvcServer {
@@ -71,30 +74,44 @@ impl DrdynvcServer {
     pub fn new() -> Self {
         Self {
             dynamic_channels: Slab::new(),
+            type_id_to_channel_id: BTreeMap::new(),
         }
     }
 
-    pub fn get_dvc_channel_id_by_type<T>(&self) -> Option<u32>
+    pub fn get_channel_id_by_type<T>(&self) -> Option<u32>
     where
         T: DvcServerProcessor + 'static,
     {
-        self.dynamic_channels.iter().find_map(|(id, channel)| {
-            if channel.state != ChannelState::Opened || !channel.processor.as_any().is::<T>() {
-                return None;
-            }
-
-            id.try_into().ok()
-        })
+        self.type_id_to_channel_id.get(&TypeId::of::<T>()).copied()
     }
 
-    // FIXME(#61): it’s likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
+    /// Returns `true` if the DVC channel with the given ID has completed
+    /// its creation handshake and is in the `Opened` state.
+    pub fn is_channel_opened(&self, channel_id: u32) -> bool {
+        let Ok(id) = usize::try_from(channel_id) else {
+            return false;
+        };
+        self.dynamic_channels
+            .get(id)
+            .is_some_and(|c| c.state == ChannelState::Opened)
+    }
 
+    // FIXME(#61): it's likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
+
+    /// Registers a dynamic channel with the server.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of registered dynamic channels exceeds `u32::MAX`.
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
         T: DvcServerProcessor + 'static,
     {
-        self.dynamic_channels.insert(DynamicChannel::new(channel));
+        let id = self.dynamic_channels.insert(DynamicChannel::new(channel));
+        // The slab index is used as the DVC channel ID (a u32).
+        let channel_id = u32::try_from(id).expect("DVC channel count should not exceed u32::MAX");
+        self.type_id_to_channel_id.insert(TypeId::of::<T>(), channel_id);
         self
     }
 
