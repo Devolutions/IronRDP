@@ -15,6 +15,7 @@
 mod clipboard;
 mod displaycontrol;
 mod dvc;
+mod echo;
 mod egfx;
 mod fuzz_regression;
 mod graphics;
