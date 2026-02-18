@@ -11,7 +11,7 @@ pub(crate) fn capabilities(opts: &RdpServerOptions, size: DesktopSize) -> Vec<ca
         capability_sets::CapabilitySet::Pointer(pointer_capabilities()),
         capability_sets::CapabilitySet::Input(input_capabilities()),
         capability_sets::CapabilitySet::VirtualChannel(virtual_channel_capabilities()),
-        capability_sets::CapabilitySet::MultiFragmentUpdate(multifragment_update()),
+        capability_sets::CapabilitySet::MultiFragmentUpdate(multifragment_update(opts)),
         capability_sets::CapabilitySet::BitmapCodecs(opts.codecs.clone()),
     ]
 }
@@ -80,10 +80,8 @@ fn virtual_channel_capabilities() -> capability_sets::VirtualChannel {
     }
 }
 
-fn multifragment_update() -> capability_sets::MultifragmentUpdate {
+fn multifragment_update(opts: &RdpServerOptions) -> capability_sets::MultifragmentUpdate {
     capability_sets::MultifragmentUpdate {
-        // FIXME(#318): use an acceptable value for msctc.
-        // What is the actual server max size?
-        max_request_size: 16_777_215,
+        max_request_size: opts.max_request_size,
     }
 }
