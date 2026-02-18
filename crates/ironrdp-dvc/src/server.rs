@@ -96,8 +96,13 @@ impl DrdynvcServer {
             .is_some_and(|c| c.state == ChannelState::Opened)
     }
 
-    // FIXME(#61): it’s likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
+    // FIXME(#61): it's likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
 
+    /// Registers a dynamic channel with the server.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of registered dynamic channels exceeds `u32::MAX`.
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
