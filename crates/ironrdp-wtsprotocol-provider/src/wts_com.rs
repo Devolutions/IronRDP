@@ -10,6 +10,7 @@ use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::io::{Read as _, Write};
 use std::os::windows::io::{AsRawHandle as _, RawHandle};
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -1164,7 +1165,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
             // transfers ownership of the stream reference back to COM.
             let callback_for_worker =
                 unsafe { CoGetInterfaceAndReleaseStream::<_, IWRdsProtocolListenerCallback>(&callback_stream) };
-            std::mem::forget(callback_stream);
+            let _ = callback_stream.into_raw();
 
             let callback_for_worker = match callback_for_worker {
                 Ok(callback_for_worker) => callback_for_worker,
@@ -1196,10 +1197,10 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                     };
 
                     let connection_entry = listener.create_connection_with_id(incoming.connection_id);
-                    let connection_callback_slot = Arc::new(Mutex::new(None));
+                    let connection_callback_slot = Rc::new(Mutex::new(None));
                     let connection: IWRdsProtocolConnection = ComProtocolConnection::new(
                         connection_entry,
-                        Arc::clone(&connection_callback_slot),
+                        Rc::clone(&connection_callback_slot),
                         control_bridge.clone(),
                     )
                     .into();
@@ -1227,10 +1228,10 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 }
             } else {
                 let bootstrap_connection = listener.create_connection();
-                let connection_callback_slot = Arc::new(Mutex::new(None));
+                let connection_callback_slot = Rc::new(Mutex::new(None));
                 let connection: IWRdsProtocolConnection = ComProtocolConnection::new(
                     bootstrap_connection,
-                    Arc::clone(&connection_callback_slot),
+                    Rc::clone(&connection_callback_slot),
                     control_bridge,
                 )
                 .into();
@@ -1287,7 +1288,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
 struct ComProtocolConnection {
     inner: Arc<ProtocolConnection>,
     auth_bridge: CredsspServerBridge,
-    connection_callback: Arc<Mutex<Option<IWRdsProtocolConnectionCallback>>>,
+    connection_callback: Rc<Mutex<Option<IWRdsProtocolConnectionCallback>>>,
     control_bridge: ProviderControlBridge,
     ready_notified: Mutex<bool>,
     last_input_time: Mutex<u64>,
@@ -1299,7 +1300,7 @@ struct ComProtocolConnection {
 impl ComProtocolConnection {
     fn new(
         inner: Arc<ProtocolConnection>,
-        connection_callback: Arc<Mutex<Option<IWRdsProtocolConnectionCallback>>>,
+        connection_callback: Rc<Mutex<Option<IWRdsProtocolConnectionCallback>>>,
         control_bridge: ProviderControlBridge,
     ) -> Self {
         Self {

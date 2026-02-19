@@ -264,18 +264,19 @@ mod windows_main {
             .checked_mul(NonZeroUsize::from(height).get())
             .ok_or_else(|| anyhow!("frame buffer length overflow"))?;
 
-        let width_usize = usize::from(width.get());
-        let height_usize = usize::from(height.get());
+        let width_usize = NonZeroUsize::from(width).get();
+        let height_usize = NonZeroUsize::from(height).get();
         let stride_usize = stride.get();
 
         let mut data = vec![0u8; frame_len];
+        let modulus = usize::from(u8::MAX) + 1;
 
         for y in 0..height_usize {
             let row = &mut data[(y * stride_usize)..((y + 1) * stride_usize)];
-            let g = (y as u8).wrapping_mul(3);
+            let g = u8::try_from(y % modulus).unwrap_or(0).wrapping_mul(3);
             for x in 0..width_usize {
                 let offset = x * 4;
-                let b = (x as u8).wrapping_mul(5);
+                let b = u8::try_from(x % modulus).unwrap_or(0).wrapping_mul(5);
                 row[offset] = b;
                 row[offset + 1] = g;
                 row[offset + 2] = 0x80;
