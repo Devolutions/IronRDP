@@ -14,11 +14,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::thread;
 
+use ironrdp_pdu::nego;
 use ironrdp_wtsprotocol_ipc::{
     default_pipe_name, pipe_path, read_json_message, resolve_pipe_name_from_env, write_json_message, ProviderCommand,
     ServiceEvent, DEFAULT_MAX_FRAME_SIZE,
 };
-use ironrdp_pdu::nego;
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 use windows::Win32::Foundation::{
@@ -33,14 +33,13 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolConnection, IWRdsProtocolConnectionCallback, IWRdsProtocolConnection_Impl,
-    IWRdsProtocolLicenseConnection, IWRdsProtocolListener, IWRdsProtocolListenerCallback,
-    IWRdsProtocolListener_Impl, IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager,
-    IWRdsProtocolManager_Impl, IWRdsProtocolSettings, IWRdsProtocolShadowConnection, WTSVirtualChannelClose,
-    WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite, WRDS_CONNECTION_SETTINGS,
-    WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL, WRDS_SETTINGS, WTS_CHANNEL_OPTION_DYNAMIC,
-    WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED,
-    WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA, WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS,
-    WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
+    IWRdsProtocolLicenseConnection, IWRdsProtocolListener, IWRdsProtocolListenerCallback, IWRdsProtocolListener_Impl,
+    IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager, IWRdsProtocolManager_Impl, IWRdsProtocolSettings,
+    IWRdsProtocolShadowConnection, WTSVirtualChannelClose, WTSVirtualChannelOpenEx, WTSVirtualChannelRead,
+    WTSVirtualChannelWrite, WRDS_CONNECTION_SETTINGS, WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL,
+    WRDS_SETTINGS, WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW,
+    WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA, WTS_PROPERTY_VALUE,
+    WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
 };
 use windows_core::{implement, Interface as _, BOOL, GUID, PCSTR, PCWSTR};
 use windows_core::{IUnknown, HRESULT};
@@ -324,9 +323,9 @@ impl ProviderControlBridge {
         };
 
         match event {
-            ServiceEvent::ListenerStarted { listener_name: started_listener } if started_listener == listener_name => {
-                Ok(true)
-            }
+            ServiceEvent::ListenerStarted {
+                listener_name: started_listener,
+            } if started_listener == listener_name => Ok(true),
             ServiceEvent::Ack => Ok(true),
             ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
             other => Err(windows_core::Error::new(
@@ -345,9 +344,9 @@ impl ProviderControlBridge {
         };
 
         match event {
-            ServiceEvent::ListenerStopped { listener_name: stopped_listener } if stopped_listener == listener_name => {
-                Ok(())
-            }
+            ServiceEvent::ListenerStopped {
+                listener_name: stopped_listener,
+            } if stopped_listener == listener_name => Ok(()),
             ServiceEvent::Ack => Ok(()),
             ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
             other => Err(windows_core::Error::new(
@@ -387,7 +386,11 @@ impl ProviderControlBridge {
         }
     }
 
-    fn wait_for_incoming(&self, listener_name: &str, timeout_ms: u32) -> windows_core::Result<Option<IncomingConnection>> {
+    fn wait_for_incoming(
+        &self,
+        listener_name: &str,
+        timeout_ms: u32,
+    ) -> windows_core::Result<Option<IncomingConnection>> {
         let Some(event) = self.send_command(&ProviderCommand::WaitForIncoming {
             listener_name: listener_name.to_owned(),
             timeout_ms,
@@ -431,10 +434,7 @@ impl ProviderControlBridge {
         };
 
         let full_pipe_name = pipe_path(pipe_name);
-        let pipe_result = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&full_pipe_name);
+        let pipe_result = OpenOptions::new().read(true).write(true).open(&full_pipe_name);
 
         let mut pipe = match pipe_result {
             Ok(pipe) => pipe,
@@ -1058,8 +1058,9 @@ impl IWRdsProtocolManager_Impl for ComProtocolManager_Impl {
         } else {
             // SAFETY: listener name is provided by termservice and expected to be a valid
             // NUL-terminated wide string.
-            unsafe { wszlistenername.to_string() }
-                .map_err(|error| windows_core::Error::new(E_UNEXPECTED, format!("failed to decode listener name: {error}")))?
+            unsafe { wszlistenername.to_string() }.map_err(|error| {
+                windows_core::Error::new(E_UNEXPECTED, format!("failed to decode listener name: {error}"))
+            })?
         };
 
         info!(listener_name = %listener_name, "Created protocol listener");
@@ -1142,7 +1143,8 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
         let (stop_tx, stop_rx) = mpsc::channel();
         // SAFETY: we marshal a valid COM callback interface pointer into a stream token
         // so the worker thread can unmarshal it in its own COM apartment.
-        let callback_stream = unsafe { CoMarshalInterThreadInterfaceInStream(&IWRdsProtocolListenerCallback::IID, &callback) }?;
+        let callback_stream =
+            unsafe { CoMarshalInterThreadInterfaceInStream(&IWRdsProtocolListenerCallback::IID, &callback) }?;
         let callback_stream_token = stream_ptr_to_token(callback_stream.into_raw());
         let listener = Arc::clone(&self.inner);
         let control_bridge = self.control_bridge.clone();
@@ -1160,9 +1162,8 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
             let callback_stream = unsafe { IStream::from_raw(token_to_stream_ptr(callback_stream_token)) };
             // SAFETY: stream token contains a marshaled callback interface and this function
             // transfers ownership of the stream reference back to COM.
-            let callback_for_worker = unsafe {
-                CoGetInterfaceAndReleaseStream::<_, IWRdsProtocolListenerCallback>(&callback_stream)
-            };
+            let callback_for_worker =
+                unsafe { CoGetInterfaceAndReleaseStream::<_, IWRdsProtocolListenerCallback>(&callback_stream) };
             std::mem::forget(callback_stream);
 
             let callback_for_worker = match callback_for_worker {
