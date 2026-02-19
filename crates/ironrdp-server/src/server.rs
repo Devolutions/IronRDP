@@ -1257,6 +1257,15 @@ impl ConnectionSource for TcpConnectionSource {
     }
 }
 
+#[cfg(feature = "egfx")]
+struct NoopGfxHandler;
+
+#[cfg(feature = "egfx")]
+impl ironrdp_egfx::server::GraphicsPipelineHandler for NoopGfxHandler {
+    fn capabilities_advertise(&mut self, _pdu: &ironrdp_egfx::pdu::CapabilitiesAdvertisePdu) {}
+    fn on_ready(&mut self, _negotiated: &ironrdp_egfx::pdu::CapabilitySet) {}
+}
+
 /// RDP Server
 ///
 /// A server is created to listen for connections.
@@ -2975,6 +2984,8 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpdrServer::new(backend));
         }
 
+        info!("Attaching server input hooks (keyboard/mouse via fast-path, input PDUs, and AINPUT DVC)");
+
         let dvc = dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler {
             handler: Arc::clone(&self.handler),
             active: Arc::clone(&self.advanced_input_active),
@@ -3027,6 +3038,11 @@ impl RdpServer {
                 let (processor, handle) = crate::gfx::build_server_and_handle(gfx_factory, gfx_context);
                 gfx_handle = Some(handle);
                 dvc = dvc.with_dynamic_channel(processor);
+                info!("Attached EGFX graphics hook with shared server handle");
+            } else {
+                let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(Box::new(NoopGfxHandler));
+                dvc = dvc.with_dynamic_channel(gfx_server);
+                info!("Attached default EGFX graphics hook");
             }
             (dvc, gfx_handle)
         };
