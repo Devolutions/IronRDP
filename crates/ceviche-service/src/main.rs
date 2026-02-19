@@ -388,20 +388,22 @@ mod windows_main {
         let current_process = unsafe { GetCurrentProcess() };
 
         // SAFETY: `OpenProcessToken` writes a token handle into `process_token` on success.
-        unsafe {
+        let open_result = unsafe {
             OpenProcessToken(
                 current_process,
                 TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_SESSIONID,
                 &mut process_token,
             )
-        }
-        .ok()
-        .context("OpenProcessToken failed")?;
+        };
+
+        open_result
+            .map_err(|error| anyhow!("OpenProcessToken failed: {error}"))
+            .context("OpenProcessToken failed")?;
 
         let mut primary_token = windows::Win32::Foundation::HANDLE::default();
 
         // SAFETY: `DuplicateTokenEx` writes a new token handle into `primary_token` on success.
-        unsafe {
+        let duplicate_result = unsafe {
             DuplicateTokenEx(
                 process_token,
                 TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_SESSIONID,
@@ -410,9 +412,11 @@ mod windows_main {
                 TokenPrimary,
                 &mut primary_token,
             )
-        }
-        .ok()
-        .context("DuplicateTokenEx failed")?;
+        };
+
+        duplicate_result
+            .map_err(|error| anyhow!("DuplicateTokenEx failed: {error}"))
+            .context("DuplicateTokenEx failed")?;
 
         // SAFETY: close the original process token.
         unsafe {
@@ -422,16 +426,18 @@ mod windows_main {
         let session_id_ptr = core::ptr::addr_of!(session_id).cast::<core::ffi::c_void>();
 
         // SAFETY: SetTokenInformation expects a pointer to a u32 session id.
-        unsafe {
+        let set_result = unsafe {
             SetTokenInformation(
                 primary_token,
                 TokenSessionId,
                 session_id_ptr,
                 u32::try_from(size_of::<u32>()).map_err(|_| anyhow!("TokenSessionId size overflow"))?,
             )
-        }
-        .ok()
-        .context("SetTokenInformation(TokenSessionId) failed")?;
+        };
+
+        set_result
+            .map_err(|error| anyhow!("SetTokenInformation(TokenSessionId) failed: {error}"))
+            .context("SetTokenInformation(TokenSessionId) failed")?;
 
         Ok(primary_token)
     }
