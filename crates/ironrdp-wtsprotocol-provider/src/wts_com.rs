@@ -14,6 +14,10 @@ use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::thread;
 
+use ironrdp_wtsprotocol_ipc::{
+    default_pipe_name, pipe_path, read_json_message, resolve_pipe_name_from_env, write_json_message, ProviderCommand,
+    ServiceEvent, DEFAULT_MAX_FRAME_SIZE,
+};
 use ironrdp_pdu::nego;
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
@@ -21,31 +25,36 @@ use windows::Win32::Foundation::{
     CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_NO_DATA,
     ERROR_SEM_TIMEOUT, E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED, HANDLE, HANDLE_PTR,
 };
-use windows::Win32::System::Com::{CoCreateInstance, IClassFactory, IClassFactory_Impl, CLSCTX_INPROC_SERVER};
+use windows::Win32::System::Com::Marshal::CoMarshalInterThreadInterfaceInStream;
+use windows::Win32::System::Com::StructuredStorage::CoGetInterfaceAndReleaseStream;
+use windows::Win32::System::Com::{
+    CoInitializeEx, CoUninitialize, IClassFactory, IClassFactory_Impl, IStream, COINIT_MULTITHREADED,
+};
 use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::RemoteDesktop::{
-    IWRdsProtocolConnection, IWRdsProtocolConnection_Impl, IWRdsProtocolLicenseConnection, IWRdsProtocolListener,
-    IWRdsProtocolListenerCallback, IWRdsProtocolListener_Impl, IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager,
+    IWRdsProtocolConnection, IWRdsProtocolConnectionCallback, IWRdsProtocolConnection_Impl,
+    IWRdsProtocolLicenseConnection, IWRdsProtocolListener, IWRdsProtocolListenerCallback,
+    IWRdsProtocolListener_Impl, IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager,
     IWRdsProtocolManager_Impl, IWRdsProtocolSettings, IWRdsProtocolShadowConnection, WTSVirtualChannelClose,
     WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite, WRDS_CONNECTION_SETTINGS,
     WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL, WRDS_SETTINGS, WTS_CHANNEL_OPTION_DYNAMIC,
     WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED,
-    WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA, WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE,
-    WTS_SESSION_ID, WTS_USER_CREDENTIAL,
+    WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA, WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS,
+    WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
 };
 use windows_core::{implement, Interface as _, BOOL, GUID, PCSTR, PCWSTR};
 use windows_core::{IUnknown, HRESULT};
 
 use crate::auth_bridge::{CredsspPolicy, CredsspServerBridge};
 use crate::connection::ProtocolConnection;
+use crate::listener::ProtocolListener;
+use crate::manager::ProtocolManager;
 
 const S_OK: HRESULT = HRESULT(0);
 const S_FALSE: HRESULT = HRESULT(1);
 
 pub const IRONRDP_PROTOCOL_MANAGER_CLSID: GUID = GUID::from_u128(0x89c7ed1e_25e5_4b15_8f52_ae6df4a5ceaf);
 pub const IRONRDP_PROTOCOL_MANAGER_CLSID_STR: &str = "{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}";
-
-const DEFAULT_RDP_PROTOCOL_MANAGER_CLSID: GUID = GUID::from_u128(0x5828227c_20cf_4408_b73f_73ab70b8849f);
 
 static SERVER_LOCK_COUNT: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_OBJECT_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -271,6 +280,196 @@ fn virtual_channel_requested_priority(
     hook_target
         .map(IronRdpVirtualChannelServer::default_dynamic_priority)
         .unwrap_or(requested_priority)
+}
+
+#[derive(Debug)]
+struct ListenerWorker {
+    stop_tx: mpsc::Sender<()>,
+    join_handle: thread::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderControlBridge {
+    pipe_name: Option<String>,
+    optional_connection: bool,
+}
+
+#[derive(Debug, Clone)]
+struct IncomingConnection {
+    connection_id: u32,
+    peer_addr: Option<String>,
+}
+
+impl ProviderControlBridge {
+    fn from_env() -> Self {
+        if let Some(pipe_name) = resolve_pipe_name_from_env() {
+            return Self {
+                pipe_name: Some(pipe_name),
+                optional_connection: false,
+            };
+        }
+
+        Self {
+            pipe_name: Some(default_pipe_name()),
+            optional_connection: true,
+        }
+    }
+
+    fn start_listen(&self, listener_name: &str) -> windows_core::Result<bool> {
+        let Some(event) = self.send_command(&ProviderCommand::StartListen {
+            listener_name: listener_name.to_owned(),
+        })?
+        else {
+            return Ok(false);
+        };
+
+        match event {
+            ServiceEvent::ListenerStarted { listener_name: started_listener } if started_listener == listener_name => {
+                Ok(true)
+            }
+            ServiceEvent::Ack => Ok(true),
+            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            other => Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                format!("unexpected service event on start listen: {other:?}"),
+            )),
+        }
+    }
+
+    fn stop_listen(&self, listener_name: &str) -> windows_core::Result<()> {
+        let Some(event) = self.send_command(&ProviderCommand::StopListen {
+            listener_name: listener_name.to_owned(),
+        })?
+        else {
+            return Ok(());
+        };
+
+        match event {
+            ServiceEvent::ListenerStopped { listener_name: stopped_listener } if stopped_listener == listener_name => {
+                Ok(())
+            }
+            ServiceEvent::Ack => Ok(()),
+            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            other => Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                format!("unexpected service event on stop listen: {other:?}"),
+            )),
+        }
+    }
+
+    fn accept_connection(&self, connection_id: u32) -> windows_core::Result<()> {
+        let Some(event) = self.send_command(&ProviderCommand::AcceptConnection { connection_id })? else {
+            return Ok(());
+        };
+
+        match event {
+            ServiceEvent::ConnectionReady {
+                connection_id: ready_connection_id,
+            } if ready_connection_id == connection_id => Ok(()),
+            ServiceEvent::Ack => Ok(()),
+            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            other => Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                format!("unexpected service event on accept connection: {other:?}"),
+            )),
+        }
+    }
+
+    fn close_connection(&self, connection_id: u32) -> windows_core::Result<()> {
+        let Some(event) = self.send_command(&ProviderCommand::CloseConnection { connection_id })? else {
+            return Ok(());
+        };
+
+        match event {
+            ServiceEvent::Ack => Ok(()),
+            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            _ => Ok(()),
+        }
+    }
+
+    fn wait_for_incoming(&self, listener_name: &str, timeout_ms: u32) -> windows_core::Result<Option<IncomingConnection>> {
+        let Some(event) = self.send_command(&ProviderCommand::WaitForIncoming {
+            listener_name: listener_name.to_owned(),
+            timeout_ms,
+        })?
+        else {
+            return Ok(None);
+        };
+
+        match event {
+            ServiceEvent::IncomingConnection {
+                listener_name: service_listener_name,
+                connection_id,
+                peer_addr,
+            } => {
+                if service_listener_name != listener_name {
+                    return Err(windows_core::Error::new(
+                        E_UNEXPECTED,
+                        format!(
+                            "incoming connection listener mismatch: expected {listener_name} got {service_listener_name}"
+                        ),
+                    ));
+                }
+
+                Ok(Some(IncomingConnection {
+                    connection_id,
+                    peer_addr,
+                }))
+            }
+            ServiceEvent::NoIncoming | ServiceEvent::Ack => Ok(None),
+            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            other => Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                format!("unexpected service event on wait incoming: {other:?}"),
+            )),
+        }
+    }
+
+    fn send_command(&self, command: &ProviderCommand) -> windows_core::Result<Option<ServiceEvent>> {
+        let Some(pipe_name) = self.pipe_name.as_ref() else {
+            return Ok(None);
+        };
+
+        let full_pipe_name = pipe_path(pipe_name);
+        let pipe_result = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&full_pipe_name);
+
+        let mut pipe = match pipe_result {
+            Ok(pipe) => pipe,
+            Err(error) if self.optional_connection && is_optional_control_pipe_error(&error) => {
+                debug!(%error, pipe = %full_pipe_name, "Companion control pipe not available; using local fallback");
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(io_error_to_windows_error(error, "failed to connect to control pipe"));
+            }
+        };
+
+        write_json_message(&mut pipe, command)
+            .map_err(|error| io_error_to_windows_error(error, "failed to send control command"))?;
+
+        let event = read_json_message::<ServiceEvent>(&mut pipe, DEFAULT_MAX_FRAME_SIZE)
+            .map_err(|error| io_error_to_windows_error(error, "failed to read control response"))?;
+
+        Ok(Some(event))
+    }
+}
+
+fn is_optional_control_pipe_error(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+
+    matches!(
+        error.kind(),
+        ErrorKind::NotFound
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::TimedOut
+            | ErrorKind::BrokenPipe
+            | ErrorKind::WouldBlock
+    )
 }
 
 pub fn create_protocol_manager_com() -> IWRdsProtocolManager {
@@ -815,30 +1014,15 @@ fn dll_get_class_object_impl(
 #[implement(IWRdsProtocolManager)]
 struct ComProtocolManager {
     _lifetime: ComObjectLifetime,
-    default_manager: Mutex<Option<IWRdsProtocolManager>>,
+    inner: ProtocolManager,
 }
 
 impl ComProtocolManager {
     fn new() -> Self {
         Self {
             _lifetime: ComObjectLifetime::new(),
-            default_manager: Mutex::new(None),
+            inner: ProtocolManager::new(),
         }
-    }
-
-    fn ensure_default_manager(&self) -> windows_core::Result<IWRdsProtocolManager> {
-        if let Some(manager) = self.default_manager.lock().as_ref() {
-            return Ok(manager.clone());
-        }
-
-        // SAFETY: `CoCreateInstance` is an FFI call. The CLSID is a fixed known value for the
-        // built-in RDP protocol manager and we request an in-proc server implementation.
-        let manager: IWRdsProtocolManager =
-            unsafe { CoCreateInstance(&DEFAULT_RDP_PROTOCOL_MANAGER_CLSID, None, CLSCTX_INPROC_SERVER)? };
-
-        *self.default_manager.lock() = Some(manager.clone());
-
-        Ok(manager)
     }
 }
 
@@ -859,87 +1043,55 @@ impl Drop for ComObjectLifetime {
 }
 
 impl IWRdsProtocolManager_Impl for ComProtocolManager_Impl {
-    #[expect(clippy::similar_names)]
     fn Initialize(
         &self,
-        piwrdssettings: windows_core::Ref<'_, IWRdsProtocolSettings>,
-        pwrdssettings: *const WRDS_SETTINGS,
+        _piwrdssettings: windows_core::Ref<'_, IWRdsProtocolSettings>,
+        _pwrdssettings: *const WRDS_SETTINGS,
     ) -> windows_core::Result<()> {
-        let default_manager = self.ensure_default_manager()?;
-
-        let settings_ref = piwrdssettings.ok().ok();
-        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-        unsafe { default_manager.Initialize(settings_ref, pwrdssettings) }?;
-
-        info!("Initialized protocol manager (delegating to built-in RDP protocol manager)");
+        info!("Initialized protocol manager");
         Ok(())
     }
 
-    fn CreateListener(&self, _wszlistenername: &PCWSTR) -> windows_core::Result<IWRdsProtocolListener> {
-        let default_manager = self.ensure_default_manager()?;
-        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-        let inner_listener = unsafe { default_manager.CreateListener(*_wszlistenername) }?;
+    fn CreateListener(&self, wszlistenername: &PCWSTR) -> windows_core::Result<IWRdsProtocolListener> {
+        let listener_name = if wszlistenername.is_null() {
+            "IRDP-Tcp".to_owned()
+        } else {
+            // SAFETY: listener name is provided by termservice and expected to be a valid
+            // NUL-terminated wide string.
+            unsafe { wszlistenername.to_string() }
+                .map_err(|error| windows_core::Error::new(E_UNEXPECTED, format!("failed to decode listener name: {error}")))?
+        };
 
-        info!("Created protocol listener (delegating to built-in RDP protocol listener)");
-        Ok(ComProtocolListener::new(inner_listener).into())
+        info!(listener_name = %listener_name, "Created protocol listener");
+        Ok(ComProtocolListener::new(self.inner.create_listener(), listener_name).into())
     }
 
     fn NotifyServiceStateChange(&self, _ptsservicestatechange: *const WTS_SERVICE_STATE) -> windows_core::Result<()> {
-        if let Some(manager) = self.default_manager.lock().as_ref() {
-            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-            unsafe { manager.NotifyServiceStateChange(_ptsservicestatechange) }?;
-        }
-
         info!("Received service state change notification");
         Ok(())
     }
 
     fn NotifySessionOfServiceStart(&self, _sessionid: *const WTS_SESSION_ID) -> windows_core::Result<()> {
-        if let Some(manager) = self.default_manager.lock().as_ref() {
-            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-            unsafe { manager.NotifySessionOfServiceStart(_sessionid) }?;
-        }
-
         debug!("Received session service start notification");
         Ok(())
     }
 
     fn NotifySessionOfServiceStop(&self, _sessionid: *const WTS_SESSION_ID) -> windows_core::Result<()> {
-        if let Some(manager) = self.default_manager.lock().as_ref() {
-            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-            unsafe { manager.NotifySessionOfServiceStop(_sessionid) }?;
-        }
-
         debug!("Received session service stop notification");
         Ok(())
     }
 
     fn NotifySessionStateChange(&self, _sessionid: *const WTS_SESSION_ID, eventid: u32) -> windows_core::Result<()> {
-        if let Some(manager) = self.default_manager.lock().as_ref() {
-            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-            unsafe { manager.NotifySessionStateChange(_sessionid, eventid) }?;
-        }
-
         debug!(eventid, "Received session state change notification");
         Ok(())
     }
 
     fn NotifySettingsChange(&self, _pwrdssettings: *const WRDS_SETTINGS) -> windows_core::Result<()> {
-        if let Some(manager) = self.default_manager.lock().as_ref() {
-            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-            unsafe { manager.NotifySettingsChange(_pwrdssettings) }?;
-        }
-
         info!("Received protocol settings change notification");
         Ok(())
     }
 
     fn Uninitialize(&self) -> windows_core::Result<()> {
-        if let Some(manager) = self.default_manager.lock().as_ref() {
-            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-            unsafe { manager.Uninitialize() }?;
-        }
-
         info!("Uninitialized protocol manager");
         Ok(())
     }
@@ -947,35 +1099,186 @@ impl IWRdsProtocolManager_Impl for ComProtocolManager_Impl {
 
 #[implement(IWRdsProtocolListener)]
 struct ComProtocolListener {
-    inner: IWRdsProtocolListener,
+    inner: Arc<ProtocolListener>,
+    listener_name: String,
+    control_bridge: ProviderControlBridge,
+    callback: Mutex<Option<IWRdsProtocolListenerCallback>>,
+    worker: Mutex<Option<ListenerWorker>>,
 }
 
 impl ComProtocolListener {
-    fn new(inner: IWRdsProtocolListener) -> Self {
-        Self { inner }
+    fn new(inner: ProtocolListener, listener_name: String) -> Self {
+        Self {
+            inner: Arc::new(inner),
+            listener_name,
+            control_bridge: ProviderControlBridge::from_env(),
+            callback: Mutex::new(None),
+            worker: Mutex::new(None),
+        }
     }
 }
 
 impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
     fn GetSettings(
         &self,
-        wrdslistenersettinglevel: WRDS_LISTENER_SETTING_LEVEL,
+        _wrdslistenersettinglevel: WRDS_LISTENER_SETTING_LEVEL,
     ) -> windows_core::Result<WRDS_LISTENER_SETTINGS> {
-        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-        unsafe { self.inner.GetSettings(wrdslistenersettinglevel) }
+        Ok(WRDS_LISTENER_SETTINGS::default())
     }
 
     fn StartListen(&self, pcallback: windows_core::Ref<'_, IWRdsProtocolListenerCallback>) -> windows_core::Result<()> {
-        let callback_ref = pcallback
+        let callback = pcallback
             .ok()
-            .map_err(|_| windows_core::Error::new(E_POINTER, "null listener callback"))?;
-        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-        unsafe { self.inner.StartListen(callback_ref) }
+            .map_err(|_| windows_core::Error::new(E_POINTER, "null listener callback"))?
+            .clone();
+
+        if self.worker.lock().is_some() {
+            info!("Protocol listener already started");
+            return Ok(());
+        }
+
+        let control_bridge_enabled = self.control_bridge.start_listen(&self.listener_name)?;
+
+        let (stop_tx, stop_rx) = mpsc::channel();
+        // SAFETY: we marshal a valid COM callback interface pointer into a stream token
+        // so the worker thread can unmarshal it in its own COM apartment.
+        let callback_stream = unsafe { CoMarshalInterThreadInterfaceInStream(&IWRdsProtocolListenerCallback::IID, &callback) }?;
+        let callback_stream_token = stream_ptr_to_token(callback_stream.into_raw());
+        let listener = Arc::clone(&self.inner);
+        let control_bridge = self.control_bridge.clone();
+        let listener_name = self.listener_name.clone();
+
+        let join_handle = thread::spawn(move || {
+            // SAFETY: each worker thread initializes and uninitializes COM exactly once.
+            let co_initialize = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            if let Err(error) = co_initialize.ok() {
+                warn!(%error, "Failed to initialize COM on listener worker thread");
+                return;
+            }
+
+            // SAFETY: token was produced by `IStream::into_raw` in this process.
+            let callback_stream = unsafe { IStream::from_raw(token_to_stream_ptr(callback_stream_token)) };
+            // SAFETY: stream token contains a marshaled callback interface and this function
+            // transfers ownership of the stream reference back to COM.
+            let callback_for_worker = unsafe {
+                CoGetInterfaceAndReleaseStream::<_, IWRdsProtocolListenerCallback>(&callback_stream)
+            };
+            std::mem::forget(callback_stream);
+
+            let callback_for_worker = match callback_for_worker {
+                Ok(callback_for_worker) => callback_for_worker,
+                Err(error) => {
+                    warn!(%error, "Failed to unmarshal listener callback in worker thread");
+                    // SAFETY: paired with successful `CoInitializeEx` above.
+                    unsafe { CoUninitialize() };
+                    return;
+                }
+            };
+
+            if control_bridge_enabled {
+                loop {
+                    if stop_rx.try_recv().is_ok() {
+                        break;
+                    }
+
+                    let incoming = match control_bridge.wait_for_incoming(&listener_name, 250) {
+                        Ok(incoming) => incoming,
+                        Err(error) => {
+                            warn!(%error, listener_name = %listener_name, "Failed to poll incoming connection from companion service");
+                            thread::sleep(Duration::from_millis(200));
+                            continue;
+                        }
+                    };
+
+                    let Some(incoming) = incoming else {
+                        continue;
+                    };
+
+                    let connection_entry = listener.create_connection_with_id(incoming.connection_id);
+                    let connection_callback_slot = Arc::new(Mutex::new(None));
+                    let connection: IWRdsProtocolConnection = ComProtocolConnection::new(
+                        connection_entry,
+                        Arc::clone(&connection_callback_slot),
+                        control_bridge.clone(),
+                    )
+                    .into();
+
+                    let settings = WRDS_CONNECTION_SETTINGS::default();
+
+                    // SAFETY: COM callback and connection object are valid for call duration.
+                    match unsafe { callback_for_worker.OnConnected(&connection, &settings) } {
+                        Ok(connection_callback) => {
+                            *connection_callback_slot.lock() = Some(connection_callback);
+                            debug!(
+                                connection_id = incoming.connection_id,
+                                peer_addr = ?incoming.peer_addr,
+                                "Dispatched incoming connection from companion service"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(
+                                %error,
+                                connection_id = incoming.connection_id,
+                                "Failed to dispatch OnConnected callback for incoming connection"
+                            );
+                        }
+                    }
+                }
+            } else {
+                let bootstrap_connection = listener.create_connection();
+                let connection_callback_slot = Arc::new(Mutex::new(None));
+                let connection: IWRdsProtocolConnection = ComProtocolConnection::new(
+                    bootstrap_connection,
+                    Arc::clone(&connection_callback_slot),
+                    control_bridge,
+                )
+                .into();
+
+                let settings = WRDS_CONNECTION_SETTINGS::default();
+
+                // SAFETY: COM callback and connection object are valid for call duration.
+                match unsafe { callback_for_worker.OnConnected(&connection, &settings) } {
+                    Ok(connection_callback) => {
+                        *connection_callback_slot.lock() = Some(connection_callback);
+                    }
+                    Err(error) => {
+                        warn!(%error, "Failed to dispatch OnConnected callback");
+                    }
+                }
+
+                let _ = stop_rx.recv();
+            }
+
+            // SAFETY: paired with successful `CoInitializeEx` above.
+            unsafe { CoUninitialize() };
+        });
+
+        *self.worker.lock() = Some(ListenerWorker { stop_tx, join_handle });
+        *self.callback.lock() = Some(callback);
+        info!("Started protocol listener worker");
+
+        Ok(())
     }
 
     fn StopListen(&self) -> windows_core::Result<()> {
-        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
-        unsafe { self.inner.StopListen() }
+        if let Some(worker) = self.worker.lock().take() {
+            if let Err(error) = worker.stop_tx.send(()) {
+                warn!(%error, "Failed to signal listener worker stop");
+            }
+
+            if let Err(error) = worker.join_handle.join() {
+                warn!(?error, "Listener worker thread panicked");
+            }
+        }
+
+        *self.callback.lock() = None;
+
+        if let Err(error) = self.control_bridge.stop_listen(&self.listener_name) {
+            warn!(%error, listener_name = %self.listener_name, "Failed to stop companion service listener");
+        }
+
+        info!("Stopped protocol listener worker");
+        Ok(())
     }
 }
 
@@ -983,6 +1286,9 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
 struct ComProtocolConnection {
     inner: Arc<ProtocolConnection>,
     auth_bridge: CredsspServerBridge,
+    connection_callback: Arc<Mutex<Option<IWRdsProtocolConnectionCallback>>>,
+    control_bridge: ProviderControlBridge,
+    ready_notified: Mutex<bool>,
     last_input_time: Mutex<u64>,
     input_video_handles: Mutex<Option<InputVideoHandles>>,
     virtual_channels: Mutex<Vec<VirtualChannelHandle>>,
@@ -990,6 +1296,50 @@ struct ComProtocolConnection {
 }
 
 impl ComProtocolConnection {
+    fn new(
+        inner: Arc<ProtocolConnection>,
+        connection_callback: Arc<Mutex<Option<IWRdsProtocolConnectionCallback>>>,
+        control_bridge: ProviderControlBridge,
+    ) -> Self {
+        Self {
+            inner,
+            auth_bridge: CredsspServerBridge::default(),
+            connection_callback,
+            control_bridge,
+            ready_notified: Mutex::new(false),
+            last_input_time: Mutex::new(0),
+            input_video_handles: Mutex::new(None),
+            virtual_channels: Mutex::new(Vec::new()),
+            virtual_channel_forwarders: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn notify_ready(&self) -> windows_core::Result<()> {
+        let mut ready_notified = self.ready_notified.lock();
+        if *ready_notified {
+            return Ok(());
+        }
+
+        self.control_bridge.accept_connection(self.inner.connection_id())?;
+
+        let callback = self
+            .connection_callback
+            .lock()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "connection callback is not initialized"))?;
+
+        // SAFETY: callback was obtained from termservice for this connection.
+        unsafe { callback.OnReady() }?;
+
+        *ready_notified = true;
+        Ok(())
+    }
+
+    fn release_connection_callback(&self) {
+        *self.connection_callback.lock() = None;
+    }
+
     fn ensure_input_video_handles(&self) -> windows_core::Result<()> {
         let mut handles_guard = self.input_video_handles.lock();
         if handles_guard.is_none() {
@@ -1201,6 +1551,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         )?;
 
         self.inner.accept_connection().map_err(transition_error)?;
+        self.notify_ready()?;
         Ok(())
     }
 
@@ -1343,16 +1694,29 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
     fn DisconnectNotify(&self) -> windows_core::Result<()> {
         self.inner.disconnect_notify().map_err(transition_error)?;
+
+        if let Err(error) = self.control_bridge.close_connection(self.inner.connection_id()) {
+            warn!(%error, connection_id = self.inner.connection_id(), "Failed to notify companion service on disconnect");
+        }
+
+        *self.ready_notified.lock() = false;
         self.release_virtual_channel_forwarders();
         self.release_input_video_handles();
         self.release_virtual_channels();
+        self.release_connection_callback();
         Ok(())
     }
 
     fn Close(&self) -> windows_core::Result<()> {
+        if let Err(error) = self.control_bridge.close_connection(self.inner.connection_id()) {
+            warn!(%error, connection_id = self.inner.connection_id(), "Failed to notify companion service on close");
+        }
+
+        *self.ready_notified.lock() = false;
         self.release_virtual_channel_forwarders();
         self.release_virtual_channels();
         self.release_input_video_handles();
+        self.release_connection_callback();
         self.inner.close().map_err(transition_error)?;
         Ok(())
     }
@@ -1516,6 +1880,20 @@ fn copy_wide<const N: usize>(target: &mut [u16; N], value: &str) {
 
 fn transition_error(message: &'static str) -> windows_core::Error {
     windows_core::Error::new(E_UNEXPECTED, message)
+}
+
+fn io_error_to_windows_error(error: std::io::Error, context: &'static str) -> windows_core::Error {
+    windows_core::Error::new(E_UNEXPECTED, format!("{context}: {error}"))
+}
+
+#[expect(clippy::as_conversions)]
+fn stream_ptr_to_token(stream_ptr: *mut core::ffi::c_void) -> usize {
+    stream_ptr as usize
+}
+
+#[expect(clippy::as_conversions)]
+fn token_to_stream_ptr(token: usize) -> *mut core::ffi::c_void {
+    token as *mut core::ffi::c_void
 }
 
 #[expect(clippy::as_conversions)]

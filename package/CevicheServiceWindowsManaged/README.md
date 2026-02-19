@@ -22,6 +22,8 @@ This guide is the practical first-run flow for a Windows VM where you want to:
 - Windows VM with Remote Desktop enabled.
 - Elevated PowerShell session for install/register commands.
 - VM firewall allows your chosen listener port (default `4489`).
+- VM exposes standard TCP RDP transport (`HKLM\SYSTEM\CurrentControlSet\Services\TermDD` exists).
+  Hosts that only expose non-TCP listeners cannot be validated with `mstsc /v:<host>:<port>`.
 
 ## 1) Build artifacts (host or VM)
 

@@ -24,6 +24,7 @@ parking_lot = "0.12"
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.8" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.8" }
+ironrdp-wtsprotocol-ipc = { path = "../ironrdp-wtsprotocol-ipc", version = "0.1" }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
