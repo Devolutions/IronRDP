@@ -109,6 +109,14 @@ try {
 }
 
 try {
+    $termDdServiceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TermDD"
+    $termDdPresent = Test-Path -LiteralPath $termDdServiceKey
+    Add-Result -Name "RDP TCP transport" -Passed $termDdPresent -Details "registry_key=$termDdServiceKey present=$termDdPresent"
+} catch {
+    Add-Result -Name "RDP TCP transport" -Passed $false -Details $_.Exception.Message
+}
+
+try {
     $matchingRuleCount = (Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow -ErrorAction Stop |
             Where-Object {
                 $rule = $_
@@ -132,8 +140,19 @@ try {
 
 if ($CheckLocalPortListener.IsPresent) {
     try {
-        $listenCount = (Get-NetTCPConnection -State Listen -LocalPort $PortNumber -ErrorAction Stop).Count
-        Add-Result -Name "Local listener socket" -Passed ($listenCount -gt 0) -Details "port=$PortNumber listen_entries=$listenCount"
+        $listenCount = @((Get-NetTCPConnection -State Listen -LocalPort $PortNumber -ErrorAction SilentlyContinue)).Count
+        if ($listenCount -gt 0) {
+            Add-Result -Name "Local listener socket" -Passed $true -Details "port=$PortNumber listen_entries=$listenCount"
+        } else {
+            $qWinSta = "unavailable"
+            try {
+                $qWinSta = (qwinsta | Out-String).Trim()
+            }
+            catch {
+            }
+
+            Add-Result -Name "Local listener socket" -Passed $false -Details "port=$PortNumber listen_entries=0 qwinsta=$qWinSta"
+        }
     } catch {
         Add-Result -Name "Local listener socket" -Passed $false -Details $_.Exception.Message
     }

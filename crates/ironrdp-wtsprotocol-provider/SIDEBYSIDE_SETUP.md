@@ -16,7 +16,18 @@ The intended rollout is side-by-side first (new protocol listener name), before 
 
 - COM interface implementations are present.
 - In-proc COM activation exports are present (`DllGetClassObject`, `DllCanUnloadNow`).
+- Protocol manager/listener delegation to built-in Windows RDP is removed.
 - Listener startup dispatches `OnConnected` from a dedicated worker thread.
+- With control IPC available, listener worker polls companion-service incoming
+	connections and dispatches `OnConnected` per accepted socket.
+- Without control IPC configured, listener worker falls back to a bootstrap connection dispatch
+	for sequencing validation.
+- Optional control-plane IPC bridge to companion service is available via
+	`IRONRDP_WTS_CONTROL_PIPE`; when enabled, `AcceptConnection` waits for service
+	`ConnectionReady` before `OnReady` is issued.
+- When `IRONRDP_WTS_CONTROL_PIPE` is not set, provider startup now probes the default
+	pipe name (`IronRdpWtsControl`) and enables service polling only if `StartListen`
+	handshake succeeds; otherwise it keeps bootstrap fallback behavior.
 - Connection lifecycle state transitions and cleanup hooks are in place.
 - Invalid connection method ordering now returns explicit transition errors.
 - CredSSP policy gate (HYBRID/HYBRID_EX required) is wired in `AcceptConnection`.
@@ -28,6 +39,23 @@ The intended rollout is side-by-side first (new protocol listener name), before 
 Run all commands from an elevated PowerShell session on a Windows test VM.
 
 Prerequisite: host Remote Desktop must be enabled (`fDenyTSConnections = 0`).
+
+Prerequisite: the host must expose the standard TCP RDP transport path (`TermDD` service key at
+`HKLM\SYSTEM\CurrentControlSet\Services\TermDD`). Hosts that only expose non-TCP listeners
+(for example `qwinsta` shows only an opaque listener name and no `RDP-Tcp`) cannot be used for
+`mstsc` TCP side-by-side validation.
+
+Optional preflight for Hyper-V fleets (run from host):
+
+```powershell
+.\crates\ironrdp-wtsprotocol-provider\scripts\check-vm-side-by-side-eligibility.ps1 \
+	-VmNames IT-HELP-TEST,IT-HELP-WAC,IT-HELP-DVLS \
+	-AdminUser IT-HELP\Administrator \
+	-AdminPasswordPlainText '<password>' \
+	-PortNumber 4495
+```
+
+The script reports `Eligible = True/False` per VM and flags blockers such as missing `TermDD`.
 
 ### 1) Build the provider DLL
 
