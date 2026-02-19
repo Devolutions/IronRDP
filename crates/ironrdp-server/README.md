@@ -14,6 +14,12 @@ The server currently supports:
 **Input**
  - FastPath input events
  - x224 input events and disconnect
+ - Advanced Input DVC (`FreeRDP::Advanced::Input`) mouse events
+
+**Dynamic channels**
+ - Display Control DVC (`Microsoft::Windows::RDS::DisplayControl`) layout requests
+ - ECHO DVC (`ECHO`) RTT probes
+ - EGFX DVC (`Microsoft::Windows::RDS::Graphics`) when built with feature `egfx`
 
 **Codecs**
  - bitmap display updates with RDP 6.0 compression
@@ -50,6 +56,13 @@ handle.quit("shutdown requested")?;
 Custom logic for your RDP server can be added by implementing these traits:
  - `RdpServerInputHandler` - callbacks used when the server receives input events from a client
  - `RdpServerDisplay`      - notifies the server of display updates
+
+## Input and graphics hooks
+
+- Keyboard and mouse are always hooked to `RdpServerInputHandler` from both FastPath and classic Input PDUs.
+- Mouse side buttons from extended mouse events are forwarded as `Button4` / `Button5`.
+- Display layout changes from Display Control DVC are forwarded to `RdpServerDisplay::request_layout`.
+- With feature `egfx`, the server always attaches the Graphics DVC hook; with no custom gfx factory it uses a default no-op EGFX handler.
 
 This crate is part of the [IronRDP] project.
 
