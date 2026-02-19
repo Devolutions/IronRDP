@@ -260,6 +260,26 @@ If your host uses non-default device names, set machine-level environment variab
 
 Then restart `TermService` and run verify/smoke again.
 
+### Optional virtual-channel named-pipe bridge
+
+To enable the default provider-side virtual-channel named-pipe bridge (recognized IronRDP VC endpoints only), set a machine environment variable and restart `TermService`:
+
+```powershell
+[Environment]::SetEnvironmentVariable("IRONRDP_WTS_VC_BRIDGE_PIPE_PREFIX", "IronRdpVcBridge", "Machine")
+```
+
+Pipe names are generated as:
+
+- `\\.\pipe\<prefix>.svc.<channel>` for static channels
+- `\\.\pipe\<prefix>.dvc.<channel>` for dynamic channels
+
+Payload format is little-endian `u32` length prefix + raw bytes.
+
+Directionality:
+
+- provider → pipe (payload bytes read from TermSrv VC handles)
+- pipe → provider (framed payload bytes written back into TermSrv VC handles)
+
 ### 6) Roll back
 
 ```powershell
