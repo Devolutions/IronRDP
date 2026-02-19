@@ -21,17 +21,28 @@ pub enum ProviderCommand {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServiceEvent {
     Ack,
-    ListenerStarted { listener_name: String },
-    ListenerStopped { listener_name: String },
+    ListenerStarted {
+        listener_name: String,
+    },
+    ListenerStopped {
+        listener_name: String,
+    },
     IncomingConnection {
         listener_name: String,
         connection_id: u32,
         peer_addr: Option<String>,
     },
     NoIncoming,
-    ConnectionReady { connection_id: u32 },
-    ConnectionBroken { connection_id: u32, reason: String },
-    Error { message: String },
+    ConnectionReady {
+        connection_id: u32,
+    },
+    ConnectionBroken {
+        connection_id: u32,
+        reason: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 pub fn resolve_pipe_name_from_env() -> Option<String> {
@@ -54,8 +65,8 @@ pub fn pipe_path(pipe_name: &str) -> String {
 }
 
 pub fn write_frame(writer: &mut impl Write, payload: &[u8]) -> io::Result<()> {
-    let payload_len = u32::try_from(payload.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "payload too large"))?;
+    let payload_len =
+        u32::try_from(payload.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "payload too large"))?;
 
     writer.write_all(&payload_len.to_le_bytes())?;
     writer.write_all(payload)
@@ -83,8 +94,12 @@ pub fn read_frame(reader: &mut impl Read, max_frame_size: usize) -> io::Result<V
 }
 
 pub fn write_json_message<T: Serialize>(writer: &mut impl Write, message: &T) -> io::Result<()> {
-    let payload = serde_json::to_vec(message)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("failed to serialize message: {error}")))?;
+    let payload = serde_json::to_vec(message).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize message: {error}"),
+        )
+    })?;
 
     write_frame(writer, &payload)
 }
