@@ -5,27 +5,27 @@ fn main() {
 
 #[cfg(windows)]
 mod windows_main {
+    use core::net::SocketAddr;
     use core::num::{NonZeroI32, NonZeroU16, NonZeroUsize};
     use core::ptr::null_mut;
     use std::collections::{HashMap, VecDeque};
     use std::io;
-    use core::net::SocketAddr;
     use std::sync::Arc;
 
     use anyhow::{anyhow, Context as _};
+    use ironrdp_server::tokio_rustls::{rustls, TlsAcceptor};
     use ironrdp_server::{
         BitmapUpdate, Credentials, DesktopSize, DisplayUpdate, PixelFormat, RdpServer, RdpServerDisplay,
         RdpServerDisplayUpdates,
     };
-    use ironrdp_server::tokio_rustls::{rustls, TlsAcceptor};
     use ironrdp_wtsprotocol_ipc::{
         default_pipe_name, pipe_path, resolve_pipe_name_from_env, ProviderCommand, ServiceEvent, DEFAULT_MAX_FRAME_SIZE,
     };
     use rustls_cng::signer::CngSigningKey;
     use rustls_cng::store::{CertStore, CertStoreType};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use tokio::net::{TcpListener, TcpStream};
     use tokio::net::windows::named_pipe;
+    use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
     use tokio::time::{sleep, timeout, Duration};
@@ -33,20 +33,19 @@ mod windows_main {
     use tracing_subscriber::EnvFilter;
     use windows::core::{w, PCWSTR, PWSTR};
     use windows::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
-        DeleteObject, GetDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
+        BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
     };
     use windows::Win32::Security::Cryptography::{
         CertAddCertificateContextToStore, CertCloseStore, CertCreateSelfSignCertificate, CertFindCertificateInStore,
-        CertFreeCertificateContext, CertOpenStore, CertStrToNameW, CERT_CONTEXT, CERT_FIND_SUBJECT_STR_W,
-        CERT_CREATE_SELFSIGN_FLAGS, CERT_NCRYPT_KEY_SPEC, CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE,
-        CERT_STORE_ADD_REPLACE_EXISTING, CRYPT_INTEGER_BLOB, NCRYPT_ALLOW_EXPORT_FLAG,
-        NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG, NCRYPT_FLAGS,
-        CERT_STORE_PROV_SYSTEM_W, CERT_SYSTEM_STORE_LOCAL_MACHINE, CERT_X500_NAME_STR, CRYPT_KEY_PROV_INFO,
-        NCryptCreatePersistedKey, NCryptFinalizeKey, NCryptFreeObject, NCryptOpenStorageProvider, NCryptSetProperty,
-        BCRYPT_RSA_ALGORITHM, HCERTSTORE, MS_KEY_STORAGE_PROVIDER, NCRYPT_EXPORT_POLICY_PROPERTY, NCRYPT_HANDLE,
-        NCRYPT_LENGTH_PROPERTY, NCRYPT_MACHINE_KEY_FLAG, NCRYPT_PROV_HANDLE, PKCS_7_ASN_ENCODING,
-        X509_ASN_ENCODING,
+        CertFreeCertificateContext, CertOpenStore, CertStrToNameW, NCryptCreatePersistedKey, NCryptFinalizeKey,
+        NCryptFreeObject, NCryptOpenStorageProvider, NCryptSetProperty, BCRYPT_RSA_ALGORITHM, CERT_CONTEXT,
+        CERT_CREATE_SELFSIGN_FLAGS, CERT_FIND_SUBJECT_STR_W, CERT_NCRYPT_KEY_SPEC, CERT_OPEN_STORE_FLAGS,
+        CERT_QUERY_ENCODING_TYPE, CERT_STORE_ADD_REPLACE_EXISTING, CERT_STORE_PROV_SYSTEM_W,
+        CERT_SYSTEM_STORE_LOCAL_MACHINE, CERT_X500_NAME_STR, CRYPT_INTEGER_BLOB, CRYPT_KEY_PROV_INFO, HCERTSTORE,
+        MS_KEY_STORAGE_PROVIDER, NCRYPT_ALLOW_EXPORT_FLAG, NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG,
+        NCRYPT_EXPORT_POLICY_PROPERTY, NCRYPT_FLAGS, NCRYPT_HANDLE, NCRYPT_LENGTH_PROPERTY, NCRYPT_MACHINE_KEY_FLAG,
+        NCRYPT_PROV_HANDLE, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
@@ -132,8 +131,7 @@ mod windows_main {
                         error = %format!("{error:#}"),
                         "GDI capture failed; sending synthetic test pattern"
                     );
-                    fallback_bitmap_update(self.desktop_size)
-                        .context("failed to generate fallback bitmap update")?
+                    fallback_bitmap_update(self.desktop_size).context("failed to generate fallback bitmap update")?
                 }
             };
             self.sent_first_frame = true;
@@ -187,17 +185,8 @@ mod windows_main {
         let mut bits_ptr: *mut core::ffi::c_void = null_mut();
 
         // SAFETY: `screen_dc` and `bitmap_info` are valid, and we pass a valid out-pointer for bits.
-        let bitmap = unsafe {
-            CreateDIBSection(
-                Some(screen_dc),
-                &bitmap_info,
-                DIB_RGB_COLORS,
-                &mut bits_ptr,
-                None,
-                0,
-            )
-        }
-        .map_err(|error| anyhow!("CreateDIBSection failed: {error}"))?;
+        let bitmap = unsafe { CreateDIBSection(Some(screen_dc), &bitmap_info, DIB_RGB_COLORS, &mut bits_ptr, None, 0) }
+            .map_err(|error| anyhow!("CreateDIBSection failed: {error}"))?;
 
         if bitmap.0.is_null() {
             // SAFETY: `memory_dc` and `screen_dc` are valid handles created above.
@@ -220,19 +209,7 @@ mod windows_main {
         }
 
         // SAFETY: all DC handles are valid and dimensions are taken from initialized state.
-        let bitblt_result = unsafe {
-            BitBlt(
-                memory_dc,
-                0,
-                0,
-                width_i32,
-                height_i32,
-                Some(screen_dc),
-                0,
-                0,
-                SRCCOPY,
-            )
-        };
+        let bitblt_result = unsafe { BitBlt(memory_dc, 0, 0, width_i32, height_i32, Some(screen_dc), 0, 0, SRCCOPY) };
 
         let mut data = vec![0u8; frame_len];
         if bitblt_result.is_ok() {
@@ -334,7 +311,9 @@ mod windows_main {
         let height_u16 = u16::try_from(height).map_err(|_| anyhow!("screen height out of range: {height}"))?;
 
         if width_u16 == 0 || height_u16 == 0 {
-            return Err(anyhow!("screen metrics returned zero-sized desktop ({width_u16}x{height_u16})"));
+            return Err(anyhow!(
+                "screen metrics returned zero-sized desktop ({width_u16}x{height_u16})"
+            ));
         }
 
         Ok(DesktopSize {
@@ -446,7 +425,8 @@ mod windows_main {
                 }
             });
 
-            self.listeners.insert(listener_name.clone(), ManagedListener { join_handle });
+            self.listeners
+                .insert(listener_name.clone(), ManagedListener { join_handle });
 
             info!(%listener_name, bind_addr = %self.bind_addr, "Started control-plane listener task");
 
@@ -658,9 +638,9 @@ mod windows_main {
 
         match (username, password) {
             (None, None) => Ok(None),
-            (Some(_), None) | (None, Some(_)) => {
-                Err(anyhow!("both {RDP_USERNAME_ENV} and {RDP_PASSWORD_ENV} must be set together"))
-            }
+            (Some(_), None) | (None, Some(_)) => Err(anyhow!(
+                "both {RDP_USERNAME_ENV} and {RDP_PASSWORD_ENV} must be set together"
+            )),
             (Some(username), Some(password)) => Ok(Some(Credentials {
                 username,
                 password,
@@ -713,19 +693,12 @@ mod windows_main {
                 .pop()
                 .ok_or_else(|| anyhow!("no certificate found in Windows store"))?;
 
-            let key_handle = ctx
-                .acquire_key(true)
-                .context("acquire private key for certificate")?;
+            let key_handle = ctx.acquire_key(true).context("acquire private key for certificate")?;
             let key = CngSigningKey::new(key_handle).context("wrap CNG signing key")?;
 
-            let chain = ctx
-                .as_chain_der()
-                .context("certificate chain is not available")?;
+            let chain = ctx.as_chain_der().context("certificate chain is not available")?;
 
-            let certs = chain
-                .into_iter()
-                .map(rustls::pki_types::CertificateDer::from)
-                .collect();
+            let certs = chain.into_iter().map(rustls::pki_types::CertificateDer::from).collect();
 
             Ok(Arc::new(rustls::sign::CertifiedKey {
                 cert: certs,
@@ -736,10 +709,7 @@ mod windows_main {
     }
 
     impl rustls::server::ResolvesServerCert for WindowsStoreCertResolver {
-        fn resolve(
-            &self,
-            _client_hello: rustls::server::ClientHello<'_>,
-        ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        fn resolve(&self, _client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<rustls::sign::CertifiedKey>> {
             match self.resolve_once() {
                 Ok(key) => Some(key),
                 Err(error) => {
@@ -939,15 +909,8 @@ mod windows_main {
         }
 
         // SAFETY: store and cert_ctx are valid.
-        unsafe {
-            CertAddCertificateContextToStore(
-                Some(store),
-                cert_ctx,
-                CERT_STORE_ADD_REPLACE_EXISTING,
-                None,
-            )
-        }
-        .context("CertAddCertificateContextToStore failed")?;
+        unsafe { CertAddCertificateContextToStore(Some(store), cert_ctx, CERT_STORE_ADD_REPLACE_EXISTING, None) }
+            .context("CertAddCertificateContextToStore failed")?;
 
         // SAFETY: `cert_ctx` was returned by WinCrypto and must be freed.
         unsafe {
@@ -976,7 +939,10 @@ mod windows_main {
 
         let mut state = ServiceState::new(bind_addr);
 
-        #[expect(clippy::infinite_loop, reason = "service runs indefinitely; failures are handled inside the loop")]
+        #[expect(
+            clippy::infinite_loop,
+            reason = "service runs indefinitely; failures are handled inside the loop"
+        )]
         loop {
             if let Err(error) = run_server_once(&pipe_name, &mut state).await {
                 warn!(%error, pipe = %pipe_name, "Control pipe loop failed; retrying");
@@ -1071,8 +1037,12 @@ mod windows_main {
     }
 
     async fn write_event(pipe: &mut named_pipe::NamedPipeServer, event: &ServiceEvent) -> io::Result<()> {
-        let payload = serde_json::to_vec(event)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("failed to serialize event: {error}")))?;
+        let payload = serde_json::to_vec(event).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to serialize event: {error}"),
+            )
+        })?;
 
         write_frame(pipe, &payload).await
     }
