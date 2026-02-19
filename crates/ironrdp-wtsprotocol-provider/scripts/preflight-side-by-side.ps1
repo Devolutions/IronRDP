@@ -69,8 +69,17 @@ $conflictingListeners = @(Get-ChildItem -LiteralPath $winStationsRoot -ErrorActi
             $name = $_.PSChildName
             $props = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
 
-            if ($null -ne $props -and $null -ne $props.PortNumber -and [int]$props.PortNumber -eq $PortNumber) {
-                $name
+            if ($null -ne $props) {
+                $portProperty = $props.PSObject.Properties['PortNumber']
+                if ($null -ne $portProperty) {
+                    try {
+                        if ([int]$portProperty.Value -eq $PortNumber) {
+                            $name
+                        }
+                    }
+                    catch {
+                    }
+                }
             }
         })
 

@@ -33,16 +33,24 @@ New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
 $outputPath = (Resolve-Path -LiteralPath $OutputDirectory).Path
 
 $keysToExport = @(
-    @{ Key = "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp"; Name = "winstation-rdp-tcp.reg" },
-    @{ Key = "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\$ListenerName"; Name = "winstation-$ListenerName.reg" },
-    @{ Key = "HKLM\\SOFTWARE\\Classes\\CLSID\\$ProtocolManagerClsid"; Name = "clsid-$($ProtocolManagerClsid.Trim('{}')).reg" }
+    @{ Key = "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"; Name = "winstation-rdp-tcp.reg" },
+    @{ Key = "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\$ListenerName"; Name = "winstation-$ListenerName.reg" },
+    @{ Key = "HKLM\SOFTWARE\Classes\CLSID\$ProtocolManagerClsid"; Name = "clsid-$($ProtocolManagerClsid.Trim('{}')).reg" }
 )
 
 foreach ($item in $keysToExport) {
     $targetFile = Join-Path -Path $outputPath -ChildPath $item.Name
-    $null = & reg.exe export $item.Key $targetFile /y 2>$null
+    $exportExitCode = 0
 
-    if ($LASTEXITCODE -eq 0) {
+    try {
+        $null = & reg.exe export $item.Key $targetFile /y 2>$null
+        $exportExitCode = $LASTEXITCODE
+    }
+    catch {
+        $exportExitCode = 1
+    }
+
+    if ($exportExitCode -eq 0) {
         Write-Host "Exported: $($item.Key) -> $targetFile"
     } else {
         Write-Warning "Skipped (not found or inaccessible): $($item.Key)"
