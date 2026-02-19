@@ -5,12 +5,13 @@ fn main() {
 
 #[cfg(windows)]
 mod windows_main {
-    use core::net::SocketAddr;
+    use core::net::{Ipv4Addr, SocketAddr};
     use core::num::{NonZeroI32, NonZeroU16, NonZeroUsize};
     use core::ptr::null_mut;
     use std::collections::{HashMap, VecDeque};
     use std::io;
     use std::sync::Arc;
+    use std::time::Instant;
 
     use anyhow::{anyhow, Context as _};
     use ironrdp_server::tokio_rustls::{rustls, TlsAcceptor};
@@ -47,12 +48,18 @@ mod windows_main {
         NCRYPT_EXPORT_POLICY_PROPERTY, NCRYPT_FLAGS, NCRYPT_HANDLE, NCRYPT_LENGTH_PROPERTY, NCRYPT_MACHINE_KEY_FLAG,
         NCRYPT_PROV_HANDLE, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
     };
+    use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
+    use windows::Win32::System::Threading::{
+        CreateProcessAsUserW, TerminateProcess, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
     const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
     const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:4489";
     const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
+    const CAPTURE_HELPER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+    const CAPTURE_HELPER_RETRY_DELAY: Duration = Duration::from_secs(5);
     const TLS_CERT_SUBJECT_FIND: &str = "IronRDP Ceviche Service";
     const TLS_KEY_NAME: &str = "IronRdpCevicheTlsKey";
     const RDP_USERNAME_ENV: &str = "IRONRDP_RDP_USERNAME";
@@ -60,11 +67,12 @@ mod windows_main {
     const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
 
     struct GdiDisplay {
+        connection_id: u32,
         desktop_size: DesktopSize,
     }
 
     impl GdiDisplay {
-        fn new() -> anyhow::Result<Self> {
+        fn new(connection_id: u32) -> anyhow::Result<Self> {
             let desktop_size = desktop_size_from_gdi().context("failed to query desktop size")?;
 
             info!(
@@ -73,7 +81,10 @@ mod windows_main {
                 "Initialized GDI display source"
             );
 
-            Ok(Self { desktop_size })
+            Ok(Self {
+                connection_id,
+                desktop_size,
+            })
         }
     }
 
@@ -96,24 +107,39 @@ mod windows_main {
 
         async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
             Ok(Box::new(
-                GdiDisplayUpdates::new(self.desktop_size).context("failed to initialize GDI display updates")?,
+                GdiDisplayUpdates::new(self.connection_id, self.desktop_size)
+                    .context("failed to initialize GDI display updates")?,
             ))
         }
     }
 
     struct GdiDisplayUpdates {
+        connection_id: u32,
         desktop_size: DesktopSize,
+        capture: Option<HelperCaptureClient>,
+        next_helper_attempt_at: Instant,
         sent_first_frame: bool,
     }
 
     impl GdiDisplayUpdates {
-        fn new(size: DesktopSize) -> anyhow::Result<Self> {
+        fn new(connection_id: u32, size: DesktopSize) -> anyhow::Result<Self> {
             let _ = desktop_size_nonzero(size)?;
 
             Ok(Self {
+                connection_id,
                 desktop_size: size,
+                capture: None,
+                next_helper_attempt_at: Instant::now(),
                 sent_first_frame: false,
             })
+        }
+    }
+
+    impl Drop for GdiDisplayUpdates {
+        fn drop(&mut self) {
+            if let Some(capture) = self.capture.take() {
+                capture.terminate();
+            }
         }
     }
 
@@ -124,20 +150,290 @@ mod windows_main {
                 sleep(CAPTURE_INTERVAL).await;
             }
 
-            let bitmap = match capture_bitmap_update(self.desktop_size) {
-                Ok(bitmap) => bitmap,
-                Err(error) => {
-                    warn!(
-                        error = %format!("{error:#}"),
-                        "GDI capture failed; sending synthetic test pattern"
-                    );
-                    fallback_bitmap_update(self.desktop_size).context("failed to generate fallback bitmap update")?
+            if self.capture.is_none() && Instant::now() >= self.next_helper_attempt_at {
+                match HelperCaptureClient::start(self.connection_id).await {
+                    Ok(capture) => {
+                        info!(
+                            connection_id = self.connection_id,
+                            helper_pid = capture.pid(),
+                            "Started interactive capture helper"
+                        );
+                        self.capture = Some(capture);
+                    }
+                    Err(error) => {
+                        warn!(
+                            connection_id = self.connection_id,
+                            error = %format!("{error:#}"),
+                            "Failed to start interactive capture helper; falling back to in-process GDI"
+                        );
+                        self.next_helper_attempt_at = Instant::now() + CAPTURE_HELPER_RETRY_DELAY;
+                    }
+                }
+            }
+
+            let bitmap = if let Some(capture) = &mut self.capture {
+                match timeout(CAPTURE_INTERVAL, capture.read_frame()).await {
+                    Ok(Ok(bitmap)) => bitmap,
+                    Ok(Err(error)) => {
+                        warn!(
+                            connection_id = self.connection_id,
+                            error = %format!("{error:#}"),
+                            "Interactive capture helper failed; falling back to synthetic test pattern"
+                        );
+                        let capture = self.capture.take();
+                        if let Some(capture) = capture {
+                            capture.terminate();
+                        }
+                        fallback_bitmap_update(self.desktop_size)
+                            .context("failed to generate fallback bitmap update")?
+                    }
+                    Err(_) => fallback_bitmap_update(self.desktop_size)
+                        .context("failed to generate fallback bitmap update")?,
+                }
+            } else {
+                match capture_bitmap_update(self.desktop_size) {
+                    Ok(bitmap) => bitmap,
+                    Err(error) => {
+                        warn!(
+                            error = %format!("{error:#}"),
+                            "GDI capture failed; sending synthetic test pattern"
+                        );
+                        fallback_bitmap_update(self.desktop_size)
+                            .context("failed to generate fallback bitmap update")?
+                    }
                 }
             };
             self.sent_first_frame = true;
 
             Ok(Some(DisplayUpdate::Bitmap(bitmap)))
         }
+    }
+
+    #[derive(Clone, Copy)]
+    struct SendHandle(windows::Win32::Foundation::HANDLE);
+
+    // SAFETY: Windows kernel object handles can be sent and used across threads.
+    unsafe impl Send for SendHandle {}
+    // SAFETY: Windows kernel object handles can be shared across threads.
+    unsafe impl Sync for SendHandle {}
+
+    struct HelperCaptureClient {
+        helper_pid: u32,
+        helper_process: SendHandle,
+        stream: TcpStream,
+    }
+
+    impl HelperCaptureClient {
+        async fn start(connection_id: u32) -> anyhow::Result<Self> {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .context("failed to bind local capture helper listener")?;
+
+            let local_addr = listener
+                .local_addr()
+                .context("failed to query local helper listener address")?;
+
+            let helper = spawn_capture_helper_process(local_addr)
+                .with_context(|| format!("failed to spawn capture helper for connection {connection_id}"))?;
+
+            let (stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, listener.accept())
+                .await
+                .map_err(|_| anyhow!("capture helper did not connect within timeout"))?
+                .context("failed to accept capture helper connection")?;
+
+            Ok(Self {
+                helper_pid: helper.pid,
+                helper_process: helper.process,
+                stream,
+            })
+        }
+
+        fn pid(&self) -> u32 {
+            self.helper_pid
+        }
+
+        fn terminate(self) {
+            // SAFETY: handle was returned by CreateProcessAsUserW.
+            unsafe {
+                let _ = TerminateProcess(self.helper_process.0, 1);
+            }
+
+            // SAFETY: handle was returned by CreateProcessAsUserW.
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(self.helper_process.0);
+            }
+        }
+
+        async fn read_frame(&mut self) -> anyhow::Result<BitmapUpdate> {
+            read_capture_frame(&mut self.stream).await
+        }
+    }
+
+    struct SpawnedProcess {
+        pid: u32,
+        process: SendHandle,
+    }
+
+    fn spawn_capture_helper_process(connect_addr: SocketAddr) -> anyhow::Result<SpawnedProcess> {
+        // SAFETY: safe to call and returns a process-global session id value.
+        let session_id = unsafe { WTSGetActiveConsoleSessionId() };
+        if session_id == u32::MAX {
+            return Err(anyhow!("no active console session"));
+        }
+
+        let mut user_token = windows::Win32::Foundation::HANDLE::default();
+        // SAFETY: `WTSQueryUserToken` writes a token handle into `user_token` on success.
+        unsafe { WTSQueryUserToken(session_id, &mut user_token) }
+            .ok()
+            .context("WTSQueryUserToken failed")?;
+
+        let exe_path = std::env::current_exe().context("failed to resolve current executable path")?;
+        let exe_path_str = exe_path
+            .to_str()
+            .ok_or_else(|| anyhow!("current executable path is not valid unicode"))?;
+
+        let desktop = "winsta0\\default";
+        let args = format!("\"{exe_path_str}\" --capture-helper --connect {connect_addr}",);
+
+        let app_name: Vec<u16> = exe_path_str.encode_utf16().chain(Some(0)).collect();
+        let mut cmd_line: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
+        let mut desktop_w: Vec<u16> = desktop.encode_utf16().chain(Some(0)).collect();
+
+        let startup_info = STARTUPINFOW {
+            cb: u32::try_from(size_of::<STARTUPINFOW>()).map_err(|_| anyhow!("STARTUPINFOW size overflow"))?,
+            lpDesktop: PWSTR(desktop_w.as_mut_ptr()),
+            ..Default::default()
+        };
+
+        let mut process_info = PROCESS_INFORMATION::default();
+
+        // SAFETY:
+        // - token handle is valid on success from WTSQueryUserToken
+        // - app/cmd/desktop buffers are nul-terminated and live for the call
+        // - process_info/startup_info are valid out-pointers
+        let create_ok = unsafe {
+            CreateProcessAsUserW(
+                Some(user_token),
+                PCWSTR(app_name.as_ptr()),
+                Some(PWSTR(cmd_line.as_mut_ptr())),
+                None,
+                None,
+                false,
+                CREATE_NO_WINDOW,
+                None,
+                None,
+                &startup_info,
+                &mut process_info,
+            )
+        };
+
+        // SAFETY: close token handle from WTSQueryUserToken.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(user_token);
+        }
+
+        create_ok.ok().context("CreateProcessAsUserW failed")?;
+
+        // SAFETY: close thread handle we don't need.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(process_info.hThread);
+        }
+
+        Ok(SpawnedProcess {
+            pid: process_info.dwProcessId,
+            process: SendHandle(process_info.hProcess),
+        })
+    }
+
+    const CAPTURE_FRAME_MAGIC: [u8; 4] = *b"IRDP";
+    const CAPTURE_FRAME_HEADER_LEN: usize = 24;
+
+    async fn read_capture_frame(stream: &mut TcpStream) -> anyhow::Result<BitmapUpdate> {
+        let mut header = [0u8; CAPTURE_FRAME_HEADER_LEN];
+        stream
+            .read_exact(&mut header)
+            .await
+            .context("failed to read capture frame header")?;
+
+        if header[0..4] != CAPTURE_FRAME_MAGIC {
+            return Err(anyhow!("invalid capture frame magic"));
+        }
+
+        let version = u16::from_le_bytes([header[4], header[5]]);
+        if version != 1 {
+            return Err(anyhow!("unsupported capture frame version: {version}"));
+        }
+
+        let width_u16 = u16::from_le_bytes([header[6], header[7]]);
+        let height_u16 = u16::from_le_bytes([header[8], header[9]]);
+        let stride_u32 = u32::from_le_bytes([header[10], header[11], header[12], header[13]]);
+        let format = header[14];
+        let payload_len = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
+
+        if format != 0 {
+            return Err(anyhow!("unsupported capture pixel format: {format}"));
+        }
+
+        let width = NonZeroU16::new(width_u16).ok_or_else(|| anyhow!("capture frame width is zero"))?;
+        let height = NonZeroU16::new(height_u16).ok_or_else(|| anyhow!("capture frame height is zero"))?;
+        let stride_usize = usize::try_from(stride_u32).map_err(|_| anyhow!("capture frame stride out of range"))?;
+        let stride = NonZeroUsize::new(stride_usize).ok_or_else(|| anyhow!("capture frame stride is zero"))?;
+        let payload_len_usize =
+            usize::try_from(payload_len).map_err(|_| anyhow!("capture payload length out of range"))?;
+
+        let expected = stride
+            .get()
+            .checked_mul(NonZeroUsize::from(height).get())
+            .ok_or_else(|| anyhow!("capture payload length overflow"))?;
+
+        if payload_len_usize != expected {
+            return Err(anyhow!(
+                "capture payload length mismatch (got {payload_len_usize}, expected {expected})"
+            ));
+        }
+
+        let mut payload = vec![0u8; payload_len_usize];
+        stream
+            .read_exact(&mut payload)
+            .await
+            .context("failed to read capture frame payload")?;
+
+        Ok(BitmapUpdate {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            format: PixelFormat::BgrA32,
+            data: payload.into(),
+            stride,
+        })
+    }
+
+    async fn write_capture_frame(stream: &mut TcpStream, bitmap: &BitmapUpdate) -> anyhow::Result<()> {
+        let width_u16 = bitmap.width.get();
+        let height_u16 = bitmap.height.get();
+        let stride_u32 = u32::try_from(bitmap.stride.get()).map_err(|_| anyhow!("stride out of range"))?;
+        let payload_len_u32 = u32::try_from(bitmap.data.len()).map_err(|_| anyhow!("payload too large"))?;
+
+        let mut header = [0u8; CAPTURE_FRAME_HEADER_LEN];
+        header[0..4].copy_from_slice(&CAPTURE_FRAME_MAGIC);
+        header[4..6].copy_from_slice(&1u16.to_le_bytes());
+        header[6..8].copy_from_slice(&width_u16.to_le_bytes());
+        header[8..10].copy_from_slice(&height_u16.to_le_bytes());
+        header[10..14].copy_from_slice(&stride_u32.to_le_bytes());
+        header[14] = 0; // BgrA32
+        header[20..24].copy_from_slice(&payload_len_u32.to_le_bytes());
+
+        stream
+            .write_all(&header)
+            .await
+            .context("failed to write capture header")?;
+        stream
+            .write_all(bitmap.data.as_ref())
+            .await
+            .context("failed to write capture payload")?;
+
+        Ok(())
     }
 
     fn capture_bitmap_update(size: DesktopSize) -> anyhow::Result<BitmapUpdate> {
@@ -590,7 +886,7 @@ mod windows_main {
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
-        let display = GdiDisplay::new().context("failed to initialize GDI display handler")?;
+        let display = GdiDisplay::new(connection_id).context("failed to initialize GDI display handler")?;
         let tls_acceptor = make_tls_acceptor().context("failed to initialize TLS acceptor")?;
 
         let mut server = RdpServer::builder()
@@ -932,6 +1228,11 @@ mod windows_main {
     async fn run() -> anyhow::Result<()> {
         init_tracing()?;
 
+        if let Some(connect_addr) = parse_capture_helper_connect_addr()? {
+            info!(connect_addr = %connect_addr, "Starting capture helper mode");
+            return run_capture_helper(connect_addr).await;
+        }
+
         let pipe_name = resolve_pipe_name_from_env().unwrap_or_else(default_pipe_name);
         let bind_addr = resolve_bind_addr()?;
 
@@ -976,6 +1277,67 @@ mod windows_main {
             .compact()
             .try_init()
             .map_err(|error| anyhow::anyhow!("failed to initialize tracing subscriber: {error}"))
+    }
+
+    fn parse_capture_helper_connect_addr() -> anyhow::Result<Option<SocketAddr>> {
+        let mut args = std::env::args().skip(1);
+
+        let mut capture_helper = false;
+        let mut connect: Option<SocketAddr> = None;
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--capture-helper" => {
+                    capture_helper = true;
+                }
+                "--connect" => {
+                    let Some(value) = args.next() else {
+                        return Err(anyhow!("--connect requires a value"));
+                    };
+                    connect = Some(
+                        value
+                            .parse()
+                            .with_context(|| format!("failed to parse --connect address: {value}"))?,
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        if !capture_helper {
+            return Ok(None);
+        }
+
+        let connect = connect.ok_or_else(|| anyhow!("--capture-helper requires --connect"))?;
+        Ok(Some(connect))
+    }
+
+    async fn run_capture_helper(connect_addr: SocketAddr) -> anyhow::Result<()> {
+        let mut stream = TcpStream::connect(connect_addr)
+            .await
+            .with_context(|| format!("failed to connect to capture consumer at {connect_addr}"))?;
+
+        let desktop_size = desktop_size_from_gdi().context("failed to query desktop size")?;
+        info!(
+            width = desktop_size.width,
+            height = desktop_size.height,
+            "Initialized capture helper desktop size"
+        );
+
+        loop {
+            match capture_bitmap_update(desktop_size) {
+                Ok(bitmap) => {
+                    write_capture_frame(&mut stream, &bitmap).await?;
+                }
+                Err(error) => {
+                    warn!(
+                        error = %format!("{error:#}"),
+                        "Capture helper failed to capture frame"
+                    );
+                    sleep(CAPTURE_INTERVAL).await;
+                }
+            }
+        }
     }
 
     async fn run_server_once(pipe_name: &str, state: &mut ServiceState) -> anyhow::Result<()> {
