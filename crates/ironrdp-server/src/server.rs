@@ -27,7 +27,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
 use crate::clipboard::CliprdrServerFactory;
@@ -160,6 +160,16 @@ impl DisplayControlHandler for DisplayControlBackend {
         let display = Arc::clone(&self.display);
         task::spawn_blocking(move || display.blocking_lock().request_layout(layout));
     }
+}
+
+#[cfg(feature = "egfx")]
+struct NoopGfxHandler;
+
+#[cfg(feature = "egfx")]
+impl ironrdp_egfx::server::GraphicsPipelineHandler for NoopGfxHandler {
+    fn capabilities_advertise(&mut self, _pdu: &ironrdp_egfx::pdu::CapabilitiesAdvertisePdu) {}
+
+    fn on_ready(&mut self, _negotiated: &ironrdp_egfx::pdu::CapabilitySet) {}
 }
 
 /// RDP Server
@@ -396,6 +406,9 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpsndServer::new(backend));
         }
 
+        info!("Attaching server input hooks (keyboard/mouse via fast-path, input PDUs, and AINPUT DVC)");
+        info!("Attaching display-control hook");
+
         let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
         let dvc = dvc::DrdynvcServer::new()
             .with_dynamic_channel(AInputHandler {
@@ -415,11 +428,17 @@ impl RdpServer {
                 if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
                     self.gfx_handle = Some(handle);
                     dvc = dvc.with_dynamic_channel(bridge);
+                    info!("Attached EGFX graphics hook with shared server handle");
                 } else {
                     let handler = gfx_factory.build_gfx_handler();
                     let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
                     dvc = dvc.with_dynamic_channel(gfx_server);
+                    info!("Attached EGFX graphics hook");
                 }
+            } else {
+                let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(Box::new(NoopGfxHandler));
+                dvc = dvc.with_dynamic_channel(gfx_server);
+                info!("Attached default EGFX graphics hook");
             }
             dvc
         };
@@ -1228,7 +1247,104 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc as std_mpsc;
+    use std::time::Duration;
+
+    use ironrdp_ainput::{
+        ClientPdu as AInputClientPdu, MouseEventFlags as AInputMouseEventFlags, MousePdu as AInputMousePdu,
+    };
+    use ironrdp_dvc::DvcProcessor;
+
     use super::*;
+    use crate::display::RdpServerDisplayUpdates;
+    use crate::handler::{KeyboardEvent, MouseEvent};
+
+    struct RecordingInputHandler {
+        mouse_tx: std_mpsc::Sender<MouseEvent>,
+    }
+
+    impl RdpServerInputHandler for RecordingInputHandler {
+        fn keyboard(&mut self, _event: KeyboardEvent) {}
+
+        fn mouse(&mut self, event: MouseEvent) {
+            let _ = self.mouse_tx.send(event);
+        }
+    }
+
+    struct RecordingDisplayUpdates;
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplayUpdates for RecordingDisplayUpdates {
+        async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
+            Ok(None)
+        }
+    }
+
+    struct RecordingDisplay {
+        layout_tx: std_mpsc::Sender<DisplayControlMonitorLayout>,
+    }
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplay for RecordingDisplay {
+        async fn size(&mut self) -> DesktopSize {
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            }
+        }
+
+        async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+            Ok(Box::new(RecordingDisplayUpdates))
+        }
+
+        fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
+            let _ = self.layout_tx.send(layout);
+        }
+    }
+
+    #[tokio::test]
+    async fn ainput_mouse_payload_is_forwarded_to_input_handler() {
+        let (mouse_tx, mouse_rx) = std_mpsc::channel();
+        let input_handler = Box::new(RecordingInputHandler { mouse_tx });
+        let mut processor = AInputHandler {
+            handler: Arc::new(Mutex::new(input_handler)),
+        };
+
+        let payload = encode_vec(&AInputClientPdu::Mouse(AInputMousePdu {
+            time: 42,
+            flags: AInputMouseEventFlags::BUTTON1 | AInputMouseEventFlags::DOWN,
+            x: 0,
+            y: 0,
+        }))
+        .expect("encode ainput payload");
+
+        let _ = processor.process(1, &payload).expect("process ainput payload");
+
+        let event = task::spawn_blocking(move || mouse_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("join blocking receiver")
+            .expect("mouse event from handler");
+
+        assert!(matches!(event, MouseEvent::LeftPressed));
+    }
+
+    #[tokio::test]
+    async fn display_control_layout_is_forwarded_to_display() {
+        let (layout_tx, layout_rx) = std_mpsc::channel();
+        let display = Box::new(RecordingDisplay { layout_tx });
+        let backend = DisplayControlBackend::new(Arc::new(Mutex::new(display)));
+
+        let layout = DisplayControlMonitorLayout::new_single_primary_monitor(1280, 720, None, None)
+            .expect("create monitor layout");
+        backend.monitor_layout(layout.clone());
+
+        let forwarded = task::spawn_blocking(move || layout_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("join blocking receiver")
+            .expect("display layout forwarded");
+
+        assert_eq!(forwarded.monitors().len(), layout.monitors().len());
+    }
 
     #[test]
     fn server_handle_quit_sends_quit_event() {
@@ -1275,10 +1391,7 @@ mod tests {
             }
         });
 
-        let got = handle
-            .local_addr()
-            .await
-            .expect("local address request should succeed");
+        let got = handle.local_addr().await.expect("local address request should succeed");
 
         assert_eq!(got, Some(expected));
         responder.await.expect("responder should complete");

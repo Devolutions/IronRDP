@@ -164,9 +164,7 @@ mod tests {
         };
 
         let mut output = vec![0u8; 4096];
-        let written = encoder
-            .encode(&bitmap, &mut output)
-            .expect("encoding should succeed");
+        let written = encoder.encode(&bitmap, &mut output).expect("encoding should succeed");
         let payload = &output[..written];
 
         let update: BitmapUpdateData<'_> = decode(payload).expect("bitmap update should decode");
