@@ -14,7 +14,8 @@ mod windows_main {
 
     use anyhow::{anyhow, Context as _};
     use ironrdp_server::{
-        BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat, RdpServer, RdpServerDisplay, RdpServerDisplayUpdates,
+        BitmapUpdate, Credentials, DesktopSize, DisplayUpdate, PixelFormat, RdpServer, RdpServerDisplay,
+        RdpServerDisplayUpdates,
     };
     use ironrdp_server::tokio_rustls::{rustls, TlsAcceptor};
     use ironrdp_wtsprotocol_ipc::{
@@ -31,7 +32,6 @@ mod windows_main {
     use tracing::{error, info, warn};
     use tracing_subscriber::EnvFilter;
     use windows::core::{w, PCWSTR, PWSTR};
-    use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
         BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
         DeleteObject, GetDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
@@ -48,7 +48,7 @@ mod windows_main {
         NCRYPT_LENGTH_PROPERTY, NCRYPT_MACHINE_KEY_FLAG, NCRYPT_PROV_HANDLE, PKCS_7_ASN_ENCODING,
         X509_ASN_ENCODING,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
     const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
@@ -56,6 +56,9 @@ mod windows_main {
     const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
     const TLS_CERT_SUBJECT_FIND: &str = "IronRDP Ceviche Service";
     const TLS_KEY_NAME: &str = "IronRdpCevicheTlsKey";
+    const RDP_USERNAME_ENV: &str = "IRONRDP_RDP_USERNAME";
+    const RDP_PASSWORD_ENV: &str = "IRONRDP_RDP_PASSWORD";
+    const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
 
     struct GdiDisplay {
         desktop_size: DesktopSize,
@@ -122,7 +125,17 @@ mod windows_main {
                 sleep(CAPTURE_INTERVAL).await;
             }
 
-            let bitmap = capture_bitmap_update(self.desktop_size).context("failed to capture desktop frame with GDI")?;
+            let bitmap = match capture_bitmap_update(self.desktop_size) {
+                Ok(bitmap) => bitmap,
+                Err(error) => {
+                    warn!(
+                        error = %format!("{error:#}"),
+                        "GDI capture failed; sending synthetic test pattern"
+                    );
+                    fallback_bitmap_update(self.desktop_size)
+                        .context("failed to generate fallback bitmap update")?
+                }
+            };
             self.sent_first_frame = true;
 
             Ok(Some(DisplayUpdate::Bitmap(bitmap)))
@@ -145,8 +158,11 @@ mod windows_main {
             .checked_mul(NonZeroUsize::from(height).get())
             .ok_or_else(|| anyhow!("frame buffer length overflow"))?;
 
-        // SAFETY: Passing a null HWND obtains the DC for the entire screen.
-        let screen_dc = unsafe { GetDC(Some(HWND::default())) };
+        // SAFETY: `GetDesktopWindow` is safe to call and returns a process-global desktop window handle.
+        let desktop_hwnd = unsafe { GetDesktopWindow() };
+
+        // SAFETY: `desktop_hwnd` is a valid HWND for the current session desktop.
+        let screen_dc = unsafe { GetDC(Some(desktop_hwnd)) };
         if screen_dc.0.is_null() {
             return Err(anyhow!("GetDC returned a null screen device context"));
         }
@@ -155,7 +171,7 @@ mod windows_main {
         let memory_dc = unsafe { CreateCompatibleDC(Some(screen_dc)) };
         if memory_dc.0.is_null() {
             // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
-            let _ = unsafe { ReleaseDC(Some(HWND::default()), screen_dc) };
+            let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
             return Err(anyhow!("CreateCompatibleDC returned a null memory device context"));
         }
 
@@ -187,7 +203,7 @@ mod windows_main {
             // SAFETY: `memory_dc` and `screen_dc` are valid handles created above.
             let _ = unsafe { DeleteDC(memory_dc) };
             // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
-            let _ = unsafe { ReleaseDC(Some(HWND::default()), screen_dc) };
+            let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
             return Err(anyhow!("CreateDIBSection returned a null bitmap handle"));
         }
 
@@ -199,7 +215,7 @@ mod windows_main {
             // SAFETY: `memory_dc` is a valid memory DC created above.
             let _ = unsafe { DeleteDC(memory_dc) };
             // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
-            let _ = unsafe { ReleaseDC(Some(HWND::default()), screen_dc) };
+            let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
             return Err(anyhow!("SelectObject failed for capture bitmap"));
         }
 
@@ -228,7 +244,7 @@ mod windows_main {
                 // SAFETY: clean up GDI objects created above.
                 let _ = unsafe { DeleteDC(memory_dc) };
                 // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { ReleaseDC(Some(HWND::default()), screen_dc) };
+                let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
                 return Err(anyhow!("CreateDIBSection returned a null bitmap data pointer"));
             }
 
@@ -245,9 +261,50 @@ mod windows_main {
         // SAFETY: `memory_dc` was created with `CreateCompatibleDC`.
         let _ = unsafe { DeleteDC(memory_dc) };
         // SAFETY: `screen_dc` was acquired with `GetDC`.
-        let _ = unsafe { ReleaseDC(Some(HWND::default()), screen_dc) };
+        let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
 
         bitblt_result.map_err(|error| anyhow!("BitBlt failed while capturing desktop frame: {error}"))?;
+
+        Ok(BitmapUpdate {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            format: PixelFormat::BgrA32,
+            data: data.into(),
+            stride,
+        })
+    }
+
+    fn fallback_bitmap_update(size: DesktopSize) -> anyhow::Result<BitmapUpdate> {
+        let (width, height) = desktop_size_nonzero(size)?;
+
+        let stride = NonZeroUsize::from(width)
+            .checked_mul(NonZeroUsize::new(4).ok_or_else(|| anyhow!("invalid bytes-per-pixel value"))?)
+            .ok_or_else(|| anyhow!("frame stride overflow"))?;
+        let frame_len = stride
+            .get()
+            .checked_mul(NonZeroUsize::from(height).get())
+            .ok_or_else(|| anyhow!("frame buffer length overflow"))?;
+
+        let width_usize = usize::from(width.get());
+        let height_usize = usize::from(height.get());
+        let stride_usize = stride.get();
+
+        let mut data = vec![0u8; frame_len];
+
+        for y in 0..height_usize {
+            let row = &mut data[(y * stride_usize)..((y + 1) * stride_usize)];
+            let g = (y as u8).wrapping_mul(3);
+            for x in 0..width_usize {
+                let offset = x * 4;
+                let b = (x as u8).wrapping_mul(5);
+                row[offset] = b;
+                row[offset + 1] = g;
+                row[offset + 2] = 0x80;
+                row[offset + 3] = 0xFF;
+            }
+        }
 
         Ok(BitmapUpdate {
             x: 0,
@@ -473,7 +530,7 @@ mod windows_main {
 
             let session_task = tokio::task::spawn_local(async move {
                 if let Err(error) = run_ironrdp_connection(connection_id, peer_addr.as_deref(), stream).await {
-                    warn!(%error, connection_id, "IronRDP connection task failed");
+                    warn!(error = %format!("{error:#}"), connection_id, "IronRDP connection task failed");
                 }
             });
 
@@ -562,6 +619,18 @@ mod windows_main {
             .with_display_handler(display)
             .build();
 
+        if let Some(credentials) = resolve_rdp_credentials_from_env()? {
+            info!(username = %credentials.username, domain = ?credentials.domain, "Configured expected RDP credentials");
+            server.set_credentials(Some(credentials));
+        } else {
+            warn!(
+                username_env = %RDP_USERNAME_ENV,
+                password_env = %RDP_PASSWORD_ENV,
+                domain_env = %RDP_DOMAIN_ENV,
+                "RDP credentials are not configured; standard security connections will be rejected"
+            );
+        }
+
         server
             .run_connection(stream)
             .await
@@ -569,6 +638,35 @@ mod windows_main {
 
         info!(connection_id, peer_addr = ?peer_addr, "IronRDP session task finished");
         Ok(())
+    }
+
+    fn resolve_rdp_credentials_from_env() -> anyhow::Result<Option<Credentials>> {
+        let username = std::env::var(RDP_USERNAME_ENV)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        let password = std::env::var(RDP_PASSWORD_ENV)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        let domain = std::env::var(RDP_DOMAIN_ENV)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        match (username, password) {
+            (None, None) => Ok(None),
+            (Some(_), None) | (None, Some(_)) => {
+                Err(anyhow!("both {RDP_USERNAME_ENV} and {RDP_PASSWORD_ENV} must be set together"))
+            }
+            (Some(username), Some(password)) => Ok(Some(Credentials {
+                username,
+                password,
+                domain,
+            })),
+        }
     }
 
     fn make_tls_acceptor() -> anyhow::Result<TlsAcceptor> {

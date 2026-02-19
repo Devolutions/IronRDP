@@ -2,6 +2,8 @@
 /target
 /dependencies
 /bench-data
+# Local smoke-test artifacts
+/artifacts
 # Local cargo root
 /.cargo/local_root
 
