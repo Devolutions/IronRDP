@@ -26,8 +26,8 @@ param(
     [string]$ProtocolManagerClsid = "{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}",
 
     [Parameter()]
-    [ValidateRange(1, 65535)]
-    [int]$PortNumber = 3390,
+    [ValidateRange(0, 65535)]
+    [int]$PortNumber = 0,
 
     [Parameter()]
     [string]$BackupDirectory = "",
@@ -64,7 +64,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if ($WaitForServiceReadyAfterRestart.IsPresent -and -not $RestartTermService.IsPresent) {
+    throw "WaitForServiceReadyAfterRestart requires RestartTermService"
+}
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$defaultsScript = Join-Path -Path $scriptRoot -ChildPath "side-by-side-defaults.ps1"
+. $defaultsScript
+
+$PortNumber = Resolve-SideBySideListenerPort -PortNumber $PortNumber
+
 $crateRoot = Resolve-Path -LiteralPath (Join-Path -Path $scriptRoot -ChildPath "..")
 $workspaceRoot = Resolve-Path -LiteralPath (Join-Path -Path $crateRoot -ChildPath "..\\..")
 $preflightScript = Join-Path -Path $scriptRoot -ChildPath "preflight-side-by-side.ps1"
@@ -182,6 +191,24 @@ function Show-Plan {
     Write-Host "  mstsc /v:$TargetHost`:$PortNumber"
 }
 
+function Resolve-LatestBackupDirectory {
+    $backupRoot = Join-Path -Path $workspaceRoot -ChildPath "artifacts"
+    if (-not (Test-Path -LiteralPath $backupRoot -PathType Container)) {
+        return ""
+    }
+
+    $latest = Get-ChildItem -LiteralPath $backupRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "wtsprotocol-backup-*" } |
+        Sort-Object -Property LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $latest) {
+        return ""
+    }
+
+    return $latest.FullName
+}
+
 if ($Mode -eq "Preview") {
     Show-Plan
     return
@@ -196,7 +223,17 @@ if ($Mode -eq "Install") {
         $backupArguments.OutputDirectory = $BackupDirectory
     }
 
-    & $backupScript @backupArguments
+    $backupPathOutput = & $backupScript @backupArguments -PassThru
+    $resolvedBackupPath = "$backupPathOutput".Trim()
+    if ([string]::IsNullOrWhiteSpace($resolvedBackupPath)) {
+        $resolvedBackupPath = Resolve-LatestBackupDirectory
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($resolvedBackupPath)) {
+        Write-Host "Backup directory: $resolvedBackupPath"
+        Write-Host "Rollback restore command:"
+        Write-Host "  .\crates\ironrdp-wtsprotocol-provider\scripts\first-run-side-by-side.ps1 -Mode Rollback -PortNumber $PortNumber -RestoreBackupOnRollback -BackupDirectory `"$resolvedBackupPath`""
+    }
 
     & $preflightScript `
         -ProviderDllPath $ProviderDllPath `
@@ -248,6 +285,8 @@ if ($Mode -eq "Install") {
 
     if ($RestartTermService.IsPresent -and $WaitForServiceReadyAfterRestart.IsPresent) {
         & $waitServiceScript -PortNumber $PortNumber -TimeoutSeconds $ServiceReadyTimeoutSeconds
+    } elseif (-not $RestartTermService.IsPresent) {
+        Write-Warning "TermService was not restarted; if this is a first registration, restart service before mstsc testing"
     }
 
     Write-Host "Install flow completed"
@@ -271,7 +310,11 @@ if (-not $SkipFirewall.IsPresent) {
 
 if ($RestoreBackupOnRollback.IsPresent) {
     if ([string]::IsNullOrWhiteSpace($BackupDirectory)) {
-        throw "BackupDirectory is required when RestoreBackupOnRollback is set"
+        $BackupDirectory = Resolve-LatestBackupDirectory
+    }
+
+    if ([string]::IsNullOrWhiteSpace($BackupDirectory)) {
+        throw "BackupDirectory is required when RestoreBackupOnRollback is set and no backup directory could be auto-detected"
     }
 
     & $restoreScript -BackupDirectory $BackupDirectory

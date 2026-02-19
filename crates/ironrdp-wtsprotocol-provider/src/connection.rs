@@ -131,6 +131,12 @@ impl ProtocolConnection {
         *self.state.lock()
     }
 
+    pub fn session_id(&self) -> Option<u32> {
+        self.sessions
+            .get_by_connection_id(self.connection_id)
+            .map(|entry| entry.session_id)
+    }
+
     fn invalid_transition(&self, method_name: &'static str, current_state: ConnectionLifecycleState) -> &'static str {
         warn!(
             connection_id = self.connection_id,

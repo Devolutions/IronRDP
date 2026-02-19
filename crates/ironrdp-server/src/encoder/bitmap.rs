@@ -1,6 +1,6 @@
 use core::num::NonZeroUsize;
 
-use ironrdp_core::{cast_int, cast_length, invalid_field_err, Encode as _, WriteCursor};
+use ironrdp_core::{cast_int, cast_length, Encode as _, WriteCursor};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rdp6::{
     ABgrChannels, ARgbChannels, BgrAChannels, BitmapEncodeError, BitmapStreamEncoder, RgbAChannels,
@@ -24,17 +24,6 @@ impl BitmapEncoder {
     }
 
     pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> Result<usize, BitmapEncodeError> {
-        // FIXME: support non-multiple of 4 widths.
-        //
-        // It’s not clear how to achieve that yet, but generally, server uses multiple of 4-widths,
-        // and client has surface capabilities, so this path is unlikely.
-        if bitmap.width.get() % 4 != 0 {
-            return Err(BitmapEncodeError::Encode(invalid_field_err!(
-                "bitmap",
-                "Width must be a multiple of 4"
-            )));
-        }
-
         let bytes_per_pixel = u16::from(bitmap.format.bytes_per_pixel());
         let row_len = bitmap.width.get() * bytes_per_pixel;
         let chunk_height = u16::MAX / row_len;
@@ -76,7 +65,7 @@ impl BitmapEncoder {
                 compression_flags: Compression::BITMAP_COMPRESSION,
                 compressed_data_header: Some(bitmap::CompressedDataHeader {
                     main_body_size: cast_length!("main body size", len).map_err(BitmapEncodeError::Encode)?,
-                    scan_width: u16::from(bitmap.width),
+                    scan_width: row_len,
                     uncompressed_size: height * row_len,
                 }),
                 bitmap_data: &self.buffer[..len],
@@ -113,5 +102,80 @@ impl BitmapEncoder {
         };
 
         Ok(written)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::num::{NonZeroU16, NonZeroUsize};
+
+    use bytes::Bytes;
+    use ironrdp_core::decode;
+    use ironrdp_graphics::image_processing::PixelFormat;
+    use ironrdp_pdu::bitmap::BitmapUpdateData;
+
+    use super::BitmapEncoder;
+    use crate::BitmapUpdate;
+
+    #[test]
+    fn encode_allows_non_multiple_of_four_pixel_width_for_32bpp() {
+        let mut encoder = BitmapEncoder::new();
+        let width = NonZeroU16::new(5).expect("non-zero width");
+        let height = NonZeroU16::new(3).expect("non-zero height");
+        let stride = NonZeroUsize::new(usize::from(width.get()) * 4).expect("non-zero stride");
+        let bitmap = BitmapUpdate {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            format: PixelFormat::ARgb32,
+            data: Bytes::from(vec![0xAA; stride.get() * usize::from(height.get())]),
+            stride,
+        };
+
+        let mut output = vec![0u8; 4096];
+        let written = encoder
+            .encode(&bitmap, &mut output)
+            .expect("encoding should succeed for width 5");
+        let payload = &output[..written];
+
+        let update: BitmapUpdateData<'_> = decode(payload).expect("bitmap update should decode");
+        assert_eq!(update.rectangles.len(), 1);
+
+        let rectangle = &update.rectangles[0];
+        assert_eq!(rectangle.width, width.get());
+        assert_eq!(rectangle.height, height.get());
+    }
+
+    #[test]
+    fn encode_sets_scan_width_in_bytes() {
+        let mut encoder = BitmapEncoder::new();
+        let width = NonZeroU16::new(5).expect("non-zero width");
+        let height = NonZeroU16::new(2).expect("non-zero height");
+        let stride = NonZeroUsize::new(usize::from(width.get()) * 4).expect("non-zero stride");
+        let bitmap = BitmapUpdate {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            format: PixelFormat::ARgb32,
+            data: Bytes::from(vec![0x55; stride.get() * usize::from(height.get())]),
+            stride,
+        };
+
+        let mut output = vec![0u8; 4096];
+        let written = encoder
+            .encode(&bitmap, &mut output)
+            .expect("encoding should succeed");
+        let payload = &output[..written];
+
+        let update: BitmapUpdateData<'_> = decode(payload).expect("bitmap update should decode");
+        let rectangle = &update.rectangles[0];
+        let compressed_header = rectangle
+            .compressed_data_header
+            .as_ref()
+            .expect("compressed header should be present");
+
+        assert_eq!(compressed_header.scan_width, width.get() * 4);
     }
 }

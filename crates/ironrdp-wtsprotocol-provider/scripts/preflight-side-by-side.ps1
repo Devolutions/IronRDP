@@ -13,12 +13,18 @@ param(
     [string]$ProtocolManagerClsid = "{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}",
 
     [Parameter()]
-    [ValidateRange(1, 65535)]
-    [int]$PortNumber = 3390
+    [ValidateRange(0, 65535)]
+    [int]$PortNumber = 0
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$defaultsScript = Join-Path -Path $scriptRoot -ChildPath "side-by-side-defaults.ps1"
+. $defaultsScript
+
+$PortNumber = Resolve-SideBySideListenerPort -PortNumber $PortNumber
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -37,6 +43,13 @@ if (-not (Test-Path -LiteralPath $ProviderDllPath -PathType Leaf)) {
 $providerDllPathResolved = (Resolve-Path -LiteralPath $ProviderDllPath).Path
 
 $termService = Get-Service -Name "TermService" -ErrorAction Stop
+$terminalServerKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
+$terminalServerProps = Get-ItemProperty -LiteralPath $terminalServerKey -ErrorAction Stop
+$denyTsConnections = [int]$terminalServerProps.fDenyTSConnections
+
+if ($denyTsConnections -ne 0) {
+    throw "remote desktop connections are disabled (fDenyTSConnections=$denyTsConnections); enable Remote Desktop before mstsc testing"
+}
 
 $winStationsRoot = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations"
 $sourceListener = Join-Path -Path $winStationsRoot -ChildPath "RDP-Tcp"
@@ -47,7 +60,7 @@ if (-not (Test-Path -LiteralPath $sourceListener)) {
 }
 
 if ($ListenerName -ne "RDP-Tcp" -and $PortNumber -eq 3389) {
-    throw "side-by-side listener cannot use port 3389; use a dedicated port such as 3390"
+    throw "side-by-side listener cannot use port 3389; use a dedicated port such as 4489"
 }
 
 $conflictingListeners = @(Get-ChildItem -LiteralPath $winStationsRoot -ErrorAction Stop |
@@ -72,6 +85,7 @@ Write-Host "Preflight checks passed"
 Write-Host "  elevated session: yes"
 Write-Host "  provider dll: $providerDllPathResolved"
 Write-Host "  termservice state: $($termService.Status)"
+Write-Host "  remote desktop enabled: yes"
 Write-Host "  source listener key: $sourceListener"
 Write-Host "  target listener key: $targetListener"
 Write-Host "  planned listener port: $PortNumber"

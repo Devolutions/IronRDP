@@ -236,6 +236,7 @@ pub struct RdpServer {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "egfx")]
     gfx_handle: Option<crate::gfx::GfxServerHandle>,
+    handle: RdpServerHandle,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -256,6 +257,45 @@ pub enum ServerEvent {
 
 pub trait ServerEventSender {
     fn set_sender(&mut self, sender: mpsc::UnboundedSender<ServerEvent>);
+}
+
+/// Handle for controlling a running [`RdpServer`] from other tasks.
+#[derive(Debug, Clone)]
+pub struct RdpServerHandle {
+    sender: mpsc::UnboundedSender<ServerEvent>,
+}
+
+impl RdpServerHandle {
+    pub(crate) fn new(sender: mpsc::UnboundedSender<ServerEvent>) -> Self {
+        Self { sender }
+    }
+
+    /// Requests server shutdown.
+    pub fn quit(&self, reason: impl Into<String>) -> Result<()> {
+        self.sender
+            .send(ServerEvent::Quit(reason.into()))
+            .map_err(|_error| anyhow::anyhow!("send server quit event"))
+    }
+
+    /// Updates credentials that will be used for the next incoming connection.
+    pub fn set_credentials(&self, credentials: Credentials) -> Result<()> {
+        self.sender
+            .send(ServerEvent::SetCredentials(credentials))
+            .map_err(|_error| anyhow::anyhow!("send server credentials event"))
+    }
+
+    /// Requests the listener local address.
+    ///
+    /// Returns `None` if the listener has not started yet.
+    pub async fn local_addr(&self) -> Result<Option<SocketAddr>> {
+        let (tx, rx) = oneshot::channel();
+
+        self.sender
+            .send(ServerEvent::GetLocalAddr(tx))
+            .map_err(|_error| anyhow::anyhow!("send server local address request event"))?;
+
+        rx.await.context("receive server local address")
+    }
 }
 
 impl ServerEvent {
@@ -281,6 +321,7 @@ impl RdpServer {
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
+        let handle = RdpServerHandle::new(ev_sender.clone());
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
             cliprdr.set_sender(ev_sender.clone());
         }
@@ -303,6 +344,7 @@ impl RdpServer {
             gfx_factory,
             #[cfg(feature = "egfx")]
             gfx_handle: None,
+            handle,
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -316,6 +358,11 @@ impl RdpServer {
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Returns a typed runtime handle for controlling the server.
+    pub fn handle(&self) -> &RdpServerHandle {
+        &self.handle
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
@@ -1176,5 +1223,64 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
         Self {
             writer: Rc::new(Mutex::new(writer)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_handle_quit_sends_quit_event() {
+        let (sender, mut receiver) = ServerEvent::create_channel();
+        let handle = RdpServerHandle::new(sender);
+
+        handle.quit("unit-test quit").expect("quit event should be sent");
+
+        let event = receiver.try_recv().expect("quit event should be queued");
+        assert!(matches!(event, ServerEvent::Quit(reason) if reason == "unit-test quit"));
+    }
+
+    #[test]
+    fn server_handle_set_credentials_sends_credentials_event() {
+        let (sender, mut receiver) = ServerEvent::create_channel();
+        let handle = RdpServerHandle::new(sender);
+        let credentials = Credentials {
+            username: "alice".to_owned(),
+            password: "password".to_owned(),
+            domain: Some("example".to_owned()),
+        };
+
+        handle
+            .set_credentials(credentials.clone())
+            .expect("credentials event should be sent");
+
+        let event = receiver.try_recv().expect("credentials event should be queued");
+        assert!(matches!(event, ServerEvent::SetCredentials(got) if got == credentials));
+    }
+
+    #[tokio::test]
+    async fn server_handle_local_addr_returns_reply() {
+        let (sender, mut receiver) = ServerEvent::create_channel();
+        let handle = RdpServerHandle::new(sender);
+        let expected: SocketAddr = ([127, 0, 0, 1], 3395).into();
+
+        let responder = tokio::spawn(async move {
+            match receiver.recv().await {
+                Some(ServerEvent::GetLocalAddr(reply_tx)) => {
+                    let _ = reply_tx.send(Some(expected));
+                }
+                Some(other) => panic!("unexpected event: {other:?}"),
+                None => panic!("event channel unexpectedly closed"),
+            }
+        });
+
+        let got = handle
+            .local_addr()
+            .await
+            .expect("local address request should succeed");
+
+        assert_eq!(got, Some(expected));
+        responder.await.expect("responder should complete");
     }
 }
