@@ -13,12 +13,18 @@ param(
     [string]$ProtocolManagerClsid = "{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}",
 
     [Parameter()]
-    [ValidateRange(1, 65535)]
-    [int]$PortNumber = 3390
+    [ValidateRange(0, 65535)]
+    [int]$PortNumber = 0
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$defaultsScript = Join-Path -Path $scriptRoot -ChildPath "side-by-side-defaults.ps1"
+. $defaultsScript
+
+$PortNumber = Resolve-SideBySideListenerPort -PortNumber $PortNumber
 
 if (-not (Test-Path -LiteralPath $ProviderDllPath -PathType Leaf)) {
     throw "provider dll path does not exist: $ProviderDllPath"

@@ -1693,6 +1693,10 @@ pub struct RdpServerHandle {
 }
 
 impl RdpServerHandle {
+    pub(crate) fn new(sender: mpsc::UnboundedSender<ServerEvent>) -> Self {
+        Self { sender }
+    }
+
     /// Queues [`ServerEvent::Quit`] to disconnect the active client or stop an idle server.
     ///
     /// After an active client disconnects, the listener continues unless its connection handler stops it.
@@ -2436,6 +2440,7 @@ impl RdpServer {
         #[cfg(feature = "usb")] usb_factory: Option<Box<dyn DeviceFactory>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
+        let handle = RdpServerHandle::new(ev_sender.clone());
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
             cliprdr.set_sender(ev_sender.clone());
         }
@@ -2482,9 +2487,7 @@ impl RdpServer {
             gfx_factory,
             #[cfg(feature = "usb")]
             usb_factory,
-            handle: RdpServerHandle {
-                sender: ev_sender.clone(),
-            },
+            handle,
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -7983,6 +7986,60 @@ mod tests {
             released.load(Ordering::Relaxed),
             "the channel backends of a finished connection must be released, not held until the next client"
         );
+    }
+
+    #[test]
+    fn server_handle_quit_sends_quit_event() {
+        let (sender, mut receiver) = ServerEvent::create_channel();
+        let handle = RdpServerHandle::new(sender);
+
+        handle.quit("unit-test quit").expect("quit event should be sent");
+
+        let event = receiver.try_recv().expect("quit event should be queued");
+        assert!(matches!(event, ServerEvent::Quit(reason) if reason == "unit-test quit"));
+    }
+
+    #[test]
+    fn server_handle_set_credentials_sends_credentials_event() {
+        let (sender, mut receiver) = ServerEvent::create_channel();
+        let handle = RdpServerHandle::new(sender);
+        let credentials = Credentials {
+            username: "alice".to_owned(),
+            password: "password".to_owned(),
+            domain: Some("example".to_owned()),
+        };
+
+        handle
+            .set_credentials(credentials.clone())
+            .expect("credentials event should be sent");
+
+        let event = receiver.try_recv().expect("credentials event should be queued");
+        assert!(matches!(event, ServerEvent::SetCredentials(got) if got == credentials));
+    }
+
+    #[tokio::test]
+    async fn server_handle_local_addr_returns_reply() {
+        let (sender, mut receiver) = ServerEvent::create_channel();
+        let handle = RdpServerHandle::new(sender);
+        let expected: SocketAddr = ([127, 0, 0, 1], 3395).into();
+
+        let responder = tokio::spawn(async move {
+            match receiver.recv().await {
+                Some(ServerEvent::GetLocalAddr(reply_tx)) => {
+                    let _ = reply_tx.send(Some(expected));
+                }
+                Some(other) => panic!("unexpected event: {other:?}"),
+                None => panic!("event channel unexpectedly closed"),
+            }
+        });
+
+        let got = handle
+            .local_addr()
+            .await
+            .expect("local address request should succeed");
+
+        assert_eq!(got, Some(expected));
+        responder.await.expect("responder should complete");
     }
 }
 

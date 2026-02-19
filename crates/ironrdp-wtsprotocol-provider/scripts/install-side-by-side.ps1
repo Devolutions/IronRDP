@@ -13,8 +13,8 @@ param(
     [string]$ProtocolManagerClsid = "{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}",
 
     [Parameter()]
-    [ValidateRange(1, 65535)]
-    [int]$PortNumber = 3390,
+    [ValidateRange(0, 65535)]
+    [int]$PortNumber = 0,
 
     [Parameter()]
     [switch]$RestartTermService
@@ -22,6 +22,13 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$defaultsScript = Join-Path -Path $scriptRoot -ChildPath "side-by-side-defaults.ps1"
+. $defaultsScript
+
+$PortNumber = Resolve-SideBySideListenerPort -PortNumber $PortNumber -PersistResolvedDefault
+$portSettingInfo = Get-SideBySideListenerPortSettingInfo
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -48,7 +55,7 @@ if (-not (Test-Path -LiteralPath $sourceListener)) {
 }
 
 if ($ListenerName -ne "RDP-Tcp" -and $PortNumber -eq 3389) {
-    throw "side-by-side listener cannot use port 3389; use a dedicated port such as 3390"
+    throw "side-by-side listener cannot use port 3389; use a dedicated port such as 4489"
 }
 
 $conflictingListeners = @(Get-ChildItem -LiteralPath $winStationsRoot -ErrorAction Stop |
@@ -86,6 +93,7 @@ Set-ItemProperty -Path $inprocServer32 -Name "ThreadingModel" -Type String -Valu
 Write-Host "Installed side-by-side protocol provider"
 Write-Host "  listener: $ListenerName"
 Write-Host "  port: $PortNumber"
+Write-Host "  default-listener-port registry: $($portSettingInfo.RegistryPath)\\$($portSettingInfo.RegistryValueName)"
 Write-Host "  clsid: $ProtocolManagerClsid"
 Write-Host "  dll: $providerDllPathResolved"
 
