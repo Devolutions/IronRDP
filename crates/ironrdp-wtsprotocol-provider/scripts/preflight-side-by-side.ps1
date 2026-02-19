@@ -51,6 +51,11 @@ if ($denyTsConnections -ne 0) {
     throw "remote desktop connections are disabled (fDenyTSConnections=$denyTsConnections); enable Remote Desktop before mstsc testing"
 }
 
+$termDdServiceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TermDD"
+if (-not (Test-Path -LiteralPath $termDdServiceKey)) {
+    throw "rdp tcp transport service key is missing ($termDdServiceKey); this host does not expose the standard TermDD listener path required for mstsc tcp validation"
+}
+
 $winStationsRoot = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations"
 $sourceListener = Join-Path -Path $winStationsRoot -ChildPath "RDP-Tcp"
 $targetListener = Join-Path -Path $winStationsRoot -ChildPath $ListenerName
@@ -95,6 +100,7 @@ Write-Host "  elevated session: yes"
 Write-Host "  provider dll: $providerDllPathResolved"
 Write-Host "  termservice state: $($termService.Status)"
 Write-Host "  remote desktop enabled: yes"
+Write-Host "  rdp tcp transport key: $termDdServiceKey"
 Write-Host "  source listener key: $sourceListener"
 Write-Host "  target listener key: $targetListener"
 Write-Host "  planned listener port: $PortNumber"
