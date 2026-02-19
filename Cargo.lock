@@ -3028,6 +3028,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-wtsprotocol-provider"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-acceptor",
+ "ironrdp-connector",
+ "ironrdp-pdu",
+ "parking_lot",
+ "tracing",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "is-terminal"
 version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
