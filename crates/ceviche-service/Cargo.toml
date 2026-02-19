@@ -11,12 +11,21 @@ categories.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 anyhow = "1"
+async-trait = "0.1"
+rustls-cng = "0.7"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 serde_json = "1"
 ironrdp-server = { path = "../ironrdp-server", version = "0.10" }
 ironrdp-wtsprotocol-ipc = { path = "../ironrdp-wtsprotocol-ipc", version = "0.1" }
+windows = { version = "0.62", features = [
+	"Win32_Foundation",
+	"Win32_Graphics_Gdi",
+	"Win32_Security_Cryptography",
+	"Win32_Security_Cryptography_Certificates",
+	"Win32_UI_WindowsAndMessaging",
+] }
 
 [lints]
 workspace = true

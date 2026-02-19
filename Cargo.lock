@@ -620,12 +620,15 @@ name = "ceviche-service"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "ironrdp-server",
  "ironrdp-wtsprotocol-ipc",
+ "rustls-cng",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows",
 ]
 
 [[package]]
@@ -4959,6 +4962,17 @@ dependencies = [
  "rustls-webpki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rustls-cng"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "807615e3031830a0b598a65be815a8a195a4a8eff5e037959f134e449998e13d"
+dependencies = [
+ "bitflags 2.10.0",
+ "rustls",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
