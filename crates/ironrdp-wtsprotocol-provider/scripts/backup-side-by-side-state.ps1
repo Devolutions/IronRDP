@@ -10,15 +10,23 @@ param(
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string]$OutputDirectory = ""
+    [string]$OutputDirectory = "",
+
+    [Parameter()]
+    [switch]$PassThru
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $crateRoot = Resolve-Path -LiteralPath (Join-Path -Path $scriptRoot -ChildPath "..")
+    $workspaceRoot = Resolve-Path -LiteralPath (Join-Path -Path $crateRoot -ChildPath "..\\..")
+    $artifactsRoot = Join-Path -Path $workspaceRoot -ChildPath "artifacts"
+
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $OutputDirectory = Join-Path -Path (Get-Location) -ChildPath ("artifacts\\wtsprotocol-backup-" + $timestamp)
+    $OutputDirectory = Join-Path -Path $artifactsRoot -ChildPath ("wtsprotocol-backup-" + $timestamp)
 }
 
 New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
@@ -41,4 +49,24 @@ foreach ($item in $keysToExport) {
     }
 }
 
+$manifest = [PSCustomObject]@{
+    createdAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    listenerName = $ListenerName
+    protocolManagerClsid = $ProtocolManagerClsid
+    outputDirectory = $outputPath
+    files = @(
+        "winstation-rdp-tcp.reg",
+        "winstation-$ListenerName.reg",
+        "clsid-$($ProtocolManagerClsid.Trim('{}')).reg"
+    )
+}
+
+$manifestPath = Join-Path -Path $outputPath -ChildPath "manifest.json"
+$manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
 Write-Host "Backup complete: $outputPath"
+Write-Host "Manifest: $manifestPath"
+
+if ($PassThru.IsPresent) {
+    Write-Output $outputPath
+}
