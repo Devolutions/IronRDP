@@ -26,6 +26,7 @@ fn credssp_sequence_type_marker() -> core::any::TypeId {
 }
 
 impl CredsspServerBridge {
+    #[must_use]
     pub fn with_kerberos_config(mut self, kerberos_config: sspi::KerberosServerConfig) -> Self {
         self.kerberos_config = Some(kerberos_config);
         self

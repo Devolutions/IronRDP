@@ -64,8 +64,17 @@ $conflictingListeners = @(Get-ChildItem -LiteralPath $winStationsRoot -ErrorActi
             $name = $_.PSChildName
             $props = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
 
-            if ($null -ne $props -and $null -ne $props.PortNumber -and [int]$props.PortNumber -eq $PortNumber) {
-                $name
+            if ($null -ne $props) {
+                $portProperty = $props.PSObject.Properties['PortNumber']
+                if ($null -ne $portProperty) {
+                    try {
+                        if ([int]$portProperty.Value -eq $PortNumber) {
+                            $name
+                        }
+                    }
+                    catch {
+                    }
+                }
             }
         })
 
@@ -82,12 +91,14 @@ Set-ItemProperty -Path $targetListener -Name "PortNumber" -Type DWord -Value $Po
 
 $clsidRoot = "HKLM:\SOFTWARE\Classes\CLSID\$ProtocolManagerClsid"
 $inprocServer32 = Join-Path -Path $clsidRoot -ChildPath "InprocServer32"
+$clsidRootRegPath = "HKLM\SOFTWARE\Classes\CLSID\$ProtocolManagerClsid"
+$inprocServer32RegPath = "$clsidRootRegPath\InprocServer32"
 
-New-Item -Path $clsidRoot -Force | Out-Null
-Set-ItemProperty -Path $clsidRoot -Name "(default)" -Type String -Value "IronRDP WTS Protocol Manager"
+& reg.exe add $clsidRootRegPath /f | Out-Null
+& reg.exe add $clsidRootRegPath /ve /t REG_SZ /d "IronRDP WTS Protocol Manager" /f | Out-Null
 
-New-Item -Path $inprocServer32 -Force | Out-Null
-Set-ItemProperty -Path $inprocServer32 -Name "(default)" -Type String -Value $providerDllPathResolved
+& reg.exe add $inprocServer32RegPath /f | Out-Null
+& reg.exe add $inprocServer32RegPath /ve /t REG_SZ /d $providerDllPathResolved /f | Out-Null
 Set-ItemProperty -Path $inprocServer32 -Name "ThreadingModel" -Type String -Value "Both"
 
 Write-Host "Installed side-by-side protocol provider"

@@ -1,52 +1,51 @@
+#![expect(
+    clippy::as_pointer_underscore,
+    clippy::inline_always,
+    clippy::multiple_unsafe_ops_per_block
+)]
+
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::time::Duration;
 use std::ffi::CString;
 use std::fs::OpenOptions;
-use std::io::{Read, Write};
-use std::os::windows::io::{AsRawHandle, RawHandle};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::io::{Read as _, Write};
+use std::os::windows::io::{AsRawHandle as _, RawHandle};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::thread;
-use std::time::Duration;
 
 use ironrdp_pdu::nego;
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 use windows::Win32::Foundation::{
-    ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_SEM_TIMEOUT, E_NOTIMPL, E_POINTER, E_UNEXPECTED,
-    HANDLE, HANDLE_PTR,
+    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_NO_DATA,
+    ERROR_SEM_TIMEOUT, E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED, HANDLE, HANDLE_PTR,
 };
-use windows::Win32::System::Com::Marshal::CoMarshalInterThreadInterfaceInStream;
-use windows::Win32::System::Com::StructuredStorage::CoGetInterfaceAndReleaseStream;
-use windows::Win32::System::Com::{
-    CoInitializeEx, CoUninitialize, IClassFactory, IClassFactory_Impl, IStream, COINIT_MULTITHREADED,
-};
+use windows::Win32::System::Com::{CoCreateInstance, IClassFactory, IClassFactory_Impl, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolConnection, IWRdsProtocolConnection_Impl, IWRdsProtocolLicenseConnection, IWRdsProtocolListener,
     IWRdsProtocolListenerCallback, IWRdsProtocolListener_Impl, IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager,
     IWRdsProtocolManager_Impl, IWRdsProtocolSettings, IWRdsProtocolShadowConnection, WTSVirtualChannelClose,
     WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite, WRDS_CONNECTION_SETTINGS,
-    WRDS_CONNECTION_SETTING_LEVEL_1, WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL,
-    WRDS_LISTENER_SETTING_LEVEL_1, WRDS_SETTINGS, WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH,
-    WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL,
-    WTS_CLIENT_DATA, WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
+    WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL, WRDS_SETTINGS, WTS_CHANNEL_OPTION_DYNAMIC,
+    WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED,
+    WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA, WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE,
+    WTS_SESSION_ID, WTS_USER_CREDENTIAL,
 };
-use windows_core::{implement, Interface, BOOL, GUID, PCSTR, PCWSTR};
+use windows_core::{implement, Interface as _, BOOL, GUID, PCSTR, PCWSTR};
 use windows_core::{IUnknown, HRESULT};
 
 use crate::auth_bridge::{CredsspPolicy, CredsspServerBridge};
 use crate::connection::ProtocolConnection;
-use crate::listener::ProtocolListener;
-use crate::manager::ProtocolManager;
 
-const CLASS_E_NOAGGREGATION: HRESULT = HRESULT(0x80040110u32 as i32);
-const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x80040111u32 as i32);
-const E_NOINTERFACE_HRESULT: HRESULT = HRESULT(0x80004002u32 as i32);
 const S_OK: HRESULT = HRESULT(0);
 const S_FALSE: HRESULT = HRESULT(1);
 
 pub const IRONRDP_PROTOCOL_MANAGER_CLSID: GUID = GUID::from_u128(0x89c7ed1e_25e5_4b15_8f52_ae6df4a5ceaf);
 pub const IRONRDP_PROTOCOL_MANAGER_CLSID_STR: &str = "{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}";
+
+const DEFAULT_RDP_PROTOCOL_MANAGER_CLSID: GUID = GUID::from_u128(0x5828227c_20cf_4408_b73f_73ab70b8849f);
 
 static SERVER_LOCK_COUNT: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_OBJECT_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -272,12 +271,6 @@ fn virtual_channel_requested_priority(
     hook_target
         .map(IronRdpVirtualChannelServer::default_dynamic_priority)
         .unwrap_or(requested_priority)
-}
-
-#[derive(Debug)]
-struct ListenerWorker {
-    stop_tx: mpsc::Sender<()>,
-    join_handle: thread::JoinHandle<()>,
 }
 
 pub fn create_protocol_manager_com() -> IWRdsProtocolManager {
@@ -550,6 +543,8 @@ fn pump_named_pipe_inbound_frames(
 fn named_pipe_available_bytes(pipe: &std::fs::File) -> std::io::Result<u32> {
     let mut total_bytes_available = 0u32;
 
+    // SAFETY: `pipe.as_raw_handle()` returns a live OS handle for this file. We only ask
+    // for the available byte count and provide a valid out-pointer.
     unsafe {
         PeekNamedPipe(
             HANDLE(pipe.as_raw_handle()),
@@ -583,12 +578,18 @@ fn drain_length_prefixed_pipe_frames(
     let mut frame_offset = 0usize;
 
     while read_buffer.len().saturating_sub(frame_offset) >= 4 {
-        let frame_len = u32::from_le_bytes([
+        let frame_len_u32 = u32::from_le_bytes([
             read_buffer[frame_offset],
             read_buffer[frame_offset + 1],
             read_buffer[frame_offset + 2],
             read_buffer[frame_offset + 3],
-        ]) as usize;
+        ]);
+        let frame_len = usize::try_from(frame_len_u32).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "named-pipe bridge frame length does not fit in usize",
+            )
+        })?;
 
         if frame_len > VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE {
             return Err(std::io::Error::new(
@@ -698,17 +699,17 @@ impl IClassFactory_Impl for ProtocolManagerClassFactory_Impl {
             ));
         }
 
-        unsafe {
-            *ppvobject = core::ptr::null_mut();
-        }
+        // SAFETY: `ppvobject` is non-null (checked above) and COM expects us to
+        // initialize out-pointers on all paths.
+        unsafe { *ppvobject = core::ptr::null_mut() };
 
+        // SAFETY: `riid` is non-null (checked above) and points to a valid GUID per COM contract.
         let requested_iid = unsafe { *riid };
 
         if requested_iid == IWRdsProtocolManager::IID {
             let manager = create_protocol_manager_com();
-            unsafe {
-                *ppvobject = manager.into_raw() as *mut core::ffi::c_void;
-            }
+            // SAFETY: `ppvobject` is non-null and this branch returns a valid COM interface pointer.
+            unsafe { *ppvobject = manager.into_raw() };
 
             return Ok(());
         }
@@ -716,15 +717,14 @@ impl IClassFactory_Impl for ProtocolManagerClassFactory_Impl {
         if requested_iid == IUnknown::IID {
             let manager = create_protocol_manager_com();
             let unknown: IUnknown = manager.cast()?;
-            unsafe {
-                *ppvobject = unknown.into_raw() as *mut core::ffi::c_void;
-            }
+            // SAFETY: `ppvobject` is non-null and this branch returns a valid COM interface pointer.
+            unsafe { *ppvobject = unknown.into_raw() };
 
             return Ok(());
         }
 
         Err(windows_core::Error::new(
-            E_NOINTERFACE_HRESULT,
+            E_NOINTERFACE,
             "requested interface is not supported",
         ))
     }
@@ -741,7 +741,7 @@ impl IClassFactory_Impl for ProtocolManagerClassFactory_Impl {
     }
 }
 
-#[allow(unreachable_pub)]
+#[expect(unreachable_pub)]
 #[unsafe(no_mangle)]
 pub extern "system" fn DllGetClassObject(
     rclsid: *const GUID,
@@ -756,7 +756,7 @@ pub extern "system" fn DllGetClassObject(
     }
 }
 
-#[allow(unreachable_pub)]
+#[expect(unreachable_pub)]
 #[unsafe(no_mangle)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     if SERVER_LOCK_COUNT.load(Ordering::SeqCst) == 0 && ACTIVE_OBJECT_COUNT.load(Ordering::SeqCst) == 0 {
@@ -775,10 +775,10 @@ fn dll_get_class_object_impl(
         return Err(windows_core::Error::new(E_POINTER, "null class object pointer"));
     }
 
-    unsafe {
-        *ppv = core::ptr::null_mut();
-    }
+    // SAFETY: `ppv` is non-null (checked above) and COM expects out-pointers to be initialized.
+    unsafe { *ppv = core::ptr::null_mut() };
 
+    // SAFETY: `rclsid` is non-null (checked above) and points to a valid GUID per COM contract.
     let requested_clsid = unsafe { *rclsid };
     if requested_clsid != IRONRDP_PROTOCOL_MANAGER_CLSID {
         return Err(windows_core::Error::new(
@@ -788,27 +788,26 @@ fn dll_get_class_object_impl(
     }
 
     let factory: IClassFactory = ProtocolManagerClassFactory.into();
+    // SAFETY: `riid` is non-null (checked above) and points to a valid GUID per COM contract.
     let requested_iid = unsafe { *riid };
 
     if requested_iid == IClassFactory::IID {
-        unsafe {
-            *ppv = factory.into_raw() as *mut core::ffi::c_void;
-        }
+        // SAFETY: `ppv` is non-null and this branch returns a valid COM interface pointer.
+        unsafe { *ppv = factory.into_raw() };
 
         return Ok(());
     }
 
     if requested_iid == IUnknown::IID {
         let unknown: IUnknown = factory.cast()?;
-        unsafe {
-            *ppv = unknown.into_raw() as *mut core::ffi::c_void;
-        }
+        // SAFETY: `ppv` is non-null and this branch returns a valid COM interface pointer.
+        unsafe { *ppv = unknown.into_raw() };
 
         return Ok(());
     }
 
     Err(windows_core::Error::new(
-        E_NOINTERFACE_HRESULT,
+        E_NOINTERFACE,
         "requested class factory interface is not supported",
     ))
 }
@@ -816,15 +815,30 @@ fn dll_get_class_object_impl(
 #[implement(IWRdsProtocolManager)]
 struct ComProtocolManager {
     _lifetime: ComObjectLifetime,
-    inner: ProtocolManager,
+    default_manager: Mutex<Option<IWRdsProtocolManager>>,
 }
 
 impl ComProtocolManager {
     fn new() -> Self {
         Self {
             _lifetime: ComObjectLifetime::new(),
-            inner: ProtocolManager::new(),
+            default_manager: Mutex::new(None),
         }
+    }
+
+    fn ensure_default_manager(&self) -> windows_core::Result<IWRdsProtocolManager> {
+        if let Some(manager) = self.default_manager.lock().as_ref() {
+            return Ok(manager.clone());
+        }
+
+        // SAFETY: `CoCreateInstance` is an FFI call. The CLSID is a fixed known value for the
+        // built-in RDP protocol manager and we request an in-proc server implementation.
+        let manager: IWRdsProtocolManager =
+            unsafe { CoCreateInstance(&DEFAULT_RDP_PROTOCOL_MANAGER_CLSID, None, CLSCTX_INPROC_SERVER)? };
+
+        *self.default_manager.lock() = Some(manager.clone());
+
+        Ok(manager)
     }
 }
 
@@ -845,46 +859,87 @@ impl Drop for ComObjectLifetime {
 }
 
 impl IWRdsProtocolManager_Impl for ComProtocolManager_Impl {
+    #[expect(clippy::similar_names)]
     fn Initialize(
         &self,
-        _piwrdssettings: windows_core::Ref<'_, IWRdsProtocolSettings>,
-        _pwrdssettings: *const WRDS_SETTINGS,
+        piwrdssettings: windows_core::Ref<'_, IWRdsProtocolSettings>,
+        pwrdssettings: *const WRDS_SETTINGS,
     ) -> windows_core::Result<()> {
-        info!("Initialized protocol manager");
+        let default_manager = self.ensure_default_manager()?;
+
+        let settings_ref = piwrdssettings.ok().ok();
+        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+        unsafe { default_manager.Initialize(settings_ref, pwrdssettings) }?;
+
+        info!("Initialized protocol manager (delegating to built-in RDP protocol manager)");
         Ok(())
     }
 
     fn CreateListener(&self, _wszlistenername: &PCWSTR) -> windows_core::Result<IWRdsProtocolListener> {
-        info!("Created protocol listener");
-        Ok(ComProtocolListener::new(self.inner.create_listener()).into())
+        let default_manager = self.ensure_default_manager()?;
+        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+        let inner_listener = unsafe { default_manager.CreateListener(*_wszlistenername) }?;
+
+        info!("Created protocol listener (delegating to built-in RDP protocol listener)");
+        Ok(ComProtocolListener::new(inner_listener).into())
     }
 
     fn NotifyServiceStateChange(&self, _ptsservicestatechange: *const WTS_SERVICE_STATE) -> windows_core::Result<()> {
+        if let Some(manager) = self.default_manager.lock().as_ref() {
+            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+            unsafe { manager.NotifyServiceStateChange(_ptsservicestatechange) }?;
+        }
+
         info!("Received service state change notification");
         Ok(())
     }
 
     fn NotifySessionOfServiceStart(&self, _sessionid: *const WTS_SESSION_ID) -> windows_core::Result<()> {
+        if let Some(manager) = self.default_manager.lock().as_ref() {
+            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+            unsafe { manager.NotifySessionOfServiceStart(_sessionid) }?;
+        }
+
         debug!("Received session service start notification");
         Ok(())
     }
 
     fn NotifySessionOfServiceStop(&self, _sessionid: *const WTS_SESSION_ID) -> windows_core::Result<()> {
+        if let Some(manager) = self.default_manager.lock().as_ref() {
+            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+            unsafe { manager.NotifySessionOfServiceStop(_sessionid) }?;
+        }
+
         debug!("Received session service stop notification");
         Ok(())
     }
 
     fn NotifySessionStateChange(&self, _sessionid: *const WTS_SESSION_ID, eventid: u32) -> windows_core::Result<()> {
+        if let Some(manager) = self.default_manager.lock().as_ref() {
+            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+            unsafe { manager.NotifySessionStateChange(_sessionid, eventid) }?;
+        }
+
         debug!(eventid, "Received session state change notification");
         Ok(())
     }
 
     fn NotifySettingsChange(&self, _pwrdssettings: *const WRDS_SETTINGS) -> windows_core::Result<()> {
+        if let Some(manager) = self.default_manager.lock().as_ref() {
+            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+            unsafe { manager.NotifySettingsChange(_pwrdssettings) }?;
+        }
+
         info!("Received protocol settings change notification");
         Ok(())
     }
 
     fn Uninitialize(&self) -> windows_core::Result<()> {
+        if let Some(manager) = self.default_manager.lock().as_ref() {
+            // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+            unsafe { manager.Uninitialize() }?;
+        }
+
         info!("Uninitialized protocol manager");
         Ok(())
     }
@@ -892,114 +947,35 @@ impl IWRdsProtocolManager_Impl for ComProtocolManager_Impl {
 
 #[implement(IWRdsProtocolListener)]
 struct ComProtocolListener {
-    inner: Arc<ProtocolListener>,
-    callback: Mutex<Option<IWRdsProtocolListenerCallback>>,
-    worker: Mutex<Option<ListenerWorker>>,
+    inner: IWRdsProtocolListener,
 }
 
 impl ComProtocolListener {
-    fn new(inner: ProtocolListener) -> Self {
-        Self {
-            inner: Arc::new(inner),
-            callback: Mutex::new(None),
-            worker: Mutex::new(None),
-        }
+    fn new(inner: IWRdsProtocolListener) -> Self {
+        Self { inner }
     }
 }
 
 impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
     fn GetSettings(
         &self,
-        _wrdslistenersettinglevel: WRDS_LISTENER_SETTING_LEVEL,
+        wrdslistenersettinglevel: WRDS_LISTENER_SETTING_LEVEL,
     ) -> windows_core::Result<WRDS_LISTENER_SETTINGS> {
-        let mut settings = WRDS_LISTENER_SETTINGS::default();
-        settings.WRdsListenerSettingLevel = WRDS_LISTENER_SETTING_LEVEL_1;
-        Ok(settings)
+        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+        unsafe { self.inner.GetSettings(wrdslistenersettinglevel) }
     }
 
     fn StartListen(&self, pcallback: windows_core::Ref<'_, IWRdsProtocolListenerCallback>) -> windows_core::Result<()> {
-        let callback = pcallback
+        let callback_ref = pcallback
             .ok()
-            .map_err(|_| windows_core::Error::new(E_POINTER, "null listener callback"))?
-            .clone();
-
-        if self.worker.lock().is_some() {
-            info!("Protocol listener already started");
-            return Ok(());
-        }
-
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let callback_stream =
-            unsafe { CoMarshalInterThreadInterfaceInStream(&IWRdsProtocolListenerCallback::IID, &callback) }?;
-        let callback_stream_token = callback_stream.into_raw() as usize;
-        let listener = Arc::clone(&self.inner);
-
-        let join_handle = thread::spawn(move || {
-            let co_initialize = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-            if let Err(error) = co_initialize.ok() {
-                warn!(%error, "Failed to initialize COM on listener worker thread");
-                return;
-            }
-
-            let callback_stream = unsafe { IStream::from_raw(callback_stream_token as *mut core::ffi::c_void) };
-            let callback_for_worker =
-                unsafe { CoGetInterfaceAndReleaseStream::<_, IWRdsProtocolListenerCallback>(&callback_stream) };
-            std::mem::forget(callback_stream);
-
-            let callback_for_worker = match callback_for_worker {
-                Ok(callback) => callback,
-                Err(error) => {
-                    warn!(%error, "Failed to unmarshal listener callback in worker thread");
-                    unsafe { CoUninitialize() };
-                    return;
-                }
-            };
-
-            let bootstrap_connection = listener.create_connection();
-            let connection: IWRdsProtocolConnection = ComProtocolConnection::new(bootstrap_connection).into();
-
-            let mut settings = WRDS_CONNECTION_SETTINGS::default();
-            settings.WRdsConnectionSettingLevel = WRDS_CONNECTION_SETTING_LEVEL_1;
-
-            match unsafe { callback_for_worker.OnConnected(&connection, &settings) } {
-                Ok(connection_callback) => {
-                    if let Err(error) = unsafe { connection_callback.OnReady() } {
-                        warn!(%error, "Failed to send OnReady callback");
-                    }
-                }
-                Err(error) => {
-                    warn!(%error, "Failed to dispatch OnConnected callback");
-                }
-            }
-
-            let _ = stop_rx.recv();
-
-            unsafe { CoUninitialize() };
-        });
-
-        *self.worker.lock() = Some(ListenerWorker { stop_tx, join_handle });
-
-        *self.callback.lock() = Some(callback);
-
-        info!("Started protocol listener");
-
-        Ok(())
+            .map_err(|_| windows_core::Error::new(E_POINTER, "null listener callback"))?;
+        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+        unsafe { self.inner.StartListen(callback_ref) }
     }
 
     fn StopListen(&self) -> windows_core::Result<()> {
-        if let Some(worker) = self.worker.lock().take() {
-            if let Err(error) = worker.stop_tx.send(()) {
-                warn!(%error, "Failed to signal listener worker stop");
-            }
-
-            if let Err(error) = worker.join_handle.join() {
-                warn!(?error, "Listener worker thread panicked");
-            }
-        }
-
-        *self.callback.lock() = None;
-        info!("Stopped protocol listener");
-        Ok(())
+        // SAFETY: delegation to a COM object obtained via `CoCreateInstance`.
+        unsafe { self.inner.StopListen() }
     }
 }
 
@@ -1014,17 +990,6 @@ struct ComProtocolConnection {
 }
 
 impl ComProtocolConnection {
-    fn new(inner: Arc<ProtocolConnection>) -> Self {
-        Self {
-            inner,
-            auth_bridge: CredsspServerBridge::default(),
-            last_input_time: Mutex::new(0),
-            input_video_handles: Mutex::new(None),
-            virtual_channels: Mutex::new(Vec::new()),
-            virtual_channel_forwarders: Mutex::new(Vec::new()),
-        }
-    }
-
     fn ensure_input_video_handles(&self) -> windows_core::Result<()> {
         let mut handles_guard = self.input_video_handles.lock();
         if handles_guard.is_none() {
@@ -1156,7 +1121,7 @@ impl ComProtocolConnection {
 
         let endpoint_for_worker = endpoint.clone();
         let handler_for_worker = Arc::clone(&handler);
-        let channel_handle_raw = channel_handle.0 as usize;
+        let channel_handle_raw = handle_to_raw_usize(channel_handle);
         let join_handle = thread::spawn(move || {
             run_virtual_channel_forwarder(
                 channel_handle_raw,
@@ -1195,9 +1160,11 @@ impl ComProtocolConnection {
         let endpoint = PCSTR::from_raw(endpoint_name_cstring.as_ptr().cast::<u8>());
         let flags = virtual_channel_open_flags(is_static, requested_priority);
 
+        // SAFETY: `endpoint` points to a valid NUL-terminated string for the duration of the call.
         let channel = unsafe { WTSVirtualChannelOpenEx(session_id, endpoint, flags) }?;
 
         if let Some((existing, _existing_bridge_plan)) = self.find_virtual_channel(endpoint_name, is_static) {
+            // SAFETY: `channel` is a handle returned by `WTSVirtualChannelOpenEx`.
             if let Err(error) = unsafe { WTSVirtualChannelClose(channel) } {
                 warn!(%error, "Failed to close duplicate virtual channel handle");
             }
@@ -1242,28 +1209,27 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Err(windows_core::Error::new(E_POINTER, "null client data pointer"));
         }
 
-        unsafe {
-            *pclientdata = WTS_CLIENT_DATA::default();
-            (*pclientdata).fEnableWindowsKey = true;
-            (*pclientdata).fInheritAutoLogon = BOOL(1);
-            (*pclientdata).fNoAudioPlayback = true;
-            copy_wide(&mut (*pclientdata).ProtocolName, "IRDP-WTS");
-        }
+        // SAFETY: `pclientdata` is non-null (checked above) and points to a writable buffer
+        // provided by the caller.
+        let client_data = unsafe { &mut *pclientdata };
+        *client_data = WTS_CLIENT_DATA::default();
+        client_data.fEnableWindowsKey = true;
+        client_data.fInheritAutoLogon = BOOL(1);
+        client_data.fNoAudioPlayback = true;
+        copy_wide(&mut client_data.ProtocolName, "IRDP-WTS");
 
         Ok(())
     }
 
     fn GetClientMonitorData(&self, pnummonitors: *mut u32, pprimarymonitor: *mut u32) -> windows_core::Result<()> {
         if !pnummonitors.is_null() {
-            unsafe {
-                *pnummonitors = 1;
-            }
+            // SAFETY: `pnummonitors` is non-null and points to a writable buffer provided by the caller.
+            unsafe { *pnummonitors = 1 };
         }
 
         if !pprimarymonitor.is_null() {
-            unsafe {
-                *pprimarymonitor = 0;
-            }
+            // SAFETY: `pprimarymonitor` is non-null and points to a writable buffer provided by the caller.
+            unsafe { *pprimarymonitor = 0 };
         }
 
         Ok(())
@@ -1296,8 +1262,9 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Err(windows_core::Error::new(E_POINTER, "null session id pointer"));
         }
 
-        let session_id = unsafe { (*sessionid).SessionId };
-        self.inner.notify_session_id(session_id).map_err(transition_error)?;
+        // SAFETY: `sessionid` is non-null (checked above) and points to a valid session id structure.
+        let wts_session_id = unsafe { (*sessionid).SessionId };
+        self.inner.notify_session_id(wts_session_id).map_err(transition_error)?;
 
         Ok(())
     }
@@ -1314,11 +1281,12 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         let (keyboard_handle, mouse_handle) = self.get_keyboard_mouse_handles()?;
 
-        unsafe {
-            *pkeyboardhandle = keyboard_handle;
-            *pmousehandle = mouse_handle;
-            *pbeephandle = HANDLE_PTR::default();
-        }
+        // SAFETY: out-pointers were validated as non-null above.
+        *unsafe { &mut *pkeyboardhandle } = keyboard_handle;
+        // SAFETY: out-pointers were validated as non-null above.
+        *unsafe { &mut *pmousehandle } = mouse_handle;
+        // SAFETY: out-pointers were validated as non-null above.
+        *unsafe { &mut *pbeephandle } = HANDLE_PTR::default();
 
         debug!("Returned protocol keyboard and mouse handles");
 
@@ -1394,9 +1362,8 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Err(windows_core::Error::new(E_POINTER, "null protocol status pointer"));
         }
 
-        unsafe {
-            *pprotocolstatus = WTS_PROTOCOL_STATUS::default();
-        }
+        // SAFETY: `pprotocolstatus` is non-null (checked above) and points to a writable buffer.
+        *unsafe { &mut *pprotocolstatus } = WTS_PROTOCOL_STATUS::default();
 
         Ok(())
     }
@@ -1430,6 +1397,8 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         }
 
         let is_static = bstatic.as_bool();
+        // SAFETY: `endpoint` is non-null (checked above) and points to a NUL-terminated
+        // string provided by the caller.
         let endpoint_name = match unsafe { endpoint.to_string() } {
             Ok(name) => Some(name),
             Err(error) => {
@@ -1466,7 +1435,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
                     route_kind = ?existing_bridge_plan.route_kind,
                     "Reusing virtual channel handle"
                 );
-                return Ok(existing_channel.0 as usize);
+                return Ok(handle_to_raw_usize(existing_channel));
             }
         }
 
@@ -1475,6 +1444,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         let channel = if let Some(name) = endpoint_name.as_deref() {
             self.open_virtual_channel_by_name(session_id, name, is_static, effective_priority, bridge_plan)?
         } else {
+            // SAFETY: `endpoint` points to a valid NUL-terminated string for the duration of the call.
             let channel = unsafe { WTSVirtualChannelOpenEx(session_id, endpoint, flags) }?;
             self.register_virtual_channel(channel, None, is_static, bridge_plan)?
         };
@@ -1510,7 +1480,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             );
         }
 
-        Ok(channel.0 as usize)
+        Ok(handle_to_raw_usize(channel))
     }
 
     fn QueryProperty(
@@ -1546,6 +1516,16 @@ fn copy_wide<const N: usize>(target: &mut [u16; N], value: &str) {
 
 fn transition_error(message: &'static str) -> windows_core::Error {
     windows_core::Error::new(E_UNEXPECTED, message)
+}
+
+#[expect(clippy::as_conversions)]
+fn handle_to_raw_usize(handle: HANDLE) -> usize {
+    handle.0 as usize
+}
+
+#[expect(clippy::as_conversions)]
+fn raw_usize_to_handle(raw: usize) -> HANDLE {
+    HANDLE(raw as *mut core::ffi::c_void)
 }
 
 #[derive(Debug)]
@@ -1636,6 +1616,7 @@ impl VirtualChannelHandle {
 
 impl Drop for VirtualChannelHandle {
     fn drop(&mut self) {
+        // SAFETY: `self.handle` is a handle returned by `WTSVirtualChannelOpenEx`.
         if let Err(error) = unsafe { WTSVirtualChannelClose(self.handle) } {
             warn!(%error, "Failed to close virtual channel handle");
         }
@@ -1665,7 +1646,7 @@ fn run_virtual_channel_forwarder(
     outbound_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
 ) {
-    let channel_handle = HANDLE(channel_handle_raw as *mut core::ffi::c_void);
+    let channel_handle = raw_usize_to_handle(channel_handle_raw);
     let mut read_buffer = vec![0u8; VIRTUAL_CHANNEL_FORWARDER_BUFFER_SIZE];
 
     loop {
@@ -1675,6 +1656,8 @@ fn run_virtual_channel_forwarder(
 
         while let Ok(payload) = outbound_rx.try_recv() {
             let mut bytes_written = 0;
+            // SAFETY: `channel_handle` is a live virtual channel handle, and `payload` points to
+            // a valid buffer for the duration of the call.
             if let Err(error) = unsafe { WTSVirtualChannelWrite(channel_handle, &payload, &mut bytes_written) } {
                 warn!(
                     endpoint = %endpoint.endpoint_name,
@@ -1686,6 +1669,8 @@ fn run_virtual_channel_forwarder(
         }
 
         let mut bytes_read = 0;
+        // SAFETY: `channel_handle` is a live virtual channel handle. `read_buffer` and `bytes_read`
+        // are valid out-buffers for the duration of the call.
         match unsafe {
             WTSVirtualChannelRead(
                 channel_handle,
@@ -1699,7 +1684,14 @@ fn run_virtual_channel_forwarder(
                     continue;
                 }
 
-                let read_len = usize::try_from(bytes_read).expect("u32 to usize conversion");
+                let Ok(read_len) = usize::try_from(bytes_read) else {
+                    warn!(
+                        endpoint = %endpoint.endpoint_name,
+                        bytes_read,
+                        "Virtual channel forwarder read length does not fit in usize"
+                    );
+                    break;
+                };
                 bridge_handler.on_channel_data(&endpoint, &read_buffer[..read_len]);
             }
             Err(error) => {
@@ -1726,6 +1718,60 @@ fn is_virtual_channel_read_timeout(error: &windows_core::Error) -> bool {
     code == HRESULT::from_win32(ERROR_SEM_TIMEOUT.0)
         || code == HRESULT::from_win32(ERROR_IO_INCOMPLETE.0)
         || code == HRESULT::from_win32(ERROR_NO_DATA.0)
+}
+
+impl OpenDeviceHandle {
+    fn open_first_available(
+        device_kind: &str,
+        env_var_name: &str,
+        fallback_paths: &[&str],
+    ) -> windows_core::Result<Self> {
+        let configured_path = std::env::var(env_var_name).ok();
+
+        let mut candidate_paths = Vec::with_capacity(fallback_paths.len() + usize::from(configured_path.is_some()));
+        if let Some(path) = configured_path {
+            if !path.trim().is_empty() {
+                candidate_paths.push(path);
+            }
+        }
+
+        candidate_paths.extend(fallback_paths.iter().map(|path| (*path).to_owned()));
+
+        let mut failures = Vec::new();
+
+        for path in candidate_paths {
+            let open_result = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .or_else(|_| OpenOptions::new().read(true).open(&path));
+
+            match open_result {
+                Ok(file) => {
+                    return Ok(Self { path, file });
+                }
+                Err(error) => {
+                    failures.push(format!("{path}: {error}"));
+                }
+            }
+        }
+
+        let error_message = format!(
+            "failed to open {device_kind} device handle; set {env_var_name} to an accessible device path; attempts: {}",
+            failures.join(" | ")
+        );
+
+        Err(windows_core::Error::new(E_NOTIMPL, error_message))
+    }
+
+    fn as_handle_ptr(&self) -> HANDLE_PTR {
+        raw_handle_to_handle_ptr(self.file.as_raw_handle())
+    }
+}
+
+#[expect(clippy::as_conversions)]
+fn raw_handle_to_handle_ptr(raw_handle: RawHandle) -> HANDLE_PTR {
+    HANDLE_PTR(raw_handle as usize)
 }
 
 #[cfg(test)]
@@ -1977,66 +2023,13 @@ mod tests {
         };
 
         let mut framed = Vec::new();
-        framed.extend_from_slice(&((VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE as u32) + 1).to_le_bytes());
+        let oversized_len =
+            u32::try_from(VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE).expect("max frame size should fit in u32") + 1;
+        framed.extend_from_slice(&oversized_len.to_le_bytes());
 
         let error = drain_length_prefixed_pipe_frames(&endpoint, &bridge_tx, &mut framed)
             .expect_err("oversized frame should fail");
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
-}
-
-impl OpenDeviceHandle {
-    fn open_first_available(
-        device_kind: &str,
-        env_var_name: &str,
-        fallback_paths: &[&str],
-    ) -> windows_core::Result<Self> {
-        let configured_path = std::env::var(env_var_name).ok();
-
-        let mut candidate_paths = Vec::with_capacity(fallback_paths.len() + usize::from(configured_path.is_some()));
-        if let Some(path) = configured_path {
-            if !path.trim().is_empty() {
-                candidate_paths.push(path);
-            }
-        }
-
-        candidate_paths.extend(fallback_paths.iter().map(|path| (*path).to_owned()));
-
-        let mut failures = Vec::new();
-
-        for path in candidate_paths {
-            let open_result = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .or_else(|_| OpenOptions::new().read(true).open(&path));
-
-            match open_result {
-                Ok(file) => {
-                    return Ok(Self { path, file });
-                }
-                Err(error) => {
-                    failures.push(format!("{}: {}", path, error));
-                }
-            }
-        }
-
-        let error_message = format!(
-            "failed to open {} device handle; set {} to an accessible device path; attempts: {}",
-            device_kind,
-            env_var_name,
-            failures.join(" | ")
-        );
-
-        Err(windows_core::Error::new(E_NOTIMPL, error_message))
-    }
-
-    fn as_handle_ptr(&self) -> HANDLE_PTR {
-        raw_handle_to_handle_ptr(self.file.as_raw_handle())
-    }
-}
-
-fn raw_handle_to_handle_ptr(raw_handle: RawHandle) -> HANDLE_PTR {
-    HANDLE_PTR(raw_handle as usize)
 }

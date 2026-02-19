@@ -1247,13 +1247,13 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
     use std::sync::mpsc as std_mpsc;
-    use std::time::Duration;
 
     use ironrdp_ainput::{
         ClientPdu as AInputClientPdu, MouseEventFlags as AInputMouseEventFlags, MousePdu as AInputMousePdu,
     };
-    use ironrdp_dvc::DvcProcessor;
+    use ironrdp_dvc::DvcProcessor as _;
 
     use super::*;
     use crate::display::RdpServerDisplayUpdates;

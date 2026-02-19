@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn fastpath_keyboard_flags_map_to_pressed_and_released() {
-        let pressed = KeyboardEvent::from((0x2A_u8, fast_path::KeyboardFlags::empty()));
+        let pressed = KeyboardEvent::from((0x2Au8, fast_path::KeyboardFlags::empty()));
         assert!(matches!(
             pressed,
             KeyboardEvent::Pressed {
@@ -291,7 +291,7 @@ mod tests {
         ));
 
         let released = KeyboardEvent::from((
-            0x2A_u8,
+            0x2Au8,
             fast_path::KeyboardFlags::RELEASE | fast_path::KeyboardFlags::EXTENDED,
         ));
         assert!(matches!(
