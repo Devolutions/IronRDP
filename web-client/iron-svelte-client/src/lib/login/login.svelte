@@ -8,7 +8,7 @@
     import { onMount } from 'svelte';
 
     let username = 'Administrator';
-    let password = 'DevoLabs123!';
+    let password = '';
     let gatewayAddress = 'ws://localhost:7171/jet/rdp';
     let hostname = '10.10.0.3:3389';
     let domain = '';
