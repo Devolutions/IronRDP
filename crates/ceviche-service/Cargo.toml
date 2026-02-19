@@ -1,0 +1,22 @@
+[package]
+name = "ceviche-service"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+serde_json = "1"
+ironrdp-server = { path = "../ironrdp-server", version = "0.10" }
+ironrdp-wtsprotocol-ipc = { path = "../ironrdp-wtsprotocol-ipc", version = "0.1" }
+
+[lints]
+workspace = true

@@ -616,6 +616,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
 
 [[package]]
+name = "ceviche-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ironrdp-server",
+ "ironrdp-wtsprotocol-ipc",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3028,12 +3041,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-wtsprotocol-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ironrdp-wtsprotocol-provider"
 version = "0.1.0"
 dependencies = [
  "ironrdp-acceptor",
  "ironrdp-connector",
  "ironrdp-pdu",
+ "ironrdp-wtsprotocol-ipc",
  "parking_lot",
  "tracing",
  "windows",
