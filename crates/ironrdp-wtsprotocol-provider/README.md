@@ -74,6 +74,38 @@ Hook behavior:
 - Reuses existing opened handles by endpoint name (avoids duplicate opens for the same endpoint)
 - Applies recommended dynamic priorities for known IronRDP dynamic channels when callers pass unknown/legacy priority values
 - Ensures the `drdynvc` static backbone is opened before known IronRDP dynamic channels
+- Starts per-channel forwarder workers for recognized IronRDP endpoints when a bridge handler is registered
+
+## Virtual channel bridge handler API
+
+The provider now exposes a process-wide bridge handler registration API:
+
+- `set_virtual_channel_bridge_handler(...)`
+- `VirtualChannelBridgeHandler`
+- `VirtualChannelBridgeEndpoint`
+- `VirtualChannelBridgeTx`
+
+When registered, recognized IronRDP channel endpoints trigger:
+
+1. `on_channel_opened(...)` with an endpoint descriptor and writable bridge tx.
+2. `on_channel_data(...)` for payload bytes read from the TermSrv channel handle.
+3. `on_channel_closed(...)` when the channel forwarder shuts down.
+
+## Default named-pipe bridge (env-based)
+
+If no custom bridge handler is registered, the provider can install a default named-pipe bridge automatically when this environment variable is set in the provider process:
+
+- `IRONRDP_WTS_VC_BRIDGE_PIPE_PREFIX`
+
+Behavior:
+
+- One named-pipe worker is created per recognized channel endpoint.
+- Pipe path format: `\\.\pipe\<prefix>.<svc|dvc>.<sanitized-channel-name>`
+- Payload framing in both directions: little-endian `u32` length prefix + raw payload bytes.
+- Provider → pipe: forwards payload bytes read from the TermSrv virtual channel handle.
+- Pipe → provider: reads framed payloads from the pipe and forwards them back to the TermSrv virtual channel handle.
+
+This makes it possible to stand up an external broker/service quickly using only the env var, while keeping custom in-proc bridge handler registration available for advanced scenarios.
 
 However, there is no direct `IWRdsProtocolConnection*` callback API that streams virtual channel payload bytes into this provider implementation.
 

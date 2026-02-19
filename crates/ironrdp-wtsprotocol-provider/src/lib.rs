@@ -12,4 +12,8 @@ pub use connection::{ConnectionLifecycleState, ProtocolConnection};
 pub use listener::ProtocolListener;
 pub use manager::ProtocolManager;
 pub use session_registry::{SessionEntry, SessionRegistry};
-pub use wts_com::{create_protocol_manager_com, IRONRDP_PROTOCOL_MANAGER_CLSID, IRONRDP_PROTOCOL_MANAGER_CLSID_STR};
+pub use wts_com::{
+    create_protocol_manager_com, set_virtual_channel_bridge_handler, VirtualChannelBridgeEndpoint,
+    VirtualChannelBridgeHandler, VirtualChannelBridgeTx, VirtualChannelRouteKind, IRONRDP_PROTOCOL_MANAGER_CLSID,
+    IRONRDP_PROTOCOL_MANAGER_CLSID_STR,
+};
