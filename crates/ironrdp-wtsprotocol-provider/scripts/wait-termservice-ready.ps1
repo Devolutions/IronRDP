@@ -22,6 +22,11 @@ $defaultsScript = Join-Path -Path $scriptRoot -ChildPath "side-by-side-defaults.
 
 $PortNumber = Resolve-SideBySideListenerPort -PortNumber $PortNumber
 
+$termDdServiceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TermDD"
+if (-not (Test-Path -LiteralPath $termDdServiceKey)) {
+    throw "rdp tcp transport service key is missing ($termDdServiceKey); this host does not expose the standard TermDD listener path required for mstsc tcp validation"
+}
+
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 
 while ((Get-Date) -lt $deadline) {
@@ -47,4 +52,11 @@ if ($null -ne $service) {
     $status = [string]$service.Status
 }
 
-throw "timeout waiting for TermService/port readiness (status=$status, port=$PortNumber, timeout=${TimeoutSeconds}s)"
+$qWinSta = "unavailable"
+try {
+    $qWinSta = (qwinsta | Out-String).Trim()
+}
+catch {
+}
+
+throw "timeout waiting for TermService/port readiness (status=$status, port=$PortNumber, timeout=${TimeoutSeconds}s); qwinsta: $qWinSta"
