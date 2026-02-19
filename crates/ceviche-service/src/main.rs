@@ -50,9 +50,15 @@ mod windows_main {
     };
     use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
     use windows::Win32::System::Threading::{
-        CreateProcessAsUserW, TerminateProcess, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
+        CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken, TerminateProcess, CREATE_NO_WINDOW,
+        PROCESS_INFORMATION, STARTUPINFOW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    use windows::Win32::Security::{
+        DuplicateTokenEx, SecurityImpersonation, SetTokenInformation, TokenPrimary, TokenSessionId,
+        TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_QUERY,
+    };
 
     const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
@@ -274,6 +280,11 @@ mod windows_main {
         process: SendHandle,
     }
 
+    struct AcquiredSessionToken {
+        token: windows::Win32::Foundation::HANDLE,
+        desktop: &'static str,
+    }
+
     fn spawn_capture_helper_process(connect_addr: SocketAddr) -> anyhow::Result<SpawnedProcess> {
         // SAFETY: safe to call and returns a process-global session id value.
         let session_id = unsafe { WTSGetActiveConsoleSessionId() };
@@ -281,18 +292,16 @@ mod windows_main {
             return Err(anyhow!("no active console session"));
         }
 
-        let mut user_token = windows::Win32::Foundation::HANDLE::default();
-        // SAFETY: `WTSQueryUserToken` writes a token handle into `user_token` on success.
-        unsafe { WTSQueryUserToken(session_id, &mut user_token) }
-            .ok()
-            .context("WTSQueryUserToken failed")?;
+        let acquired =
+            acquire_session_token(session_id).context("failed to acquire a token for the capture session")?;
+        let user_token = acquired.token;
 
         let exe_path = std::env::current_exe().context("failed to resolve current executable path")?;
         let exe_path_str = exe_path
             .to_str()
             .ok_or_else(|| anyhow!("current executable path is not valid unicode"))?;
 
-        let desktop = "winsta0\\default";
+        let desktop = acquired.desktop;
         let args = format!("\"{exe_path_str}\" --capture-helper --connect {connect_addr}",);
 
         let app_name: Vec<u16> = exe_path_str.encode_utf16().chain(Some(0)).collect();
@@ -343,6 +352,88 @@ mod windows_main {
             pid: process_info.dwProcessId,
             process: SendHandle(process_info.hProcess),
         })
+    }
+
+    fn acquire_session_token(session_id: u32) -> anyhow::Result<AcquiredSessionToken> {
+        let mut token = windows::Win32::Foundation::HANDLE::default();
+
+        // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
+        let wts_result = unsafe { WTSQueryUserToken(session_id, &mut token) };
+        if wts_result.is_ok() {
+            return Ok(AcquiredSessionToken {
+                token,
+                desktop: "winsta0\\default",
+            });
+        }
+
+        let wts_error = wts_result.err().unwrap_or_else(windows::core::Error::empty);
+        warn!(
+            session_id,
+            error = %wts_error,
+            "WTSQueryUserToken failed; attempting to spawn helper with a session-adjusted service token"
+        );
+
+        let token = duplicate_self_token_for_session(session_id)?;
+
+        Ok(AcquiredSessionToken {
+            token,
+            desktop: "winsta0\\winlogon",
+        })
+    }
+
+    fn duplicate_self_token_for_session(session_id: u32) -> anyhow::Result<windows::Win32::Foundation::HANDLE> {
+        let mut process_token = windows::Win32::Foundation::HANDLE::default();
+
+        // SAFETY: `GetCurrentProcess` is safe to call.
+        let current_process = unsafe { GetCurrentProcess() };
+
+        // SAFETY: `OpenProcessToken` writes a token handle into `process_token` on success.
+        unsafe {
+            OpenProcessToken(
+                current_process,
+                TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_SESSIONID,
+                &mut process_token,
+            )
+        }
+        .ok()
+        .context("OpenProcessToken failed")?;
+
+        let mut primary_token = windows::Win32::Foundation::HANDLE::default();
+
+        // SAFETY: `DuplicateTokenEx` writes a new token handle into `primary_token` on success.
+        unsafe {
+            DuplicateTokenEx(
+                process_token,
+                TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_SESSIONID,
+                None,
+                SecurityImpersonation,
+                TokenPrimary,
+                &mut primary_token,
+            )
+        }
+        .ok()
+        .context("DuplicateTokenEx failed")?;
+
+        // SAFETY: close the original process token.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(process_token);
+        }
+
+        let session_id_ptr = core::ptr::addr_of!(session_id).cast::<core::ffi::c_void>();
+
+        // SAFETY: SetTokenInformation expects a pointer to a u32 session id.
+        unsafe {
+            SetTokenInformation(
+                primary_token,
+                TokenSessionId,
+                session_id_ptr,
+                u32::try_from(size_of::<u32>()).map_err(|_| anyhow!("TokenSessionId size overflow"))?,
+            )
+        }
+        .ok()
+        .context("SetTokenInformation(TokenSessionId) failed")?;
+
+        Ok(primary_token)
     }
 
     const CAPTURE_FRAME_MAGIC: [u8; 4] = *b"IRDP";
