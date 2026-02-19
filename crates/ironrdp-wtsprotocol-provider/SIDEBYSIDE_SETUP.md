@@ -1,5 +1,9 @@
 # Side-by-side setup (first-run prep)
 
+If you also want to install and run the companion `IronRdpCevicheService` via MSI in a Windows VM before mstsc validation, see:
+
+- `package/CevicheServiceWindowsManaged/README.md`
+
 This crate currently provides an initial Windows protocol-provider scaffold using:
 
 - `IWRdsProtocolManager`
@@ -22,6 +26,8 @@ The intended rollout is side-by-side first (new protocol listener name), before 
 ## First-run preparation checklist
 
 Run all commands from an elevated PowerShell session on a Windows test VM.
+
+Prerequisite: host Remote Desktop must be enabled (`fDenyTSConnections = 0`).
 
 ### 1) Build the provider DLL
 
@@ -55,7 +61,7 @@ Run full install flow:
 	-ProviderDllPath .\target\release\ironrdp_wtsprotocol_provider.dll \
 	-TargetHost <host> \
 	-GenerateRdpFile \
-	-PortNumber 3390
+	-PortNumber 4489
 ```
 
 More robust first-run variant (restarts and waits for ready state):
@@ -66,7 +72,7 @@ More robust first-run variant (restarts and waits for ready state):
 	-BuildProvider \
 	-BuildProfile release \
 	-TargetHost <host> \
-	-PortNumber 3390 \
+	-PortNumber 4489 \
 	-RestartTermService \
 	-WaitForServiceReadyAfterRestart \
 	-GenerateRdpFile
@@ -76,6 +82,62 @@ If `-ProviderDllPath` is omitted, the orchestrator auto-detects `target\<profile
 Add `-BuildProvider` to make it build automatically before install.
 With `-RestartTermService -WaitForServiceReadyAfterRestart`, the orchestrator waits until `TermService` is running and the configured port is listening.
 
+### Optional packaging path (prepare commands without installing)
+
+Generate a ready-to-run package (install/rollback/connect command files + `.rdp` file) without touching system state:
+
+```powershell
+.\crates\ironrdp-wtsprotocol-provider\scripts\prepare-first-run-package.ps1 \
+	-TargetHost <host> \
+	-BuildProvider \
+	-BuildProfile release \
+	-PortNumber 4489
+```
+
+This creates `artifacts\first-run-package-<timestamp>` containing:
+
+- `START-HERE.md`
+- `run-first-run-elevated.ps1`
+- `run-first-run.ps1`
+- `run-first-run-elevated.cmd`
+- `run-first-run.cmd`
+- `run-preview.ps1`
+- `run-preflight.ps1`
+- `run-install.ps1`
+- `run-install-restart.ps1`
+- `run-verify.ps1`
+- `run-smoke.ps1`
+- `run-connect.ps1`
+- `run-connect.cmd`
+- `run-diagnostics.ps1`
+- `run-diagnostics.cmd`
+- `run-rollback.ps1`
+- `run-rollback.cmd`
+- `preview-now.ps1.txt`
+- `preflight-now.ps1.txt`
+- `first-run-now.ps1.txt`
+- `install-now.ps1.txt`
+- `install-with-restart-now.ps1.txt`
+- `verify-now.ps1.txt`
+- `smoke-now.ps1.txt`
+- `rollback-now.ps1.txt`
+- `connect-now.txt`
+- `collect-diagnostics-now.ps1.txt`
+- `manual-steps.ps1.txt`
+- `irdp-side-by-side.rdp`
+- `package.json`
+- plus `artifacts\first-run-package-<timestamp>.zip`
+- plus `artifacts\first-run-package-<timestamp>.zip.sha256.txt`
+`-WaitForServiceReadyAfterRestart` requires `-RestartTermService`.
+
+When `-PortNumber` is omitted, scripts resolve the listener port from
+`HKLM\SOFTWARE\IronRDP\WtsProtocolProvider\ListenerPort` and fall back to `4489`.
+To change the default for future runs:
+
+```powershell
+Set-ItemProperty -Path "HKLM:\SOFTWARE\IronRDP\WtsProtocolProvider" -Name "ListenerPort" -Type DWord -Value 4495
+```
+
 ### 2) Backup current listener and provider state (recommended)
 
 ```powershell
@@ -84,6 +146,7 @@ With `-RestartTermService -WaitForServiceReadyAfterRestart`, the orchestrator wa
 ```
 
 Keep the printed backup directory path for potential restore.
+By default, backups are saved under `artifacts\wtsprotocol-backup-<timestamp>` and include `manifest.json`.
 
 ### 3) Install as a side-by-side listener
 
@@ -93,14 +156,14 @@ Optional but recommended preflight before install:
 .\crates\ironrdp-wtsprotocol-provider\scripts\preflight-side-by-side.ps1 \
 	-ProviderDllPath .\target\release\ironrdp_wtsprotocol_provider.dll \
 	-ListenerName IRDP-Tcp \
-	-PortNumber 3390
+	-PortNumber 4489
 ```
 
 ```powershell
 .\crates\ironrdp-wtsprotocol-provider\scripts\install-side-by-side.ps1 \
 	-ProviderDllPath .\target\release\ironrdp_wtsprotocol_provider.dll \
 	-ListenerName IRDP-Tcp \
-	-PortNumber 3390
+	-PortNumber 4489
 ```
 
 What this script does:
@@ -108,7 +171,8 @@ What this script does:
 - Clones `RDP-Tcp` listener configuration into `IRDP-Tcp` (if it does not exist yet).
 - Registers protocol manager CLSID `{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}` under `HKLM\SOFTWARE\Classes\CLSID`.
 - Sets `LoadableProtocol_Object` on `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\IRDP-Tcp`.
-- Sets `PortNumber` on the custom listener (default `3390`) so mstsc can target `<host>:3390`.
+- Sets `PortNumber` on the custom listener (default `4489`) so mstsc can target `<host>:4489`.
+- Persists the resolved default listener port at `HKLM\SOFTWARE\IronRDP\WtsProtocolProvider\ListenerPort`.
 - Fails fast if the selected port is already used by another WinStation listener.
 
 Immediate registration verification:
@@ -117,7 +181,7 @@ Immediate registration verification:
 .\crates\ironrdp-wtsprotocol-provider\scripts\verify-side-by-side.ps1 \
 	-ProviderDllPath .\target\release\ironrdp_wtsprotocol_provider.dll \
 	-ListenerName IRDP-Tcp \
-	-PortNumber 3390
+	-PortNumber 4489
 ```
 
 Optional consolidated smoke test before mstsc:
@@ -126,7 +190,7 @@ Optional consolidated smoke test before mstsc:
 .\crates\ironrdp-wtsprotocol-provider\scripts\smoke-test-side-by-side.ps1 \
 	-ProviderDllPath .\target\release\ironrdp_wtsprotocol_provider.dll \
 	-ListenerName IRDP-Tcp \
-	-PortNumber 3390
+	-PortNumber 4489
 ```
 
 ### 3) Restart Remote Desktop Services manually
@@ -138,7 +202,7 @@ Use your normal test-VM procedure, or pass `-RestartTermService` to the install 
 ```powershell
 .\crates\ironrdp-wtsprotocol-provider\scripts\configure-side-by-side-firewall.ps1 \
 	-Mode Add \
-	-PortNumber 3390
+	-PortNumber 4489
 ```
 
 By default, firewall rule name is derived from port: `IronRDP Side-by-side RDP (TCP <PortNumber>)`.
@@ -148,17 +212,17 @@ Optional verification:
 ```powershell
 .\crates\ironrdp-wtsprotocol-provider\scripts\configure-side-by-side-firewall.ps1 \
 	-Mode Verify \
-	-PortNumber 3390
+	-PortNumber 4489
 ```
 
 ### 5) Connect from mstsc
 
-Connect to the test host with `mstsc` using `<host>:3390` and validate provider logs/method sequencing.
+Connect to the test host with `mstsc` using `<host>:4489` and validate provider logs/method sequencing.
 
 Example:
 
 ```powershell
-mstsc /v:<host>:3390
+mstsc /v:<host>:4489
 ```
 
 Optional `.rdp` file generation:
@@ -166,11 +230,35 @@ Optional `.rdp` file generation:
 ```powershell
 .\crates\ironrdp-wtsprotocol-provider\scripts\new-side-by-side-mstsc-file.ps1 \
 	-TargetHost <host> \
-	-PortNumber 3390 \
+	-PortNumber 4489 \
 	-OutputPath .\artifacts\irdp-side-by-side.rdp
 ```
 
 If you use the orchestrator with `-GenerateRdpFile`, this file can be generated automatically.
+
+### Troubleshooting bundle (if mstsc fails)
+
+```powershell
+.\crates\ironrdp-wtsprotocol-provider\scripts\collect-side-by-side-diagnostics.ps1 \
+	-ListenerName IRDP-Tcp \
+	-PortNumber 4489 \
+	-ProviderDllPath .\target\release\ironrdp_wtsprotocol_provider.dll
+```
+
+This writes a diagnostics folder under `artifacts\wtsprotocol-diagnostics-<timestamp>`.
+
+### Input/graphics device handle overrides (if keyboard, mouse, or video do not initialize)
+
+The provider now opens real handles in `GetInputHandles` and `GetVideoHandle`.
+If your host uses non-default device names, set machine-level environment variables and restart `TermService`:
+
+```powershell
+[Environment]::SetEnvironmentVariable("IRONRDP_WTS_KEYBOARD_DEVICE", "\\.\KeyboardClass0", "Machine")
+[Environment]::SetEnvironmentVariable("IRONRDP_WTS_MOUSE_DEVICE", "\\.\PointerClass0", "Machine")
+[Environment]::SetEnvironmentVariable("IRONRDP_WTS_VIDEO_DEVICE", "\\.\RdpVideoMiniport", "Machine")
+```
+
+Then restart `TermService` and run verify/smoke again.
 
 ### 6) Roll back
 
@@ -194,7 +282,16 @@ Optional firewall cleanup:
 Orchestrated rollback:
 
 ```powershell
-.\crates\ironrdp-wtsprotocol-provider\scripts\first-run-side-by-side.ps1 -Mode Rollback -PortNumber 3390
+.\crates\ironrdp-wtsprotocol-provider\scripts\first-run-side-by-side.ps1 -Mode Rollback -PortNumber 4489
+```
+
+Orchestrated rollback with automatic backup restore (latest backup if `-BackupDirectory` omitted):
+
+```powershell
+.\crates\ironrdp-wtsprotocol-provider\scripts\first-run-side-by-side.ps1 \
+	-Mode Rollback \
+	-PortNumber 4489 \
+	-RestoreBackupOnRollback
 ```
 
 Then restart `TermService`.

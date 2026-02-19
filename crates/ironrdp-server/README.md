@@ -20,6 +20,33 @@ The server currently supports:
 
 ---
 
+## Runtime control handle
+
+Use `RdpServer::handle()` to control a running server from other tasks without using raw events.
+
+```rust
+use ironrdp_server::RdpServer;
+
+# async fn demo(server: RdpServer) -> anyhow::Result<()> {
+let handle = server.handle().clone();
+
+// Request listener address once run loop starts.
+let _bound_addr = handle.local_addr().await?;
+
+// Update credentials for subsequent connections.
+handle.set_credentials(ironrdp_server::Credentials {
+	username: "alice".to_owned(),
+	password: "secret".to_owned(),
+	domain: Some("example".to_owned()),
+})?;
+
+// Stop the server loop.
+handle.quit("shutdown requested")?;
+# Ok(()) }
+```
+
+---
+
 Custom logic for your RDP server can be added by implementing these traits:
  - `RdpServerInputHandler` - callbacks used when the server receives input events from a client
  - `RdpServerDisplay`      - notifies the server of display updates

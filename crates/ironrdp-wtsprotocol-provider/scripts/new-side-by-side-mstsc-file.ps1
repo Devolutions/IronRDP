@@ -5,8 +5,8 @@ param(
     [string]$TargetHost,
 
     [Parameter()]
-    [ValidateRange(1, 65535)]
-    [int]$PortNumber = 3390,
+    [ValidateRange(0, 65535)]
+    [int]$PortNumber = 0,
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
@@ -15,6 +15,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$defaultsScript = Join-Path -Path $scriptRoot -ChildPath "side-by-side-defaults.ps1"
+. $defaultsScript
+
+$PortNumber = Resolve-SideBySideListenerPort -PortNumber $PortNumber
 
 $outputDirectory = Split-Path -Path $OutputPath -Parent
 if (-not [string]::IsNullOrWhiteSpace($outputDirectory)) {
