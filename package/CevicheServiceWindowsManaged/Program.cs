@@ -4,27 +4,39 @@ using WixSharp;
 using CompressionLevel = WixSharp.CompressionLevel;
 using File = WixSharp.File;
 
-namespace IronRdpCevicheInstaller;
+namespace IronRdpTermSrvInstaller;
 
 internal static class Program
 {
-    private const string PackageName = "IronRdpCevicheService";
+    private const string PackageName = "IronRdpTermSrv";
+
+    private const string ServiceExeEnvVar = "IRDP_TERMSRV_SERVICE_EXECUTABLE";
+    private const string ServiceExeEnvVarLegacy = "IRDP_CEVICHE_SERVICE_EXECUTABLE";
+    private const string ConfigDirEnvVar = "IRDP_TERMSRV_CONFIG_DIR";
+    private const string ConfigDirEnvVarLegacy = "IRDP_CEVICHE_CONFIG_DIR";
+    private const string MsiVersionEnvVar = "IRDP_TERMSRV_MSI_VERSION";
+    private const string MsiVersionEnvVarLegacy = "IRDP_CEVICHE_MSI_VERSION";
+    private const string MsiPlatformEnvVar = "IRDP_TERMSRV_MSI_PLATFORM";
+    private const string MsiPlatformEnvVarLegacy = "IRDP_CEVICHE_MSI_PLATFORM";
 
     private static string ServiceExecutablePath => ResolveRequiredArtifact(
-        "IRDP_CEVICHE_SERVICE_EXECUTABLE",
-        "..\\..\\target\\release\\ceviche-service.exe");
+        ServiceExeEnvVar,
+        ServiceExeEnvVarLegacy,
+        "..\\..\\target\\release\\ironrdp-termsrv.exe");
 
     private static string? ProviderDllPath => ResolveOptionalArtifact(
         "IRDP_PROVIDER_DLL",
+        "IRDP_PROVIDER_DLL",
         "..\\..\\target\\release\\ironrdp_wtsprotocol_provider.dll");
 
-    private static string? ConfigDirectoryPath => ResolveOptionalDirectory("IRDP_CEVICHE_CONFIG_DIR");
+    private static string? ConfigDirectoryPath => ResolveOptionalDirectory(ConfigDirEnvVar, ConfigDirEnvVarLegacy);
 
     private static Version InstallerVersion
     {
         get
         {
-            var versionString = Environment.GetEnvironmentVariable("IRDP_CEVICHE_MSI_VERSION");
+            var versionString = Environment.GetEnvironmentVariable(MsiVersionEnvVar)
+                ?? Environment.GetEnvironmentVariable(MsiVersionEnvVarLegacy);
 
             if (string.IsNullOrWhiteSpace(versionString))
             {
@@ -33,7 +45,7 @@ internal static class Program
 
             if (string.IsNullOrWhiteSpace(versionString) || !Version.TryParse(versionString, out var version))
             {
-                throw new Exception("IRDP_CEVICHE_MSI_VERSION is not specified or invalid");
+                throw new Exception($"{MsiVersionEnvVar} is not specified or invalid");
             }
 
             return NormalizeInstallerVersion(version);
@@ -44,7 +56,8 @@ internal static class Program
     {
         get
         {
-            var platform = Environment.GetEnvironmentVariable("IRDP_CEVICHE_MSI_PLATFORM");
+            var platform = Environment.GetEnvironmentVariable(MsiPlatformEnvVar)
+                ?? Environment.GetEnvironmentVariable(MsiPlatformEnvVarLegacy);
 
 #if DEBUG
             if (string.IsNullOrWhiteSpace(platform))
@@ -55,7 +68,7 @@ internal static class Program
 
             if (string.IsNullOrWhiteSpace(platform))
             {
-                throw new Exception("IRDP_CEVICHE_MSI_PLATFORM is not specified");
+                throw new Exception($"{MsiPlatformEnvVar} is not specified");
             }
 
             return platform.ToLowerInvariant() switch
@@ -63,14 +76,14 @@ internal static class Program
                 "x64" or "x86_64" or "amd64" => Platform.x64,
                 "x86" or "i386" => Platform.x86,
                 "arm64" or "aarch64" => Platform.arm64,
-                _ => throw new Exception($"unsupported IRDP_CEVICHE_MSI_PLATFORM value: {platform}"),
+                _ => throw new Exception($"unsupported {MsiPlatformEnvVar} value: {platform}"),
             };
         }
     }
 
-    private static string ResolveRequiredArtifact(string varName, string defaultPath)
+    private static string ResolveRequiredArtifact(string varName, string legacyVarName, string defaultPath)
     {
-        var path = ResolveOptionalArtifact(varName, defaultPath);
+        var path = ResolveOptionalArtifact(varName, legacyVarName, defaultPath);
         if (path is null)
         {
             throw new Exception($"required artifact is missing ({varName})");
@@ -79,9 +92,13 @@ internal static class Program
         return path;
     }
 
-    private static string? ResolveOptionalArtifact(string varName, string? defaultPath = null)
+    private static string? ResolveOptionalArtifact(string varName, string legacyVarName, string? defaultPath = null)
     {
         var configuredPath = Environment.GetEnvironmentVariable(varName);
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            configuredPath = Environment.GetEnvironmentVariable(legacyVarName);
+        }
         if (!string.IsNullOrWhiteSpace(configuredPath))
         {
             var fullPath = Path.GetFullPath(configuredPath);
@@ -111,9 +128,13 @@ internal static class Program
         return candidate;
     }
 
-    private static string? ResolveOptionalDirectory(string varName)
+    private static string? ResolveOptionalDirectory(string varName, string legacyVarName)
     {
         var configured = Environment.GetEnvironmentVariable(varName);
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            configured = Environment.GetEnvironmentVariable(legacyVarName);
+        }
         if (string.IsNullOrWhiteSpace(configured))
         {
             return null;
@@ -220,7 +241,7 @@ internal static class Program
             {
                 new()
                 {
-                    Cabinet = "ceviche.cab",
+                    Cabinet = "termsrv.cab",
                     EmbedCab = true,
                     CompressionLevel = CompressionLevel.mszip,
                 },
