@@ -82,6 +82,12 @@ mod windows_main {
 
     use windows::Win32::System::RemoteDesktop::{WTSEnumerateProcessesW, WTS_PROCESS_INFOW};
 
+    #[link(name = "sas")]
+    unsafe extern "system" {
+        // Win32 BOOL is a 32-bit signed integer.
+        fn SendSAS(as_user: i32) -> i32;
+    }
+
     const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
     const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:4489";
@@ -3185,8 +3191,46 @@ mod windows_main {
     }
 
     async fn run_input_injector(mut stream: TcpStream) -> anyhow::Result<()> {
+        // Track modifier state so we can translate Ctrl+Alt+End into a real SAS.
+        // This is necessary because Winlogon often ignores normal injected key sequences.
+        let mut ctrl_down = false;
+        let mut alt_down = false;
+
         loop {
             let event = read_helper_input_event(&mut stream).await?;
+
+            if let HelperInputEvent::ScancodeKey {
+                code,
+                released,
+                ..
+            } = event
+            {
+                // Set-1 scancodes used by mstsc for modifiers.
+                const SCANCODE_CTRL: u8 = 0x1D;
+                const SCANCODE_ALT: u8 = 0x38;
+                const SCANCODE_END: u8 = 0x4F;
+                const SCANCODE_DEL: u8 = 0x53;
+
+                match code {
+                    SCANCODE_CTRL => ctrl_down = !released,
+                    SCANCODE_ALT => alt_down = !released,
+                    SCANCODE_END | SCANCODE_DEL if !released && ctrl_down && alt_down => {
+                        // Try to generate a real SAS. If this fails, fall back to normal injection.
+                        // SAFETY: SendSAS is an OS API; it returns non-zero on success.
+                        let ok = unsafe { SendSAS(0) };
+                        if ok != 0 {
+                            info!("Generated Secure Attention Sequence (SAS)");
+                            continue;
+                        } else {
+                            // SAFETY: GetLastError returns the last thread error code.
+                            let err = unsafe { GetLastError() };
+                            warn!(error = ?err, "SendSAS failed; falling back to injected key sequence");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             if let Err(error) = inject_helper_input_event(event) {
                 warn!(error = %format!("{error:#}"), "Failed to inject input event");
             }
