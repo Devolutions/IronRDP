@@ -28,7 +28,10 @@ if (-not (Test-Path -LiteralPath $MsRdpExPath -PathType Leaf)) {
 
 $pwd = [Environment]::GetEnvironmentVariable($PasswordEnvVar)
 if ([string]::IsNullOrWhiteSpace($pwd)) {
-    throw "Missing password: set env:$PasswordEnvVar"
+    $pwd = [Environment]::GetEnvironmentVariable('IRONRDP_TESTVM_PASSWORD')
+    if ([string]::IsNullOrWhiteSpace($pwd)) {
+        throw "Missing password: set env:$PasswordEnvVar (or env:IRONRDP_TESTVM_PASSWORD)"
+    }
 }
 
 # NOTE: Prefer down-level username (DOMAIN\\user) when testing NLA against ironrdp-termsrv.
