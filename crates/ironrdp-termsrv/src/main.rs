@@ -2112,18 +2112,29 @@ mod windows_main {
 
         let display = GdiDisplay::new(connection_id, Arc::clone(&input_stream_slot))
             .context("failed to initialize GDI display handler")?;
-        let tls_acceptor = make_tls_acceptor().context("failed to initialize TLS acceptor")?;
+        let (tls_acceptor, tls_pub_key) = make_tls_acceptor().context("failed to initialize TLS acceptor")?;
+
+        let expected_credentials = resolve_rdp_credentials_from_env()?;
 
         let input_handler = TermSrvInputHandler::new(connection_id, input_tx);
 
-        let mut server = RdpServer::builder()
-            .with_addr(([127, 0, 0, 1], 0))
-            .with_tls(tls_acceptor)
-            .with_input_handler(input_handler)
-            .with_display_handler(display)
-            .build();
+        let mut server = {
+            let builder = RdpServer::builder().with_addr(([127, 0, 0, 1], 0));
 
-        if let Some(credentials) = resolve_rdp_credentials_from_env()? {
+            let builder = if expected_credentials.is_some() {
+                builder.with_hybrid(tls_acceptor, tls_pub_key)
+            } else {
+                drop(tls_pub_key);
+                builder.with_tls(tls_acceptor)
+            };
+
+            builder
+                .with_input_handler(input_handler)
+                .with_display_handler(display)
+                .build()
+        };
+
+        if let Some(credentials) = expected_credentials {
             info!(username = %credentials.username, domain = ?credentials.domain, "Configured expected RDP credentials");
             server.set_credentials(Some(credentials));
         } else {
@@ -2175,7 +2186,7 @@ mod windows_main {
         }
     }
 
-    fn make_tls_acceptor() -> anyhow::Result<TlsAcceptor> {
+    fn make_tls_acceptor() -> anyhow::Result<(TlsAcceptor, Vec<u8>)> {
         let subject_name = std::env::var("IRONRDP_TLS_CERT_SUBJECT")
             .ok()
             .map(|value| value.trim().to_owned())
@@ -2190,6 +2201,31 @@ mod windows_main {
             store_name: "My".to_owned(),
         };
 
+        let certified_key = resolver
+            .resolve_once()
+            .context("resolve TLS certificate from Windows certificate store")?;
+
+        let pub_key = {
+            use x509_cert::der::Decode as _;
+
+            let cert = certified_key
+                .cert
+                .first()
+                .ok_or_else(|| anyhow!("TLS certificate chain is empty"))?;
+            let cert = x509_cert::Certificate::from_der(cert).map_err(|source| anyhow!(source))?;
+
+            cert.tbs_certificate
+                .subject_public_key_info
+                .subject_public_key
+                .as_bytes()
+                .ok_or_else(|| anyhow!("subject public key BIT STRING is not aligned"))?
+                .to_owned()
+        };
+
+        let resolver = StaticCertifiedKeyResolver {
+            certified_key: Arc::clone(&certified_key),
+        };
+
         let mut server_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(resolver));
@@ -2197,7 +2233,18 @@ mod windows_main {
         // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
         server_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
-        Ok(TlsAcceptor::from(Arc::new(server_config)))
+        Ok((TlsAcceptor::from(Arc::new(server_config)), pub_key))
+    }
+
+    #[derive(Debug)]
+    struct StaticCertifiedKeyResolver {
+        certified_key: Arc<rustls::sign::CertifiedKey>,
+    }
+
+    impl rustls::server::ResolvesServerCert for StaticCertifiedKeyResolver {
+        fn resolve(&self, _client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<rustls::sign::CertifiedKey>> {
+            Some(Arc::clone(&self.certified_key))
+        }
     }
 
     #[derive(Debug)]
