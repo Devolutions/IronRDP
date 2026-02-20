@@ -39,9 +39,9 @@ else {
 $WorkspaceRoot = (Resolve-Path $WorkspaceRoot).Path
 $providerScriptsDir = Join-Path $WorkspaceRoot 'crates\ironrdp-wtsprotocol-provider\scripts'
 $providerDll = Join-Path $WorkspaceRoot 'target\release\ironrdp_wtsprotocol_provider.dll'
-$serviceExe = Join-Path $WorkspaceRoot 'target\release\ceviche-service.exe'
+$serviceExe = Join-Path $WorkspaceRoot 'target\release\ironrdp-termsrv.exe'
 $msiBuilderDir = Join-Path $WorkspaceRoot 'package\CevicheServiceWindowsManaged'
-$msiPath = Join-Path $msiBuilderDir 'Release\IronRdpCevicheService.msi'
+$msiPath = Join-Path $msiBuilderDir 'Release\IronRdpTermSrv.msi'
 
 if (-not (Test-Path $providerScriptsDir)) {
     throw "Provider scripts directory not found: $providerScriptsDir"
@@ -59,7 +59,7 @@ if ($installService) {
     if (-not (Test-Path $serviceExe)) {
         Write-Host 'Service executable not found. Attempting to build a companion service (release)...' -ForegroundColor Cyan
 
-        $servicePackageCandidates = @('ceviche-service', 'ironrdp-ceviche-service')
+        $servicePackageCandidates = @('ironrdp-termsrv')
         foreach ($pkg in $servicePackageCandidates) {
             try {
                 cargo build -p $pkg --release | Out-Null
@@ -87,7 +87,7 @@ if ($installService) {
 }
 
 if ($installService) {
-    Write-Host 'Building Ceviche service MSI...' -ForegroundColor Cyan
+    Write-Host 'Building TermSrv service MSI...' -ForegroundColor Cyan
     Push-Location $msiBuilderDir
     try {
         .\build-ceviche-service-msi.ps1 -ServiceExePath $serviceExe -ProviderDllPath $providerDll -Platform x64 -Configuration Release
@@ -149,7 +149,7 @@ try {
     }
 
     if ($installService) {
-        Copy-Item -ToSession $session -Path $msiPath -Destination (Join-Path $VmDeployRoot 'bin\IronRdpCevicheService.msi') -Force
+        Copy-Item -ToSession $session -Path $msiPath -Destination (Join-Path $VmDeployRoot 'bin\IronRdpTermSrv.msi') -Force
     }
 
     if (-not $useIronRdpProvider) {
@@ -224,7 +224,7 @@ try {
 
         $scripts = Join-Path $Root 'scripts'
         $dll = Join-Path $Root 'bin\ironrdp_wtsprotocol_provider.dll'
-        $msi = Join-Path $Root 'bin\IronRdpCevicheService.msi'
+        $msi = Join-Path $Root 'bin\IronRdpTermSrv.msi'
 
         Invoke-DeploymentStep -Name 'Backup side-by-side state' -Action {
             & (Join-Path $scripts 'backup-side-by-side-state.ps1') -ListenerName $Listener -ProtocolManagerClsid $Clsid -OutputDirectory (Join-Path $Root 'logs') | Out-Null
@@ -265,8 +265,8 @@ try {
             }
 
             Invoke-DeploymentStep -Name 'Start companion service' -Action {
-                Start-Service -Name 'IronRdpCevicheService'
-                $script:serviceStatus = (Get-Service -Name 'IronRdpCevicheService').Status.ToString()
+                Start-Service -Name 'IronRdpTermSrv'
+                $script:serviceStatus = (Get-Service -Name 'IronRdpTermSrv').Status.ToString()
             }
         }
 

@@ -16,7 +16,7 @@ socket; without control IPC, it falls back to a single bootstrap `OnConnected` d
 sequencing validation.
 
 Provider-to-service control-plane IPC is now available through the shared
-`ironrdp-wtsprotocol-ipc` contract crate and a companion `ceviche-service` process.
+`ironrdp-wtsprotocol-ipc` contract crate and a companion `ironrdp-termsrv` process.
 When `IRONRDP_WTS_CONTROL_PIPE` is set in the provider process environment,
 `StartListen`/`StopListen`, `WaitForIncoming`, and
 `AcceptConnection`/connection-close notifications are sent over the configured named pipe and
@@ -51,7 +51,7 @@ the initial `StartListen` handshake succeeds; otherwise it keeps local bootstrap
 - CMD launchers for quick invocation (`run-first-run-elevated.cmd`, `run-first-run.cmd`, `run-connect.cmd`, `run-diagnostics.cmd`, `run-rollback.cmd`)
 - Portable package archive output (`<package>.zip` + `<package>.zip.sha256.txt`)
 - Diagnostics bundle collector for failed first-run attempts
-- WixSharp MSI project for `ceviche-rs` service packaging (`package/CevicheServiceWindowsManaged`)
+- WixSharp MSI project for `ironrdp-termsrv` service packaging (`package/CevicheServiceWindowsManaged`)
 
 ## Input and graphics handle notes
 
