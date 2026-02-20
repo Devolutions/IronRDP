@@ -10,6 +10,12 @@ use ironrdp_connector::{
 };
 use ironrdp_core::{other_err, WriteBuf};
 use ironrdp_pdu::PduHint;
+use picky_asn1::wrapper::{
+    ExplicitContextTag0, ExplicitContextTag1, ExplicitContextTag2, OctetStringAsn1, Optional,
+};
+use picky_asn1_der::Asn1RawDer;
+use picky_krb::constants::gss_api::{ACCEPT_COMPLETE, ACCEPT_INCOMPLETE};
+use picky_krb::gss_api::{ApplicationTag0, GssApiNegInit, NegTokenTarg, NegTokenTarg1};
 use tracing::debug;
 
 #[derive(Debug)]
@@ -41,6 +47,44 @@ pub type CredsspProcessGenerator<'a> =
 pub struct CredsspSequence<'a> {
     server: CredSspServer<CredentialsProxyImpl<'a>>,
     state: CredsspState,
+    spnego_wrapped: bool,
+}
+
+fn try_unwrap_spnego(token: &[u8]) -> Option<Vec<u8>> {
+    if let Ok(init) = picky_asn1_der::from_bytes::<ApplicationTag0<GssApiNegInit>>(token) {
+        let mech_token = init.0.neg_token_init.0.mech_token.0?;
+        return Some(mech_token.0 .0);
+    }
+
+    if let Ok(targ) = picky_asn1_der::from_bytes::<NegTokenTarg1>(token) {
+        let response_token = targ.0.response_token.0?;
+        return Some(response_token.0 .0);
+    }
+
+    None
+}
+
+fn wrap_spnego_ntlm_reply(raw_token: Vec<u8>) -> std::io::Result<Vec<u8>> {
+    let neg_result = if raw_token.is_empty() {
+        ACCEPT_COMPLETE
+    } else {
+        ACCEPT_INCOMPLETE
+    };
+
+    let response_token = if raw_token.is_empty() {
+        Optional::from(None)
+    } else {
+        Optional::from(Some(ExplicitContextTag2::from(OctetStringAsn1::from(raw_token))))
+    };
+
+    let targ = ExplicitContextTag1::from(NegTokenTarg {
+        neg_result: Optional::from(Some(ExplicitContextTag0::from(Asn1RawDer(neg_result.to_vec())))),
+        supported_mech: Optional::from(None),
+        response_token,
+        mech_list_mic: Optional::from(None),
+    });
+
+    picky_asn1_der::to_vec(&targ).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 #[derive(Debug)]
@@ -127,6 +171,7 @@ impl<'a> CredsspSequence<'a> {
         let sequence = Self {
             server,
             state: CredsspState::Ongoing,
+            spnego_wrapped: false,
         };
 
         Ok(sequence)
@@ -136,7 +181,17 @@ impl<'a> CredsspSequence<'a> {
     pub fn decode_client_message(&mut self, input: &[u8]) -> ConnectorResult<Option<TsRequest>> {
         match self.state {
             CredsspState::Ongoing => {
-                let message = TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
+                let mut message = TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
+
+                if let Some(nego_tokens) = message.nego_tokens.take() {
+                    if let Some(inner) = try_unwrap_spnego(&nego_tokens) {
+                        self.spnego_wrapped = true;
+                        message.nego_tokens = Some(inner);
+                    } else {
+                        message.nego_tokens = Some(nego_tokens);
+                    }
+                }
+
                 debug!(?message, "Received");
                 Ok(Some(message))
             }
@@ -166,6 +221,16 @@ impl<'a> CredsspSequence<'a> {
 
         self.state = next_state;
         if let Some(ts_request) = ts_request {
+            let mut ts_request = ts_request;
+
+            if self.spnego_wrapped {
+                if let Some(nego_tokens) = ts_request.nego_tokens.take() {
+                    let wrapped = wrap_spnego_ntlm_reply(nego_tokens)
+                        .map_err(|e| custom_err!("SPNEGO", e))?;
+                    ts_request.nego_tokens = Some(wrapped);
+                }
+            }
+
             debug!(?ts_request, "Send");
             let length = usize::from(ts_request.buffer_len());
             let unfilled_buffer = output.unfilled_to(length);

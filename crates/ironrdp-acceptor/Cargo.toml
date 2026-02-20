@@ -22,6 +22,9 @@ ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.8" } # public
 ironrdp-async = { path = "../ironrdp-async", version = "0.8" } # public
 tracing = { version = "0.1", features = ["log"] }
+picky-asn1 = "0.10.1"
+picky-asn1-der = "0.5.4"
+picky-krb = "0.12.0"
 
 [lints]
 workspace = true

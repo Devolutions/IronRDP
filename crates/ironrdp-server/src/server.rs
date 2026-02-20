@@ -101,7 +101,9 @@ impl RdpServerSecurity {
         match self {
             RdpServerSecurity::None => nego::SecurityProtocol::empty(),
             RdpServerSecurity::Tls(_) => nego::SecurityProtocol::SSL,
-            RdpServerSecurity::Hybrid(_) => nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX,
+            RdpServerSecurity::Hybrid(_) => {
+                nego::SecurityProtocol::SSL | nego::SecurityProtocol::HYBRID
+            }
         }
     }
 }

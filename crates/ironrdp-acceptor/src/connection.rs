@@ -24,6 +24,101 @@ use crate::util::{self, wrap_share_data};
 const IO_CHANNEL_ID: u16 = 1003;
 const USER_CHANNEL_ID: u16 = 1002;
 
+#[derive(Clone, Copy, Debug)]
+struct CredentialIdentity<'a> {
+    username: &'a str,
+    domain: Option<&'a str>,
+}
+
+fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+fn split_down_level_logon_name(s: &str) -> Option<(&str, &str)> {
+    let (domain, username) = s.split_once('\\')?;
+    if domain.is_empty() || username.is_empty() {
+        return None;
+    }
+    Some((username, domain))
+}
+
+fn split_upn(s: &str) -> Option<(&str, &str)> {
+    let (username, domain) = s.rsplit_once('@')?;
+    if username.is_empty() || domain.is_empty() {
+        return None;
+    }
+    Some((username, domain))
+}
+
+fn credential_identities(creds: &Credentials) -> [Option<CredentialIdentity<'_>>; 3] {
+    let mut out = [None, None, None];
+    out[0] = Some(CredentialIdentity {
+        username: creds.username.as_str(),
+        domain: creds.domain.as_deref(),
+    });
+
+    if creds.domain.is_none() {
+        if let Some((username, domain)) = split_down_level_logon_name(&creds.username) {
+            out[1] = Some(CredentialIdentity {
+                username,
+                domain: Some(domain),
+            });
+        }
+
+        if let Some((username, domain)) = split_upn(&creds.username) {
+            out[2] = Some(CredentialIdentity {
+                username,
+                domain: Some(domain),
+            });
+        }
+    }
+
+    out
+}
+
+fn credential_identity_equal(a: CredentialIdentity<'_>, b: CredentialIdentity<'_>) -> bool {
+    if !eq_ignore_ascii_case(a.username, b.username) {
+        return false;
+    }
+
+    match (a.domain, b.domain) {
+        (None, None) => true,
+        (Some(a), Some(b)) => eq_ignore_ascii_case(a, b),
+        _ => false,
+    }
+}
+
+fn credentials_match(expected: &Credentials, actual: &Credentials) -> bool {
+    if expected.password != actual.password {
+        return false;
+    }
+
+    let expected_ids = credential_identities(expected);
+    let actual_ids = credential_identities(actual);
+
+    for expected_id in expected_ids.into_iter().flatten() {
+        for actual_id in actual_ids.into_iter().flatten() {
+            if credential_identity_equal(expected_id, actual_id) {
+                return true;
+            }
+        }
+    }
+
+    // mstsc can send UPN in the username field while leaving the domain field empty.
+    // When that happens, tolerate domain mismatches and only match on the UPN username part.
+    if actual.domain.is_none() {
+        if let Some((actual_username, _actual_domain)) = split_upn(&actual.username) {
+            for expected_id in expected_ids.into_iter().flatten() {
+                if eq_ignore_ascii_case(expected_id.username, actual_username) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 pub struct Acceptor {
     pub(crate) state: AcceptorState,
     security: SecurityProtocol,
@@ -530,7 +625,11 @@ impl Sequence for Acceptor {
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
 
-                    if self.creds.as_ref() != Some(&creds) {
+                    if self
+                        .creds
+                        .as_ref()
+                        .is_none_or(|expected| !credentials_match(expected, &creds))
+                    {
                         // FIXME: How authorization should be denied with standard RDP security?
                         // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.
                         let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
