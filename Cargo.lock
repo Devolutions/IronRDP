@@ -3499,6 +3499,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows",
+ "x509-cert",
 ]
 
 [[package]]
