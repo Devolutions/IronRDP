@@ -21,6 +21,11 @@ The full IronRDP transport/data-plane integration is still in progress.
   - TCP bind address for side-by-side incoming sockets.
   - Default when unset: `0.0.0.0:4489`.
 
+- Environment variables: `IRONRDP_RDP_USERNAME`, `IRONRDP_RDP_PASSWORD`, `IRONRDP_RDP_DOMAIN` (optional)
+  - Expected RDP credentials used for authentication.
+  - When `IRONRDP_RDP_USERNAME` + `IRONRDP_RDP_PASSWORD` are set, the server advertises Hybrid security (CredSSP/NLA).
+  - When unset, the server falls back to TLS-only.
+
 ## Build
 
 ```powershell
