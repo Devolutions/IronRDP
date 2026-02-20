@@ -418,6 +418,28 @@ mod windows_main {
                 sleep(CAPTURE_INTERVAL).await;
             }
 
+            if let Some(capture) = &self.capture {
+                if capture.desktop() == HelperDesktop::Winlogon && session_has_user_token(capture.session_id()) {
+                    info!(
+                        connection_id = self.connection_id,
+                        session_id = capture.session_id(),
+                        "User token is now available; restarting capture helper on Default desktop"
+                    );
+
+                    let capture = self.capture.take();
+                    if let Some(capture) = capture {
+                        capture.terminate();
+                    }
+
+                    self.next_helper_attempt_at = Instant::now();
+                    self.warned_blank_capture = false;
+                    self.sent_first_frame = false;
+                    self.last_bitmap = None;
+                    self.helper_frames_received = 0;
+                    self.helper_timeouts = 0;
+                }
+            }
+
             if self.capture.is_none() && Instant::now() >= self.next_helper_attempt_at {
                 match CaptureClient::start(
                     self.connection_id,
@@ -618,6 +640,20 @@ mod windows_main {
             }
         }
 
+        fn session_id(&self) -> u32 {
+            match self {
+                Self::Tcp(client) => client.session_id(),
+                Self::SharedMem(client) => client.session_id(),
+            }
+        }
+
+        fn desktop(&self) -> HelperDesktop {
+            match self {
+                Self::Tcp(client) => client.desktop(),
+                Self::SharedMem(client) => client.desktop(),
+            }
+        }
+
         fn terminate(self) {
             match self {
                 Self::Tcp(client) => client.terminate(),
@@ -636,6 +672,8 @@ mod windows_main {
     struct HelperCaptureClient {
         helper_pid: u32,
         helper_process: SendHandle,
+        helper_session_id: u32,
+        helper_desktop: HelperDesktop,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
         stream: TcpStream,
     }
@@ -683,6 +721,8 @@ mod windows_main {
             Ok(Self {
                 helper_pid: helper.pid,
                 helper_process: helper.process,
+                helper_session_id: helper.session_id,
+                helper_desktop: helper.desktop,
                 input_stream_slot,
                 stream,
             })
@@ -690,6 +730,14 @@ mod windows_main {
 
         fn pid(&self) -> u32 {
             self.helper_pid
+        }
+
+        fn session_id(&self) -> u32 {
+            self.helper_session_id
+        }
+
+        fn desktop(&self) -> HelperDesktop {
+            self.helper_desktop
         }
 
         fn terminate(self) {
@@ -977,6 +1025,8 @@ mod windows_main {
     struct SharedMemCaptureClient {
         helper_pid: u32,
         helper_process: SendHandle,
+        helper_session_id: u32,
+        helper_desktop: HelperDesktop,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
         mapping: SendHandle,
         frame_ready_event: SendHandle,
@@ -1100,6 +1150,8 @@ mod windows_main {
             Ok(Self {
                 helper_pid: helper.pid,
                 helper_process: helper.process,
+                helper_session_id: helper.session_id,
+                helper_desktop: helper.desktop,
                 input_stream_slot,
                 mapping,
                 frame_ready_event,
@@ -1115,6 +1167,14 @@ mod windows_main {
 
         fn pid(&self) -> u32 {
             self.helper_pid
+        }
+
+        fn session_id(&self) -> u32 {
+            self.helper_session_id
+        }
+
+        fn desktop(&self) -> HelperDesktop {
+            self.helper_desktop
         }
 
         fn terminate(self) {
@@ -1221,11 +1281,28 @@ mod windows_main {
     struct SpawnedProcess {
         pid: u32,
         process: SendHandle,
+        session_id: u32,
+        desktop: HelperDesktop,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HelperDesktop {
+        Default,
+        Winlogon,
+    }
+
+    impl HelperDesktop {
+        fn as_lpdesktop(self) -> &'static str {
+            match self {
+                Self::Default => "winsta0\\default",
+                Self::Winlogon => "winsta0\\winlogon",
+            }
+        }
     }
 
     struct AcquiredSessionToken {
         token: windows::Win32::Foundation::HANDLE,
-        desktop: &'static str,
+        desktop: HelperDesktop,
     }
 
     fn spawn_capture_helper_process_tcp(
@@ -1260,7 +1337,7 @@ mod windows_main {
             .to_str()
             .ok_or_else(|| anyhow!("current executable path is not valid unicode"))?;
 
-        let desktop = acquired.desktop;
+        let desktop = acquired.desktop.as_lpdesktop();
         let args = format!("\"{exe_path_str}\" --capture-helper {extra_args}");
 
         let app_name: Vec<u16> = exe_path_str.encode_utf16().chain(Some(0)).collect();
@@ -1310,6 +1387,8 @@ mod windows_main {
         Ok(SpawnedProcess {
             pid: process_info.dwProcessId,
             process: SendHandle(process_info.hProcess),
+            session_id,
+            desktop: acquired.desktop,
         })
     }
 
@@ -1393,7 +1472,7 @@ mod windows_main {
         if wts_result.is_ok() {
             return Ok(AcquiredSessionToken {
                 token,
-                desktop: "winsta0\\default",
+                desktop: HelperDesktop::Default,
             });
         }
 
@@ -1408,7 +1487,7 @@ mod windows_main {
         if let Ok(token) = token_from_winlogon(session_id) {
             return Ok(AcquiredSessionToken {
                 token,
-                desktop: "winsta0\\winlogon",
+                desktop: HelperDesktop::Winlogon,
             });
         }
 
@@ -1416,7 +1495,7 @@ mod windows_main {
 
         Ok(AcquiredSessionToken {
             token,
-            desktop: "winsta0\\winlogon",
+            desktop: HelperDesktop::Winlogon,
         })
     }
 
