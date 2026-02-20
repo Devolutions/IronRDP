@@ -56,7 +56,9 @@ mod windows_main {
         CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ, FILE_MAP_WRITE,
         PAGE_READWRITE,
     };
-    use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
+    use windows::Win32::System::RemoteDesktop::{
+        WTSGetActiveConsoleSessionId, WTSQueryUserToken, WTSEnumerateSessionsW, WTSFreeMemory, WTS_SESSION_INFOW,
+    };
     use windows::Win32::System::Threading::{
         CreateEventW, CreateProcessAsUserW, GetCurrentProcess, OpenEventW, OpenProcess, OpenProcessToken, SetEvent,
         TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW, EVENT_MODIFY_STATE, PROCESS_INFORMATION,
@@ -78,7 +80,7 @@ mod windows_main {
         TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY,
     };
 
-    use windows::Win32::System::RemoteDesktop::{WTSEnumerateProcessesW, WTSFreeMemory, WTS_PROCESS_INFOW};
+    use windows::Win32::System::RemoteDesktop::{WTSEnumerateProcessesW, WTS_PROCESS_INFOW};
 
     const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
@@ -87,6 +89,7 @@ mod windows_main {
     const CAPTURE_HELPER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
     const CAPTURE_HELPER_RETRY_DELAY: Duration = Duration::from_secs(5);
     const CAPTURE_IPC_ENV: &str = "IRONRDP_WTS_CAPTURE_IPC";
+    const CAPTURE_SESSION_ID_ENV: &str = "IRONRDP_WTS_CAPTURE_SESSION_ID";
     const AUTO_LISTEN_ENV: &str = "IRONRDP_WTS_AUTO_LISTEN";
     const AUTO_LISTEN_NAME_ENV: &str = "IRONRDP_WTS_AUTO_LISTENER_NAME";
     const TLS_CERT_SUBJECT_FIND: &str = "IronRDP TermSrv";
@@ -343,6 +346,7 @@ mod windows_main {
         capture: Option<CaptureClient>,
         next_helper_attempt_at: Instant,
         sent_first_frame: bool,
+        warned_blank_capture: bool,
         last_bitmap: Option<BitmapUpdate>,
         helper_frames_received: u64,
         helper_timeouts: u64,
@@ -363,11 +367,31 @@ mod windows_main {
                 capture: None,
                 next_helper_attempt_at: Instant::now(),
                 sent_first_frame: false,
+                warned_blank_capture: false,
                 last_bitmap: None,
                 helper_frames_received: 0,
                 helper_timeouts: 0,
             })
         }
+    }
+
+    fn is_probably_blank_bgra32(data: &[u8]) -> bool {
+        if data.is_empty() {
+            return true;
+        }
+
+        // Sample the buffer to avoid scanning multi-megabyte frames on every tick.
+        // If all sampled B/G/R bytes are zero, it's almost certainly a blocked/blank capture.
+        let samples = 2048usize;
+        let step = (data.len() / samples).max(4);
+        let mut i = 0usize;
+        while i + 2 < data.len() {
+            if data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 0 {
+                return false;
+            }
+            i = i.saturating_add(step);
+        }
+        true
     }
 
     impl Drop for GdiDisplayUpdates {
@@ -431,7 +455,6 @@ mod windows_main {
                 match timeout(read_timeout, capture.read_frame()).await {
                     Ok(Ok(bitmap)) => {
                         self.helper_frames_received = self.helper_frames_received.saturating_add(1);
-                        self.last_bitmap = Some(bitmap.clone());
                         bitmap
                     }
                     Ok(Err(error)) => {
@@ -472,7 +495,6 @@ mod windows_main {
             } else {
                 match capture_bitmap_update(self.desktop_size) {
                     Ok(bitmap) => {
-                        self.last_bitmap = Some(bitmap.clone());
                         bitmap
                     }
                     Err(error) => {
@@ -489,12 +511,29 @@ mod windows_main {
                             );
                             let bitmap = fallback_bitmap_update(self.desktop_size)
                                 .context("failed to generate fallback bitmap update")?;
-                            self.last_bitmap = Some(bitmap.clone());
                             bitmap
                         }
                     }
                 }
             };
+
+            // If capture returns an all-black frame (common on secure desktops / session 0),
+            // replace it with a synthetic test pattern so mstsc shows *something* and we can
+            // confirm the update pipeline works.
+            let bitmap = if is_probably_blank_bgra32(bitmap.data.as_ref()) {
+                if !self.warned_blank_capture {
+                    self.warned_blank_capture = true;
+                    warn!(
+                        connection_id = self.connection_id,
+                        "Captured blank frame; falling back to synthetic test pattern (check capture session/desktop)"
+                    );
+                }
+                fallback_bitmap_update(self.desktop_size).context("failed to generate fallback bitmap update")?
+            } else {
+                bitmap
+            };
+
+            self.last_bitmap = Some(bitmap.clone());
             self.sent_first_frame = true;
 
             Ok(Some(DisplayUpdate::Bitmap(bitmap)))
@@ -1209,11 +1248,8 @@ mod windows_main {
     }
 
     fn spawn_capture_helper_process_with_args(extra_args: &str) -> anyhow::Result<SpawnedProcess> {
-        // SAFETY: safe to call and returns a process-global session id value.
-        let session_id = unsafe { WTSGetActiveConsoleSessionId() };
-        if session_id == u32::MAX {
-            return Err(anyhow!("no active console session"));
-        }
+        let session_id = resolve_capture_session_id().context("failed to resolve capture session id")?;
+        info!(session_id, "Selected capture session");
 
         let acquired =
             acquire_session_token(session_id).context("failed to acquire a token for the capture session")?;
@@ -1275,6 +1311,78 @@ mod windows_main {
             pid: process_info.dwProcessId,
             process: SendHandle(process_info.hProcess),
         })
+    }
+
+    fn session_has_user_token(session_id: u32) -> bool {
+        let mut token = windows::Win32::Foundation::HANDLE::default();
+        // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
+        let res = unsafe { WTSQueryUserToken(session_id, &mut token) };
+        if res.is_ok() {
+            // SAFETY: close token handle from WTSQueryUserToken.
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(token);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    fn resolve_capture_session_id() -> anyhow::Result<u32> {
+        if let Ok(configured) = std::env::var(CAPTURE_SESSION_ID_ENV) {
+            let configured = configured.trim();
+            if !configured.is_empty() {
+                let session_id: u32 = configured
+                    .parse()
+                    .with_context(|| format!("failed to parse {CAPTURE_SESSION_ID_ENV} as u32: {configured}"))?;
+                return Ok(session_id);
+            }
+        }
+
+        // SAFETY: safe to call and returns a process-global session id value.
+        let console_session = unsafe { WTSGetActiveConsoleSessionId() };
+        if console_session != u32::MAX && session_has_user_token(console_session) {
+            return Ok(console_session);
+        }
+
+        let mut sessions_ptr: *mut WTS_SESSION_INFOW = null_mut();
+        let mut session_count = 0u32;
+
+        // SAFETY: WTSEnumerateSessionsW writes a buffer pointer into `sessions_ptr` on success.
+        let res = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
+        if res.is_err() || sessions_ptr.is_null() || session_count == 0 {
+            if console_session == u32::MAX {
+                return Err(anyhow!("no active console session"));
+            }
+            return Ok(console_session);
+        }
+
+        // SAFETY: WTSEnumerateSessionsW returned a valid buffer for session_count entries.
+        let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count as usize) };
+
+        let mut candidates: Vec<u32> = sessions.iter().map(|s| s.SessionId).collect();
+
+        // SAFETY: free buffer allocated by WTSEnumerateSessionsW.
+        unsafe {
+            WTSFreeMemory(sessions_ptr.cast());
+        }
+
+        candidates.sort_unstable();
+
+        for session_id in candidates {
+            if session_id == u32::MAX {
+                continue;
+            }
+            if session_has_user_token(session_id) {
+                return Ok(session_id);
+            }
+        }
+
+        if console_session == u32::MAX {
+            Err(anyhow!("no suitable capture session found"))
+        } else {
+            Ok(console_session)
+        }
     }
 
     fn acquire_session_token(session_id: u32) -> anyhow::Result<AcquiredSessionToken> {
