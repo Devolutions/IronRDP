@@ -3219,6 +3219,7 @@ mod windows_main {
             match capture_bitmap_update(desktop_size) {
                 Ok(bitmap) => {
                     write_capture_frame(&mut stream, &bitmap).await?;
+                    sleep(CAPTURE_INTERVAL).await;
                 }
                 Err(error) => {
                     warn!(
@@ -3318,6 +3319,9 @@ mod windows_main {
                     unsafe { SetEvent(frame_ready_event) }
                         .map_err(|error| anyhow!("SetEvent failed: {error}"))
                         .context("SetEvent failed")?;
+
+                    // Important: yield/throttle so the input injector task can run.
+                    sleep(CAPTURE_INTERVAL).await;
                 }
                 Err(error) => {
                     warn!(
