@@ -41,6 +41,9 @@ param(
     [string]$CaptureIpc = 'tcp',
 
     [Parameter()]
+    [string]$CaptureSessionId = '',
+
+    [Parameter()]
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
@@ -170,6 +173,9 @@ param(
     [string]$CaptureIpc,
 
     [Parameter()]
+    [string]$CaptureSessionId = '',
+
+    [Parameter()]
     [string]$RdpUsername = '',
 
     [Parameter()]
@@ -186,6 +192,12 @@ $env:IRONRDP_WTS_LISTEN_ADDR = $ListenerAddr
 $env:IRONRDP_WTS_CAPTURE_IPC = $CaptureIpc
 $env:IRONRDP_WTS_AUTO_LISTEN = '1'
 $env:IRONRDP_LOG = 'info'
+
+if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
+    $env:IRONRDP_WTS_CAPTURE_SESSION_ID = $CaptureSessionId
+} else {
+    Remove-Item Env:IRONRDP_WTS_CAPTURE_SESSION_ID -ErrorAction SilentlyContinue
+}
 
 if (-not [string]::IsNullOrWhiteSpace($RdpUsername)) {
     $env:IRONRDP_RDP_USERNAME = $RdpUsername
@@ -260,7 +272,7 @@ finally {
     } -ArgumentList ([int]($ListenerAddr.Split(':')[-1]))
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $RdpUsername, $RdpDomain)
+        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $CaptureSessionId, $RdpUsername, $RdpDomain)
 
         $arguments = @(
             '-NoProfile',
@@ -271,6 +283,7 @@ finally {
             '-LogErr', $LogErr,
             '-ListenerAddr', $ListenerAddr,
             '-CaptureIpc', $CaptureIpc,
+            '-CaptureSessionId', $CaptureSessionId,
             '-RdpUsername', $RdpUsername,
             '-RdpDomain', $RdpDomain,
             '-RdpPasswordFile', $SecretPath
@@ -308,7 +321,7 @@ finally {
             LogErr = $LogErr
             Pid = $proc.Id
         }
-    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $RdpUsername, $RdpDomain | Format-List
+    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $CaptureSessionId, $RdpUsername, $RdpDomain | Format-List
 
     Invoke-Command -Session $session -ScriptBlock {
         param($ListenerAddr, $LogOut, $LogErr, $TailLines)
