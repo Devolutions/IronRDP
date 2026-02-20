@@ -1,10 +1,10 @@
-# IronRDP Ceviche Service Windows Installer
+# IronRDP TermSrv Windows Installer
 
-WixSharp-based MSI packaging project for a `ceviche-rs` Windows service.
+WixSharp-based MSI packaging project for the `ironrdp-termsrv` Windows service.
 
 This guide is the practical first-run flow for a Windows VM where you want to:
 
-1. Install and run the `IronRdpCevicheService` Windows service.
+1. Install and run the `IronRdpTermSrv` Windows service.
 2. Register the IronRDP WTS protocol provider side-by-side.
 3. Connect with `mstsc` to the VM on the side-by-side listener port.
 
@@ -12,10 +12,10 @@ This guide is the practical first-run flow for a Windows VM where you want to:
 
 ## What gets installed
 
-- MSI product: `IronRDP Ceviche Service`
-- Service name: `IronRdpCevicheService`
-- Service executable name: `ironrdp-ceviche-service.exe`
-- Install root (default): `%ProgramFiles%\IronRDP\CevicheService`
+- MSI product: `IronRDP TermSrv`
+- Service name: `IronRdpTermSrv`
+- Service executable name: `ironrdp-termsrv.exe`
+- Install root (default): `%ProgramFiles%\IronRDP\TermSrv`
 
 ## Prerequisites (VM)
 
@@ -30,13 +30,13 @@ This guide is the practical first-run flow for a Windows VM where you want to:
 From repository root:
 
 ```powershell
-cargo build -p ceviche-service --release
+cargo build -p ironrdp-termsrv --release
 cargo build -p ironrdp-wtsprotocol-provider --release
 ```
 
 Expected files:
 
-- `target\release\ceviche-service.exe`
+- `target\release\ironrdp-termsrv.exe`
 - `target\release\ironrdp_wtsprotocol_provider.dll`
 
 ## 2) Build MSI
@@ -45,7 +45,7 @@ From `package\CevicheServiceWindowsManaged`:
 
 ```powershell
 .\build-ceviche-service-msi.ps1 \
-  -ServiceExePath ..\..\target\release\ceviche-service.exe \
+  -ServiceExePath ..\..\target\release\ironrdp-termsrv.exe \
   -ProviderDllPath ..\..\target\release\ironrdp_wtsprotocol_provider.dll \
   -Platform x64 \
   -Configuration Release
@@ -53,28 +53,28 @@ From `package\CevicheServiceWindowsManaged`:
 
 Expected MSI output:
 
-- `package\CevicheServiceWindowsManaged\Release\IronRdpCevicheService.msi`
+- `package\CevicheServiceWindowsManaged\Release\IronRdpTermSrv.msi`
 
 ## 3) Install MSI in the VM
 
-Copy `IronRdpCevicheService.msi` to the VM, then run:
+Copy `IronRdpTermSrv.msi` to the VM, then run:
 
 ```powershell
-msiexec /i .\IronRdpCevicheService.msi /qn /norestart
+msiexec /i .\IronRdpTermSrv.msi /qn /norestart
 ```
 
 Verify installation and service registration:
 
 ```powershell
-Get-Service -Name IronRdpCevicheService
-Get-ItemProperty "HKLM:\Software\IronRDP\CevicheService"
+Get-Service -Name IronRdpTermSrv
+Get-ItemProperty "HKLM:\Software\IronRDP\TermSrv"
 ```
 
 Start service (if not already running):
 
 ```powershell
-Start-Service -Name IronRdpCevicheService
-Get-Service -Name IronRdpCevicheService
+Start-Service -Name IronRdpTermSrv
+Get-Service -Name IronRdpTermSrv
 ```
 
 ## 4) Register side-by-side listener for mstsc
@@ -154,7 +154,7 @@ Unregister side-by-side listener:
 Uninstall service MSI:
 
 ```powershell
-msiexec /x .\IronRdpCevicheService.msi /qn /norestart
+msiexec /x .\IronRdpTermSrv.msi /qn /norestart
 ```
 
 ---
@@ -165,8 +165,15 @@ For deeper side-by-side details (backup/restore, manual preflight/install, diagn
 
 ## MSI build inputs (reference)
 
-- `IRDP_CEVICHE_SERVICE_EXECUTABLE` (required): absolute path to service executable.
+- `IRDP_TERMSRV_SERVICE_EXECUTABLE` (required): absolute path to service executable.
 - `IRDP_PROVIDER_DLL` (optional): absolute path to `ironrdp_wtsprotocol_provider.dll`.
-- `IRDP_CEVICHE_CONFIG_DIR` (optional): directory copied as `config\`.
-- `IRDP_CEVICHE_MSI_VERSION` (optional): MSI version (`major.minor.build` constraints apply).
-- `IRDP_CEVICHE_MSI_PLATFORM` (required in Release): `x64`, `x86`, or `arm64`.
+- `IRDP_TERMSRV_CONFIG_DIR` (optional): directory copied as `config\`.
+- `IRDP_TERMSRV_MSI_VERSION` (optional): MSI version (`major.minor.build` constraints apply).
+- `IRDP_TERMSRV_MSI_PLATFORM` (required in Release): `x64`, `x86`, or `arm64`.
+
+Legacy env vars are also accepted for compatibility:
+
+- `IRDP_CEVICHE_SERVICE_EXECUTABLE`
+- `IRDP_CEVICHE_CONFIG_DIR`
+- `IRDP_CEVICHE_MSI_VERSION`
+- `IRDP_CEVICHE_MSI_PLATFORM`
