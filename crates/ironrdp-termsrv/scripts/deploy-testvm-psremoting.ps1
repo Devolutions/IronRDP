@@ -282,12 +282,22 @@ finally {
             '-LogOut', $LogOut,
             '-LogErr', $LogErr,
             '-ListenerAddr', $ListenerAddr,
-            '-CaptureIpc', $CaptureIpc,
-            '-CaptureSessionId', $CaptureSessionId,
-            '-RdpUsername', $RdpUsername,
-            '-RdpDomain', $RdpDomain,
-            '-RdpPasswordFile', $SecretPath
+            '-CaptureIpc', $CaptureIpc
         )
+
+        if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
+            $arguments += @('-CaptureSessionId', $CaptureSessionId)
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($RdpUsername)) {
+            $arguments += @('-RdpUsername', $RdpUsername)
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($RdpDomain)) {
+            $arguments += @('-RdpDomain', $RdpDomain)
+        }
+
+        $arguments += @('-RdpPasswordFile', $SecretPath)
 
         $argumentString = ($arguments | ForEach-Object {
             if ($_ -match '[\s"'']') { '"' + ($_ -replace '"', '\\"') + '"' } else { $_ }
@@ -301,8 +311,13 @@ finally {
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
         Start-ScheduledTask -TaskName $TaskName
 
-        Start-Sleep -Seconds 1
-        $proc = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
+        $proc = $null
+        $deadline = (Get-Date).AddSeconds(10)
+        do {
+            Start-Sleep -Milliseconds 250
+            $proc = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
+        } while (($null -eq $proc) -and ((Get-Date) -lt $deadline))
+
         if ($null -eq $proc) {
             if (Test-Path -LiteralPath $LogErr -PathType Leaf) {
                 Write-Host "---- ironrdp-termsrv.err.log (tail) ----" -ForegroundColor Yellow
