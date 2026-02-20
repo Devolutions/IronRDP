@@ -2636,6 +2636,9 @@ dependencies = [
  "ironrdp-core 0.3.0",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "picky-asn1",
+ "picky-asn1-der",
+ "picky-krb",
  "rand 0.9.5",
  "tracing",
 ]
