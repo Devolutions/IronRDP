@@ -1,14 +1,24 @@
-use iron_remote_desktop::IronErrorKind;
+use iron_remote_desktop::{IronErrorKind, RDCleanPathDetails};
 use ironrdp::connector::{self, sspi, ConnectorErrorKind};
 
 pub(crate) struct IronError {
     kind: IronErrorKind,
     source: anyhow::Error,
+    rdcleanpath_details: Option<RDCleanPathDetails>,
 }
 
 impl IronError {
     pub(crate) fn with_kind(mut self, kind: IronErrorKind) -> Self {
         self.kind = kind;
+        self
+    }
+
+    pub(crate) fn with_rdcleanpath_details(mut self, details: RDCleanPathDetails) -> Self {
+        debug_assert!(
+            matches!(self.kind, IronErrorKind::RDCleanPath),
+            "rdcleanpath_details should only be set for RDCleanPath errors"
+        );
+        self.rdcleanpath_details = Some(details);
         self
     }
 }
@@ -20,6 +30,10 @@ impl iron_remote_desktop::IronError for IronError {
 
     fn kind(&self) -> IronErrorKind {
         self.kind
+    }
+
+    fn rdcleanpath_details(&self) -> Option<RDCleanPathDetails> {
+        self.rdcleanpath_details
     }
 }
 
@@ -44,6 +58,7 @@ impl From<connector::ConnectorError> for IronError {
         Self {
             kind,
             source: anyhow::Error::new(e),
+            rdcleanpath_details: None,
         }
     }
 }
@@ -53,6 +68,7 @@ impl From<ironrdp::session::SessionError> for IronError {
         Self {
             kind: IronErrorKind::General,
             source: anyhow::Error::new(e),
+            rdcleanpath_details: None,
         }
     }
 }
@@ -62,6 +78,7 @@ impl From<anyhow::Error> for IronError {
         Self {
             kind: IronErrorKind::General,
             source: e,
+            rdcleanpath_details: None,
         }
     }
 }

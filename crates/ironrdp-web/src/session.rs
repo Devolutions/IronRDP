@@ -1113,9 +1113,15 @@ where
                     server_addr: _,
                 } => (x224_connection_response, server_cert_chain),
                 ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error) => {
+                    let details = iron_remote_desktop::RDCleanPathDetails::new(
+                        error.http_status_code,
+                        error.wsa_last_error,
+                        error.tls_alert_code,
+                    );
                     return Err(
                         IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
-                            .with_kind(IronErrorKind::RDCleanPath),
+                            .with_kind(IronErrorKind::RDCleanPath)
+                            .with_rdcleanpath_details(details),
                     );
                 }
                 ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {

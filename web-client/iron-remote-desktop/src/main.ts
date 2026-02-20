@@ -1,7 +1,7 @@
 export * as default from './iron-remote-desktop.svelte';
 export type { ResizeEvent } from './interfaces/ResizeEvent';
 export type { NewSessionInfo } from './interfaces/NewSessionInfo';
-export type { IronError, IronErrorKind } from './interfaces/Error';
+export type { IronError, IronErrorKind, RDCleanPathDetails } from './interfaces/Error';
 export type { SessionTerminationInfo } from './interfaces/SessionTerminationInfo';
 export type { ClipboardData } from './interfaces/ClipboardData';
 export type { ClipboardItem } from './interfaces/ClipboardItem';

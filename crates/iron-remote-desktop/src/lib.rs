@@ -12,7 +12,7 @@ mod session;
 pub use clipboard::{ClipboardData, ClipboardItem};
 pub use cursor::CursorStyle;
 pub use desktop_size::DesktopSize;
-pub use error::{IronError, IronErrorKind};
+pub use error::{IronError, IronErrorKind, RDCleanPathDetails};
 pub use extension::Extension;
 pub use input::{DeviceEvent, InputTransaction, RotationUnit};
 pub use session::{Session, SessionBuilder, SessionTerminationInfo};
@@ -430,6 +430,11 @@ macro_rules! make_bridge {
 
             pub fn kind(&self) -> $crate::IronErrorKind {
                 $crate::IronError::kind(&self.0)
+            }
+
+            #[wasm_bindgen(js_name = rdcleanpathDetails)]
+            pub fn rdcleanpath_details(&self) -> Option<$crate::RDCleanPathDetails> {
+                $crate::IronError::rdcleanpath_details(&self.0)
             }
         }
     };
