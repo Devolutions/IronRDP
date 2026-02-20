@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$ServiceExePath = "..\\..\\target\\release\\ceviche-service.exe",
+    [string]$ServiceExePath = "..\\..\\target\\release\\ironrdp-termsrv.exe",
 
     [Parameter()]
     [string]$ProviderDllPath = "..\\..\\target\\release\\ironrdp_wtsprotocol_provider.dll",
@@ -28,6 +28,7 @@ $packageRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Push-Location $packageRoot
 try {
     $resolvedServicePath = Resolve-Path -LiteralPath $ServiceExePath -ErrorAction Stop
+    $env:IRDP_TERMSRV_SERVICE_EXECUTABLE = $resolvedServicePath.Path
     $env:IRDP_CEVICHE_SERVICE_EXECUTABLE = $resolvedServicePath.Path
 
     if (-not [string]::IsNullOrWhiteSpace($ProviderDllPath)) {
@@ -41,23 +42,28 @@ try {
 
     if (-not [string]::IsNullOrWhiteSpace($ConfigDirectory)) {
         $resolvedConfigDirectory = Resolve-Path -LiteralPath $ConfigDirectory -ErrorAction Stop
+        $env:IRDP_TERMSRV_CONFIG_DIR = $resolvedConfigDirectory.Path
         $env:IRDP_CEVICHE_CONFIG_DIR = $resolvedConfigDirectory.Path
     } else {
+        Remove-Item Env:IRDP_TERMSRV_CONFIG_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:IRDP_CEVICHE_CONFIG_DIR -ErrorAction SilentlyContinue
     }
 
+    $env:IRDP_TERMSRV_MSI_PLATFORM = $Platform
     $env:IRDP_CEVICHE_MSI_PLATFORM = $Platform
 
     if (-not [string]::IsNullOrWhiteSpace($Version)) {
+        $env:IRDP_TERMSRV_MSI_VERSION = $Version
         $env:IRDP_CEVICHE_MSI_VERSION = $Version
     } else {
+        Remove-Item Env:IRDP_TERMSRV_MSI_VERSION -ErrorAction SilentlyContinue
         Remove-Item Env:IRDP_CEVICHE_MSI_VERSION -ErrorAction SilentlyContinue
     }
 
     dotnet build .\CevicheServiceWindowsManaged.csproj -c $Configuration
     dotnet run --project .\CevicheServiceWindowsManaged.csproj -c $Configuration
 
-    $msiPath = Join-Path -Path $packageRoot -ChildPath (Join-Path -Path $Configuration -ChildPath "IronRdpCevicheService.msi")
+    $msiPath = Join-Path -Path $packageRoot -ChildPath (Join-Path -Path $Configuration -ChildPath "IronRdpTermSrv.msi")
     if (Test-Path -LiteralPath $msiPath -PathType Leaf) {
         Write-Host "MSI ready: $msiPath"
     } else {

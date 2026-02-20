@@ -1,6 +1,6 @@
 # Side-by-side setup (first-run prep)
 
-If you also want to install and run the companion `IronRdpCevicheService` via MSI in a Windows VM before mstsc validation, see:
+If you also want to install and run the companion `IronRdpTermSrv` via MSI in a Windows VM before mstsc validation, see:
 
 - `package/CevicheServiceWindowsManaged/README.md`
 
