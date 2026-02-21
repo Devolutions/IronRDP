@@ -10,11 +10,30 @@ pub const DEFAULT_MAX_FRAME_SIZE: usize = 64 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderCommand {
-    StartListen { listener_name: String },
-    StopListen { listener_name: String },
-    WaitForIncoming { listener_name: String, timeout_ms: u32 },
-    AcceptConnection { connection_id: u32 },
-    CloseConnection { connection_id: u32 },
+    StartListen {
+        listener_name: String,
+    },
+    StopListen {
+        listener_name: String,
+    },
+    WaitForIncoming {
+        listener_name: String,
+        timeout_ms: u32,
+    },
+    AcceptConnection {
+        connection_id: u32,
+    },
+    CloseConnection {
+        connection_id: u32,
+    },
+    /// Retrieve the CredSSP-derived plaintext credentials for a connection.
+    ///
+    /// The provider DLL calls this after `AcceptConnection` and before `GetUserCredentials` is
+    /// invoked by RDS, so that the companion service can relay the credentials it captured during
+    /// the NLA handshake back to the provider.
+    GetConnectionCredentials {
+        connection_id: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,6 +58,24 @@ pub enum ServiceEvent {
     ConnectionBroken {
         connection_id: u32,
         reason: String,
+    },
+    /// Plaintext credentials obtained from the CredSSP/NLA handshake for a connection.
+    ///
+    /// Returned in response to [`ProviderCommand::GetConnectionCredentials`].  The provider DLL
+    /// stores these and returns them from `IWRdsProtocolConnection::GetUserCredentials` so that
+    /// Winlogon can create a real interactive session.
+    ConnectionCredentials {
+        connection_id: u32,
+        username: String,
+        domain: String,
+        password: String,
+    },
+    /// No CredSSP credentials are available for the requested connection.
+    ///
+    /// The companion service returns this when it has not yet completed the NLA handshake or when
+    /// the connection is not known.  The provider should fall back to showing the logon dialog.
+    NoCredentials {
+        connection_id: u32,
     },
     Error {
         message: String,

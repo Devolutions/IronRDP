@@ -3336,6 +3336,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "ironrdp-core",
+ "ironrdp-pdu",
  "ironrdp-server",
  "ironrdp-wtsprotocol-ipc",
  "rustls-cng",

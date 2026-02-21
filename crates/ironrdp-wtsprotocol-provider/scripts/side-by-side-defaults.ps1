@@ -80,3 +80,39 @@ function Resolve-SideBySideListenerPort {
 
     return $resolvedPort
 }
+
+function Get-RdpTcpTransportRegistryKeys {
+    return @(
+        'HKLM:\SYSTEM\CurrentControlSet\Services\TermDD',
+        'HKLM:\SYSTEM\CurrentControlSet\Services\UmRdpService',
+        'HKLM:\SYSTEM\CurrentControlSet\Services\rdpbus',
+        'HKLM:\SYSTEM\CurrentControlSet\Services\RDPNP'
+    )
+}
+
+function Test-RdpTcpTransportPresent {
+    foreach ($key in (Get-RdpTcpTransportRegistryKeys)) {
+        if (Test-Path -LiteralPath $key) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-RdpTcpTransportPresenceDetails {
+    $keys = @(Get-RdpTcpTransportRegistryKeys)
+    $present = @()
+
+    foreach ($key in $keys) {
+        if (Test-Path -LiteralPath $key) {
+            $present += $key
+        }
+    }
+
+    if ($present.Count -eq 0) {
+        return "present=none checked=$($keys -join ', ')"
+    }
+
+    return "present=$($present -join ', ')"
+}

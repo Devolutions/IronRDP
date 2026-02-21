@@ -109,9 +109,9 @@ try {
 }
 
 try {
-    $termDdServiceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TermDD"
-    $termDdPresent = Test-Path -LiteralPath $termDdServiceKey
-    Add-Result -Name "RDP TCP transport" -Passed $termDdPresent -Details "registry_key=$termDdServiceKey present=$termDdPresent"
+    $transportPresent = Test-RdpTcpTransportPresent
+    $transportDetails = Get-RdpTcpTransportPresenceDetails
+    Add-Result -Name "RDP TCP transport" -Passed $transportPresent -Details $transportDetails
 } catch {
     Add-Result -Name "RDP TCP transport" -Passed $false -Details $_.Exception.Message
 }

@@ -10,6 +10,9 @@ param(
     [securestring]$Password,
 
     [Parameter()]
+    [string]$PasswordPlainText = '',
+
+    [Parameter()]
     [switch]$PromptPassword,
 
     [Parameter()]
@@ -41,6 +44,9 @@ param(
     [string]$CaptureIpc = 'tcp',
 
     [Parameter()]
+    [switch]$AutoListen,
+
+    [Parameter()]
     [string]$CaptureSessionId = '',
 
     [Parameter()]
@@ -58,6 +64,21 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Convert-SecureStringToPlainText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [securestring]$Value
+    )
+
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Value)
+    try {
+        [Runtime.InteropServices.Marshal]::PtrToStringUni($bstr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
 
 function Resolve-WorkspaceRoot {
     $here = $PSScriptRoot
@@ -89,6 +110,9 @@ if (-not (Test-Path -LiteralPath $exeLocal -PathType Leaf)) {
 $resolvedPassword = if ($Password) {
     $Password
 }
+elseif (-not [string]::IsNullOrWhiteSpace($PasswordPlainText)) {
+    ConvertTo-SecureString -String $PasswordPlainText -AsPlainText -Force
+}
 elseif ($PromptPassword.IsPresent) {
     Read-Host -Prompt "Password for $Username@$Hostname" -AsSecureString
 }
@@ -117,6 +141,12 @@ else {
 }
 
 if ([string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
+    # Convenience: if the user provided/prompted an admin password (SecureString), reuse it for RDP
+    # so Hybrid/CredSSP can be enabled without passing any plaintext password on the command line.
+    $resolvedRdpPassword = Convert-SecureStringToPlainText -Value $resolvedPassword
+}
+
+if ([string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
     Write-Warning "RDP password is not configured (pass -RdpPassword or set env:$RdpPasswordEnvVar). Standard security connections will be rejected."
 }
 
@@ -137,14 +167,38 @@ try {
     $logErr = Join-Path $RemoteRoot 'logs\ironrdp-termsrv.err.log'
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $RdpPasswordPath)
+        param($TaskName, $RdpPasswordPath, $LogOut, $LogErr)
+
+        # Stop TermService first so the DLL is unloaded and stops connecting to the pipe
+        Write-Host "Stopping TermService..."
+        Stop-Service -Name 'TermService' -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
 
         try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
         try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
 
-        Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        # Kill ALL ironrdp-termsrv processes and wait for them to exit
+        $procs = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
+        if ($procs) {
+            Write-Host "Killing $($procs.Count) ironrdp-termsrv process(es): $($procs.Id -join ', ')"
+            $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+            $deadline = (Get-Date).AddSeconds(10)
+            do {
+                Start-Sleep -Milliseconds 500
+                $remaining = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
+            } while ($remaining -and ((Get-Date) -lt $deadline))
+            if ($remaining) {
+                Write-Warning "Failed to kill all ironrdp-termsrv processes: $($remaining.Id -join ', ')"
+            }
+        }
+
+        # Wait a moment for pipe handles to be released
+        Start-Sleep -Seconds 1
+
         Remove-Item -LiteralPath $RdpPasswordPath -Force -ErrorAction SilentlyContinue
-    } -ArgumentList $TaskName, $rdpPasswordRemote
+        Remove-Item -LiteralPath $LogOut -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $LogErr -Force -ErrorAction SilentlyContinue
+    } -ArgumentList $TaskName, $rdpPasswordRemote, $logOut, $logErr
 
     Copy-Item -ToSession $session -Path $exeLocal -Destination $exeRemote -Force
 
@@ -173,6 +227,9 @@ param(
     [string]$CaptureIpc,
 
     [Parameter()]
+    [switch]$AutoListen,
+
+    [Parameter()]
     [string]$CaptureSessionId = '',
 
     [Parameter()]
@@ -190,8 +247,9 @@ $ErrorActionPreference = 'Stop'
 
 $env:IRONRDP_WTS_LISTEN_ADDR = $ListenerAddr
 $env:IRONRDP_WTS_CAPTURE_IPC = $CaptureIpc
-$env:IRONRDP_WTS_AUTO_LISTEN = '1'
+$env:IRONRDP_WTS_AUTO_LISTEN = if ($AutoListen.IsPresent) { '1' } else { '0' }
 $env:IRONRDP_LOG = 'info'
+$env:RUST_BACKTRACE = '1'
 
 if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
     $env:IRONRDP_WTS_CAPTURE_SESSION_ID = $CaptureSessionId
@@ -272,7 +330,7 @@ finally {
     } -ArgumentList ([int]($ListenerAddr.Split(':')[-1]))
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $CaptureSessionId, $RdpUsername, $RdpDomain)
+        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $CaptureSessionId, $RdpUsername, $RdpDomain)
 
         $arguments = @(
             '-NoProfile',
@@ -284,6 +342,10 @@ finally {
             '-ListenerAddr', $ListenerAddr,
             '-CaptureIpc', $CaptureIpc
         )
+
+        if ($AutoListen) {
+            $arguments += @('-AutoListen')
+        }
 
         if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
             $arguments += @('-CaptureSessionId', $CaptureSessionId)
@@ -336,10 +398,15 @@ finally {
             LogErr = $LogErr
             Pid = $proc.Id
         }
-    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $CaptureSessionId, $RdpUsername, $RdpDomain | Format-List
+    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $CaptureSessionId, $RdpUsername, $RdpDomain | Format-List
 
     Invoke-Command -Session $session -ScriptBlock {
         param($ListenerAddr, $LogOut, $LogErr, $TailLines)
+
+        # Restart TermService NOW (after companion is running) so the DLL connects to THIS instance
+        Write-Host "Starting TermService..."
+        Start-Service -Name 'TermService' -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
 
         $port = [int]($ListenerAddr.Split(':')[-1])
         $listening = $false
