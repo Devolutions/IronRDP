@@ -119,7 +119,21 @@ pub(crate) async fn resolve_generator(
     generator: &mut CredsspProcessGenerator<'_>,
     network_client: &mut impl NetworkClient,
 ) -> Result<ServerState, ServerError> {
-    let mut state = generator.start();
+    let mut state = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generator.start())) {
+        Ok(s) => s,
+        Err(panic) => {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .copied()
+                .map(String::from)
+                .or_else(|| panic.downcast_ref::<String>().map(|s| s.clone()))
+                .unwrap_or_else(|| "CredSSP processing panic (generator.start)".to_string());
+            return Err(ServerError {
+                ts_request: None,
+                error: sspi::Error::new(sspi::ErrorKind::InternalError, msg),
+            });
+        }
+    };
 
     loop {
         match state {
@@ -128,7 +142,22 @@ pub(crate) async fn resolve_generator(
                     ts_request: None,
                     error: sspi::Error::new(sspi::ErrorKind::InternalError, err),
                 })?;
-                state = generator.resume(Ok(response));
+                state = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generator.resume(Ok(response))))
+                {
+                    Ok(s) => s,
+                    Err(panic) => {
+                        let msg = panic
+                            .downcast_ref::<&str>()
+                            .copied()
+                            .map(String::from)
+                            .or_else(|| panic.downcast_ref::<String>().map(|s| s.clone()))
+                            .unwrap_or_else(|| "CredSSP processing panic".to_string());
+                        return Err(ServerError {
+                            ts_request: None,
+                            error: sspi::Error::new(sspi::ErrorKind::InternalError, msg),
+                        });
+                    }
+                };
             }
             GeneratorState::Completed(client_state) => break client_state,
         }
@@ -199,19 +228,37 @@ impl<'a> CredsspSequence<'a> {
     pub fn decode_client_message(&mut self, input: &[u8]) -> ConnectorResult<Option<TsRequest>> {
         match self.state {
             CredsspState::Ongoing => {
-                let mut message = TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
+                let decode = || -> ConnectorResult<Option<TsRequest>> {
+                    let mut message = TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
 
-                if let Some(nego_tokens) = message.nego_tokens.take() {
-                    if let Some(inner) = try_unwrap_spnego(&nego_tokens) {
-                        self.spnego_wrapped = true;
-                        message.nego_tokens = Some(inner);
-                    } else {
-                        message.nego_tokens = Some(nego_tokens);
+                    if let Some(nego_tokens) = message.nego_tokens.take() {
+                        if let Some(inner) = try_unwrap_spnego(&nego_tokens) {
+                            self.spnego_wrapped = true;
+                            message.nego_tokens = Some(inner);
+                        } else {
+                            message.nego_tokens = Some(nego_tokens);
+                        }
+                    }
+
+                    debug!(?message, "Received");
+                    Ok(Some(message))
+                };
+
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)) {
+                    Ok(res) => res,
+                    Err(panic) => {
+                        let msg = panic
+                            .downcast_ref::<&str>()
+                            .copied()
+                            .map(String::from)
+                            .or_else(|| panic.downcast_ref::<String>().map(|s| s.clone()))
+                            .unwrap_or_else(|| "CredSSP decode_client_message panic".to_string());
+                        Err(ConnectorError::new(
+                            "CredSSP decode",
+                            ConnectorErrorKind::Credssp(sspi::Error::new(sspi::ErrorKind::InternalError, msg)),
+                        ))
                     }
                 }
-
-                debug!(?message, "Received");
-                Ok(Some(message))
             }
             _ => Err(general_err!(
                 "attempted to feed client request to CredSSP sequence in an unexpected state"

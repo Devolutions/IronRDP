@@ -365,6 +365,11 @@ fn active_stage(
             {
                 break 'outer
             }
+            Err(e) if got_graphics => {
+                // Server closed without TLS close_notify; save what we have
+                info!("Connection closed ({}); saving received graphics", e);
+                break 'outer;
+            }
             Err(e) => return Err(anyhow::Error::new(e).context("read frame")),
         };
 

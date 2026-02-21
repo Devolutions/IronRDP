@@ -11,7 +11,7 @@ mod windows_main {
     use core::sync::atomic::{fence, Ordering};
     use std::collections::{HashMap, VecDeque};
     use std::io;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Instant;
 
     use anyhow::{anyhow, Context as _};
@@ -35,7 +35,7 @@ mod windows_main {
     use tracing_subscriber::EnvFilter;
     use windows::core::{w, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
-        GetLastError, LocalFree, SetLastError, ERROR_NOT_ALL_ASSIGNED, HANDLE, HLOCAL, LUID, WAIT_OBJECT_0,
+        GetLastError, LocalFree, SetLastError, ERROR_NOT_ALL_ASSIGNED, HLOCAL, LUID, WAIT_OBJECT_0,
         WAIT_TIMEOUT, WIN32_ERROR,
     };
     use windows::Win32::Graphics::Gdi::{
@@ -364,10 +364,15 @@ mod windows_main {
         connection_id: u32,
         desktop_size: DesktopSize,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
+        connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
     }
 
     impl GdiDisplay {
-        fn new(connection_id: u32, input_stream_slot: Arc<Mutex<Option<TcpStream>>>) -> anyhow::Result<Self> {
+        fn new(
+            connection_id: u32,
+            input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
+            connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+        ) -> anyhow::Result<Self> {
             let desktop_size = desktop_size_from_gdi().context("failed to query desktop size")?;
 
             info!(
@@ -380,6 +385,7 @@ mod windows_main {
                 connection_id,
                 desktop_size,
                 input_stream_slot,
+                connection_session_ids,
             })
         }
     }
@@ -407,6 +413,7 @@ mod windows_main {
                     self.connection_id,
                     self.desktop_size,
                     Arc::clone(&self.input_stream_slot),
+                    Arc::clone(&self.connection_session_ids),
                 )
                 .context("failed to initialize GDI display updates")?,
             ))
@@ -417,6 +424,7 @@ mod windows_main {
         connection_id: u32,
         desktop_size: DesktopSize,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
+        connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
         capture: Option<CaptureClient>,
         next_helper_attempt_at: Instant,
         sent_first_frame: bool,
@@ -431,6 +439,7 @@ mod windows_main {
             connection_id: u32,
             size: DesktopSize,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
+            connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
         ) -> anyhow::Result<Self> {
             let _ = desktop_size_nonzero(size)?;
 
@@ -438,6 +447,7 @@ mod windows_main {
                 connection_id,
                 desktop_size: size,
                 input_stream_slot,
+                connection_session_ids,
                 capture: None,
                 next_helper_attempt_at: Instant::now(),
                 sent_first_frame: false,
@@ -515,10 +525,16 @@ mod windows_main {
             }
 
             if self.capture.is_none() && Instant::now() >= self.next_helper_attempt_at {
+                let session_id_override = self
+                    .connection_session_ids
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.get(&self.connection_id).copied());
                 match CaptureClient::start(
                     self.connection_id,
                     self.desktop_size,
                     Arc::clone(&self.input_stream_slot),
+                    session_id_override,
                 )
                 .await
                 {
@@ -692,14 +708,20 @@ mod windows_main {
             connection_id: u32,
             desktop_size: DesktopSize,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
+            session_id_override: Option<u32>,
         ) -> anyhow::Result<Self> {
             match capture_ipc_from_env() {
                 CaptureIpc::Tcp => Ok(Self::Tcp(
-                    HelperCaptureClient::start(connection_id, input_stream_slot).await?,
+                    HelperCaptureClient::start(connection_id, input_stream_slot, session_id_override).await?,
                 )),
                 CaptureIpc::SharedMem => {
-                    match SharedMemCaptureClient::start(connection_id, desktop_size, Arc::clone(&input_stream_slot))
-                        .await
+                    match SharedMemCaptureClient::start(
+                        connection_id,
+                        desktop_size,
+                        Arc::clone(&input_stream_slot),
+                        session_id_override,
+                    )
+                    .await
                     {
                         Ok(client) => Ok(Self::SharedMem(client)),
                         Err(error) => {
@@ -709,7 +731,12 @@ mod windows_main {
                                 "Shared-memory capture IPC failed; falling back to TCP"
                             );
                             Ok(Self::Tcp(
-                                HelperCaptureClient::start(connection_id, input_stream_slot).await?,
+                                HelperCaptureClient::start(
+                                    connection_id,
+                                    input_stream_slot,
+                                    session_id_override,
+                                )
+                                .await?,
                             ))
                         }
                     }
@@ -763,7 +790,11 @@ mod windows_main {
     }
 
     impl HelperCaptureClient {
-        async fn start(connection_id: u32, input_stream_slot: Arc<Mutex<Option<TcpStream>>>) -> anyhow::Result<Self> {
+        async fn start(
+            connection_id: u32,
+            input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
+            session_id_override: Option<u32>,
+        ) -> anyhow::Result<Self> {
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
                 .await
                 .context("failed to bind local capture helper listener")?;
@@ -782,7 +813,7 @@ mod windows_main {
 
             info!(connection_id, input_addr = %input_addr, "Capture helper input listener bound");
 
-            let helper = spawn_capture_helper_process_tcp(local_addr, input_addr, true)
+            let helper = spawn_capture_helper_process_tcp(local_addr, input_addr, true, session_id_override)
                 .with_context(|| format!("failed to spawn capture helper for connection {connection_id}"))?;
 
             let (stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, listener.accept())
@@ -1135,6 +1166,7 @@ mod windows_main {
             connection_id: u32,
             desktop_size: DesktopSize,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
+            session_id_override: Option<u32>,
         ) -> anyhow::Result<Self> {
             let (width, height) = desktop_size_nonzero(desktop_size)?;
             let width_usize = NonZeroUsize::from(width).get();
@@ -1215,9 +1247,10 @@ mod windows_main {
             let frame_ready_event = SendHandle(frame_ready_event);
 
             let helper =
-                spawn_capture_helper_process_shared_mem(&map_name, &event_name, input_addr).with_context(|| {
-                    format!("failed to spawn shared-memory capture helper for connection {connection_id}")
-                })?;
+                spawn_capture_helper_process_shared_mem(&map_name, &event_name, input_addr, session_id_override)
+                    .with_context(|| {
+                        format!("failed to spawn shared-memory capture helper for connection {connection_id}")
+                    })?;
 
             let (input_stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, input_listener.accept())
                 .await
@@ -1393,25 +1426,38 @@ mod windows_main {
         connect_addr: SocketAddr,
         input_connect_addr: SocketAddr,
         rfx_encode: bool,
+        session_id_override: Option<u32>,
     ) -> anyhow::Result<SpawnedProcess> {
         let rfx_flag = if rfx_encode { " --rfx-encode" } else { "" };
-        spawn_capture_helper_process_with_args(&format!(
-            "--connect {connect_addr} --input-connect {input_connect_addr}{rfx_flag}"
-        ))
+        spawn_capture_helper_process_with_args(
+            &format!("--connect {connect_addr} --input-connect {input_connect_addr}{rfx_flag}"),
+            session_id_override,
+        )
     }
 
     fn spawn_capture_helper_process_shared_mem(
         map_name: &str,
         event_name: &str,
         input_connect_addr: SocketAddr,
+        session_id_override: Option<u32>,
     ) -> anyhow::Result<SpawnedProcess> {
-        spawn_capture_helper_process_with_args(&format!(
-            "--shm-map \"{map_name}\" --shm-event \"{event_name}\" --input-connect {input_connect_addr}"
-        ))
+        spawn_capture_helper_process_with_args(
+            &format!("--shm-map \"{map_name}\" --shm-event \"{event_name}\" --input-connect {input_connect_addr}"),
+            session_id_override,
+        )
     }
 
-    fn spawn_capture_helper_process_with_args(extra_args: &str) -> anyhow::Result<SpawnedProcess> {
-        let session_id = resolve_capture_session_id().context("failed to resolve capture session id")?;
+    fn spawn_capture_helper_process_with_args(
+        extra_args: &str,
+        session_id_override: Option<u32>,
+    ) -> anyhow::Result<SpawnedProcess> {
+        let session_id = match session_id_override {
+            Some(id) => {
+                info!(session_id = id, "Using WTS-notified capture session");
+                id
+            }
+            None => resolve_capture_session_id().context("failed to resolve capture session id")?,
+        };
         info!(session_id, "Selected capture session");
 
         let acquired =
@@ -1570,13 +1616,24 @@ mod windows_main {
             "WTSQueryUserToken failed; attempting to spawn helper with a session-adjusted service token"
         );
 
-        if let Ok(token) = token_from_winlogon(session_id) {
+        // Prefer explorer.exe: it runs as the logged-in user with access to the default desktop.
+        if let Ok(token) = token_from_session_process(session_id, "explorer.exe") {
+            debug!(session_id, "Using explorer.exe token (default desktop)");
+            return Ok(AcquiredSessionToken {
+                token,
+                desktop: HelperDesktop::Default,
+            });
+        }
+
+        if let Ok(token) = token_from_session_process(session_id, "winlogon.exe") {
+            debug!(session_id, "Using winlogon.exe token (winlogon desktop)");
             return Ok(AcquiredSessionToken {
                 token,
                 desktop: HelperDesktop::Winlogon,
             });
         }
 
+        debug!(session_id, "Using duplicated service token for capture");
         let token = duplicate_self_token_for_session(session_id)?;
 
         Ok(AcquiredSessionToken {
@@ -1585,7 +1642,10 @@ mod windows_main {
         })
     }
 
-    fn token_from_winlogon(session_id: u32) -> anyhow::Result<windows::Win32::Foundation::HANDLE> {
+    fn token_from_session_process(
+        session_id: u32,
+        process_name: &str,
+    ) -> anyhow::Result<windows::Win32::Foundation::HANDLE> {
         let mut process_info_ptr: *mut WTS_PROCESS_INFOW = null_mut();
         let mut process_count = 0u32;
 
@@ -1616,7 +1676,7 @@ mod windows_main {
         // SAFETY: WTSEnumerateProcessesW returned `process_count` entries at `process_info_ptr`.
         let processes = unsafe { core::slice::from_raw_parts(process_info_ptr, process_count_usize) };
 
-        let mut winlogon_pid: Option<u32> = None;
+        let mut found_pid: Option<u32> = None;
 
         for entry in processes {
             if entry.SessionId != session_id {
@@ -1625,13 +1685,13 @@ mod windows_main {
 
             // SAFETY: pProcessName is a nul-terminated wide string pointer returned by WTSEnumerateProcessesW.
             let name = unsafe { PCWSTR(entry.pProcessName.0).to_string() }.unwrap_or_default();
-            if name.eq_ignore_ascii_case("winlogon.exe") {
-                winlogon_pid = Some(entry.ProcessId);
+            if name.eq_ignore_ascii_case(process_name) {
+                found_pid = Some(entry.ProcessId);
                 break;
             }
         }
 
-        let pid = winlogon_pid.ok_or_else(|| anyhow!("winlogon.exe not found in session {session_id}"))?;
+        let pid = found_pid.ok_or_else(|| anyhow!("{process_name} not found in session {session_id}"))?;
 
         // SAFETY: OpenProcess returns a handle for the specified PID when permitted.
         let process_handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
@@ -1660,8 +1720,8 @@ mod windows_main {
                 &mut winlogon_token,
             )
         }
-        .map_err(|error| anyhow!("OpenProcessToken(winlogon) failed: {error}"))
-        .context("OpenProcessToken(winlogon) failed")?;
+        .map_err(|error| anyhow!("OpenProcessToken({process_name}) failed: {error}"))
+        .context("OpenProcessToken failed")?;
 
         let _token_guard = HandleGuard(winlogon_token);
 
@@ -1678,8 +1738,8 @@ mod windows_main {
                 &mut primary_token,
             )
         }
-        .map_err(|error| anyhow!("DuplicateTokenEx(winlogon) failed: {error}"))
-        .context("DuplicateTokenEx(winlogon) failed")?;
+        .map_err(|error| anyhow!("DuplicateTokenEx({process_name}) failed: {error}"))
+        .context("DuplicateTokenEx failed")?;
 
         Ok(primary_token)
     }
@@ -2204,6 +2264,8 @@ mod windows_main {
         next_connection_id: u32,
         accepted_tx: mpsc::UnboundedSender<AcceptedSocket>,
         accepted_rx: mpsc::UnboundedReceiver<AcceptedSocket>,
+        /// Session ID per connection, set when the provider receives NotifySessionId from WTS.
+        connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
     }
 
     impl ServiceState {
@@ -2218,6 +2280,7 @@ mod windows_main {
                 next_connection_id: 1,
                 accepted_tx,
                 accepted_rx,
+                connection_session_ids: Arc::new(StdMutex::new(HashMap::new())),
             }
         }
 
@@ -2236,7 +2299,18 @@ mod windows_main {
                 ProviderCommand::GetConnectionCredentials { connection_id } => {
                     self.get_connection_credentials(connection_id).await
                 }
+                ProviderCommand::SetCaptureSessionId { connection_id, session_id } => {
+                    self.set_capture_session_id(connection_id, session_id)
+                }
             }
+        }
+
+        fn set_capture_session_id(&self, connection_id: u32, session_id: u32) -> ServiceEvent {
+            if let Ok(mut guard) = self.connection_session_ids.lock() {
+                guard.insert(connection_id, session_id);
+                info!(connection_id, session_id, "Set capture session id for connection");
+            }
+            ServiceEvent::Ack
         }
 
         async fn start_listen(&mut self, listener_name: String) -> ServiceEvent {
@@ -2382,10 +2456,17 @@ mod windows_main {
 
             let peer_addr = connection.peer_addr.clone();
             let credentials_slot = Arc::clone(&connection.credentials);
+            let connection_session_ids = Arc::clone(&self.connection_session_ids);
 
             let session_task = tokio::task::spawn_local(async move {
-                if let Err(error) =
-                    run_ironrdp_connection(connection_id, peer_addr.as_deref(), stream, credentials_slot).await
+                if let Err(error) = run_ironrdp_connection(
+                    connection_id,
+                    peer_addr.as_deref(),
+                    stream,
+                    credentials_slot,
+                    connection_session_ids,
+                )
+                .await
                 {
                     warn!(error = %format!("{error:#}"), connection_id, "IronRDP connection task failed");
                 }
@@ -2414,6 +2495,9 @@ mod windows_main {
         }
 
         fn close_connection(&mut self, connection_id: u32) -> ServiceEvent {
+            if let Ok(mut guard) = self.connection_session_ids.lock() {
+                guard.remove(&connection_id);
+            }
             if let Some(entry) = self.connections.remove(&connection_id) {
                 if let Some(session_task) = entry.session_task {
                     session_task.abort();
@@ -2489,6 +2573,7 @@ mod windows_main {
         peer_addr: Option<&str>,
         stream: TcpStream,
         credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
+        connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
@@ -2500,7 +2585,11 @@ mod windows_main {
             input_rx,
         ));
 
-        let display = GdiDisplay::new(connection_id, Arc::clone(&input_stream_slot))
+        let display = GdiDisplay::new(
+            connection_id,
+            Arc::clone(&input_stream_slot),
+            connection_session_ids,
+        )
             .context("failed to initialize GDI display handler")?;
         let (tls_acceptor, tls_pub_key) = make_tls_acceptor().context("failed to initialize TLS acceptor")?;
 
@@ -3027,8 +3116,15 @@ mod windows_main {
                 // In standalone mode there is no WTS provider to query credentials; use a
                 // throw-away slot (credentials won't be read by anyone).
                 let credentials_slot = Arc::new(Mutex::new(None));
-                if let Err(error) =
-                    run_ironrdp_connection(connection_id, Some(&peer_addr), stream, credentials_slot).await
+                let connection_session_ids = Arc::new(StdMutex::new(HashMap::new()));
+                if let Err(error) = run_ironrdp_connection(
+                    connection_id,
+                    Some(&peer_addr),
+                    stream,
+                    credentials_slot,
+                    connection_session_ids,
+                )
+                .await
                 {
                     warn!(
                         error = %format!("{error:#}"),

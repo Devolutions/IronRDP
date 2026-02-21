@@ -94,6 +94,7 @@ fn command_kind(command: &ProviderCommand) -> &'static str {
         ProviderCommand::AcceptConnection { .. } => "accept_connection",
         ProviderCommand::CloseConnection { .. } => "close_connection",
         ProviderCommand::GetConnectionCredentials { .. } => "get_connection_credentials",
+        ProviderCommand::SetCaptureSessionId { .. } => "set_capture_session_id",
     }
 }
 
@@ -767,6 +768,24 @@ impl ProviderControlBridge {
             other => Err(windows_core::Error::new(
                 E_UNEXPECTED,
                 format!("unexpected service event on stop listen: {other:?}"),
+            )),
+        }
+    }
+
+    fn set_capture_session_id(&self, connection_id: u32, session_id: u32) -> windows_core::Result<()> {
+        let Some(event) = self.send_command(&ProviderCommand::SetCaptureSessionId {
+            connection_id,
+            session_id,
+        })? else {
+            return Ok(());
+        };
+
+        match event {
+            ServiceEvent::Ack => Ok(()),
+            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            other => Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                format!("unexpected service event on set capture session id: {other:?}"),
             )),
         }
     }
@@ -1812,6 +1831,21 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                     )
                     .into();
 
+                    // Start the RDP server immediately so the client's X224 handshake is processed.
+                    // RDS may call AcceptConnection later; the companion returns ConnectionReady
+                    // if the session is already running.
+                    if let Err(error) = control_bridge.accept_connection(incoming.connection_id) {
+                        debug_log_line(&format!(
+                            "Early accept_connection failed connection_id={} error={}; continuing",
+                            incoming.connection_id, error
+                        ));
+                        warn!(
+                            %error,
+                            connection_id = incoming.connection_id,
+                            "Early accept_connection failed; RDS may call AcceptConnection later"
+                        );
+                    }
+
                     let mut settings = default_connection_settings(&listener_name);
 
                     let mut sd_probe: Option<&'static mut [u8]> = None;
@@ -2482,6 +2516,16 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             wts_session_id
         ));
         self.inner.notify_session_id(wts_session_id).map_err(transition_error)?;
+
+        if let Err(error) =
+            self.control_bridge
+                .set_capture_session_id(self.inner.connection_id(), wts_session_id)
+        {
+            debug_log_line(&format!(
+                "Failed to notify companion of session id: {}",
+                error
+            ));
+        }
 
         Ok(())
     }
