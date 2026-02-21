@@ -479,6 +479,11 @@ fn capture_frames<S: Read + io::Write>(
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
                 continue 'outer;
             }
+            Err(e) if got_graphics => {
+                // Server closed without TLS close_notify; save what we have
+                info!("Connection closed ({}); saving received graphics", e);
+                break 'outer;
+            }
             Err(e) => return Err(anyhow::Error::new(e).context("read frame")),
         };
 

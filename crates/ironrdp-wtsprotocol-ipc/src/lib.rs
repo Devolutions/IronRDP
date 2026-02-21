@@ -34,6 +34,14 @@ pub enum ProviderCommand {
     GetConnectionCredentials {
         connection_id: u32,
     },
+    /// Notify the companion service of the session ID for a connection.
+    ///
+    /// The provider DLL calls this when WTS invokes `NotifySessionId`, so the companion can
+    /// target the correct session for desktop capture instead of guessing via console/enumeration.
+    SetCaptureSessionId {
+        connection_id: u32,
+        session_id: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
