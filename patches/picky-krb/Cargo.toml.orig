@@ -1,0 +1,43 @@
+[package]
+name = "picky-krb"
+version = "0.12.0"
+authors = ["Devolutions Inc."]
+edition = "2024"
+rust-version = "1.85"
+keywords = ["kerberos", "asn1", "parse"]
+categories = ["encoding"]
+description = "Encode/decode Kerberos ASN.1 DER structs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Devolutions/picky-rs"
+readme = "README.md"
+include = ["src/**/*", "README.md", "CHANGELOG.md", "LICENSE-*"]
+
+[dependencies]
+picky-asn1 = { version = "0.10", path = "../picky-asn1" }
+picky-asn1-der = { version = "0.5", path = "../picky-asn1-der" }
+picky-asn1-x509 = { version = "0.15", path = "../picky-asn1-x509" }
+serde = { version = "1", features = ["derive"] }
+byteorder = "1.5"
+thiserror = "2"
+
+pbkdf2 = { version = "=0.13.0-rc.1", features = ["sha1"] }
+hmac = "=0.13.0-rc.2"
+sha1 = "=0.11.0-rc.2"
+
+aes = "=0.9.0-rc.1"
+des = "=0.9.0-rc.1"
+cbc = "=0.2.0-rc.1"
+inout = "=0.2.0-rc.6"
+rand = "0.9"
+
+uuid = { version = "1.18", default-features = false, features = ["serde"] }
+oid = "0.2"
+crypto-bigint = { version = "=0.7.0-rc.8", features = ["alloc"] }
+
+# Pin transitive dependencies versions.
+# TODO: Remove when stable versions will be released.
+block-padding = "=0.4.0-rc.4"
+cipher = "=0.5.0-rc.1"
+block-buffer = "=0.11.0-rc.5"
+crypto-common = "=0.2.0-rc.4"
+digest = "=0.11.0-rc.3"
