@@ -53,6 +53,7 @@ foreach ($vmName in $VmNames) {
         ComputerName = $null
         UserName = $null
         TermDDPresent = $false
+        RdpTransportPresent = $false
         TermServiceRunning = $false
         RemoteDesktopEnabled = $false
         RdpTcpEnabled = $false
@@ -101,6 +102,12 @@ foreach ($vmName in $VmNames) {
                 ComputerName = $env:COMPUTERNAME
                 UserName = (whoami)
                 TermDDPresent = (Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\TermDD')
+                RdpTransportPresent = (
+                    (Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\TermDD') -or
+                    (Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\UmRdpService') -or
+                    (Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\rdpbus') -or
+                    (Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\RDPNP')
+                )
                 TermServiceRunning = ($null -ne $termService -and $termService.Status -eq 'Running')
                 RemoteDesktopEnabled = ($null -ne $terminalServer -and [int]$terminalServer.fDenyTSConnections -eq 0)
                 RdpTcpEnabled = ($null -ne $rdpTcp -and [int]$rdpTcp.fEnableWinStation -eq 1)
@@ -116,6 +123,7 @@ foreach ($vmName in $VmNames) {
         $result.ComputerName = $remote.ComputerName
         $result.UserName = $remote.UserName
         $result.TermDDPresent = [bool]$remote.TermDDPresent
+        $result.RdpTransportPresent = [bool]$remote.RdpTransportPresent
         $result.TermServiceRunning = [bool]$remote.TermServiceRunning
         $result.RemoteDesktopEnabled = [bool]$remote.RemoteDesktopEnabled
         $result.RdpTcpEnabled = [bool]$remote.RdpTcpEnabled
@@ -127,8 +135,8 @@ foreach ($vmName in $VmNames) {
 
         $problems = New-Object System.Collections.Generic.List[string]
 
-        if (-not $result.TermDDPresent) {
-            $problems.Add('TermDD missing')
+        if (-not $result.RdpTransportPresent) {
+            $problems.Add('RDP transport missing')
         }
 
         if (-not $result.TermServiceRunning) {
@@ -169,7 +177,7 @@ foreach ($vmName in $VmNames) {
     $results.Add([PSCustomObject]$result)
 }
 
-$results | Sort-Object VmName | Format-Table VmName,VmState,CredentialAccess,TermDDPresent,TermServiceRunning,RemoteDesktopEnabled,RdpTcpEnabled,RdpTcpPort,SideBySideListenerExists,SideBySidePort,ActiveRdpTcpSocket,ActiveSideBySideSocket,Eligible,Reason -AutoSize | Out-String | Write-Host
+$results | Sort-Object VmName | Format-Table VmName,VmState,CredentialAccess,RdpTransportPresent,TermDDPresent,TermServiceRunning,RemoteDesktopEnabled,RdpTcpEnabled,RdpTcpPort,SideBySideListenerExists,SideBySidePort,ActiveRdpTcpSocket,ActiveSideBySideSocket,Eligible,Reason -AutoSize | Out-String | Write-Host
 
 $results
 

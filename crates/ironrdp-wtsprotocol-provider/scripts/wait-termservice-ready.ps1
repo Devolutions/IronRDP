@@ -22,9 +22,9 @@ $defaultsScript = Join-Path -Path $scriptRoot -ChildPath "side-by-side-defaults.
 
 $PortNumber = Resolve-SideBySideListenerPort -PortNumber $PortNumber
 
-$termDdServiceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TermDD"
-if (-not (Test-Path -LiteralPath $termDdServiceKey)) {
-    throw "rdp tcp transport service key is missing ($termDdServiceKey); this host does not expose the standard TermDD listener path required for mstsc tcp validation"
+$rdpTransportDetails = Get-RdpTcpTransportPresenceDetails
+if (-not (Test-RdpTcpTransportPresent)) {
+    throw "rdp tcp transport registry keys are missing; $rdpTransportDetails"
 }
 
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -33,9 +33,9 @@ while ((Get-Date) -lt $deadline) {
     $service = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
 
     if ($null -ne $service -and $service.Status -eq "Running") {
-        $listeners = Get-NetTCPConnection -State Listen -LocalPort $PortNumber -ErrorAction SilentlyContinue
+        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $PortNumber -ErrorAction SilentlyContinue)
 
-        if ($listeners -and $listeners.Count -gt 0) {
+        if ($listeners.Count -gt 0) {
             Write-Host "TermService ready"
             Write-Host "  status: Running"
             Write-Host "  listening port: $PortNumber"
