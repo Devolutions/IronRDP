@@ -2,6 +2,8 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // TODO: should we enable this lint back?
 
+pub use {ironrdp_acceptor, tokio, tokio_rustls};
+
 mod macros;
 
 pub mod autodetect;
@@ -10,7 +12,7 @@ mod capabilities;
 mod clipboard;
 mod display;
 mod echo;
-mod encoder;
+pub mod encoder;
 mod error;
 #[cfg(feature = "egfx")]
 mod gfx;
@@ -30,7 +32,7 @@ mod urbdrc;
 pub use clipboard::CliprdrServerFactory;
 pub use display::{
     BitmapUpdate, ColorPointer, DesktopSize, DisplayContext, DisplayUpdate, Framebuffer, LargePointer, PixelFormat,
-    RGBAPointer, RdpServerDisplay, RdpServerDisplayUpdates,
+    PreEncodedSurface, RGBAPointer, RdpServerDisplay, RdpServerDisplayUpdates,
 };
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
 pub use error::{ServerError, ServerErrorExt, ServerErrorKind, ServerResult, ServerResultExt};
@@ -60,7 +62,7 @@ pub use server::{
     AuthenticatedConnection, AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler,
     ConnectionInfo, ConnectionPolicy, ConnectionSource, CredentialDecision, CredentialValidationError,
     CredentialValidator, Credentials, ErrorInfoDisconnectHandle, ExactMatchCredentialValidator, IncomingConnection,
-    NextConnection, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent,
+    NextConnection, PendingSession, PostConnectionAction, RdpServer, RdpServerHandle, RdpServerOptions, RdpServerSecurity, ServerEvent,
     ServerEventSender, ServerRedirectionHandle, SessionOutcome, StaticChannelFactory, TransportTls,
     pick_remotefx_entropy_coder,
 };

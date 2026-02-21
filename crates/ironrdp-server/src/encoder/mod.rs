@@ -20,12 +20,12 @@ use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
 use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
 use crate::macros::time_warn;
-use crate::{ColorPointer, DisplayUpdate, Framebuffer, LargePointer, RGBAPointer};
+use crate::{ColorPointer, DisplayUpdate, Framebuffer, LargePointer, PreEncodedSurface, RGBAPointer};
 
 mod bitmap;
 mod fast_path;
 mod pointer_mask;
-pub(crate) mod rfx;
+pub mod rfx;
 
 pub(crate) use fast_path::*;
 use ironrdp_graphics::rdp6::BitmapEncodeError;
@@ -333,6 +333,29 @@ impl UpdateEncoder {
         ))
     }
 
+    fn pre_encoded_surface(surface: &PreEncodedSurface) -> Result<UpdateFragmenter> {
+        let destination = ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: surface.width,
+            bottom: surface.height,
+        };
+        let extended_bitmap_data = ExtendedBitmapDataPdu {
+            bpp: 32,
+            width: surface.width,
+            height: surface.height,
+            codec_id: surface.codec_id,
+            header: None,
+            data: &surface.data,
+        };
+        let pdu = SurfaceBitsPdu {
+            destination,
+            extended_bitmap_data,
+        };
+        let cmd = SurfaceCommand::SetSurfaceBits(pdu);
+        Ok(UpdateFragmenter::new(UpdateCode::SurfaceCommands, encode_vec(&cmd)?))
+    }
+
     fn bitmap_diffs(&mut self, bitmap: &BitmapUpdate) -> Vec<Rect> {
         // TODO: we may want to make it optional for servers that already provide damaged regions
         const USE_DIFFS: bool = true;
@@ -485,6 +508,7 @@ impl EncoderIter<'_> {
                         self.state = State::BitmapDiffs { diffs, bitmap, pos: 0 };
                         continue;
                     }
+                    DisplayUpdate::PreEncodedSurface(surface) => UpdateEncoder::pre_encoded_surface(&surface),
                     DisplayUpdate::PointerPosition(pos) => UpdateEncoder::pointer_position(pos),
                     DisplayUpdate::RGBAPointer(ptr) => {
                         if encoder.pointer_cache_size == 0 {
@@ -722,7 +746,7 @@ struct RemoteFxHandler {
 impl RemoteFxHandler {
     fn new(algo: EntropyBits, quant: Quant, codec_id: u8, desktop_size: DesktopSize) -> Self {
         Self {
-            remotefx: RfxEncoder::new(algo, quant),
+            remotefx: RfxEncoder::with_quant(algo, quant),
             desktop_size: Some(desktop_size),
             codec_id,
         }
