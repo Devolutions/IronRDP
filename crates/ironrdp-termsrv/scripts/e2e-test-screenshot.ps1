@@ -138,10 +138,7 @@ if (-not $SkipDeploy.IsPresent) {
         SkipBuild        = $true
         ListenerAddr     = "0.0.0.0:$Port"
         CaptureIpc       = 'tcp'
-    }
-
-    if ($Mode -eq 'Standalone') {
-        $deployArgs.AutoListen = $true
+        AutoListen       = $true
     }
 
     & $deployScript @deployArgs
@@ -163,6 +160,13 @@ if (-not $SkipDeploy.IsPresent) {
                 param($Dir)
                 New-Item -ItemType Directory -Path $Dir -Force | Out-Null
             } -ArgumentList $remoteProviderDir
+
+            # Stop TermService so the provider DLL can be replaced (it's loaded by TermService)
+            Write-Host "Stopping TermService to allow provider DLL update..." -ForegroundColor Cyan
+            Invoke-Command -Session $session -ScriptBlock {
+                Stop-Service -Name TermService -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+            }
 
             Copy-Item -ToSession $session -Path $providerDll -Destination "$remoteProviderDir\ironrdp_wtsprotocol_provider.dll" -Force
 
