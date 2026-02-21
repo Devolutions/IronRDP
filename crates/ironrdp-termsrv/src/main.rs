@@ -2984,6 +2984,7 @@ mod windows_main {
 
         let mut state = ServiceState::new(bind_addr);
         let mut empty_count: u64 = 0;
+
         #[expect(
             clippy::infinite_loop,
             reason = "service runs indefinitely; failures are handled inside the loop"

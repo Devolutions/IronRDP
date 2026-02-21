@@ -192,8 +192,9 @@ try {
             }
         }
 
-        # Wait a moment for pipe handles to be released
-        Start-Sleep -Seconds 1
+        # Wait for kernel to release named pipe handles (first_pipe_instance requires exclusive ownership)
+        Write-Host "Waiting 5s for pipe handles to be released..."
+        Start-Sleep -Seconds 5
 
         Remove-Item -LiteralPath $RdpPasswordPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $LogOut -Force -ErrorAction SilentlyContinue
