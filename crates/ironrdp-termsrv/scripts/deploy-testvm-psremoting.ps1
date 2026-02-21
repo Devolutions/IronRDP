@@ -174,6 +174,10 @@ try {
         Stop-Service -Name 'TermService' -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
 
+        # Stop ceviche-service if present - it uses the same named pipe and causes accept_connection to fail
+        Write-Host "Stopping ceviche-service (if running)..."
+        Get-Process -Name 'ceviche-service' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
         try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
         try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
 
