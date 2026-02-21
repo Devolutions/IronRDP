@@ -18,11 +18,11 @@ use self::bitmap::BitmapEncoder;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
 use crate::macros::time_warn;
-use crate::{ColorPointer, DisplayUpdate, Framebuffer, RGBAPointer};
+use crate::{ColorPointer, DisplayUpdate, Framebuffer, PreEncodedSurface, RGBAPointer};
 
 mod bitmap;
 mod fast_path;
-pub(crate) mod rfx;
+pub mod rfx;
 
 pub(crate) use fast_path::*;
 use ironrdp_graphics::rdp6::BitmapEncodeError;
@@ -206,6 +206,29 @@ impl UpdateEncoder {
         Ok(UpdateFragmenter::new(UpdateCode::PositionPointer, encode_vec(&pos)?))
     }
 
+    fn pre_encoded_surface(surface: &PreEncodedSurface) -> Result<UpdateFragmenter> {
+        let destination = ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: surface.width,
+            bottom: surface.height,
+        };
+        let extended_bitmap_data = ExtendedBitmapDataPdu {
+            bpp: 32,
+            width: surface.width,
+            height: surface.height,
+            codec_id: surface.codec_id,
+            header: None,
+            data: &surface.data,
+        };
+        let pdu = SurfaceBitsPdu {
+            destination,
+            extended_bitmap_data,
+        };
+        let cmd = SurfaceCommand::SetSurfaceBits(pdu);
+        Ok(UpdateFragmenter::new(UpdateCode::SurfaceCommands, encode_vec(&cmd)?))
+    }
+
     fn bitmap_diffs(&mut self, bitmap: &BitmapUpdate) -> Vec<Rect> {
         // TODO: we may want to make it optional for servers that already provide damaged regions
         const USE_DIFFS: bool = true;
@@ -303,6 +326,9 @@ impl EncoderIter<'_> {
                         let diffs = encoder.bitmap_diffs(&bitmap);
                         self.state = State::BitmapDiffs { diffs, bitmap, pos: 0 };
                         continue;
+                    }
+                    DisplayUpdate::PreEncodedSurface(surface) => {
+                        UpdateEncoder::pre_encoded_surface(&surface)
                     }
                     DisplayUpdate::PointerPosition(pos) => UpdateEncoder::pointer_position(pos),
                     DisplayUpdate::RGBAPointer(ptr) => UpdateEncoder::rgba_pointer(ptr),

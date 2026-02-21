@@ -31,11 +31,12 @@ mod windows_main {
     use tokio::sync::{mpsc, Mutex};
     use tokio::task::JoinHandle;
     use tokio::time::{sleep, timeout, Duration};
-    use tracing::{error, info, warn};
+    use tracing::{debug, error, info, warn};
     use tracing_subscriber::EnvFilter;
     use windows::core::{w, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
-        GetLastError, SetLastError, ERROR_NOT_ALL_ASSIGNED, LUID, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
+        GetLastError, LocalFree, SetLastError, ERROR_NOT_ALL_ASSIGNED, HANDLE, HLOCAL, LUID, WAIT_OBJECT_0,
+        WAIT_TIMEOUT, WIN32_ERROR,
     };
     use windows::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
@@ -57,7 +58,7 @@ mod windows_main {
         PAGE_READWRITE,
     };
     use windows::Win32::System::RemoteDesktop::{
-        WTSGetActiveConsoleSessionId, WTSQueryUserToken, WTSEnumerateSessionsW, WTSFreeMemory, WTS_SESSION_INFOW,
+        WTSEnumerateSessionsW, WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSQueryUserToken, WTS_SESSION_INFOW,
     };
     use windows::Win32::System::Threading::{
         CreateEventW, CreateProcessAsUserW, GetCurrentProcess, OpenEventW, OpenProcess, OpenProcessToken, SetEvent,
@@ -79,6 +80,11 @@ mod windows_main {
         TokenPrimary, TokenSessionId, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
         TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY,
     };
+
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows::Win32::Security::{GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
 
     use windows::Win32::System::RemoteDesktop::{WTSEnumerateProcessesW, WTS_PROCESS_INFOW};
 
@@ -103,6 +109,68 @@ mod windows_main {
     const RDP_USERNAME_ENV: &str = "IRONRDP_RDP_USERNAME";
     const RDP_PASSWORD_ENV: &str = "IRONRDP_RDP_PASSWORD";
     const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
+
+    fn configure_control_pipe_security(full_pipe_name: &str) -> anyhow::Result<()> {
+        // Allow TermService (NetworkService) to connect to the control pipe.
+        //
+        // NOTE: we also include Everyone (WD) as a diagnostic escape hatch so we can
+        // confirm that the DACL is actually being applied and unblock integration on
+        // newer Windows builds where TermService may use additional restricted SIDs.
+        //
+        // - SY: LocalSystem
+        // - BA: Builtin Administrators
+        // - NS: NetworkService
+        // - WD: Everyone
+        let sddl = w!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;NS)(A;;GA;;;WD)");
+
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        let mut sd_len = 0u32;
+
+        // SAFETY: `sddl` is a NUL-terminated wide string literal. `sd` receives a valid pointer
+        // which must be freed with LocalFree.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &mut sd, Some(&mut sd_len))
+        }
+        .map_err(|error| anyhow!("ConvertStringSecurityDescriptorToSecurityDescriptorW failed: {error}"))?;
+
+        let mut dacl_present = windows::core::BOOL(0);
+        let mut dacl_ptr: *mut ACL = null_mut();
+        let mut dacl_defaulted = windows::core::BOOL(0);
+
+        // SAFETY: `sd` points to a valid security descriptor allocated above; output pointers are valid.
+        unsafe { GetSecurityDescriptorDacl(sd, &mut dacl_present, &mut dacl_ptr, &mut dacl_defaulted) }
+            .context("GetSecurityDescriptorDacl failed")?;
+
+        if dacl_present == windows::core::BOOL(0) || dacl_ptr.is_null() {
+            return Err(anyhow!("security descriptor does not contain a DACL"));
+        }
+
+        let pipe_name_wide: Vec<u16> = full_pipe_name.encode_utf16().chain(core::iter::once(0)).collect();
+
+        // SAFETY: SetNamedSecurityInfoW expects a file object name. Named pipes are file objects.
+        // We provide a DACL pointer that is valid for the duration of the call.
+        let result = unsafe {
+            SetNamedSecurityInfoW(
+                PCWSTR::from_raw(pipe_name_wide.as_ptr()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(dacl_ptr as *const ACL),
+                None,
+            )
+        };
+
+        // SAFETY: frees the buffer allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+        }
+
+        if result.0 != 0 {
+            return Err(anyhow!("SetNamedSecurityInfoW failed: {result:?}"));
+        }
+        Ok(())
+    }
 
     const INPUT_FRAME_MAGIC: [u8; 4] = *b"IRIN";
     const INPUT_FRAME_VERSION: u16 = 1;
@@ -473,7 +541,7 @@ mod windows_main {
                 }
             }
 
-            let bitmap = if let Some(capture) = &mut self.capture {
+            let captured = if let Some(capture) = &mut self.capture {
                 let read_timeout = if self.helper_frames_received == 0 {
                     Duration::from_secs(1)
                 } else {
@@ -481,9 +549,9 @@ mod windows_main {
                 };
 
                 match timeout(read_timeout, capture.read_frame()).await {
-                    Ok(Ok(bitmap)) => {
+                    Ok(Ok(frame)) => {
                         self.helper_frames_received = self.helper_frames_received.saturating_add(1);
-                        bitmap
+                        frame
                     }
                     Ok(Err(error)) => {
                         warn!(
@@ -498,12 +566,12 @@ mod windows_main {
                         self.next_helper_attempt_at = Instant::now() + CAPTURE_HELPER_RETRY_DELAY;
 
                         if let Some(bitmap) = self.last_bitmap.clone() {
-                            bitmap
+                            CapturedFrame::Raw(bitmap)
                         } else {
                             let bitmap = fallback_bitmap_update(self.desktop_size)
                                 .context("failed to generate fallback bitmap update")?;
                             self.last_bitmap = Some(bitmap.clone());
-                            bitmap
+                            CapturedFrame::Raw(bitmap)
                         }
                     }
                     Err(_) => {
@@ -511,27 +579,25 @@ mod windows_main {
                         sleep(CAPTURE_INTERVAL).await;
 
                         if let Some(bitmap) = self.last_bitmap.clone() {
-                            bitmap
+                            CapturedFrame::Raw(bitmap)
                         } else {
                             let bitmap = fallback_bitmap_update(self.desktop_size)
                                 .context("failed to generate fallback bitmap update")?;
                             self.last_bitmap = Some(bitmap.clone());
-                            bitmap
+                            CapturedFrame::Raw(bitmap)
                         }
                     }
                 }
             } else {
                 match capture_bitmap_update(self.desktop_size) {
-                    Ok(bitmap) => {
-                        bitmap
-                    }
+                    Ok(bitmap) => CapturedFrame::Raw(bitmap),
                     Err(error) => {
                         if let Some(bitmap) = self.last_bitmap.clone() {
                             warn!(
                                 error = %format!("{error:#}"),
                                 "GDI capture failed; re-sending last bitmap"
                             );
-                            bitmap
+                            CapturedFrame::Raw(bitmap)
                         } else {
                             warn!(
                                 error = %format!("{error:#}"),
@@ -539,32 +605,39 @@ mod windows_main {
                             );
                             let bitmap = fallback_bitmap_update(self.desktop_size)
                                 .context("failed to generate fallback bitmap update")?;
-                            bitmap
+                            CapturedFrame::Raw(bitmap)
                         }
                     }
                 }
             };
 
-            // If capture returns an all-black frame (common on secure desktops / session 0),
-            // replace it with a synthetic test pattern so mstsc shows *something* and we can
-            // confirm the update pipeline works.
-            let bitmap = if is_probably_blank_bgra32(bitmap.data.as_ref()) {
-                if !self.warned_blank_capture {
-                    self.warned_blank_capture = true;
-                    warn!(
-                        connection_id = self.connection_id,
-                        "Captured blank frame; falling back to synthetic test pattern (check capture session/desktop)"
-                    );
-                }
-                fallback_bitmap_update(self.desktop_size).context("failed to generate fallback bitmap update")?
-            } else {
-                bitmap
-            };
-
-            self.last_bitmap = Some(bitmap.clone());
             self.sent_first_frame = true;
 
-            Ok(Some(DisplayUpdate::Bitmap(bitmap)))
+            match captured {
+                CapturedFrame::PreEncoded(surface) => {
+                    Ok(Some(DisplayUpdate::PreEncodedSurface(surface)))
+                }
+                CapturedFrame::Raw(bitmap) => {
+                    // If capture returns an all-black frame (common on secure desktops / session 0),
+                    // replace with a synthetic test pattern so the client shows *something*.
+                    let bitmap = if is_probably_blank_bgra32(bitmap.data.as_ref()) {
+                        if !self.warned_blank_capture {
+                            self.warned_blank_capture = true;
+                            warn!(
+                                connection_id = self.connection_id,
+                                "Captured blank frame; falling back to synthetic test pattern (check capture session/desktop)"
+                            );
+                        }
+                        fallback_bitmap_update(self.desktop_size)
+                            .context("failed to generate fallback bitmap update")?
+                    } else {
+                        bitmap
+                    };
+
+                    self.last_bitmap = Some(bitmap.clone());
+                    Ok(Some(DisplayUpdate::Bitmap(bitmap)))
+                }
+            }
         }
     }
 
@@ -602,6 +675,11 @@ mod windows_main {
             "shm" | "sharedmem" | "shared-memory" => CaptureIpc::SharedMem,
             _ => CaptureIpc::Tcp,
         }
+    }
+
+    enum CapturedFrame {
+        Raw(BitmapUpdate),
+        PreEncoded(ironrdp_server::PreEncodedSurface),
     }
 
     enum CaptureClient {
@@ -667,10 +745,10 @@ mod windows_main {
             }
         }
 
-        async fn read_frame(&mut self) -> anyhow::Result<BitmapUpdate> {
+        async fn read_frame(&mut self) -> anyhow::Result<CapturedFrame> {
             match self {
                 Self::Tcp(client) => client.read_frame().await,
-                Self::SharedMem(client) => client.read_frame().await,
+                Self::SharedMem(client) => client.read_frame().await.map(CapturedFrame::Raw),
             }
         }
     }
@@ -704,7 +782,7 @@ mod windows_main {
 
             info!(connection_id, input_addr = %input_addr, "Capture helper input listener bound");
 
-            let helper = spawn_capture_helper_process_tcp(local_addr, input_addr)
+            let helper = spawn_capture_helper_process_tcp(local_addr, input_addr, true)
                 .with_context(|| format!("failed to spawn capture helper for connection {connection_id}"))?;
 
             let (stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, listener.accept())
@@ -762,7 +840,7 @@ mod windows_main {
             }
         }
 
-        async fn read_frame(&mut self) -> anyhow::Result<BitmapUpdate> {
+        async fn read_frame(&mut self) -> anyhow::Result<CapturedFrame> {
             read_capture_frame(&mut self.stream).await
         }
     }
@@ -1314,9 +1392,11 @@ mod windows_main {
     fn spawn_capture_helper_process_tcp(
         connect_addr: SocketAddr,
         input_connect_addr: SocketAddr,
+        rfx_encode: bool,
     ) -> anyhow::Result<SpawnedProcess> {
+        let rfx_flag = if rfx_encode { " --rfx-encode" } else { "" };
         spawn_capture_helper_process_with_args(&format!(
-            "--connect {connect_addr} --input-connect {input_connect_addr}"
+            "--connect {connect_addr} --input-connect {input_connect_addr}{rfx_flag}"
         ))
     }
 
@@ -1734,7 +1814,7 @@ mod windows_main {
     const CAPTURE_FRAME_HEADER_LEN: usize = 24;
     const CAPTURE_FRAME_RESYNC_LIMIT: usize = 1024 * 1024;
 
-    async fn read_capture_frame(stream: &mut TcpStream) -> anyhow::Result<BitmapUpdate> {
+    async fn read_capture_frame(stream: &mut TcpStream) -> anyhow::Result<CapturedFrame> {
         let mut header = [0u8; CAPTURE_FRAME_HEADER_LEN];
         stream
             .read_exact(&mut header[0..4])
@@ -1769,53 +1849,72 @@ mod windows_main {
             .context("failed to read capture frame header")?;
 
         let version = u16::from_le_bytes([header[4], header[5]]);
-        if version != 1 {
-            return Err(anyhow!("unsupported capture frame version: {version}"));
-        }
 
         let width_u16 = u16::from_le_bytes([header[6], header[7]]);
         let height_u16 = u16::from_le_bytes([header[8], header[9]]);
-        let stride_u32 = u32::from_le_bytes([header[10], header[11], header[12], header[13]]);
-        let format = header[14];
         let payload_len = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
-
-        if format != 0 {
-            return Err(anyhow!("unsupported capture pixel format: {format}"));
-        }
-
-        let width = NonZeroU16::new(width_u16).ok_or_else(|| anyhow!("capture frame width is zero"))?;
-        let height = NonZeroU16::new(height_u16).ok_or_else(|| anyhow!("capture frame height is zero"))?;
-        let stride_usize = usize::try_from(stride_u32).map_err(|_| anyhow!("capture frame stride out of range"))?;
-        let stride = NonZeroUsize::new(stride_usize).ok_or_else(|| anyhow!("capture frame stride is zero"))?;
         let payload_len_usize =
             usize::try_from(payload_len).map_err(|_| anyhow!("capture payload length out of range"))?;
 
-        let expected = stride
-            .get()
-            .checked_mul(NonZeroUsize::from(height).get())
-            .ok_or_else(|| anyhow!("capture payload length overflow"))?;
+        match version {
+            1 => {
+                let stride_u32 = u32::from_le_bytes([header[10], header[11], header[12], header[13]]);
+                let format = header[14];
+                if format != 0 {
+                    return Err(anyhow!("unsupported capture pixel format: {format}"));
+                }
 
-        if payload_len_usize != expected {
-            return Err(anyhow!(
-                "capture payload length mismatch (got {payload_len_usize}, expected {expected})"
-            ));
+                let width = NonZeroU16::new(width_u16).ok_or_else(|| anyhow!("capture frame width is zero"))?;
+                let height = NonZeroU16::new(height_u16).ok_or_else(|| anyhow!("capture frame height is zero"))?;
+                let stride_usize =
+                    usize::try_from(stride_u32).map_err(|_| anyhow!("capture frame stride out of range"))?;
+                let stride = NonZeroUsize::new(stride_usize).ok_or_else(|| anyhow!("capture frame stride is zero"))?;
+
+                let expected = stride
+                    .get()
+                    .checked_mul(NonZeroUsize::from(height).get())
+                    .ok_or_else(|| anyhow!("capture payload length overflow"))?;
+
+                if payload_len_usize != expected {
+                    return Err(anyhow!(
+                        "capture payload length mismatch (got {payload_len_usize}, expected {expected})"
+                    ));
+                }
+
+                let mut payload = vec![0u8; payload_len_usize];
+                stream
+                    .read_exact(&mut payload)
+                    .await
+                    .context("failed to read capture frame payload")?;
+
+                Ok(CapturedFrame::Raw(BitmapUpdate {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                    format: PixelFormat::BgrA32,
+                    data: payload.into(),
+                    stride,
+                }))
+            }
+            2 => {
+                let codec_id = header[14];
+
+                let mut payload = vec![0u8; payload_len_usize];
+                stream
+                    .read_exact(&mut payload)
+                    .await
+                    .context("failed to read pre-encoded frame payload")?;
+
+                Ok(CapturedFrame::PreEncoded(ironrdp_server::PreEncodedSurface {
+                    codec_id,
+                    width: width_u16,
+                    height: height_u16,
+                    data: payload.into(),
+                }))
+            }
+            _ => Err(anyhow!("unsupported capture frame version: {version}")),
         }
-
-        let mut payload = vec![0u8; payload_len_usize];
-        stream
-            .read_exact(&mut payload)
-            .await
-            .context("failed to read capture frame payload")?;
-
-        Ok(BitmapUpdate {
-            x: 0,
-            y: 0,
-            width,
-            height,
-            format: PixelFormat::BgrA32,
-            data: payload.into(),
-            stride,
-        })
     }
 
     async fn write_capture_frame(stream: &mut TcpStream, bitmap: &BitmapUpdate) -> anyhow::Result<()> {
@@ -1841,6 +1940,35 @@ mod windows_main {
             .write_all(bitmap.data.as_ref())
             .await
             .context("failed to write capture payload")?;
+
+        Ok(())
+    }
+
+    async fn write_capture_frame_preencoded(
+        stream: &mut TcpStream,
+        width: u16,
+        height: u16,
+        codec_id: u8,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        let payload_len_u32 = u32::try_from(data.len()).map_err(|_| anyhow!("pre-encoded payload too large"))?;
+
+        let mut header = [0u8; CAPTURE_FRAME_HEADER_LEN];
+        header[0..4].copy_from_slice(&CAPTURE_FRAME_MAGIC);
+        header[4..6].copy_from_slice(&2u16.to_le_bytes()); // version 2 = pre-encoded
+        header[6..8].copy_from_slice(&width.to_le_bytes());
+        header[8..10].copy_from_slice(&height.to_le_bytes());
+        header[14] = codec_id;
+        header[20..24].copy_from_slice(&payload_len_u32.to_le_bytes());
+
+        stream
+            .write_all(&header)
+            .await
+            .context("failed to write pre-encoded capture header")?;
+        stream
+            .write_all(data)
+            .await
+            .context("failed to write pre-encoded capture payload")?;
 
         Ok(())
     }
@@ -2028,6 +2156,18 @@ mod windows_main {
         })
     }
 
+    /// Plaintext credentials captured from the CredSSP/NLA handshake.
+    ///
+    /// The connection task stores these here after `run_connection` returns the
+    /// `AuthIdentity`, so the IPC handler can serve them to the WTS provider DLL
+    /// when it calls `GetConnectionCredentials`.
+    #[derive(Debug, Clone)]
+    struct StoredCredentials {
+        username: String,
+        domain: String,
+        password: String,
+    }
+
     struct AcceptedSocket {
         listener_name: String,
         peer_addr: Option<String>,
@@ -2046,6 +2186,10 @@ mod windows_main {
         peer_addr: Option<String>,
         stream: Option<TcpStream>,
         session_task: Option<JoinHandle<()>>,
+        /// Credentials captured from the CredSSP handshake.
+        ///
+        /// `None` until the NLA handshake completes; queried by `GetConnectionCredentials`.
+        credentials: Arc<Mutex<Option<StoredCredentials>>>,
     }
 
     struct ManagedListener {
@@ -2089,6 +2233,9 @@ mod windows_main {
                 } => self.wait_for_incoming(listener_name, timeout_ms).await,
                 ProviderCommand::AcceptConnection { connection_id } => self.accept_connection(connection_id),
                 ProviderCommand::CloseConnection { connection_id } => self.close_connection(connection_id),
+                ProviderCommand::GetConnectionCredentials { connection_id } => {
+                    self.get_connection_credentials(connection_id).await
+                }
             }
         }
 
@@ -2169,6 +2316,15 @@ mod windows_main {
         }
 
         async fn wait_for_incoming(&mut self, listener_name: String, timeout_ms: u32) -> ServiceEvent {
+            if !self.listeners.contains_key(&listener_name) {
+                info!(%listener_name, "Auto-starting listener on first wait_for_incoming");
+                let event = self.start_listen(listener_name.clone()).await;
+                match &event {
+                    ServiceEvent::ListenerStarted { .. } => {}
+                    _ => return event,
+                }
+            }
+
             if let Some(event) = self.pop_pending_for_listener(&listener_name) {
                 return event;
             }
@@ -2193,11 +2349,23 @@ mod windows_main {
         }
 
         fn accept_connection(&mut self, connection_id: u32) -> ServiceEvent {
+            let known_ids: Vec<u32> = self.connections.keys().copied().collect();
+            info!(
+                connection_id,
+                ?known_ids,
+                total_connections = self.connections.len(),
+                "accept_connection ENTRY"
+            );
             let connection = match self.connections.get_mut(&connection_id) {
                 Some(connection) => connection,
                 None => {
+                    warn!(
+                        connection_id,
+                        ?known_ids,
+                        "accept_connection: MISS"
+                    );
                     return ServiceEvent::Error {
-                        message: format!("unknown connection id: {connection_id}"),
+                        message: format!("MISS connection id={connection_id} known={known_ids:?}"),
                     };
                 }
             };
@@ -2213,9 +2381,12 @@ mod windows_main {
             };
 
             let peer_addr = connection.peer_addr.clone();
+            let credentials_slot = Arc::clone(&connection.credentials);
 
             let session_task = tokio::task::spawn_local(async move {
-                if let Err(error) = run_ironrdp_connection(connection_id, peer_addr.as_deref(), stream).await {
+                if let Err(error) =
+                    run_ironrdp_connection(connection_id, peer_addr.as_deref(), stream, credentials_slot).await
+                {
                     warn!(error = %format!("{error:#}"), connection_id, "IronRDP connection task failed");
                 }
             });
@@ -2223,6 +2394,23 @@ mod windows_main {
             connection.session_task = Some(session_task);
 
             ServiceEvent::ConnectionReady { connection_id }
+        }
+
+        async fn get_connection_credentials(&self, connection_id: u32) -> ServiceEvent {
+            let Some(entry) = self.connections.get(&connection_id) else {
+                return ServiceEvent::NoCredentials { connection_id };
+            };
+
+            let guard = entry.credentials.lock().await;
+            match &*guard {
+                Some(creds) => ServiceEvent::ConnectionCredentials {
+                    connection_id,
+                    username: creds.username.clone(),
+                    domain: creds.domain.clone(),
+                    password: creds.password.clone(),
+                },
+                None => ServiceEvent::NoCredentials { connection_id },
+            }
         }
 
         fn close_connection(&mut self, connection_id: u32) -> ServiceEvent {
@@ -2264,6 +2452,13 @@ mod windows_main {
             let listener_name = accepted.listener_name;
             let peer_addr = accepted.peer_addr;
 
+            info!(
+                connection_id,
+                %listener_name,
+                peer_addr = ?peer_addr,
+                "Registered incoming TCP connection"
+            );
+
             self.connections.insert(
                 connection_id,
                 ConnectionEntry {
@@ -2271,6 +2466,7 @@ mod windows_main {
                     peer_addr: peer_addr.clone(),
                     stream: Some(accepted.stream),
                     session_task: None,
+                    credentials: Arc::new(Mutex::new(None)),
                 },
             );
 
@@ -2292,6 +2488,7 @@ mod windows_main {
         connection_id: u32,
         peer_addr: Option<&str>,
         stream: TcpStream,
+        credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
@@ -2321,9 +2518,15 @@ mod windows_main {
                 builder.with_tls(tls_acceptor)
             };
 
+            let rfx_only_codecs = ironrdp_pdu::rdp::capability_sets::server_codecs_capabilities(
+                &["remotefx:on", "qoi:off", "qoiz:off"],
+            )
+            .expect("valid codec config");
+
             builder
                 .with_input_handler(input_handler)
                 .with_display_handler(display)
+                .with_bitmap_codecs(rfx_only_codecs)
                 .build()
         };
 
@@ -2339,8 +2542,36 @@ mod windows_main {
             );
         }
 
+        let pending = server
+            .run_connection_handshake(stream)
+            .await
+            .with_context(|| format!("failed handshake for connection {connection_id}"))?;
+
+        // Store CredSSP credentials immediately so the WTS provider DLL can
+        // retrieve them via `GetConnectionCredentials` before the display loop
+        // blocks.
+        if let Some(identity) = pending.captured_identity() {
+            let username = identity.username.account_name().to_owned();
+            let domain = identity.username.domain_name().unwrap_or("").to_owned();
+            let password = identity.password.as_ref().to_owned();
+
+            info!(
+                connection_id,
+                username = %username,
+                domain = %domain,
+                "Captured CredSSP credentials; storing for WTS provider"
+            );
+
+            let mut guard = credentials_slot.lock().await;
+            *guard = Some(StoredCredentials {
+                username,
+                domain,
+                password,
+            });
+        }
+
         server
-            .run_connection(stream)
+            .run_connection_session(pending)
             .await
             .with_context(|| format!("failed to run IronRDP session for connection {connection_id}"))?;
 
@@ -2702,13 +2933,15 @@ mod windows_main {
                 CaptureHelperMode::Tcp {
                     connect_addr,
                     input_connect_addr,
+                    rfx_encode,
                 } => {
                     info!(
                         connect_addr = %connect_addr,
                         input_connect_addr = %input_connect_addr,
+                        rfx_encode,
                         "Starting capture helper mode (tcp)"
                     );
-                    return run_capture_helper_tcp(connect_addr, input_connect_addr).await;
+                    return run_capture_helper_tcp(connect_addr, input_connect_addr, rfx_encode).await;
                 }
                 CaptureHelperMode::SharedMem {
                     map_name,
@@ -2745,17 +2978,18 @@ mod windows_main {
             return run_standalone_listener(bind_addr).await;
         }
 
-        info!(pipe = %pipe_name, "Starting termsrv control loop");
+        let instance_id: u32 = std::process::id();
+        info!(pipe = %pipe_name, instance_id, "Starting termsrv control loop");
         info!(bind_addr = %bind_addr, "Configured service listener bind address");
 
         let mut state = ServiceState::new(bind_addr);
-
+        let mut empty_count: u64 = 0;
         #[expect(
             clippy::infinite_loop,
             reason = "service runs indefinitely; failures are handled inside the loop"
         )]
         loop {
-            if let Err(error) = run_server_once(&pipe_name, &mut state).await {
+            if let Err(error) = run_server_once(&pipe_name, &mut state, &mut empty_count, false).await {
                 warn!(%error, pipe = %pipe_name, "Control pipe loop failed; retrying");
                 sleep(Duration::from_millis(200)).await;
             }
@@ -2789,7 +3023,12 @@ mod windows_main {
             info!(connection_id, peer_addr = %peer_addr, "Client accepted");
 
             tokio::task::spawn_local(async move {
-                if let Err(error) = run_ironrdp_connection(connection_id, Some(&peer_addr), stream).await {
+                // In standalone mode there is no WTS provider to query credentials; use a
+                // throw-away slot (credentials won't be read by anyone).
+                let credentials_slot = Arc::new(Mutex::new(None));
+                if let Err(error) =
+                    run_ironrdp_connection(connection_id, Some(&peer_addr), stream, credentials_slot).await
+                {
                     warn!(
                         error = %format!("{error:#}"),
                         connection_id,
@@ -2831,6 +3070,7 @@ mod windows_main {
         Tcp {
             connect_addr: SocketAddr,
             input_connect_addr: SocketAddr,
+            rfx_encode: bool,
         },
         SharedMem {
             map_name: String,
@@ -2847,11 +3087,15 @@ mod windows_main {
         let mut input_connect: Option<SocketAddr> = None;
         let mut map_name: Option<String> = None;
         let mut event_name: Option<String> = None;
+        let mut rfx_encode = false;
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--capture-helper" => {
                     capture_helper = true;
+                }
+                "--rfx-encode" => {
+                    rfx_encode = true;
                 }
                 "--connect" => {
                     let Some(value) = args.next() else {
@@ -2902,6 +3146,7 @@ mod windows_main {
             return Ok(Some(CaptureHelperMode::Tcp {
                 connect_addr: connect,
                 input_connect_addr,
+                rfx_encode,
             }));
         }
 
@@ -3199,12 +3444,7 @@ mod windows_main {
         loop {
             let event = read_helper_input_event(&mut stream).await?;
 
-            if let HelperInputEvent::ScancodeKey {
-                code,
-                released,
-                ..
-            } = event
-            {
+            if let HelperInputEvent::ScancodeKey { code, released, .. } = event {
                 // Set-1 scancodes used by mstsc for modifiers.
                 const SCANCODE_CTRL: u8 = 0x1D;
                 const SCANCODE_ALT: u8 = 0x38;
@@ -3237,7 +3477,11 @@ mod windows_main {
         }
     }
 
-    async fn run_capture_helper_tcp(connect_addr: SocketAddr, input_connect_addr: SocketAddr) -> anyhow::Result<()> {
+    async fn run_capture_helper_tcp(
+        connect_addr: SocketAddr,
+        input_connect_addr: SocketAddr,
+        rfx_encode: bool,
+    ) -> anyhow::Result<()> {
         let mut stream = TcpStream::connect(connect_addr)
             .await
             .with_context(|| format!("failed to connect to capture consumer at {connect_addr}"))?;
@@ -3256,13 +3500,59 @@ mod windows_main {
         info!(
             width = desktop_size.width,
             height = desktop_size.height,
+            rfx_encode,
             "Initialized capture helper desktop size"
         );
+
+        let mut rfx_encoder = if rfx_encode {
+            use ironrdp_pdu::rdp::capability_sets::EntropyBits;
+            Some(ironrdp_server::encoder::rfx::RfxEncoder::new(EntropyBits::Rlgr3))
+        } else {
+            None
+        };
+
+        let rfx_codec_id: u8 = 3; // CODEC_ID_REMOTEFX
+        let mut rfx_first_frame = true;
 
         loop {
             match capture_bitmap_update(desktop_size) {
                 Ok(bitmap) => {
-                    write_capture_frame(&mut stream, &bitmap).await?;
+                    if let Some(encoder) = rfx_encoder.as_mut() {
+                        if is_probably_blank_bgra32(bitmap.data.as_ref()) {
+                            write_capture_frame(&mut stream, &bitmap).await?;
+                        } else {
+                            let ds = if rfx_first_frame {
+                                rfx_first_frame = false;
+                                Some(desktop_size)
+                            } else {
+                                None
+                            };
+
+                            let mut buf = vec![0u8; bitmap.data.len()];
+                            let encoded_len = loop {
+                                match encoder.encode(&bitmap, &mut buf, ds) {
+                                    Ok(len) => break len,
+                                    Err(e) => match e.kind() {
+                                        ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
+                                            buf.resize(buf.len() * 2, 0);
+                                        }
+                                        _ => return Err(anyhow::anyhow!("RemoteFX encode error: {e}")),
+                                    },
+                                }
+                            };
+
+                            write_capture_frame_preencoded(
+                                &mut stream,
+                                desktop_size.width,
+                                desktop_size.height,
+                                rfx_codec_id,
+                                &buf[..encoded_len],
+                            )
+                            .await?;
+                        }
+                    } else {
+                        write_capture_frame(&mut stream, &bitmap).await?;
+                    }
                     sleep(CAPTURE_INTERVAL).await;
                 }
                 Err(error) => {
@@ -3378,48 +3668,83 @@ mod windows_main {
         }
     }
 
-    async fn run_server_once(pipe_name: &str, state: &mut ServiceState) -> anyhow::Result<()> {
+    async fn run_server_once(
+        pipe_name: &str,
+        state: &mut ServiceState,
+        empty_count: &mut u64,
+        first_instance: bool,
+    ) -> anyhow::Result<()> {
         let full_pipe_name = pipe_path(pipe_name);
 
-        let mut server = named_pipe::ServerOptions::new()
-            .access_inbound(true)
+        let mut opts = named_pipe::ServerOptions::new();
+        opts.access_inbound(true)
             .access_outbound(true)
             .in_buffer_size(PIPE_BUFFER_SIZE)
             .out_buffer_size(PIPE_BUFFER_SIZE)
-            .pipe_mode(named_pipe::PipeMode::Byte)
+            .pipe_mode(named_pipe::PipeMode::Byte);
+
+        if first_instance {
+            opts.first_pipe_instance(true);
+        }
+
+        let mut server = opts
             .create(&full_pipe_name)
             .with_context(|| format!("failed to create control pipe server: {full_pipe_name}"))?;
 
-        info!(pipe = %full_pipe_name, "Waiting for provider control connection");
+        if let Err(error) = configure_control_pipe_security(&full_pipe_name) {
+            debug!(%error, "Failed to set control pipe security (best-effort); continuing with default DACL");
+        }
+
         server
             .connect()
             .await
             .with_context(|| format!("failed to accept control connection on pipe: {full_pipe_name}"))?;
 
-        info!(pipe = %full_pipe_name, "Provider control connection established");
-
-        if let Err(error) = handle_client(&mut server, state).await {
-            warn!(%error, pipe = %full_pipe_name, "Control connection handler returned error");
+        match handle_client(&mut server, state).await {
+            Ok(commands_processed) if commands_processed == 0 => {
+                *empty_count += 1;
+                if *empty_count == 1
+                    || (*empty_count <= 10 && *empty_count % 5 == 0)
+                    || *empty_count % 100_000 == 0
+                {
+                    info!(empty_disconnects = *empty_count, "Client disconnected without sending commands");
+                }
+            }
+            Ok(_) => {
+                *empty_count = 0;
+            }
+            Err(error) => {
+                warn!(%error, pipe = %full_pipe_name, "Control connection handler returned error");
+                *empty_count = 0;
+            }
         }
 
         Ok(())
     }
 
-    async fn handle_client(pipe: &mut named_pipe::NamedPipeServer, state: &mut ServiceState) -> anyhow::Result<()> {
+    async fn handle_client(
+        pipe: &mut named_pipe::NamedPipeServer,
+        state: &mut ServiceState,
+    ) -> anyhow::Result<u32> {
+        let mut commands_processed: u32 = 0;
+
         loop {
             let command = match read_command(pipe).await {
                 Ok(Some(command)) => command,
                 Ok(None) => {
-                    info!("Provider control client disconnected");
-                    return Ok(());
+                    return Ok(commands_processed);
                 }
                 Err(error) => {
                     return Err(error).context("failed to read provider command");
                 }
             };
 
+            commands_processed += 1;
+            info!(command = ?command, seq = commands_processed, "Processing pipe command");
+
             let event = state.handle_command(command).await;
 
+            info!(event_type = event_kind(&event), seq = commands_processed, "Sending pipe response");
             write_event(pipe, &event).await?;
         }
     }
@@ -3475,6 +3800,21 @@ mod windows_main {
 
         pipe.write_all(&payload_len.to_le_bytes()).await?;
         pipe.write_all(payload).await
+    }
+
+    fn event_kind(event: &ServiceEvent) -> &'static str {
+        match event {
+            ServiceEvent::Ack => "ack",
+            ServiceEvent::ListenerStarted { .. } => "listener_started",
+            ServiceEvent::ListenerStopped { .. } => "listener_stopped",
+            ServiceEvent::IncomingConnection { .. } => "incoming_connection",
+            ServiceEvent::NoIncoming => "no_incoming",
+            ServiceEvent::ConnectionReady { .. } => "connection_ready",
+            ServiceEvent::ConnectionBroken { .. } => "connection_broken",
+            ServiceEvent::ConnectionCredentials { .. } => "connection_credentials",
+            ServiceEvent::NoCredentials { .. } => "no_credentials",
+            ServiceEvent::Error { .. } => "error",
+        }
     }
 
     fn is_disconnect_error(error: &io::Error) -> bool {

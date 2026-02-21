@@ -2,6 +2,7 @@
 
 use core::num::NonZeroU32;
 use core::time::Duration;
+use std::error::Error as _;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -29,6 +30,7 @@ pub struct App {
     input_database: ironrdp::input::Database,
     last_size: Option<PhysicalSize<u32>>,
     resize_timeout: Option<Instant>,
+    close_requested: bool,
 }
 
 impl App {
@@ -56,7 +58,46 @@ impl App {
             input_database,
             last_size: None,
             resize_timeout: None,
+            close_requested: false,
         })
+    }
+
+    fn is_expected_shutdown_error(error: &ironrdp::session::SessionError) -> bool {
+        use ironrdp::core::DecodeErrorKind;
+        use ironrdp::session::SessionErrorKind;
+
+        match error.kind() {
+            SessionErrorKind::Decode(decode) => matches!(decode.kind(), DecodeErrorKind::NotEnoughBytes { .. }),
+            SessionErrorKind::Custom => {
+                // Best-effort: walk the source chain and look for EOF-ish errors.
+                let mut source = error.source();
+                while let Some(err) = source {
+                    if let Some(decode) = err.downcast_ref::<ironrdp::core::DecodeError>() {
+                        if matches!(decode.kind(), DecodeErrorKind::NotEnoughBytes { .. }) {
+                            return true;
+                        }
+                    }
+
+                    if let Some(io) = err.downcast_ref::<std::io::Error>() {
+                        use std::io::ErrorKind;
+                        if matches!(
+                            io.kind(),
+                            ErrorKind::UnexpectedEof
+                                | ErrorKind::ConnectionAborted
+                                | ErrorKind::ConnectionReset
+                                | ErrorKind::BrokenPipe
+                        ) {
+                            return true;
+                        }
+                    }
+
+                    source = err.source();
+                }
+
+                false
+            }
+            _ => false,
+        }
     }
 
     fn send_resize_event(&mut self) {
@@ -139,6 +180,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
             WindowEvent::CloseRequested => {
+                self.close_requested = true;
                 if self.input_event_sender.send(RdpInputEvent::Close).is_err() {
                     error!("Failed to send graceful shutdown event, closing the window");
                     event_loop.exit();
@@ -366,9 +408,17 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                         proc_exit::sysexits::OK
                     }
                     Err(error) => {
-                        error!(?error);
-                        eprintln!("Active session error: {}", error.report());
-                        proc_exit::sysexits::PROTOCOL_ERR
+                        if self.close_requested && Self::is_expected_shutdown_error(&error) {
+                            println!(
+                                "Terminated gracefully: {}",
+                                ironrdp::session::GracefulDisconnectReason::UserInitiated
+                            );
+                            proc_exit::sysexits::OK
+                        } else {
+                            error!(?error);
+                            eprintln!("Active session error: {}", error.report());
+                            proc_exit::sysexits::PROTOCOL_ERR
+                        }
                     }
                 };
                 // TODO set exit_code.as_raw());

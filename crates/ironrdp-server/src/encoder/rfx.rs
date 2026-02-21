@@ -15,12 +15,12 @@ use ironrdp_pdu::WriteCursor;
 use crate::BitmapUpdate;
 
 #[derive(Debug, Clone)]
-pub(crate) struct RfxEncoder {
+pub struct RfxEncoder {
     entropy_algorithm: rfx::EntropyAlgorithm,
 }
 
 impl RfxEncoder {
-    pub(crate) fn new(entropy_bits: EntropyBits) -> Self {
+    pub fn new(entropy_bits: EntropyBits) -> Self {
         let entropy_algorithm = match entropy_bits {
             EntropyBits::Rlgr1 => rfx::EntropyAlgorithm::Rlgr1,
             EntropyBits::Rlgr3 => rfx::EntropyAlgorithm::Rlgr3,
@@ -28,7 +28,7 @@ impl RfxEncoder {
         Self { entropy_algorithm }
     }
 
-    pub(crate) fn encode(
+    pub fn encode(
         &mut self,
         bitmap: &BitmapUpdate,
         output: &mut [u8],

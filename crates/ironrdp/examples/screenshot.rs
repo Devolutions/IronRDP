@@ -345,11 +345,26 @@ fn active_stage(
     image: &mut DecodedImage,
 ) -> anyhow::Result<()> {
     let mut active_stage = ActiveStage::new(connection_result);
+    let mut got_graphics = false;
+    let mut first_graphic_time: Option<std::time::Instant> = None;
+    let max_after_first_graphic = Duration::from_secs(8);
 
     'outer: loop {
+        if let Some(t) = first_graphic_time {
+            if t.elapsed() >= max_after_first_graphic {
+                info!("Received graphics; stopping after {:?}", t.elapsed());
+                break 'outer;
+            }
+        }
+
         let (action, payload) = match framed.read_pdu() {
             Ok((action, payload)) => (action, payload),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break 'outer,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break 'outer
+            }
             Err(e) => return Err(anyhow::Error::new(e).context("read frame")),
         };
 
@@ -360,6 +375,11 @@ fn active_stage(
         for out in outputs {
             match out {
                 ActiveStageOutput::ResponseFrame(frame) => framed.write_all(&frame).context("write response")?,
+                ActiveStageOutput::GraphicsUpdate(_) if !got_graphics => {
+                    got_graphics = true;
+                    first_graphic_time = Some(std::time::Instant::now());
+                    info!("First graphics update received");
+                }
                 ActiveStageOutput::Terminate(_) => break 'outer,
                 _ => {}
             }

@@ -2,7 +2,7 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // TODO: should we enable this lint back?
 
-pub use {tokio, tokio_rustls};
+pub use {ironrdp_acceptor, tokio, tokio_rustls};
 
 mod macros;
 
@@ -11,7 +11,7 @@ mod capabilities;
 mod clipboard;
 mod display;
 mod echo;
-mod encoder;
+pub mod encoder;
 #[cfg(feature = "egfx")]
 mod gfx;
 mod handler;

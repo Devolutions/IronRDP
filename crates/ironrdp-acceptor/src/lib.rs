@@ -14,6 +14,7 @@ pub mod credssp;
 mod finalization;
 mod util;
 
+pub use ironrdp_connector::sspi::AuthIdentity as CredsspAuthIdentity;
 pub use ironrdp_connector::DesktopSize;
 use ironrdp_pdu::nego;
 
@@ -58,7 +59,7 @@ pub async fn accept_credssp<S, N>(
     client_computer_name: ServerName,
     public_key: Vec<u8>,
     kerberos_config: Option<KerberosServerConfig>,
-) -> ConnectorResult<()>
+) -> ConnectorResult<Option<AuthIdentity>>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
@@ -77,7 +78,7 @@ where
         )
         .await
     } else {
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -107,7 +108,7 @@ async fn perform_credssp_step<S, N>(
     client_computer_name: ServerName,
     public_key: Vec<u8>,
     kerberos_config: Option<KerberosServerConfig>,
-) -> ConnectorResult<()>
+) -> ConnectorResult<Option<AuthIdentity>>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
@@ -131,28 +132,28 @@ where
     if protocol.intersects(nego::SecurityProtocol::HYBRID_EX) {
         trace!(?result, "HYBRID_EX");
 
-        let result = if result.is_ok() {
+        let early_result = if result.is_ok() {
             EarlyUserAuthResult::Success
         } else {
             EarlyUserAuthResult::AccessDenied
         };
 
         buf.clear();
-        result
+        early_result
             .to_buffer(&mut *buf)
             .map_err(|e| ironrdp_connector::custom_err!("to_buffer", e))?;
-        let response = &buf[..result.buffer_len()];
+        let response = &buf[..early_result.buffer_len()];
         framed
             .write_all(response)
             .await
             .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
     }
 
-    result?;
+    let identity = result?;
 
     acceptor.mark_credssp_as_done();
 
-    return Ok(());
+    return Ok(identity);
 
     async fn credssp_loop<S, N>(
         framed: &mut Framed<S>,
@@ -162,7 +163,7 @@ where
         client_computer_name: ServerName,
         public_key: Vec<u8>,
         kerberos_config: Option<KerberosServerConfig>,
-    ) -> ConnectorResult<()>
+    ) -> ConnectorResult<Option<AuthIdentity>>
     where
         S: FramedRead + FramedWrite,
         N: NetworkClient,
@@ -220,6 +221,6 @@ where
             }
         }
 
-        Ok(())
+        Ok(sequence.take_identity())
     }
 }
