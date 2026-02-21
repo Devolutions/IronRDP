@@ -31,7 +31,7 @@ use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, un
 use rand::RngCore as _;
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use tokio::net::TcpSocket;
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
@@ -312,9 +312,7 @@ impl RdpServerSecurity {
         match self {
             RdpServerSecurity::None => nego::SecurityProtocol::empty(),
             RdpServerSecurity::Tls(_) => nego::SecurityProtocol::SSL,
-            RdpServerSecurity::Hybrid(_) => {
-                nego::SecurityProtocol::SSL | nego::SecurityProtocol::HYBRID
-            }
+            RdpServerSecurity::Hybrid(_) => nego::SecurityProtocol::SSL | nego::SecurityProtocol::HYBRID,
         }
     }
 }
@@ -629,6 +627,33 @@ enum RunState {
     Continue,
     Disconnect,
     DeactivationReactivation { desktop_size: DesktopSize },
+}
+
+/// Intermediate state produced by [`RdpServer::run_connection_handshake`].
+///
+/// Holds the TLS-upgraded stream and acceptor state so the caller can inspect
+/// the captured CredSSP identity before continuing with the session loop.
+pub enum PendingSession {
+    Tls {
+        framed: TokioFramed<tokio_rustls::server::TlsStream<TcpStream>>,
+        acceptor: Acceptor,
+        captured_identity: Option<ironrdp_acceptor::CredsspAuthIdentity>,
+    },
+    Plain {
+        framed: TokioFramed<TcpStream>,
+        acceptor: Acceptor,
+    },
+    Failed,
+}
+
+impl PendingSession {
+    /// Returns the captured CredSSP identity, if available.
+    pub fn captured_identity(&self) -> Option<&ironrdp_acceptor::CredsspAuthIdentity> {
+        match self {
+            PendingSession::Tls { captured_identity, .. } => captured_identity.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 impl RdpServer {
@@ -1168,9 +1193,100 @@ impl RdpServer {
             BeginResult::Continue(framed) => {
                 self.accept_finalize(framed, acceptor).await?;
             }
-        };
+        }
 
         Ok(())
+    }
+
+    /// Performs TLS + CredSSP handshake only, returning a [`PendingSession`] that
+    /// can be continued with [`run_connection_session`] after the caller has
+    /// consumed the captured credentials.
+    pub async fn run_connection_handshake(&mut self, stream: TcpStream) -> Result<PendingSession> {
+        self.display_suppressed.store(false, Ordering::Relaxed);
+
+        let framed = TokioFramed::new(stream);
+
+        let size = self.display.lock().await.size().await;
+        let capabilities = capabilities::capabilities(&self.opts, size);
+        let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
+        acceptor.set_honor_client_desktop_size(self.opts.honor_client_desktop_size);
+
+        self.attach_channels(&mut acceptor);
+
+        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
+            .await
+            .context("accept_begin failed")?;
+
+        match res {
+            BeginResult::ShouldUpgrade(stream) => {
+                let tls_acceptor = match &self.opts.security {
+                    RdpServerSecurity::Tls(acceptor) => acceptor,
+                    RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
+                    RdpServerSecurity::None => unreachable!(),
+                };
+                let accept = match tls_acceptor.accept(stream).await {
+                    Ok(accept) => accept,
+                    Err(e) => {
+                        warn!("Failed to TLS accept: {}", e);
+                        return Ok(PendingSession::Failed);
+                    }
+                };
+                let mut framed = TokioFramed::new(accept);
+
+                acceptor.mark_security_upgrade_as_done();
+
+                let captured_identity = if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
+                    let client_name = framed.get_inner().0.get_ref().0.peer_addr()?.to_string();
+
+                    ironrdp_acceptor::accept_credssp(
+                        &mut framed,
+                        &mut acceptor,
+                        &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+                        client_name.into(),
+                        pub_key.clone(),
+                        None,
+                    )
+                    .await?
+                } else {
+                    None
+                };
+
+                Ok(PendingSession::Tls {
+                    framed,
+                    acceptor,
+                    captured_identity,
+                })
+            }
+
+            BeginResult::Continue(framed) => Ok(PendingSession::Plain { framed, acceptor }),
+        }
+    }
+
+    /// Continues a pending session after the handshake: capabilities exchange,
+    /// client loop, and graceful shutdown.
+    pub async fn run_connection_session(&mut self, pending: PendingSession) -> Result<()> {
+        match pending {
+            PendingSession::Tls {
+                framed,
+                acceptor,
+                captured_identity: _,
+            } => {
+                let framed = self.accept_finalize(framed, acceptor).await?;
+                debug!("Shutting down TLS connection");
+                let (mut tls_stream, _) = framed.into_inner();
+                if let Err(e) = tls_stream.shutdown().await {
+                    debug!(?e, "TLS shutdown error");
+                }
+                Ok(())
+            }
+
+            PendingSession::Plain { framed, acceptor } => {
+                self.accept_finalize(framed, acceptor).await?;
+                Ok(())
+            }
+
+            PendingSession::Failed => Ok(()),
+        }
     }
 
     /// Shared post-handshake tail for both [`TransportTls`] modes: mark the

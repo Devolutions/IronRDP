@@ -20,12 +20,38 @@ pub use ironrdp_graphics::image_processing::PixelFormat;
 pub enum DisplayUpdate {
     Resize(DesktopSize),
     Bitmap(BitmapUpdate),
+    /// Pre-encoded surface bits that bypass the encoder's codec step.
+    ///
+    /// The `data` contains the raw codec payload (e.g. RemoteFX tile data) that
+    /// will be wrapped in a `SurfaceBitsPdu` and fragmented into Fast-Path
+    /// Server Update PDUs without re-encoding.
+    PreEncodedSurface(PreEncodedSurface),
     PointerPosition(PointerPositionAttribute),
     ColorPointer(ColorPointer),
     RGBAPointer(RGBAPointer),
     HidePointer,
     DefaultPointer,
     CachedPointer(u16),
+}
+
+/// Pre-encoded surface bitmap data ready for Fast-Path framing.
+#[derive(Clone)]
+pub struct PreEncodedSurface {
+    pub codec_id: u8,
+    pub width: u16,
+    pub height: u16,
+    pub data: Bytes,
+}
+
+impl core::fmt::Debug for PreEncodedSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PreEncodedSurface")
+            .field("codec_id", &self.codec_id)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
 }
 
 #[derive(Clone)]
