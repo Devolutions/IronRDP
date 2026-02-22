@@ -138,7 +138,20 @@ if (-not $SkipDeploy.IsPresent) {
         SkipBuild        = $true
         ListenerAddr     = "0.0.0.0:$Port"
         CaptureIpc       = 'tcp'
-        AutoListen       = $true
+        # In Provider mode the companion must NOT self-bind port 4489.  The WTS provider DLL
+        # connects to the companion's named-pipe control server, sends WaitForIncoming (which
+        # auto-starts the TCP listener), and notifies TermService about each incoming connection.
+        # TermService then calls NotifySessionId / IsUserAllowedToLogon on the DLL, which in turn
+        # calls SetCaptureSessionId / GetConnectionCredentials on the companion.
+        # AutoListen=true puts the companion in standalone mode with NO named-pipe server at all,
+        # so the provider DLL has nothing to connect to and session management never happens.
+        AutoListen           = ($Mode -ne 'Provider')
+        WtsProvider          = ($Mode -eq 'Provider')
+        # In Provider mode, skip the TermService start in the deploy step.  TermService will be
+        # started exactly once by the provider-DLL install step below.  A double TermService
+        # start/stop cycle triggers StopListen IPC which aborts the companion's TCP listener task,
+        # causing wait-termservice-ready.ps1 to time out after the second restart.
+        NoTermServiceStart   = ($Mode -eq 'Provider')
     }
 
     & $deployScript @deployArgs
@@ -270,15 +283,29 @@ try {
     $session = New-PSSession -ComputerName $Hostname -Credential $cred
     try {
         $remoteLogs = Invoke-Command -Session $session -ScriptBlock {
+            param($port)
             $result = @{}
             $logOut = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log'
             $logErr = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log'
+            $dllDebugLog = 'C:\IronRDPDeploy\logs\wts-provider-debug.log'
 
             if (Test-Path $logOut) {
-                $result['stdout'] = Get-Content $logOut -Tail 100 -ErrorAction SilentlyContinue | Out-String
+                $result['stdout'] = Get-Content $logOut -Tail 150 -ErrorAction SilentlyContinue | Out-String
             }
             if (Test-Path $logErr) {
-                $result['stderr'] = Get-Content $logErr -Tail 100 -ErrorAction SilentlyContinue | Out-String
+                $result['stderr'] = Get-Content $logErr -Tail 50 -ErrorAction SilentlyContinue | Out-String
+            }
+            if (Test-Path $dllDebugLog) {
+                $result['dll_debug'] = Get-Content $dllDebugLog -Tail 200 -ErrorAction SilentlyContinue | Out-String
+            }
+
+            # Collect recent TermService event log entries
+            try {
+                $events = Get-WinEvent -LogName 'System' -MaxEvents 20 -ErrorAction SilentlyContinue |
+                    Where-Object { $_.ProviderName -match 'TermService|TermDD|Remote Desktop' -or $_.Id -in @(1058, 1088, 1096, 1149, 22) }
+                $result['termservice_events'] = ($events | Select-Object TimeCreated, Id, LevelDisplayName, Message | Out-String)
+            } catch {
+                $result['termservice_events'] = "Could not collect TermService events: $_"
             }
 
             $proc = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
@@ -288,14 +315,14 @@ try {
             }
 
             try {
-                $listeners = Get-NetTCPConnection -State Listen -LocalPort 4489 -ErrorAction SilentlyContinue
+                $listeners = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue
                 $result['listening'] = ($listeners | Measure-Object).Count -gt 0
             } catch {
                 $result['listening'] = $false
             }
 
             $result
-        }
+        } -ArgumentList $Port
 
         $isRunning = $remoteLogs['running']
         $isListening = $remoteLogs['listening']
@@ -314,6 +341,17 @@ try {
             $remoteLogs['stderr'] | Set-Content (Join-Path $remoteLogDir 'ironrdp-termsrv.err.log')
             Write-Host "`n---- ironrdp-termsrv.err.log (tail) ----" -ForegroundColor Yellow
             Write-Host $remoteLogs['stderr']
+        }
+        if ($remoteLogs['dll_debug']) {
+            $remoteLogs['dll_debug'] | Set-Content (Join-Path $remoteLogDir 'wts-provider-debug.log')
+            Write-Host "`n---- wts-provider-debug.log (tail) ----" -ForegroundColor Magenta
+            Write-Host $remoteLogs['dll_debug']
+        } else {
+            Write-Host "`n---- wts-provider-debug.log: not present (set IRONRDP_WTS_PROVIDER_DEBUG_LOG for TermService to enable) ----" -ForegroundColor DarkGray
+        }
+        if ($remoteLogs['termservice_events']) {
+            Write-Host "`n---- TermService event log (recent) ----" -ForegroundColor Yellow
+            Write-Host $remoteLogs['termservice_events']
         }
     }
     finally {
