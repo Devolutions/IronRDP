@@ -8,7 +8,14 @@
     NegotiationFailure = 6,
 }
 
+export interface RDCleanPathDetails {
+    readonly httpStatusCode?: number;
+    readonly wsaErrorCode?: number;
+    readonly tlsAlertCode?: number;
+}
+
 export interface IronError {
     backtrace: () => string;
     kind: () => IronErrorKind;
+    rdcleanpathDetails: () => RDCleanPathDetails | undefined;
 }
