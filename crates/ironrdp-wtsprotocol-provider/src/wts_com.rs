@@ -29,27 +29,31 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
 use windows::Win32::Security::{
-    GetKernelObjectSecurity, IsValidSecurityDescriptor, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SACL_SECURITY_INFORMATION,
+    GetKernelObjectSecurity, IsValidSecurityDescriptor, LogonUserW, DACL_SECURITY_INFORMATION,
+    GROUP_SECURITY_INFORMATION, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, SACL_SECURITY_INFORMATION,
 };
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoUninitialize, IAgileObject, IClassFactory, IClassFactory_Impl, COINIT_MULTITHREADED,
+    CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IClassFactory, IClassFactory_Impl, COINIT_MULTITHREADED,
 };
 use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_BINARY};
 use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolConnection, IWRdsProtocolConnectionCallback, IWRdsProtocolConnectionSettings,
     IWRdsProtocolConnectionSettings_Impl, IWRdsProtocolConnection_Impl, IWRdsProtocolLicenseConnection,
-    IWRdsProtocolListener, IWRdsProtocolListenerCallback, IWRdsProtocolListener_Impl,
-    IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager, IWRdsProtocolManager_Impl, IWRdsProtocolSettings,
-    IWRdsProtocolShadowConnection, IWRdsWddmIddProps, IWRdsWddmIddProps_Impl, WTSGetListenerSecurityW,
-    WTSVirtualChannelClose, WTSVirtualChannelOpenEx,
-    WTSVirtualChannelRead, WTSVirtualChannelWrite, WRDS_CONNECTION_SETTING, WRDS_CONNECTION_SETTINGS,
-    WRDS_CONNECTION_SETTINGS_1, WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTING, WRDS_LISTENER_SETTINGS,
-    WRDS_LISTENER_SETTINGS_1, WRDS_LISTENER_SETTING_LEVEL, WRDS_SETTINGS, WTS_CHANNEL_OPTION_DYNAMIC,
-    WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED,
-    WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA, WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS,
-    WTS_PROTOCOL_TYPE_RDP, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
+    IWRdsProtocolLicenseConnection_Impl, IWRdsProtocolListener, IWRdsProtocolListenerCallback,
+    IWRdsProtocolListener_Impl, IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager,
+    IWRdsProtocolManager_Impl, IWRdsProtocolSettings, IWRdsProtocolShadowConnection, IWRdsWddmIddProps,
+    IWRdsWddmIddProps_Impl, WTSDisconnected, WTSEnumerateSessionsW, WTSFreeMemory, WTSGetListenerSecurityW,
+    WTSVirtualChannelClose, WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite,
+    WRDS_CONNECTION_SETTING, WRDS_CONNECTION_SETTINGS, WRDS_CONNECTION_SETTINGS_1,
+    WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTING, WRDS_LISTENER_SETTINGS,
+    WRDS_LISTENER_SETTINGS_1, WRDS_LISTENER_SETTING_LEVEL, WRDS_SETTINGS, WTS_CERT_TYPE_INVALID,
+    WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW,
+    WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA,
+    WTS_KEY_EXCHANGE_ALG_RSA, WTS_LICENSE_CAPABILITIES, WTS_LICENSE_PREAMBLE_VERSION, WTS_PROPERTY_VALUE,
+    WTS_PROTOCOL_STATUS, WTS_PROTOCOL_TYPE_RDP, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_SESSION_INFOW,
+    WTS_USER_CREDENTIAL,
 };
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows_core::{implement, Interface as _, BOOL, GUID, PCSTR, PCWSTR};
@@ -731,7 +735,10 @@ impl ProviderControlBridge {
     }
 
     fn start_listen(&self, listener_name: &str) -> windows_core::Result<bool> {
-        let Some(event) = self.send_command(&ProviderCommand::StartListen {
+        // Use retries: if the pipe is momentarily busy (e.g., occupied by an orphaned worker
+        // thread from a previous TermService session still polling WaitForIncoming), we want
+        // to keep retrying rather than returning an error that causes a "Catastrophic failure".
+        let Some(event) = self.send_command_retried(&ProviderCommand::StartListen {
             listener_name: listener_name.to_owned(),
         })?
         else {
@@ -786,6 +793,24 @@ impl ProviderControlBridge {
             other => Err(windows_core::Error::new(
                 E_UNEXPECTED,
                 format!("unexpected service event on set capture session id: {other:?}"),
+            )),
+        }
+    }
+
+    fn set_capture_session_id_retried(&self, connection_id: u32, session_id: u32) -> windows_core::Result<()> {
+        let Some(event) = self.send_command_retried(&ProviderCommand::SetCaptureSessionId {
+            connection_id,
+            session_id,
+        })? else {
+            return Ok(());
+        };
+
+        match event {
+            ServiceEvent::Ack => Ok(()),
+            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            other => Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                format!("unexpected service event on set capture session id (retried): {other:?}"),
             )),
         }
     }
@@ -849,7 +874,11 @@ impl ProviderControlBridge {
                 connection_id,
             }) {
                 Ok(Some(event)) => event,
-                Ok(None) => return Ok(None),
+                Ok(None) => {
+                    // Pipe transiently unavailable (companion pipe server between iterations).
+                    // Treat this like NoCredentials: continue polling rather than giving up.
+                    continue;
+                }
                 Err(error) => {
                     if poll == 0 {
                         debug_log_line(&format!(
@@ -1819,6 +1848,12 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                     };
 
                     let Some(incoming) = incoming else {
+                        // wait_for_incoming returned Ok(None): no new connection arrived in the
+                        // polling window.  Sleep briefly before re-polling so that orphaned worker
+                        // threads (left running in svchost after TermService stops) do not
+                        // monopolise the companion's control pipe and starve the StartListen IPC
+                        // call that a freshly loaded DLL instance must send.
+                        thread::sleep(Duration::from_millis(100));
                         continue;
                     };
 
@@ -2075,6 +2110,79 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
     }
 }
 
+// Minimal IWRdsProtocolLicenseConnection implementation that allows TermService to proceed past
+// licensing.  Returning E_NOTIMPL from GetLicenseConnection causes TermService to close the
+// connection immediately; providing this stub object allows the connection to advance to
+// IsUserAllowedToLogon so that the user token can be passed back and auto-logon can occur.
+#[implement(IWRdsProtocolLicenseConnection)]
+struct WrdsLicenseConnection;
+
+impl IWRdsProtocolLicenseConnection_Impl for WrdsLicenseConnection_Impl {
+    fn RequestLicensingCapabilities(
+        &self,
+        pplicensecapabilities: *mut WTS_LICENSE_CAPABILITIES,
+        pcblicensecapabilities: *mut u32,
+    ) -> windows_core::Result<()> {
+        debug_log_line("WrdsLicenseConnection::RequestLicensingCapabilities");
+        if pplicensecapabilities.is_null() || pcblicensecapabilities.is_null() {
+            return Err(windows_core::Error::new(E_POINTER, "null pointer"));
+        }
+        // The SDK signature is PWRDS_LICENSE_CAPABILITIES* (double pointer): TermService passes a
+        // pointer-to-pointer and expects us to allocate and write the struct address into it.
+        // The windows-rs binding exposes this as *mut WTS_LICENSE_CAPABILITIES, so we
+        // reinterpret it as *mut *mut WTS_LICENSE_CAPABILITIES when writing the allocated pointer.
+        unsafe {
+            let caps = CoTaskMemAlloc(core::mem::size_of::<WTS_LICENSE_CAPABILITIES>())
+                as *mut WTS_LICENSE_CAPABILITIES;
+            if caps.is_null() {
+                return Err(windows_core::Error::new(
+                    windows_core::HRESULT(0x8007000E_u32 as i32), // E_OUTOFMEMORY
+                    "CoTaskMemAlloc failed",
+                ));
+            }
+            *caps = WTS_LICENSE_CAPABILITIES {
+                KeyExchangeAlg: WTS_KEY_EXCHANGE_ALG_RSA,
+                ProtocolVer: WTS_LICENSE_PREAMBLE_VERSION,
+                fAuthenticateServer: BOOL(0),
+                CertType: WTS_CERT_TYPE_INVALID,
+                cbClientName: 0,
+                rgbClientName: [0; 42],
+            };
+            // Write the allocated pointer into the caller's output slot (double-pointer semantics).
+            let pp = pplicensecapabilities as *mut *mut WTS_LICENSE_CAPABILITIES;
+            *pp = caps;
+            *pcblicensecapabilities = core::mem::size_of::<WTS_LICENSE_CAPABILITIES>() as u32;
+        }
+        Ok(())
+    }
+
+    fn SendClientLicense(&self, _pclientlicense: *const u8, _cbclientlicense: u32) -> windows_core::Result<()> {
+        debug_log_line("WrdsLicenseConnection::SendClientLicense");
+        Ok(())
+    }
+
+    fn RequestClientLicense(
+        &self,
+        _reserve1: *const u8,
+        _reserve2: u32,
+        _ppclientlicense: *mut u8,
+        pcbclientlicense: *mut u32,
+    ) -> windows_core::Result<()> {
+        debug_log_line("WrdsLicenseConnection::RequestClientLicense");
+        // Return an empty license (0 bytes) — sufficient for the RDS grace period and
+        // "Remote Desktop for Administration" (2-admin-connection) mode on a non-CAL server.
+        if !pcbclientlicense.is_null() {
+            unsafe { *pcbclientlicense = 0 };
+        }
+        Ok(())
+    }
+
+    fn ProtocolComplete(&self, _ulcomplete: u32) -> windows_core::Result<()> {
+        debug_log_line("WrdsLicenseConnection::ProtocolComplete");
+        Ok(())
+    }
+}
+
 #[implement(IWRdsProtocolConnection, IWRdsWddmIddProps)]
 struct ComProtocolConnection {
     inner: Arc<ProtocolConnection>,
@@ -2113,7 +2221,27 @@ impl ComProtocolConnection {
             return Ok(());
         }
 
-        self.control_bridge.accept_connection(self.inner.connection_id())?;
+        // Best-effort: notify the companion that this connection is being accepted.  If the IPC
+        // fails (e.g. the pipe is busy because the listener worker's early-accept already started
+        // the session and the pipe is occupied with wait_for_incoming polling), log and continue
+        // anyway.  The early accept from the listener worker has already started the IronRDP
+        // session, so the companion is ready.  Returning an error here would cause TermService to
+        // close the connection before ever calling GetClientData / IsUserAllowedToLogon.
+        match self.control_bridge.accept_connection(self.inner.connection_id()) {
+            Ok(()) => {
+                debug_log_line(&format!(
+                    "notify_ready: accept_connection ok connection_id={}",
+                    self.inner.connection_id()
+                ));
+            }
+            Err(error) => {
+                debug_log_line(&format!(
+                    "notify_ready: accept_connection IPC failed (early accept already active); continuing connection_id={} error={}",
+                    self.inner.connection_id(),
+                    error
+                ));
+            }
+        }
 
         *ready_notified = true;
         Ok(())
@@ -2423,6 +2551,13 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         let client_data = unsafe { &mut *pclientdata };
         *client_data = WTS_CLIENT_DATA::default();
         client_data.fEnableWindowsKey = true;
+        // fInheritAutoLogon = 1: use credentials from GetUserCredentials for automatic logon.
+        // fUsingSavedCreds = false (default): TermService uses the standard credential path
+        // including IsUserAllowedToLogon.  When fUsingSavedCreds = true, TermService treats the
+        // connection as NLA-pre-authenticated and tries to perform the logon itself using delegated
+        // NLA credentials — but since our companion handles CredSSP (not TermService), TermService
+        // cannot find those delegated credentials and immediately closes the connection without ever
+        // calling IsUserAllowedToLogon.
         client_data.fInheritAutoLogon = BOOL(1);
         client_data.fNoAudioPlayback = true;
         copy_wide(&mut client_data.ProtocolName, "IRDP-WTS");
@@ -2446,24 +2581,28 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     }
 
     fn GetUserCredentials(&self, pusercreds: *mut WTS_USER_CREDENTIAL) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::GetUserCredentials called connection_id={}",
-            self.inner.connection_id()
+            "IWRdsProtocolConnection::GetUserCredentials called connection_id={connection_id}"
         ));
 
         if pusercreds.is_null() {
             return Err(windows_core::Error::new(E_POINTER, "null user credentials pointer"));
         }
 
-        let connection_id = self.inner.connection_id();
-
-        let Some((username, domain, password)) = self.control_bridge.get_connection_credentials(connection_id)? else {
+        // Fetch CredSSP credentials from the companion and return them so that TermService knows
+        // who is logging on.  With fInheritAutoLogon=1 and fUsingSavedCreds=true in GetClientData,
+        // TermService treats this as NLA pre-authentication and will NOT call its own internal
+        // LogonUser — it defers authentication to IsUserAllowedToLogon where we supply the token.
+        let Some((username, domain, password)) =
+            self.control_bridge.get_connection_credentials(connection_id)?
+        else {
             debug_log_line(&format!(
                 "IWRdsProtocolConnection::GetUserCredentials no_credentials connection_id={connection_id}"
             ));
             return Err(windows_core::Error::new(
                 E_NOTIMPL,
-                "no CredSSP credentials available for this connection",
+                "no CredSSP credentials available yet",
             ));
         };
 
@@ -2473,7 +2612,6 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         let creds = unsafe { &mut *pusercreds };
         *creds = WTS_USER_CREDENTIAL::default();
-
         copy_wide(&mut creds.UserName, &username);
         copy_wide(&mut creds.Domain, &domain);
         copy_wide(&mut creds.Password, &password);
@@ -2486,17 +2624,48 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             "IWRdsProtocolConnection::GetLicenseConnection called connection_id={}",
             self.inner.connection_id()
         ));
-        Err(windows_core::Error::new(
-            E_NOTIMPL,
-            "license connection is not implemented",
-        ))
+        // Return a stub license connection object.  Returning E_NOTIMPL here causes TermService
+        // to close the connection immediately (it cannot proceed to IsUserAllowedToLogon without
+        // completing the licensing phase).  The stub allows the licensing phase to succeed so that
+        // the connection can advance to IsUserAllowedToLogon and session creation.
+        let stub: IWRdsProtocolLicenseConnection = WrdsLicenseConnection.into();
+        Ok(stub)
     }
 
-    fn AuthenticateClientToSession(&self, _sessionid: *mut WTS_SESSION_ID) -> windows_core::Result<()> {
+    fn AuthenticateClientToSession(&self, sessionid: *mut WTS_SESSION_ID) -> windows_core::Result<()> {
+        let session_in = if !sessionid.is_null() {
+            unsafe { (*sessionid).SessionId }
+        } else {
+            0
+        };
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::AuthenticateClientToSession called connection_id={}",
+            "IWRdsProtocolConnection::AuthenticateClientToSession called connection_id={} session_in={session_in}",
             self.inner.connection_id()
         ));
+
+        // MSDN: sessionid is an IN-OUT parameter.  On input TermService provides an initial session
+        // ID hint (0 = no preference / new session).  The protocol must respond with either:
+        //   • -1 (as u32 = u32::MAX) → ask TermService to create a brand-new session, OR
+        //   • an existing session ID → reconnect the client to that session.
+        // Leaving the value as 0 tells TermService "use session 0" (isolated services session in
+        // Windows Vista+) which is not a valid user logon target and causes TermService to call
+        // Close immediately without ever invoking IsUserAllowedToLogon.
+        //
+        // Strategy: prefer reconnecting to an existing DISCONNECTED session (the user's most
+        // recent desktop), because TermService MUST call IsUserAllowedToLogon for reconnects,
+        // giving us the opportunity to provide an authenticated user token for auto-logon.
+        // Fall back to u32::MAX (new session) only if no disconnected session exists.
+        if !sessionid.is_null() && session_in == 0 {
+            let reconnect_session = find_disconnected_session();
+            let session_out = reconnect_session.unwrap_or(u32::MAX);
+            // SAFETY: sessionid is non-null (checked above) and points to TermService's WTS_SESSION_ID.
+            unsafe { (*sessionid).SessionId = session_out };
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::AuthenticateClientToSession session_out={session_out} connection_id={}",
+                self.inner.connection_id()
+            ));
+        }
+
         Ok(())
     }
 
@@ -2548,71 +2717,188 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             beep_null
         ));
 
-        if keyboard_null && mouse_null && beep_null {
-            return Err(windows_core::Error::new(
-                E_POINTER,
-                "all input handle output pointers are null",
-            ));
-        }
-
-        let (keyboard_handle, mouse_handle) = self.get_keyboard_mouse_handles()?;
-
+        // Our provider uses IronRDP's own input and GDI capture, not TermService's kernel-mode
+        // input/video pipeline.  Per MSDN: "If the protocol does not support one of these devices,
+        // it should set the corresponding handle to NULL."  Returning NULL for all handles is
+        // correct and avoids the previous pattern of trying to open \\.\KeyboardClass0 /
+        // \\.\RdpVideoMiniport which may not be accessible in the TermService process context,
+        // causing GetInputHandles to return an error that made TermService close the connection
+        // before calling IsUserAllowedToLogon.
         if !pkeyboardhandle.is_null() {
-            // SAFETY: checked non-null above.
-            *unsafe { &mut *pkeyboardhandle } = keyboard_handle;
+            // SAFETY: non-null (checked above), valid TermService-provided pointer.
+            unsafe { *pkeyboardhandle = HANDLE_PTR::default() };
         }
 
         if !pmousehandle.is_null() {
-            // SAFETY: checked non-null above.
-            *unsafe { &mut *pmousehandle } = mouse_handle;
+            // SAFETY: non-null (checked above), valid TermService-provided pointer.
+            unsafe { *pmousehandle = HANDLE_PTR::default() };
         }
 
         if !pbeephandle.is_null() {
-            // SAFETY: checked non-null above.
-            *unsafe { &mut *pbeephandle } = HANDLE_PTR::default();
+            // SAFETY: non-null (checked above), valid TermService-provided pointer.
+            unsafe { *pbeephandle = HANDLE_PTR::default() };
         }
 
-        debug!("Returned protocol keyboard and mouse handles");
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::GetInputHandles ok (null handles) connection_id={}",
+            self.inner.connection_id()
+        ));
 
         Ok(())
     }
 
     fn GetVideoHandle(&self) -> windows_core::Result<HANDLE_PTR> {
-        self.get_video_handle()
+        // Our companion uses GDI capture; we don't use TermService's video pipeline.
+        // Return NULL so TermService skips its internal RDP video miniport setup,
+        // avoiding device-open failures that would cause an immediate Close.
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::GetVideoHandle called (returning null) connection_id={}",
+            self.inner.connection_id()
+        ));
+        Ok(HANDLE_PTR::default())
     }
 
     fn ConnectNotify(&self, sessionid: u32) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::ConnectNotify called connection_id={} session_id={}",
-            self.inner.connection_id(),
-            sessionid
+            "IWRdsProtocolConnection::ConnectNotify called connection_id={connection_id} session_id={sessionid}"
         ));
         self.inner.connect_notify().map_err(transition_error)?;
+
+        // NotifySessionId's attempt to send SetCaptureSessionId often fails because the companion
+        // is busy processing a WaitForIncoming command (which holds the single-instance pipe for
+        // up to 250 ms).  ConnectNotify is called AFTER the session's display has been set up,
+        // giving the pipe time to become free.  Retry here so the companion learns the real
+        // session ID and can switch from the fallback capture session to the active session.
+        match self.control_bridge.set_capture_session_id_retried(connection_id, sessionid) {
+            Ok(()) => {
+                debug_log_line(&format!(
+                    "IWRdsProtocolConnection::ConnectNotify set_capture_session_id ok connection_id={connection_id} session_id={sessionid}"
+                ));
+            }
+            Err(error) => {
+                debug_log_line(&format!(
+                    "IWRdsProtocolConnection::ConnectNotify set_capture_session_id failed connection_id={connection_id} session_id={sessionid} error={error}"
+                ));
+            }
+        }
+
         Ok(())
     }
 
     fn IsUserAllowedToLogon(
         &self,
         sessionid: u32,
-        _usertoken: HANDLE_PTR,
+        usertoken: HANDLE_PTR,
         _pdomainname: &PCWSTR,
         _pusername: &PCWSTR,
     ) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::IsUserAllowedToLogon called connection_id={} session_id={}",
-            self.inner.connection_id(),
-            sessionid
+            "IWRdsProtocolConnection::IsUserAllowedToLogon called connection_id={connection_id} session_id={sessionid}"
         ));
-        Ok(())
+
+        // Retrieve CredSSP credentials from the companion service and call LogonUserW so that
+        // TermService can automatically log the user into their session — exactly what the built-in
+        // Windows RDP stack does.  Without this, TermService never receives a user token and the
+        // session stays at the pre-login state.
+        match self.control_bridge.get_connection_credentials(connection_id) {
+            Ok(Some((username, domain, password))) => {
+                debug_log_line(&format!(
+                    "IsUserAllowedToLogon: calling LogonUserW username={username} domain={domain} connection_id={connection_id}"
+                ));
+
+                let username_wide: Vec<u16> = username.encode_utf16().chain(std::iter::once(0)).collect();
+                let domain_wide: Vec<u16> = if domain.is_empty() {
+                    // Empty domain means local account; pass a dot which Windows treats as local.
+                    ".".encode_utf16().chain(std::iter::once(0)).collect()
+                } else {
+                    domain.encode_utf16().chain(std::iter::once(0)).collect()
+                };
+                let password_wide: Vec<u16> = password.encode_utf16().chain(std::iter::once(0)).collect();
+
+                let mut token = HANDLE::default();
+                // SAFETY: all wide-string buffers are valid, null-terminated, and outlive the call.
+                let logon_result = unsafe {
+                    LogonUserW(
+                        PCWSTR::from_raw(username_wide.as_ptr()),
+                        PCWSTR::from_raw(domain_wide.as_ptr()),
+                        PCWSTR::from_raw(password_wide.as_ptr()),
+                        LOGON32_LOGON_INTERACTIVE,
+                        LOGON32_PROVIDER_DEFAULT,
+                        &mut token,
+                    )
+                };
+
+                match logon_result {
+                    Ok(()) => {
+                        debug_log_line(&format!(
+                            "IsUserAllowedToLogon: LogonUserW succeeded connection_id={connection_id}"
+                        ));
+                        // Write the user token to TermService's out-parameter.  TermService takes
+                        // ownership and will use it to auto-log the user into session N.
+                        if usertoken.0 != 0 {
+                            // SAFETY: usertoken.0 is a TermService-provided pointer to a HANDLE slot.
+                            unsafe { *(usertoken.0 as *mut HANDLE) = token };
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        debug_log_line(&format!(
+                            "IsUserAllowedToLogon: LogonUserW failed connection_id={connection_id} error={error}"
+                        ));
+                        warn!(
+                            connection_id,
+                            %error,
+                            "LogonUserW failed in IsUserAllowedToLogon; session will show Winlogon instead of auto-logging in"
+                        );
+                        // Do NOT propagate the error: returning Err causes TermService to close the
+                        // connection immediately, which means NotifySessionId is never called and the
+                        // companion never learns the correct session ID.  Return Ok without a token
+                        // instead; TermService will show the Winlogon screen for the session but at
+                        // least the session is created and SetCaptureSessionId will be called.
+                        Ok(())
+                    }
+                }
+            }
+            Ok(None) => {
+                debug_log_line(&format!(
+                    "IsUserAllowedToLogon: no credentials available connection_id={connection_id}"
+                ));
+                warn!(
+                    connection_id,
+                    "No CredSSP credentials available for IsUserAllowedToLogon; session will stay at login screen"
+                );
+                // Allow logon to continue without a token — TermService will present the login screen.
+                Ok(())
+            }
+            Err(error) => {
+                debug_log_line(&format!(
+                    "IsUserAllowedToLogon: get_connection_credentials error connection_id={connection_id} error={error}"
+                ));
+                warn!(
+                    connection_id,
+                    %error,
+                    "Failed to fetch credentials for IsUserAllowedToLogon"
+                );
+                Ok(())
+            }
+        }
     }
 
     fn SessionArbitrationEnumeration(
         &self,
         _husertoken: HANDLE_PTR,
-        _bsinglesessionperuserenabled: BOOL,
+        bsinglesessionperuserenabled: BOOL,
         _psessionidarray: *mut u32,
         _pdwsessionidentifiercount: *mut u32,
     ) -> windows_core::Result<()> {
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::SessionArbitrationEnumeration called connection_id={} single_session={}",
+            self.inner.connection_id(),
+            bsinglesessionperuserenabled.as_bool()
+        ));
+        // Return E_NOTIMPL so TermService uses its own default session-arbitration logic.
         Err(windows_core::Error::new(
             E_NOTIMPL,
             "session arbitration uses default behavior",
@@ -2829,6 +3115,41 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     fn NotifyCommandProcessCreated(&self, _sessionid: u32) -> windows_core::Result<()> {
         Ok(())
     }
+}
+
+/// Returns the session ID of the first disconnected (non-system) user session, or `None` if
+/// no such session exists.  Used by `AuthenticateClientToSession` to reconnect an incoming RDP
+/// client to the user's existing desktop rather than creating a new login-screen session.
+fn find_disconnected_session() -> Option<u32> {
+    let mut sessions_ptr: *mut WTS_SESSION_INFOW = core::ptr::null_mut();
+    let mut session_count = 0u32;
+
+    // SAFETY: WTSEnumerateSessionsW writes a valid buffer pointer into `sessions_ptr` on success;
+    // we free it below with WTSFreeMemory.
+    let result = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
+    if result.is_err() || sessions_ptr.is_null() || session_count == 0 {
+        return None;
+    }
+
+    // SAFETY: WTSEnumerateSessionsW returned `session_count` valid entries at `sessions_ptr`.
+    let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count as usize) };
+
+    let mut found: Option<u32> = None;
+    for session in sessions {
+        // Session 0 is the isolated services session; skip it.
+        if session.SessionId == 0 {
+            continue;
+        }
+        if session.State == WTSDisconnected {
+            found = Some(session.SessionId);
+            break;
+        }
+    }
+
+    // SAFETY: `sessions_ptr` was allocated by WTSEnumerateSessionsW and must be freed here.
+    unsafe { WTSFreeMemory(sessions_ptr.cast()) };
+
+    found
 }
 
 fn copy_wide<const N: usize>(target: &mut [u16; N], value: &str) {

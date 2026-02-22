@@ -89,6 +89,16 @@ if (-not (Test-Path -LiteralPath $targetListener)) {
 Set-ItemProperty -Path $targetListener -Name "LoadableProtocol_Object" -Type String -Value $ProtocolManagerClsid
 Set-ItemProperty -Path $targetListener -Name "PortNumber" -Type DWord -Value $PortNumber
 
+# Remove the kernel-mode transport (TDTCP / tdtcp.sys) from our listener.
+# When LoadableProtocol_Object is set, the COM-based protocol manager owns the network connection
+# entirely (including TCP accept).  Leaving PdDLL=tdtcp causes the kernel transport to bind our
+# port *before* StartListen is called on the DLL, so the companion's TcpListener::bind fails and
+# TermService reports "listener stack was down – Catastrophic failure".
+Set-ItemProperty -Path $targetListener -Name "PdClass" -Type DWord -Value 0
+Set-ItemProperty -Path $targetListener -Name "PdDLL"   -Type String -Value ""
+Set-ItemProperty -Path $targetListener -Name "PdName"  -Type String -Value ""
+Set-ItemProperty -Path $targetListener -Name "PdFlag"  -Type DWord -Value 0
+
 $clsidRoot = "HKLM:\SOFTWARE\Classes\CLSID\$ProtocolManagerClsid"
 $inprocServer32 = Join-Path -Path $clsidRoot -ChildPath "InprocServer32"
 $clsidRootRegPath = "HKLM\SOFTWARE\Classes\CLSID\$ProtocolManagerClsid"
@@ -100,6 +110,27 @@ $inprocServer32RegPath = "$clsidRootRegPath\InprocServer32"
 & reg.exe add $inprocServer32RegPath /f | Out-Null
 & reg.exe add $inprocServer32RegPath /ve /t REG_SZ /d $providerDllPathResolved /f | Out-Null
 Set-ItemProperty -Path $inprocServer32 -Name "ThreadingModel" -Type String -Value "Both"
+
+# Enable DLL debug logging by injecting the env var into TermService's per-service environment.
+# TermService runs inside svchost.exe; per-service env vars are set via the Environment
+# REG_MULTI_SZ value under the service's registry key.
+$termServiceRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\TermService"
+$debugLogPath = "C:\IronRDPDeploy\logs\wts-provider-debug.log"
+$debugEnvEntry = "IRONRDP_WTS_PROVIDER_DEBUG_LOG=$debugLogPath"
+try {
+    $existing = (Get-ItemProperty -Path $termServiceRegPath -Name "Environment" -ErrorAction SilentlyContinue).Environment
+    if ($null -eq $existing) {
+        $newEnv = @($debugEnvEntry)
+    } else {
+        # Keep other vars, replace or add our entry
+        $newEnv = @($existing | Where-Object { $_ -notlike "IRONRDP_WTS_PROVIDER_DEBUG_LOG=*" })
+        $newEnv += $debugEnvEntry
+    }
+    Set-ItemProperty -Path $termServiceRegPath -Name "Environment" -Type MultiString -Value $newEnv
+    Write-Host "  dll debug log: $debugLogPath (via TermService env)"
+} catch {
+    Write-Warning "Could not set TermService environment for DLL debug log: $_"
+}
 
 Write-Host "Installed side-by-side protocol provider"
 Write-Host "  listener: $ListenerName"

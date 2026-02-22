@@ -365,6 +365,7 @@ mod windows_main {
         desktop_size: DesktopSize,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+        provider_mode: bool,
     }
 
     impl GdiDisplay {
@@ -372,6 +373,7 @@ mod windows_main {
             connection_id: u32,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+            provider_mode: bool,
         ) -> anyhow::Result<Self> {
             let desktop_size = desktop_size_from_gdi().context("failed to query desktop size")?;
 
@@ -386,6 +388,7 @@ mod windows_main {
                 desktop_size,
                 input_stream_slot,
                 connection_session_ids,
+                provider_mode,
             })
         }
     }
@@ -414,11 +417,22 @@ mod windows_main {
                     self.desktop_size,
                     Arc::clone(&self.input_stream_slot),
                     Arc::clone(&self.connection_session_ids),
+                    self.provider_mode,
                 )
                 .context("failed to initialize GDI display updates")?,
             ))
         }
     }
+
+    /// How long to wait for `WTSQueryUserToken` to succeed after a TermService session is assigned
+    /// before giving up and falling back to the pre-login (winlogon) token.
+    const LOGON_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// In Provider mode, how long to wait for the WTS provider DLL to send `SetCaptureSessionId`
+    /// before falling back to `resolve_capture_session_id()`.  The DLL sends this from
+    /// `ConnectNotify` which fires ~1–2 s after the TCP connection is accepted.  5 seconds gives
+    /// ample margin while avoiding an indefinite stall if the DLL fails to send it.
+    const PROVIDER_SESSION_ID_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
     struct GdiDisplayUpdates {
         connection_id: u32,
@@ -432,6 +446,23 @@ mod windows_main {
         last_bitmap: Option<BitmapUpdate>,
         helper_frames_received: u64,
         helper_timeouts: u64,
+        /// Set the first time we observe `session_id_override` but `WTSQueryUserToken` has not yet
+        /// succeeded.  We delay spawning the capture helper until the user is logged in (or until
+        /// `LOGON_WAIT_TIMEOUT` elapses).
+        waiting_for_user_login_since: Option<Instant>,
+        /// Set to `true` after we have restarted the capture helper once the user has logged in.
+        /// Prevents repeated restarts if `WTSQueryUserToken` briefly flaps.
+        capture_restarted_for_logon: bool,
+        /// The `session_id_override` value that was in effect when the capture helper was last
+        /// started.  Used to detect when the provider DLL sets a session after capture already
+        /// started with a guessed session from `resolve_capture_session_id`.
+        capture_started_with_session_override: Option<u32>,
+        /// When `true` (Provider mode), hold off starting the capture helper until the WTS provider
+        /// DLL sends `SetCaptureSessionId` so we don't waste frames on the wrong (guessed) session.
+        /// Falls through after `PROVIDER_SESSION_ID_WAIT_TIMEOUT` to avoid blocking forever.
+        provider_mode: bool,
+        /// Deadline for the provider-session-ID wait.  Initialized lazily on first poll.
+        wait_for_session_id_until: Option<Instant>,
     }
 
     impl GdiDisplayUpdates {
@@ -440,6 +471,7 @@ mod windows_main {
             size: DesktopSize,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+            provider_mode: bool,
         ) -> anyhow::Result<Self> {
             let _ = desktop_size_nonzero(size)?;
 
@@ -455,6 +487,11 @@ mod windows_main {
                 last_bitmap: None,
                 helper_frames_received: 0,
                 helper_timeouts: 0,
+                waiting_for_user_login_since: None,
+                capture_restarted_for_logon: false,
+                capture_started_with_session_override: None,
+                provider_mode,
+                wait_for_session_id_until: None,
             })
         }
     }
@@ -498,38 +535,113 @@ mod windows_main {
     #[async_trait::async_trait]
     impl RdpServerDisplayUpdates for GdiDisplayUpdates {
         async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+            // We loop here so that "no first frame yet" paths (capture helper timeout/error before
+            // the first frame arrives) can retry without returning Ok(None) — returning Ok(None)
+            // would cause the IronRDP server to disconnect the client immediately.
+            loop {
             if self.sent_first_frame && self.capture.is_none() {
                 sleep(CAPTURE_INTERVAL).await;
             }
 
-            if let Some(capture) = &self.capture {
-                if capture.desktop() == HelperDesktop::Winlogon && session_has_user_token(capture.session_id()) {
+            let mut session_id_override = self
+                .connection_session_ids
+                .lock()
+                .ok()
+                .and_then(|guard| guard.get(&self.connection_id).copied());
+
+            // In Provider mode, the WTS provider DLL will call SetCaptureSessionId from
+            // ConnectNotify (~1-2 s after TCP accept) to tell us the correct TermService session.
+            // Spin here until the session ID arrives so we never start the capture helper with
+            // a wrong (guessed) session.  We must NOT return Ok(None) because the IronRDP server
+            // interprets None as "disconnect".  Fall through after PROVIDER_SESSION_ID_WAIT_TIMEOUT
+            // so we don't stall forever if the DLL fails to deliver the session ID.
+            if self.provider_mode && self.capture.is_none() && session_id_override.is_none() {
+                let deadline = self
+                    .wait_for_session_id_until
+                    .get_or_insert_with(|| Instant::now() + PROVIDER_SESSION_ID_WAIT_TIMEOUT);
+
+                while Instant::now() < *deadline {
+                    sleep(Duration::from_millis(100)).await;
+                    session_id_override = self
+                        .connection_session_ids
+                        .lock()
+                        .ok()
+                        .and_then(|guard| guard.get(&self.connection_id).copied());
+                    if session_id_override.is_some() {
+                        break;
+                    }
+                }
+
+                if session_id_override.is_none() {
                     info!(
                         connection_id = self.connection_id,
-                        session_id = capture.session_id(),
-                        "User token is now available; restarting capture helper on Default desktop"
+                        "Timed out waiting for provider SetCaptureSessionId; falling back to guessed session"
                     );
-
-                    let capture = self.capture.take();
-                    if let Some(capture) = capture {
-                        capture.terminate();
-                    }
-
-                    self.next_helper_attempt_at = Instant::now();
-                    self.warned_blank_capture = false;
-                    self.sent_first_frame = false;
-                    self.last_bitmap = None;
-                    self.helper_frames_received = 0;
-                    self.helper_timeouts = 0;
                 }
             }
 
+            // In provider mode (IRONRDP_WTS_PROVIDER=1), note when the WTS provider assigns
+            // a session so we can restart capture with the correct session and user token.
+            // The session_override_arrived / user_logged_in restart logic below handles the
+            // transition from the initial fallback capture to the real user desktop.
+
+            // Restart the capture helper if a better session or user token has become available:
+            //   - The WTS provider set session_id_override AFTER capture already started with a
+            //     guessed session from resolve_capture_session_id.  Restart to target the correct
+            //     TermService session.
+            //   - The user has now logged into the TermService session (WTSQueryUserToken
+            //     succeeds).  Restart to pick up the real user token instead of the pre-login
+            //     fallback (winlogon) token.
+            let session_override_arrived =
+                session_id_override.is_some() && self.capture_started_with_session_override.is_none();
+            let user_logged_in = !self.capture_restarted_for_logon
+                && session_id_override.map_or(false, session_has_user_token);
+            let should_restart = self.capture.is_some() && (session_override_arrived || user_logged_in);
+
+            if should_restart {
+                let session_id = session_id_override.unwrap_or(0);
+                if session_override_arrived {
+                    info!(
+                        connection_id = self.connection_id,
+                        session_id,
+                        "WTS session assigned after capture started; restarting capture helper on correct session"
+                    );
+                } else {
+                    info!(
+                        connection_id = self.connection_id,
+                        session_id,
+                        "User has logged in; restarting capture helper to pick up real user desktop"
+                    );
+                }
+                self.capture_restarted_for_logon = true;
+
+                if let Some(capture) = self.capture.take() {
+                    capture.terminate();
+                }
+
+                self.next_helper_attempt_at = Instant::now();
+                self.warned_blank_capture = false;
+                self.sent_first_frame = false;
+                self.last_bitmap = None;
+                self.helper_frames_received = 0;
+                self.helper_timeouts = 0;
+                self.capture_started_with_session_override = None;
+                self.waiting_for_user_login_since = None;
+            }
+
             if self.capture.is_none() && Instant::now() >= self.next_helper_attempt_at {
-                let session_id_override = self
-                    .connection_session_ids
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.get(&self.connection_id).copied());
+                // Start the capture helper immediately once the session ID is known.
+                // `acquire_session_token` handles the privilege-less case: it falls back to
+                // `explorer.exe` (user's desktop) then `winlogon.exe` (pre-login screen) then
+                // the service token, so the capture helper can always start regardless of whether
+                // `WTSQueryUserToken` (which requires SE_TCB_PRIVILEGE) succeeds.
+                if let Some(session_id) = session_id_override {
+                    if session_has_user_token(session_id) {
+                        // User is logged in — clear the wait state.
+                        self.waiting_for_user_login_since = None;
+                    }
+                }
+
                 match CaptureClient::start(
                     self.connection_id,
                     self.desktop_size,
@@ -544,6 +656,7 @@ mod windows_main {
                             helper_pid = capture.pid(),
                             "Started interactive capture helper"
                         );
+                        self.capture_started_with_session_override = session_id_override;
                         self.capture = Some(capture);
                     }
                     Err(error) => {
@@ -584,10 +697,11 @@ mod windows_main {
                         if let Some(bitmap) = self.last_bitmap.clone() {
                             CapturedFrame::Raw(bitmap)
                         } else {
-                            let bitmap = fallback_bitmap_update(self.desktop_size)
-                                .context("failed to generate fallback bitmap update")?;
-                            self.last_bitmap = Some(bitmap.clone());
-                            CapturedFrame::Raw(bitmap)
+                            // Helper died before sending its first frame.  Retry rather than
+                            // sending the synthetic test pattern — a GDI fallback or a fresh
+                            // helper spawn will produce real (possibly blank) content instead.
+                            sleep(CAPTURE_INTERVAL).await;
+                            continue;
                         }
                     }
                     Err(_) => {
@@ -597,10 +711,10 @@ mod windows_main {
                         if let Some(bitmap) = self.last_bitmap.clone() {
                             CapturedFrame::Raw(bitmap)
                         } else {
-                            let bitmap = fallback_bitmap_update(self.desktop_size)
-                                .context("failed to generate fallback bitmap update")?;
-                            self.last_bitmap = Some(bitmap.clone());
-                            CapturedFrame::Raw(bitmap)
+                            // Helper timed out before its first frame arrived (session still
+                            // initialising).  Loop back and wait rather than sending the
+                            // synthetic test pattern.
+                            continue;
                         }
                     }
                 }
@@ -631,29 +745,27 @@ mod windows_main {
 
             match captured {
                 CapturedFrame::PreEncoded(surface) => {
-                    Ok(Some(DisplayUpdate::PreEncodedSurface(surface)))
+                    return Ok(Some(DisplayUpdate::PreEncodedSurface(surface)));
                 }
                 CapturedFrame::Raw(bitmap) => {
-                    // If capture returns an all-black frame (common on secure desktops / session 0),
-                    // replace with a synthetic test pattern so the client shows *something*.
-                    let bitmap = if is_probably_blank_bgra32(bitmap.data.as_ref()) {
-                        if !self.warned_blank_capture {
-                            self.warned_blank_capture = true;
-                            warn!(
-                                connection_id = self.connection_id,
-                                "Captured blank frame; falling back to synthetic test pattern (check capture session/desktop)"
-                            );
-                        }
-                        fallback_bitmap_update(self.desktop_size)
-                            .context("failed to generate fallback bitmap update")?
-                    } else {
-                        bitmap
-                    };
+                    // Log a warning when the capture helper returns an all-black frame so we can
+                    // diagnose session/desktop mismatches, but still send the actual (blank) frame.
+                    // Replacing blank frames with a synthetic test pattern was confusing because it
+                    // made new/initializing sessions (where blank is normal while Winlogon starts)
+                    // look like broken captures.
+                    if is_probably_blank_bgra32(bitmap.data.as_ref()) && !self.warned_blank_capture {
+                        self.warned_blank_capture = true;
+                        debug!(
+                            connection_id = self.connection_id,
+                            "Captured blank frame; sending as-is (session may still be initializing)"
+                        );
+                    }
 
                     self.last_bitmap = Some(bitmap.clone());
-                    Ok(Some(DisplayUpdate::Bitmap(bitmap)))
+                    return Ok(Some(DisplayUpdate::Bitmap(bitmap)));
                 }
             }
+            } // end loop
         }
     }
 
@@ -1626,10 +1738,12 @@ mod windows_main {
         }
 
         if let Ok(token) = token_from_session_process(session_id, "winlogon.exe") {
-            debug!(session_id, "Using winlogon.exe token (winlogon desktop)");
+            // Windows 10+ renders the login screen on winsta0\default (not the secure Winlogon
+            // desktop).  Spawning the helper on the Default desktop lets GDI capture the login UI.
+            debug!(session_id, "Using winlogon.exe token (default desktop — pre-login)");
             return Ok(AcquiredSessionToken {
                 token,
-                desktop: HelperDesktop::Winlogon,
+                desktop: HelperDesktop::Default,
             });
         }
 
@@ -1638,7 +1752,7 @@ mod windows_main {
 
         Ok(AcquiredSessionToken {
             token,
-            desktop: HelperDesktop::Winlogon,
+            desktop: HelperDesktop::Default,
         })
     }
 
@@ -2465,6 +2579,7 @@ mod windows_main {
                     stream,
                     credentials_slot,
                     connection_session_ids,
+                    true, // provider_mode: WTS provider DLL will send SetCaptureSessionId
                 )
                 .await
                 {
@@ -2574,6 +2689,7 @@ mod windows_main {
         stream: TcpStream,
         credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+        provider_mode: bool,
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
@@ -2589,6 +2705,7 @@ mod windows_main {
             connection_id,
             Arc::clone(&input_stream_slot),
             connection_session_ids,
+            provider_mode,
         )
             .context("failed to initialize GDI display handler")?;
         let (tls_acceptor, tls_pub_key) = make_tls_acceptor().context("failed to initialize TLS acceptor")?;
@@ -3123,6 +3240,7 @@ mod windows_main {
                     stream,
                     credentials_slot,
                     connection_session_ids,
+                    false, // provider_mode: standalone mode, session ID resolved immediately
                 )
                 .await
                 {
