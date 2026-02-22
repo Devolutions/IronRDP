@@ -327,9 +327,7 @@ impl EncoderIter<'_> {
                         self.state = State::BitmapDiffs { diffs, bitmap, pos: 0 };
                         continue;
                     }
-                    DisplayUpdate::PreEncodedSurface(surface) => {
-                        UpdateEncoder::pre_encoded_surface(&surface)
-                    }
+                    DisplayUpdate::PreEncodedSurface(surface) => UpdateEncoder::pre_encoded_surface(&surface),
                     DisplayUpdate::PointerPosition(pos) => UpdateEncoder::pointer_position(pos),
                     DisplayUpdate::RGBAPointer(ptr) => UpdateEncoder::rgba_pointer(ptr),
                     DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),

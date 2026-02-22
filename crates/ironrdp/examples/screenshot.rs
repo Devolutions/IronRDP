@@ -359,10 +359,7 @@ fn active_stage(
 
         let (action, payload) = match framed.read_pdu() {
             Ok((action, payload)) => (action, payload),
-            Err(e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
                 break 'outer
             }
             Err(e) if got_graphics => {

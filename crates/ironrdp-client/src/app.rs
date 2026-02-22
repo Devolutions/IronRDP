@@ -1,8 +1,8 @@
 #![allow(clippy::print_stderr, clippy::print_stdout)] // allowed in this module only
 
+use core::error::Error as _;
 use core::num::NonZeroU32;
 use core::time::Duration;
-use std::error::Error as _;
 use std::sync::Arc;
 use std::time::Instant;
 

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::io::{Read as _, Write};
-use std::os::windows::io::{AsRawHandle as _, RawHandle};
+use std::os::windows::io::AsRawHandle as _;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
@@ -25,37 +25,27 @@ use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 use windows::Win32::Foundation::{
     CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_NO_DATA,
-    ERROR_SEM_TIMEOUT, ERROR_SUCCESS, E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED, HANDLE, HANDLE_PTR,
+    ERROR_SEM_TIMEOUT, E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED, HANDLE, HANDLE_PTR,
 };
-use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-use windows::Win32::Security::{
-    GetKernelObjectSecurity, IsValidSecurityDescriptor, LogonUserW, DACL_SECURITY_INFORMATION,
-    GROUP_SECURITY_INFORMATION, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, OWNER_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, SACL_SECURITY_INFORMATION,
-};
+use windows::Win32::Security::{IsValidSecurityDescriptor, PSECURITY_DESCRIPTOR};
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IClassFactory, IClassFactory_Impl, COINIT_MULTITHREADED,
+    CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IClassFactory, IClassFactory_Impl,
+    COINIT_MULTITHREADED,
 };
 use windows::Win32::System::Pipes::PeekNamedPipe;
-use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_BINARY};
 use windows::Win32::System::RemoteDesktop::{
-    IWRdsProtocolConnection, IWRdsProtocolConnectionCallback, IWRdsProtocolConnectionSettings,
-    IWRdsProtocolConnectionSettings_Impl, IWRdsProtocolConnection_Impl, IWRdsProtocolLicenseConnection,
-    IWRdsProtocolLicenseConnection_Impl, IWRdsProtocolListener, IWRdsProtocolListenerCallback,
-    IWRdsProtocolListener_Impl, IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager,
-    IWRdsProtocolManager_Impl, IWRdsProtocolSettings, IWRdsProtocolShadowConnection, IWRdsWddmIddProps,
-    IWRdsWddmIddProps_Impl, WTSDisconnected, WTSEnumerateSessionsW, WTSFreeMemory, WTSGetListenerSecurityW,
-    WTSVirtualChannelClose, WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite,
-    WRDS_CONNECTION_SETTING, WRDS_CONNECTION_SETTINGS, WRDS_CONNECTION_SETTINGS_1,
-    WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTING, WRDS_LISTENER_SETTINGS,
-    WRDS_LISTENER_SETTINGS_1, WRDS_LISTENER_SETTING_LEVEL, WRDS_SETTINGS, WTS_CERT_TYPE_INVALID,
-    WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW,
-    WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA,
-    WTS_KEY_EXCHANGE_ALG_RSA, WTS_LICENSE_CAPABILITIES, WTS_LICENSE_PREAMBLE_VERSION, WTS_PROPERTY_VALUE,
-    WTS_PROTOCOL_STATUS, WTS_PROTOCOL_TYPE_RDP, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_SESSION_INFOW,
-    WTS_USER_CREDENTIAL,
+    IWRdsProtocolConnection, IWRdsProtocolConnectionCallback, IWRdsProtocolConnectionSettings_Impl,
+    IWRdsProtocolConnection_Impl, IWRdsProtocolLicenseConnection, IWRdsProtocolLicenseConnection_Impl,
+    IWRdsProtocolListener, IWRdsProtocolListenerCallback, IWRdsProtocolListener_Impl,
+    IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager, IWRdsProtocolManager_Impl, IWRdsProtocolSettings,
+    IWRdsProtocolShadowConnection, IWRdsWddmIddProps, IWRdsWddmIddProps_Impl, WTSDisconnected, WTSEnumerateSessionsW,
+    WTSFreeMemory, WTSVirtualChannelClose, WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite,
+    WRDS_CONNECTION_SETTINGS, WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL,
+    WRDS_SETTINGS, WTS_CERT_TYPE_INVALID, WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH,
+    WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL,
+    WTS_CLIENT_DATA, WTS_KEY_EXCHANGE_ALG_RSA, WTS_LICENSE_CAPABILITIES, WTS_LICENSE_PREAMBLE_VERSION,
+    WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_SESSION_INFOW, WTS_USER_CREDENTIAL,
 };
-use windows::Win32::System::Threading::GetCurrentProcess;
 use windows_core::{implement, Interface as _, BOOL, GUID, PCSTR, PCWSTR};
 use windows_core::{IUnknown, HRESULT};
 
@@ -66,6 +56,8 @@ use crate::manager::ProtocolManager;
 
 const S_OK: HRESULT = HRESULT(0);
 const S_FALSE: HRESULT = HRESULT(1);
+// HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY=14) == 0x8007000E
+const E_OUTOFMEMORY: HRESULT = HRESULT(-2147024882);
 
 const DEBUG_LOG_PATH_ENV: &str = "IRONRDP_WTS_PROVIDER_DEBUG_LOG";
 
@@ -142,334 +134,6 @@ const VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE: usize = 1024 * 1024;
 type SharedVirtualChannelBridgeHandler = Arc<dyn VirtualChannelBridgeHandler>;
 
 static VIRTUAL_CHANNEL_BRIDGE_HANDLER: OnceLock<Mutex<Option<SharedVirtualChannelBridgeHandler>>> = OnceLock::new();
-
-static LISTENER_SECURITY_DESCRIPTOR: OnceLock<Mutex<HashMap<String, ListenerSecurityDescriptorBuffers>>> =
-    OnceLock::new();
-
-struct ListenerSecurityDescriptorBuffers {
-    sd: Vec<u8>,
-    sd_size: u32,
-}
-
-fn to_utf16_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(core::iter::once(0)).collect()
-}
-
-fn read_listener_sd_from_registry(listener_name: &str) -> Option<Vec<u8>> {
-    let subkey = format!("SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\{listener_name}");
-    let subkey_w = to_utf16_null(&subkey);
-    let subkey = PCWSTR(subkey_w.as_ptr());
-
-    for value_name in ["Security", "SecurityDescriptor", "Permissions", "UserSecurity"] {
-        let value_w = to_utf16_null(value_name);
-        let value = PCWSTR(value_w.as_ptr());
-
-        let mut len = 0u32;
-        // SAFETY: pointers remain valid for the duration of the call.
-        let status = unsafe {
-            RegGetValueW(
-                HKEY_LOCAL_MACHINE,
-                subkey,
-                value,
-                RRF_RT_REG_BINARY,
-                None,
-                None,
-                Some(&mut len),
-            )
-        };
-
-        if status != ERROR_SUCCESS || len == 0 {
-            continue;
-        }
-
-        let mut buf = vec![0u8; len as usize];
-        // SAFETY: buffer is writable and sized to `len` bytes.
-        let status = unsafe {
-            RegGetValueW(
-                HKEY_LOCAL_MACHINE,
-                subkey,
-                value,
-                RRF_RT_REG_BINARY,
-                None,
-                Some(buf.as_mut_ptr().cast()),
-                Some(&mut len),
-            )
-        };
-
-        if status != ERROR_SUCCESS {
-            continue;
-        }
-
-        buf.truncate(len as usize);
-        let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_ptr() as *mut core::ffi::c_void);
-        let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-
-        debug_log_line(&format!(
-            "listener registry security descriptor value={value_name} valid={} len={len}",
-            valid.as_bool(),
-        ));
-
-        if valid.as_bool() {
-            return Some(buf);
-        }
-    }
-
-    None
-}
-
-fn read_listener_sd_from_wtsapi(listener_name: &str) -> Option<Vec<u8>> {
-    let listener_w = to_utf16_null(listener_name);
-    let listener_name = PCWSTR(listener_w.as_ptr());
-
-    let info_with_sacl =
-        DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION;
-    let info_no_sacl = DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION;
-
-    let mut needed = 0u32;
-    let mut info = info_with_sacl;
-
-    // First call is expected to fail with insufficient buffer, but should populate `needed`.
-    let _ = unsafe { WTSGetListenerSecurityW(None, core::ptr::null(), 0, listener_name, info, None, 0, &mut needed) };
-
-    if needed == 0 {
-        info = info_no_sacl;
-        let _ =
-            unsafe { WTSGetListenerSecurityW(None, core::ptr::null(), 0, listener_name, info, None, 0, &mut needed) };
-    }
-
-    if needed == 0 {
-        debug_log_line("WTSGetListenerSecurityW did not report required buffer size");
-        return None;
-    }
-
-    let mut buf = vec![0u8; needed as usize];
-    let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_mut_ptr().cast());
-
-    if let Err(error) = unsafe {
-        WTSGetListenerSecurityW(
-            None,
-            core::ptr::null(),
-            0,
-            listener_name,
-            info,
-            Some(sd_ptr),
-            needed,
-            &mut needed,
-        )
-    } {
-        debug_log_line(&format!("WTSGetListenerSecurityW failed: {error}"));
-        return None;
-    }
-
-    buf.truncate(needed as usize);
-    let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-    debug_log_line(&format!(
-        "listener wtsapi security descriptor valid={} len={needed} sacl_included={}",
-        valid.as_bool(),
-        info == info_with_sacl,
-    ));
-
-    if !valid.as_bool() {
-        debug_log_line("WTSGetListenerSecurityW returned invalid security descriptor");
-        return None;
-    }
-
-    Some(buf)
-}
-
-fn read_winstations_default_security() -> Option<Vec<u8>> {
-    let subkey = "SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations";
-    let subkey_w = to_utf16_null(subkey);
-    let subkey = PCWSTR(subkey_w.as_ptr());
-    let value_w = to_utf16_null("DefaultSecurity");
-    let value = PCWSTR(value_w.as_ptr());
-
-    let mut len = 0u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            subkey,
-            value,
-            RRF_RT_REG_BINARY,
-            None,
-            None,
-            Some(&mut len),
-        )
-    };
-
-    if status != ERROR_SUCCESS || len == 0 {
-        debug_log_line("WinStations DefaultSecurity not found in registry");
-        return None;
-    }
-
-    let mut buf = vec![0u8; len as usize];
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            subkey,
-            value,
-            RRF_RT_REG_BINARY,
-            None,
-            Some(buf.as_mut_ptr().cast()),
-            Some(&mut len),
-        )
-    };
-
-    if status != ERROR_SUCCESS {
-        debug_log_line(&format!("WinStations DefaultSecurity read failed: {status:?}"));
-        return None;
-    }
-
-    buf.truncate(len as usize);
-    let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_ptr() as *mut core::ffi::c_void);
-    let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-
-    debug_log_line(&format!(
-        "WinStations DefaultSecurity valid={} len={len}",
-        valid.as_bool(),
-    ));
-
-    if valid.as_bool() {
-        Some(buf)
-    } else {
-        None
-    }
-}
-
-fn compute_listener_security_descriptor(listener_name: &str) -> Option<ListenerSecurityDescriptorBuffers> {
-    if let Some(buf) = read_listener_sd_from_wtsapi(listener_name) {
-        return Some(ListenerSecurityDescriptorBuffers {
-            sd_size: buf.len() as u32,
-            sd: buf,
-        });
-    }
-
-    if let Some(buf) = read_listener_sd_from_registry(listener_name) {
-        return Some(ListenerSecurityDescriptorBuffers {
-            sd_size: buf.len() as u32,
-            sd: buf,
-        });
-    }
-
-    // Fall back to the system-wide DefaultSecurity from the parent WinStations key.
-    // This is the SD that TermService uses for listeners without a per-listener SD.
-    if let Some(buf) = read_winstations_default_security() {
-        return Some(ListenerSecurityDescriptorBuffers {
-            sd_size: buf.len() as u32,
-            sd: buf,
-        });
-    }
-
-    let sddl = windows::core::w!("D:(A;;GA;;;WD)");
-
-    let mut sd = PSECURITY_DESCRIPTOR::default();
-    let mut sd_len = 0u32;
-
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &mut sd, Some(&mut sd_len))
-    }
-    .is_ok()
-        && !sd.0.is_null()
-        && sd_len > 0
-    {
-        // SAFETY: `sd` points to a self-relative security descriptor buffer of length `sd_len`.
-        let bytes = unsafe { core::slice::from_raw_parts(sd.0.cast::<u8>(), sd_len as usize) };
-        let mut buf = bytes.to_vec();
-        let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_mut_ptr().cast());
-        let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-        debug_log_line(&format!(
-            "listener sddl security descriptor valid={} len={sd_len}",
-            valid.as_bool(),
-        ));
-
-        if valid.as_bool() {
-            return Some(ListenerSecurityDescriptorBuffers {
-                sd: buf,
-                sd_size: sd_len,
-            });
-        }
-    } else {
-        debug_log_line("ConvertStringSecurityDescriptorToSecurityDescriptorW failed; falling back");
-    }
-
-    let handle = unsafe { GetCurrentProcess() };
-    let info_with_sacl = (DACL_SECURITY_INFORMATION
-        | OWNER_SECURITY_INFORMATION
-        | GROUP_SECURITY_INFORMATION
-        | SACL_SECURITY_INFORMATION)
-        .0;
-    let info_no_sacl = (DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION).0;
-
-    let mut needed = 0u32;
-    // Try with SACL first; this may fail without SeSecurityPrivilege.
-    let _ = unsafe { GetKernelObjectSecurity(handle, info_with_sacl, None, 0, &mut needed) };
-    let mut info = info_with_sacl;
-    if needed == 0 {
-        let _ = unsafe { GetKernelObjectSecurity(handle, info_no_sacl, None, 0, &mut needed) };
-        info = info_no_sacl;
-    }
-
-    if needed == 0 {
-        debug_log_line("GetKernelObjectSecurity did not report required buffer size");
-        return None;
-    }
-
-    let mut buf = vec![0u8; needed as usize];
-    let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_mut_ptr().cast());
-    if let Err(error) = unsafe { GetKernelObjectSecurity(handle, info, Some(sd_ptr), needed, &mut needed) } {
-        debug_log_line(&format!("GetKernelObjectSecurity failed: {error}"));
-        return None;
-    }
-
-    let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-    debug_log_line(&format!(
-        "listener kernel security descriptor valid={} len={needed} sacl_included={}",
-        valid.as_bool(),
-        info == info_with_sacl,
-    ));
-
-    if !valid.as_bool() {
-        debug_log_line("kernel security descriptor failed IsValidSecurityDescriptor");
-        return None;
-    }
-
-    Some(ListenerSecurityDescriptorBuffers {
-        sd: buf,
-        sd_size: needed,
-    })
-}
-
-fn listener_security_descriptor(listener_name: &str) -> Option<(*mut u8, u32)> {
-    let cache = LISTENER_SECURITY_DESCRIPTOR.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock();
-
-    if cache.get(listener_name).is_none() {
-        if let Some(buffers) = compute_listener_security_descriptor(listener_name) {
-            cache.insert(listener_name.to_owned(), buffers);
-        }
-    }
-
-    let buffers = cache.get(listener_name)?;
-    let sd_size = buffers.sd_size;
-
-    // Allocate a fresh copy with LocalAlloc each time.
-    // TermService may free the pSecurityDescriptor pointer (e.g., after GetSettings),
-    // so we must provide a separately-allocated copy for each call.
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn LocalAlloc(uflags: u32, ubytes: usize) -> *mut u8;
-    }
-    const LMEM_FIXED: u32 = 0x0000;
-    let ptr = unsafe { LocalAlloc(LMEM_FIXED, sd_size as usize) };
-    if ptr.is_null() {
-        debug_log_line("LocalAlloc failed for security descriptor copy");
-        return None;
-    }
-    unsafe {
-        core::ptr::copy_nonoverlapping(buffers.sd.as_ptr(), ptr, sd_size as usize);
-    }
-    Some((ptr, sd_size))
-}
 
 struct ComInitGuard {
     initialized: bool,
@@ -779,29 +443,12 @@ impl ProviderControlBridge {
         }
     }
 
-    fn set_capture_session_id(&self, connection_id: u32, session_id: u32) -> windows_core::Result<()> {
-        let Some(event) = self.send_command(&ProviderCommand::SetCaptureSessionId {
-            connection_id,
-            session_id,
-        })? else {
-            return Ok(());
-        };
-
-        match event {
-            ServiceEvent::Ack => Ok(()),
-            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
-            other => Err(windows_core::Error::new(
-                E_UNEXPECTED,
-                format!("unexpected service event on set capture session id: {other:?}"),
-            )),
-        }
-    }
-
     fn set_capture_session_id_retried(&self, connection_id: u32, session_id: u32) -> windows_core::Result<()> {
         let Some(event) = self.send_command_retried(&ProviderCommand::SetCaptureSessionId {
             connection_id,
             session_id,
-        })? else {
+        })?
+        else {
             return Ok(());
         };
 
@@ -833,8 +480,7 @@ impl ProviderControlBridge {
             }
             other => {
                 debug_log_line(&format!(
-                    "accept_connection unexpected_event connection_id={connection_id} event={:?}",
-                    other
+                    "accept_connection unexpected_event connection_id={connection_id} event={other:?}"
                 ));
                 Err(windows_core::Error::new(
                     E_UNEXPECTED,
@@ -870,9 +516,7 @@ impl ProviderControlBridge {
                 thread::sleep(Duration::from_millis(250));
             }
 
-            let event = match self.send_command_retried(&ProviderCommand::GetConnectionCredentials {
-                connection_id,
-            }) {
+            let event = match self.send_command_retried(&ProviderCommand::GetConnectionCredentials { connection_id }) {
                 Ok(Some(event)) => event,
                 Ok(None) => {
                     // Pipe transiently unavailable (companion pipe server between iterations).
@@ -929,8 +573,7 @@ impl ProviderControlBridge {
         }
 
         debug_log_line(&format!(
-            "get_connection_credentials timed out connection_id={connection_id} last_error={:?}",
-            last_pipe_error
+            "get_connection_credentials timed out connection_id={connection_id} last_error={last_pipe_error:?}"
         ));
         Ok(None)
     }
@@ -940,7 +583,7 @@ impl ProviderControlBridge {
         listener_name: &str,
         timeout_ms: u32,
     ) -> windows_core::Result<Option<IncomingConnection>> {
-        let Some(event) = self.send_command(&ProviderCommand::WaitForIncoming {
+        let Some(event) = self.send_command_retried(&ProviderCommand::WaitForIncoming {
             listener_name: listener_name.to_owned(),
             timeout_ms,
         })?
@@ -999,14 +642,18 @@ impl ProviderControlBridge {
         let mut last_error = None;
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                thread::sleep(Duration::from_millis(50 + (attempt as u64) * 30));
+                thread::sleep(Duration::from_millis(50 + u64::from(attempt) * 30));
             }
 
             debug_log_line(&format!(
                 "ProviderControlBridge::send_command open pipe={} command={}{}",
                 full_pipe_name,
                 command_kind(command),
-                if attempt > 0 { format!(" retry={attempt}") } else { String::new() }
+                if attempt > 0 {
+                    format!(" retry={attempt}")
+                } else {
+                    String::new()
+                }
             ));
 
             let pipe_result = OpenOptions::new().read(true).write(true).open(&full_pipe_name);
@@ -1053,8 +700,11 @@ impl ProviderControlBridge {
             return Ok(Some(event));
         }
 
-        let error = last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "max retries exceeded"));
-        Err(io_error_to_windows_error(error, "failed to connect to control pipe after retries"))
+        let error = last_error.unwrap_or_else(|| std::io::Error::other("max retries exceeded"));
+        Err(io_error_to_windows_error(
+            error,
+            "failed to connect to control pipe after retries",
+        ))
     }
 }
 
@@ -1074,8 +724,10 @@ fn is_optional_control_pipe_error(error: &std::io::Error) -> bool {
 }
 
 fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS {
+    // SAFETY: `WRDS_CONNECTION_SETTINGS` is a plain C struct; a zeroed value is a valid baseline.
     let mut settings: WRDS_CONNECTION_SETTINGS = unsafe { core::mem::zeroed() };
     settings.WRdsConnectionSettingLevel = WRDS_CONNECTION_SETTING_LEVEL(1);
+    // SAFETY: WRDS_CONNECTION_SETTINGS contains a union; accessing the level-1 view is valid because we set the level.
     unsafe {
         let ls = &mut settings
             .WRdsConnectionSetting
@@ -1089,21 +741,6 @@ fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS 
         "default_connection_settings listener_name={listener_name} (matching MS sample: NULL SD)",
     ));
 
-    settings
-}
-
-fn default_listener_settings(listener_name: &str, level: WRDS_LISTENER_SETTING_LEVEL) -> WRDS_LISTENER_SETTINGS {
-    let (sd_ptr, sd_len) = listener_security_descriptor(listener_name).unwrap_or((core::ptr::null_mut(), 0));
-
-    let mut settings = WRDS_LISTENER_SETTINGS::default();
-    settings.WRdsListenerSettingLevel = level;
-    settings.WRdsListenerSetting = WRDS_LISTENER_SETTING {
-        WRdsListenerSettings1: WRDS_LISTENER_SETTINGS_1 {
-            MaxProtocolListenerConnectionCount: u32::MAX,
-            SecurityDescriptorSize: sd_len,
-            pSecurityDescriptor: sd_ptr,
-        },
-    };
     settings
 }
 
@@ -1815,6 +1452,10 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
         // Windows Server 2025 (REGDB_E_IIDNOTREG), so CoMarshalInterThreadInterfaceInStream fails.
         // In practice, this callback is in-proc and appears safe to invoke from a worker thread.
         // We keep ownership correct by AddRef-ing via clone + into_raw and reconstructing on the worker.
+        #[expect(
+            clippy::as_conversions,
+            reason = "store a raw COM interface pointer as usize so it can cross a thread boundary"
+        )]
         let callback_token = callback.clone().into_raw() as usize;
         let listener = Arc::clone(&self.inner);
         let control_bridge = self.control_bridge.clone();
@@ -1828,9 +1469,14 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 return;
             }
 
-            // SAFETY: token was produced by `IWRdsProtocolListenerCallback::into_raw` in this process.
-            let callback_for_worker =
-                unsafe { IWRdsProtocolListenerCallback::from_raw(callback_token as *mut core::ffi::c_void) };
+            #[expect(
+                clippy::as_conversions,
+                reason = "reconstruct raw COM interface pointer from the usize token"
+            )]
+            let callback_for_worker = {
+                // SAFETY: token was produced by `IWRdsProtocolListenerCallback::into_raw` in this process.
+                unsafe { IWRdsProtocolListenerCallback::from_raw(callback_token as *mut core::ffi::c_void) }
+            };
 
             if control_bridge_enabled {
                 loop {
@@ -1883,40 +1529,46 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
 
                     let mut settings = default_connection_settings(&listener_name);
 
-                    let mut sd_probe: Option<&'static mut [u8]> = None;
-                    if std::env::var("IRONRDP_WTS_SD_PROBE").as_deref() == Ok("1") {
-                        // DIAGNOSTIC: TermService may treat WRDS_LISTENER_SETTINGS_1.pSecurityDescriptor as an
-                        // output buffer. Provide a large, process-lifetime buffer and detect whether it is written.
-                        let probe: &'static mut [u8] = Box::leak(vec![0xCCu8; 4096].into_boxed_slice());
+                    let sd_probe: Option<&'static mut [u8]> =
+                        if std::env::var("IRONRDP_WTS_SD_PROBE").as_deref() == Ok("1") {
+                            // DIAGNOSTIC: TermService may treat WRDS_LISTENER_SETTINGS_1.pSecurityDescriptor as an
+                            // output buffer. Provide a large, process-lifetime buffer and detect whether it is written.
+                            let probe: &'static mut [u8] = Box::leak(vec![0xCCu8; 4096].into_boxed_slice());
+                            let probe_len = u32::try_from(probe.len()).unwrap_or(0);
+                            // SAFETY: WRDS_CONNECTION_SETTINGS contains a union; `default_connection_settings` sets level=1.
+                            unsafe {
+                                let ls1 = &mut settings
+                                    .WRdsConnectionSetting
+                                    .WRdsConnectionSettings1
+                                    .WRdsListenerSettings
+                                    .WRdsListenerSetting
+                                    .WRdsListenerSettings1;
+                                ls1.SecurityDescriptorSize = probe_len;
+                                ls1.pSecurityDescriptor = probe.as_mut_ptr();
+                            }
+                            Some(probe)
+                        } else {
+                            None
+                        };
+
+                    let (listener_level, protocol_type) = {
+                        // SAFETY: union view is valid because `default_connection_settings` sets setting_level=1.
                         unsafe {
-                            let ls1 = &mut settings
-                                .WRdsConnectionSetting
-                                .WRdsConnectionSettings1
-                                .WRdsListenerSettings
-                                .WRdsListenerSetting
-                                .WRdsListenerSettings1;
-                            ls1.SecurityDescriptorSize = probe.len() as u32;
-                            ls1.pSecurityDescriptor = probe.as_mut_ptr();
+                            let s1 = &settings.WRdsConnectionSetting.WRdsConnectionSettings1;
+                            (s1.WRdsListenerSettings.WRdsListenerSettingLevel.0, s1.ProtocolType)
                         }
-                        sd_probe = Some(probe);
-                    }
+                    };
 
                     debug_log_line(&format!(
                         "OnConnected calling listener_name={} connection_id={} conn_level={} listener_level={} protocol_type={}",
                         listener_name,
                         incoming.connection_id,
                         settings.WRdsConnectionSettingLevel.0,
-                        unsafe {
-                            settings
-                                .WRdsConnectionSetting
-                                .WRdsConnectionSettings1
-                                .WRdsListenerSettings
-                                .WRdsListenerSettingLevel
-                                .0
-                        },
-                        unsafe { settings.WRdsConnectionSetting.WRdsConnectionSettings1.ProtocolType },
+                        listener_level,
+                        protocol_type,
                     ));
 
+                    // SAFETY: WRDS_CONNECTION_SETTINGS contains a union; `default_connection_settings` sets level=1.
                     unsafe {
                         let ls1 = &settings
                             .WRdsConnectionSetting
@@ -1928,17 +1580,19 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                         let sd_size = ls1.SecurityDescriptorSize;
                         let max_conn = ls1.MaxProtocolListenerConnectionCount;
                         if !sd_ptr.is_null() && sd_size > 0 {
-                            let sd_bytes = core::slice::from_raw_parts(sd_ptr, core::cmp::min(sd_size as usize, 40));
-                            let hex: String = sd_bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+                            let sd_size_usize = usize::try_from(sd_size).unwrap_or(0);
+                            let sd_bytes = core::slice::from_raw_parts(sd_ptr, core::cmp::min(sd_size_usize, 40));
+                            let hex: String = sd_bytes
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<Vec<_>>()
+                                .join(" ");
                             debug_log_line(&format!(
                                 "OnConnected SD dump: max_conn={max_conn} sd_size={sd_size} sd_ptr={sd_ptr:?} first_bytes=[{hex}]"
                             ));
-                            let sd_psec = PSECURITY_DESCRIPTOR(sd_ptr as *mut core::ffi::c_void);
+                            let sd_psec = PSECURITY_DESCRIPTOR(sd_ptr.cast());
                             let valid = IsValidSecurityDescriptor(sd_psec);
-                            debug_log_line(&format!(
-                                "OnConnected SD valid={} right_before_call",
-                                valid.as_bool()
-                            ));
+                            debug_log_line(&format!("OnConnected SD valid={} right_before_call", valid.as_bool()));
                         } else {
                             debug_log_line(&format!(
                                 "OnConnected SD: NULL or empty max_conn={max_conn} sd_size={sd_size} sd_ptr={sd_ptr:?}"
@@ -1950,12 +1604,12 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                     let result = unsafe { callback_for_worker.OnConnected(&connection, &settings) };
                     if let Some(sd_probe) = sd_probe.as_deref() {
                         let sd_written = sd_probe.iter().any(|byte| *byte != 0xCC);
+                        let b0 = sd_probe.first().copied().unwrap_or(0);
+                        let b1 = sd_probe.get(1).copied().unwrap_or(0);
+                        let b2 = sd_probe.get(2).copied().unwrap_or(0);
+                        let b3 = sd_probe.get(3).copied().unwrap_or(0);
                         debug_log_line(&format!(
-                            "OnConnected sd_probe written={sd_written} first4={:02X}{:02X}{:02X}{:02X}",
-                            sd_probe.get(0).copied().unwrap_or(0),
-                            sd_probe.get(1).copied().unwrap_or(0),
-                            sd_probe.get(2).copied().unwrap_or(0),
-                            sd_probe.get(3).copied().unwrap_or(0),
+                            "OnConnected sd_probe written={sd_written} first4={b0:02X}{b1:02X}{b2:02X}{b3:02X}",
                         ));
                     }
 
@@ -1966,6 +1620,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                                 listener_name, incoming.connection_id
                             ));
 
+                            // SAFETY: connection_callback is a valid COM interface returned by TermService.
                             let conn_id_result = unsafe { connection_callback.GetConnectionId() };
                             debug_log_line(&format!(
                                 "GetConnectionId result={:?} connection_id={}",
@@ -1974,6 +1629,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
 
                             *connection_callback_slot.lock() = Some(connection_callback.clone());
 
+                            // SAFETY: connection_callback is a valid COM interface returned by TermService.
                             let ready_result = unsafe { connection_callback.OnReady() };
                             debug_log_line(&format!(
                                 "OnReady result={:?} connection_id={}",
@@ -2012,9 +1668,11 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
 
                 let mut settings = default_connection_settings(&listener_name);
 
-                let mut sd_probe: Option<&'static mut [u8]> = None;
-                if std::env::var("IRONRDP_WTS_SD_PROBE").as_deref() == Ok("1") {
+                let sd_probe: Option<&'static mut [u8]> = if std::env::var("IRONRDP_WTS_SD_PROBE").as_deref() == Ok("1")
+                {
                     let probe: &'static mut [u8] = Box::leak(vec![0xCCu8; 4096].into_boxed_slice());
+                    let probe_len = u32::try_from(probe.len()).unwrap_or(0);
+                    // SAFETY: WRDS_CONNECTION_SETTINGS contains a union; `default_connection_settings` sets level=1.
                     unsafe {
                         let ls1 = &mut settings
                             .WRdsConnectionSetting
@@ -2022,38 +1680,41 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                             .WRdsListenerSettings
                             .WRdsListenerSetting
                             .WRdsListenerSettings1;
-                        ls1.SecurityDescriptorSize = probe.len() as u32;
+                        ls1.SecurityDescriptorSize = probe_len;
                         ls1.pSecurityDescriptor = probe.as_mut_ptr();
                     }
-                    sd_probe = Some(probe);
-                }
+                    Some(probe)
+                } else {
+                    None
+                };
+
+                let (listener_level, protocol_type) = {
+                    // SAFETY: union view is valid because `default_connection_settings` sets setting_level=1.
+                    unsafe {
+                        let s1 = &settings.WRdsConnectionSetting.WRdsConnectionSettings1;
+                        (s1.WRdsListenerSettings.WRdsListenerSettingLevel.0, s1.ProtocolType)
+                    }
+                };
 
                 debug_log_line(&format!(
                     "OnConnected calling listener_name={} connection_id={} conn_level={} listener_level={} protocol_type={}",
                     listener_name,
                     0,
                     settings.WRdsConnectionSettingLevel.0,
-                    unsafe {
-                        settings
-                            .WRdsConnectionSetting
-                            .WRdsConnectionSettings1
-                            .WRdsListenerSettings
-                            .WRdsListenerSettingLevel
-                            .0
-                    },
-                    unsafe { settings.WRdsConnectionSetting.WRdsConnectionSettings1.ProtocolType },
+                    listener_level,
+                    protocol_type,
                 ));
 
                 // SAFETY: COM callback and connection object are valid for call duration.
                 let result = unsafe { callback_for_worker.OnConnected(&connection, &settings) };
                 if let Some(sd_probe) = sd_probe.as_deref() {
                     let sd_written = sd_probe.iter().any(|byte| *byte != 0xCC);
+                    let b0 = sd_probe.first().copied().unwrap_or(0);
+                    let b1 = sd_probe.get(1).copied().unwrap_or(0);
+                    let b2 = sd_probe.get(2).copied().unwrap_or(0);
+                    let b3 = sd_probe.get(3).copied().unwrap_or(0);
                     debug_log_line(&format!(
-                        "OnConnected sd_probe written={sd_written} first4={:02X}{:02X}{:02X}{:02X}",
-                        sd_probe.get(0).copied().unwrap_or(0),
-                        sd_probe.get(1).copied().unwrap_or(0),
-                        sd_probe.get(2).copied().unwrap_or(0),
-                        sd_probe.get(3).copied().unwrap_or(0),
+                        "OnConnected sd_probe written={sd_written} first4={b0:02X}{b1:02X}{b2:02X}{b3:02X}",
                     ));
                 }
 
@@ -2129,29 +1790,32 @@ impl IWRdsProtocolLicenseConnection_Impl for WrdsLicenseConnection_Impl {
         }
         // The SDK signature is PWRDS_LICENSE_CAPABILITIES* (double pointer): TermService passes a
         // pointer-to-pointer and expects us to allocate and write the struct address into it.
-        // The windows-rs binding exposes this as *mut WTS_LICENSE_CAPABILITIES, so we
-        // reinterpret it as *mut *mut WTS_LICENSE_CAPABILITIES when writing the allocated pointer.
+        // The windows-rs binding exposes this as *mut WTS_LICENSE_CAPABILITIES, so we treat it
+        // as a raw byte pointer and write the pointer value unaligned.
+        // SAFETY: TermService provides valid output slots for the duration of this call.
         unsafe {
-            let caps = CoTaskMemAlloc(core::mem::size_of::<WTS_LICENSE_CAPABILITIES>())
-                as *mut WTS_LICENSE_CAPABILITIES;
+            let caps = CoTaskMemAlloc(size_of::<WTS_LICENSE_CAPABILITIES>()).cast::<WTS_LICENSE_CAPABILITIES>();
             if caps.is_null() {
-                return Err(windows_core::Error::new(
-                    windows_core::HRESULT(0x8007000E_u32 as i32), // E_OUTOFMEMORY
-                    "CoTaskMemAlloc failed",
-                ));
+                return Err(windows_core::Error::new(E_OUTOFMEMORY, "CoTaskMemAlloc failed"));
             }
-            *caps = WTS_LICENSE_CAPABILITIES {
-                KeyExchangeAlg: WTS_KEY_EXCHANGE_ALG_RSA,
-                ProtocolVer: WTS_LICENSE_PREAMBLE_VERSION,
-                fAuthenticateServer: BOOL(0),
-                CertType: WTS_CERT_TYPE_INVALID,
-                cbClientName: 0,
-                rgbClientName: [0; 42],
-            };
+            // SAFETY: `caps` points to a writable allocation sized for WTS_LICENSE_CAPABILITIES.
+            core::ptr::write(
+                caps,
+                WTS_LICENSE_CAPABILITIES {
+                    KeyExchangeAlg: WTS_KEY_EXCHANGE_ALG_RSA,
+                    ProtocolVer: WTS_LICENSE_PREAMBLE_VERSION,
+                    fAuthenticateServer: BOOL(0),
+                    CertType: WTS_CERT_TYPE_INVALID,
+                    cbClientName: 0,
+                    rgbClientName: [0; 42],
+                },
+            );
             // Write the allocated pointer into the caller's output slot (double-pointer semantics).
-            let pp = pplicensecapabilities as *mut *mut WTS_LICENSE_CAPABILITIES;
-            *pp = caps;
-            *pcblicensecapabilities = core::mem::size_of::<WTS_LICENSE_CAPABILITIES>() as u32;
+            let dst = pplicensecapabilities.cast::<u8>();
+            let src = core::ptr::addr_of!(caps).cast::<u8>();
+            core::ptr::copy_nonoverlapping(src, dst, size_of::<*mut WTS_LICENSE_CAPABILITIES>());
+            // SAFETY: pcblicensecapabilities is a valid out-pointer.
+            *pcblicensecapabilities = u32::try_from(size_of::<WTS_LICENSE_CAPABILITIES>()).unwrap_or(0);
         }
         Ok(())
     }
@@ -2172,6 +1836,7 @@ impl IWRdsProtocolLicenseConnection_Impl for WrdsLicenseConnection_Impl {
         // Return an empty license (0 bytes) — sufficient for the RDS grace period and
         // "Remote Desktop for Administration" (2-admin-connection) mode on a non-CAL server.
         if !pcbclientlicense.is_null() {
+            // SAFETY: pcbclientlicense is a valid out-pointer when non-null.
             unsafe { *pcbclientlicense = 0 };
         }
         Ok(())
@@ -2191,7 +1856,6 @@ struct ComProtocolConnection {
     control_bridge: ProviderControlBridge,
     ready_notified: Mutex<bool>,
     last_input_time: Mutex<u64>,
-    input_video_handles: Mutex<Option<InputVideoHandles>>,
     virtual_channels: Mutex<Vec<VirtualChannelHandle>>,
     virtual_channel_forwarders: Mutex<Vec<VirtualChannelForwarderWorker>>,
 }
@@ -2209,7 +1873,6 @@ impl ComProtocolConnection {
             control_bridge,
             ready_notified: Mutex::new(false),
             last_input_time: Mutex::new(0),
-            input_video_handles: Mutex::new(None),
             virtual_channels: Mutex::new(Vec::new()),
             virtual_channel_forwarders: Mutex::new(Vec::new()),
         }
@@ -2249,42 +1912,6 @@ impl ComProtocolConnection {
 
     fn release_connection_callback(&self) {
         *self.connection_callback.lock() = None;
-    }
-
-    fn ensure_input_video_handles(&self) -> windows_core::Result<()> {
-        let mut handles_guard = self.input_video_handles.lock();
-        if handles_guard.is_none() {
-            *handles_guard = Some(InputVideoHandles::open()?);
-        }
-
-        Ok(())
-    }
-
-    fn get_keyboard_mouse_handles(&self) -> windows_core::Result<(HANDLE_PTR, HANDLE_PTR)> {
-        self.ensure_input_video_handles()?;
-
-        let handles_guard = self.input_video_handles.lock();
-        let handles = handles_guard
-            .as_ref()
-            .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "input handles are not initialized"))?;
-
-        Ok((handles.keyboard.as_handle_ptr(), handles.mouse.as_handle_ptr()))
-    }
-
-    fn get_video_handle(&self) -> windows_core::Result<HANDLE_PTR> {
-        self.ensure_input_video_handles()?;
-
-        let handles_guard = self.input_video_handles.lock();
-        let handles = handles_guard
-            .as_ref()
-            .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "video handle is not initialized"))?;
-
-        Ok(handles.video.as_handle_ptr())
-    }
-
-    fn release_input_video_handles(&self) {
-        let mut handles_guard = self.input_video_handles.lock();
-        *handles_guard = None;
     }
 
     fn release_virtual_channels(&self) {
@@ -2463,40 +2090,35 @@ impl IWRdsProtocolConnectionSettings_Impl for ComProtocolConnection_Impl {
         _ppropertyentriesout: *mut WTS_PROPERTY_VALUE,
     ) -> windows_core::Result<()> {
         debug_log_line("IWRdsProtocolConnectionSettings::GetConnectionSetting called");
-        Err(windows_core::Error::new(E_NOTIMPL, "GetConnectionSetting not implemented"))
+        Err(windows_core::Error::new(
+            E_NOTIMPL,
+            "GetConnectionSetting not implemented",
+        ))
     }
 }
 
 impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
     fn GetHardwareId(&self, pdisplaydriverhardwareid: &PCWSTR, count: u32) -> windows_core::Result<()> {
-        debug_log_line(&format!(
-            "IWRdsWddmIddProps::GetHardwareId called count={count}"
-        ));
+        debug_log_line(&format!("IWRdsWddmIddProps::GetHardwareId called count={count}"));
         if count > 0 {
-            let ptr = pdisplaydriverhardwareid.0 as *mut u16;
+            let ptr = pdisplaydriverhardwareid.0.cast_mut();
             if !ptr.is_null() {
+                // SAFETY: TermService provides a writable output buffer when `count > 0`.
                 unsafe { *ptr = 0 };
             }
         }
         Ok(())
     }
 
-    fn OnDriverLoad(
-        &self,
-        sessionid: u32,
-        driverhandle: HANDLE_PTR,
-    ) -> windows_core::Result<()> {
+    fn OnDriverLoad(&self, sessionid: u32, driverhandle: HANDLE_PTR) -> windows_core::Result<()> {
         debug_log_line(&format!(
-            "IWRdsWddmIddProps::OnDriverLoad session_id={sessionid} handle={:?}",
-            driverhandle
+            "IWRdsWddmIddProps::OnDriverLoad session_id={sessionid} handle={driverhandle:?}",
         ));
         Ok(())
     }
 
     fn OnDriverUnload(&self, sessionid: u32) -> windows_core::Result<()> {
-        debug_log_line(&format!(
-            "IWRdsWddmIddProps::OnDriverUnload session_id={sessionid}"
-        ));
+        debug_log_line(&format!("IWRdsWddmIddProps::OnDriverUnload session_id={sessionid}"));
         Ok(())
     }
 
@@ -2548,16 +2170,13 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Err(windows_core::Error::new(E_POINTER, "null client data pointer"));
         }
 
+        // SAFETY: pclientdata is non-null and points to writable memory owned by TermService.
         let client_data = unsafe { &mut *pclientdata };
         *client_data = WTS_CLIENT_DATA::default();
         client_data.fEnableWindowsKey = true;
-        // fInheritAutoLogon = 1: use credentials from GetUserCredentials for automatic logon.
-        // fUsingSavedCreds = false (default): TermService uses the standard credential path
-        // including IsUserAllowedToLogon.  When fUsingSavedCreds = true, TermService treats the
-        // connection as NLA-pre-authenticated and tries to perform the logon itself using delegated
-        // NLA credentials — but since our companion handles CredSSP (not TermService), TermService
-        // cannot find those delegated credentials and immediately closes the connection without ever
-        // calling IsUserAllowedToLogon.
+        // Ask TermService/Winlogon to use protocol-supplied credentials for automatic logon.
+        // See IWRdsProtocolConnection::GetUserCredentials remarks: if we return S_OK there,
+        // TermService passes the credentials to Winlogon to log on the user.
         client_data.fInheritAutoLogon = BOOL(1);
         client_data.fNoAudioPlayback = true;
         copy_wide(&mut client_data.ProtocolName, "IRDP-WTS");
@@ -2590,13 +2209,10 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Err(windows_core::Error::new(E_POINTER, "null user credentials pointer"));
         }
 
-        // Fetch CredSSP credentials from the companion and return them so that TermService knows
-        // who is logging on.  With fInheritAutoLogon=1 and fUsingSavedCreds=true in GetClientData,
-        // TermService treats this as NLA pre-authentication and will NOT call its own internal
-        // LogonUser — it defers authentication to IsUserAllowedToLogon where we supply the token.
-        let Some((username, domain, password)) =
-            self.control_bridge.get_connection_credentials(connection_id)?
-        else {
+        // Fetch CredSSP credentials from the companion and return them.
+        // If we return S_OK, TermService passes these plaintext credentials to Winlogon which
+        // performs the logon.
+        let Some((username, domain, password)) = self.control_bridge.get_connection_credentials(connection_id)? else {
             debug_log_line(&format!(
                 "IWRdsProtocolConnection::GetUserCredentials no_credentials connection_id={connection_id}"
             ));
@@ -2610,6 +2226,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             "IWRdsProtocolConnection::GetUserCredentials ok connection_id={connection_id} user={username} domain={domain}"
         ));
 
+        // SAFETY: pusercreds is non-null and points to writable memory owned by TermService.
         let creds = unsafe { &mut *pusercreds };
         *creds = WTS_USER_CREDENTIAL::default();
         copy_wide(&mut creds.UserName, &username);
@@ -2633,10 +2250,11 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     }
 
     fn AuthenticateClientToSession(&self, sessionid: *mut WTS_SESSION_ID) -> windows_core::Result<()> {
-        let session_in = if !sessionid.is_null() {
-            unsafe { (*sessionid).SessionId }
-        } else {
+        let session_in = if sessionid.is_null() {
             0
+        } else {
+            // SAFETY: sessionid is non-null and points to a valid WTS_SESSION_ID provided by TermService.
+            unsafe { (*sessionid).SessionId }
         };
         debug_log_line(&format!(
             "IWRdsProtocolConnection::AuthenticateClientToSession called connection_id={} session_in={session_in}",
@@ -2678,6 +2296,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Err(windows_core::Error::new(E_POINTER, "null session id pointer"));
         }
 
+        // SAFETY: sessionid is non-null and points to a valid WTS_SESSION_ID provided by TermService.
         let wts_session_id = unsafe { (*sessionid).SessionId };
         debug_log_line(&format!(
             "IWRdsProtocolConnection::NotifySessionId called connection_id={} session_id={}",
@@ -2686,14 +2305,11 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         ));
         self.inner.notify_session_id(wts_session_id).map_err(transition_error)?;
 
-        if let Err(error) =
-            self.control_bridge
-                .set_capture_session_id(self.inner.connection_id(), wts_session_id)
+        if let Err(error) = self
+            .control_bridge
+            .set_capture_session_id_retried(self.inner.connection_id(), wts_session_id)
         {
-            debug_log_line(&format!(
-                "Failed to notify companion of session id: {}",
-                error
-            ));
+            debug_log_line(&format!("Failed to notify companion of session id: {error}"));
         }
 
         Ok(())
@@ -2770,7 +2386,10 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         // up to 250 ms).  ConnectNotify is called AFTER the session's display has been set up,
         // giving the pipe time to become free.  Retry here so the companion learns the real
         // session ID and can switch from the fallback capture session to the active session.
-        match self.control_bridge.set_capture_session_id_retried(connection_id, sessionid) {
+        match self
+            .control_bridge
+            .set_capture_session_id_retried(connection_id, sessionid)
+        {
             Ok(()) => {
                 debug_log_line(&format!(
                     "IWRdsProtocolConnection::ConnectNotify set_capture_session_id ok connection_id={connection_id} session_id={sessionid}"
@@ -2794,96 +2413,28 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         _pusername: &PCWSTR,
     ) -> windows_core::Result<()> {
         let connection_id = self.inner.connection_id();
+        let domain_name = if _pdomainname.is_null() {
+            "<null>".to_owned()
+        } else {
+            // SAFETY: TermService provides a valid NUL-terminated PCWSTR for the duration of this call.
+            unsafe { _pdomainname.to_string() }.unwrap_or_else(|_| "<invalid>".to_owned())
+        };
+
+        let user_name = if _pusername.is_null() {
+            "<null>".to_owned()
+        } else {
+            // SAFETY: TermService provides a valid NUL-terminated PCWSTR for the duration of this call.
+            unsafe { _pusername.to_string() }.unwrap_or_else(|_| "<invalid>".to_owned())
+        };
+
+        // Per docs, UserToken is an input token handle created by TermService/Winlogon.
+        // We can allow/deny the logon here, but we must NOT treat it as an out-parameter.
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::IsUserAllowedToLogon called connection_id={connection_id} session_id={sessionid}"
+            "IWRdsProtocolConnection::IsUserAllowedToLogon called connection_id={connection_id} session_id={sessionid} usertoken=0x{:X} user={domain_name}\\{user_name}",
+            usertoken.0
         ));
 
-        // Retrieve CredSSP credentials from the companion service and call LogonUserW so that
-        // TermService can automatically log the user into their session — exactly what the built-in
-        // Windows RDP stack does.  Without this, TermService never receives a user token and the
-        // session stays at the pre-login state.
-        match self.control_bridge.get_connection_credentials(connection_id) {
-            Ok(Some((username, domain, password))) => {
-                debug_log_line(&format!(
-                    "IsUserAllowedToLogon: calling LogonUserW username={username} domain={domain} connection_id={connection_id}"
-                ));
-
-                let username_wide: Vec<u16> = username.encode_utf16().chain(std::iter::once(0)).collect();
-                let domain_wide: Vec<u16> = if domain.is_empty() {
-                    // Empty domain means local account; pass a dot which Windows treats as local.
-                    ".".encode_utf16().chain(std::iter::once(0)).collect()
-                } else {
-                    domain.encode_utf16().chain(std::iter::once(0)).collect()
-                };
-                let password_wide: Vec<u16> = password.encode_utf16().chain(std::iter::once(0)).collect();
-
-                let mut token = HANDLE::default();
-                // SAFETY: all wide-string buffers are valid, null-terminated, and outlive the call.
-                let logon_result = unsafe {
-                    LogonUserW(
-                        PCWSTR::from_raw(username_wide.as_ptr()),
-                        PCWSTR::from_raw(domain_wide.as_ptr()),
-                        PCWSTR::from_raw(password_wide.as_ptr()),
-                        LOGON32_LOGON_INTERACTIVE,
-                        LOGON32_PROVIDER_DEFAULT,
-                        &mut token,
-                    )
-                };
-
-                match logon_result {
-                    Ok(()) => {
-                        debug_log_line(&format!(
-                            "IsUserAllowedToLogon: LogonUserW succeeded connection_id={connection_id}"
-                        ));
-                        // Write the user token to TermService's out-parameter.  TermService takes
-                        // ownership and will use it to auto-log the user into session N.
-                        if usertoken.0 != 0 {
-                            // SAFETY: usertoken.0 is a TermService-provided pointer to a HANDLE slot.
-                            unsafe { *(usertoken.0 as *mut HANDLE) = token };
-                        }
-                        Ok(())
-                    }
-                    Err(error) => {
-                        debug_log_line(&format!(
-                            "IsUserAllowedToLogon: LogonUserW failed connection_id={connection_id} error={error}"
-                        ));
-                        warn!(
-                            connection_id,
-                            %error,
-                            "LogonUserW failed in IsUserAllowedToLogon; session will show Winlogon instead of auto-logging in"
-                        );
-                        // Do NOT propagate the error: returning Err causes TermService to close the
-                        // connection immediately, which means NotifySessionId is never called and the
-                        // companion never learns the correct session ID.  Return Ok without a token
-                        // instead; TermService will show the Winlogon screen for the session but at
-                        // least the session is created and SetCaptureSessionId will be called.
-                        Ok(())
-                    }
-                }
-            }
-            Ok(None) => {
-                debug_log_line(&format!(
-                    "IsUserAllowedToLogon: no credentials available connection_id={connection_id}"
-                ));
-                warn!(
-                    connection_id,
-                    "No CredSSP credentials available for IsUserAllowedToLogon; session will stay at login screen"
-                );
-                // Allow logon to continue without a token — TermService will present the login screen.
-                Ok(())
-            }
-            Err(error) => {
-                debug_log_line(&format!(
-                    "IsUserAllowedToLogon: get_connection_credentials error connection_id={connection_id} error={error}"
-                ));
-                warn!(
-                    connection_id,
-                    %error,
-                    "Failed to fetch credentials for IsUserAllowedToLogon"
-                );
-                Ok(())
-            }
-        }
+        Ok(())
     }
 
     fn SessionArbitrationEnumeration(
@@ -2943,7 +2494,6 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         *self.ready_notified.lock() = false;
         self.release_virtual_channel_forwarders();
-        self.release_input_video_handles();
         self.release_virtual_channels();
         self.release_connection_callback();
         Ok(())
@@ -2962,7 +2512,6 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         *self.ready_notified.lock() = false;
         self.release_virtual_channel_forwarders();
         self.release_virtual_channels();
-        self.release_input_video_handles();
         self.release_connection_callback();
         self.inner.close().map_err(transition_error)?;
         Ok(())
@@ -3131,8 +2680,10 @@ fn find_disconnected_session() -> Option<u32> {
         return None;
     }
 
-    // SAFETY: WTSEnumerateSessionsW returned `session_count` valid entries at `sessions_ptr`.
-    let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count as usize) };
+    let session_count_usize = usize::try_from(session_count).ok()?;
+
+    // SAFETY: WTSEnumerateSessionsW returned `session_count_usize` valid entries at `sessions_ptr`.
+    let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
 
     let mut found: Option<u32> = None;
     for session in sessions {
@@ -3176,50 +2727,6 @@ fn handle_to_raw_usize(handle: HANDLE) -> usize {
 #[expect(clippy::as_conversions)]
 fn raw_usize_to_handle(raw: usize) -> HANDLE {
     HANDLE(raw as *mut core::ffi::c_void)
-}
-
-#[derive(Debug)]
-struct InputVideoHandles {
-    keyboard: OpenDeviceHandle,
-    mouse: OpenDeviceHandle,
-    video: OpenDeviceHandle,
-}
-
-impl InputVideoHandles {
-    fn open() -> windows_core::Result<Self> {
-        let keyboard = OpenDeviceHandle::open_first_available(
-            "keyboard",
-            "IRONRDP_WTS_KEYBOARD_DEVICE",
-            &[r"\\.\KeyboardClass0", r"\\.\KeyboardClass1"],
-        )?;
-
-        let mouse = OpenDeviceHandle::open_first_available(
-            "mouse",
-            "IRONRDP_WTS_MOUSE_DEVICE",
-            &[r"\\.\PointerClass0", r"\\.\PointerClass1"],
-        )?;
-
-        let video = OpenDeviceHandle::open_first_available(
-            "video",
-            "IRONRDP_WTS_VIDEO_DEVICE",
-            &[r"\\.\RdpVideoMiniport", r"\\.\DISPLAY"],
-        )?;
-
-        info!(
-            keyboard_device = %keyboard.path,
-            mouse_device = %mouse.path,
-            video_device = %video.path,
-            "Opened protocol input and video device handles"
-        );
-
-        Ok(Self { keyboard, mouse, video })
-    }
-}
-
-#[derive(Debug)]
-struct OpenDeviceHandle {
-    path: String,
-    file: std::fs::File,
 }
 
 #[derive(Debug)]
@@ -3368,60 +2875,6 @@ fn is_virtual_channel_read_timeout(error: &windows_core::Error) -> bool {
     code == HRESULT::from_win32(ERROR_SEM_TIMEOUT.0)
         || code == HRESULT::from_win32(ERROR_IO_INCOMPLETE.0)
         || code == HRESULT::from_win32(ERROR_NO_DATA.0)
-}
-
-impl OpenDeviceHandle {
-    fn open_first_available(
-        device_kind: &str,
-        env_var_name: &str,
-        fallback_paths: &[&str],
-    ) -> windows_core::Result<Self> {
-        let configured_path = std::env::var(env_var_name).ok();
-
-        let mut candidate_paths = Vec::with_capacity(fallback_paths.len() + usize::from(configured_path.is_some()));
-        if let Some(path) = configured_path {
-            if !path.trim().is_empty() {
-                candidate_paths.push(path);
-            }
-        }
-
-        candidate_paths.extend(fallback_paths.iter().map(|path| (*path).to_owned()));
-
-        let mut failures = Vec::new();
-
-        for path in candidate_paths {
-            let open_result = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .or_else(|_| OpenOptions::new().read(true).open(&path));
-
-            match open_result {
-                Ok(file) => {
-                    return Ok(Self { path, file });
-                }
-                Err(error) => {
-                    failures.push(format!("{path}: {error}"));
-                }
-            }
-        }
-
-        let error_message = format!(
-            "failed to open {device_kind} device handle; set {env_var_name} to an accessible device path; attempts: {}",
-            failures.join(" | ")
-        );
-
-        Err(windows_core::Error::new(E_NOTIMPL, error_message))
-    }
-
-    fn as_handle_ptr(&self) -> HANDLE_PTR {
-        raw_handle_to_handle_ptr(self.file.as_raw_handle())
-    }
-}
-
-#[expect(clippy::as_conversions)]
-fn raw_handle_to_handle_ptr(raw_handle: RawHandle) -> HANDLE_PTR {
-    HANDLE_PTR(raw_handle as usize)
 }
 
 #[cfg(test)]

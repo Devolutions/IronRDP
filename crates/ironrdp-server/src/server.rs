@@ -325,6 +325,10 @@ enum RunState {
 ///
 /// Holds the TLS-upgraded stream and acceptor state so the caller can inspect
 /// the captured CredSSP identity before continuing with the session loop.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public API; boxing would be a breaking change and this enum is not created in hot paths"
+)]
 pub enum PendingSession {
     Tls {
         framed: TokioFramed<tokio_rustls::server::TlsStream<TcpStream>>,
@@ -542,10 +546,7 @@ impl RdpServer {
     /// Performs TLS + CredSSP handshake only, returning a [`PendingSession`] that
     /// can be continued with [`run_connection_session`] after the caller has
     /// consumed the captured credentials.
-    pub async fn run_connection_handshake(
-        &mut self,
-        stream: TcpStream,
-    ) -> Result<PendingSession> {
+    pub async fn run_connection_handshake(&mut self, stream: TcpStream) -> Result<PendingSession> {
         let framed = TokioFramed::new(stream);
 
         let size = self.display.lock().await.size().await;
@@ -599,9 +600,7 @@ impl RdpServer {
                 })
             }
 
-            BeginResult::Continue(framed) => {
-                Ok(PendingSession::Plain { framed, acceptor })
-            }
+            BeginResult::Continue(framed) => Ok(PendingSession::Plain { framed, acceptor }),
         }
     }
 

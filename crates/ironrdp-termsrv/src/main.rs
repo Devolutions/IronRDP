@@ -5,12 +5,14 @@ fn main() {
 
 #[cfg(windows)]
 mod windows_main {
+    use core::ffi::c_void;
     use core::net::{Ipv4Addr, SocketAddr};
     use core::num::{NonZeroI32, NonZeroU16, NonZeroUsize};
     use core::ptr::null_mut;
-    use core::sync::atomic::{fence, Ordering};
+    use core::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
     use std::collections::{HashMap, VecDeque};
     use std::io;
+    use std::io::Write as _;
     use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Instant;
 
@@ -28,14 +30,14 @@ mod windows_main {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::windows::named_pipe;
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::{mpsc, Mutex};
+    use tokio::sync::{mpsc, watch, Mutex};
     use tokio::task::JoinHandle;
     use tokio::time::{sleep, timeout, Duration};
     use tracing::{debug, error, info, warn};
     use tracing_subscriber::EnvFilter;
-    use windows::core::{w, PCWSTR, PWSTR};
+    use windows::core::{w, BOOL, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
-        GetLastError, LocalFree, SetLastError, ERROR_NOT_ALL_ASSIGNED, HLOCAL, LUID, WAIT_OBJECT_0,
+        GetLastError, LocalFree, SetLastError, ERROR_NOT_ALL_ASSIGNED, HANDLE, HLOCAL, LUID, WAIT_OBJECT_0,
         WAIT_TIMEOUT, WIN32_ERROR,
     };
     use windows::Win32::Graphics::Gdi::{
@@ -82,9 +84,9 @@ mod windows_main {
     };
 
     use windows::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
-    use windows::Win32::Security::{GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+    use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
     use windows::Win32::System::RemoteDesktop::{WTSEnumerateProcessesW, WTS_PROCESS_INFOW};
 
@@ -95,6 +97,8 @@ mod windows_main {
     }
 
     const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
+    const CONTROL_PIPE_SERVER_INSTANCES: usize = 64;
+    const CONTROL_PIPE_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
     const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:4489";
     const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
@@ -102,6 +106,7 @@ mod windows_main {
     const CAPTURE_HELPER_RETRY_DELAY: Duration = Duration::from_secs(5);
     const CAPTURE_IPC_ENV: &str = "IRONRDP_WTS_CAPTURE_IPC";
     const CAPTURE_SESSION_ID_ENV: &str = "IRONRDP_WTS_CAPTURE_SESSION_ID";
+    const DUMP_BITMAP_UPDATES_DIR_ENV: &str = "IRONRDP_WTS_DUMP_BITMAP_UPDATES_DIR";
     const AUTO_LISTEN_ENV: &str = "IRONRDP_WTS_AUTO_LISTEN";
     const AUTO_LISTEN_NAME_ENV: &str = "IRONRDP_WTS_AUTO_LISTENER_NAME";
     const TLS_CERT_SUBJECT_FIND: &str = "IronRDP TermSrv";
@@ -110,7 +115,7 @@ mod windows_main {
     const RDP_PASSWORD_ENV: &str = "IRONRDP_RDP_PASSWORD";
     const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
 
-    fn configure_control_pipe_security(full_pipe_name: &str) -> anyhow::Result<()> {
+    fn control_pipe_security_attributes() -> anyhow::Result<(SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR)> {
         // Allow TermService (NetworkService) to connect to the control pipe.
         //
         // NOTE: we also include Everyone (WD) as a diagnostic escape hatch so we can
@@ -133,43 +138,14 @@ mod windows_main {
         }
         .map_err(|error| anyhow!("ConvertStringSecurityDescriptorToSecurityDescriptorW failed: {error}"))?;
 
-        let mut dacl_present = windows::core::BOOL(0);
-        let mut dacl_ptr: *mut ACL = null_mut();
-        let mut dacl_defaulted = windows::core::BOOL(0);
-
-        // SAFETY: `sd` points to a valid security descriptor allocated above; output pointers are valid.
-        unsafe { GetSecurityDescriptorDacl(sd, &mut dacl_present, &mut dacl_ptr, &mut dacl_defaulted) }
-            .context("GetSecurityDescriptorDacl failed")?;
-
-        if dacl_present == windows::core::BOOL(0) || dacl_ptr.is_null() {
-            return Err(anyhow!("security descriptor does not contain a DACL"));
-        }
-
-        let pipe_name_wide: Vec<u16> = full_pipe_name.encode_utf16().chain(core::iter::once(0)).collect();
-
-        // SAFETY: SetNamedSecurityInfoW expects a file object name. Named pipes are file objects.
-        // We provide a DACL pointer that is valid for the duration of the call.
-        let result = unsafe {
-            SetNamedSecurityInfoW(
-                PCWSTR::from_raw(pipe_name_wide.as_ptr()),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                None,
-                None,
-                Some(dacl_ptr as *const ACL),
-                None,
-            )
+        let attrs = SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
+                .map_err(|_| anyhow!("SECURITY_ATTRIBUTES size overflow"))?,
+            lpSecurityDescriptor: sd.0,
+            bInheritHandle: BOOL(0),
         };
 
-        // SAFETY: frees the buffer allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
-        unsafe {
-            let _ = LocalFree(Some(HLOCAL(sd.0)));
-        }
-
-        if result.0 != 0 {
-            return Err(anyhow!("SetNamedSecurityInfoW failed: {result:?}"));
-        }
-        Ok(())
+        Ok((attrs, sd))
     }
 
     const INPUT_FRAME_MAGIC: [u8; 4] = *b"IRIN";
@@ -424,10 +400,6 @@ mod windows_main {
         }
     }
 
-    /// How long to wait for `WTSQueryUserToken` to succeed after a TermService session is assigned
-    /// before giving up and falling back to the pre-login (winlogon) token.
-    const LOGON_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
-
     /// In Provider mode, how long to wait for the WTS provider DLL to send `SetCaptureSessionId`
     /// before falling back to `resolve_capture_session_id()`.  The DLL sends this from
     /// `ConnectNotify` which fires ~1–2 s after the TCP connection is accepted.  5 seconds gives
@@ -448,7 +420,7 @@ mod windows_main {
         helper_timeouts: u64,
         /// Set the first time we observe `session_id_override` but `WTSQueryUserToken` has not yet
         /// succeeded.  We delay spawning the capture helper until the user is logged in (or until
-        /// `LOGON_WAIT_TIMEOUT` elapses).
+        /// we decide to fall back to a non-user token).
         waiting_for_user_login_since: Option<Instant>,
         /// Set to `true` after we have restarted the capture helper once the user has logged in.
         /// Prevents repeated restarts if `WTSQueryUserToken` briefly flaps.
@@ -539,238 +511,238 @@ mod windows_main {
             // the first frame arrives) can retry without returning Ok(None) — returning Ok(None)
             // would cause the IronRDP server to disconnect the client immediately.
             loop {
-            if self.sent_first_frame && self.capture.is_none() {
-                sleep(CAPTURE_INTERVAL).await;
-            }
+                if self.sent_first_frame && self.capture.is_none() {
+                    sleep(CAPTURE_INTERVAL).await;
+                }
 
-            let mut session_id_override = self
-                .connection_session_ids
-                .lock()
-                .ok()
-                .and_then(|guard| guard.get(&self.connection_id).copied());
+                let mut session_id_override = self
+                    .connection_session_ids
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.get(&self.connection_id).copied());
 
-            // In Provider mode, the WTS provider DLL will call SetCaptureSessionId from
-            // ConnectNotify (~1-2 s after TCP accept) to tell us the correct TermService session.
-            // Spin here until the session ID arrives so we never start the capture helper with
-            // a wrong (guessed) session.  We must NOT return Ok(None) because the IronRDP server
-            // interprets None as "disconnect".  Fall through after PROVIDER_SESSION_ID_WAIT_TIMEOUT
-            // so we don't stall forever if the DLL fails to deliver the session ID.
-            if self.provider_mode && self.capture.is_none() && session_id_override.is_none() {
-                let deadline = self
-                    .wait_for_session_id_until
-                    .get_or_insert_with(|| Instant::now() + PROVIDER_SESSION_ID_WAIT_TIMEOUT);
+                // In Provider mode, the WTS provider DLL will call SetCaptureSessionId from
+                // ConnectNotify (~1-2 s after TCP accept) to tell us the correct TermService session.
+                // Spin here until the session ID arrives so we never start the capture helper with
+                // a wrong (guessed) session.  We must NOT return Ok(None) because the IronRDP server
+                // interprets None as "disconnect".  Fall through after PROVIDER_SESSION_ID_WAIT_TIMEOUT
+                // so we don't stall forever if the DLL fails to deliver the session ID.
+                if self.provider_mode && self.capture.is_none() && session_id_override.is_none() {
+                    let deadline = self
+                        .wait_for_session_id_until
+                        .get_or_insert_with(|| Instant::now() + PROVIDER_SESSION_ID_WAIT_TIMEOUT);
 
-                while Instant::now() < *deadline {
-                    sleep(Duration::from_millis(100)).await;
-                    session_id_override = self
-                        .connection_session_ids
-                        .lock()
-                        .ok()
-                        .and_then(|guard| guard.get(&self.connection_id).copied());
-                    if session_id_override.is_some() {
-                        break;
+                    while Instant::now() < *deadline {
+                        sleep(Duration::from_millis(100)).await;
+                        session_id_override = self
+                            .connection_session_ids
+                            .lock()
+                            .ok()
+                            .and_then(|guard| guard.get(&self.connection_id).copied());
+                        if session_id_override.is_some() {
+                            break;
+                        }
                     }
-                }
 
-                if session_id_override.is_none() {
-                    info!(
-                        connection_id = self.connection_id,
-                        "Timed out waiting for provider SetCaptureSessionId; falling back to guessed session"
-                    );
-                }
-            }
-
-            // In provider mode (IRONRDP_WTS_PROVIDER=1), note when the WTS provider assigns
-            // a session so we can restart capture with the correct session and user token.
-            // The session_override_arrived / user_logged_in restart logic below handles the
-            // transition from the initial fallback capture to the real user desktop.
-
-            // Restart the capture helper if a better session or user token has become available:
-            //   - The WTS provider set session_id_override AFTER capture already started with a
-            //     guessed session from resolve_capture_session_id.  Restart to target the correct
-            //     TermService session.
-            //   - The user has now logged into the TermService session (WTSQueryUserToken
-            //     succeeds).  Restart to pick up the real user token instead of the pre-login
-            //     fallback (winlogon) token.
-            let session_override_arrived =
-                session_id_override.is_some() && self.capture_started_with_session_override.is_none();
-            let user_logged_in = !self.capture_restarted_for_logon
-                && session_id_override.map_or(false, session_has_user_token);
-            let should_restart = self.capture.is_some() && (session_override_arrived || user_logged_in);
-
-            if should_restart {
-                let session_id = session_id_override.unwrap_or(0);
-                if session_override_arrived {
-                    info!(
-                        connection_id = self.connection_id,
-                        session_id,
-                        "WTS session assigned after capture started; restarting capture helper on correct session"
-                    );
-                } else {
-                    info!(
-                        connection_id = self.connection_id,
-                        session_id,
-                        "User has logged in; restarting capture helper to pick up real user desktop"
-                    );
-                }
-                self.capture_restarted_for_logon = true;
-
-                if let Some(capture) = self.capture.take() {
-                    capture.terminate();
-                }
-
-                self.next_helper_attempt_at = Instant::now();
-                self.warned_blank_capture = false;
-                self.sent_first_frame = false;
-                self.last_bitmap = None;
-                self.helper_frames_received = 0;
-                self.helper_timeouts = 0;
-                self.capture_started_with_session_override = None;
-                self.waiting_for_user_login_since = None;
-            }
-
-            if self.capture.is_none() && Instant::now() >= self.next_helper_attempt_at {
-                // Start the capture helper immediately once the session ID is known.
-                // `acquire_session_token` handles the privilege-less case: it falls back to
-                // `explorer.exe` (user's desktop) then `winlogon.exe` (pre-login screen) then
-                // the service token, so the capture helper can always start regardless of whether
-                // `WTSQueryUserToken` (which requires SE_TCB_PRIVILEGE) succeeds.
-                if let Some(session_id) = session_id_override {
-                    if session_has_user_token(session_id) {
-                        // User is logged in — clear the wait state.
-                        self.waiting_for_user_login_since = None;
-                    }
-                }
-
-                match CaptureClient::start(
-                    self.connection_id,
-                    self.desktop_size,
-                    Arc::clone(&self.input_stream_slot),
-                    session_id_override,
-                )
-                .await
-                {
-                    Ok(capture) => {
+                    if session_id_override.is_none() {
                         info!(
                             connection_id = self.connection_id,
-                            helper_pid = capture.pid(),
-                            "Started interactive capture helper"
+                            "Timed out waiting for provider SetCaptureSessionId; falling back to guessed session"
                         );
-                        self.capture_started_with_session_override = session_id_override;
-                        self.capture = Some(capture);
-                    }
-                    Err(error) => {
-                        warn!(
-                            connection_id = self.connection_id,
-                            error = %format!("{error:#}"),
-                            "Failed to start interactive capture helper; falling back to in-process GDI"
-                        );
-                        self.next_helper_attempt_at = Instant::now() + CAPTURE_HELPER_RETRY_DELAY;
                     }
                 }
-            }
 
-            let captured = if let Some(capture) = &mut self.capture {
-                let read_timeout = if self.helper_frames_received == 0 {
-                    Duration::from_secs(1)
+                // In provider mode (IRONRDP_WTS_PROVIDER=1), note when the WTS provider assigns
+                // a session so we can restart capture with the correct session and user token.
+                // The session_override_arrived / user_logged_in restart logic below handles the
+                // transition from the initial fallback capture to the real user desktop.
+
+                // Restart the capture helper if a better session or user token has become available:
+                //   - The WTS provider set session_id_override AFTER capture already started with a
+                //     guessed session from resolve_capture_session_id.  Restart to target the correct
+                //     TermService session.
+                //   - The user has now logged into the TermService session (WTSQueryUserToken
+                //     succeeds).  Restart to pick up the real user token instead of the pre-login
+                //     fallback (winlogon) token.
+                let session_override_arrived =
+                    session_id_override.is_some() && self.capture_started_with_session_override.is_none();
+
+                let user_token_available = session_id_override.is_some_and(session_has_user_token);
+                let should_restart_for_logon = user_token_available && !self.capture_restarted_for_logon;
+                let should_restart = self.capture.is_some() && (session_override_arrived || should_restart_for_logon);
+
+                if should_restart {
+                    let session_id = session_id_override.unwrap_or(0);
+                    if should_restart_for_logon {
+                        info!(
+                            connection_id = self.connection_id,
+                            session_id, "User has logged in; restarting capture helper to pick up real user desktop"
+                        );
+                        self.capture_restarted_for_logon = true;
+                    } else {
+                        info!(
+                            connection_id = self.connection_id,
+                            session_id,
+                            "WTS session assigned after capture started; restarting capture helper on correct session"
+                        );
+                    }
+
+                    if let Some(capture) = self.capture.take() {
+                        capture.terminate();
+                    }
+
+                    self.next_helper_attempt_at = Instant::now();
+                    self.warned_blank_capture = false;
+                    self.sent_first_frame = false;
+                    self.last_bitmap = None;
+                    self.helper_frames_received = 0;
+                    self.helper_timeouts = 0;
+                    self.capture_started_with_session_override = None;
+                    self.waiting_for_user_login_since = None;
+                }
+
+                if self.capture.is_none() && Instant::now() >= self.next_helper_attempt_at {
+                    // Start the capture helper immediately once the session ID is known.
+                    // `acquire_session_token` handles the privilege-less case: it falls back to
+                    // `explorer.exe` (user's desktop) then `winlogon.exe` (pre-login screen) then
+                    // the service token, so the capture helper can always start regardless of whether
+                    // `WTSQueryUserToken` (which requires SE_TCB_PRIVILEGE) succeeds.
+                    if let Some(session_id) = session_id_override {
+                        if session_has_user_token(session_id) {
+                            // User is logged in — clear the wait state.
+                            self.waiting_for_user_login_since = None;
+                        }
+                    }
+
+                    match CaptureClient::start(
+                        self.connection_id,
+                        self.desktop_size,
+                        Arc::clone(&self.input_stream_slot),
+                        session_id_override,
+                    )
+                    .await
+                    {
+                        Ok(capture) => {
+                            info!(
+                                connection_id = self.connection_id,
+                                helper_pid = capture.pid(),
+                                "Started interactive capture helper"
+                            );
+                            self.capture_started_with_session_override = session_id_override;
+                            self.capture = Some(capture);
+                        }
+                        Err(error) => {
+                            warn!(
+                                connection_id = self.connection_id,
+                                error = %format!("{error:#}"),
+                                "Failed to start interactive capture helper; falling back to in-process GDI"
+                            );
+                            self.next_helper_attempt_at = Instant::now() + CAPTURE_HELPER_RETRY_DELAY;
+                        }
+                    }
+                }
+
+                let captured = if let Some(capture) = &mut self.capture {
+                    let read_timeout = if self.helper_frames_received == 0 {
+                        Duration::from_secs(1)
+                    } else {
+                        CAPTURE_INTERVAL
+                    };
+
+                    match timeout(read_timeout, capture.read_frame()).await {
+                        Ok(Ok(frame)) => {
+                            self.helper_frames_received = self.helper_frames_received.saturating_add(1);
+                            frame
+                        }
+                        Ok(Err(error)) => {
+                            warn!(
+                                connection_id = self.connection_id,
+                                error = %format!("{error:#}"),
+                                "Interactive capture helper failed"
+                            );
+                            let capture = self.capture.take();
+                            if let Some(capture) = capture {
+                                capture.terminate();
+                            }
+                            self.next_helper_attempt_at = Instant::now() + CAPTURE_HELPER_RETRY_DELAY;
+
+                            if let Some(bitmap) = self.last_bitmap.clone() {
+                                CapturedFrame::Raw(bitmap)
+                            } else {
+                                // Helper died before sending its first frame.  Retry rather than
+                                // sending the synthetic test pattern — a GDI fallback or a fresh
+                                // helper spawn will produce real (possibly blank) content instead.
+                                sleep(CAPTURE_INTERVAL).await;
+                                continue;
+                            }
+                        }
+                        Err(_) => {
+                            self.helper_timeouts = self.helper_timeouts.saturating_add(1);
+                            sleep(CAPTURE_INTERVAL).await;
+
+                            if let Some(bitmap) = self.last_bitmap.clone() {
+                                CapturedFrame::Raw(bitmap)
+                            } else {
+                                // Helper timed out before its first frame arrived (session still
+                                // initialising).  Loop back and wait rather than sending the
+                                // synthetic test pattern.
+                                continue;
+                            }
+                        }
+                    }
                 } else {
-                    CAPTURE_INTERVAL
+                    match capture_bitmap_update(self.desktop_size) {
+                        Ok(bitmap) => CapturedFrame::Raw(bitmap),
+                        Err(error) => {
+                            if let Some(bitmap) = self.last_bitmap.clone() {
+                                warn!(
+                                    error = %format!("{error:#}"),
+                                    "GDI capture failed; re-sending last bitmap"
+                                );
+                                CapturedFrame::Raw(bitmap)
+                            } else {
+                                warn!(
+                                    error = %format!("{error:#}"),
+                                    "GDI capture failed; sending synthetic test pattern"
+                                );
+                                let bitmap = fallback_bitmap_update(self.desktop_size)
+                                    .context("failed to generate fallback bitmap update")?;
+                                CapturedFrame::Raw(bitmap)
+                            }
+                        }
+                    }
                 };
 
-                match timeout(read_timeout, capture.read_frame()).await {
-                    Ok(Ok(frame)) => {
-                        self.helper_frames_received = self.helper_frames_received.saturating_add(1);
-                        frame
-                    }
-                    Ok(Err(error)) => {
-                        warn!(
-                            connection_id = self.connection_id,
-                            error = %format!("{error:#}"),
-                            "Interactive capture helper failed"
-                        );
-                        let capture = self.capture.take();
-                        if let Some(capture) = capture {
-                            capture.terminate();
-                        }
-                        self.next_helper_attempt_at = Instant::now() + CAPTURE_HELPER_RETRY_DELAY;
+                self.sent_first_frame = true;
 
-                        if let Some(bitmap) = self.last_bitmap.clone() {
-                            CapturedFrame::Raw(bitmap)
-                        } else {
-                            // Helper died before sending its first frame.  Retry rather than
-                            // sending the synthetic test pattern — a GDI fallback or a fresh
-                            // helper spawn will produce real (possibly blank) content instead.
-                            sleep(CAPTURE_INTERVAL).await;
-                            continue;
-                        }
+                match captured {
+                    CapturedFrame::PreEncoded(surface) => {
+                        return Ok(Some(DisplayUpdate::PreEncodedSurface(surface)));
                     }
-                    Err(_) => {
-                        self.helper_timeouts = self.helper_timeouts.saturating_add(1);
-                        sleep(CAPTURE_INTERVAL).await;
-
-                        if let Some(bitmap) = self.last_bitmap.clone() {
-                            CapturedFrame::Raw(bitmap)
-                        } else {
-                            // Helper timed out before its first frame arrived (session still
-                            // initialising).  Loop back and wait rather than sending the
-                            // synthetic test pattern.
-                            continue;
-                        }
-                    }
-                }
-            } else {
-                match capture_bitmap_update(self.desktop_size) {
-                    Ok(bitmap) => CapturedFrame::Raw(bitmap),
-                    Err(error) => {
-                        if let Some(bitmap) = self.last_bitmap.clone() {
-                            warn!(
-                                error = %format!("{error:#}"),
-                                "GDI capture failed; re-sending last bitmap"
+                    CapturedFrame::Raw(bitmap) => {
+                        // Log a warning when the capture helper returns an all-black frame so we can
+                        // diagnose session/desktop mismatches, but still send the actual (blank) frame.
+                        // Replacing blank frames with a synthetic test pattern was confusing because it
+                        // made new/initializing sessions (where blank is normal while Winlogon starts)
+                        // look like broken captures.
+                        if is_probably_blank_bgra32(bitmap.data.as_ref()) && !self.warned_blank_capture {
+                            self.warned_blank_capture = true;
+                            debug!(
+                                connection_id = self.connection_id,
+                                "Captured blank frame; sending as-is (session may still be initializing)"
                             );
-                            CapturedFrame::Raw(bitmap)
-                        } else {
-                            warn!(
-                                error = %format!("{error:#}"),
-                                "GDI capture failed; sending synthetic test pattern"
-                            );
-                            let bitmap = fallback_bitmap_update(self.desktop_size)
-                                .context("failed to generate fallback bitmap update")?;
-                            CapturedFrame::Raw(bitmap)
                         }
+
+                        self.last_bitmap = Some(bitmap.clone());
+                        return Ok(Some(DisplayUpdate::Bitmap(bitmap)));
                     }
                 }
-            };
-
-            self.sent_first_frame = true;
-
-            match captured {
-                CapturedFrame::PreEncoded(surface) => {
-                    return Ok(Some(DisplayUpdate::PreEncodedSurface(surface)));
-                }
-                CapturedFrame::Raw(bitmap) => {
-                    // Log a warning when the capture helper returns an all-black frame so we can
-                    // diagnose session/desktop mismatches, but still send the actual (blank) frame.
-                    // Replacing blank frames with a synthetic test pattern was confusing because it
-                    // made new/initializing sessions (where blank is normal while Winlogon starts)
-                    // look like broken captures.
-                    if is_probably_blank_bgra32(bitmap.data.as_ref()) && !self.warned_blank_capture {
-                        self.warned_blank_capture = true;
-                        debug!(
-                            connection_id = self.connection_id,
-                            "Captured blank frame; sending as-is (session may still be initializing)"
-                        );
-                    }
-
-                    self.last_bitmap = Some(bitmap.clone());
-                    return Ok(Some(DisplayUpdate::Bitmap(bitmap)));
-                }
-            }
             } // end loop
         }
     }
 
     #[derive(Clone, Copy)]
-    struct SendHandle(windows::Win32::Foundation::HANDLE);
+    struct SendHandle(HANDLE);
 
     // SAFETY: Windows kernel object handles can be sent and used across threads.
     unsafe impl Send for SendHandle {}
@@ -843,12 +815,8 @@ mod windows_main {
                                 "Shared-memory capture IPC failed; falling back to TCP"
                             );
                             Ok(Self::Tcp(
-                                HelperCaptureClient::start(
-                                    connection_id,
-                                    input_stream_slot,
-                                    session_id_override,
-                                )
-                                .await?,
+                                HelperCaptureClient::start(connection_id, input_stream_slot, session_id_override)
+                                    .await?,
                             ))
                         }
                     }
@@ -860,20 +828,6 @@ mod windows_main {
             match self {
                 Self::Tcp(client) => client.pid(),
                 Self::SharedMem(client) => client.pid(),
-            }
-        }
-
-        fn session_id(&self) -> u32 {
-            match self {
-                Self::Tcp(client) => client.session_id(),
-                Self::SharedMem(client) => client.session_id(),
-            }
-        }
-
-        fn desktop(&self) -> HelperDesktop {
-            match self {
-                Self::Tcp(client) => client.desktop(),
-                Self::SharedMem(client) => client.desktop(),
             }
         }
 
@@ -895,8 +849,6 @@ mod windows_main {
     struct HelperCaptureClient {
         helper_pid: u32,
         helper_process: SendHandle,
-        helper_session_id: u32,
-        helper_desktop: HelperDesktop,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
         stream: TcpStream,
     }
@@ -948,8 +900,6 @@ mod windows_main {
             Ok(Self {
                 helper_pid: helper.pid,
                 helper_process: helper.process,
-                helper_session_id: helper.session_id,
-                helper_desktop: helper.desktop,
                 input_stream_slot,
                 stream,
             })
@@ -957,14 +907,6 @@ mod windows_main {
 
         fn pid(&self) -> u32 {
             self.helper_pid
-        }
-
-        fn session_id(&self) -> u32 {
-            self.helper_session_id
-        }
-
-        fn desktop(&self) -> HelperDesktop {
-            self.helper_desktop
         }
 
         fn terminate(self) {
@@ -1252,8 +1194,6 @@ mod windows_main {
     struct SharedMemCaptureClient {
         helper_pid: u32,
         helper_process: SendHandle,
-        helper_session_id: u32,
-        helper_desktop: HelperDesktop,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
         mapping: SendHandle,
         frame_ready_event: SendHandle,
@@ -1379,8 +1319,6 @@ mod windows_main {
             Ok(Self {
                 helper_pid: helper.pid,
                 helper_process: helper.process,
-                helper_session_id: helper.session_id,
-                helper_desktop: helper.desktop,
                 input_stream_slot,
                 mapping,
                 frame_ready_event,
@@ -1396,14 +1334,6 @@ mod windows_main {
 
         fn pid(&self) -> u32 {
             self.helper_pid
-        }
-
-        fn session_id(&self) -> u32 {
-            self.helper_session_id
-        }
-
-        fn desktop(&self) -> HelperDesktop {
-            self.helper_desktop
         }
 
         fn terminate(self) {
@@ -1510,8 +1440,6 @@ mod windows_main {
     struct SpawnedProcess {
         pid: u32,
         process: SendHandle,
-        session_id: u32,
-        desktop: HelperDesktop,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1530,7 +1458,7 @@ mod windows_main {
     }
 
     struct AcquiredSessionToken {
-        token: windows::Win32::Foundation::HANDLE,
+        token: HANDLE,
         desktop: HelperDesktop,
     }
 
@@ -1631,13 +1559,11 @@ mod windows_main {
         Ok(SpawnedProcess {
             pid: process_info.dwProcessId,
             process: SendHandle(process_info.hProcess),
-            session_id,
-            desktop: acquired.desktop,
         })
     }
 
     fn session_has_user_token(session_id: u32) -> bool {
-        let mut token = windows::Win32::Foundation::HANDLE::default();
+        let mut token = HANDLE::default();
         // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
         let res = unsafe { WTSQueryUserToken(session_id, &mut token) };
         if res.is_ok() {
@@ -1680,8 +1606,10 @@ mod windows_main {
             return Ok(console_session);
         }
 
-        // SAFETY: WTSEnumerateSessionsW returned a valid buffer for session_count entries.
-        let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count as usize) };
+        let session_count_usize = usize::try_from(session_count).map_err(|_| anyhow!("session count overflow"))?;
+
+        // SAFETY: WTSEnumerateSessionsW returned a valid buffer for `session_count_usize` entries.
+        let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
 
         let mut candidates: Vec<u32> = sessions.iter().map(|s| s.SessionId).collect();
 
@@ -1709,7 +1637,7 @@ mod windows_main {
     }
 
     fn acquire_session_token(session_id: u32) -> anyhow::Result<AcquiredSessionToken> {
-        let mut token = windows::Win32::Foundation::HANDLE::default();
+        let mut token = HANDLE::default();
 
         // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
         let wts_result = unsafe { WTSQueryUserToken(session_id, &mut token) };
@@ -1738,12 +1666,15 @@ mod windows_main {
         }
 
         if let Ok(token) = token_from_session_process(session_id, "winlogon.exe") {
-            // Windows 10+ renders the login screen on winsta0\default (not the secure Winlogon
-            // desktop).  Spawning the helper on the Default desktop lets GDI capture the login UI.
-            debug!(session_id, "Using winlogon.exe token (default desktop — pre-login)");
+            // When there is no user token (pre-login / lock screen), the visible UI is typically on
+            // the Winlogon desktop. Spawn the helper on winsta0\winlogon so GDI capture can see it.
+            info!(
+                session_id,
+                "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
+            );
             return Ok(AcquiredSessionToken {
                 token,
-                desktop: HelperDesktop::Default,
+                desktop: HelperDesktop::Winlogon,
             });
         }
 
@@ -1756,10 +1687,7 @@ mod windows_main {
         })
     }
 
-    fn token_from_session_process(
-        session_id: u32,
-        process_name: &str,
-    ) -> anyhow::Result<windows::Win32::Foundation::HANDLE> {
+    fn token_from_session_process(session_id: u32, process_name: &str) -> anyhow::Result<HANDLE> {
         let mut process_info_ptr: *mut WTS_PROCESS_INFOW = null_mut();
         let mut process_count = 0u32;
 
@@ -1812,7 +1740,7 @@ mod windows_main {
             .map_err(|error| anyhow!("OpenProcess failed: {error}"))
             .context("OpenProcess failed")?;
 
-        struct HandleGuard(windows::Win32::Foundation::HANDLE);
+        struct HandleGuard(HANDLE);
         impl Drop for HandleGuard {
             fn drop(&mut self) {
                 // SAFETY: handle is either valid or null; CloseHandle is safe to call.
@@ -1824,7 +1752,7 @@ mod windows_main {
 
         let _process_guard = HandleGuard(process_handle);
 
-        let mut winlogon_token = windows::Win32::Foundation::HANDLE::default();
+        let mut winlogon_token = HANDLE::default();
 
         // SAFETY: OpenProcessToken writes a token handle into `winlogon_token` on success.
         unsafe {
@@ -1839,7 +1767,7 @@ mod windows_main {
 
         let _token_guard = HandleGuard(winlogon_token);
 
-        let mut primary_token = windows::Win32::Foundation::HANDLE::default();
+        let mut primary_token = HANDLE::default();
 
         // SAFETY: DuplicateTokenEx writes a new token handle into `primary_token` on success.
         unsafe {
@@ -1858,8 +1786,8 @@ mod windows_main {
         Ok(primary_token)
     }
 
-    fn duplicate_self_token_for_session(session_id: u32) -> anyhow::Result<windows::Win32::Foundation::HANDLE> {
-        let mut process_token = windows::Win32::Foundation::HANDLE::default();
+    fn duplicate_self_token_for_session(session_id: u32) -> anyhow::Result<HANDLE> {
+        let mut process_token = HANDLE::default();
 
         // SAFETY: `GetCurrentProcess` is safe to call.
         let current_process = unsafe { GetCurrentProcess() };
@@ -1877,7 +1805,7 @@ mod windows_main {
             .map_err(|error| anyhow!("OpenProcessToken failed: {error}"))
             .context("OpenProcessToken failed")?;
 
-        let mut primary_token = windows::Win32::Foundation::HANDLE::default();
+        let mut primary_token = HANDLE::default();
 
         // SAFETY: `DuplicateTokenEx` writes a new token handle into `primary_token` on success.
         let duplicate_result = unsafe {
@@ -1900,7 +1828,7 @@ mod windows_main {
             let _ = windows::Win32::Foundation::CloseHandle(process_token);
         }
 
-        let session_id_ptr = core::ptr::addr_of!(session_id).cast::<core::ffi::c_void>();
+        let session_id_ptr = core::ptr::addr_of!(session_id).cast::<c_void>();
 
         enable_privilege(w!("SeTcbPrivilege"))
             .context("failed to enable SeTcbPrivilege (hint: run ironrdp-termsrv as LocalSystem)")?;
@@ -1923,7 +1851,7 @@ mod windows_main {
     }
 
     fn enable_privilege(privilege_name: PCWSTR) -> anyhow::Result<()> {
-        let mut process_token = windows::Win32::Foundation::HANDLE::default();
+        let mut process_token = HANDLE::default();
 
         // SAFETY: `GetCurrentProcess` is safe to call.
         let current_process = unsafe { GetCurrentProcess() };
@@ -2147,6 +2075,114 @@ mod windows_main {
         Ok(())
     }
 
+    static BITMAP_DUMP_DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    static BITMAP_DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    static BITMAP_DUMP_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
+    static BITMAP_DUMP_ERROR_LOGGED: AtomicBool = AtomicBool::new(false);
+
+    fn bitmap_dump_dir() -> Option<&'static std::path::PathBuf> {
+        BITMAP_DUMP_DIR
+            .get_or_init(|| {
+                let raw = std::env::var_os(DUMP_BITMAP_UPDATES_DIR_ENV)?;
+                let raw = raw.to_string_lossy();
+                let trimmed = raw.trim();
+
+                let dir = if trimmed.is_empty()
+                    || trimmed.eq_ignore_ascii_case("1")
+                    || trimmed.eq_ignore_ascii_case("true")
+                    || trimmed.eq_ignore_ascii_case("yes")
+                {
+                    std::env::temp_dir().join("ironrdp-wts-bitmap-updates")
+                } else {
+                    std::path::PathBuf::from(trimmed)
+                };
+
+                Some(dir)
+            })
+            .as_ref()
+    }
+
+    fn maybe_dump_bitmap_update_bgra32(width: NonZeroU16, height: NonZeroU16, stride: NonZeroUsize, data: &[u8]) {
+        let Some(dir) = bitmap_dump_dir() else {
+            return;
+        };
+
+        if !BITMAP_DUMP_ENABLED_LOGGED.swap(true, Ordering::Relaxed) {
+            info!(
+                dir = %dir.display(),
+                "Bitmap dumping enabled (unset IRONRDP_WTS_DUMP_BITMAP_UPDATES_DIR to disable)"
+            );
+        }
+
+        if let Err(error) = dump_bitmap_update_bgra32_impl(dir, width, height, stride, data) {
+            if !BITMAP_DUMP_ERROR_LOGGED.swap(true, Ordering::Relaxed) {
+                warn!(error = %format!("{error:#}"), "Failed to dump captured bitmap");
+            }
+        }
+    }
+
+    fn dump_bitmap_update_bgra32_impl(
+        dir: &std::path::Path,
+        width: NonZeroU16,
+        height: NonZeroU16,
+        stride: NonZeroUsize,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create bitmap dump directory: {}", dir.display()))?;
+
+        let expected = stride
+            .get()
+            .checked_mul(NonZeroUsize::from(height).get())
+            .ok_or_else(|| anyhow!("bitmap dump length overflow"))?;
+
+        if data.len() != expected {
+            return Err(anyhow!(
+                "bitmap dump length mismatch (got {}, expected {})",
+                data.len(),
+                expected
+            ));
+        }
+
+        let pixels_len_u32 = u32::try_from(expected).map_err(|_| anyhow!("bitmap dump payload too large"))?;
+        let header_len_u32 = 14u32 + 40u32;
+        let file_len_u32 = header_len_u32
+            .checked_add(pixels_len_u32)
+            .ok_or_else(|| anyhow!("bitmap dump file length overflow"))?;
+
+        let width_i32 = NonZeroI32::from(width).get();
+        let height_i32 = NonZeroI32::from(height)
+            .get()
+            .checked_neg()
+            .ok_or_else(|| anyhow!("bitmap dump height overflow"))?;
+
+        let pid = std::process::id();
+        let seq = BITMAP_DUMP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        let path = dir.join(format!("bitmap-update-{pid}-{seq:08}.bmp"));
+
+        let mut header = [0u8; 54];
+        header[0..2].copy_from_slice(b"BM");
+        header[2..6].copy_from_slice(&file_len_u32.to_le_bytes());
+        header[10..14].copy_from_slice(&header_len_u32.to_le_bytes());
+
+        header[14..18].copy_from_slice(&40u32.to_le_bytes());
+        header[18..22].copy_from_slice(&width_i32.to_le_bytes());
+        header[22..26].copy_from_slice(&height_i32.to_le_bytes());
+        header[26..28].copy_from_slice(&1u16.to_le_bytes());
+        header[28..30].copy_from_slice(&32u16.to_le_bytes());
+        header[30..34].copy_from_slice(&0u32.to_le_bytes());
+        header[34..38].copy_from_slice(&pixels_len_u32.to_le_bytes());
+
+        let mut file = std::fs::File::create(&path)
+            .with_context(|| format!("failed to create bitmap dump file: {}", path.display()))?;
+        file.write_all(&header)
+            .with_context(|| format!("failed to write bitmap dump header: {}", path.display()))?;
+        file.write_all(data)
+            .with_context(|| format!("failed to write bitmap dump pixels: {}", path.display()))?;
+
+        Ok(())
+    }
+
     fn capture_bitmap_update(size: DesktopSize) -> anyhow::Result<BitmapUpdate> {
         let (width, height) = desktop_size_nonzero(size)?;
         let width_i32 = i32::from(NonZeroI32::from(width));
@@ -2189,7 +2225,7 @@ mod windows_main {
         bitmap_info.bmiHeader.biBitCount = 32;
         bitmap_info.bmiHeader.biCompression = BI_RGB.0;
 
-        let mut bits_ptr: *mut core::ffi::c_void = null_mut();
+        let mut bits_ptr: *mut c_void = null_mut();
 
         // SAFETY: `screen_dc` and `bitmap_info` are valid, and we pass a valid out-pointer for bits.
         let bitmap = unsafe { CreateDIBSection(Some(screen_dc), &bitmap_info, DIB_RGB_COLORS, &mut bits_ptr, None, 0) }
@@ -2248,6 +2284,9 @@ mod windows_main {
         let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
 
         bitblt_result.map_err(|error| anyhow!("BitBlt failed while capturing desktop frame: {error}"))?;
+
+        // Optional diagnostics: dump the raw (pre-RemoteFX encode) BGRA32 frame to disk.
+        maybe_dump_bitmap_update_bgra32(width, height, stride, &data);
 
         Ok(BitmapUpdate {
             x: 0,
@@ -2370,69 +2409,70 @@ mod windows_main {
         join_handle: JoinHandle<()>,
     }
 
-    struct ServiceState {
-        bind_addr: SocketAddr,
-        listeners: HashMap<String, ManagedListener>,
-        pending_incoming: VecDeque<PendingIncoming>,
-        connections: HashMap<u32, ConnectionEntry>,
-        next_connection_id: u32,
-        accepted_tx: mpsc::UnboundedSender<AcceptedSocket>,
-        accepted_rx: mpsc::UnboundedReceiver<AcceptedSocket>,
-        /// Session ID per connection, set when the provider receives NotifySessionId from WTS.
-        connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+    #[derive(Clone)]
+    struct ControlPlane {
+        state: Arc<Mutex<ServiceState>>,
+        pending_wakeup_tx: watch::Sender<u64>,
+        pending_seq: Arc<AtomicU64>,
     }
 
-    impl ServiceState {
-        fn new(bind_addr: SocketAddr) -> Self {
-            let (accepted_tx, accepted_rx) = mpsc::unbounded_channel();
+    impl ControlPlane {
+        fn new(state: ServiceState) -> Self {
+            let (pending_wakeup_tx, _pending_wakeup_rx) = watch::channel(0u64);
 
             Self {
-                bind_addr,
-                listeners: HashMap::new(),
-                pending_incoming: VecDeque::new(),
-                connections: HashMap::new(),
-                next_connection_id: 1,
-                accepted_tx,
-                accepted_rx,
-                connection_session_ids: Arc::new(StdMutex::new(HashMap::new())),
+                state: Arc::new(Mutex::new(state)),
+                pending_wakeup_tx,
+                pending_seq: Arc::new(AtomicU64::new(0)),
             }
         }
 
-        async fn handle_command(&mut self, command: ProviderCommand) -> ServiceEvent {
-            self.drain_accepted();
+        fn notify_pending_changed(&self) {
+            let next = self.pending_seq.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+            let _ = self.pending_wakeup_tx.send(next);
+        }
 
+        async fn handle_command(
+            &self,
+            command: ProviderCommand,
+            pending_wakeup_rx: &mut watch::Receiver<u64>,
+        ) -> ServiceEvent {
             match command {
                 ProviderCommand::StartListen { listener_name } => self.start_listen(listener_name).await,
-                ProviderCommand::StopListen { listener_name } => self.stop_listen(listener_name),
+                ProviderCommand::StopListen { listener_name } => self.stop_listen(listener_name).await,
                 ProviderCommand::WaitForIncoming {
                     listener_name,
                     timeout_ms,
-                } => self.wait_for_incoming(listener_name, timeout_ms).await,
-                ProviderCommand::AcceptConnection { connection_id } => self.accept_connection(connection_id),
-                ProviderCommand::CloseConnection { connection_id } => self.close_connection(connection_id),
+                } => {
+                    self.wait_for_incoming(listener_name, timeout_ms, pending_wakeup_rx)
+                        .await
+                }
+                ProviderCommand::AcceptConnection { connection_id } => self.accept_connection(connection_id).await,
+                ProviderCommand::CloseConnection { connection_id } => self.close_connection(connection_id).await,
                 ProviderCommand::GetConnectionCredentials { connection_id } => {
                     self.get_connection_credentials(connection_id).await
                 }
-                ProviderCommand::SetCaptureSessionId { connection_id, session_id } => {
-                    self.set_capture_session_id(connection_id, session_id)
+                ProviderCommand::SetCaptureSessionId {
+                    connection_id,
+                    session_id,
+                } => self.set_capture_session_id(connection_id, session_id).await,
+            }
+        }
+
+        async fn start_listen(&self, listener_name: String) -> ServiceEvent {
+            {
+                let guard = self.state.lock().await;
+                if guard.listeners.contains_key(&listener_name) {
+                    return ServiceEvent::ListenerStarted { listener_name };
                 }
             }
-        }
 
-        fn set_capture_session_id(&self, connection_id: u32, session_id: u32) -> ServiceEvent {
-            if let Ok(mut guard) = self.connection_session_ids.lock() {
-                guard.insert(connection_id, session_id);
-                info!(connection_id, session_id, "Set capture session id for connection");
-            }
-            ServiceEvent::Ack
-        }
+            let (bind_addr, accept_tx) = {
+                let guard = self.state.lock().await;
+                (guard.bind_addr, guard.accepted_tx.clone())
+            };
 
-        async fn start_listen(&mut self, listener_name: String) -> ServiceEvent {
-            if self.listeners.contains_key(&listener_name) {
-                return ServiceEvent::ListenerStarted { listener_name };
-            }
-
-            let listener = match TcpListener::bind(self.bind_addr).await {
+            let listener = match TcpListener::bind(bind_addr).await {
                 Ok(listener) => listener,
                 Err(error) => {
                     return ServiceEvent::Error {
@@ -2441,9 +2481,7 @@ mod windows_main {
                 }
             };
 
-            let accept_tx = self.accepted_tx.clone();
             let listener_name_for_task = listener_name.clone();
-
             let join_handle = tokio::spawn(async move {
                 loop {
                     match listener.accept().await {
@@ -2466,36 +2504,50 @@ mod windows_main {
                 }
             });
 
-            self.listeners
-                .insert(listener_name.clone(), ManagedListener { join_handle });
+            {
+                let mut guard = self.state.lock().await;
+                if guard.listeners.contains_key(&listener_name) {
+                    join_handle.abort();
+                    return ServiceEvent::ListenerStarted { listener_name };
+                }
 
-            info!(%listener_name, bind_addr = %self.bind_addr, "Started control-plane listener task");
+                guard
+                    .listeners
+                    .insert(listener_name.clone(), ManagedListener { join_handle });
+            }
+
+            info!(%listener_name, bind_addr = %bind_addr, "Started control-plane listener task");
 
             ServiceEvent::ListenerStarted { listener_name }
         }
 
-        fn stop_listen(&mut self, listener_name: String) -> ServiceEvent {
-            if let Some(listener) = self.listeners.remove(&listener_name) {
-                listener.join_handle.abort();
-            }
+        async fn stop_listen(&self, listener_name: String) -> ServiceEvent {
+            let connection_ids_to_close = {
+                let mut guard = self.state.lock().await;
 
-            self.pending_incoming
-                .retain(|pending| pending.listener_name != listener_name);
+                if let Some(listener) = guard.listeners.remove(&listener_name) {
+                    listener.join_handle.abort();
+                }
 
-            let connection_ids_to_close: Vec<u32> = self
-                .connections
-                .iter()
-                .filter_map(|(connection_id, connection)| {
-                    if connection.listener_name == listener_name {
-                        Some(*connection_id)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+                guard
+                    .pending_incoming
+                    .retain(|pending| pending.listener_name != listener_name);
+
+                guard
+                    .connections
+                    .iter()
+                    .filter_map(|(connection_id, connection)| {
+                        if connection.listener_name == listener_name {
+                            Some(*connection_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<u32>>()
+            };
 
             for connection_id in connection_ids_to_close {
-                let _ = self.close_connection(connection_id);
+                let _ = self.close_connection(connection_id).await;
             }
 
             info!(%listener_name, "Stopped control-plane listener task");
@@ -2503,37 +2555,148 @@ mod windows_main {
             ServiceEvent::ListenerStopped { listener_name }
         }
 
-        async fn wait_for_incoming(&mut self, listener_name: String, timeout_ms: u32) -> ServiceEvent {
-            if !self.listeners.contains_key(&listener_name) {
-                info!(%listener_name, "Auto-starting listener on first wait_for_incoming");
-                let event = self.start_listen(listener_name.clone()).await;
-                match &event {
-                    ServiceEvent::ListenerStarted { .. } => {}
-                    _ => return event,
+        async fn wait_for_incoming(
+            &self,
+            listener_name: String,
+            timeout_ms: u32,
+            pending_wakeup_rx: &mut watch::Receiver<u64>,
+        ) -> ServiceEvent {
+            // Auto-start listener on first wait_for_incoming.
+            {
+                let guard = self.state.lock().await;
+                if !guard.listeners.contains_key(&listener_name) {
+                    drop(guard);
+                    let event = self.start_listen(listener_name.clone()).await;
+                    match &event {
+                        ServiceEvent::ListenerStarted { .. } => {}
+                        _ => return event,
+                    }
                 }
             }
 
-            if let Some(event) = self.pop_pending_for_listener(&listener_name) {
-                return event;
+            // Fast-path: return immediately if we already have something queued.
+            {
+                let mut guard = self.state.lock().await;
+                if let Some(event) = guard.pop_pending_for_listener(&listener_name) {
+                    return event;
+                }
             }
 
-            if timeout_ms == 0 {
+            let timeout = Duration::from_millis(u64::from(timeout_ms));
+            if timeout.is_zero() {
                 return ServiceEvent::NoIncoming;
             }
 
-            let wait_duration = Duration::from_millis(u64::from(timeout_ms));
+            // Wait (without holding the global state lock) for either:
+            // - pending_incoming to change (notified by the accept-drain task), or
+            // - the timeout to expire.
+            //
+            // This avoids a tight client-side polling loop that can exhaust the pipe server
+            // instance pool and trigger ERROR_PIPE_BUSY.
+            let deadline = Instant::now() + timeout;
 
-            match timeout(wait_duration, self.accepted_rx.recv()).await {
-                Ok(Some(accepted)) => {
-                    self.register_accepted(accepted);
-                    self.pop_pending_for_listener(&listener_name)
-                        .unwrap_or(ServiceEvent::NoIncoming)
+            loop {
+                {
+                    let mut guard = self.state.lock().await;
+                    if let Some(event) = guard.pop_pending_for_listener(&listener_name) {
+                        return event;
+                    }
                 }
-                Ok(None) => ServiceEvent::Error {
-                    message: "accept channel closed".to_owned(),
-                },
-                Err(_) => ServiceEvent::NoIncoming,
+
+                let now = Instant::now();
+                if now >= deadline {
+                    return ServiceEvent::NoIncoming;
+                }
+
+                let remaining = deadline - now;
+
+                tokio::select! {
+                    _ = sleep(remaining) => return ServiceEvent::NoIncoming,
+                    changed = pending_wakeup_rx.changed() => {
+                        if changed.is_err() {
+                            // Control-plane notifier dropped; treat as no incoming.
+                            return ServiceEvent::NoIncoming;
+                        }
+                    }
+                }
             }
+        }
+
+        async fn accept_connection(&self, connection_id: u32) -> ServiceEvent {
+            let mut guard = self.state.lock().await;
+            guard.accept_connection(connection_id)
+        }
+
+        async fn get_connection_credentials(&self, connection_id: u32) -> ServiceEvent {
+            let entry = {
+                let guard = self.state.lock().await;
+                guard
+                    .connections
+                    .get(&connection_id)
+                    .map(|e| Arc::clone(&e.credentials))
+            };
+
+            let Some(credentials) = entry else {
+                return ServiceEvent::NoCredentials { connection_id };
+            };
+
+            let guard = credentials.lock().await;
+            match &*guard {
+                Some(creds) => ServiceEvent::ConnectionCredentials {
+                    connection_id,
+                    username: creds.username.clone(),
+                    domain: creds.domain.clone(),
+                    password: creds.password.clone(),
+                },
+                None => ServiceEvent::NoCredentials { connection_id },
+            }
+        }
+
+        async fn set_capture_session_id(&self, connection_id: u32, session_id: u32) -> ServiceEvent {
+            let guard = self.state.lock().await;
+            guard.set_capture_session_id(connection_id, session_id)
+        }
+
+        async fn close_connection(&self, connection_id: u32) -> ServiceEvent {
+            let mut guard = self.state.lock().await;
+            guard.close_connection(connection_id)
+        }
+    }
+
+    struct ServiceState {
+        bind_addr: SocketAddr,
+        listeners: HashMap<String, ManagedListener>,
+        pending_incoming: VecDeque<PendingIncoming>,
+        connections: HashMap<u32, ConnectionEntry>,
+        next_connection_id: u32,
+        accepted_tx: mpsc::UnboundedSender<AcceptedSocket>,
+        /// Session ID per connection, set when the provider receives NotifySessionId from WTS.
+        connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+    }
+
+    impl ServiceState {
+        fn new(bind_addr: SocketAddr) -> (Self, mpsc::UnboundedReceiver<AcceptedSocket>) {
+            let (accepted_tx, accepted_rx) = mpsc::unbounded_channel();
+
+            let state = Self {
+                bind_addr,
+                listeners: HashMap::new(),
+                pending_incoming: VecDeque::new(),
+                connections: HashMap::new(),
+                next_connection_id: 1,
+                accepted_tx,
+                connection_session_ids: Arc::new(StdMutex::new(HashMap::new())),
+            };
+
+            (state, accepted_rx)
+        }
+
+        fn set_capture_session_id(&self, connection_id: u32, session_id: u32) -> ServiceEvent {
+            if let Ok(mut guard) = self.connection_session_ids.lock() {
+                guard.insert(connection_id, session_id);
+                info!(connection_id, session_id, "Set capture session id for connection");
+            }
+            ServiceEvent::Ack
         }
 
         fn accept_connection(&mut self, connection_id: u32) -> ServiceEvent {
@@ -2547,11 +2710,7 @@ mod windows_main {
             let connection = match self.connections.get_mut(&connection_id) {
                 Some(connection) => connection,
                 None => {
-                    warn!(
-                        connection_id,
-                        ?known_ids,
-                        "accept_connection: MISS"
-                    );
+                    warn!(connection_id, ?known_ids, "accept_connection: MISS");
                     return ServiceEvent::Error {
                         message: format!("MISS connection id={connection_id} known={known_ids:?}"),
                     };
@@ -2590,23 +2749,6 @@ mod windows_main {
             connection.session_task = Some(session_task);
 
             ServiceEvent::ConnectionReady { connection_id }
-        }
-
-        async fn get_connection_credentials(&self, connection_id: u32) -> ServiceEvent {
-            let Some(entry) = self.connections.get(&connection_id) else {
-                return ServiceEvent::NoCredentials { connection_id };
-            };
-
-            let guard = entry.credentials.lock().await;
-            match &*guard {
-                Some(creds) => ServiceEvent::ConnectionCredentials {
-                    connection_id,
-                    username: creds.username.clone(),
-                    domain: creds.domain.clone(),
-                    password: creds.password.clone(),
-                },
-                None => ServiceEvent::NoCredentials { connection_id },
-            }
         }
 
         fn close_connection(&mut self, connection_id: u32) -> ServiceEvent {
@@ -2675,12 +2817,6 @@ mod windows_main {
                 peer_addr,
             });
         }
-
-        fn drain_accepted(&mut self) {
-            while let Ok(accepted) = self.accepted_rx.try_recv() {
-                self.register_accepted(accepted);
-            }
-        }
     }
 
     async fn run_ironrdp_connection(
@@ -2707,7 +2843,7 @@ mod windows_main {
             connection_session_ids,
             provider_mode,
         )
-            .context("failed to initialize GDI display handler")?;
+        .context("failed to initialize GDI display handler")?;
         let (tls_acceptor, tls_pub_key) = make_tls_acceptor().context("failed to initialize TLS acceptor")?;
 
         let expected_credentials = resolve_rdp_credentials_from_env()?;
@@ -2724,10 +2860,9 @@ mod windows_main {
                 builder.with_tls(tls_acceptor)
             };
 
-            let rfx_only_codecs = ironrdp_pdu::rdp::capability_sets::server_codecs_capabilities(
-                &["remotefx:on", "qoi:off", "qoiz:off"],
-            )
-            .expect("valid codec config");
+            let rfx_only_codecs =
+                ironrdp_pdu::rdp::capability_sets::server_codecs_capabilities(&["remotefx:on", "qoi:off", "qoiz:off"])
+                    .expect("valid codec config");
 
             builder
                 .with_input_handler(input_handler)
@@ -3184,22 +3319,47 @@ mod windows_main {
             return run_standalone_listener(bind_addr).await;
         }
 
-        let instance_id: u32 = std::process::id();
+        let instance_id = std::process::id();
         info!(pipe = %pipe_name, instance_id, "Starting termsrv control loop");
         info!(bind_addr = %bind_addr, "Configured service listener bind address");
 
-        let mut state = ServiceState::new(bind_addr);
-        let mut empty_count: u64 = 0;
+        let (state, mut accepted_rx) = ServiceState::new(bind_addr);
+        let control_plane = ControlPlane::new(state);
 
-        #[expect(
-            clippy::infinite_loop,
-            reason = "service runs indefinitely; failures are handled inside the loop"
-        )]
+        // Drain accepted TCP connections continuously so `WaitForIncoming` never needs to hold
+        // the global state lock across a timed wait.
+        {
+            let control_plane = control_plane.clone();
+            tokio::task::spawn_local(async move {
+                while let Some(accepted) = accepted_rx.recv().await {
+                    {
+                        let mut guard = control_plane.state.lock().await;
+                        guard.register_accepted(accepted);
+                    }
+                    control_plane.notify_pending_changed();
+                }
+
+                warn!("Accepted TCP drain task ended; no further incoming connections will be registered");
+            });
+        }
+
+        let full_pipe_name = pipe_path(&pipe_name);
+        let empty_disconnects = Arc::new(AtomicU64::new(0));
+
+        // Multiple pipe server instances reduce `ERROR_PIPE_BUSY` under concurrent provider calls.
+        // Each instance independently serves one client connection at a time.
+        for _ in 0..CONTROL_PIPE_SERVER_INSTANCES {
+            let control_plane = control_plane.clone();
+            let full_pipe_name = full_pipe_name.clone();
+            let empty_disconnects = Arc::clone(&empty_disconnects);
+            tokio::task::spawn_local(async move {
+                run_control_pipe_instance_loop(&full_pipe_name, control_plane, empty_disconnects).await;
+            });
+        }
+
+        #[expect(clippy::infinite_loop, reason = "service runs indefinitely")]
         loop {
-            if let Err(error) = run_server_once(&pipe_name, &mut state, &mut empty_count, false).await {
-                warn!(%error, pipe = %pipe_name, "Control pipe loop failed; retrying");
-                sleep(Duration::from_millis(200)).await;
-            }
+            sleep(Duration::from_secs(3600)).await;
         }
     }
 
@@ -3794,7 +3954,7 @@ mod windows_main {
             .map_err(|error| anyhow!("OpenFileMappingW failed: {error}"))
             .context("OpenFileMappingW failed")?;
 
-        struct HandleGuard(windows::Win32::Foundation::HANDLE);
+        struct HandleGuard(HANDLE);
         impl Drop for HandleGuard {
             fn drop(&mut self) {
                 // SAFETY: handle is owned by this guard.
@@ -3883,83 +4043,111 @@ mod windows_main {
         }
     }
 
-    async fn run_server_once(
-        pipe_name: &str,
-        state: &mut ServiceState,
-        empty_count: &mut u64,
-        first_instance: bool,
-    ) -> anyhow::Result<()> {
-        let full_pipe_name = pipe_path(pipe_name);
+    #[expect(clippy::infinite_loop, reason = "pipe server instances run indefinitely")]
+    async fn run_control_pipe_instance_loop(
+        full_pipe_name: &str,
+        control_plane: ControlPlane,
+        empty_disconnects: Arc<AtomicU64>,
+    ) {
+        loop {
+            let mut opts = named_pipe::ServerOptions::new();
+            opts.access_inbound(true)
+                .access_outbound(true)
+                .in_buffer_size(PIPE_BUFFER_SIZE)
+                .out_buffer_size(PIPE_BUFFER_SIZE)
+                .pipe_mode(named_pipe::PipeMode::Byte);
 
-        let mut opts = named_pipe::ServerOptions::new();
-        opts.access_inbound(true)
-            .access_outbound(true)
-            .in_buffer_size(PIPE_BUFFER_SIZE)
-            .out_buffer_size(PIPE_BUFFER_SIZE)
-            .pipe_mode(named_pipe::PipeMode::Byte);
+            let (mut attrs, sd) = match control_pipe_security_attributes() {
+                Ok(values) => values,
+                Err(error) => {
+                    warn!(%error, "Failed to build control pipe security attributes; retrying");
+                    sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
 
-        if first_instance {
-            opts.first_pipe_instance(true);
-        }
+            // Create the pipe with an explicit DACL so TermService can open it.
+            // SAFETY: attrs is a valid SECURITY_ATTRIBUTES for the duration of the call.
+            let mut server = match unsafe {
+                opts.create_with_security_attributes_raw(
+                    full_pipe_name,
+                    core::ptr::from_mut(&mut attrs).cast::<c_void>(),
+                )
+            } {
+                Ok(server) => server,
+                Err(error) => {
+                    // SAFETY: frees the buffer allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+                    unsafe {
+                        let _ = LocalFree(Some(HLOCAL(sd.0)));
+                    }
+                    warn!(%error, pipe = %full_pipe_name, "Failed to create control pipe server instance; retrying");
+                    sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
 
-        let mut server = opts
-            .create(&full_pipe_name)
-            .with_context(|| format!("failed to create control pipe server: {full_pipe_name}"))?;
+            // SAFETY: frees the buffer allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+            unsafe {
+                let _ = LocalFree(Some(HLOCAL(sd.0)));
+            }
 
-        if let Err(error) = configure_control_pipe_security(&full_pipe_name) {
-            debug!(%error, "Failed to set control pipe security (best-effort); continuing with default DACL");
-        }
+            if let Err(error) = server.connect().await {
+                warn!(%error, pipe = %full_pipe_name, "Failed to accept control connection; retrying");
+                sleep(Duration::from_millis(200)).await;
+                continue;
+            }
 
-        server
-            .connect()
-            .await
-            .with_context(|| format!("failed to accept control connection on pipe: {full_pipe_name}"))?;
+            let mut pending_wakeup_rx = control_plane.pending_wakeup_tx.subscribe();
 
-        match handle_client(&mut server, state).await {
-            Ok(commands_processed) if commands_processed == 0 => {
-                *empty_count += 1;
-                if *empty_count == 1
-                    || (*empty_count <= 10 && *empty_count % 5 == 0)
-                    || *empty_count % 100_000 == 0
-                {
-                    info!(empty_disconnects = *empty_count, "Client disconnected without sending commands");
+            match handle_client(&mut server, &control_plane, &mut pending_wakeup_rx).await {
+                Ok(0) => {
+                    let n = empty_disconnects.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+                    if n == 1 || (n <= 10 && n % 5 == 0) || n % 100_000 == 0 {
+                        info!(empty_disconnects = n, "Client disconnected without sending commands");
+                    }
+                }
+                Ok(_) => {
+                    empty_disconnects.store(0, Ordering::Relaxed);
+                }
+                Err(error) => {
+                    warn!(%error, pipe = %full_pipe_name, "Control connection handler returned error");
+                    empty_disconnects.store(0, Ordering::Relaxed);
                 }
             }
-            Ok(_) => {
-                *empty_count = 0;
-            }
-            Err(error) => {
-                warn!(%error, pipe = %full_pipe_name, "Control connection handler returned error");
-                *empty_count = 0;
-            }
         }
-
-        Ok(())
     }
 
     async fn handle_client(
         pipe: &mut named_pipe::NamedPipeServer,
-        state: &mut ServiceState,
+        control_plane: &ControlPlane,
+        pending_wakeup_rx: &mut watch::Receiver<u64>,
     ) -> anyhow::Result<u32> {
         let mut commands_processed: u32 = 0;
 
         loop {
-            let command = match read_command(pipe).await {
-                Ok(Some(command)) => command,
-                Ok(None) => {
+            let command = match timeout(CONTROL_PIPE_IDLE_TIMEOUT, read_command(pipe)).await {
+                Ok(Ok(Some(command))) => command,
+                Ok(Ok(None)) => return Ok(commands_processed),
+                Ok(Err(error)) => return Err(error).context("failed to read provider command"),
+                Err(_) => {
+                    debug!(
+                        commands_processed,
+                        "Control pipe client idle; closing connection to free pipe instance"
+                    );
                     return Ok(commands_processed);
-                }
-                Err(error) => {
-                    return Err(error).context("failed to read provider command");
                 }
             };
 
             commands_processed += 1;
             info!(command = ?command, seq = commands_processed, "Processing pipe command");
 
-            let event = state.handle_command(command).await;
+            let event = control_plane.handle_command(command, pending_wakeup_rx).await;
 
-            info!(event_type = event_kind(&event), seq = commands_processed, "Sending pipe response");
+            info!(
+                event_type = event_kind(&event),
+                seq = commands_processed,
+                "Sending pipe response"
+            );
             write_event(pipe, &event).await?;
         }
     }

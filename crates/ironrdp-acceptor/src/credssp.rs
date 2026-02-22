@@ -119,15 +119,15 @@ pub(crate) async fn resolve_generator(
     generator: &mut CredsspProcessGenerator<'_>,
     network_client: &mut impl NetworkClient,
 ) -> Result<ServerState, ServerError> {
-    let mut state = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generator.start())) {
+    let mut state = match std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| generator.start())) {
         Ok(s) => s,
         Err(panic) => {
             let msg = panic
                 .downcast_ref::<&str>()
                 .copied()
                 .map(String::from)
-                .or_else(|| panic.downcast_ref::<String>().map(|s| s.clone()))
-                .unwrap_or_else(|| "CredSSP processing panic (generator.start)".to_string());
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "CredSSP processing panic (generator.start)".to_owned());
             return Err(ServerError {
                 ts_request: None,
                 error: sspi::Error::new(sspi::ErrorKind::InternalError, msg),
@@ -142,7 +142,7 @@ pub(crate) async fn resolve_generator(
                     ts_request: None,
                     error: sspi::Error::new(sspi::ErrorKind::InternalError, err),
                 })?;
-                state = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| generator.resume(Ok(response))))
+                state = match std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| generator.resume(Ok(response))))
                 {
                     Ok(s) => s,
                     Err(panic) => {
@@ -150,8 +150,8 @@ pub(crate) async fn resolve_generator(
                             .downcast_ref::<&str>()
                             .copied()
                             .map(String::from)
-                            .or_else(|| panic.downcast_ref::<String>().map(|s| s.clone()))
-                            .unwrap_or_else(|| "CredSSP processing panic".to_string());
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "CredSSP processing panic".to_owned());
                         return Err(ServerError {
                             ts_request: None,
                             error: sspi::Error::new(sspi::ErrorKind::InternalError, msg),
@@ -244,15 +244,15 @@ impl<'a> CredsspSequence<'a> {
                     Ok(Some(message))
                 };
 
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)) {
+                match std::panic::catch_unwind(core::panic::AssertUnwindSafe(decode)) {
                     Ok(res) => res,
                     Err(panic) => {
                         let msg = panic
                             .downcast_ref::<&str>()
                             .copied()
                             .map(String::from)
-                            .or_else(|| panic.downcast_ref::<String>().map(|s| s.clone()))
-                            .unwrap_or_else(|| "CredSSP decode_client_message panic".to_string());
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "CredSSP decode_client_message panic".to_owned());
                         Err(ConnectorError::new(
                             "CredSSP decode",
                             ConnectorErrorKind::Credssp(sspi::Error::new(sspi::ErrorKind::InternalError, msg)),
