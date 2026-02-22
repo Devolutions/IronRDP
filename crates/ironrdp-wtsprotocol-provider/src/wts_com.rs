@@ -61,6 +61,35 @@ const E_OUTOFMEMORY: HRESULT = HRESULT(-2147024882);
 
 const DEBUG_LOG_PATH_ENV: &str = "IRONRDP_WTS_PROVIDER_DEBUG_LOG";
 
+fn normalize_winlogon_credentials(username: &str, domain: &str) -> (String, String) {
+    let username = username.trim();
+    let domain = domain.trim();
+
+    if domain.is_empty() {
+        if let Some((dom, user)) = username.split_once('\\') {
+            let user = user.trim();
+            let dom = dom.trim();
+            if !user.is_empty() {
+                return (user.to_owned(), dom.to_owned());
+            }
+        }
+    }
+
+    // If the username already looks like a UPN, keep it and clear the domain.
+    // Many Winlogon/LSA paths treat UPN logon as `user@fqdn` with empty domain.
+    if username.contains('@') {
+        return (username.to_owned(), String::new());
+    }
+
+    // If the domain looks like a DNS name (contains a dot), prefer a UPN style username.
+    // This avoids relying on NetBIOS domain mapping for domain-joined logons.
+    if !domain.is_empty() && domain.contains('.') {
+        return (format!("{username}@{domain}"), String::new());
+    }
+
+    (username.to_owned(), domain.to_owned())
+}
+
 fn debug_log_line(message: &str) {
     let Some(path) = std::env::var(DEBUG_LOG_PATH_ENV)
         .ok()
@@ -2178,6 +2207,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         // See IWRdsProtocolConnection::GetUserCredentials remarks: if we return S_OK there,
         // TermService passes the credentials to Winlogon to log on the user.
         client_data.fInheritAutoLogon = BOOL(1);
+        client_data.fUsingSavedCreds = true;
         client_data.fNoAudioPlayback = true;
         copy_wide(&mut client_data.ProtocolName, "IRDP-WTS");
 
@@ -2222,15 +2252,17 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             ));
         };
 
+        let (winlogon_username, winlogon_domain) = normalize_winlogon_credentials(&username, &domain);
+
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::GetUserCredentials ok connection_id={connection_id} user={username} domain={domain}"
+            "IWRdsProtocolConnection::GetUserCredentials ok connection_id={connection_id} user={winlogon_username} domain={winlogon_domain}"
         ));
 
         // SAFETY: pusercreds is non-null and points to writable memory owned by TermService.
         let creds = unsafe { &mut *pusercreds };
         *creds = WTS_USER_CREDENTIAL::default();
-        copy_wide(&mut creds.UserName, &username);
-        copy_wide(&mut creds.Domain, &domain);
+        copy_wide(&mut creds.UserName, &winlogon_username);
+        copy_wide(&mut creds.Domain, &winlogon_domain);
         copy_wide(&mut creds.Password, &password);
 
         Ok(())
