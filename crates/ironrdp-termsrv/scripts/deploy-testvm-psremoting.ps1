@@ -47,6 +47,9 @@ param(
     [switch]$AutoListen,
 
     [Parameter()]
+    [switch]$WtsProvider,
+
+    [Parameter()]
     [string]$CaptureSessionId = '',
 
     [Parameter()]
@@ -54,9 +57,13 @@ param(
     [string]$Configuration = 'Release',
 
     [Parameter()]
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
 
-    ,
+    # When set, the deploy script will NOT start TermService after the companion is started.
+    # Use this when a separate step (e.g. provider DLL install) will start TermService, to avoid
+    # a double-start that triggers StopListen → the companion's TCP listener task is aborted.
+    [Parameter()]
+    [switch]$NoTermServiceStart,
 
     [Parameter()]
     [int]$TailLines = 80
@@ -203,6 +210,8 @@ try {
         Remove-Item -LiteralPath $RdpPasswordPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $LogOut -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $LogErr -Force -ErrorAction SilentlyContinue
+        # Clear the DLL debug log so each run has a fresh log
+        Remove-Item -LiteralPath 'C:\IronRDPDeploy\logs\wts-provider-debug.log' -Force -ErrorAction SilentlyContinue
     } -ArgumentList $TaskName, $rdpPasswordRemote, $logOut, $logErr
 
     Copy-Item -ToSession $session -Path $exeLocal -Destination $exeRemote -Force
@@ -235,6 +244,9 @@ param(
     [switch]$AutoListen,
 
     [Parameter()]
+    [switch]$WtsProvider,
+
+    [Parameter()]
     [string]$CaptureSessionId = '',
 
     [Parameter()]
@@ -253,6 +265,7 @@ $ErrorActionPreference = 'Stop'
 $env:IRONRDP_WTS_LISTEN_ADDR = $ListenerAddr
 $env:IRONRDP_WTS_CAPTURE_IPC = $CaptureIpc
 $env:IRONRDP_WTS_AUTO_LISTEN = if ($AutoListen.IsPresent) { '1' } else { '0' }
+$env:IRONRDP_WTS_PROVIDER = if ($WtsProvider.IsPresent) { '1' } else { '0' }
 $env:IRONRDP_LOG = 'info'
 $env:RUST_BACKTRACE = '1'
 
@@ -335,7 +348,7 @@ finally {
     } -ArgumentList ([int]($ListenerAddr.Split(':')[-1]))
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $CaptureSessionId, $RdpUsername, $RdpDomain)
+        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $CaptureSessionId, $RdpUsername, $RdpDomain)
 
         $arguments = @(
             '-NoProfile',
@@ -350,6 +363,10 @@ finally {
 
         if ($AutoListen) {
             $arguments += @('-AutoListen')
+        }
+
+        if ($WtsProvider) {
+            $arguments += @('-WtsProvider')
         }
 
         if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
@@ -403,15 +420,21 @@ finally {
             LogErr = $LogErr
             Pid = $proc.Id
         }
-    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $CaptureSessionId, $RdpUsername, $RdpDomain | Format-List
+    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $CaptureSessionId, $RdpUsername, $RdpDomain | Format-List
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($ListenerAddr, $LogOut, $LogErr, $TailLines)
+        param($ListenerAddr, $LogOut, $LogErr, $TailLines, $NoTermServiceStart)
 
-        # Restart TermService NOW (after companion is running) so the DLL connects to THIS instance
-        Write-Host "Starting TermService..."
-        Start-Service -Name 'TermService' -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 3
+        if (-not $NoTermServiceStart) {
+            # Restart TermService NOW (after companion is running) so the DLL connects to THIS instance.
+            # Skip in Provider mode: the provider DLL install step will restart TermService exactly once.
+            # A double-restart causes StopListen IPC → companion aborts its TCP listener task.
+            Write-Host "Starting TermService..."
+            Start-Service -Name 'TermService' -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 3
+        } else {
+            Write-Host "Skipping TermService start (NoTermServiceStart flag set)"
+        }
 
         $port = [int]($ListenerAddr.Split(':')[-1])
         $listening = $false
@@ -433,7 +456,7 @@ finally {
             Write-Host "---- ironrdp-termsrv.log (tail) ----" -ForegroundColor Yellow
             Get-Content -LiteralPath $LogOut -Tail $TailLines -ErrorAction SilentlyContinue
         }
-    } -ArgumentList $ListenerAddr, $logOut, $logErr, $TailLines
+    } -ArgumentList $ListenerAddr, $logOut, $logErr, $TailLines, $NoTermServiceStart.IsPresent
 
     Write-Host "Ready: $Hostname ($ListenerAddr)" -ForegroundColor Green
     $rdpIdentity = if ([string]::IsNullOrWhiteSpace($RdpDomain)) { $RdpUsername } else { "$RdpDomain\\$RdpUsername" }
