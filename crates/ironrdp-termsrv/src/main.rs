@@ -426,9 +426,15 @@ mod windows_main {
         /// Prevents repeated restarts if `WTSQueryUserToken` briefly flaps.
         capture_restarted_for_logon: bool,
         /// The `session_id_override` value that was in effect when the capture helper was last
-        /// started.  Used to detect when the provider DLL sets a session after capture already
-        /// started with a guessed session from `resolve_capture_session_id`.
-        capture_started_with_session_override: Option<u32>,
+        /// started.
+        ///
+        /// - `None`: capture has not started yet
+        /// - `Some(None)`: capture started without a WTS override (guessed session)
+        /// - `Some(Some(id))`: capture started with an explicit WTS session id override
+        ///
+        /// Used to detect when the provider DLL sets (or changes) a session after capture already
+        /// started with a guessed or different session.
+        capture_started_with_session_override: Option<Option<u32>>,
         /// When `true` (Provider mode), hold off starting the capture helper until the WTS provider
         /// DLL sends `SetCaptureSessionId` so we don't waste frames on the wrong (guessed) session.
         /// Falls through after `PROVIDER_SESSION_ID_WAIT_TIMEOUT` to avoid blocking forever.
@@ -564,12 +570,13 @@ mod windows_main {
                 //   - The user has now logged into the TermService session (WTSQueryUserToken
                 //     succeeds).  Restart to pick up the real user token instead of the pre-login
                 //     fallback (winlogon) token.
-                let session_override_arrived =
-                    session_id_override.is_some() && self.capture_started_with_session_override.is_none();
+                let session_override_changed = self
+                    .capture_started_with_session_override
+                    .is_some_and(|started_with| started_with != session_id_override);
 
                 let user_token_available = session_id_override.is_some_and(session_has_user_token);
                 let should_restart_for_logon = user_token_available && !self.capture_restarted_for_logon;
-                let should_restart = self.capture.is_some() && (session_override_arrived || should_restart_for_logon);
+                let should_restart = self.capture.is_some() && (session_override_changed || should_restart_for_logon);
 
                 if should_restart {
                     let session_id = session_id_override.unwrap_or(0);
@@ -628,7 +635,7 @@ mod windows_main {
                                 helper_pid = capture.pid(),
                                 "Started interactive capture helper"
                             );
-                            self.capture_started_with_session_override = session_id_override;
+                            self.capture_started_with_session_override = Some(session_id_override);
                             self.capture = Some(capture);
                         }
                         Err(error) => {
