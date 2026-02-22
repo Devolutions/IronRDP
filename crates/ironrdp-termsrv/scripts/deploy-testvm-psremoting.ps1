@@ -53,6 +53,9 @@ param(
     [string]$CaptureSessionId = '',
 
     [Parameter()]
+    [string]$DumpBitmapUpdatesDir = '',
+
+    [Parameter()]
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
@@ -157,7 +160,15 @@ if ([string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
     Write-Warning "RDP password is not configured (pass -RdpPassword or set env:$RdpPasswordEnvVar). Standard security connections will be rejected."
 }
 
-$session = New-PSSession -ComputerName $Hostname -Credential $cred
+$session = $null
+try {
+    $session = New-PSSession -ComputerName $Hostname -Credential $cred -ErrorAction Stop
+}
+catch {
+    Write-Warning "WinRM over HTTP failed for $Hostname; trying WinRM over HTTPS (5986)"
+    $sessOpts = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+    $session = New-PSSession -ComputerName $Hostname -Credential $cred -UseSSL -Port 5986 -SessionOption $sessOpts -ErrorAction Stop
+}
 try {
     Invoke-Command -Session $session -ScriptBlock {
         param($RemoteRoot)
@@ -250,6 +261,9 @@ param(
     [string]$CaptureSessionId = '',
 
     [Parameter()]
+    [string]$DumpBitmapUpdatesDir = '',
+
+    [Parameter()]
     [string]$RdpUsername = '',
 
     [Parameter()]
@@ -273,6 +287,12 @@ if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
     $env:IRONRDP_WTS_CAPTURE_SESSION_ID = $CaptureSessionId
 } else {
     Remove-Item Env:IRONRDP_WTS_CAPTURE_SESSION_ID -ErrorAction SilentlyContinue
+}
+
+if (-not [string]::IsNullOrWhiteSpace($DumpBitmapUpdatesDir)) {
+    $env:IRONRDP_WTS_DUMP_BITMAP_UPDATES_DIR = $DumpBitmapUpdatesDir
+} else {
+    Remove-Item Env:IRONRDP_WTS_DUMP_BITMAP_UPDATES_DIR -ErrorAction SilentlyContinue
 }
 
 if (-not [string]::IsNullOrWhiteSpace($RdpUsername)) {
@@ -348,7 +368,7 @@ finally {
     } -ArgumentList ([int]($ListenerAddr.Split(':')[-1]))
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $CaptureSessionId, $RdpUsername, $RdpDomain)
+        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain)
 
         $arguments = @(
             '-NoProfile',
@@ -371,6 +391,10 @@ finally {
 
         if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
             $arguments += @('-CaptureSessionId', $CaptureSessionId)
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($DumpBitmapUpdatesDir)) {
+            $arguments += @('-DumpBitmapUpdatesDir', $DumpBitmapUpdatesDir)
         }
 
         if (-not [string]::IsNullOrWhiteSpace($RdpUsername)) {
@@ -420,7 +444,7 @@ finally {
             LogErr = $LogErr
             Pid = $proc.Id
         }
-    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $CaptureSessionId, $RdpUsername, $RdpDomain | Format-List
+    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain | Format-List
 
     Invoke-Command -Session $session -ScriptBlock {
         param($ListenerAddr, $LogOut, $LogErr, $TailLines, $NoTermServiceStart)

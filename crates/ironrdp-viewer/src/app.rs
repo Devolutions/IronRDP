@@ -1,5 +1,6 @@
 #![allow(clippy::print_stderr, clippy::print_stdout)] // allowed in this module only
 
+use core::error::Error as _;
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
