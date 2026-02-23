@@ -24,10 +24,15 @@ param(
     [string]$Mode = 'Standalone',
 
     [Parameter()]
+    [Alias('ComputerName')]
     [string]$Hostname = 'IT-HELP-TEST',
 
     [Parameter()]
+    [Alias('ServerPort')]
     [int]$Port = 4489,
+
+    [Parameter()]
+    [pscredential]$Credential,
 
     [Parameter()]
     [string]$AdminUsername = 'IT-HELP\Administrator',
@@ -43,6 +48,12 @@ param(
 
     [Parameter()]
     [string]$RdpDomain = 'ad.it-help.ninja',
+
+    [Parameter()]
+    [int]$RdpPort = 3389,
+
+    [Parameter()]
+    [switch]$AutoLogon,
 
     [Parameter()]
     [string]$OutputPng = '',
@@ -61,11 +72,26 @@ param(
     [string]$Configuration = 'Release',
 
     [Parameter()]
-    [int]$ScreenshotTimeoutSeconds = 30
+    [int]$ScreenshotTimeoutSeconds = 30,
+
+    [Parameter()]
+    [int]$AfterFirstGraphicsSeconds = 20
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$adminUsernameEffective = $AdminUsername
+$adminPasswordEffective = $AdminPassword
+
+if ($PSBoundParameters.ContainsKey('Credential') -and ($null -ne $Credential)) {
+    $adminUsernameEffective = $Credential.UserName
+    $adminPasswordEffective = $Credential.GetNetworkCredential().Password
+    $adminCred = $Credential
+} else {
+    $securePwd = ConvertTo-SecureString -String $AdminPassword -AsPlainText -Force
+    $adminCred = [pscredential]::new($AdminUsername, $securePwd)
+}
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $workspaceRoot = (Resolve-Path (Join-Path $scriptRoot '..\..\..')).Path
@@ -73,6 +99,7 @@ $artifactsDir = Join-Path $workspaceRoot 'artifacts'
 New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$testStartTime = Get-Date
 if ([string]::IsNullOrWhiteSpace($OutputPng)) {
     $OutputPng = Join-Path $artifactsDir "screenshot-$timestamp.png"
 }
@@ -129,8 +156,8 @@ if (-not $SkipDeploy.IsPresent) {
 
     $deployArgs = @{
         Hostname         = $Hostname
-        Username         = $AdminUsername
-        PasswordPlainText = $AdminPassword
+        Username         = $adminUsernameEffective
+        PasswordPlainText = $adminPasswordEffective
         RdpUsername      = $RdpUsername
         RdpPassword      = $RdpPassword
         RdpDomain        = $RdpDomain
@@ -159,9 +186,7 @@ if (-not $SkipDeploy.IsPresent) {
     if ($Mode -eq 'Provider') {
         Write-Host "Installing side-by-side WTS provider on $Hostname..." -ForegroundColor Cyan
 
-        $securePwd = ConvertTo-SecureString -String $AdminPassword -AsPlainText -Force
-        $cred = [pscredential]::new($AdminUsername, $securePwd)
-        $session = New-PSSession -ComputerName $Hostname -Credential $cred
+        $session = New-PSSession -ComputerName $Hostname -Credential $adminCred
         try {
             $providerDll = Join-Path $workspaceRoot "target\$profileDir\ironrdp_wtsprotocol_provider.dll"
             if (-not (Test-Path $providerDll)) {
@@ -236,7 +261,9 @@ if (-not $SkipScreenshot.IsPresent) {
         '--port', $Port,
         '-u', $RdpUsername,
         '-p', $RdpPassword,
-        '-o', $OutputPng
+        '--autologon', 'true',
+        '-o', $OutputPng,
+        '--after-first-graphics-seconds', $AfterFirstGraphicsSeconds
     )
     if (-not [string]::IsNullOrWhiteSpace($RdpDomain)) {
         $screenshotArgs += @('-d', $RdpDomain)
@@ -276,14 +303,11 @@ if (-not $SkipScreenshot.IsPresent) {
 # ── Step 4: Collect remote logs ─────────────────────────────────────────────
 Write-Host "`n=== Step 4: Collecting remote logs ===" -ForegroundColor Cyan
 
-$securePwd = ConvertTo-SecureString -String $AdminPassword -AsPlainText -Force
-$cred = [pscredential]::new($AdminUsername, $securePwd)
-
 try {
-    $session = New-PSSession -ComputerName $Hostname -Credential $cred
+    $session = New-PSSession -ComputerName $Hostname -Credential $adminCred
     try {
         $remoteLogs = Invoke-Command -Session $session -ScriptBlock {
-            param($port)
+            param($port, $securityStartTime, $mode)
             $result = @{}
             $logOut = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log'
             $logErr = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log'
@@ -295,17 +319,74 @@ try {
             if (Test-Path $logErr) {
                 $result['stderr'] = Get-Content $logErr -Tail 50 -ErrorAction SilentlyContinue | Out-String
             }
-            if (Test-Path $dllDebugLog) {
-                $result['dll_debug'] = Get-Content $dllDebugLog -Tail 200 -ErrorAction SilentlyContinue | Out-String
+            if ($mode -eq 'Provider' -and (Test-Path $dllDebugLog)) {
+                # The provider debug log can be extremely noisy due to polling. Capture a signal-focused view.
+                $dllTail = Get-Content $dllDebugLog -Tail 5000 -ErrorAction SilentlyContinue
+                $patterns = @(
+                    'IWRdsProtocolManager::',
+                    'IWRdsProtocolListener::',
+                    'IWRdsProtocolListenerCallback::',
+                    'IWRdsProtocolConnection::',
+                    'IWRdsWddmIddProps::',
+                    'GetUserCredentials ok',
+                    'NotifyCommandProcessCreated',
+                    'IsUserAllowedToLogon',
+                    'LogonNotify',
+                    'SessionArbitrationEnumeration',
+                    'DisconnectNotify',
+                    'Close called',
+                    'PreDisconnect'
+                )
+
+                $result['dll_debug'] = ($dllTail | Select-Object -Last 200 | Out-String)
+                $matches = $dllTail | Select-String -SimpleMatch -Pattern $patterns -ErrorAction SilentlyContinue
+                if ($matches) {
+                    $result['dll_debug_key'] = ($matches | Select-Object -Last 400 | ForEach-Object { $_.Line } | Out-String)
+                }
             }
 
-            # Collect recent TermService event log entries
-            try {
-                $events = Get-WinEvent -LogName 'System' -MaxEvents 20 -ErrorAction SilentlyContinue |
-                    Where-Object { $_.ProviderName -match 'TermService|TermDD|Remote Desktop' -or $_.Id -in @(1058, 1088, 1096, 1149, 22) }
-                $result['termservice_events'] = ($events | Select-Object TimeCreated, Id, LevelDisplayName, Message | Out-String)
-            } catch {
-                $result['termservice_events'] = "Could not collect TermService events: $_"
+            if ($mode -eq 'Provider') {
+                # Collect Security 4624 for Administrator (Type 2 vs Type 10) since test start
+                try {
+                    $start = $securityStartTime.AddMinutes(-1)
+                    $rows = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4624; StartTime = $start } -ErrorAction SilentlyContinue |
+                        ForEach-Object {
+                            $xml = [xml]$_.ToXml()
+                            $data = @{}
+                            foreach ($d in $xml.Event.EventData.Data) { $data[$d.Name] = [string]$d.'#text' }
+
+                            if ($data.TargetUserName -eq 'Administrator' -and $data.TargetDomainName -eq 'IT-HELP' -and ($data.LogonType -in '2', '10')) {
+                                [pscustomobject]@{
+                                    TimeCreated  = $_.TimeCreated
+                                    LogonType    = $data.LogonType
+                                    LogonProcess = $data.LogonProcessName
+                                    ProcessName  = $data.ProcessName
+                                    IpAddress    = $data.IpAddress
+                                }
+                            }
+                        } |
+                        Sort-Object TimeCreated -Descending |
+                        Select-Object -First 20
+
+                    if ($rows) {
+                        $result['security_4624_admin'] = "Since $start`n" + ($rows | Format-Table -AutoSize | Out-String)
+                    } else {
+                        $result['security_4624_admin'] = "Since $start`n(no matching 4624 events for IT-HELP\\Administrator with LogonType 2/10)"
+                    }
+                } catch {
+                    $result['security_4624_admin'] = "Could not collect Security 4624: $_"
+                }
+            }
+
+            if ($mode -eq 'Provider') {
+                # Collect recent TermService event log entries
+                try {
+                    $events = Get-WinEvent -LogName 'System' -MaxEvents 20 -ErrorAction SilentlyContinue |
+                        Where-Object { $_.ProviderName -match 'TermService|TermDD|Remote Desktop' -or $_.Id -in @(1058, 1088, 1096, 1149, 22) }
+                    $result['termservice_events'] = ($events | Select-Object TimeCreated, Id, LevelDisplayName, Message | Out-String)
+                } catch {
+                    $result['termservice_events'] = "Could not collect TermService events: $_"
+                }
             }
 
             $proc = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
@@ -322,7 +403,7 @@ try {
             }
 
             $result
-        } -ArgumentList $Port
+        } -ArgumentList $Port, $testStartTime, $Mode
 
         $isRunning = $remoteLogs['running']
         $isListening = $remoteLogs['listening']
@@ -346,8 +427,20 @@ try {
             $remoteLogs['dll_debug'] | Set-Content (Join-Path $remoteLogDir 'wts-provider-debug.log')
             Write-Host "`n---- wts-provider-debug.log (tail) ----" -ForegroundColor Magenta
             Write-Host $remoteLogs['dll_debug']
-        } else {
+
+            if ($remoteLogs['dll_debug_key']) {
+                $remoteLogs['dll_debug_key'] | Set-Content (Join-Path $remoteLogDir 'wts-provider-debug.key.log')
+                Write-Host "`n---- wts-provider-debug.key.log (filtered) ----" -ForegroundColor Magenta
+                Write-Host $remoteLogs['dll_debug_key']
+            }
+        } elseif ($Mode -eq 'Provider') {
             Write-Host "`n---- wts-provider-debug.log: not present (set IRONRDP_WTS_PROVIDER_DEBUG_LOG for TermService to enable) ----" -ForegroundColor DarkGray
+        }
+
+        if ($remoteLogs['security_4624_admin']) {
+            $remoteLogs['security_4624_admin'] | Set-Content (Join-Path $remoteLogDir 'security-4624-admin.log')
+            Write-Host "`n---- Security 4624 (Administrator Type 2/10) ----" -ForegroundColor Yellow
+            Write-Host $remoteLogs['security_4624_admin']
         }
         if ($remoteLogs['termservice_events']) {
             Write-Host "`n---- TermService event log (recent) ----" -ForegroundColor Yellow
