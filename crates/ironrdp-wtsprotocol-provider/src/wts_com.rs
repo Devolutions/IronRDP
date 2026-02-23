@@ -819,8 +819,20 @@ impl ProviderControlBridge {
 
             let mut pipe = match pipe_result {
                 Ok(pipe) => pipe,
-                Err(error) if self.optional_connection && is_optional_control_pipe_error(&error) => {
-                    debug!(%error, pipe = %full_pipe_name, "Companion control pipe not available; using local fallback");
+                Err(error)
+                    if is_optional_control_pipe_error(&error)
+                        && (self.optional_connection
+                            || matches!(
+                                command,
+                                ProviderCommand::StartListen { .. } | ProviderCommand::WaitForIncoming { .. }
+                            )) =>
+                {
+                    debug!(
+                        %error,
+                        pipe = %full_pipe_name,
+                        command = command_kind(command),
+                        "Companion control pipe not available yet; deferring provider IPC"
+                    );
                     return Ok(None);
                 }
                 Err(error) if error.raw_os_error() == Some(231) && attempt + 1 < max_attempts => {
