@@ -95,6 +95,25 @@ function Resolve-WorkspaceRoot {
     return (Get-Item -LiteralPath (Join-Path $here '..\..\..')).FullName
 }
 
+function New-TestVmSession {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Hostname,
+
+        [Parameter(Mandatory = $true)]
+        [pscredential]$Credential
+    )
+
+    try {
+        return New-PSSession -ComputerName $Hostname -Credential $Credential -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "WinRM over HTTP failed for $Hostname; trying WinRM over HTTPS (5986)"
+        $sessOpts = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+        return New-PSSession -ComputerName $Hostname -Credential $Credential -UseSSL -Port 5986 -SessionOption $sessOpts -ErrorAction Stop
+    }
+}
+
 $workspaceRoot = Resolve-WorkspaceRoot
 $profileDir = if ($Configuration -eq 'Release') { 'release' } else { 'debug' }
 $exeLocal = Join-Path $workspaceRoot "target\$profileDir\ironrdp-termsrv.exe"
@@ -161,14 +180,7 @@ if ([string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
 }
 
 $session = $null
-try {
-    $session = New-PSSession -ComputerName $Hostname -Credential $cred -ErrorAction Stop
-}
-catch {
-    Write-Warning "WinRM over HTTP failed for $Hostname; trying WinRM over HTTPS (5986)"
-    $sessOpts = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-    $session = New-PSSession -ComputerName $Hostname -Credential $cred -UseSSL -Port 5986 -SessionOption $sessOpts -ErrorAction Stop
-}
+$session = New-TestVmSession -Hostname $Hostname -Credential $cred
 try {
     Invoke-Command -Session $session -ScriptBlock {
         param($RemoteRoot)
@@ -225,7 +237,31 @@ try {
         Remove-Item -LiteralPath 'C:\IronRDPDeploy\logs\wts-provider-debug.log' -Force -ErrorAction SilentlyContinue
     } -ArgumentList $TaskName, $rdpPasswordRemote, $logOut, $logErr
 
-    Copy-Item -ToSession $session -Path $exeLocal -Destination $exeRemote -Force
+    $copyAttempts = 0
+    $maxCopyAttempts = 4
+    while ($true) {
+        $copyAttempts++
+        try {
+            Copy-Item -ToSession $session -Path $exeLocal -Destination $exeRemote -Force
+            break
+        }
+        catch {
+            Write-Warning "Copy-Item failed (attempt $copyAttempts/$maxCopyAttempts): $_"
+            if ($copyAttempts -ge $maxCopyAttempts) {
+                throw
+            }
+
+            try {
+                if ($null -ne $session) {
+                    Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+                }
+            }
+            catch { }
+
+            Start-Sleep -Seconds (2 * $copyAttempts)
+            $session = New-TestVmSession -Hostname $Hostname -Credential $cred
+        }
+    }
 
     Invoke-Command -Session $session -ScriptBlock {
         param($RunnerPath)

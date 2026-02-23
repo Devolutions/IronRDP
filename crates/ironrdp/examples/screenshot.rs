@@ -477,6 +477,9 @@ fn capture_frames<S: Read + io::Write>(
         let (action, payload) = match framed.read_pdu() {
             Ok((action, payload)) => (action, payload),
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                if got_graphics && e.kind() == io::ErrorKind::WouldBlock {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
                 continue 'outer;
             }
             Err(e) if got_graphics => {
