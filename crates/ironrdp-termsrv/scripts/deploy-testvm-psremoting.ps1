@@ -155,6 +155,20 @@ else {
 
 $cred = [pscredential]::new($Username, $resolvedPassword)
 
+$wtsLogonUsername = ''
+$wtsLogonDomain = ''
+if ($WtsProvider.IsPresent) {
+    $m = [regex]::Match($Username, '^(?<domain>[^\\]+)\\(?<user>.+)$')
+    if ($m.Success) {
+        $wtsLogonDomain = $m.Groups['domain'].Value
+        $wtsLogonUsername = $m.Groups['user'].Value
+    }
+    else {
+        $wtsLogonUsername = $Username
+        $wtsLogonDomain = ''
+    }
+}
+
 $resolvedRdpPassword = if ($PSBoundParameters.ContainsKey('RdpPassword') -and -not [string]::IsNullOrWhiteSpace($RdpPassword)) {
     Write-Warning "-RdpPassword is passed as plaintext; prefer env:$RdpPasswordEnvVar to avoid leaking credentials via shell history."
     $RdpPassword
@@ -306,7 +320,16 @@ param(
     [string]$RdpDomain = '',
 
     [Parameter()]
-    [string]$RdpPasswordFile = ''
+    [string]$RdpPasswordFile = '',
+
+    [Parameter()]
+    [string]$WtsLogonUsername = '',
+
+    [Parameter()]
+    [string]$WtsLogonDomain = '',
+
+    [Parameter()]
+    [string]$WtsLogonPasswordFile = ''
 )
 
 Set-StrictMode -Version Latest
@@ -354,6 +377,25 @@ if (-not [string]::IsNullOrWhiteSpace($rdpPassword)) {
     Remove-Item Env:IRONRDP_RDP_PASSWORD -ErrorAction SilentlyContinue
 }
 
+$wtsPassword = ''
+if (-not [string]::IsNullOrWhiteSpace($WtsLogonPasswordFile) -and (Test-Path -LiteralPath $WtsLogonPasswordFile -PathType Leaf)) {
+    $wtsPassword = [System.IO.File]::ReadAllText($WtsLogonPasswordFile, [System.Text.Encoding]::UTF8).TrimEnd("`r", "`n")
+}
+
+if (-not [string]::IsNullOrWhiteSpace($WtsLogonUsername) -and -not [string]::IsNullOrWhiteSpace($wtsPassword)) {
+    $env:IRONRDP_WTS_LOGON_USERNAME = $WtsLogonUsername
+    if (-not [string]::IsNullOrWhiteSpace($WtsLogonDomain)) {
+        $env:IRONRDP_WTS_LOGON_DOMAIN = $WtsLogonDomain
+    } else {
+        Remove-Item Env:IRONRDP_WTS_LOGON_DOMAIN -ErrorAction SilentlyContinue
+    }
+    $env:IRONRDP_WTS_LOGON_PASSWORD = $wtsPassword
+} else {
+    Remove-Item Env:IRONRDP_WTS_LOGON_USERNAME -ErrorAction SilentlyContinue
+    Remove-Item Env:IRONRDP_WTS_LOGON_DOMAIN -ErrorAction SilentlyContinue
+    Remove-Item Env:IRONRDP_WTS_LOGON_PASSWORD -ErrorAction SilentlyContinue
+}
+
 $logDir = Split-Path -Parent $LogOut
 if (-not [string]::IsNullOrWhiteSpace($logDir)) {
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
@@ -367,6 +409,9 @@ finally {
     # Best-effort cleanup: remove the password file after startup.
     if (-not [string]::IsNullOrWhiteSpace($RdpPasswordFile)) {
         Remove-Item -LiteralPath $RdpPasswordFile -Force -ErrorAction SilentlyContinue
+    }
+    if (-not [string]::IsNullOrWhiteSpace($WtsLogonPasswordFile) -and ($WtsLogonPasswordFile -ne $RdpPasswordFile)) {
+        Remove-Item -LiteralPath $WtsLogonPasswordFile -Force -ErrorAction SilentlyContinue
     }
 }
 '@
@@ -404,7 +449,7 @@ finally {
     } -ArgumentList ([int]($ListenerAddr.Split(':')[-1]))
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain)
+        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain, $WtsLogonUsername, $WtsLogonDomain)
 
         $arguments = @(
             '-NoProfile',
@@ -423,6 +468,13 @@ finally {
 
         if ($WtsProvider) {
             $arguments += @('-WtsProvider')
+            if (-not [string]::IsNullOrWhiteSpace($WtsLogonUsername)) {
+                $arguments += @('-WtsLogonUsername', $WtsLogonUsername)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($WtsLogonDomain)) {
+                $arguments += @('-WtsLogonDomain', $WtsLogonDomain)
+            }
+            $arguments += @('-WtsLogonPasswordFile', $SecretPath)
         }
 
         if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
@@ -480,7 +532,7 @@ finally {
             LogErr = $LogErr
             Pid = $proc.Id
         }
-    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain | Format-List
+    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain, $wtsLogonUsername, $wtsLogonDomain | Format-List
 
     Invoke-Command -Session $session -ScriptBlock {
         param($ListenerAddr, $LogOut, $LogErr, $TailLines, $NoTermServiceStart)
