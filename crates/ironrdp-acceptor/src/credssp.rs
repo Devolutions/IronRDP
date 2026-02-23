@@ -46,6 +46,7 @@ pub struct CredsspSequence<'a> {
     server: CredSspServer<CredentialsProxyImpl<'a>>,
     state: CredsspState,
     spnego_wrapped: bool,
+    spnego_shim: bool,
 }
 
 fn try_unwrap_spnego(token: &[u8]) -> Option<Vec<u8>> {
@@ -197,19 +198,31 @@ impl<'a> CredsspSequence<'a> {
         let client_computer_name = client_computer_name.into_inner();
         let credentials = CredentialsProxyImpl::new(creds);
 
-        // NOTE: we default to NTLM when no explicit Kerberos config is provided.
-        // Using the Negotiate/Kerberos path can trigger picky-krb panics on some
-        // environments (observed on IT-HELP-TEST). This still enables CredSSP/NLA
-        // for typical test setups while we iterate on full SSPI integration.
-        let server_mode = if let Some(krb_config) = krb_config {
+        // NOTE: some RDP clients (notably mstsc in domain environments) will send GSS tokens that
+        // are not raw NTLM, even when NTLM is ultimately selected. Using the Negotiate path keeps
+        // the token format compatible (SPNEGO/GSS) and avoids rejecting valid client handshakes.
+        //
+        // We keep the SPNEGO unwrap/wrap shim only for the NTLM-only mode.
+        let (server_mode, spnego_shim) = if let Some(krb_config) = krb_config {
             let credssp_config: Box<dyn ProtocolConfig> = Box::new(krb_config);
-            ServerMode::Negotiate(NegotiateConfig {
-                protocol_config: credssp_config,
-                package_list: None,
-                client_computer_name,
-            })
+            (
+                ServerMode::Negotiate(NegotiateConfig {
+                    protocol_config: credssp_config,
+                    package_list: None,
+                    client_computer_name,
+                }),
+                false,
+            )
         } else {
-            ServerMode::Ntlm(sspi::ntlm::NtlmConfig::default())
+            let credssp_config: Box<dyn ProtocolConfig> = Box::new(sspi::ntlm::NtlmConfig::default());
+            (
+                ServerMode::Negotiate(NegotiateConfig {
+                    protocol_config: credssp_config,
+                    package_list: None,
+                    client_computer_name,
+                }),
+                false,
+            )
         };
 
         let server = CredSspServer::new(public_key, credentials, server_mode)
@@ -219,6 +232,7 @@ impl<'a> CredsspSequence<'a> {
             server,
             state: CredsspState::Ongoing,
             spnego_wrapped: false,
+            spnego_shim,
         };
 
         Ok(sequence)
@@ -231,12 +245,14 @@ impl<'a> CredsspSequence<'a> {
                 let decode = || -> ConnectorResult<Option<TsRequest>> {
                     let mut message = TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
 
-                    if let Some(nego_tokens) = message.nego_tokens.take() {
-                        if let Some(inner) = try_unwrap_spnego(&nego_tokens) {
-                            self.spnego_wrapped = true;
-                            message.nego_tokens = Some(inner);
-                        } else {
-                            message.nego_tokens = Some(nego_tokens);
+                    if self.spnego_shim {
+                        if let Some(nego_tokens) = message.nego_tokens.take() {
+                            if let Some(inner) = try_unwrap_spnego(&nego_tokens) {
+                                self.spnego_wrapped = true;
+                                message.nego_tokens = Some(inner);
+                            } else {
+                                message.nego_tokens = Some(nego_tokens);
+                            }
                         }
                     }
 
@@ -288,7 +304,7 @@ impl<'a> CredsspSequence<'a> {
         if let Some(ts_request) = ts_request {
             let mut ts_request = ts_request;
 
-            if self.spnego_wrapped {
+            if self.spnego_shim && self.spnego_wrapped {
                 if let Some(nego_tokens) = ts_request.nego_tokens.take() {
                     let wrapped = wrap_spnego_ntlm_reply(nego_tokens).map_err(|e| custom_err!("SPNEGO", e))?;
                     ts_request.nego_tokens = Some(wrapped);

@@ -42,7 +42,7 @@ mod windows_main {
     };
     use windows::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
     };
     use windows::Win32::Security::Cryptography::{
         CertAddCertificateContextToStore, CertCloseStore, CertCreateSelfSignCertificate, CertFindCertificateInStore,
@@ -73,9 +73,7 @@ mod windows_main {
         MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
         MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, VIRTUAL_KEY,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetDesktopWindow, GetSystemMetrics, SetCursorPos, SM_CXSCREEN, SM_CYSCREEN,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SetCursorPos, SM_CXSCREEN, SM_CYSCREEN};
 
     use windows::Win32::Security::{
         AdjustTokenPrivileges, DuplicateTokenEx, LookupPrivilegeValueW, RevertToSelf, SecurityImpersonation,
@@ -115,6 +113,9 @@ mod windows_main {
     const RDP_USERNAME_ENV: &str = "IRONRDP_RDP_USERNAME";
     const RDP_PASSWORD_ENV: &str = "IRONRDP_RDP_PASSWORD";
     const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
+    const WTS_LOGON_USERNAME_ENV: &str = "IRONRDP_WTS_LOGON_USERNAME";
+    const WTS_LOGON_PASSWORD_ENV: &str = "IRONRDP_WTS_LOGON_PASSWORD";
+    const WTS_LOGON_DOMAIN_ENV: &str = "IRONRDP_WTS_LOGON_DOMAIN";
 
     fn control_pipe_security_attributes() -> anyhow::Result<(SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR)> {
         // Allow TermService (NetworkService) to connect to the control pipe.
@@ -1433,7 +1434,13 @@ mod windows_main {
                     ));
                 }
 
-                let mut data = vec![0u8; payload_len];
+                let mut data = Vec::new();
+                if let Err(error) = data.try_reserve(payload_len) {
+                    return Err(anyhow!(
+                        "failed to allocate shared memory payload buffer ({payload_len} bytes): {error}"
+                    ));
+                }
+                data.resize(payload_len, 0);
 
                 let slot_offset = SHM_FB_HEADER_LEN + slot * self.slot_len;
                 let end = slot_offset + payload_len;
@@ -2172,7 +2179,13 @@ mod windows_main {
                     ));
                 }
 
-                let mut payload = vec![0u8; payload_len_usize];
+                let mut payload = Vec::new();
+                if let Err(error) = payload.try_reserve(payload_len_usize) {
+                    return Err(anyhow!(
+                        "failed to allocate capture frame payload buffer ({payload_len_usize} bytes): {error}"
+                    ));
+                }
+                payload.resize(payload_len_usize, 0);
                 stream
                     .read_exact(&mut payload)
                     .await
@@ -2191,7 +2204,13 @@ mod windows_main {
             2 => {
                 let codec_id = header[14];
 
-                let mut payload = vec![0u8; payload_len_usize];
+                let mut payload = Vec::new();
+                if let Err(error) = payload.try_reserve(payload_len_usize) {
+                    return Err(anyhow!(
+                        "failed to allocate pre-encoded frame payload buffer ({payload_len_usize} bytes): {error}"
+                    ));
+                }
+                payload.resize(payload_len_usize, 0);
                 stream
                     .read_exact(&mut payload)
                     .await
@@ -2388,11 +2407,8 @@ mod windows_main {
             .checked_mul(NonZeroUsize::from(height).get())
             .ok_or_else(|| anyhow!("frame buffer length overflow"))?;
 
-        // SAFETY: `GetDesktopWindow` is safe to call and returns a process-global desktop window handle.
-        let desktop_hwnd = unsafe { GetDesktopWindow() };
-
-        // SAFETY: `desktop_hwnd` is a valid HWND for the current session desktop.
-        let screen_dc = unsafe { GetDC(Some(desktop_hwnd)) };
+        // SAFETY: `GetDC(None)` is safe to call and returns the DC for the entire screen.
+        let screen_dc = unsafe { GetDC(None) };
         if screen_dc.0.is_null() {
             return Err(anyhow!("GetDC returned a null screen device context"));
         }
@@ -2401,7 +2417,7 @@ mod windows_main {
         let memory_dc = unsafe { CreateCompatibleDC(Some(screen_dc)) };
         if memory_dc.0.is_null() {
             // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
-            let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
+            let _ = unsafe { ReleaseDC(None, screen_dc) };
             return Err(anyhow!("CreateCompatibleDC returned a null memory device context"));
         }
 
@@ -2424,7 +2440,7 @@ mod windows_main {
             // SAFETY: `memory_dc` and `screen_dc` are valid handles created above.
             let _ = unsafe { DeleteDC(memory_dc) };
             // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
-            let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
+            let _ = unsafe { ReleaseDC(None, screen_dc) };
             return Err(anyhow!("CreateDIBSection returned a null bitmap handle"));
         }
 
@@ -2436,14 +2452,27 @@ mod windows_main {
             // SAFETY: `memory_dc` is a valid memory DC created above.
             let _ = unsafe { DeleteDC(memory_dc) };
             // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
-            let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
+            let _ = unsafe { ReleaseDC(None, screen_dc) };
             return Err(anyhow!("SelectObject failed for capture bitmap"));
         }
 
         // SAFETY: all DC handles are valid and dimensions are taken from initialized state.
-        let bitblt_result = unsafe { BitBlt(memory_dc, 0, 0, width_i32, height_i32, Some(screen_dc), 0, 0, SRCCOPY) };
+        // CAPTUREBLT requests that layered windows and DWM-composited surfaces be included.
+        let bitblt_result = unsafe {
+            BitBlt(
+                memory_dc,
+                0,
+                0,
+                width_i32,
+                height_i32,
+                Some(screen_dc),
+                0,
+                0,
+                SRCCOPY | CAPTUREBLT,
+            )
+        };
 
-        let mut data = vec![0u8; frame_len];
+        let mut data = Vec::new();
         if bitblt_result.is_ok() {
             if bits_ptr.is_null() {
                 // SAFETY: clean up GDI objects created above.
@@ -2453,9 +2482,23 @@ mod windows_main {
                 // SAFETY: clean up GDI objects created above.
                 let _ = unsafe { DeleteDC(memory_dc) };
                 // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
+                let _ = unsafe { ReleaseDC(None, screen_dc) };
                 return Err(anyhow!("CreateDIBSection returned a null bitmap data pointer"));
             }
+
+            if let Err(error) = data.try_reserve(frame_len) {
+                // SAFETY: clean up GDI objects created above.
+                let _ = unsafe { SelectObject(memory_dc, previous_bitmap) };
+                // SAFETY: clean up GDI objects created above.
+                let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+                // SAFETY: clean up GDI objects created above.
+                let _ = unsafe { DeleteDC(memory_dc) };
+                // SAFETY: clean up GDI objects created above.
+                let _ = unsafe { ReleaseDC(None, screen_dc) };
+                return Err(anyhow!("failed to allocate frame buffer ({frame_len} bytes): {error}"));
+            }
+
+            data.resize(frame_len, 0);
 
             // SAFETY: source and destination buffers are valid for `frame_len` bytes and do not overlap.
             unsafe {
@@ -2470,7 +2513,7 @@ mod windows_main {
         // SAFETY: `memory_dc` was created with `CreateCompatibleDC`.
         let _ = unsafe { DeleteDC(memory_dc) };
         // SAFETY: `screen_dc` was acquired with `GetDC`.
-        let _ = unsafe { ReleaseDC(Some(desktop_hwnd), screen_dc) };
+        let _ = unsafe { ReleaseDC(None, screen_dc) };
 
         bitblt_result.map_err(|error| anyhow!("BitBlt failed while capturing desktop frame: {error}"))?;
 
@@ -2503,7 +2546,13 @@ mod windows_main {
         let height_usize = NonZeroUsize::from(height).get();
         let stride_usize = stride.get();
 
-        let mut data = vec![0u8; frame_len];
+        let mut data = Vec::new();
+        if let Err(error) = data.try_reserve(frame_len) {
+            return Err(anyhow!(
+                "failed to allocate fallback frame buffer ({frame_len} bytes): {error}"
+            ));
+        }
+        data.resize(frame_len, 0);
         let modulus = usize::from(u8::MAX) + 1;
 
         for y in 0..height_usize {
@@ -3112,6 +3161,32 @@ mod windows_main {
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
+        if provider_mode {
+            if let Some(env_creds) = resolve_wts_logon_credentials_from_env()? {
+                let StoredCredentials {
+                    username,
+                    domain,
+                    password,
+                } = env_creds;
+
+                info!(
+                    connection_id,
+                    username = %username,
+                    domain = %domain,
+                    "Configured WTS logon credentials from env"
+                );
+
+                let mut guard = credentials_slot.lock().await;
+                if guard.is_none() {
+                    *guard = Some(StoredCredentials {
+                        username,
+                        domain,
+                        password,
+                    });
+                }
+            }
+        }
+
         let input_stream_slot: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
         let (input_tx, input_rx) = mpsc::unbounded_channel::<InputPacket>();
         let input_task = tokio::task::spawn_local(run_input_spooler(
@@ -3130,18 +3205,19 @@ mod windows_main {
         .context("failed to initialize GDI display handler")?;
         let (tls_acceptor, tls_pub_key) = make_tls_acceptor().context("failed to initialize TLS acceptor")?;
 
-        let expected_credentials = resolve_rdp_credentials_from_env()?;
-
         let input_handler = TermSrvInputHandler::new(connection_id, input_tx);
 
         let mut server = {
             let builder = RdpServer::builder().with_addr(([127, 0, 0, 1], 0));
 
-            let builder = if expected_credentials.is_some() {
-                builder.with_hybrid(tls_acceptor, tls_pub_key)
-            } else {
-                drop(tls_pub_key);
+            // In provider mode we need plaintext credentials to pass to TermService.
+            // Our current CredSSP implementation requires preconfigured passwords (pure-Rust SSPI),
+            // so we capture credentials from the ClientInfo PDU over TLS-only instead.
+            let builder = if provider_mode {
+                let _ = tls_pub_key;
                 builder.with_tls(tls_acceptor)
+            } else {
+                builder.with_hybrid(tls_acceptor, tls_pub_key)
             };
 
             let rfx_only_codecs =
@@ -3155,16 +3231,58 @@ mod windows_main {
                 .build()
         };
 
-        if let Some(credentials) = expected_credentials {
-            info!(username = %credentials.username, domain = ?credentials.domain, "Configured expected RDP credentials");
-            server.set_credentials(Some(credentials));
+        if provider_mode {
+            server.set_allow_unverified_credentials(true);
+
+            let credentials_slot = Arc::clone(&credentials_slot);
+            server.set_client_info_credentials_sink(move |creds| {
+                let username = creds.username;
+                let domain = creds.domain.unwrap_or_default();
+                let password = creds.password;
+
+                if username.is_empty() || password.is_empty() {
+                    info!(
+                        connection_id,
+                        username = %username,
+                        domain = %domain,
+                        "Received ClientInfo credentials without username/password; ignoring"
+                    );
+                    return;
+                }
+
+                info!(
+                    connection_id,
+                    username = %username,
+                    domain = %domain,
+                    "Captured ClientInfo credentials; storing for WTS provider"
+                );
+
+                let credentials_slot = Arc::clone(&credentials_slot);
+                tokio::task::spawn_local(async move {
+                    let mut guard = credentials_slot.lock().await;
+                    if guard.is_none() {
+                        *guard = Some(StoredCredentials {
+                            username,
+                            domain,
+                            password,
+                        });
+                    }
+                });
+            });
         } else {
-            warn!(
-                username_env = %RDP_USERNAME_ENV,
-                password_env = %RDP_PASSWORD_ENV,
-                domain_env = %RDP_DOMAIN_ENV,
-                "RDP credentials are not configured; standard security connections will be rejected"
-            );
+            let expected_credentials = resolve_rdp_credentials_from_env()?;
+
+            if let Some(credentials) = expected_credentials {
+                info!(username = %credentials.username, domain = ?credentials.domain, "Configured expected RDP credentials");
+                server.set_credentials(Some(credentials));
+            } else {
+                warn!(
+                    username_env = %RDP_USERNAME_ENV,
+                    password_env = %RDP_PASSWORD_ENV,
+                    domain_env = %RDP_DOMAIN_ENV,
+                    "RDP credentials are not configured; standard security connections will be rejected"
+                );
+            }
         }
 
         let pending = server
@@ -3188,11 +3306,13 @@ mod windows_main {
             );
 
             let mut guard = credentials_slot.lock().await;
-            *guard = Some(StoredCredentials {
-                username,
-                domain,
-                password,
-            });
+            if guard.is_none() {
+                *guard = Some(StoredCredentials {
+                    username,
+                    domain,
+                    password,
+                });
+            }
         }
 
         server
@@ -3231,6 +3351,36 @@ mod windows_main {
                 username,
                 password,
                 domain,
+            })),
+        }
+    }
+
+    fn resolve_wts_logon_credentials_from_env() -> anyhow::Result<Option<StoredCredentials>> {
+        let username = std::env::var(WTS_LOGON_USERNAME_ENV)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        let password = std::env::var(WTS_LOGON_PASSWORD_ENV)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        let domain = std::env::var(WTS_LOGON_DOMAIN_ENV)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_default();
+
+        match (username, password) {
+            (None, None) => Ok(None),
+            (Some(_), None) | (None, Some(_)) => Err(anyhow!(
+                "both {WTS_LOGON_USERNAME_ENV} and {WTS_LOGON_PASSWORD_ENV} must be set together"
+            )),
+            (Some(username), Some(password)) => Ok(Some(StoredCredentials {
+                username,
+                domain,
+                password,
             })),
         }
     }

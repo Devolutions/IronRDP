@@ -907,10 +907,11 @@ fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS 
         s1.ProtocolType = 2;
         copy_wide(&mut s1.ProtocolName, "RDP");
 
-        // Match the provider's GetClientData/GetUserCredentials intent: automatic logon using
-        // protocol-supplied credentials, no prompt.
-        s1.fInheritAutoLogon = true;
-        s1.fUsingSavedCreds = true;
+        // Do not force auto-logon here: TermService may query GetClientData/GetUserCredentials
+        // before CredSSP credentials are available, and advertising "saved creds" with empty
+        // fields can lead to immediate logon failure/disconnect.
+        s1.fInheritAutoLogon = false;
+        s1.fUsingSavedCreds = false;
         s1.fPromptForPassword = false;
         s1.fEnableWindowsKey = true;
         s1.fDisableCtrlAltDel = true;
@@ -2531,11 +2532,10 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         client_data.fMouse = true;
         client_data.fMaximizeShell = true;
         client_data.fEnableWindowsKey = true;
-        // Ask TermService/Winlogon to use protocol-supplied credentials for automatic logon.
-        // See IWRdsProtocolConnection::GetUserCredentials remarks: if we return S_OK there,
-        // TermService passes the credentials to Winlogon to log on the user.
-        client_data.fInheritAutoLogon = BOOL(1);
-        client_data.fUsingSavedCreds = true;
+        // Only advertise auto-logon once we actually have CredSSP-derived credentials.
+        // Otherwise, some TermService/Winlogon paths will attempt to use empty fields and fail.
+        client_data.fInheritAutoLogon = BOOL(0);
+        client_data.fUsingSavedCreds = false;
         client_data.fPromptForPassword = false;
         client_data.fNoAudioPlayback = true;
         // Match the built-in RDP provider identifiers.
@@ -2551,6 +2551,10 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         match self.control_bridge.get_connection_credentials(connection_id)? {
             Some((username, domain, password)) => {
                 let (winlogon_username, winlogon_domain) = normalize_winlogon_credentials(&username, &domain);
+
+                client_data.fInheritAutoLogon = BOOL(1);
+                client_data.fUsingSavedCreds = true;
+                client_data.fPromptForPassword = false;
 
                 copy_wide(&mut client_data.UserName, &winlogon_username);
                 copy_wide(&mut client_data.Domain, &winlogon_domain);

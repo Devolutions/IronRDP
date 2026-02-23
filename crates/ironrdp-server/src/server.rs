@@ -250,6 +250,8 @@ pub struct RdpServer {
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
+    allow_unverified_credentials: bool,
+    client_info_credentials_sink: Option<Arc<dyn Fn(Credentials) + Send + Sync>>,
     local_addr: Option<SocketAddr>,
 }
 
@@ -381,6 +383,8 @@ impl RdpServer {
             sound_factory,
             cliprdr_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
+            allow_unverified_credentials: false,
+            client_info_credentials_sink: None,
             #[cfg(feature = "egfx")]
             gfx_factory,
             #[cfg(feature = "egfx")]
@@ -483,6 +487,7 @@ impl RdpServer {
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
+        acceptor.set_allow_unverified_credentials(self.allow_unverified_credentials);
 
         self.attach_channels(&mut acceptor);
 
@@ -552,6 +557,7 @@ impl RdpServer {
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
+        acceptor.set_allow_unverified_credentials(self.allow_unverified_credentials);
 
         self.attach_channels(&mut acceptor);
 
@@ -1273,6 +1279,12 @@ impl RdpServer {
                 .await
                 .context("failed to accept client during finalize")?;
 
+            if let Some(sink) = self.client_info_credentials_sink.as_ref() {
+                if let Some(creds) = acceptor.take_captured_client_credentials() {
+                    sink(creds);
+                }
+            }
+
             let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
             match self.client_accepted(&mut reader, &mut writer, result).await? {
@@ -1303,6 +1315,24 @@ impl RdpServer {
     pub fn set_credentials(&mut self, creds: Option<Credentials>) {
         debug!(?creds, "Changing credentials");
         self.creds = creds
+    }
+
+    /// When enabled, do not deny TLS-only (non-hybrid) connections just because
+    /// no expected credentials were configured.
+    ///
+    /// This is intended for environments where another component (e.g., TermService)
+    /// will validate the supplied credentials.
+    pub fn set_allow_unverified_credentials(&mut self, allow: bool) {
+        self.allow_unverified_credentials = allow;
+    }
+
+    /// Installs a callback that is invoked once the client sends its
+    /// `ClientInfo` credentials (TLS-only / standard security path).
+    pub fn set_client_info_credentials_sink<F>(&mut self, sink: F)
+    where
+        F: Fn(Credentials) + Send + Sync + 'static,
+    {
+        self.client_info_credentials_sink = Some(Arc::new(sink));
     }
 }
 

@@ -129,6 +129,8 @@ pub struct Acceptor {
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
+    allow_unverified_credentials: bool,
+    captured_client_credentials: Option<Credentials>,
     reactivation: bool,
 }
 
@@ -159,8 +161,26 @@ impl Acceptor {
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
             creds,
+            allow_unverified_credentials: false,
+            captured_client_credentials: None,
             reactivation: false,
         }
+    }
+
+    /// When enabled, the acceptor will not deny connections just because no
+    /// expected credentials were configured.
+    ///
+    /// This is useful in "provider mode" setups where the RDP server's job is
+    /// to *capture* the client's credentials (from the ClientInfo PDU) and pass
+    /// them to a higher-level component (e.g., TermService) for real logon.
+    pub fn set_allow_unverified_credentials(&mut self, allow: bool) {
+        self.allow_unverified_credentials = allow;
+    }
+
+    /// Returns the credentials captured from the ClientInfo PDU (standard
+    /// security / TLS-only), if any.
+    pub fn take_captured_client_credentials(&mut self) -> Option<Credentials> {
+        self.captured_client_credentials.take()
     }
 
     pub fn new_deactivation_reactivation(
@@ -200,6 +220,8 @@ impl Acceptor {
             static_channels,
             saved_for_reactivation,
             creds: consumed.creds,
+            allow_unverified_credentials: consumed.allow_unverified_credentials,
+            captured_client_credentials: None,
             reactivation: true,
         })
     }
@@ -624,11 +646,13 @@ impl Sequence for Acceptor {
 
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
+                    self.captured_client_credentials = Some(creds.clone());
 
-                    if self
-                        .creds
-                        .as_ref()
-                        .is_none_or(|expected| !credentials_match(expected, &creds))
+                    if !self.allow_unverified_credentials
+                        && self
+                            .creds
+                            .as_ref()
+                            .is_none_or(|expected| !credentials_match(expected, &creds))
                     {
                         // FIXME: How authorization should be denied with standard RDP security?
                         // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.

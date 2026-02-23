@@ -153,7 +153,16 @@ impl CredsspSequence {
                     client_computer_name: server_name,
                 })
             }
-            None => credssp::ClientMode::Ntlm(sspi::ntlm::NtlmConfig::default()),
+            None => {
+                // Use the Negotiate token format (SPNEGO/GSS) even when we only have NTLM.
+                // This keeps the handshake compatible with servers/clients that expect Negotiate.
+                let credssp_config = Box::new(sspi::ntlm::NtlmConfig::default());
+                credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
+                    protocol_config: credssp_config,
+                    package_list: None,
+                    client_computer_name: server_name,
+                })
+            }
         };
 
         let client = CredSspClient::new(
