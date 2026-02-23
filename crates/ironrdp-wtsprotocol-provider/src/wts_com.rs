@@ -552,7 +552,17 @@ impl ProviderControlBridge {
             listener_name: listener_name.to_owned(),
         })?
         else {
-            return Ok(false);
+            // When running under TermService, the companion service is typically started via a
+            // Scheduled Task. On boot, TermService can call StartListen before that task has
+            // created the named pipe. If we return "disabled" here, we never enter the
+            // WaitForIncoming polling loop, so the companion never auto-starts its TCP listener.
+            //
+            // Treat the bridge as enabled and let the worker thread keep polling; once the pipe
+            // becomes available, WaitForIncoming will auto-start the TCP listener.
+            debug_log_line(&format!(
+                "ProviderControlBridge::start_listen control pipe not available yet; enabling deferred StartListen listener_name={listener_name}",
+            ));
+            return Ok(true);
         };
 
         match event {
