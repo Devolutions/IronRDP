@@ -6,12 +6,11 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::io::{Read as _, Write};
 use std::os::windows::io::AsRawHandle as _;
-use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -23,13 +22,21 @@ use ironrdp_wtsprotocol_ipc::{
 };
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
+use windows::core::AgileReference;
 use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_NO_DATA,
-    ERROR_SEM_TIMEOUT, E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED, HANDLE, HANDLE_PTR,
+    LocalFree, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, ERROR_BROKEN_PIPE, ERROR_INSUFFICIENT_BUFFER,
+    ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_SEM_TIMEOUT, E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED, HANDLE,
+    HANDLE_PTR, HLOCAL,
 };
-use windows::Win32::Security::{IsValidSecurityDescriptor, PSECURITY_DESCRIPTOR};
+use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows::Win32::Security::{
+    IsValidSecurityDescriptor, LookupAccountNameW, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
+};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IClassFactory, IClassFactory_Impl,
+    CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IAgileObject_Impl, IClassFactory, IClassFactory_Impl,
     COINIT_MULTITHREADED,
 };
 use windows::Win32::System::Pipes::PeekNamedPipe;
@@ -38,15 +45,15 @@ use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolConnection_Impl, IWRdsProtocolLicenseConnection, IWRdsProtocolLicenseConnection_Impl,
     IWRdsProtocolListener, IWRdsProtocolListenerCallback, IWRdsProtocolListener_Impl,
     IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager, IWRdsProtocolManager_Impl, IWRdsProtocolSettings,
-    IWRdsProtocolShadowConnection, IWRdsWddmIddProps, IWRdsWddmIddProps_Impl, WTSDisconnected, WTSEnumerateSessionsW,
-    WTSFreeMemory, WTSVirtualChannelClose, WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite,
-    WRDS_CONNECTION_SETTINGS, WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL,
-    WRDS_SETTINGS, WTS_CERT_TYPE_INVALID, WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH,
+    IWRdsProtocolShadowConnection, IWRdsWddmIddProps, IWRdsWddmIddProps_Impl, WTSVirtualChannelClose,
+    WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite, WRDS_CONNECTION_SETTINGS,
+    WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL, WRDS_SETTINGS,
+    WTS_CERT_TYPE_INVALID, WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH,
     WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL,
     WTS_CLIENT_DATA, WTS_KEY_EXCHANGE_ALG_RSA, WTS_LICENSE_CAPABILITIES, WTS_LICENSE_PREAMBLE_VERSION,
-    WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_SESSION_INFOW, WTS_USER_CREDENTIAL,
+    WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
 };
-use windows_core::{implement, Interface as _, BOOL, GUID, PCSTR, PCWSTR};
+use windows_core::{implement, Interface as _, BOOL, GUID, PCSTR, PCWSTR, PWSTR};
 use windows_core::{IUnknown, HRESULT};
 
 use crate::auth_bridge::{CredsspPolicy, CredsspServerBridge};
@@ -58,6 +65,108 @@ const S_OK: HRESULT = HRESULT(0);
 const S_FALSE: HRESULT = HRESULT(1);
 // HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY=14) == 0x8007000E
 const E_OUTOFMEMORY: HRESULT = HRESULT(-2147024882);
+
+const RDP_IDD_DISPLAY_DRIVER_HARDWARE_ID: &str = "RdpIdd_IndirectDisplay";
+const WTS_PROTOCOL_TYPE_RDP: u16 = 2;
+
+const WTS_VALUE_TYPE_ULONG: u16 = 1;
+const WTS_VALUE_TYPE_STRING: u16 = 2;
+
+// From Windows SDK `wtsdefs.h`.
+const PROPERTY_TYPE_GET_FAST_RECONNECT: GUID = GUID::from_u128(0x6212_d757_0043_4862_99c3_9f30_59ac_2a3b);
+const PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID: GUID = GUID::from_u128(0x197c_427a_0135_4b6d_9c5e_e657_9a0a_b625);
+
+// From Windows SDK `wtsdefs.h`.
+const WTS_QUERY_AUDIOENUM_DLL: GUID = GUID::from_u128(0x9bf4_fa97_c883_4c2a_80ab_5a39_c9af_00db);
+const PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL: GUID =
+    GUID::from_u128(0xed2c_3fda_338d_4d3f_81a3_e767_310d_908e);
+
+const FAST_RECONNECT_ENHANCED: u32 = 2;
+
+fn lookup_account_sid_string(username: &str, domain: &str) -> windows_core::Result<String> {
+    let username = username.trim();
+    let domain = domain.trim();
+
+    let account = if domain.is_empty() {
+        username.to_owned()
+    } else if username.contains('@') {
+        // Already a UPN.
+        username.to_owned()
+    } else if domain.contains('.') {
+        // AD often doesn't resolve DNS-style domains as down-level `DOMAIN\\user`.
+        // Use UPN to make LookupAccountNameW succeed without relying on NetBIOS mapping.
+        format!("{username}@{domain}")
+    } else {
+        format!("{domain}\\{username}")
+    };
+
+    let account_w = windows_core::HSTRING::from(account);
+
+    let mut sid_size = 0u32;
+    let mut domain_size = 0u32;
+    let mut use_type = SID_NAME_USE(0);
+
+    // First call to obtain required buffer sizes.
+    // SAFETY: sizes/use_type are valid out-params.
+    unsafe {
+        let _ = LookupAccountNameW(
+            None,
+            PCWSTR(account_w.as_ptr()),
+            None,
+            &mut sid_size,
+            None,
+            &mut domain_size,
+            &mut use_type,
+        );
+    }
+
+    if sid_size == 0 {
+        return Err(windows_core::Error::new(
+            E_UNEXPECTED,
+            "LookupAccountNameW returned zero SID size",
+        ));
+    }
+
+    let sid_len = usize::try_from(sid_size)
+        .map_err(|_| windows_core::Error::new(E_UNEXPECTED, "SID size does not fit in usize"))?;
+    let domain_len = usize::try_from(domain_size)
+        .map_err(|_| windows_core::Error::new(E_UNEXPECTED, "domain size does not fit in usize"))?;
+
+    let mut sid_buf = vec![0u8; sid_len];
+    let mut domain_buf = vec![0u16; domain_len];
+
+    // SAFETY: buffers are allocated according to `sid_size` and `domain_size` returned above.
+    unsafe {
+        LookupAccountNameW(
+            None,
+            PCWSTR(account_w.as_ptr()),
+            Some(PSID(sid_buf.as_mut_ptr().cast())),
+            &mut sid_size,
+            Some(PWSTR(domain_buf.as_mut_ptr())),
+            &mut domain_size,
+            &mut use_type,
+        )?;
+    }
+
+    let mut sid_string = PWSTR::null();
+    // SAFETY: `sid_buf` contains a valid SID and `sid_string` is a valid out-param.
+    unsafe { ConvertSidToStringSidW(PSID(sid_buf.as_mut_ptr().cast()), &mut sid_string)? };
+
+    // SAFETY: `sid_string` is NUL-terminated on success.
+    let sid = unsafe { sid_string.to_string() }.map_err(|error| {
+        windows_core::Error::new(
+            E_UNEXPECTED,
+            format!("failed to decode SID string returned by ConvertSidToStringSidW: {error}"),
+        )
+    })?;
+
+    // SAFETY: ConvertSidToStringSidW allocates with LocalAlloc; free with LocalFree.
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(sid_string.0.cast())));
+    }
+
+    Ok(sid)
+}
 
 const DEBUG_LOG_PATH_ENV: &str = "IRONRDP_WTS_PROVIDER_DEBUG_LOG";
 
@@ -81,9 +190,10 @@ fn normalize_winlogon_credentials(username: &str, domain: &str) -> (String, Stri
         return (username.to_owned(), String::new());
     }
 
-    // If the domain looks like a DNS name (contains a dot), prefer a UPN style username.
-    // This avoids relying on NetBIOS domain mapping for domain-joined logons.
-    if !domain.is_empty() && domain.contains('.') {
+    // If the caller provided a DNS/FQDN-style domain, prefer UPN form.
+    // In practice, passing `Domain=ad.example.com` separately is not consistently accepted
+    // across Winlogon/LSA call paths, while `user@ad.example.com` is.
+    if domain.contains('.') {
         return (format!("{username}@{domain}"), String::new());
     }
 
@@ -163,6 +273,8 @@ const VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE: usize = 1024 * 1024;
 type SharedVirtualChannelBridgeHandler = Arc<dyn VirtualChannelBridgeHandler>;
 
 static VIRTUAL_CHANNEL_BRIDGE_HANDLER: OnceLock<Mutex<Option<SharedVirtualChannelBridgeHandler>>> = OnceLock::new();
+
+static UNKNOWN_QUERY_PROPERTY_GUIDS: OnceLock<Mutex<HashSet<GUID>>> = OnceLock::new();
 
 struct ComInitGuard {
     initialized: bool,
@@ -412,6 +524,11 @@ struct IncomingConnection {
     peer_addr: Option<String>,
 }
 
+enum WaitForIncomingEvent {
+    Incoming(IncomingConnection),
+    ConnectionBroken { connection_id: u32, reason: String },
+}
+
 impl ProviderControlBridge {
     fn from_env() -> Self {
         if let Some(pipe_name) = resolve_pipe_name_from_env() {
@@ -611,7 +728,7 @@ impl ProviderControlBridge {
         &self,
         listener_name: &str,
         timeout_ms: u32,
-    ) -> windows_core::Result<Option<IncomingConnection>> {
+    ) -> windows_core::Result<Option<WaitForIncomingEvent>> {
         let Some(event) = self.send_command_retried(&ProviderCommand::WaitForIncoming {
             listener_name: listener_name.to_owned(),
             timeout_ms,
@@ -635,10 +752,13 @@ impl ProviderControlBridge {
                     ));
                 }
 
-                Ok(Some(IncomingConnection {
+                Ok(Some(WaitForIncomingEvent::Incoming(IncomingConnection {
                     connection_id,
                     peer_addr,
-                }))
+                })))
+            }
+            ServiceEvent::ConnectionBroken { connection_id, reason } => {
+                Ok(Some(WaitForIncomingEvent::ConnectionBroken { connection_id, reason }))
             }
             ServiceEvent::NoIncoming | ServiceEvent::Ack => Ok(None),
             ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
@@ -758,10 +878,23 @@ fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS 
     settings.WRdsConnectionSettingLevel = WRDS_CONNECTION_SETTING_LEVEL(1);
     // SAFETY: WRDS_CONNECTION_SETTINGS contains a union; accessing the level-1 view is valid because we set the level.
     unsafe {
-        let ls = &mut settings
-            .WRdsConnectionSetting
-            .WRdsConnectionSettings1
-            .WRdsListenerSettings;
+        // Mark this as an RDP-like connection so TermService follows the Winlogon logon path.
+        // See WTS_PROTOCOL_TYPE_* values in the Windows SDK (WtsApi32.h):
+        //   CONSOLE = 0, ICA = 1, RDP = 2
+        let s1 = &mut settings.WRdsConnectionSetting.WRdsConnectionSettings1;
+        s1.ProtocolType = 2;
+        copy_wide(&mut s1.ProtocolName, "RDP");
+
+        // Match the provider's GetClientData/GetUserCredentials intent: automatic logon using
+        // protocol-supplied credentials, no prompt.
+        s1.fInheritAutoLogon = true;
+        s1.fUsingSavedCreds = true;
+        s1.fPromptForPassword = false;
+        s1.fEnableWindowsKey = true;
+        s1.fDisableCtrlAltDel = true;
+        s1.fMouse = true;
+
+        let ls = &mut s1.WRdsListenerSettings;
         ls.WRdsListenerSettingLevel = WRDS_LISTENER_SETTING_LEVEL(1);
         ls.WRdsListenerSetting.WRdsListenerSettings1.pSecurityDescriptor = core::ptr::null_mut();
     }
@@ -1507,14 +1640,16 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 unsafe { IWRdsProtocolListenerCallback::from_raw(callback_token as *mut core::ffi::c_void) }
             };
 
+            let mut connection_callbacks: HashMap<u32, IWRdsProtocolConnectionCallback> = HashMap::new();
+
             if control_bridge_enabled {
                 loop {
                     if stop_rx.try_recv().is_ok() {
                         break;
                     }
 
-                    let incoming = match control_bridge.wait_for_incoming(&listener_name, 250) {
-                        Ok(incoming) => incoming,
+                    let event = match control_bridge.wait_for_incoming(&listener_name, 250) {
+                        Ok(event) => event,
                         Err(error) => {
                             warn!(%error, listener_name = %listener_name, "Failed to poll incoming connection from companion service");
                             thread::sleep(Duration::from_millis(200));
@@ -1522,7 +1657,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                         }
                     };
 
-                    let Some(incoming) = incoming else {
+                    let Some(event) = event else {
                         // wait_for_incoming returned Ok(None): no new connection arrived in the
                         // polling window.  Sleep briefly before re-polling so that orphaned worker
                         // threads (left running in svchost after TermService stops) do not
@@ -1532,11 +1667,38 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                         continue;
                     };
 
+                    let incoming = match event {
+                        WaitForIncomingEvent::Incoming(incoming) => Some(incoming),
+                        WaitForIncomingEvent::ConnectionBroken { connection_id, reason } => {
+                            debug_log_line(&format!(
+                                "Received connection_broken from companion connection_id={connection_id} reason={reason}",
+                            ));
+
+                            if let Some(callback) = connection_callbacks.remove(&connection_id) {
+                                // SAFETY: callback is a valid COM interface returned by TermService.
+                                let broken_result = unsafe { callback.BrokenConnection(0, 0) };
+                                debug_log_line(&format!(
+                                    "IWRdsProtocolConnectionCallback::BrokenConnection result={broken_result:?} connection_id={connection_id}",
+                                ));
+                            } else {
+                                debug_log_line(&format!(
+                                    "No TermService callback registered for broken connection_id={connection_id}",
+                                ));
+                            }
+
+                            None
+                        }
+                    };
+
+                    let Some(incoming) = incoming else {
+                        continue;
+                    };
+
                     let connection_entry = listener.create_connection_with_id(incoming.connection_id);
-                    let connection_callback_slot = Rc::new(Mutex::new(None));
+                    let connection_callback_slot = Arc::new(Mutex::new(None));
                     let connection: IWRdsProtocolConnection = ComProtocolConnection::new(
                         connection_entry,
-                        Rc::clone(&connection_callback_slot),
+                        Arc::clone(&connection_callback_slot),
                         control_bridge.clone(),
                     )
                     .into();
@@ -1656,7 +1818,24 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                                 conn_id_result, incoming.connection_id
                             ));
 
-                            *connection_callback_slot.lock() = Some(connection_callback.clone());
+                            match AgileReference::new(&connection_callback) {
+                                Ok(callback_agile) => {
+                                    *connection_callback_slot.lock() = Some(callback_agile);
+                                }
+                                Err(error) => {
+                                    debug_log_line(&format!(
+                                        "Failed to create AgileReference for connection callback connection_id={} error={error}",
+                                        incoming.connection_id,
+                                    ));
+                                    warn!(
+                                        %error,
+                                        connection_id = incoming.connection_id,
+                                        "Failed to create AgileReference for TermService connection callback"
+                                    );
+                                }
+                            }
+
+                            connection_callbacks.insert(incoming.connection_id, connection_callback.clone());
 
                             // SAFETY: connection_callback is a valid COM interface returned by TermService.
                             let ready_result = unsafe { connection_callback.OnReady() };
@@ -1687,10 +1866,10 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 }
             } else {
                 let bootstrap_connection = listener.create_connection();
-                let connection_callback_slot = Rc::new(Mutex::new(None));
+                let connection_callback_slot = Arc::new(Mutex::new(None));
                 let connection: IWRdsProtocolConnection = ComProtocolConnection::new(
                     bootstrap_connection,
-                    Rc::clone(&connection_callback_slot),
+                    Arc::clone(&connection_callback_slot),
                     control_bridge,
                 )
                 .into();
@@ -1748,9 +1927,20 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 }
 
                 match result {
-                    Ok(connection_callback) => {
-                        *connection_callback_slot.lock() = Some(connection_callback);
-                    }
+                    Ok(connection_callback) => match AgileReference::new(&connection_callback) {
+                        Ok(callback_agile) => {
+                            *connection_callback_slot.lock() = Some(callback_agile);
+                        }
+                        Err(error) => {
+                            debug_log_line(&format!(
+                                "Failed to create AgileReference for connection callback (standalone) error={error}",
+                            ));
+                            warn!(
+                                %error,
+                                "Failed to create AgileReference for TermService connection callback (standalone)"
+                            );
+                        }
+                    },
                     Err(error) => {
                         warn!(%error, "Failed to dispatch OnConnected callback");
                     }
@@ -1877,22 +2067,27 @@ impl IWRdsProtocolLicenseConnection_Impl for WrdsLicenseConnection_Impl {
     }
 }
 
-#[implement(IWRdsProtocolConnection, IWRdsWddmIddProps)]
+#[implement(IWRdsProtocolConnection, IWRdsWddmIddProps, IAgileObject)]
 struct ComProtocolConnection {
     inner: Arc<ProtocolConnection>,
     auth_bridge: CredsspServerBridge,
-    connection_callback: Rc<Mutex<Option<IWRdsProtocolConnectionCallback>>>,
+    connection_callback: Arc<Mutex<Option<AgileReference<IWRdsProtocolConnectionCallback>>>>,
     control_bridge: ProviderControlBridge,
     ready_notified: Mutex<bool>,
     last_input_time: Mutex<u64>,
     virtual_channels: Mutex<Vec<VirtualChannelHandle>>,
     virtual_channel_forwarders: Mutex<Vec<VirtualChannelForwarderWorker>>,
+    keyboard_handle: Mutex<Option<HANDLE>>,
+    mouse_handle: Mutex<Option<HANDLE>>,
+    video_handle: Mutex<Option<HANDLE>>,
 }
+
+impl IAgileObject_Impl for ComProtocolConnection_Impl {}
 
 impl ComProtocolConnection {
     fn new(
         inner: Arc<ProtocolConnection>,
-        connection_callback: Rc<Mutex<Option<IWRdsProtocolConnectionCallback>>>,
+        connection_callback: Arc<Mutex<Option<AgileReference<IWRdsProtocolConnectionCallback>>>>,
         control_bridge: ProviderControlBridge,
     ) -> Self {
         Self {
@@ -1904,7 +2099,87 @@ impl ComProtocolConnection {
             last_input_time: Mutex::new(0),
             virtual_channels: Mutex::new(Vec::new()),
             virtual_channel_forwarders: Mutex::new(Vec::new()),
+            keyboard_handle: Mutex::new(None),
+            mouse_handle: Mutex::new(None),
+            video_handle: Mutex::new(None),
         }
+    }
+
+    fn close_device_handles(&self) {
+        // Best-effort cleanup: TermService might also close these, but we treat them as owned
+        // by this connection object to avoid leaks across repeated connections.
+        for slot in [&self.keyboard_handle, &self.mouse_handle, &self.video_handle] {
+            if let Some(handle) = slot.lock().take() {
+                // SAFETY: handle came from CreateFileW.
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(handle);
+                }
+            }
+        }
+    }
+
+    fn open_device_handle_with_access(path: &str, desired_access: u32) -> windows_core::Result<HANDLE> {
+        let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+
+        // SAFETY: `wide` is NUL-terminated and lives for the duration of the call.
+        unsafe {
+            CreateFileW(
+                PCWSTR(wide.as_ptr()),
+                desired_access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                None,
+            )
+        }
+    }
+
+    fn open_device_handle(path: &str) -> windows_core::Result<HANDLE> {
+        // Best-effort: request read/write; these are device objects.
+        // If access is denied, TermService will likely fail to advance the connection sequence.
+        let access = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+            | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
+            .0;
+        Self::open_device_handle_with_access(path, access)
+    }
+
+    fn open_first_device_handle(candidates: &[(&'static str, u32)]) -> windows_core::Result<HANDLE> {
+        let mut last_error: Option<windows_core::Error> = None;
+        for (path, access) in candidates {
+            match Self::open_device_handle_with_access(path, *access) {
+                Ok(handle) => return Ok(handle),
+                Err(error) => last_error = Some(error),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| windows_core::Error::new(E_UNEXPECTED, "no device handle candidates")))
+    }
+
+    fn open_keyboard_device_handle() -> windows_core::Result<HANDLE> {
+        // On some Windows Server builds, the Win32 \\.\KeyboardClassN links are missing,
+        // but GLOBALROOT device paths are present and can be opened with 0 desired access.
+        let rw = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+            | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
+            .0;
+
+        Self::open_first_device_handle(&[
+            (r"\\.\KeyboardClass0", rw),
+            (r"\\?\GLOBALROOT\Device\KeyboardClass0", 0),
+            (r"\\?\GLOBALROOT\Device\KeyboardClass1", 0),
+        ])
+    }
+
+    fn open_pointer_device_handle() -> windows_core::Result<HANDLE> {
+        let rw = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+            | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
+            .0;
+
+        Self::open_first_device_handle(&[
+            (r"\\.\PointerClass0", rw),
+            (r"\\?\GLOBALROOT\Device\PointerClass0", 0),
+            (r"\\?\GLOBALROOT\Device\PointerClass1", 0),
+        ])
     }
 
     fn notify_ready(&self) -> windows_core::Result<()> {
@@ -2128,14 +2403,41 @@ impl IWRdsProtocolConnectionSettings_Impl for ComProtocolConnection_Impl {
 
 impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
     fn GetHardwareId(&self, pdisplaydriverhardwareid: &PCWSTR, count: u32) -> windows_core::Result<()> {
-        debug_log_line(&format!("IWRdsWddmIddProps::GetHardwareId called count={count}"));
-        if count > 0 {
-            let ptr = pdisplaydriverhardwareid.0.cast_mut();
-            if !ptr.is_null() {
-                // SAFETY: TermService provides a writable output buffer when `count > 0`.
-                unsafe { *ptr = 0 };
-            }
+        // TermService uses this to locate the WDDM IDD display driver to load for a session.
+        // Windows ships an RDP IDD implementation, exposed as the “Microsoft Remote Display Adapter”.
+        let wide: Vec<u16> = RDP_IDD_DISPLAY_DRIVER_HARDWARE_ID
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+
+        let required = wide.len();
+        let capacity = usize::try_from(count).unwrap_or(0);
+
+        if pdisplaydriverhardwareid.0.is_null() {
+            debug_log_line("IWRdsWddmIddProps::GetHardwareId null out-buffer");
+            return Err(windows_core::Error::new(E_POINTER, "hardware id buffer is null"));
         }
+
+        if capacity < required {
+            debug_log_line(&format!(
+                "IWRdsWddmIddProps::GetHardwareId insufficient buffer capacity={capacity} required={required}",
+            ));
+            return Err(windows_core::Error::new(
+                HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0),
+                "hardware id buffer is too small",
+            ));
+        }
+
+        // SAFETY: TermService provides a writable buffer with `count` characters.
+        unsafe {
+            core::ptr::copy_nonoverlapping(wide.as_ptr(), pdisplaydriverhardwareid.0.cast_mut(), required);
+        }
+
+        debug_log_line(&format!(
+            "IWRdsWddmIddProps::GetHardwareId wrote '{RDP_IDD_DISPLAY_DRIVER_HARDWARE_ID}' chars={}",
+            required.saturating_sub(1)
+        ));
+
         Ok(())
     }
 
@@ -2202,14 +2504,46 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         // SAFETY: pclientdata is non-null and points to writable memory owned by TermService.
         let client_data = unsafe { &mut *pclientdata };
         *client_data = WTS_CLIENT_DATA::default();
+        // Match typical RDP defaults so Winlogon doesn't block on secure-attention requirements.
+        client_data.fDisableCtrlAltDel = true;
+        client_data.fMouse = true;
+        client_data.fMaximizeShell = true;
         client_data.fEnableWindowsKey = true;
         // Ask TermService/Winlogon to use protocol-supplied credentials for automatic logon.
         // See IWRdsProtocolConnection::GetUserCredentials remarks: if we return S_OK there,
         // TermService passes the credentials to Winlogon to log on the user.
         client_data.fInheritAutoLogon = BOOL(1);
         client_data.fUsingSavedCreds = true;
+        client_data.fPromptForPassword = false;
         client_data.fNoAudioPlayback = true;
-        copy_wide(&mut client_data.ProtocolName, "IRDP-WTS");
+        // Match the built-in RDP provider identifiers.
+        client_data.ProtocolType = 2;
+        copy_wide(&mut client_data.ProtocolName, "RDP");
+
+        // Some TermService/Winlogon code paths rely on the auto-logon credentials embedded in
+        // WTS_CLIENT_DATA when fInheritAutoLogon is set. Populate these from the CredSSP-derived
+        // credentials when available.
+        //
+        // The username/password are plaintext per Microsoft docs.
+        let connection_id = self.inner.connection_id();
+        match self.control_bridge.get_connection_credentials(connection_id)? {
+            Some((username, domain, password)) => {
+                let (winlogon_username, winlogon_domain) = normalize_winlogon_credentials(&username, &domain);
+
+                copy_wide(&mut client_data.UserName, &winlogon_username);
+                copy_wide(&mut client_data.Domain, &winlogon_domain);
+                copy_wide(&mut client_data.Password, &password);
+
+                debug_log_line(&format!(
+                    "IWRdsProtocolConnection::GetClientData filled_autologon_creds connection_id={connection_id} user={winlogon_username} domain={winlogon_domain}"
+                ));
+            }
+            None => {
+                debug_log_line(&format!(
+                    "IWRdsProtocolConnection::GetClientData no_autologon_creds_yet connection_id={connection_id}"
+                ));
+            }
+        }
 
         debug_log_line("IWRdsProtocolConnection::GetClientData ok");
         Ok(())
@@ -2282,41 +2616,32 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     }
 
     fn AuthenticateClientToSession(&self, sessionid: *mut WTS_SESSION_ID) -> windows_core::Result<()> {
-        let session_in = if sessionid.is_null() {
-            0
-        } else {
-            // SAFETY: sessionid is non-null and points to a valid WTS_SESSION_ID provided by TermService.
-            unsafe { (*sessionid).SessionId }
-        };
+        let connection_id = self.inner.connection_id();
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::AuthenticateClientToSession called connection_id={} session_in={session_in}",
-            self.inner.connection_id()
+            "IWRdsProtocolConnection::AuthenticateClientToSession called connection_id={connection_id}",
         ));
 
-        // MSDN: sessionid is an IN-OUT parameter.  On input TermService provides an initial session
-        // ID hint (0 = no preference / new session).  The protocol must respond with either:
-        //   • -1 (as u32 = u32::MAX) → ask TermService to create a brand-new session, OR
-        //   • an existing session ID → reconnect the client to that session.
-        // Leaving the value as 0 tells TermService "use session 0" (isolated services session in
-        // Windows Vista+) which is not a valid user logon target and causes TermService to call
-        // Close immediately without ever invoking IsUserAllowedToLogon.
-        //
-        // Strategy: prefer reconnecting to an existing DISCONNECTED session (the user's most
-        // recent desktop), because TermService MUST call IsUserAllowedToLogon for reconnects,
-        // giving us the opportunity to provide an authenticated user token for auto-logon.
-        // Fall back to u32::MAX (new session) only if no disconnected session exists.
-        if !sessionid.is_null() && session_in == 0 {
-            let reconnect_session = find_disconnected_session();
-            let session_out = reconnect_session.unwrap_or(u32::MAX);
-            // SAFETY: sessionid is non-null (checked above) and points to TermService's WTS_SESSION_ID.
-            unsafe { (*sessionid).SessionId = session_out };
-            debug_log_line(&format!(
-                "IWRdsProtocolConnection::AuthenticateClientToSession session_out={session_out} connection_id={}",
-                self.inner.connection_id()
-            ));
+        // Microsoft docs: this is an `[out]` parameter (WRDS_SESSION_ID*), not an in-out hint.
+        // We currently do not implement fast reconnect / session reattachment. Returning an error
+        // is explicitly supported: TermService continues the connection sequence.
+        if sessionid.is_null() {
+            return Err(windows_core::Error::new(E_POINTER, "null session id pointer"));
         }
 
-        Ok(())
+        // SAFETY: `sessionid` is non-null and is writable out-parameter memory owned by TermService.
+        // Initialize it to a well-defined value (all-zero GUID + SessionId=0) to avoid leaking
+        // uninitialized stack contents into logs or future consumers.
+        unsafe {
+            *sessionid = WTS_SESSION_ID::default();
+        }
+
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::AuthenticateClientToSession returning E_NOTIMPL connection_id={connection_id}",
+        ));
+        Err(windows_core::Error::new(
+            E_NOTIMPL,
+            "AuthenticateClientToSession is not implemented",
+        ))
     }
 
     fn NotifySessionId(
@@ -2365,30 +2690,69 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             beep_null
         ));
 
-        // Our provider uses IronRDP's own input and GDI capture, not TermService's kernel-mode
-        // input/video pipeline.  Per MSDN: "If the protocol does not support one of these devices,
-        // it should set the corresponding handle to NULL."  Returning NULL for all handles is
-        // correct and avoids the previous pattern of trying to open \\.\KeyboardClass0 /
-        // \\.\RdpVideoMiniport which may not be accessible in the TermService process context,
-        // causing GetInputHandles to return an error that made TermService close the connection
-        // before calling IsUserAllowedToLogon.
-        if !pkeyboardhandle.is_null() {
-            // SAFETY: non-null (checked above), valid TermService-provided pointer.
-            unsafe { *pkeyboardhandle = HANDLE_PTR::default() };
-        }
-
-        if !pmousehandle.is_null() {
-            // SAFETY: non-null (checked above), valid TermService-provided pointer.
-            unsafe { *pmousehandle = HANDLE_PTR::default() };
-        }
-
+        // Per docs, beep handle is unused and must be NULL.
         if !pbeephandle.is_null() {
             // SAFETY: non-null (checked above), valid TermService-provided pointer.
             unsafe { *pbeephandle = HANDLE_PTR::default() };
         }
 
+        // Best-effort: provide real device handles so TermService can complete session setup.
+        if !pkeyboardhandle.is_null() {
+            let mut slot = self.keyboard_handle.lock();
+            if slot.is_none() {
+                match ComProtocolConnection::open_keyboard_device_handle() {
+                    Ok(handle) => {
+                        debug_log_line("GetInputHandles: opened keyboard device handle");
+                        *slot = Some(handle);
+                    }
+                    Err(error) => {
+                        debug_log_line(&format!(
+                            "GetInputHandles: failed to open keyboard device handle: {error}"
+                        ));
+
+                        // Some environments deny opening keyboard device objects from the TermService process.
+                        // Provide a non-null fallback handle so TermService can still advance the session.
+                        match ComProtocolConnection::open_pointer_device_handle() {
+                            Ok(handle) => {
+                                debug_log_line("GetInputHandles: using pointer device handle as keyboard fallback");
+                                *slot = Some(handle);
+                            }
+                            Err(fallback_error) => {
+                                debug_log_line(&format!(
+                                    "GetInputHandles: keyboard fallback (pointer device) failed: {fallback_error}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            let raw = slot.map(handle_to_raw_usize).unwrap_or_default();
+            // SAFETY: non-null pointer, TermService-provided output.
+            unsafe { *pkeyboardhandle = HANDLE_PTR(raw) };
+        }
+
+        if !pmousehandle.is_null() {
+            let mut slot = self.mouse_handle.lock();
+            if slot.is_none() {
+                match ComProtocolConnection::open_pointer_device_handle() {
+                    Ok(handle) => {
+                        debug_log_line("GetInputHandles: opened pointer device handle");
+                        *slot = Some(handle);
+                    }
+                    Err(error) => {
+                        debug_log_line(&format!(
+                            "GetInputHandles: failed to open pointer device handle: {error}"
+                        ));
+                    }
+                }
+            }
+            let raw = slot.map(handle_to_raw_usize).unwrap_or_default();
+            // SAFETY: non-null pointer, TermService-provided output.
+            unsafe { *pmousehandle = HANDLE_PTR(raw) };
+        }
+
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::GetInputHandles ok (null handles) connection_id={}",
+            "IWRdsProtocolConnection::GetInputHandles ok connection_id={}",
             self.inner.connection_id()
         ));
 
@@ -2396,14 +2760,27 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     }
 
     fn GetVideoHandle(&self) -> windows_core::Result<HANDLE_PTR> {
-        // Our companion uses GDI capture; we don't use TermService's video pipeline.
-        // Return NULL so TermService skips its internal RDP video miniport setup,
-        // avoiding device-open failures that would cause an immediate Close.
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::GetVideoHandle called (returning null) connection_id={}",
+            "IWRdsProtocolConnection::GetVideoHandle called connection_id={}",
             self.inner.connection_id()
         ));
-        Ok(HANDLE_PTR::default())
+
+        let mut slot = self.video_handle.lock();
+        if slot.is_none() {
+            match ComProtocolConnection::open_device_handle(r"\\.\RdpVideoMiniport") {
+                Ok(handle) => {
+                    debug_log_line("GetVideoHandle: opened \\.\\RdpVideoMiniport");
+                    *slot = Some(handle);
+                }
+                Err(error) => {
+                    debug_log_line(&format!(
+                        "GetVideoHandle: failed to open \\.\\RdpVideoMiniport: {error}"
+                    ));
+                }
+            }
+        }
+
+        Ok(HANDLE_PTR(slot.map(handle_to_raw_usize).unwrap_or_default()))
     }
 
     fn ConnectNotify(&self, sessionid: u32) -> windows_core::Result<()> {
@@ -2525,6 +2902,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         }
 
         *self.ready_notified.lock() = false;
+        self.close_device_handles();
         self.release_virtual_channel_forwarders();
         self.release_virtual_channels();
         self.release_connection_callback();
@@ -2542,6 +2920,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         }
 
         *self.ready_notified.lock() = false;
+        self.close_device_handles();
         self.release_virtual_channel_forwarders();
         self.release_virtual_channels();
         self.release_connection_callback();
@@ -2550,12 +2929,26 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     }
 
     fn GetProtocolStatus(&self, pprotocolstatus: *mut WTS_PROTOCOL_STATUS) -> windows_core::Result<()> {
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::GetProtocolStatus called connection_id={}",
+            self.inner.connection_id()
+        ));
+
         if pprotocolstatus.is_null() {
             return Err(windows_core::Error::new(E_POINTER, "null protocol status pointer"));
         }
 
         // SAFETY: `pprotocolstatus` is non-null (checked above) and points to a writable buffer.
-        *unsafe { &mut *pprotocolstatus } = WTS_PROTOCOL_STATUS::default();
+        let status = unsafe { &mut *pprotocolstatus };
+        *status = WTS_PROTOCOL_STATUS::default();
+
+        // TermService may consult these counters to identify the protocol type.
+        // Keep it consistent with WRDS/WTS client data (RDP == 2).
+        status.Output.ProtocolType = WTS_PROTOCOL_TYPE_RDP;
+        status.Input.ProtocolType = WTS_PROTOCOL_TYPE_RDP;
+        status.Output.Length =
+            u16::try_from(size_of::<windows::Win32::System::RemoteDesktop::WTS_PROTOCOL_COUNTERS>()).unwrap_or(0);
+        status.Input.Length = status.Output.Length;
 
         Ok(())
     }
@@ -2683,7 +3076,149 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         _ppropertyentriesin: *const WTS_PROPERTY_VALUE,
         _ppropertyentriesout: *mut WTS_PROPERTY_VALUE,
     ) -> windows_core::Result<()> {
-        Err(windows_core::Error::new(E_NOTIMPL, "query property is not implemented"))
+        if _ulnumentriesout == 0 {
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty called connection_id={} querytype={:?} in={} out=0",
+                self.inner.connection_id(),
+                _querytype,
+                _ulnumentriesin,
+            ));
+            return Ok(());
+        }
+
+        if _ppropertyentriesout.is_null() {
+            return Err(windows_core::Error::new(E_POINTER, "null property output pointer"));
+        }
+
+        let out_len = usize::try_from(_ulnumentriesout).unwrap_or(0);
+        if out_len == 0 {
+            return Ok(());
+        }
+
+        // SAFETY: pointer is non-null (checked above) and points to at least one output entry.
+        let requested_type = unsafe { (*_ppropertyentriesout).Type };
+
+        let is_known_querytype = *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT
+            || *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID
+            || *_querytype == PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL
+            || *_querytype == WTS_QUERY_AUDIOENUM_DLL;
+
+        let first_time_unknown = if is_known_querytype {
+            false
+        } else {
+            let seen = UNKNOWN_QUERY_PROPERTY_GUIDS.get_or_init(|| Mutex::new(HashSet::new()));
+            let mut seen = seen.lock();
+            seen.insert(*_querytype)
+        };
+
+        if is_known_querytype || first_time_unknown {
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty called connection_id={} querytype={:?} in={} out={} out0_type_in={requested_type}",
+                self.inner.connection_id(),
+                _querytype,
+                _ulnumentriesin,
+                _ulnumentriesout,
+            ));
+        }
+
+        // SAFETY: TermService provides `_ulnumentriesout` writable entries.
+        let out = unsafe { core::slice::from_raw_parts_mut(_ppropertyentriesout, out_len) };
+        for entry in out.iter_mut() {
+            *entry = WTS_PROPERTY_VALUE::default();
+        }
+
+        // `wtsdefs.h` documents QueryProperty GUIDs and the expected output types.
+        // TermService appears to treat invalid `Type` values as a hard failure.
+        let first = &mut out[0];
+
+        if *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT {
+            first.Type = WTS_VALUE_TYPE_ULONG;
+            first.u.ulVal = FAST_RECONNECT_ENHANCED;
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_GET_FAST_RECONNECT -> {FAST_RECONNECT_ENHANCED}",
+            ));
+            return Ok(());
+        }
+
+        if *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID {
+            let connection_id = self.inner.connection_id();
+            let sid = self
+                .control_bridge
+                .get_connection_credentials(connection_id)?
+                .and_then(|(username, domain, _password)| {
+                    let (winlogon_username, winlogon_domain) = normalize_winlogon_credentials(&username, &domain);
+                    lookup_account_sid_string(&winlogon_username, &winlogon_domain).ok()
+                })
+                .unwrap_or_default();
+
+            let sid_w: Vec<u16> = sid.encode_utf16().chain(core::iter::once(0)).collect();
+            let bytes = sid_w.len().saturating_mul(size_of::<u16>());
+
+            // SAFETY: CoTaskMemAlloc returns a valid pointer or null; TermService is responsible for freeing.
+            let mem = unsafe { CoTaskMemAlloc(bytes) };
+            if mem.is_null() {
+                return Err(windows_core::Error::new(E_OUTOFMEMORY, "CoTaskMemAlloc failed"));
+            }
+
+            // SAFETY: `mem` is at least `bytes` bytes, and `sid_w` has the same length in u16s.
+            unsafe {
+                core::ptr::copy_nonoverlapping(sid_w.as_ptr(), mem.cast::<u16>(), sid_w.len());
+            }
+
+            first.Type = WTS_VALUE_TYPE_STRING;
+            first.u.strVal.size = u32::try_from(sid_w.len()).unwrap_or(0);
+            first.u.strVal.pstrVal = PWSTR(mem.cast());
+
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID -> {sid}",
+            ));
+            return Ok(());
+        }
+
+        if *_querytype == PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL {
+            // `wtsdefs.h`: 0 = don't enable, 1 = enable.
+            first.Type = WTS_VALUE_TYPE_ULONG;
+            first.u.ulVal = 0;
+            debug_log_line(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL -> 0",
+            );
+            return Ok(());
+        }
+
+        if *_querytype == WTS_QUERY_AUDIOENUM_DLL {
+            // `wtsdefs.h`: used by audio enumeration / Media Foundation components.
+            // We don't provide an audio-enum helper DLL; return an empty string.
+            let empty_w: [u16; 1] = [0];
+            let bytes = size_of::<u16>();
+
+            // SAFETY: CoTaskMemAlloc returns a valid pointer or null; TermService is responsible for freeing.
+            let mem = unsafe { CoTaskMemAlloc(bytes) };
+            if mem.is_null() {
+                return Err(windows_core::Error::new(E_OUTOFMEMORY, "CoTaskMemAlloc failed"));
+            }
+
+            // SAFETY: `mem` is at least `bytes` bytes.
+            unsafe {
+                core::ptr::copy_nonoverlapping(empty_w.as_ptr(), mem.cast::<u16>(), empty_w.len());
+            }
+
+            first.Type = WTS_VALUE_TYPE_STRING;
+            first.u.strVal.size = 1;
+            first.u.strVal.pstrVal = PWSTR(mem.cast());
+
+            debug_log_line("IWRdsProtocolConnection::QueryProperty WTS_QUERY_AUDIOENUM_DLL -> ''");
+            return Ok(());
+        }
+
+        if first_time_unknown {
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty unknown querytype={_querytype:?} requested_type={requested_type} -> E_NOTIMPL (logged once)",
+            ));
+        }
+        Err(windows_core::Error::new(
+            E_NOTIMPL,
+            "QueryProperty querytype is not implemented",
+        ))
     }
 
     fn GetShadowConnection(&self) -> windows_core::Result<IWRdsProtocolShadowConnection> {
@@ -2693,46 +3228,13 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         ))
     }
 
-    fn NotifyCommandProcessCreated(&self, _sessionid: u32) -> windows_core::Result<()> {
+    fn NotifyCommandProcessCreated(&self, sessionid: u32) -> windows_core::Result<()> {
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::NotifyCommandProcessCreated called connection_id={} session_id={sessionid}",
+            self.inner.connection_id(),
+        ));
         Ok(())
     }
-}
-
-/// Returns the session ID of the first disconnected (non-system) user session, or `None` if
-/// no such session exists.  Used by `AuthenticateClientToSession` to reconnect an incoming RDP
-/// client to the user's existing desktop rather than creating a new login-screen session.
-fn find_disconnected_session() -> Option<u32> {
-    let mut sessions_ptr: *mut WTS_SESSION_INFOW = core::ptr::null_mut();
-    let mut session_count = 0u32;
-
-    // SAFETY: WTSEnumerateSessionsW writes a valid buffer pointer into `sessions_ptr` on success;
-    // we free it below with WTSFreeMemory.
-    let result = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
-    if result.is_err() || sessions_ptr.is_null() || session_count == 0 {
-        return None;
-    }
-
-    let session_count_usize = usize::try_from(session_count).ok()?;
-
-    // SAFETY: WTSEnumerateSessionsW returned `session_count_usize` valid entries at `sessions_ptr`.
-    let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
-
-    let mut found: Option<u32> = None;
-    for session in sessions {
-        // Session 0 is the isolated services session; skip it.
-        if session.SessionId == 0 {
-            continue;
-        }
-        if session.State == WTSDisconnected {
-            found = Some(session.SessionId);
-            break;
-        }
-    }
-
-    // SAFETY: `sessions_ptr` was allocated by WTSEnumerateSessionsW and must be freed here.
-    unsafe { WTSFreeMemory(sessions_ptr.cast()) };
-
-    found
 }
 
 fn copy_wide<const N: usize>(target: &mut [u16; N], value: &str) {

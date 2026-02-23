@@ -40,7 +40,9 @@ USAGE:
   cargo run --example=screenshot -- --host <HOSTNAME> --port <PORT>
                                     -u/--username <USERNAME> -p/--password <PASSWORD>
                                     [-o/--output <OUTPUT_FILE>] [-d/--domain <DOMAIN>]
+                                                                        [--autologon <true|false>]
                                     [--compression-enabled <true|false>] [--compression-level <0..3>]
+                                                                        [--after-first-graphics-seconds <SECONDS>]
 ";
 
 fn main() -> anyhow::Result<()> {
@@ -66,8 +68,10 @@ fn main() -> anyhow::Result<()> {
             password,
             output,
             domain,
+            autologon,
             compression_enabled,
             compression_level,
+            after_first_graphics_seconds,
         } => {
             info!(
                 host,
@@ -75,8 +79,10 @@ fn main() -> anyhow::Result<()> {
                 username,
                 output = %output.display(),
                 domain,
+                autologon,
                 compression_enabled,
                 compression_level,
+                after_first_graphics_seconds,
                 "run"
             );
             run(RunConfig {
@@ -86,8 +92,10 @@ fn main() -> anyhow::Result<()> {
                 password,
                 output,
                 domain,
+                autologon,
                 compression_enabled,
                 compression_level,
+                after_first_graphics_seconds,
             })
         }
     }
@@ -101,8 +109,10 @@ struct RunConfig {
     password: String,
     output: PathBuf,
     domain: Option<String>,
+    autologon: bool,
     compression_enabled: bool,
     compression_level: u32,
+    after_first_graphics_seconds: u64,
 }
 
 #[derive(Debug)]
@@ -115,8 +125,10 @@ enum Action {
         password: String,
         output: PathBuf,
         domain: Option<String>,
+        autologon: bool,
         compression_enabled: bool,
         compression_level: u32,
+        after_first_graphics_seconds: u64,
     },
 }
 
@@ -134,8 +146,10 @@ fn parse_args() -> anyhow::Result<Action> {
             .opt_value_from_str(["-o", "--output"])?
             .unwrap_or_else(|| PathBuf::from("out.png"));
         let domain = args.opt_value_from_str(["-d", "--domain"])?;
+        let autologon = args.opt_value_from_str("--autologon")?.unwrap_or(false);
         let compression_enabled = args.opt_value_from_str("--compression-enabled")?.unwrap_or(true);
         let compression_level = args.opt_value_from_str("--compression-level")?.unwrap_or(3);
+        let after_first_graphics_seconds = args.opt_value_from_str("--after-first-graphics-seconds")?.unwrap_or(8);
 
         if compression_level > 3 {
             anyhow::bail!("Invalid compression level. Valid values are 0, 1, 2, 3.");
@@ -148,8 +162,10 @@ fn parse_args() -> anyhow::Result<Action> {
             password,
             output,
             domain,
+            autologon,
             compression_enabled,
             compression_level,
+            after_first_graphics_seconds,
         }
     };
 
@@ -182,6 +198,7 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
         config.username,
         config.password,
         config.domain,
+        config.autologon,
         config.compression_enabled,
         config.compression_level,
     )?;
@@ -195,7 +212,13 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
         connection_result.desktop_size.height,
     );
 
-    active_stage(connection_result, framed, &mut image).context("active stage")?;
+    active_stage(
+        connection_result,
+        framed,
+        &mut image,
+        Duration::from_secs(config.after_first_graphics_seconds),
+    )
+    .context("active stage")?;
 
     let img: image::ImageBuffer<image::Rgba<u8>, _> =
         image::ImageBuffer::from_raw(u32::from(image.width()), u32::from(image.height()), image.data())
@@ -210,6 +233,7 @@ fn build_config(
     username: String,
     password: String,
     domain: Option<String>,
+    autologon: bool,
     compression_enabled: bool,
     compression_level: u32,
 ) -> anyhow::Result<connector::Config> {
@@ -260,7 +284,7 @@ fn build_config(
 
         enable_server_pointer: false, // Disable custom pointers (there is no user interaction anyway).
         request_data: None,
-        autologon: false,
+        autologon,
         enable_audio_playback: false,
         compression_type,
         pointer_software_rendering: true,
@@ -343,11 +367,11 @@ fn active_stage(
     connection_result: ConnectionResult,
     mut framed: UpgradedFramed,
     image: &mut DecodedImage,
+    max_after_first_graphic: Duration,
 ) -> anyhow::Result<()> {
     let mut active_stage = ActiveStage::new(connection_result);
     let mut got_graphics = false;
     let mut first_graphic_time: Option<std::time::Instant> = None;
-    let max_after_first_graphic = Duration::from_secs(8);
 
     'outer: loop {
         if let Some(t) = first_graphic_time {
@@ -360,7 +384,14 @@ fn active_stage(
         let (action, payload) = match framed.read_pdu() {
             Ok((action, payload)) => (action, payload),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                break 'outer
+                if got_graphics {
+                    // Keep the connection alive after we started receiving graphics. TermService
+                    // logon can take a bit longer than the first paint (e.g., Winlogon UI).
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue 'outer;
+                }
+
+                break 'outer;
             }
             Err(e) if got_graphics => {
                 // Server closed without TLS close_notify; save what we have

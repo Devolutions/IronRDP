@@ -10,10 +10,10 @@ mod windows_main {
     use core::num::{NonZeroI32, NonZeroU16, NonZeroUsize};
     use core::ptr::null_mut;
     use core::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::io;
     use std::io::Write as _;
-    use std::sync::{Arc, Mutex as StdMutex};
+    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
     use std::time::Instant;
 
     use anyhow::{anyhow, Context as _};
@@ -78,9 +78,10 @@ mod windows_main {
     };
 
     use windows::Win32::Security::{
-        AdjustTokenPrivileges, DuplicateTokenEx, LookupPrivilegeValueW, SecurityImpersonation, SetTokenInformation,
-        TokenPrimary, TokenSessionId, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
-        TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY,
+        AdjustTokenPrivileges, DuplicateTokenEx, LookupPrivilegeValueW, RevertToSelf, SecurityImpersonation,
+        SetTokenInformation, TokenPrimary, TokenSessionId, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_PRIVILEGES,
+        TOKEN_QUERY,
     };
 
     use windows::Win32::Security::Authorization::{
@@ -341,6 +342,7 @@ mod windows_main {
         desktop_size: DesktopSize,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+        credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
         provider_mode: bool,
     }
 
@@ -349,6 +351,7 @@ mod windows_main {
             connection_id: u32,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+            credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
             provider_mode: bool,
         ) -> anyhow::Result<Self> {
             let desktop_size = desktop_size_from_gdi().context("failed to query desktop size")?;
@@ -364,6 +367,7 @@ mod windows_main {
                 desktop_size,
                 input_stream_slot,
                 connection_session_ids,
+                credentials_slot,
                 provider_mode,
             })
         }
@@ -393,6 +397,7 @@ mod windows_main {
                     self.desktop_size,
                     Arc::clone(&self.input_stream_slot),
                     Arc::clone(&self.connection_session_ids),
+                    Arc::clone(&self.credentials_slot),
                     self.provider_mode,
                 )
                 .context("failed to initialize GDI display updates")?,
@@ -411,6 +416,7 @@ mod windows_main {
         desktop_size: DesktopSize,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+        credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
         capture: Option<CaptureClient>,
         next_helper_attempt_at: Instant,
         sent_first_frame: bool,
@@ -449,6 +455,7 @@ mod windows_main {
             size: DesktopSize,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+            credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
             provider_mode: bool,
         ) -> anyhow::Result<Self> {
             let _ = desktop_size_nonzero(size)?;
@@ -458,6 +465,7 @@ mod windows_main {
                 desktop_size: size,
                 input_stream_slot,
                 connection_session_ids,
+                credentials_slot,
                 capture: None,
                 next_helper_attempt_at: Instant::now(),
                 sent_first_frame: false,
@@ -621,11 +629,14 @@ mod windows_main {
                         }
                     }
 
+                    let captured_credentials = { self.credentials_slot.lock().await.clone() };
+
                     match CaptureClient::start(
                         self.connection_id,
                         self.desktop_size,
                         Arc::clone(&self.input_stream_slot),
                         session_id_override,
+                        captured_credentials,
                     )
                     .await
                     {
@@ -800,10 +811,12 @@ mod windows_main {
             desktop_size: DesktopSize,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             session_id_override: Option<u32>,
+            credentials: Option<StoredCredentials>,
         ) -> anyhow::Result<Self> {
             match capture_ipc_from_env() {
                 CaptureIpc::Tcp => Ok(Self::Tcp(
-                    HelperCaptureClient::start(connection_id, input_stream_slot, session_id_override).await?,
+                    HelperCaptureClient::start(connection_id, input_stream_slot, session_id_override, credentials)
+                        .await?,
                 )),
                 CaptureIpc::SharedMem => {
                     match SharedMemCaptureClient::start(
@@ -811,6 +824,7 @@ mod windows_main {
                         desktop_size,
                         Arc::clone(&input_stream_slot),
                         session_id_override,
+                        credentials.clone(),
                     )
                     .await
                     {
@@ -822,8 +836,13 @@ mod windows_main {
                                 "Shared-memory capture IPC failed; falling back to TCP"
                             );
                             Ok(Self::Tcp(
-                                HelperCaptureClient::start(connection_id, input_stream_slot, session_id_override)
-                                    .await?,
+                                HelperCaptureClient::start(
+                                    connection_id,
+                                    input_stream_slot,
+                                    session_id_override,
+                                    credentials,
+                                )
+                                .await?,
                             ))
                         }
                     }
@@ -865,6 +884,7 @@ mod windows_main {
             connection_id: u32,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             session_id_override: Option<u32>,
+            credentials: Option<StoredCredentials>,
         ) -> anyhow::Result<Self> {
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
                 .await
@@ -884,8 +904,9 @@ mod windows_main {
 
             info!(connection_id, input_addr = %input_addr, "Capture helper input listener bound");
 
-            let helper = spawn_capture_helper_process_tcp(local_addr, input_addr, true, session_id_override)
-                .with_context(|| format!("failed to spawn capture helper for connection {connection_id}"))?;
+            let helper =
+                spawn_capture_helper_process_tcp(local_addr, input_addr, true, session_id_override, credentials)
+                    .with_context(|| format!("failed to spawn capture helper for connection {connection_id}"))?;
 
             let (stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, listener.accept())
                 .await
@@ -1226,6 +1247,7 @@ mod windows_main {
             desktop_size: DesktopSize,
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             session_id_override: Option<u32>,
+            credentials: Option<StoredCredentials>,
         ) -> anyhow::Result<Self> {
             let (width, height) = desktop_size_nonzero(desktop_size)?;
             let width_usize = NonZeroUsize::from(width).get();
@@ -1305,11 +1327,14 @@ mod windows_main {
 
             let frame_ready_event = SendHandle(frame_ready_event);
 
-            let helper =
-                spawn_capture_helper_process_shared_mem(&map_name, &event_name, input_addr, session_id_override)
-                    .with_context(|| {
-                        format!("failed to spawn shared-memory capture helper for connection {connection_id}")
-                    })?;
+            let helper = spawn_capture_helper_process_shared_mem(
+                &map_name,
+                &event_name,
+                input_addr,
+                session_id_override,
+                credentials,
+            )
+            .with_context(|| format!("failed to spawn shared-memory capture helper for connection {connection_id}"))?;
 
             let (input_stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, input_listener.accept())
                 .await
@@ -1469,16 +1494,121 @@ mod windows_main {
         desktop: HelperDesktop,
     }
 
+    static SESSION_KEEPALIVE_STARTED: OnceLock<StdMutex<HashSet<u32>>> = OnceLock::new();
+
+    fn keepalive_started_set() -> &'static StdMutex<HashSet<u32>> {
+        SESSION_KEEPALIVE_STARTED.get_or_init(|| StdMutex::new(HashSet::new()))
+    }
+
+    fn close_handle_best_effort(handle: HANDLE) {
+        if handle.is_invalid() {
+            return;
+        }
+
+        // SAFETY: handle is either valid or invalid; CloseHandle is safe to call.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(handle);
+        }
+    }
+
+    fn spawn_session_keepalive_process(session_id: u32, user_token: HANDLE) -> anyhow::Result<u32> {
+        // Keep the session alive by running a long-lived, no-window process in the session.
+        // If TermService tears down sessions with no processes after disconnect, this helps
+        // make `irdp-tcp#N` behave more like a normal RDP user session.
+        let exe_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        let args = format!(
+            "\"{exe_path}\" -NoProfile -NonInteractive -WindowStyle Hidden -Command \"Start-Sleep -Seconds 86400\""
+        );
+
+        let app_name: Vec<u16> = exe_path.encode_utf16().chain(Some(0)).collect();
+        let mut cmd_line: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
+
+        // Avoid specifying lpDesktop here; the process is only a keepalive and should not depend
+        // on WinSta0/desktop ACLs (pre-logon sessions often only expose winlogon).
+        let startup_info = STARTUPINFOW {
+            cb: u32::try_from(size_of::<STARTUPINFOW>()).map_err(|_| anyhow!("STARTUPINFOW size overflow"))?,
+            ..Default::default()
+        };
+
+        let mut process_info = PROCESS_INFORMATION::default();
+
+        // SAFETY:
+        // - token handle is valid primary token
+        // - app/cmd buffers are NUL-terminated and live for the call
+        // - process_info/startup_info are valid out-pointers
+        let create_ok = unsafe {
+            CreateProcessAsUserW(
+                Some(user_token),
+                PCWSTR(app_name.as_ptr()),
+                Some(PWSTR(cmd_line.as_mut_ptr())),
+                None,
+                None,
+                false,
+                CREATE_NO_WINDOW,
+                None,
+                None,
+                &startup_info,
+                &mut process_info,
+            )
+        };
+
+        close_handle_best_effort(user_token);
+
+        create_ok
+            .ok()
+            .with_context(|| format!("CreateProcessAsUserW keepalive failed (session_id={session_id})"))?;
+
+        close_handle_best_effort(process_info.hThread);
+        close_handle_best_effort(process_info.hProcess);
+
+        Ok(process_info.dwProcessId)
+    }
+
+    fn ensure_session_keepalive_started(session_id: u32, user_token: HANDLE) -> anyhow::Result<()> {
+        let should_start = {
+            let mut guard = keepalive_started_set()
+                .lock()
+                .map_err(|_| anyhow!("keepalive session set lock poisoned"))?;
+            if guard.contains(&session_id) {
+                false
+            } else {
+                guard.insert(session_id);
+                true
+            }
+        };
+
+        if !should_start {
+            close_handle_best_effort(user_token);
+            return Ok(());
+        }
+
+        match spawn_session_keepalive_process(session_id, user_token) {
+            Ok(pid) => {
+                info!(session_id, keepalive_pid = pid, "Started session keepalive process");
+                Ok(())
+            }
+            Err(error) => {
+                // Allow retries on a subsequent connection attempt.
+                if let Ok(mut guard) = keepalive_started_set().lock() {
+                    guard.remove(&session_id);
+                }
+                Err(error)
+            }
+        }
+    }
+
     fn spawn_capture_helper_process_tcp(
         connect_addr: SocketAddr,
         input_connect_addr: SocketAddr,
         rfx_encode: bool,
         session_id_override: Option<u32>,
+        credentials: Option<StoredCredentials>,
     ) -> anyhow::Result<SpawnedProcess> {
         let rfx_flag = if rfx_encode { " --rfx-encode" } else { "" };
         spawn_capture_helper_process_with_args(
             &format!("--connect {connect_addr} --input-connect {input_connect_addr}{rfx_flag}"),
             session_id_override,
+            credentials,
         )
     }
 
@@ -1487,16 +1617,19 @@ mod windows_main {
         event_name: &str,
         input_connect_addr: SocketAddr,
         session_id_override: Option<u32>,
+        credentials: Option<StoredCredentials>,
     ) -> anyhow::Result<SpawnedProcess> {
         spawn_capture_helper_process_with_args(
             &format!("--shm-map \"{map_name}\" --shm-event \"{event_name}\" --input-connect {input_connect_addr}"),
             session_id_override,
+            credentials,
         )
     }
 
     fn spawn_capture_helper_process_with_args(
         extra_args: &str,
         session_id_override: Option<u32>,
+        credentials: Option<StoredCredentials>,
     ) -> anyhow::Result<SpawnedProcess> {
         let session_id = match session_id_override {
             Some(id) => {
@@ -1507,8 +1640,8 @@ mod windows_main {
         };
         info!(session_id, "Selected capture session");
 
-        let acquired =
-            acquire_session_token(session_id).context("failed to acquire a token for the capture session")?;
+        let acquired = acquire_session_token(session_id, credentials.as_ref())
+            .context("failed to acquire a token for the capture session")?;
         let user_token = acquired.token;
 
         let exe_path = std::env::current_exe().context("failed to resolve current executable path")?;
@@ -1643,12 +1776,27 @@ mod windows_main {
         }
     }
 
-    fn acquire_session_token(session_id: u32) -> anyhow::Result<AcquiredSessionToken> {
+    fn acquire_session_token(
+        session_id: u32,
+        credentials: Option<&StoredCredentials>,
+    ) -> anyhow::Result<AcquiredSessionToken> {
         let mut token = HANDLE::default();
 
         // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
         let wts_result = unsafe { WTSQueryUserToken(session_id, &mut token) };
         if wts_result.is_ok() {
+            // If the user is logged in, we can start the keepalive using the real session token
+            // instead of manufacturing an interactive logon via LogonUserW.
+            if let Ok(dup_for_keepalive) = duplicate_primary_token(token) {
+                if let Err(error) = ensure_session_keepalive_started(session_id, dup_for_keepalive) {
+                    warn!(
+                        session_id,
+                        error = %format!("{error:#}"),
+                        "Failed to start session keepalive process"
+                    );
+                }
+            }
+
             return Ok(AcquiredSessionToken {
                 token,
                 desktop: HelperDesktop::Default,
@@ -1662,6 +1810,12 @@ mod windows_main {
             error_code = %wts_error.code(),
             "WTSQueryUserToken failed; attempting to spawn helper with a session-adjusted service token"
         );
+
+        // NOTE: We intentionally do not fall back to LogonUserW here.
+        // When the protocol provider performs a real logon, WTSQueryUserToken will succeed later
+        // (post-LogonNotify), at which point we can start the keepalive with the real token.
+        // This avoids generating misleading Security 4624 LogonType=2 events from ironrdp-termsrv.
+        let _ = credentials;
 
         // Prefer explorer.exe: it runs as the logged-in user with access to the default desktop.
         if let Ok(token) = token_from_session_process(session_id, "explorer.exe") {
@@ -1692,6 +1846,26 @@ mod windows_main {
             token,
             desktop: HelperDesktop::Default,
         })
+    }
+
+    fn duplicate_primary_token(token: HANDLE) -> anyhow::Result<HANDLE> {
+        let mut primary_token = HANDLE::default();
+
+        // SAFETY: DuplicateTokenEx writes a new token handle into `primary_token` on success.
+        unsafe {
+            DuplicateTokenEx(
+                token,
+                TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY,
+                None,
+                SecurityImpersonation,
+                TokenPrimary,
+                &mut primary_token,
+            )
+        }
+        .map_err(|error| anyhow!("DuplicateTokenEx(session token) failed: {error}"))
+        .context("DuplicateTokenEx(session token) failed")?;
+
+        Ok(primary_token)
     }
 
     fn token_from_session_process(session_id: u32, process_name: &str) -> anyhow::Result<HANDLE> {
@@ -1794,6 +1968,14 @@ mod windows_main {
     }
 
     fn duplicate_self_token_for_session(session_id: u32) -> anyhow::Result<HANDLE> {
+        // Avoid privilege checks unexpectedly being evaluated against an impersonation token.
+        // SAFETY: RevertToSelf has no parameters and only affects the current thread token.
+        unsafe {
+            RevertToSelf()
+                .map_err(|error| anyhow!("RevertToSelf failed: {error}"))
+                .context("RevertToSelf failed")?;
+        }
+
         let mut process_token = HANDLE::default();
 
         // SAFETY: `GetCurrentProcess` is safe to call.
@@ -2082,7 +2264,7 @@ mod windows_main {
         Ok(())
     }
 
-    static BITMAP_DUMP_DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    static BITMAP_DUMP_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
     static BITMAP_DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
     static BITMAP_DUMP_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
     static BITMAP_DUMP_ERROR_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -2401,6 +2583,20 @@ mod windows_main {
         peer_addr: Option<String>,
     }
 
+    #[derive(Debug)]
+    struct PendingBroken {
+        listener_name: String,
+        connection_id: u32,
+        reason: String,
+    }
+
+    #[derive(Debug)]
+    struct BrokenNotification {
+        listener_name: String,
+        connection_id: u32,
+        reason: String,
+    }
+
     struct ConnectionEntry {
         listener_name: String,
         peer_addr: Option<String>,
@@ -2674,28 +2870,39 @@ mod windows_main {
         bind_addr: SocketAddr,
         listeners: HashMap<String, ManagedListener>,
         pending_incoming: VecDeque<PendingIncoming>,
+        pending_broken: VecDeque<PendingBroken>,
         connections: HashMap<u32, ConnectionEntry>,
         next_connection_id: u32,
         accepted_tx: mpsc::UnboundedSender<AcceptedSocket>,
+        broken_tx: mpsc::UnboundedSender<BrokenNotification>,
         /// Session ID per connection, set when the provider receives NotifySessionId from WTS.
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
     }
 
     impl ServiceState {
-        fn new(bind_addr: SocketAddr) -> (Self, mpsc::UnboundedReceiver<AcceptedSocket>) {
+        fn new(
+            bind_addr: SocketAddr,
+        ) -> (
+            Self,
+            mpsc::UnboundedReceiver<AcceptedSocket>,
+            mpsc::UnboundedReceiver<BrokenNotification>,
+        ) {
             let (accepted_tx, accepted_rx) = mpsc::unbounded_channel();
+            let (broken_tx, broken_rx) = mpsc::unbounded_channel();
 
             let state = Self {
                 bind_addr,
                 listeners: HashMap::new(),
                 pending_incoming: VecDeque::new(),
+                pending_broken: VecDeque::new(),
                 connections: HashMap::new(),
                 next_connection_id: 1,
                 accepted_tx,
+                broken_tx,
                 connection_session_ids: Arc::new(StdMutex::new(HashMap::new())),
             };
 
-            (state, accepted_rx)
+            (state, accepted_rx, broken_rx)
         }
 
         fn set_capture_session_id(&self, connection_id: u32, session_id: u32) -> ServiceEvent {
@@ -2737,9 +2944,11 @@ mod windows_main {
             let peer_addr = connection.peer_addr.clone();
             let credentials_slot = Arc::clone(&connection.credentials);
             let connection_session_ids = Arc::clone(&self.connection_session_ids);
+            let listener_name_for_task = connection.listener_name.clone();
+            let broken_tx = self.broken_tx.clone();
 
             let session_task = tokio::task::spawn_local(async move {
-                if let Err(error) = run_ironrdp_connection(
+                let result = run_ironrdp_connection(
                     connection_id,
                     peer_addr.as_deref(),
                     stream,
@@ -2747,8 +2956,20 @@ mod windows_main {
                     connection_session_ids,
                     true, // provider_mode: WTS provider DLL will send SetCaptureSessionId
                 )
-                .await
-                {
+                .await;
+
+                let reason = match &result {
+                    Ok(()) => "connection closed".to_owned(),
+                    Err(error) => format!("{error:#}"),
+                };
+
+                let _ = broken_tx.send(BrokenNotification {
+                    listener_name: listener_name_for_task,
+                    connection_id,
+                    reason,
+                });
+
+                if let Err(error) = result {
                     warn!(error = %format!("{error:#}"), connection_id, "IronRDP connection task failed");
                 }
             });
@@ -2779,6 +3000,18 @@ mod windows_main {
         }
 
         fn pop_pending_for_listener(&mut self, listener_name: &str) -> Option<ServiceEvent> {
+            if let Some(index) = self
+                .pending_broken
+                .iter()
+                .position(|pending| pending.listener_name == listener_name)
+            {
+                let pending = self.pending_broken.remove(index)?;
+                return Some(ServiceEvent::ConnectionBroken {
+                    connection_id: pending.connection_id,
+                    reason: pending.reason,
+                });
+            }
+
             let index = self
                 .pending_incoming
                 .iter()
@@ -2807,14 +3040,57 @@ mod windows_main {
                 "Registered incoming TCP connection"
             );
 
+            // Start processing the TCP stream immediately so the wire-level handshake behaves
+            // like a real RDP server (responding to the ConnectionRequest without waiting for
+            // TermService IPC round-trips). TermService will still call AcceptConnection /
+            // NotifySessionId / etc, but those callbacks should not gate initial protocol IO.
+            let credentials = Arc::new(Mutex::new(None));
+            let credentials_slot = Arc::clone(&credentials);
+            let connection_session_ids = Arc::clone(&self.connection_session_ids);
+            let peer_addr_for_task = peer_addr.clone();
+            let listener_name_for_task = listener_name.clone();
+            let broken_tx = self.broken_tx.clone();
+
+            let stream = accepted.stream;
+            let session_task = tokio::task::spawn_local(async move {
+                let result = run_ironrdp_connection(
+                    connection_id,
+                    peer_addr_for_task.as_deref(),
+                    stream,
+                    credentials_slot,
+                    connection_session_ids,
+                    true, // provider_mode: WTS provider DLL will send SetCaptureSessionId
+                )
+                .await;
+
+                let reason = match &result {
+                    Ok(()) => "connection closed".to_owned(),
+                    Err(error) => format!("{error:#}"),
+                };
+
+                let _ = broken_tx.send(BrokenNotification {
+                    listener_name: listener_name_for_task,
+                    connection_id,
+                    reason,
+                });
+
+                if let Err(error) = result {
+                    warn!(
+                        error = %format!("{error:#}"),
+                        connection_id,
+                        "IronRDP connection task failed"
+                    );
+                }
+            });
+
             self.connections.insert(
                 connection_id,
                 ConnectionEntry {
                     listener_name: listener_name.clone(),
                     peer_addr: peer_addr.clone(),
-                    stream: Some(accepted.stream),
-                    session_task: None,
-                    credentials: Arc::new(Mutex::new(None)),
+                    stream: None,
+                    session_task: Some(session_task),
+                    credentials,
                 },
             );
 
@@ -2848,6 +3124,7 @@ mod windows_main {
             connection_id,
             Arc::clone(&input_stream_slot),
             connection_session_ids,
+            Arc::clone(&credentials_slot),
             provider_mode,
         )
         .context("failed to initialize GDI display handler")?;
@@ -3330,7 +3607,7 @@ mod windows_main {
         info!(pipe = %pipe_name, instance_id, "Starting termsrv control loop");
         info!(bind_addr = %bind_addr, "Configured service listener bind address");
 
-        let (state, mut accepted_rx) = ServiceState::new(bind_addr);
+        let (state, mut accepted_rx, mut broken_rx) = ServiceState::new(bind_addr);
         let control_plane = ControlPlane::new(state);
 
         // Drain accepted TCP connections continuously so `WaitForIncoming` never needs to hold
@@ -3347,6 +3624,26 @@ mod windows_main {
                 }
 
                 warn!("Accepted TCP drain task ended; no further incoming connections will be registered");
+            });
+        }
+
+        {
+            let control_plane = control_plane.clone();
+            tokio::task::spawn_local(async move {
+                while let Some(notification) = broken_rx.recv().await {
+                    let connection_id = notification.connection_id;
+                    {
+                        let mut guard = control_plane.state.lock().await;
+                        guard.pending_broken.push_back(PendingBroken {
+                            listener_name: notification.listener_name,
+                            connection_id,
+                            reason: notification.reason,
+                        });
+                        let _ = guard.close_connection(connection_id);
+                    }
+
+                    control_plane.notify_pending_changed();
+                }
             });
         }
 
