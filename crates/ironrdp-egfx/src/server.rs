@@ -60,7 +60,7 @@ use std::time::Instant;
 
 use ironrdp_core::{decode, impl_as_any, Encode, EncodeResult, WriteCursor};
 use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
-use ironrdp_graphics::zgfx::wrap_uncompressed;
+use ironrdp_graphics::zgfx::{compress_and_wrap_egfx, wrap_uncompressed, CompressionMode, Compressor};
 use ironrdp_pdu::gcc::Monitor;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::{decode_err, PduResult};
@@ -640,6 +640,11 @@ pub struct GraphicsPipelineServer {
 
     /// Stored from DvcProcessor::start() for proactive frame encoding
     channel_id: Option<u32>,
+
+    /// ZGFX compressor state (history buffer shared across frames)
+    zgfx_compressor: Compressor,
+    /// Whether to compress EGFX output with ZGFX
+    compression_mode: CompressionMode,
 }
 
 impl GraphicsPipelineServer {
@@ -661,7 +666,21 @@ impl GraphicsPipelineServer {
             reset_graphics_sent: false,
             output_queue: VecDeque::new(),
             channel_id: None,
+            zgfx_compressor: Compressor::new(),
+            compression_mode: CompressionMode::Never,
         }
+    }
+
+    /// Create a server with ZGFX compression enabled for output.
+    ///
+    /// When `compression_mode` is `Auto` or `Always`, `drain_output()` will
+    /// compress PDUs before ZGFX wrapping, reducing bandwidth at the cost
+    /// of CPU. The compressor maintains a sliding history window across
+    /// frames for back-reference efficiency.
+    pub fn with_compression(handler: Box<dyn GraphicsPipelineHandler>, compression_mode: CompressionMode) -> Self {
+        let mut server = Self::new(handler);
+        server.compression_mode = compression_mode;
+        server
     }
 
     /// Set desktop output dimensions for ResetGraphics.
@@ -1104,8 +1123,10 @@ impl GraphicsPipelineServer {
     /// encoding logic, not a runtime condition.
     #[expect(clippy::as_conversions, reason = "Box<T> to Box<dyn Trait> coercion")]
     pub fn drain_output(&mut self) -> Vec<DvcMessage> {
-        self.output_queue
-            .drain(..)
+        let mode = self.compression_mode;
+        let pdus: Vec<_> = self.output_queue.drain(..).collect();
+
+        pdus.into_iter()
             .map(|pdu| {
                 let pdu_name = pdu.name();
                 let pdu_size = pdu.size();
@@ -1113,8 +1134,12 @@ impl GraphicsPipelineServer {
                 let mut cursor = WriteCursor::new(&mut pdu_bytes);
                 pdu.encode(&mut cursor).expect("GfxPdu encoding should not fail");
 
-                let wrapped = wrap_uncompressed(&pdu_bytes);
-                trace!(pdu_name, pdu_size, wrapped = wrapped.len(), "ZGFX wrapped");
+                let wrapped = match mode {
+                    CompressionMode::Never => wrap_uncompressed(&pdu_bytes),
+                    _ => compress_and_wrap_egfx(&pdu_bytes, &mut self.zgfx_compressor, mode)
+                        .unwrap_or_else(|_| wrap_uncompressed(&pdu_bytes)),
+                };
+                trace!(pdu_name, pdu_size, wrapped = wrapped.len(), mode = ?mode, "ZGFX output");
 
                 Box::new(ZgfxWrappedBytes {
                     bytes: wrapped,
