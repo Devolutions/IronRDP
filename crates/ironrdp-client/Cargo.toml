@@ -84,7 +84,7 @@ smallvec = "1.15"
 tap = "1"
 semver = "1"
 raw-window-handle = "0.6"
-uuid = { version = "1.20" }
+uuid = { version = "1.21" }
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 url = "2"
 

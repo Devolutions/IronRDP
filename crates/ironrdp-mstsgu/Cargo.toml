@@ -35,7 +35,7 @@ log = "0.4"
 tokio-tungstenite = { version = "0.28" }
 tokio-util = { version = "0.7" }
 tokio = { version = "1.43", features = ["macros", "rt"] }
-uuid = { version = "1.20", features = ["v4"] }
+uuid = { version = "1.21", features = ["v4"] }
 
 [lints]
 workspace = true
