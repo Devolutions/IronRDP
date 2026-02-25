@@ -409,10 +409,10 @@ mod windows_main {
     }
 
     /// In Provider mode, how long to wait for the WTS provider DLL to send `SetCaptureSessionId`
-    /// before falling back to `resolve_capture_session_id()`.  The DLL sends this from
-    /// `ConnectNotify` which fires ~1–2 s after the TCP connection is accepted.  5 seconds gives
-    /// ample margin while avoiding an indefinite stall if the DLL fails to send it.
-    const PROVIDER_SESSION_ID_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+    /// before falling back to `resolve_capture_session_id()`.  Keep this short so first graphics
+    /// can be produced promptly even when TermService does not call `NotifySessionId`/`ConnectNotify`
+    /// for a connection.
+    const PROVIDER_SESSION_ID_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 
     struct GdiDisplayUpdates {
         connection_id: u32,
