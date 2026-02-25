@@ -158,14 +158,24 @@ $cred = [pscredential]::new($Username, $resolvedPassword)
 $wtsLogonUsername = ''
 $wtsLogonDomain = ''
 if ($WtsProvider.IsPresent) {
-    $m = [regex]::Match($Username, '^(?<domain>[^\\]+)\\(?<user>.+)$')
-    if ($m.Success) {
-        $wtsLogonDomain = $m.Groups['domain'].Value
-        $wtsLogonUsername = $m.Groups['user'].Value
+    # In provider mode, TermService may request credentials before ClientInfo is
+    # available from the companion. Seed fallback logon credentials from the RDP
+    # identity first (user/domain passed to screenshot client), then fall back to
+    # the admin remoting identity if not provided.
+    if (-not [string]::IsNullOrWhiteSpace($RdpUsername)) {
+        $wtsLogonUsername = $RdpUsername
+        $wtsLogonDomain = $RdpDomain
     }
     else {
-        $wtsLogonUsername = $Username
-        $wtsLogonDomain = ''
+        $m = [regex]::Match($Username, '^(?<domain>[^\\]+)\\(?<user>.+)$')
+        if ($m.Success) {
+            $wtsLogonDomain = $m.Groups['domain'].Value
+            $wtsLogonUsername = $m.Groups['user'].Value
+        }
+        else {
+            $wtsLogonUsername = $Username
+            $wtsLogonDomain = ''
+        }
     }
 }
 
