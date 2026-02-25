@@ -218,10 +218,12 @@ impl<'a> CredsspSequence<'a> {
             (
                 ServerMode::Negotiate(NegotiateConfig {
                     protocol_config: credssp_config,
-                    package_list: None,
+                    // Restrict to NTLM when no Kerberos server config is provided.
+                    // This avoids environment-dependent Kerberos negotiation.
+                    package_list: Some("!kerberos,!pku2u".to_owned()),
                     client_computer_name,
                 }),
-                false,
+                true,
             )
         };
 

@@ -22,7 +22,7 @@ use std::io::Write as _;
 use std::net::TcpStream;
 use std::path::PathBuf;
 
-use anyhow::Context as _;
+use anyhow::{Context as _, bail};
 use connector::Credentials;
 use ironrdp::connector;
 use ironrdp::connector::ConnectionResult;
@@ -41,6 +41,7 @@ USAGE:
                                     -u/--username <USERNAME> -p/--password <PASSWORD>
                                     [-o/--output <OUTPUT_FILE>] [-d/--domain <DOMAIN>]
                                                                         [--autologon <true|false>]
+                                                                        [--tls-enabled <true|false>] [--credssp-enabled <true|false>]
                                     [--compression-enabled <true|false>] [--compression-level <0..3>]
                                                                         [--after-first-graphics-seconds <SECONDS>]
 ";
@@ -69,6 +70,8 @@ fn main() -> anyhow::Result<()> {
             output,
             domain,
             autologon,
+            tls_enabled,
+            credssp_enabled,
             compression_enabled,
             compression_level,
             after_first_graphics_seconds,
@@ -80,6 +83,8 @@ fn main() -> anyhow::Result<()> {
                 output = %output.display(),
                 domain,
                 autologon,
+                tls_enabled,
+                credssp_enabled,
                 compression_enabled,
                 compression_level,
                 after_first_graphics_seconds,
@@ -93,6 +98,8 @@ fn main() -> anyhow::Result<()> {
                 output,
                 domain,
                 autologon,
+                tls_enabled,
+                credssp_enabled,
                 compression_enabled,
                 compression_level,
                 after_first_graphics_seconds,
@@ -110,6 +117,8 @@ struct RunConfig {
     output: PathBuf,
     domain: Option<String>,
     autologon: bool,
+    tls_enabled: bool,
+    credssp_enabled: bool,
     compression_enabled: bool,
     compression_level: u32,
     after_first_graphics_seconds: u64,
@@ -126,6 +135,8 @@ enum Action {
         output: PathBuf,
         domain: Option<String>,
         autologon: bool,
+        tls_enabled: bool,
+        credssp_enabled: bool,
         compression_enabled: bool,
         compression_level: u32,
         after_first_graphics_seconds: u64,
@@ -147,6 +158,8 @@ fn parse_args() -> anyhow::Result<Action> {
             .unwrap_or_else(|| PathBuf::from("out.png"));
         let domain = args.opt_value_from_str(["-d", "--domain"])?;
         let autologon = args.opt_value_from_str("--autologon")?.unwrap_or(false);
+        let tls_enabled = args.opt_value_from_str("--tls-enabled")?.unwrap_or(false);
+        let credssp_enabled = args.opt_value_from_str("--credssp-enabled")?.unwrap_or(true);
         let compression_enabled = args.opt_value_from_str("--compression-enabled")?.unwrap_or(true);
         let compression_level = args.opt_value_from_str("--compression-level")?.unwrap_or(3);
         let after_first_graphics_seconds = args.opt_value_from_str("--after-first-graphics-seconds")?.unwrap_or(8);
@@ -163,6 +176,8 @@ fn parse_args() -> anyhow::Result<Action> {
             output,
             domain,
             autologon,
+            tls_enabled,
+            credssp_enabled,
             compression_enabled,
             compression_level,
             after_first_graphics_seconds,
@@ -194,14 +209,7 @@ fn setup_logging() -> anyhow::Result<()> {
 }
 
 fn run(config: RunConfig) -> anyhow::Result<()> {
-    let connector_config = build_config(
-        config.username,
-        config.password,
-        config.domain,
-        config.autologon,
-        config.compression_enabled,
-        config.compression_level,
-    )?;
+    let connector_config = build_config(&config)?;
 
     let (connection_result, framed) = connect(connector_config, config.host, config.port).context("connect")?;
     info!(compression_type = ?connection_result.compression_type, "Negotiated compression");
@@ -212,13 +220,21 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
         connection_result.desktop_size.height,
     );
 
-    active_stage(
+    let got_graphics = active_stage(
         connection_result,
         framed,
         &mut image,
         Duration::from_secs(config.after_first_graphics_seconds),
     )
     .context("active stage")?;
+
+    if !got_graphics {
+        bail!("no graphics updates received before capture timeout");
+    }
+
+    if is_probably_blank_rgba32(image.data()) {
+        bail!("captured framebuffer is blank");
+    }
 
     let img: image::ImageBuffer<image::Rgba<u8>, _> =
         image::ImageBuffer::from_raw(u32::from(image.width()), u32::from(image.height()), image.data())
@@ -229,25 +245,21 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_config(
-    username: String,
-    password: String,
-    domain: Option<String>,
-    autologon: bool,
-    compression_enabled: bool,
-    compression_level: u32,
-) -> anyhow::Result<connector::Config> {
-    let compression_type = if compression_enabled {
-        Some(compression_type_from_level(compression_level)?)
+fn build_config(config: &RunConfig) -> anyhow::Result<connector::Config> {
+    let compression_type = if config.compression_enabled {
+        Some(compression_type_from_level(config.compression_level)?)
     } else {
         None
     };
 
     Ok(connector::Config {
-        credentials: Credentials::UsernamePassword { username, password },
-        domain,
-        enable_tls: false, // This example does not expose any frontend.
-        enable_credssp: true,
+        credentials: Credentials::UsernamePassword {
+            username: config.username.clone(),
+            password: config.password.clone(),
+        },
+        domain: config.domain.clone(),
+        enable_tls: config.tls_enabled,
+        enable_credssp: config.credssp_enabled,
         keyboard_type: KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_layout: 0,
@@ -284,7 +296,7 @@ fn build_config(
 
         enable_server_pointer: false, // Disable custom pointers (there is no user interaction anyway).
         request_data: None,
-        autologon,
+        autologon: config.autologon,
         enable_audio_playback: false,
         compression_type,
         pointer_software_rendering: true,
@@ -368,7 +380,7 @@ fn active_stage(
     mut framed: UpgradedFramed,
     image: &mut DecodedImage,
     max_after_first_graphic: Duration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let mut active_stage = ActiveStage::new(connection_result);
     let mut got_graphics = false;
     let mut first_graphic_time: Option<std::time::Instant> = None;
@@ -419,7 +431,27 @@ fn active_stage(
         }
     }
 
-    Ok(())
+    Ok(got_graphics)
+}
+
+fn is_probably_blank_rgba32(data: &[u8]) -> bool {
+    if data.is_empty() {
+        return true;
+    }
+
+    let samples = 2048usize;
+    let step = (data.len() / samples).max(4);
+    let mut index = 0usize;
+
+    while index + 2 < data.len() {
+        if data[index] != 0 || data[index + 1] != 0 || data[index + 2] != 0 {
+            return false;
+        }
+
+        index = index.saturating_add(step);
+    }
+
+    true
 }
 
 fn lookup_addr(hostname: &str, port: u16) -> anyhow::Result<core::net::SocketAddr> {

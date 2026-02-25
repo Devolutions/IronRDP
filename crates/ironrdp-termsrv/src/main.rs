@@ -63,9 +63,9 @@ mod windows_main {
         WTSEnumerateSessionsW, WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSQueryUserToken, WTS_SESSION_INFOW,
     };
     use windows::Win32::System::Threading::{
-        CreateEventW, CreateProcessAsUserW, GetCurrentProcess, OpenEventW, OpenProcess, OpenProcessToken, SetEvent,
-        TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW, EVENT_MODIFY_STATE, PROCESS_INFORMATION,
-        PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+        CreateEventW, CreateProcessAsUserW, GetCurrentProcess, GetCurrentProcessId, OpenEventW, OpenProcess,
+        OpenProcessToken, SetEvent, TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW, EVENT_MODIFY_STATE,
+        PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
@@ -732,26 +732,36 @@ mod windows_main {
                     }
                 };
 
-                self.sent_first_frame = true;
-
                 match captured {
                     CapturedFrame::PreEncoded(surface) => {
+                        self.sent_first_frame = true;
                         return Ok(Some(DisplayUpdate::PreEncodedSurface(surface)));
                     }
                     CapturedFrame::Raw(bitmap) => {
-                        // Log a warning when the capture helper returns an all-black frame so we can
-                        // diagnose session/desktop mismatches, but still send the actual (blank) frame.
-                        // Replacing blank frames with a synthetic test pattern was confusing because it
-                        // made new/initializing sessions (where blank is normal while Winlogon starts)
-                        // look like broken captures.
-                        if is_probably_blank_bgra32(bitmap.data.as_ref()) && !self.warned_blank_capture {
+                        let is_blank = is_probably_blank_bgra32(bitmap.data.as_ref());
+
+                        if !self.sent_first_frame && is_blank {
+                            if !self.warned_blank_capture {
+                                self.warned_blank_capture = true;
+                                debug!(
+                                    connection_id = self.connection_id,
+                                    "Captured blank frame before first meaningful update; waiting for initialized desktop"
+                                );
+                            }
+
+                            sleep(CAPTURE_INTERVAL).await;
+                            continue;
+                        }
+
+                        if is_blank && !self.warned_blank_capture {
                             self.warned_blank_capture = true;
                             debug!(
                                 connection_id = self.connection_id,
-                                "Captured blank frame; sending as-is (session may still be initializing)"
+                                "Captured blank frame; sending as-is after first meaningful update"
                             );
                         }
 
+                        self.sent_first_frame = true;
                         self.last_bitmap = Some(bitmap.clone());
                         return Ok(Some(DisplayUpdate::Bitmap(bitmap)));
                     }
@@ -2287,6 +2297,35 @@ mod windows_main {
     static BITMAP_DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
     static BITMAP_DUMP_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
     static BITMAP_DUMP_ERROR_LOGGED: AtomicBool = AtomicBool::new(false);
+    static BITMAP_DUMP_LAST_MS: AtomicU64 = AtomicU64::new(0);
+    static BITMAP_DUMP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+    const BITMAP_DUMP_INTERVAL_MS: u64 = 5_000;
+    const BITMAP_DUMP_MAX_COUNT: u64 = 30;
+
+    fn current_process_session_id() -> Option<u32> {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn ProcessIdToSessionId(process_id: u32, session_id: *mut u32) -> BOOL;
+        }
+
+        let pid = unsafe { GetCurrentProcessId() };
+        let mut session_id = 0u32;
+
+        // SAFETY: `ProcessIdToSessionId` writes to `session_id` on success.
+        let ok = unsafe { ProcessIdToSessionId(pid, &mut session_id) };
+        if ok.as_bool() {
+            Some(session_id)
+        } else {
+            None
+        }
+    }
+
+    fn now_unix_ms_best_effort() -> Option<u64> {
+        let now = std::time::SystemTime::now();
+        let dur = now.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some(dur.as_millis().min(u128::from(u64::MAX)) as u64)
+    }
 
     fn bitmap_dump_dir() -> Option<&'static std::path::PathBuf> {
         BITMAP_DUMP_DIR
@@ -2318,8 +2357,27 @@ mod windows_main {
         if !BITMAP_DUMP_ENABLED_LOGGED.swap(true, Ordering::Relaxed) {
             info!(
                 dir = %dir.display(),
+                interval_ms = BITMAP_DUMP_INTERVAL_MS,
+                max_count = BITMAP_DUMP_MAX_COUNT,
                 "Bitmap dumping enabled (unset IRONRDP_WTS_DUMP_BITMAP_UPDATES_DIR to disable)"
             );
+        }
+
+        // Avoid generating unbounded huge BMP files (a full desktop frame can be multiple MB).
+        // This is only a diagnostics mechanism; rate-limit and cap the number of dumps.
+        if let Some(now_ms) = now_unix_ms_best_effort() {
+            let last_ms = BITMAP_DUMP_LAST_MS.load(Ordering::Relaxed);
+            if last_ms != 0 && now_ms.saturating_sub(last_ms) < BITMAP_DUMP_INTERVAL_MS {
+                return;
+            }
+
+            let count = BITMAP_DUMP_COUNT.load(Ordering::Relaxed);
+            if count >= BITMAP_DUMP_MAX_COUNT {
+                return;
+            }
+
+            BITMAP_DUMP_LAST_MS.store(now_ms, Ordering::Relaxed);
+            BITMAP_DUMP_COUNT.fetch_add(1, Ordering::Relaxed);
         }
 
         if let Err(error) = dump_bitmap_update_bgra32_impl(dir, width, height, stride, data) {
@@ -2365,8 +2423,9 @@ mod windows_main {
             .ok_or_else(|| anyhow!("bitmap dump height overflow"))?;
 
         let pid = std::process::id();
+        let session_id = current_process_session_id().unwrap_or(0);
         let seq = BITMAP_DUMP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-        let path = dir.join(format!("bitmap-update-{pid}-{seq:08}.bmp"));
+        let path = dir.join(format!("bitmap-update-s{session_id}-p{pid}-{seq:08}.bmp"));
 
         let mut header = [0u8; 54];
         header[0..2].copy_from_slice(b"BM");
@@ -2708,6 +2767,10 @@ mod windows_main {
                     connection_id,
                     session_id,
                 } => self.set_capture_session_id(connection_id, session_id).await,
+                ProviderCommand::NotifyIddDriverLoaded { session_id } => {
+                    info!(session_id, "WDDM IDD driver loaded (notification)");
+                    ServiceEvent::Ack
+                }
             }
         }
 

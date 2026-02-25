@@ -41,10 +41,16 @@ param(
     [string]$AdminPassword = 'DevoLabs123!',
 
     [Parameter()]
+    [string]$AdminPasswordEnvVar = 'IRONRDP_TESTVM_PASSWORD',
+
+    [Parameter()]
     [string]$RdpUsername = 'Administrator',
 
     [Parameter()]
     [string]$RdpPassword = 'DevoLabs123!',
+
+    [Parameter()]
+    [string]$RdpPasswordEnvVar = 'IRONRDP_TESTVM_RDP_PASSWORD',
 
     [Parameter()]
     [string]$RdpDomain = 'ad.it-help.ninja',
@@ -81,16 +87,58 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$adminUsernameEffective = $AdminUsername
-$adminPasswordEffective = $AdminPassword
+function New-TestVmSession {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Hostname,
+
+        [Parameter(Mandatory = $true)]
+        [pscredential]$Credential
+    )
+
+    try {
+        return New-PSSession -ComputerName $Hostname -Credential $Credential -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "WinRM over HTTP failed for $Hostname; trying WinRM over HTTPS (5986)"
+        $sessOpts = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+        return New-PSSession -ComputerName $Hostname -Credential $Credential -UseSSL -Port 5986 -SessionOption $sessOpts -ErrorAction Stop
+    }
+}
+
+$adminCred = $null
 
 if ($PSBoundParameters.ContainsKey('Credential') -and ($null -ne $Credential)) {
-    $adminUsernameEffective = $Credential.UserName
-    $adminPasswordEffective = $Credential.GetNetworkCredential().Password
     $adminCred = $Credential
 } else {
-    $securePwd = ConvertTo-SecureString -String $AdminPassword -AsPlainText -Force
+    $adminPasswordEffective = $null
+    if ($PSBoundParameters.ContainsKey('AdminPassword') -and (-not [string]::IsNullOrWhiteSpace($AdminPassword))) {
+        $adminPasswordEffective = $AdminPassword
+    } else {
+        $fromEnv = [Environment]::GetEnvironmentVariable($AdminPasswordEnvVar)
+        if (-not [string]::IsNullOrWhiteSpace($fromEnv)) {
+            $adminPasswordEffective = $fromEnv
+        } else {
+            $adminPasswordEffective = $AdminPassword
+        }
+    }
+
+    $securePwd = ConvertTo-SecureString -String $adminPasswordEffective -AsPlainText -Force
     $adminCred = [pscredential]::new($AdminUsername, $securePwd)
+}
+
+$adminUsernameEffective = $adminCred.UserName
+
+$rdpPasswordEffective = $null
+if ($PSBoundParameters.ContainsKey('RdpPassword') -and (-not [string]::IsNullOrWhiteSpace($RdpPassword))) {
+    $rdpPasswordEffective = $RdpPassword
+} else {
+    $fromEnv = [Environment]::GetEnvironmentVariable($RdpPasswordEnvVar)
+    if (-not [string]::IsNullOrWhiteSpace($fromEnv)) {
+        $rdpPasswordEffective = $fromEnv
+    } else {
+        $rdpPasswordEffective = $RdpPassword
+    }
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -103,6 +151,9 @@ $testStartTime = Get-Date
 if ([string]::IsNullOrWhiteSpace($OutputPng)) {
     $OutputPng = Join-Path $artifactsDir "screenshot-$timestamp.png"
 }
+
+$dumpRemoteDir = "C:\IronRDPDeploy\bitmap-dumps-$timestamp"
+$dumpLocalDir = Join-Path $artifactsDir "bitmap-dumps-$timestamp"
 
 $profileDir = if ($Configuration -eq 'Release') { 'release' } else { 'debug' }
 
@@ -157,14 +208,15 @@ if (-not $SkipDeploy.IsPresent) {
     $deployArgs = @{
         Hostname         = $Hostname
         Username         = $adminUsernameEffective
-        PasswordPlainText = $adminPasswordEffective
+        Password         = $adminCred.Password
         RdpUsername      = $RdpUsername
-        RdpPassword      = $RdpPassword
         RdpDomain        = $RdpDomain
+        RdpPasswordEnvVar = $RdpPasswordEnvVar
         Configuration    = $Configuration
         SkipBuild        = $true
         ListenerAddr     = "0.0.0.0:$Port"
         CaptureIpc       = 'tcp'
+        DumpBitmapUpdatesDir = $dumpRemoteDir
         # In Provider mode the companion must NOT self-bind port 4489.  The WTS provider DLL
         # connects to the companion's named-pipe control server, sends WaitForIncoming (which
         # auto-starts the TCP listener), and notifies TermService about each incoming connection.
@@ -181,12 +233,18 @@ if (-not $SkipDeploy.IsPresent) {
         NoTermServiceStart   = ($Mode -eq 'Provider')
     }
 
+    # Prefer env var on the deploy script side to avoid passing plaintext passwords.
+    $canUseEnvRdp = (-not $PSBoundParameters.ContainsKey('RdpPassword')) -and (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($RdpPasswordEnvVar)))
+    if (-not $canUseEnvRdp) {
+        $deployArgs.RdpPassword = $rdpPasswordEffective
+    }
+
     & $deployScript @deployArgs
 
     if ($Mode -eq 'Provider') {
         Write-Host "Installing side-by-side WTS provider on $Hostname..." -ForegroundColor Cyan
 
-        $session = New-PSSession -ComputerName $Hostname -Credential $adminCred
+            $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
         try {
             $providerDll = Join-Path $workspaceRoot "target\$profileDir\ironrdp_wtsprotocol_provider.dll"
             if (-not (Test-Path $providerDll)) {
@@ -260,11 +318,17 @@ if (-not $SkipScreenshot.IsPresent) {
         '--host', $Hostname,
         '--port', $Port,
         '-u', $RdpUsername,
-        '-p', $RdpPassword,
+        '-p', $rdpPasswordEffective,
         '--autologon', 'true',
         '-o', $OutputPng,
         '--after-first-graphics-seconds', $AfterFirstGraphicsSeconds
     )
+
+    if ($Mode -eq 'Provider') {
+        # Provider mode uses TLS-only to capture plaintext credentials from ClientInfo.
+        # CredSSP/NLA will be rejected (no Hybrid advertised).
+        $screenshotArgs += @('--tls-enabled', 'true', '--credssp-enabled', 'false')
+    }
     if (-not [string]::IsNullOrWhiteSpace($RdpDomain)) {
         $screenshotArgs += @('-d', $RdpDomain)
     }
@@ -304,10 +368,10 @@ if (-not $SkipScreenshot.IsPresent) {
 Write-Host "`n=== Step 4: Collecting remote logs ===" -ForegroundColor Cyan
 
 try {
-    $session = New-PSSession -ComputerName $Hostname -Credential $adminCred
+    $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
     try {
         $remoteLogs = Invoke-Command -Session $session -ScriptBlock {
-            param($port, $securityStartTime, $mode)
+            param($port, $securityStartTime, $mode, $dumpDir)
             $result = @{}
             $logOut = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log'
             $logErr = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log'
@@ -328,6 +392,7 @@ try {
                     'IWRdsProtocolListenerCallback::',
                     'IWRdsProtocolConnection::',
                     'IWRdsWddmIddProps::',
+                    'NotifyIddDriverLoaded',
                     'GetUserCredentials ok',
                     'NotifyCommandProcessCreated',
                     'IsUserAllowedToLogon',
@@ -339,9 +404,9 @@ try {
                 )
 
                 $result['dll_debug'] = ($dllTail | Select-Object -Last 200 | Out-String)
-                $matches = $dllTail | Select-String -SimpleMatch -Pattern $patterns -ErrorAction SilentlyContinue
-                if ($matches) {
-                    $result['dll_debug_key'] = ($matches | Select-Object -Last 400 | ForEach-Object { $_.Line } | Out-String)
+                $matchLines = $dllTail | Select-String -SimpleMatch -Pattern $patterns -ErrorAction SilentlyContinue
+                if ($matchLines) {
+                    $result['dll_debug_key'] = ($matchLines | Select-Object -Last 400 | ForEach-Object { $_.Line } | Out-String)
                 }
             }
 
@@ -355,9 +420,10 @@ try {
                             $data = @{}
                             foreach ($d in $xml.Event.EventData.Data) { $data[$d.Name] = [string]$d.'#text' }
 
-                            if ($data.TargetUserName -eq 'Administrator' -and $data.TargetDomainName -eq 'IT-HELP' -and ($data.LogonType -in '2', '10')) {
+                            if ($data.TargetUserName -eq 'Administrator' -and ($data.LogonType -in '2', '10')) {
                                 [pscustomobject]@{
                                     TimeCreated  = $_.TimeCreated
+                                    Domain       = $data.TargetDomainName
                                     LogonType    = $data.LogonType
                                     LogonProcess = $data.LogonProcessName
                                     ProcessName  = $data.ProcessName
@@ -371,7 +437,7 @@ try {
                     if ($rows) {
                         $result['security_4624_admin'] = "Since $start`n" + ($rows | Format-Table -AutoSize | Out-String)
                     } else {
-                        $result['security_4624_admin'] = "Since $start`n(no matching 4624 events for IT-HELP\\Administrator with LogonType 2/10)"
+                        $result['security_4624_admin'] = "Since $start`n(no matching 4624 events for Administrator with LogonType 2/10)"
                     }
                 } catch {
                     $result['security_4624_admin'] = "Could not collect Security 4624: $_"
@@ -403,7 +469,7 @@ try {
             }
 
             $result
-        } -ArgumentList $Port, $testStartTime, $Mode
+        } -ArgumentList $Port, $testStartTime, $Mode, $dumpRemoteDir
 
         $isRunning = $remoteLogs['running']
         $isListening = $remoteLogs['listening']
@@ -446,6 +512,33 @@ try {
             Write-Host "`n---- TermService event log (recent) ----" -ForegroundColor Yellow
             Write-Host $remoteLogs['termservice_events']
         }
+
+        # Pull bitmap dumps (best-effort) so we can prove capture was producing real frames.
+        try {
+            New-Item -ItemType Directory -Path $dumpLocalDir -Force | Out-Null
+
+            $remoteHasDump = Invoke-Command -Session $session -ScriptBlock {
+                param($DumpDir)
+                Test-Path -LiteralPath $DumpDir
+            } -ArgumentList $dumpRemoteDir
+
+            if ($remoteHasDump) {
+                Copy-Item -FromSession $session -Path (Join-Path $dumpRemoteDir '*') -Destination $dumpLocalDir -Recurse -Force -ErrorAction SilentlyContinue
+                $bmps = Get-ChildItem -LiteralPath $dumpLocalDir -Filter '*.bmp' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+                if ($bmps -and $bmps.Count -gt 0) {
+                    $latest = $bmps | Select-Object -First 1
+                    Copy-Item -LiteralPath $latest.FullName -Destination (Join-Path $artifactsDir 'latest-bitmap-dump.bmp') -Force
+                    Write-Host "`nBitmap dumps: $($bmps.Count) file(s) downloaded to $dumpLocalDir" -ForegroundColor Green
+                    Write-Host "Latest dump: $($latest.Name) ($([math]::Round($latest.Length / 1MB, 2)) MB)" -ForegroundColor Green
+                } else {
+                    Write-Host "`nBitmap dumps: directory exists but no .bmp files were found at $dumpLocalDir" -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "`nBitmap dumps: remote dump directory not present: $dumpRemoteDir" -ForegroundColor DarkGray
+            }
+        } catch {
+            Write-Warning "Failed to download bitmap dumps: $_"
+        }
     }
     finally {
         Remove-PSSession -Session $session
@@ -463,10 +556,69 @@ Write-Host "Screenshot: $(if (Test-Path $OutputPng) { "$OutputPng ($($(Get-Item 
 
 if (Test-Path $OutputPng) {
     $fileInfo = Get-Item $OutputPng
-    if ($fileInfo.Length -gt 1000) {
-        Write-Host "RESULT: PASS (screenshot produced with content)" -ForegroundColor Green
-    } else {
+    $hasMeaningfulContent = $false
+    $analysisSucceeded = $false
+    $analysisMessage = ''
+
+    try {
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+
+        $bitmap = [System.Drawing.Bitmap]::new($OutputPng)
+        try {
+            $stepX = [Math]::Max([int]($bitmap.Width / 256), 1)
+            $stepY = [Math]::Max([int]($bitmap.Height / 256), 1)
+
+            $sampleCount = 0
+            $hasNonBlackPixel = $false
+            $isUniform = $true
+
+            $firstPixelSet = $false
+            $firstR = 0
+            $firstG = 0
+            $firstB = 0
+
+            for ($y = 0; $y -lt $bitmap.Height; $y += $stepY) {
+                for ($x = 0; $x -lt $bitmap.Width; $x += $stepX) {
+                    $pixel = $bitmap.GetPixel($x, $y)
+                    $sampleCount++
+
+                    if (-not $firstPixelSet) {
+                        $firstR = $pixel.R
+                        $firstG = $pixel.G
+                        $firstB = $pixel.B
+                        $firstPixelSet = $true
+                    } elseif ($pixel.R -ne $firstR -or $pixel.G -ne $firstG -or $pixel.B -ne $firstB) {
+                        $isUniform = $false
+                    }
+
+                    if ($pixel.R -ne 0 -or $pixel.G -ne 0 -or $pixel.B -ne 0) {
+                        $hasNonBlackPixel = $true
+                    }
+                }
+            }
+
+            $hasMeaningfulContent = $hasNonBlackPixel -or (-not $isUniform)
+            $analysisSucceeded = $true
+            $analysisMessage = "sampled_pixels=$sampleCount uniform_rgb=$isUniform non_black_rgb=$hasNonBlackPixel"
+        }
+        finally {
+            $bitmap.Dispose()
+        }
+    }
+    catch {
+        $analysisMessage = "image analysis failed: $_"
+    }
+
+    Write-Host "Screenshot analysis: $analysisMessage"
+
+    if ($fileInfo.Length -le 1000) {
         Write-Host "RESULT: WARN (screenshot produced but suspiciously small: $($fileInfo.Length) bytes)" -ForegroundColor Yellow
+    } elseif (-not $analysisSucceeded) {
+        Write-Host "RESULT: WARN (screenshot produced but content analysis failed)" -ForegroundColor Yellow
+    } elseif ($hasMeaningfulContent) {
+        Write-Host "RESULT: PASS (screenshot produced with meaningful content)" -ForegroundColor Green
+    } else {
+        Write-Host "RESULT: FAIL (screenshot produced but frame is blank/uniform)" -ForegroundColor Red
     }
 } else {
     Write-Host "RESULT: FAIL (no screenshot produced)" -ForegroundColor Red

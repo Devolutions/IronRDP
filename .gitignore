@@ -8,6 +8,7 @@
 
 # Log files
 *.log
+IddDiagnostics-*.zip
 
 # Coverage
 /docs/coverage

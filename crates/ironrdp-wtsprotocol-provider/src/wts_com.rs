@@ -4,7 +4,7 @@
     clippy::multiple_unsafe_ops_per_block
 )]
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -66,8 +66,8 @@ const S_FALSE: HRESULT = HRESULT(1);
 // HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY=14) == 0x8007000E
 const E_OUTOFMEMORY: HRESULT = HRESULT(-2147024882);
 
-const RDP_IDD_DISPLAY_DRIVER_HARDWARE_ID: &str = "RdpIdd_IndirectDisplay";
-const WTS_PROTOCOL_TYPE_RDP: u16 = 2;
+const IRONRDP_IDD_HARDWARE_ID: &str = "RdpIdd_IndirectDisplay";
+const WTS_PROTOCOL_TYPE_NON_RDP: u16 = 2;
 
 const WTS_VALUE_TYPE_ULONG: u16 = 1;
 const WTS_VALUE_TYPE_STRING: u16 = 2;
@@ -230,6 +230,7 @@ fn command_kind(command: &ProviderCommand) -> &'static str {
         ProviderCommand::CloseConnection { .. } => "close_connection",
         ProviderCommand::GetConnectionCredentials { .. } => "get_connection_credentials",
         ProviderCommand::SetCaptureSessionId { .. } => "set_capture_session_id",
+        ProviderCommand::NotifyIddDriverLoaded { .. } => "notify_idd_driver_loaded",
     }
 }
 
@@ -618,6 +619,18 @@ impl ProviderControlBridge {
         }
     }
 
+    fn notify_idd_driver_loaded(&self, session_id: u32) -> windows_core::Result<()> {
+        let Some(event) = self.send_command(&ProviderCommand::NotifyIddDriverLoaded { session_id })? else {
+            return Ok(());
+        };
+
+        match event {
+            ServiceEvent::Ack => Ok(()),
+            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            _ => Ok(()),
+        }
+    }
+
     fn accept_connection(&self, connection_id: u32) -> windows_core::Result<()> {
         let Some(event) = self.send_command_retried(&ProviderCommand::AcceptConnection { connection_id })? else {
             return Ok(());
@@ -824,7 +837,9 @@ impl ProviderControlBridge {
                         && (self.optional_connection
                             || matches!(
                                 command,
-                                ProviderCommand::StartListen { .. } | ProviderCommand::WaitForIncoming { .. }
+                                ProviderCommand::StartListen { .. }
+                                    | ProviderCommand::WaitForIncoming { .. }
+                                    | ProviderCommand::NotifyIddDriverLoaded { .. }
                             )) =>
                 {
                     debug!(
@@ -900,11 +915,11 @@ fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS 
     settings.WRdsConnectionSettingLevel = WRDS_CONNECTION_SETTING_LEVEL(1);
     // SAFETY: WRDS_CONNECTION_SETTINGS contains a union; accessing the level-1 view is valid because we set the level.
     unsafe {
-        // Mark this as an RDP-like connection so TermService follows the Winlogon logon path.
-        // See WTS_PROTOCOL_TYPE_* values in the Windows SDK (WtsApi32.h):
+        // A/B mode: advertise a non-RDP protocol type.
+        // WTS_PROTOCOL_TYPE_* values in the Windows SDK (WtsApi32.h):
         //   CONSOLE = 0, ICA = 1, RDP = 2
         let s1 = &mut settings.WRdsConnectionSetting.WRdsConnectionSettings1;
-        s1.ProtocolType = 2;
+        s1.ProtocolType = WTS_PROTOCOL_TYPE_NON_RDP;
         copy_wide(&mut s1.ProtocolName, "RDP");
 
         // Do not force auto-logon here: TermService may query GetClientData/GetUserCredentials
@@ -2096,6 +2111,8 @@ struct ComProtocolConnection {
     auth_bridge: CredsspServerBridge,
     connection_callback: Arc<Mutex<Option<AgileReference<IWRdsProtocolConnectionCallback>>>>,
     control_bridge: ProviderControlBridge,
+    wddm_idd_enabled: AtomicBool,
+    driver_handle_raw: AtomicUsize,
     ready_notified: Mutex<bool>,
     last_input_time: Mutex<u64>,
     virtual_channels: Mutex<Vec<VirtualChannelHandle>>,
@@ -2118,6 +2135,8 @@ impl ComProtocolConnection {
             auth_bridge: CredsspServerBridge::default(),
             connection_callback,
             control_bridge,
+            wddm_idd_enabled: AtomicBool::new(false),
+            driver_handle_raw: AtomicUsize::new(0),
             ready_notified: Mutex::new(false),
             last_input_time: Mutex::new(0),
             virtual_channels: Mutex::new(Vec::new()),
@@ -2427,11 +2446,9 @@ impl IWRdsProtocolConnectionSettings_Impl for ComProtocolConnection_Impl {
 impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
     fn GetHardwareId(&self, pdisplaydriverhardwareid: &PCWSTR, count: u32) -> windows_core::Result<()> {
         // TermService uses this to locate the WDDM IDD display driver to load for a session.
-        // Windows ships an RDP IDD implementation, exposed as the “Microsoft Remote Display Adapter”.
-        let wide: Vec<u16> = RDP_IDD_DISPLAY_DRIVER_HARDWARE_ID
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+        let hardware_id = IRONRDP_IDD_HARDWARE_ID;
+
+        let wide: Vec<u16> = hardware_id.encode_utf16().chain(Some(0)).collect();
 
         let required = wide.len();
         let capacity = usize::try_from(count).unwrap_or(0);
@@ -2457,7 +2474,7 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
         }
 
         debug_log_line(&format!(
-            "IWRdsWddmIddProps::GetHardwareId wrote '{RDP_IDD_DISPLAY_DRIVER_HARDWARE_ID}' chars={}",
+            "IWRdsWddmIddProps::GetHardwareId wrote '{hardware_id}' chars={}",
             required.saturating_sub(1)
         ));
 
@@ -2468,11 +2485,21 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
         debug_log_line(&format!(
             "IWRdsWddmIddProps::OnDriverLoad session_id={sessionid} handle={driverhandle:?}",
         ));
+
+        self.driver_handle_raw.store(driverhandle.0, Ordering::SeqCst);
+
+        if let Err(error) = self.control_bridge.notify_idd_driver_loaded(sessionid) {
+            debug_log_line(&format!(
+                "IWRdsWddmIddProps::OnDriverLoad notify_idd_driver_loaded failed: {error}"
+            ));
+        }
         Ok(())
     }
 
     fn OnDriverUnload(&self, sessionid: u32) -> windows_core::Result<()> {
         debug_log_line(&format!("IWRdsWddmIddProps::OnDriverUnload session_id={sessionid}"));
+
+        self.driver_handle_raw.store(0, Ordering::SeqCst);
         Ok(())
     }
 
@@ -2481,6 +2508,8 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
             "IWRdsWddmIddProps::EnableWddmIdd enabled={}",
             enabled.as_bool()
         ));
+
+        self.wddm_idd_enabled.store(enabled.as_bool(), Ordering::SeqCst);
         Ok(())
     }
 }
@@ -2538,8 +2567,8 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         client_data.fUsingSavedCreds = false;
         client_data.fPromptForPassword = false;
         client_data.fNoAudioPlayback = true;
-        // Match the built-in RDP provider identifiers.
-        client_data.ProtocolType = 2;
+        // Advertise an explicit custom protocol name.
+        client_data.ProtocolType = WTS_PROTOCOL_TYPE_NON_RDP;
         copy_wide(&mut client_data.ProtocolName, "RDP");
 
         // Some TermService/Winlogon code paths rely on the auto-logon credentials embedded in
@@ -2695,6 +2724,19 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             debug_log_line(&format!("Failed to notify companion of session id: {error}"));
         }
 
+        let wddm_enabled = self.wddm_idd_enabled.load(Ordering::SeqCst);
+        let driver_handle_seen = self.driver_handle_raw.load(Ordering::SeqCst) != 0;
+        if wddm_enabled && !driver_handle_seen {
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::NotifySessionId fallback notify_idd_driver_loaded session_id={wts_session_id}",
+            ));
+            if let Err(error) = self.control_bridge.notify_idd_driver_loaded(wts_session_id) {
+                debug_log_line(&format!(
+                    "IWRdsProtocolConnection::NotifySessionId fallback notify_idd_driver_loaded failed: {error}",
+                ));
+            }
+        }
+
         Ok(())
     }
 
@@ -2793,15 +2835,25 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         let mut slot = self.video_handle.lock();
         if slot.is_none() {
-            match ComProtocolConnection::open_device_handle(r"\\.\RdpVideoMiniport") {
+            match ComProtocolConnection::open_device_handle(r"\\.\IronRdpIddVideo") {
                 Ok(handle) => {
-                    debug_log_line("GetVideoHandle: opened \\.\\RdpVideoMiniport");
+                    debug_log_line("GetVideoHandle: opened \\.\\IronRdpIddVideo");
                     *slot = Some(handle);
                 }
                 Err(error) => {
                     debug_log_line(&format!(
-                        "GetVideoHandle: failed to open \\.\\RdpVideoMiniport: {error}"
+                        "GetVideoHandle: failed to open custom IDD: {error}, falling back to RdpVideoMiniport"
                     ));
+
+                    match ComProtocolConnection::open_device_handle(r"\\.\RdpVideoMiniport") {
+                        Ok(handle) => {
+                            debug_log_line("GetVideoHandle: opened \\.\\RdpVideoMiniport (fallback)");
+                            *slot = Some(handle);
+                        }
+                        Err(error) => {
+                            debug_log_line(&format!("GetVideoHandle: failed to open fallback: {error}"));
+                        }
+                    }
                 }
             }
         }
@@ -2969,9 +3021,9 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         *status = WTS_PROTOCOL_STATUS::default();
 
         // TermService may consult these counters to identify the protocol type.
-        // Keep it consistent with WRDS/WTS client data (RDP == 2).
-        status.Output.ProtocolType = WTS_PROTOCOL_TYPE_RDP;
-        status.Input.ProtocolType = WTS_PROTOCOL_TYPE_RDP;
+        // Keep it consistent with WRDS/WTS client data.
+        status.Output.ProtocolType = WTS_PROTOCOL_TYPE_NON_RDP;
+        status.Input.ProtocolType = WTS_PROTOCOL_TYPE_NON_RDP;
         status.Output.Length =
             u16::try_from(size_of::<windows::Win32::System::RemoteDesktop::WTS_PROTOCOL_COUNTERS>()).unwrap_or(0);
         status.Input.Length = status.Output.Length;

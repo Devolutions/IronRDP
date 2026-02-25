@@ -159,7 +159,10 @@ impl CredsspSequence {
                 let credssp_config = Box::new(sspi::ntlm::NtlmConfig::default());
                 credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
                     protocol_config: credssp_config,
-                    package_list: None,
+                    // Avoid opportunistic Kerberos when we don't have an explicit Kerberos config.
+                    // Our pure-Rust SSPI path is primarily validated for NTLM, and attempting
+                    // Kerberos here can make handshakes environment-dependent.
+                    package_list: Some("!kerberos,!pku2u".to_owned()),
                     client_computer_name: server_name,
                 })
             }
