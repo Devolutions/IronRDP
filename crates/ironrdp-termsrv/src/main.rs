@@ -101,6 +101,8 @@ mod windows_main {
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
     const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:4489";
     const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
+    const FIRST_FRAME_BLANK_GRACE: Duration = Duration::from_secs(1);
+    const FIRST_FRAME_BLANK_MAX_FRAMES: u32 = 8;
     const CAPTURE_HELPER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
     const CAPTURE_HELPER_RETRY_DELAY: Duration = Duration::from_secs(5);
     const CAPTURE_IPC_ENV: &str = "IRONRDP_WTS_CAPTURE_IPC";
@@ -422,6 +424,8 @@ mod windows_main {
         next_helper_attempt_at: Instant,
         sent_first_frame: bool,
         warned_blank_capture: bool,
+        initial_blank_since: Option<Instant>,
+        initial_blank_frames: u32,
         last_bitmap: Option<BitmapUpdate>,
         helper_frames_received: u64,
         helper_timeouts: u64,
@@ -471,6 +475,8 @@ mod windows_main {
                 next_helper_attempt_at: Instant::now(),
                 sent_first_frame: false,
                 warned_blank_capture: false,
+                initial_blank_since: None,
+                initial_blank_frames: 0,
                 last_bitmap: None,
                 helper_frames_received: 0,
                 helper_timeouts: 0,
@@ -576,15 +582,18 @@ mod windows_main {
                 //   - The WTS provider set session_id_override AFTER capture already started with a
                 //     guessed session from resolve_capture_session_id.  Restart to target the correct
                 //     TermService session.
-                //   - The user has now logged into the TermService session (WTSQueryUserToken
-                //     succeeds).  Restart to pick up the real user token instead of the pre-login
-                //     fallback (winlogon) token.
+                //   - The user has now logged into the TermService session.  Restart to pick up
+                //     the real user desktop instead of the pre-login fallback (winlogon) desktop.
+                //     We detect this via either WTSQueryUserToken OR explorer.exe token presence
+                //     (for service contexts where WTSQueryUserToken remains unavailable).
                 let session_override_changed = self
                     .capture_started_with_session_override
                     .is_some_and(|started_with| started_with != session_id_override);
 
                 let user_token_available = session_id_override.is_some_and(session_has_user_token);
-                let should_restart_for_logon = user_token_available && !self.capture_restarted_for_logon;
+                let explorer_token_available = session_id_override.is_some_and(session_has_explorer_token);
+                let should_restart_for_logon =
+                    (user_token_available || explorer_token_available) && !self.capture_restarted_for_logon;
                 let should_restart = self.capture.is_some() && (session_override_changed || should_restart_for_logon);
 
                 if should_restart {
@@ -609,6 +618,8 @@ mod windows_main {
 
                     self.next_helper_attempt_at = Instant::now();
                     self.warned_blank_capture = false;
+                    self.initial_blank_since = None;
+                    self.initial_blank_frames = 0;
                     self.sent_first_frame = false;
                     self.last_bitmap = None;
                     self.helper_frames_received = 0;
@@ -647,6 +658,8 @@ mod windows_main {
                                 helper_pid = capture.pid(),
                                 "Started interactive capture helper"
                             );
+                            self.initial_blank_since = None;
+                            self.initial_blank_frames = 0;
                             self.capture_started_with_session_override = Some(session_id_override);
                             self.capture = Some(capture);
                         }
@@ -734,6 +747,8 @@ mod windows_main {
 
                 match captured {
                     CapturedFrame::PreEncoded(surface) => {
+                        self.initial_blank_since = None;
+                        self.initial_blank_frames = 0;
                         self.sent_first_frame = true;
                         return Ok(Some(DisplayUpdate::PreEncodedSurface(surface)));
                     }
@@ -741,16 +756,38 @@ mod windows_main {
                         let is_blank = is_probably_blank_bgra32(bitmap.data.as_ref());
 
                         if !self.sent_first_frame && is_blank {
-                            if !self.warned_blank_capture {
-                                self.warned_blank_capture = true;
-                                debug!(
-                                    connection_id = self.connection_id,
-                                    "Captured blank frame before first meaningful update; waiting for initialized desktop"
-                                );
+                            let now = Instant::now();
+                            let initial_blank_since = self.initial_blank_since.get_or_insert(now);
+                            self.initial_blank_frames = self.initial_blank_frames.saturating_add(1);
+
+                            let blank_elapsed = now.saturating_duration_since(*initial_blank_since);
+                            let still_in_grace = blank_elapsed < FIRST_FRAME_BLANK_GRACE
+                                && self.initial_blank_frames < FIRST_FRAME_BLANK_MAX_FRAMES;
+
+                            if still_in_grace {
+                                if !self.warned_blank_capture {
+                                    self.warned_blank_capture = true;
+                                    debug!(
+                                        connection_id = self.connection_id,
+                                        "Captured blank frame before first meaningful update; waiting for initialized desktop"
+                                    );
+                                }
+
+                                sleep(CAPTURE_INTERVAL).await;
+                                continue;
                             }
 
-                            sleep(CAPTURE_INTERVAL).await;
-                            continue;
+                            info!(
+                                connection_id = self.connection_id,
+                                blank_frames = self.initial_blank_frames,
+                                blank_elapsed_ms = blank_elapsed.as_millis(),
+                                "Sending blank first frame after startup grace period"
+                            );
+                        }
+
+                        if !self.sent_first_frame {
+                            self.initial_blank_since = None;
+                            self.initial_blank_frames = 0;
                         }
 
                         if is_blank && !self.warned_blank_capture {
@@ -1734,6 +1771,16 @@ mod windows_main {
         }
     }
 
+    fn session_has_explorer_token(session_id: u32) -> bool {
+        match token_from_session_process(session_id, "explorer.exe") {
+            Ok(token) => {
+                close_handle_best_effort(token);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     fn resolve_capture_session_id() -> anyhow::Result<u32> {
         if let Ok(configured) = std::env::var(CAPTURE_SESSION_ID_ENV) {
             let configured = configured.trim();
@@ -1797,6 +1844,27 @@ mod windows_main {
         session_id: u32,
         credentials: Option<&StoredCredentials>,
     ) -> anyhow::Result<AcquiredSessionToken> {
+        // Prefer tokens from session processes first. This avoids depending on
+        // WTSQueryUserToken behavior during early/pre-logon transitions.
+        if let Ok(token) = token_from_session_process(session_id, "explorer.exe") {
+            debug!(session_id, "Using explorer.exe token (default desktop)");
+            return Ok(AcquiredSessionToken {
+                token,
+                desktop: HelperDesktop::Default,
+            });
+        }
+
+        if let Ok(token) = token_from_session_process(session_id, "winlogon.exe") {
+            info!(
+                session_id,
+                "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
+            );
+            return Ok(AcquiredSessionToken {
+                token,
+                desktop: HelperDesktop::Winlogon,
+            });
+        }
+
         let mut token = HANDLE::default();
 
         // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
@@ -1829,32 +1897,8 @@ mod windows_main {
         );
 
         // NOTE: We intentionally do not fall back to LogonUserW here.
-        // When the protocol provider performs a real logon, WTSQueryUserToken will succeed later
-        // (post-LogonNotify), at which point we can start the keepalive with the real token.
         // This avoids generating misleading Security 4624 LogonType=2 events from ironrdp-termsrv.
         let _ = credentials;
-
-        // Prefer explorer.exe: it runs as the logged-in user with access to the default desktop.
-        if let Ok(token) = token_from_session_process(session_id, "explorer.exe") {
-            debug!(session_id, "Using explorer.exe token (default desktop)");
-            return Ok(AcquiredSessionToken {
-                token,
-                desktop: HelperDesktop::Default,
-            });
-        }
-
-        if let Ok(token) = token_from_session_process(session_id, "winlogon.exe") {
-            // When there is no user token (pre-login / lock screen), the visible UI is typically on
-            // the Winlogon desktop. Spawn the helper on winsta0\winlogon so GDI capture can see it.
-            info!(
-                session_id,
-                "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
-            );
-            return Ok(AcquiredSessionToken {
-                token,
-                desktop: HelperDesktop::Winlogon,
-            });
-        }
 
         debug!(session_id, "Using duplicated service token for capture");
         let token = duplicate_self_token_for_session(session_id)?;
@@ -3273,15 +3317,9 @@ mod windows_main {
         let mut server = {
             let builder = RdpServer::builder().with_addr(([127, 0, 0, 1], 0));
 
-            // In provider mode we need plaintext credentials to pass to TermService.
-            // Our current CredSSP implementation requires preconfigured passwords (pure-Rust SSPI),
-            // so we capture credentials from the ClientInfo PDU over TLS-only instead.
-            let builder = if provider_mode {
-                let _ = tls_pub_key;
-                builder.with_tls(tls_acceptor)
-            } else {
-                builder.with_hybrid(tls_acceptor, tls_pub_key)
-            };
+            // Provider mode should still negotiate Hybrid/CredSSP so TermService observes
+            // a regular RDP logon flow (Security 4624 LogonType=10).
+            let builder = builder.with_hybrid(tls_acceptor, tls_pub_key);
 
             let rfx_only_codecs =
                 ironrdp_pdu::rdp::capability_sets::server_codecs_capabilities(&["remotefx:on", "qoi:off", "qoiz:off"])
@@ -3295,6 +3333,24 @@ mod windows_main {
         };
 
         if provider_mode {
+            let expected_credentials = resolve_rdp_credentials_from_env()?;
+
+            if let Some(credentials) = expected_credentials {
+                info!(
+                    username = %credentials.username,
+                    domain = ?credentials.domain,
+                    "Configured expected RDP credentials for provider-mode CredSSP"
+                );
+                server.set_credentials(Some(credentials));
+            } else {
+                warn!(
+                    username_env = %RDP_USERNAME_ENV,
+                    password_env = %RDP_PASSWORD_ENV,
+                    domain_env = %RDP_DOMAIN_ENV,
+                    "RDP credentials are not configured; provider-mode CredSSP handshake may fail"
+                );
+            }
+
             server.set_allow_unverified_credentials(true);
 
             let credentials_slot = Arc::clone(&credentials_slot);

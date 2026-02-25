@@ -25,7 +25,8 @@ use tracing::{debug, info, warn};
 use windows::core::AgileReference;
 use windows::Win32::Foundation::{
     LocalFree, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, ERROR_BROKEN_PIPE, ERROR_INSUFFICIENT_BUFFER,
-    ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_SEM_TIMEOUT, E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED, HANDLE,
+    ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_SEM_TIMEOUT, E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED,
+    HANDLE,
     HANDLE_PTR, HLOCAL,
 };
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -66,15 +67,20 @@ const S_FALSE: HRESULT = HRESULT(1);
 // HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY=14) == 0x8007000E
 const E_OUTOFMEMORY: HRESULT = HRESULT(-2147024882);
 
-const IRONRDP_IDD_HARDWARE_ID: &str = "RdpIdd_IndirectDisplay";
+const IRONRDP_IDD_HARDWARE_ID: &str = "IronRdpIdd";
 const WTS_PROTOCOL_TYPE_NON_RDP: u16 = 2;
 
 const WTS_VALUE_TYPE_ULONG: u16 = 1;
 const WTS_VALUE_TYPE_STRING: u16 = 2;
+const WTS_VALUE_TYPE_GUID: u16 = 4;
 
 // From Windows SDK `wtsdefs.h`.
 const PROPERTY_TYPE_GET_FAST_RECONNECT: GUID = GUID::from_u128(0x6212_d757_0043_4862_99c3_9f30_59ac_2a3b);
 const PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID: GUID = GUID::from_u128(0x197c_427a_0135_4b6d_9c5e_e657_9a0a_b625);
+const PROPERTY_TYPE_CONNECTION_GUID: GUID = GUID::from_u128(0x9eaa_04f6_5b9d_4ba5_be9d_3748_ad6d_8af7);
+const PROPERTY_TYPE_SUPPRESS_LOGON_UI: GUID = GUID::from_u128(0x846b_20bb_6254_430e_952f_b0c7_ca08_1915);
+const PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT: GUID = GUID::from_u128(0x2918_db60_6cae_42a8_9945_8128_d7dd_8e71);
+const PROPERTY_TYPE_LICENSE_GUID: GUID = GUID::from_u128(0x4daa_5ab8_8b6a_49cf_9c85_8add_504c_d1f7);
 
 // From Windows SDK `wtsdefs.h`.
 const WTS_QUERY_AUDIOENUM_DLL: GUID = GUID::from_u128(0x9bf4_fa97_c883_4c2a_80ab_5a39_c9af_00db);
@@ -82,6 +88,16 @@ const PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL: GUID =
     GUID::from_u128(0xed2c_3fda_338d_4d3f_81a3_e767_310d_908e);
 
 const FAST_RECONNECT_ENHANCED: u32 = 2;
+
+fn deterministic_connection_guid(connection_id: u32) -> GUID {
+    const BASE: u128 = 0x89c7ed1e_25e5_4b15_8f52_ae6df4a50000;
+    GUID::from_u128(BASE | u128::from(connection_id))
+}
+
+fn deterministic_license_guid(connection_id: u32) -> GUID {
+    const BASE: u128 = 0x7d5e31f3_0ff8_4a25_9fcb_7b7e2f634000;
+    GUID::from_u128(BASE | u128::from(connection_id))
+}
 
 fn lookup_account_sid_string(username: &str, domain: &str) -> windows_core::Result<String> {
     let username = username.trim();
@@ -2677,8 +2693,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         ));
 
         // Microsoft docs: this is an `[out]` parameter (WRDS_SESSION_ID*), not an in-out hint.
-        // We currently do not implement fast reconnect / session reattachment. Returning an error
-        // is explicitly supported: TermService continues the connection sequence.
+        // We currently do not implement fast reconnect / session reattachment.
         if sessionid.is_null() {
             return Err(windows_core::Error::new(E_POINTER, "null session id pointer"));
         }
@@ -2693,6 +2708,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         debug_log_line(&format!(
             "IWRdsProtocolConnection::AuthenticateClientToSession returning E_NOTIMPL connection_id={connection_id}",
         ));
+
         Err(windows_core::Error::new(
             E_NOTIMPL,
             "AuthenticateClientToSession is not implemented",
@@ -3016,6 +3032,9 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Err(windows_core::Error::new(E_POINTER, "null protocol status pointer"));
         }
 
+        let protocol_counters_length =
+            u16::try_from(size_of::<windows::Win32::System::RemoteDesktop::WTS_PROTOCOL_COUNTERS>()).unwrap_or(0);
+
         // SAFETY: `pprotocolstatus` is non-null (checked above) and points to a writable buffer.
         let status = unsafe { &mut *pprotocolstatus };
         *status = WTS_PROTOCOL_STATUS::default();
@@ -3023,10 +3042,23 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         // TermService may consult these counters to identify the protocol type.
         // Keep it consistent with WRDS/WTS client data.
         status.Output.ProtocolType = WTS_PROTOCOL_TYPE_NON_RDP;
+        status.Output.Length = protocol_counters_length;
+        status.Output.Specific = WTS_PROTOCOL_TYPE_NON_RDP;
+
         status.Input.ProtocolType = WTS_PROTOCOL_TYPE_NON_RDP;
-        status.Output.Length =
-            u16::try_from(size_of::<windows::Win32::System::RemoteDesktop::WTS_PROTOCOL_COUNTERS>()).unwrap_or(0);
-        status.Input.Length = status.Output.Length;
+        status.Input.Length = protocol_counters_length;
+        status.Input.Specific = WTS_PROTOCOL_TYPE_NON_RDP;
+
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::GetProtocolStatus returned connection_id={} output={{type={},len={},specific={}}} input={{type={},len={},specific={}}}",
+            self.inner.connection_id(),
+            status.Output.ProtocolType,
+            status.Output.Length,
+            status.Output.Specific,
+            status.Input.ProtocolType,
+            status.Input.Length,
+            status.Input.Specific,
+        ));
 
         Ok(())
     }
@@ -3179,6 +3211,10 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         let is_known_querytype = *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT
             || *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID
             || *_querytype == PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL
+            || *_querytype == PROPERTY_TYPE_CONNECTION_GUID
+            || *_querytype == PROPERTY_TYPE_SUPPRESS_LOGON_UI
+            || *_querytype == PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT
+            || *_querytype == PROPERTY_TYPE_LICENSE_GUID
             || *_querytype == WTS_QUERY_AUDIOENUM_DLL;
 
         let first_time_unknown = if is_known_querytype {
@@ -3214,6 +3250,40 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             first.u.ulVal = FAST_RECONNECT_ENHANCED;
             debug_log_line(&format!(
                 "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_GET_FAST_RECONNECT -> {FAST_RECONNECT_ENHANCED}",
+            ));
+            return Ok(());
+        }
+
+        if *_querytype == PROPERTY_TYPE_CONNECTION_GUID {
+            let connection_guid = deterministic_connection_guid(self.inner.connection_id());
+            first.Type = WTS_VALUE_TYPE_GUID;
+            first.u.guidVal = connection_guid;
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CONNECTION_GUID -> {connection_guid:?}",
+            ));
+            return Ok(());
+        }
+
+        if *_querytype == PROPERTY_TYPE_SUPPRESS_LOGON_UI {
+            first.Type = WTS_VALUE_TYPE_ULONG;
+            first.u.ulVal = 0;
+            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_SUPPRESS_LOGON_UI -> 0");
+            return Ok(());
+        }
+
+        if *_querytype == PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT {
+            first.Type = WTS_VALUE_TYPE_ULONG;
+            first.u.ulVal = 0;
+            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT -> 0");
+            return Ok(());
+        }
+
+        if *_querytype == PROPERTY_TYPE_LICENSE_GUID {
+            let license_guid = deterministic_license_guid(self.inner.connection_id());
+            first.Type = WTS_VALUE_TYPE_GUID;
+            first.u.guidVal = license_guid;
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_LICENSE_GUID -> {license_guid:?}",
             ));
             return Ok(());
         }
@@ -3293,6 +3363,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
                 "IWRdsProtocolConnection::QueryProperty unknown querytype={_querytype:?} requested_type={requested_type} -> E_NOTIMPL (logged once)",
             ));
         }
+
         Err(windows_core::Error::new(
             E_NOTIMPL,
             "QueryProperty querytype is not implemented",
