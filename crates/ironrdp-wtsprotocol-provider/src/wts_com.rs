@@ -48,7 +48,8 @@ use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager, IWRdsProtocolManager_Impl, IWRdsProtocolSettings,
     IWRdsProtocolShadowConnection, IWRdsWddmIddProps, IWRdsWddmIddProps_Impl, WTSVirtualChannelClose,
     WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite, WRDS_CONNECTION_SETTINGS,
-    WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL, WRDS_SETTINGS,
+    WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTINGS_1, WRDS_LISTENER_SETTING_LEVEL,
+    WRDS_LISTENER_SETTING_LEVEL_1, WRDS_SETTINGS,
     WTS_CERT_TYPE_INVALID, WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH,
     WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL,
     WTS_CLIENT_DATA, WTS_KEY_EXCHANGE_ALG_RSA, WTS_LICENSE_CAPABILITIES, WTS_LICENSE_PREAMBLE_VERSION,
@@ -1616,12 +1617,30 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
         &self,
         wrdslistenersettinglevel: WRDS_LISTENER_SETTING_LEVEL,
     ) -> windows_core::Result<WRDS_LISTENER_SETTINGS> {
+        if wrdslistenersettinglevel != WRDS_LISTENER_SETTING_LEVEL_1 {
+            debug_log_line(&format!(
+                "IWRdsProtocolListener::GetSettings listener_name={} level={} -> E_NOTIMPL (unsupported level)",
+                self.listener_name, wrdslistenersettinglevel.0
+            ));
+
+            return Err(windows_core::Error::new(E_NOTIMPL, "unsupported listener setting level"));
+        }
+
+        let mut settings = WRDS_LISTENER_SETTINGS::default();
+        settings.WRdsListenerSettingLevel = WRDS_LISTENER_SETTING_LEVEL_1;
+
+        settings.WRdsListenerSetting.WRdsListenerSettings1 = WRDS_LISTENER_SETTINGS_1 {
+            MaxProtocolListenerConnectionCount: 0,
+            SecurityDescriptorSize: 0,
+            pSecurityDescriptor: core::ptr::null_mut(),
+        };
+
         debug_log_line(&format!(
-            "IWRdsProtocolListener::GetSettings listener_name={} level={} -> E_NOTIMPL (matching MS sample)",
+            "IWRdsProtocolListener::GetSettings listener_name={} level={} -> ok (max_conn=0 sd_size=0 sd_ptr=0x0)",
             self.listener_name, wrdslistenersettinglevel.0
         ));
 
-        Err(windows_core::Error::new(E_NOTIMPL, "GetSettings not implemented"))
+        Ok(settings)
     }
 
     fn StartListen(&self, pcallback: windows_core::Ref<'_, IWRdsProtocolListenerCallback>) -> windows_core::Result<()> {
