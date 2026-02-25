@@ -1,7 +1,8 @@
-use crate::wdf::{WDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDEVICE_INIT};
-use crate::{IDDCX_SWAPCHAIN, NTSTATUS};
+use crate::wdf::{WDFDEVICE, WDFDEVICE_INIT, WDF_OBJECT_ATTRIBUTES};
+use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, IDDCX_SWAPCHAIN, NTSTATUS};
 use core::ffi::c_void;
 use core::mem::size_of;
+use windows::Win32::Foundation::LUID;
 use windows_core::HRESULT;
 
 #[repr(C)]
@@ -22,6 +23,73 @@ unsafe extern "C" {
 const IDDCX_SWAPCHAIN_SET_DEVICE_TABLE_INDEX: usize = 10;
 const IDDCX_SWAPCHAIN_RELEASE_AND_ACQUIRE_BUFFER_TABLE_INDEX: usize = 11;
 const IDDCX_SWAPCHAIN_FINISHED_PROCESSING_FRAME_TABLE_INDEX: usize = 14;
+
+const IDDCX_MONITOR_CREATE_TABLE_INDEX: usize = 3;
+const IDDCX_MONITOR_ARRIVAL_TABLE_INDEX: usize = 4;
+const IDDCX_MONITOR_DEPARTURE_TABLE_INDEX: usize = 5;
+
+#[repr(C)]
+pub(crate) struct IDDCX_MONITOR_DESCRIPTION {
+    pub(crate) Size: u32,
+    pub(crate) Type: u32,
+    pub(crate) DataSize: u32,
+    pub(crate) pData: *mut c_void,
+}
+
+const _: () = {
+    assert!(
+        size_of::<IDDCX_MONITOR_DESCRIPTION>() == 24,
+        "IDDCX_MONITOR_DESCRIPTION size mismatch"
+    );
+};
+
+#[repr(C)]
+pub(crate) struct IDDCX_MONITOR_INFO {
+    pub(crate) Size: u32,
+    pub(crate) MonitorType: u32,
+    pub(crate) ConnectorIndex: u32,
+    pub(crate) _pad: u32,
+    pub(crate) MonitorDescription: IDDCX_MONITOR_DESCRIPTION,
+    pub(crate) MonitorContainerId: windows_core::GUID,
+}
+
+const _: () = {
+    assert!(
+        size_of::<IDDCX_MONITOR_INFO>() == 56,
+        "IDDCX_MONITOR_INFO size mismatch"
+    );
+};
+
+#[repr(C)]
+pub(crate) struct IDARG_IN_MONITORCREATE {
+    pub(crate) ObjectAttributes: *const WDF_OBJECT_ATTRIBUTES,
+    pub(crate) pMonitorInfo: *mut IDDCX_MONITOR_INFO,
+}
+
+const _: () = {
+    assert!(
+        size_of::<IDARG_IN_MONITORCREATE>() == 16,
+        "IDARG_IN_MONITORCREATE size mismatch"
+    );
+};
+
+#[repr(C)]
+pub(crate) struct IDARG_OUT_MONITORCREATE {
+    pub(crate) MonitorObject: IDDCX_MONITOR,
+}
+
+const _: () = {
+    assert!(
+        size_of::<IDARG_OUT_MONITORCREATE>() == 8,
+        "IDARG_OUT_MONITORCREATE size mismatch"
+    );
+};
+
+#[repr(C)]
+pub(crate) struct IDARG_OUT_MONITORARRIVAL {
+    pub(crate) OsAdapterLuid: LUID,
+    pub(crate) OsTargetId: u32,
+}
 
 #[repr(C)]
 pub(crate) struct IDARG_IN_SWAPCHAINSETDEVICE {
@@ -55,6 +123,18 @@ type PFN_IDDCX_SWAPCHAIN_RELEASE_AND_ACQUIRE_BUFFER = unsafe extern "system" fn(
 
 type PFN_IDDCX_SWAPCHAIN_FINISHED_PROCESSING_FRAME =
     unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, IDDCX_SWAPCHAIN) -> HRESULT;
+
+type PFN_IDDCX_MONITOR_CREATE = unsafe extern "system" fn(
+    *mut IDD_DRIVER_GLOBALS,
+    IDDCX_ADAPTER,
+    *const IDARG_IN_MONITORCREATE,
+    *mut IDARG_OUT_MONITORCREATE,
+) -> NTSTATUS;
+
+type PFN_IDDCX_MONITOR_ARRIVAL =
+    unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, IDDCX_MONITOR, *mut IDARG_OUT_MONITORARRIVAL) -> NTSTATUS;
+
+type PFN_IDDCX_MONITOR_DEPARTURE = unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, IDDCX_MONITOR) -> NTSTATUS;
 
 pub(crate) unsafe fn swapchain_set_device(swapchain: IDDCX_SWAPCHAIN, dxgi_device: *mut c_void) -> HRESULT {
     let in_args = IDARG_IN_SWAPCHAINSETDEVICE { pDevice: dxgi_device };
@@ -103,6 +183,44 @@ pub(crate) unsafe fn swapchain_finished_processing_frame(swapchain: IDDCX_SWAPCH
     unsafe { func(globals, swapchain) }
 }
 
+pub(crate) unsafe fn monitor_create(
+    adapter: IDDCX_ADAPTER,
+    in_args: *const IDARG_IN_MONITORCREATE,
+    out_args: *mut IDARG_OUT_MONITORCREATE,
+) -> NTSTATUS {
+    // SAFETY: read from a mutable static.
+    let raw = unsafe { IddFunctions[IDDCX_MONITOR_CREATE_TABLE_INDEX] };
+    // SAFETY: function pointer table uses a generic PFN type; we cast to the typed signature.
+    let func: PFN_IDDCX_MONITOR_CREATE = unsafe { core::mem::transmute::<PFN_IDD_CX, PFN_IDDCX_MONITOR_CREATE>(raw) };
+    // SAFETY: read from a mutable static.
+    let globals = unsafe { IddDriverGlobals };
+    // SAFETY: calls into the IddCx function table.
+    unsafe { func(globals, adapter, in_args, out_args) }
+}
+
+pub(crate) unsafe fn monitor_arrival(monitor: IDDCX_MONITOR, out_args: *mut IDARG_OUT_MONITORARRIVAL) -> NTSTATUS {
+    // SAFETY: read from a mutable static.
+    let raw = unsafe { IddFunctions[IDDCX_MONITOR_ARRIVAL_TABLE_INDEX] };
+    // SAFETY: function pointer table uses a generic PFN type; we cast to the typed signature.
+    let func: PFN_IDDCX_MONITOR_ARRIVAL = unsafe { core::mem::transmute::<PFN_IDD_CX, PFN_IDDCX_MONITOR_ARRIVAL>(raw) };
+    // SAFETY: read from a mutable static.
+    let globals = unsafe { IddDriverGlobals };
+    // SAFETY: calls into the IddCx function table.
+    unsafe { func(globals, monitor, out_args) }
+}
+
+pub(crate) unsafe fn monitor_departure(monitor: IDDCX_MONITOR) -> NTSTATUS {
+    // SAFETY: read from a mutable static.
+    let raw = unsafe { IddFunctions[IDDCX_MONITOR_DEPARTURE_TABLE_INDEX] };
+    // SAFETY: function pointer table uses a generic PFN type; we cast to the typed signature.
+    let func: PFN_IDDCX_MONITOR_DEPARTURE =
+        unsafe { core::mem::transmute::<PFN_IDD_CX, PFN_IDDCX_MONITOR_DEPARTURE>(raw) };
+    // SAFETY: read from a mutable static.
+    let globals = unsafe { IddDriverGlobals };
+    // SAFETY: calls into the IddCx function table.
+    unsafe { func(globals, monitor) }
+}
+
 // ────────────────────── Device init / adapter init dispatch ──────────────────────────────────
 
 /// `IddCxDeviceInitConfigTableIndex` from `IddCxFuncEnum.h` (IddCx 1.2 / `IddCx0102`).
@@ -112,14 +230,10 @@ const IDDCX_DEVICE_INITIALIZE_TABLE_INDEX: usize = 1;
 /// `IddCxAdapterInitAsyncTableIndex` from `IddCxFuncEnum.h` (IddCx 1.2 / `IddCx0102`).
 const IDDCX_ADAPTER_INIT_ASYNC_TABLE_INDEX: usize = 2;
 
-type PFN_IDDCX_DEVICE_INIT_CONFIG = unsafe extern "system" fn(
-    *mut IDD_DRIVER_GLOBALS,
-    *mut WDFDEVICE_INIT,
-    *const IDD_CX_CLIENT_CONFIG,
-) -> NTSTATUS;
+type PFN_IDDCX_DEVICE_INIT_CONFIG =
+    unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, *mut WDFDEVICE_INIT, *const IDD_CX_CLIENT_CONFIG) -> NTSTATUS;
 
-type PFN_IDDCX_DEVICE_INITIALIZE =
-    unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, WDFDEVICE) -> NTSTATUS;
+type PFN_IDDCX_DEVICE_INITIALIZE = unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, WDFDEVICE) -> NTSTATUS;
 
 type PFN_IDDCX_ADAPTER_INIT_ASYNC = unsafe extern "system" fn(
     *mut IDD_DRIVER_GLOBALS,
@@ -304,13 +418,9 @@ const _: () = {
 
 // UTF-16 null-terminated string constants for endpoint diagnostics.
 // "IronRDP IDD" (11 chars + null = 12 elements)
-pub(crate) static ENDPOINT_MODEL_NAME_UTF16: [u16; 12] = [
-    73, 114, 111, 110, 82, 68, 80, 32, 73, 68, 68, 0,
-];
+pub(crate) static ENDPOINT_MODEL_NAME_UTF16: [u16; 12] = [73, 114, 111, 110, 82, 68, 80, 32, 73, 68, 68, 0];
 // "Devolutions" (11 chars + null = 12 elements)
-pub(crate) static ENDPOINT_MANUFACTURER_UTF16: [u16; 12] = [
-    68, 101, 118, 111, 108, 117, 116, 105, 111, 110, 115, 0,
-];
+pub(crate) static ENDPOINT_MANUFACTURER_UTF16: [u16; 12] = [68, 101, 118, 111, 108, 117, 116, 105, 111, 110, 115, 0];
 
 /// IddCx version binding: the driver exports this symbol so `iddcxstub.lib` can verify version
 /// compatibility. Value is `IDDCX_VERSION_MINOR` = 2 for IddCx 1.2 (`IddCx0102`).
