@@ -1,4 +1,22 @@
-use crate::{ntstatus_to_u32, IDDCX_ADAPTER, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS};
+use crate::{ntstatus_to_u32, IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS};
+use crate::monitor::DISPLAYCONFIG_VIDEO_SIGNAL_INFO;
+
+#[cfg(ironrdp_idd_link)]
+const IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE: u32 = 1;
+#[cfg(ironrdp_idd_link)]
+const IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER: u32 = 4;
+const STATUS_INVALID_PARAMETER: NTSTATUS = crate::ntstatus_from_u32(0xC000_000D);
+
+const IDDCX_PATH_FLAGS_CHANGED: u32 = 1;
+const IDDCX_PATH_FLAGS_ACTIVE: u32 = 2;
+
+#[repr(C)]
+pub struct IDDCX_PATH {
+    pub(crate) Size: u32,
+    pub(crate) MonitorObject: IDDCX_MONITOR,
+    pub(crate) Flags: u32,
+    pub(crate) TargetVideoSignalInfo: DISPLAYCONFIG_VIDEO_SIGNAL_INFO,
+}
 
 #[repr(C)]
 pub(crate) struct IDARG_IN_ADAPTER_INIT_FINISHED {
@@ -7,7 +25,8 @@ pub(crate) struct IDARG_IN_ADAPTER_INIT_FINISHED {
 
 #[repr(C)]
 pub(crate) struct IDARG_IN_COMMITMODES {
-    _private: [u8; 0],
+    pub(crate) PathCount: u32,
+    pub(crate) pPaths: *mut IDDCX_PATH,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -75,10 +94,82 @@ pub(crate) extern "system" fn adapter_init_finished(
 }
 
 pub(crate) extern "system" fn adapter_commit_modes(
-    _adapter: IDDCX_ADAPTER,
-    _args: *const IDARG_IN_COMMITMODES,
+    adapter: IDDCX_ADAPTER,
+    args: *const IDARG_IN_COMMITMODES,
 ) -> NTSTATUS {
-    tracing::info!("EvtIddCxAdapterCommitModes (stub)");
+    if args.is_null() {
+        tracing::warn!("EvtIddCxAdapterCommitModes called with null args");
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // SAFETY: `args` is non-null and points to callback input provided by IddCx.
+    let args = unsafe { &*args };
+
+    let path_count = match usize::try_from(args.PathCount) {
+        Ok(value) => value,
+        Err(_) => {
+            tracing::warn!(path_count = args.PathCount, "EvtIddCxAdapterCommitModes path count conversion failed");
+            return STATUS_INVALID_PARAMETER;
+        }
+    };
+
+    if path_count > 0 && args.pPaths.is_null() {
+        tracing::warn!(path_count = args.PathCount, "EvtIddCxAdapterCommitModes missing paths pointer");
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    let paths = if path_count == 0 {
+        &[]
+    } else {
+        // SAFETY: `pPaths` is non-null when `path_count > 0`, and points to a caller-owned
+        // array for the callback duration.
+        unsafe { core::slice::from_raw_parts(args.pPaths.cast_const(), path_count) }
+    };
+
+    let display_update_status = crate::remote::set_display_config(adapter, paths);
+    if display_update_status < 0 {
+        tracing::warn!(
+            status = display_update_status,
+            status_hex = format_args!("0x{:08X}", ntstatus_to_u32(display_update_status)),
+            "IddCxAdapterDisplayConfigUpdate failed during commit modes"
+        );
+        return display_update_status;
+    }
+
+    let mut changed_paths = 0u32;
+    let mut active_paths = 0u32;
+    let mut inactive_changed_paths = 0u32;
+    let mut stopped_swapchains = 0u32;
+
+    for path in paths {
+        let is_changed = (path.Flags & IDDCX_PATH_FLAGS_CHANGED) != 0;
+        let is_active = (path.Flags & IDDCX_PATH_FLAGS_ACTIVE) != 0;
+
+        if is_changed {
+            changed_paths = changed_paths.saturating_add(1);
+        }
+
+        if is_active {
+            active_paths = active_paths.saturating_add(1);
+        }
+
+        if is_changed && !is_active {
+            inactive_changed_paths = inactive_changed_paths.saturating_add(1);
+            if crate::monitor::stop_swapchain_for_monitor(path.MonitorObject) {
+                stopped_swapchains = stopped_swapchains.saturating_add(1);
+            }
+        }
+    }
+
+    tracing::info!(
+        path_count = args.PathCount,
+        changed_paths,
+        active_paths,
+        inactive_changed_paths,
+        stopped_swapchains,
+        "EvtIddCxAdapterCommitModes applied display paths"
+    );
+
     STATUS_SUCCESS
 }
 
@@ -203,14 +294,11 @@ pub(crate) unsafe extern "system" fn device_add(
         _pad: 0,
     };
 
-    // IddCx0102 (1.2) supports only:
-    //   IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE(1)
-    //   IDDCX_ADAPTER_FLAGS_CAN_USE_MOVE_REGIONS(2)
-    // Do not set REMOTE_SESSION_DRIVER here: that flag was introduced in IddCx 1.4 and
-    // causes STATUS_INVALID_PARAMETER when passed to IddCxAdapterInitAsync on 1.2.
+    // Prefer remote-session mode when available (IddCx 1.4+), but keep compatibility with
+    // older IddCx runtimes that reject this bit.
     let mut caps = IDDCX_ADAPTER_CAPS {
         Size: size_of::<IDDCX_ADAPTER_CAPS>() as u32,
-        Flags: 1,
+        Flags: IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE | IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER,
         MaxDisplayPipelineRate: 0,
         MaxMonitorsSupported: 1,
         _pad: 0,
@@ -235,7 +323,20 @@ pub(crate) unsafe extern "system" fn device_add(
         AdapterObject: core::ptr::null_mut(),
     };
     // SAFETY: in_args and out_args are valid, stack-allocated structures.
-    let status = unsafe { crate::iddcx::adapter_init_async(&in_args, &mut out_args) };
+    let mut status = unsafe { crate::iddcx::adapter_init_async(&in_args, &mut out_args) };
+    if status == STATUS_INVALID_PARAMETER {
+        tracing::warn!(
+            attempted_flags = caps.Flags,
+            fallback_flags = IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE,
+            "IddCxAdapterInitAsync rejected remote-session adapter flag, retrying with fallback flags"
+        );
+
+        caps.Flags = IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE;
+        out_args.AdapterObject = core::ptr::null_mut();
+        // SAFETY: in_args and out_args remain valid across retries.
+        status = unsafe { crate::iddcx::adapter_init_async(&in_args, &mut out_args) };
+    }
+
     if status < 0 {
         tracing::error!(
             status,
@@ -249,6 +350,7 @@ pub(crate) unsafe extern "system" fn device_add(
         status,
         status_hex = format_args!("0x{:08X}", ntstatus_to_u32(status)),
         adapter_object = ?out_args.AdapterObject,
+        adapter_flags = caps.Flags,
         "IddCxAdapterInitAsync succeeded"
     );
 
