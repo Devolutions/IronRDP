@@ -2,7 +2,7 @@ use crate::{ntstatus_to_u32, IDDCX_ADAPTER, NTSTATUS, STATUS_NOT_SUPPORTED, STAT
 
 #[repr(C)]
 pub(crate) struct IDARG_IN_ADAPTER_INIT_FINISHED {
-    _private: [u8; 0],
+    pub(crate) AdapterInitStatus: NTSTATUS,
 }
 
 #[repr(C)]
@@ -31,11 +31,47 @@ impl IronRdpIddAdapter {
 }
 
 pub(crate) extern "system" fn adapter_init_finished(
-    _adapter: IDDCX_ADAPTER,
-    _args: *const IDARG_IN_ADAPTER_INIT_FINISHED,
+    adapter: IDDCX_ADAPTER,
+    args: *const IDARG_IN_ADAPTER_INIT_FINISHED,
 ) -> NTSTATUS {
-    tracing::info!("EvtIddCxAdapterInitFinished (stub)");
-    STATUS_SUCCESS
+    #[cfg(not(ironrdp_idd_link))]
+    {
+        let _ = (adapter, args);
+        tracing::info!("EvtIddCxAdapterInitFinished (stub)");
+        return STATUS_SUCCESS;
+    }
+
+    #[cfg(ironrdp_idd_link)]
+    {
+        if args.is_null() {
+            tracing::warn!("EvtIddCxAdapterInitFinished called with null args");
+            return STATUS_NOT_SUPPORTED;
+        }
+
+        // SAFETY: `args` is non-null and points to callback input provided by IddCx.
+        let adapter_init_status = unsafe { (*args).AdapterInitStatus };
+        if adapter_init_status < 0 {
+            tracing::error!(
+                status = adapter_init_status,
+                status_hex = format_args!("0x{:08X}", ntstatus_to_u32(adapter_init_status)),
+                "EvtIddCxAdapterInitFinished reported adapter initialization failure"
+            );
+            return adapter_init_status;
+        }
+
+        let status = crate::monitor::IronRdpIddMonitor::create_and_arrive(adapter, 0, None);
+        if status < 0 {
+            tracing::error!(
+                status,
+                status_hex = format_args!("0x{:08X}", ntstatus_to_u32(status)),
+                "failed to create and arrive monitor after adapter init"
+            );
+            return status;
+        }
+
+        tracing::info!("EvtIddCxAdapterInitFinished completed with monitor arrival");
+        STATUS_SUCCESS
+    }
 }
 
 pub(crate) extern "system" fn adapter_commit_modes(
@@ -54,11 +90,9 @@ pub(crate) unsafe extern "system" fn device_add(
     device_init: *mut crate::wdf::WDFDEVICE_INIT,
 ) -> NTSTATUS {
     use crate::iddcx::{
-        ENDPOINT_MANUFACTURER_UTF16, ENDPOINT_MODEL_NAME_UTF16, IDARG_IN_ADAPTER_INIT,
-        IDARG_OUT_ADAPTER_INIT, IDD_CX_CLIENT_CONFIG, IDDCX_ADAPTER_CAPS,
-        IDDCX_ENDPOINT_DIAGNOSTIC_INFO, IDDCX_ENDPOINT_VERSION,
+        ENDPOINT_MANUFACTURER_UTF16, ENDPOINT_MODEL_NAME_UTF16, IDARG_IN_ADAPTER_INIT, IDARG_OUT_ADAPTER_INIT,
+        IDDCX_ADAPTER_CAPS, IDDCX_ENDPOINT_DIAGNOSTIC_INFO, IDDCX_ENDPOINT_VERSION, IDD_CX_CLIENT_CONFIG,
     };
-    use crate::wdf::WDF_OBJECT_ATTRIBUTES;
     use core::mem::{size_of, transmute};
 
     tracing::info!("EvtDriverDeviceAdd started");
@@ -81,16 +115,13 @@ pub(crate) unsafe extern "system" fn device_add(
         transmute::<_, unsafe extern "system" fn()>(crate::monitor::parse_monitor_description as usize)
     });
     config.EvtIddCxMonitorGetDefaultDescriptionModes = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(
-            crate::monitor::monitor_get_default_description_modes as usize,
-        )
+        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_get_default_description_modes as usize)
     });
     config.EvtIddCxMonitorQueryTargetModes = Some(unsafe {
         transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_query_target_modes as usize)
     });
-    config.EvtIddCxMonitorAssignSwapChain = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_assign_swapchain as usize)
-    });
+    config.EvtIddCxMonitorAssignSwapChain =
+        Some(unsafe { transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_assign_swapchain as usize) });
     config.EvtIddCxMonitorUnassignSwapChain = Some(unsafe {
         transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_unassign_swapchain as usize)
     });
@@ -113,10 +144,10 @@ pub(crate) unsafe extern "system" fn device_add(
     );
 
     // ── 3. WdfDeviceCreate ───────────────────────────────────────────────────────────────────
-    let attribs = WDF_OBJECT_ATTRIBUTES::init_no_context();
     let mut device_init_ptr = device_init;
     // SAFETY: device_init_ptr is a valid PWDFDEVICE_INIT that has been configured above.
-    let (status, device) = unsafe { crate::wdf::device_create(&mut device_init_ptr, &attribs) };
+    // Use WDF_NO_OBJECT_ATTRIBUTES to let WDF apply defaults.
+    let (status, device) = unsafe { crate::wdf::device_create(&mut device_init_ptr, core::ptr::null()) };
     if status < 0 {
         tracing::error!(
             status,
@@ -172,10 +203,14 @@ pub(crate) unsafe extern "system" fn device_add(
         _pad: 0,
     };
 
-    // IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER(4) | IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE(1)
+    // IddCx0102 (1.2) supports only:
+    //   IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE(1)
+    //   IDDCX_ADAPTER_FLAGS_CAN_USE_MOVE_REGIONS(2)
+    // Do not set REMOTE_SESSION_DRIVER here: that flag was introduced in IddCx 1.4 and
+    // causes STATUS_INVALID_PARAMETER when passed to IddCxAdapterInitAsync on 1.2.
     let mut caps = IDDCX_ADAPTER_CAPS {
         Size: size_of::<IDDCX_ADAPTER_CAPS>() as u32,
-        Flags: 4 | 1,
+        Flags: 1,
         MaxDisplayPipelineRate: 0,
         MaxMonitorsSupported: 1,
         _pad: 0,
