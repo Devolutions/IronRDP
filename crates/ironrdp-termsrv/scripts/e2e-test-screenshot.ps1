@@ -325,9 +325,8 @@ if (-not $SkipScreenshot.IsPresent) {
     )
 
     if ($Mode -eq 'Provider') {
-        # Provider mode uses TLS-only to capture plaintext credentials from ClientInfo.
-        # CredSSP/NLA will be rejected (no Hybrid advertised).
-        $screenshotArgs += @('--tls-enabled', 'true', '--credssp-enabled', 'false')
+        # Provider mode should go through the normal CredSSP/NLA auth path.
+        $screenshotArgs += @('--tls-enabled', 'true', '--credssp-enabled', 'true')
     }
     if (-not [string]::IsNullOrWhiteSpace($RdpDomain)) {
         $screenshotArgs += @('-d', $RdpDomain)
@@ -371,11 +370,21 @@ try {
     $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
     try {
         $remoteLogs = Invoke-Command -Session $session -ScriptBlock {
-            param($port, $securityStartTime, $mode, $dumpDir)
+            param($port, $securityStartTime, $mode, $dumpDir, $rdpUsernameForAudit)
             $result = @{}
             $logOut = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log'
             $logErr = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log'
             $dllDebugLog = 'C:\IronRDPDeploy\logs\wts-provider-debug.log'
+
+            $targetUserName = $rdpUsernameForAudit
+            if (-not [string]::IsNullOrWhiteSpace($targetUserName)) {
+                if ($targetUserName.Contains('\')) {
+                    $targetUserName = $targetUserName.Split('\')[-1]
+                }
+                if ($targetUserName.Contains('@')) {
+                    $targetUserName = $targetUserName.Split('@')[0]
+                }
+            }
 
             if (Test-Path $logOut) {
                 $result['stdout'] = Get-Content $logOut -Tail 150 -ErrorAction SilentlyContinue | Out-String
@@ -411,7 +420,7 @@ try {
             }
 
             if ($mode -eq 'Provider') {
-                # Collect Security 4624 for Administrator (Type 2 vs Type 10) since test start
+                # Collect Security 4624 LogonType=10 for the configured RDP username since test start.
                 try {
                     $start = $securityStartTime.AddMinutes(-1)
                     $rows = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4624; StartTime = $start } -ErrorAction SilentlyContinue |
@@ -420,7 +429,8 @@ try {
                             $data = @{}
                             foreach ($d in $xml.Event.EventData.Data) { $data[$d.Name] = [string]$d.'#text' }
 
-                            if ($data.TargetUserName -eq 'Administrator' -and ($data.LogonType -in '2', '10')) {
+                            $userMatches = [string]::IsNullOrWhiteSpace($targetUserName) -or ($data.TargetUserName -eq $targetUserName)
+                            if ($userMatches -and $data.LogonType -eq '10') {
                                 [pscustomobject]@{
                                     TimeCreated  = $_.TimeCreated
                                     Domain       = $data.TargetDomainName
@@ -435,12 +445,12 @@ try {
                         Select-Object -First 20
 
                     if ($rows) {
-                        $result['security_4624_admin'] = "Since $start`n" + ($rows | Format-Table -AutoSize | Out-String)
+                        $result['security_4624_type10_user'] = "Since $start`n" + ($rows | Format-Table -AutoSize | Out-String)
                     } else {
-                        $result['security_4624_admin'] = "Since $start`n(no matching 4624 events for Administrator with LogonType 2/10)"
+                        $result['security_4624_type10_user'] = "Since $start`n(no matching 4624 LogonType=10 events for user '$targetUserName')"
                     }
                 } catch {
-                    $result['security_4624_admin'] = "Could not collect Security 4624: $_"
+                    $result['security_4624_type10_user'] = "Could not collect Security 4624: $_"
                 }
             }
 
@@ -469,7 +479,7 @@ try {
             }
 
             $result
-        } -ArgumentList $Port, $testStartTime, $Mode, $dumpRemoteDir
+        } -ArgumentList $Port, $testStartTime, $Mode, $dumpRemoteDir, $RdpUsername
 
         $isRunning = $remoteLogs['running']
         $isListening = $remoteLogs['listening']
@@ -503,10 +513,10 @@ try {
             Write-Host "`n---- wts-provider-debug.log: not present (set IRONRDP_WTS_PROVIDER_DEBUG_LOG for TermService to enable) ----" -ForegroundColor DarkGray
         }
 
-        if ($remoteLogs['security_4624_admin']) {
-            $remoteLogs['security_4624_admin'] | Set-Content (Join-Path $remoteLogDir 'security-4624-admin.log')
-            Write-Host "`n---- Security 4624 (Administrator Type 2/10) ----" -ForegroundColor Yellow
-            Write-Host $remoteLogs['security_4624_admin']
+        if ($remoteLogs['security_4624_type10_user']) {
+            $remoteLogs['security_4624_type10_user'] | Set-Content (Join-Path $remoteLogDir 'security-4624-type10-user.log')
+            Write-Host "`n---- Security 4624 (LogonType=10 for configured RDP user) ----" -ForegroundColor Yellow
+            Write-Host $remoteLogs['security_4624_type10_user']
         }
         if ($remoteLogs['termservice_events']) {
             Write-Host "`n---- TermService event log (recent) ----" -ForegroundColor Yellow

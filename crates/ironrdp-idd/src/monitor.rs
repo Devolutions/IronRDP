@@ -51,7 +51,7 @@ struct DISPLAYCONFIG_2DREGION {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct DISPLAYCONFIG_VIDEO_SIGNAL_INFO {
+pub(crate) struct DISPLAYCONFIG_VIDEO_SIGNAL_INFO {
     pixelRate: u64,
     hSyncFreq: DISPLAYCONFIG_RATIONAL,
     vSyncFreq: DISPLAYCONFIG_RATIONAL,
@@ -471,6 +471,12 @@ pub(crate) extern "system" fn monitor_assign_swapchain(
 pub(crate) extern "system" fn monitor_unassign_swapchain(monitor: IDDCX_MONITOR) -> NTSTATUS {
     tracing::info!("EvtIddCxMonitorUnassignSwapChain");
 
+    let _ = stop_swapchain_for_monitor(monitor);
+
+    STATUS_SUCCESS
+}
+
+pub(crate) fn stop_swapchain_for_monitor(monitor: IDDCX_MONITOR) -> bool {
     let mut swapchains = match active_swapchains().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -478,7 +484,8 @@ pub(crate) extern "system" fn monitor_unassign_swapchain(monitor: IDDCX_MONITOR)
 
     if let Some(processor) = swapchains.remove(&MonitorKey(monitor)) {
         let _ = processor.stop();
+        return true;
     }
 
-    STATUS_SUCCESS
+    false
 }
