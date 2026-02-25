@@ -1,0 +1,83 @@
+;;; IronRdpIdd.inf
+[Version]
+Signature="$WINDOWS NT$"
+Class=Display
+ClassGuid={4d36e968-e325-11ce-bfc1-08002be10318}
+Provider=%ManufacturerName%
+CatalogFile=IronRdpIdd.cat
+DriverVer=02/24/2026,0.1.0.14
+PnpLockdown=1
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceDesc%=IronRdpIdd_Device, IronRdpIdd
+%DeviceDesc%=IronRdpIdd_Device, RdpIdd_IndirectDisplay
+
+; DDInstall section: copy DLL and include WDF base requirements.
+[IronRdpIdd_Device.NT]
+CopyFiles=UmdfCopyFiles
+Include=wudfrd.inf
+Needs=WUDFRD.NT
+
+; HW section: include WDF HW requirements.
+[IronRdpIdd_Device.NT.HW]
+Include=wudfrd.inf
+Needs=WUDFRD.NT.HW
+AddReg=IronRdpIdd_AddReg
+
+[IronRdpIdd_AddReg]
+HKR,,FriendlyName,,%DeviceDesc%
+HKR,, "UpperFilters",  %REG_MULTI_SZ%, "IndirectKmd"
+
+[UmdfCopyFiles]
+IronRdpIdd.dll
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+IronRdpIdd.dll = 1,,
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+; Services section: use wudfrd.inf to install WUDFRd.sys as the function driver reflector.
+; This is the correct UMDF v2 pattern - letting wudfrd.inf handle the AddService/ASSOCSERVICE.
+[IronRdpIdd_Device.NT.Services]
+Include=wudfrd.inf
+Needs=WUDFRD.NT.Services
+; SetupAPI requires an associated function driver service for the device instance.
+; When pulling WUDFRd via Include/Needs, Windows applies a shim that may strip ASSOCSERVICE,
+; causing installs to fail with 0xe0000219 (no function driver specified).
+; Explicitly associate WUDFRd using the service install section from wudfrd.inf.
+AddService=WUDFRd,0x000001fa,WUDFRD_ServiceInstall
+
+; WDF section: register our UMDF driver service and set per-device UMDF policies.
+[IronRdpIdd_Device.NT.Wdf]
+UmdfService=IronRdpIdd,IronRdpIdd_Install
+UmdfServiceOrder=IronRdpIdd
+; IddCx communicates from kernel mode to the user-mode IDD driver.
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+; Each session gets its own host process (required for remote IDD sessions).
+UmdfHostProcessSharing=ProcessSharingDisabled
+UmdfImpersonationLevel=Identification
+
+[IronRdpIdd_Install]
+UmdfLibraryVersion=2.23.0
+ServiceBinary=%13%\IronRdpIdd.dll
+UmdfExtensions=IddCx0102
+AddReg=IronRdpIdd_Install.AddReg
+
+[IronRdpIdd_Install.AddReg]
+HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "IronRdpIddGroup"
+
+[Strings]
+; non localizable
+REG_MULTI_SZ  = 0x00010000
+REG_SZ        = 0x00000000
+
+ManufacturerName="IronRDP Project"
+DeviceDesc="IronRDP Indirect Display Driver"
+DiskName="IronRDP IDD Installation Disk"

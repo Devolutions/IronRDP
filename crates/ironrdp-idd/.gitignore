@@ -1,0 +1,11 @@
+# Generated driver package artifacts
+IronRdpIdd.dll
+IronRdpIdd.cat
+ironrdpidd.cat
+
+# Generated diagnostics/signing artifacts
+*.zip
+*.cer
+*.pfx
+*.pvk
+*.spc
