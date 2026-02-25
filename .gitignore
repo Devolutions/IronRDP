@@ -9,6 +9,7 @@
 
 # Log files
 *.log
+IddDiagnostics-*.zip
 
 # Editor/IDE files
 *~

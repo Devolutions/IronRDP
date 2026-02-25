@@ -23,7 +23,7 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use anyhow::Context as _;
+use anyhow::{Context as _, bail};
 use connector::Credentials;
 use ironrdp::connector;
 use ironrdp::connector::ConnectionResult;
@@ -193,19 +193,7 @@ fn setup_logging() -> anyhow::Result<()> {
 }
 
 fn run(config: RunConfig) -> anyhow::Result<()> {
-    let connector_config = build_config(
-        config.username,
-        config.password,
-        config.domain,
-        config.autologon,
-        config.tls_enabled,
-        config.credssp_enabled,
-        if config.compression_enabled {
-            Some(compression_type_from_level(config.compression_level)?)
-        } else {
-            None
-        },
-    );
+    let connector_config = build_config(&config)?;
 
     let (connection_result, framed) = connect(connector_config, config.host, config.port).context("connect")?;
     info!(compression_type = ?connection_result.compression_type, "Negotiated compression");
@@ -225,6 +213,10 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
     )
     .context("active stage")?;
 
+    if is_probably_blank_rgba32(image.data()) {
+        bail!("captured framebuffer is blank");
+    }
+
     let img: image::ImageBuffer<image::Rgba<u8>, _> =
         image::ImageBuffer::from_raw(u32::from(image.width()), u32::from(image.height()), image.data())
             .context("invalid image")?;
@@ -234,20 +226,21 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_config(
-    username: String,
-    password: String,
-    domain: Option<String>,
-    autologon: bool,
-    tls_enabled: bool,
-    credssp_enabled: bool,
-    compression_type: Option<CompressionType>,
-) -> connector::Config {
-    connector::Config {
-        credentials: Credentials::UsernamePassword { username, password },
-        domain,
-        enable_tls: tls_enabled,
-        enable_credssp: credssp_enabled,
+fn build_config(config: &RunConfig) -> anyhow::Result<connector::Config> {
+    let compression_type = if config.compression_enabled {
+        Some(compression_type_from_level(config.compression_level)?)
+    } else {
+        None
+    };
+
+    Ok(connector::Config {
+        credentials: Credentials::UsernamePassword {
+            username: config.username.clone(),
+            password: config.password.clone(),
+        },
+        domain: config.domain.clone(),
+        enable_tls: config.tls_enabled,
+        enable_credssp: config.credssp_enabled,
         enable_standard_rdp_security: false,
         keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
@@ -287,7 +280,7 @@ fn build_config(
 
         enable_server_pointer: false, // Disable custom pointers (there is no user interaction anyway).
         request_data: None,
-        autologon,
+        autologon: config.autologon,
         enable_audio_playback: false,
         enable_audio_capture: false,
         compression_type,
@@ -309,7 +302,7 @@ fn build_config(
         work_dir: String::new(),
         remote_application_mode: false,
         rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::empty(),
-    }
+    })
 }
 
 fn compression_type_from_level(level: u32) -> anyhow::Result<CompressionType> {
@@ -516,6 +509,25 @@ fn capture_frames<S: Read + io::Write>(
     }
 
     Ok(())
+}
+
+fn is_probably_blank_rgba32(data: &[u8]) -> bool {
+    if data.is_empty() {
+        return true;
+    }
+
+    let samples = 2048usize;
+    let step = (data.len() / samples).max(4);
+    let mut index = 0usize;
+
+    while index + 2 < data.len() {
+        if data[index] != 0 || data[index + 1] != 0 || data[index + 2] != 0 {
+            return false;
+        }
+
+        index = index.saturating_add(step);
+    }
+    true
 }
 
 fn lookup_addr(hostname: &str, port: u16) -> anyhow::Result<core::net::SocketAddr> {

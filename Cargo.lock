@@ -3145,6 +3145,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-idd"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "ironrdp-input"
 version = "0.9.0"
 dependencies = [
