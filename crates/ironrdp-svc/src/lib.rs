@@ -35,6 +35,7 @@ pub use ironrdp_core::impl_as_any;
 // The idea is to reduce the amount of code required when building a static/dynamic channel to a minimum.
 
 /// The integer type representing a static virtual channel ID.
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub type StaticChannelId = u16;
 
 /// SVC data to be sent to the server. See [`SvcMessage`] for more information.
@@ -133,6 +134,7 @@ pub enum CompressionCondition {
 
 /// A static virtual channel.
 #[derive(Debug)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct StaticVirtualChannel {
     channel_processor: Box<dyn SvcProcessor>,
     chunk_processor: ChunkProcessor,
@@ -452,6 +454,7 @@ pub fn make_channel_definition(channel: &StaticVirtualChannel) -> ChannelDef {
 /// It’s possible to downcast the trait object and to retrieve the concrete value
 /// since all [`SvcProcessor`]s are also implementing the [`AsAny`] trait.
 #[derive(Debug)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct StaticChannelSet {
     channels: BTreeMap<TypeId, StaticVirtualChannel>,
     to_channel_id: BTreeMap<TypeId, StaticChannelId>,

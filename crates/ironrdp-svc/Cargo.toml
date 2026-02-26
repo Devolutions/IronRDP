@@ -18,10 +18,12 @@ test = false
 [features]
 default = []
 std = []
+arbitrary = ["dep:arbitrary"]
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7", features = ["alloc", "std"] } # public
+arbitrary = { version = "1", optional=true, features = ["derive"] }
 bitflags = "2.9"
 
 [lints]

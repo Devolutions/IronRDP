@@ -2798,6 +2798,7 @@ dependencies = [
 name = "ironrdp-pdu"
 version = "0.7.0"
 dependencies = [
+ "arbitrary",
  "bit_field",
  "bitflags 2.10.0",
  "byteorder",
@@ -2948,6 +2949,7 @@ version = "0.0.0"
 name = "ironrdp-svc"
 version = "0.6.0"
 dependencies = [
+ "arbitrary",
  "bitflags 2.10.0",
  "ironrdp-core",
  "ironrdp-pdu",

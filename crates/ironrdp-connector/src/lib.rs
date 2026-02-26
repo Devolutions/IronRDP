@@ -111,6 +111,7 @@ pub struct SmartCardIdentity {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Credentials {
     UsernamePassword {
         username: String,
