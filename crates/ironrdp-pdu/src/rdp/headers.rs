@@ -615,10 +615,14 @@ impl ServerDeactivateAll {
 
 impl Decode<'_> for ServerDeactivateAll {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
-        let length_source_descriptor = src.read_u16();
-        ensure_size!(in: src, size: length_source_descriptor.into());
-        let _ = src.read_slice(length_source_descriptor.into());
+        // Some servers (notably XRDP and older Windows versions) send a short
+        // Deactivate All PDU without the sourceDescriptor field. FreeRDP
+        // handles this by treating any remaining data as optional.
+        if src.len() >= Self::FIXED_PART_SIZE {
+            let length_source_descriptor = src.read_u16();
+            ensure_size!(in: src, size: length_source_descriptor.into());
+            let _ = src.read_slice(length_source_descriptor.into());
+        }
         Ok(Self)
     }
 }
