@@ -106,6 +106,113 @@ function New-TestVmSession {
     }
 }
 
+function Get-HyperVVmNameFromHostname {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Hostname
+    )
+
+    $trimmed = $Hostname.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return $trimmed
+    }
+
+    return ($trimmed -split '\.')[0]
+}
+
+function Test-DeployRestartRecoverableError {
+    param(
+        [Parameter()]
+        [string]$Message
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return $false
+    }
+
+    $recoverablePatterns = @(
+        'TermService did not stop within',
+        'The I/O operation has been aborted because of either a thread exit or an application request',
+        'A remote shell operation was attempted on a shell that has already exited',
+        'failed because the shell was not found on the server',
+        'The WSMan provider host process did not return a proper response',
+        'The client cannot connect to the destination specified in the request',
+        'PSSession state is not opened'
+    )
+
+    foreach ($pattern in $recoverablePatterns) {
+        if ($Message -match [regex]::Escape($pattern)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Restart-TestVmViaHyperV {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Hostname,
+
+        [Parameter(Mandatory = $true)]
+        [pscredential]$Credential,
+
+        [Parameter()]
+        [ValidateRange(1, 120)]
+        [int]$InitialBootWaitSeconds = 15,
+
+        [Parameter()]
+        [ValidateRange(30, 900)]
+        [int]$RemotingReadyTimeoutSeconds = 300
+    )
+
+    $vmName = Get-HyperVVmNameFromHostname -Hostname $Hostname
+    if ([string]::IsNullOrWhiteSpace($vmName)) {
+        throw "cannot derive Hyper-V VM name from hostname '$Hostname'"
+    }
+
+    if (-not (Get-Command -Name Stop-VM -ErrorAction SilentlyContinue)) {
+        throw "Hyper-V cmdlets are unavailable (Stop-VM not found); install Hyper-V management tools or restart VM manually"
+    }
+
+    Write-Warning "TermService stop timeout detected; force power-cycling Hyper-V VM '$vmName'"
+
+    try {
+        Stop-VM -Name $vmName -TurnOff -Force -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Write-Warning "Stop-VM reported: $($_.Exception.Message)"
+    }
+
+    Start-Sleep -Seconds 2
+    Start-VM -Name $vmName -ErrorAction Stop | Out-Null
+
+    Write-Host "Waiting ${InitialBootWaitSeconds}s for VM boot..." -ForegroundColor Yellow
+    Start-Sleep -Seconds $InitialBootWaitSeconds
+
+    $deadline = (Get-Date).AddSeconds($RemotingReadyTimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $probe = $null
+        try {
+            $probe = New-TestVmSession -Hostname $Hostname -Credential $Credential
+            if ($null -ne $probe) {
+                Write-Host "VM is reachable over WinRM after Hyper-V restart" -ForegroundColor Green
+                return
+            }
+        }
+        catch {
+            Start-Sleep -Seconds 5
+        }
+        finally {
+            if ($null -ne $probe) {
+                Remove-PSSession -Session $probe -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    throw "VM '$vmName' did not become reachable over WinRM within ${RemotingReadyTimeoutSeconds}s after Hyper-V restart"
+}
+
 $adminCred = $null
 
 if ($PSBoundParameters.ContainsKey('Credential') -and ($null -ne $Credential)) {
@@ -239,67 +346,139 @@ if (-not $SkipDeploy.IsPresent) {
         $deployArgs.RdpPassword = $rdpPasswordEffective
     }
 
-    & $deployScript @deployArgs
-
-    if ($Mode -eq 'Provider') {
-        Write-Host "Installing side-by-side WTS provider on $Hostname..." -ForegroundColor Cyan
-
-            $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+    $deployMaxAttempts = 2
+    $deployAttempt = 0
+    while ($true) {
+        $deployAttempt++
         try {
-            $providerDll = Join-Path $workspaceRoot "target\$profileDir\ironrdp_wtsprotocol_provider.dll"
-            if (-not (Test-Path $providerDll)) {
-                throw "Provider DLL not found: $providerDll"
+            & $deployScript @deployArgs
+
+            if ($Mode -eq 'Provider') {
+                Write-Host "Installing side-by-side WTS provider on $Hostname..." -ForegroundColor Cyan
+
+                $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+                try {
+                    $providerDll = Join-Path $workspaceRoot "target\$profileDir\ironrdp_wtsprotocol_provider.dll"
+                    if (-not (Test-Path $providerDll)) {
+                        throw "Provider DLL not found: $providerDll"
+                    }
+
+                    $remoteProviderDir = 'C:\IronRDPDeploy\provider'
+                    Invoke-Command -Session $session -ScriptBlock {
+                        param($Dir)
+                        New-Item -ItemType Directory -Path $Dir -Force | Out-Null
+                    } -ArgumentList $remoteProviderDir
+
+                    # Stop TermService so the provider DLL can be replaced (it's loaded by TermService)
+                    Write-Host "Stopping TermService to allow provider DLL update..." -ForegroundColor Cyan
+                    Invoke-Command -Session $session -ScriptBlock {
+                        param($StopTimeoutSeconds)
+
+                        Stop-Service -Name TermService -Force -ErrorAction SilentlyContinue
+
+                        $stopDeadline = (Get-Date).AddSeconds($StopTimeoutSeconds)
+                        while ((Get-Date) -lt $stopDeadline) {
+                            $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
+                            if ($null -eq $service -or $service.Status -eq 'Stopped') {
+                                break
+                            }
+
+                            Start-Sleep -Seconds 2
+                        }
+
+                        $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
+                        if ($null -ne $service -and $service.Status -ne 'Stopped') {
+                            throw "TermService did not stop within ${StopTimeoutSeconds}s during provider DLL update (status=$($service.Status))"
+                        }
+                    } -ArgumentList 60
+
+                    # Wait for the remote DLL file to be released (svchost may still hold it briefly after Stop)
+                    Invoke-Command -Session $session -ScriptBlock {
+                        param($DllPath, $WaitSeconds)
+
+                        $deadline = (Get-Date).AddSeconds($WaitSeconds)
+                        $released = $false
+                        while ((Get-Date) -lt $deadline) {
+                            if (-not (Test-Path -LiteralPath $DllPath)) {
+                                $released = $true
+                                break
+                            }
+
+                            try {
+                                $stream = [System.IO.File]::Open($DllPath,
+                                    [System.IO.FileMode]::Open,
+                                    [System.IO.FileAccess]::ReadWrite,
+                                    [System.IO.FileShare]::None)
+                                $stream.Close()
+                                $released = $true
+                                break
+                            }
+                            catch {
+                                Start-Sleep -Milliseconds 500
+                            }
+                        }
+
+                        if (-not $released) {
+                            throw "Provider DLL '$DllPath' was not released within ${WaitSeconds}s after TermService stop"
+                        }
+
+                        Write-Host "Provider DLL released (file lock cleared)"
+                    } -ArgumentList "$remoteProviderDir\ironrdp_wtsprotocol_provider.dll", 30
+
+                    Copy-Item -ToSession $session -Path $providerDll -Destination "$remoteProviderDir\ironrdp_wtsprotocol_provider.dll" -Force
+
+                    $providerScriptsDir = Join-Path $workspaceRoot 'crates\ironrdp-wtsprotocol-provider\scripts'
+                    $scriptFiles = Get-ChildItem -LiteralPath $providerScriptsDir -Filter '*.ps1'
+                    foreach ($sf in $scriptFiles) {
+                        Copy-Item -ToSession $session -Path $sf.FullName -Destination "$remoteProviderDir\$($sf.Name)" -Force
+                    }
+
+                    Invoke-Command -Session $session -ScriptBlock {
+                        param($ProviderDir, $Port)
+
+                        $dllPath = Join-Path $ProviderDir 'ironrdp_wtsprotocol_provider.dll'
+                        $installScript = Join-Path $ProviderDir 'install-side-by-side.ps1'
+                        $defaultsScript = Join-Path $ProviderDir 'side-by-side-defaults.ps1'
+                        $firewallScript = Join-Path $ProviderDir 'configure-side-by-side-firewall.ps1'
+                        $waitScript = Join-Path $ProviderDir 'wait-termservice-ready.ps1'
+
+                        . $defaultsScript
+
+                        & $installScript `
+                            -ProviderDllPath $dllPath `
+                            -ListenerName 'IRDP-Tcp' `
+                            -PortNumber $Port `
+                            -RestartTermService `
+                            -TermServiceStopTimeoutSeconds 60 `
+                            -TermServiceStartTimeoutSeconds 60
+
+                        & $firewallScript -Mode Add -PortNumber $Port
+
+                        & $waitScript -PortNumber $Port -TimeoutSeconds 90
+                    } -ArgumentList $remoteProviderDir, $Port
+                }
+                finally {
+                    if ($null -ne $session) {
+                        Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+                    }
+                }
             }
 
-            $remoteProviderDir = 'C:\IronRDPDeploy\provider'
-            Invoke-Command -Session $session -ScriptBlock {
-                param($Dir)
-                New-Item -ItemType Directory -Path $Dir -Force | Out-Null
-            } -ArgumentList $remoteProviderDir
-
-            # Stop TermService so the provider DLL can be replaced (it's loaded by TermService)
-            Write-Host "Stopping TermService to allow provider DLL update..." -ForegroundColor Cyan
-            Invoke-Command -Session $session -ScriptBlock {
-                Stop-Service -Name TermService -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 2
-            }
-
-            Copy-Item -ToSession $session -Path $providerDll -Destination "$remoteProviderDir\ironrdp_wtsprotocol_provider.dll" -Force
-
-            $providerScriptsDir = Join-Path $workspaceRoot 'crates\ironrdp-wtsprotocol-provider\scripts'
-            $scriptFiles = Get-ChildItem -LiteralPath $providerScriptsDir -Filter '*.ps1'
-            foreach ($sf in $scriptFiles) {
-                Copy-Item -ToSession $session -Path $sf.FullName -Destination "$remoteProviderDir\$($sf.Name)" -Force
-            }
-
-            Invoke-Command -Session $session -ScriptBlock {
-                param($ProviderDir, $Port)
-
-                $dllPath = Join-Path $ProviderDir 'ironrdp_wtsprotocol_provider.dll'
-                $installScript = Join-Path $ProviderDir 'install-side-by-side.ps1'
-                $defaultsScript = Join-Path $ProviderDir 'side-by-side-defaults.ps1'
-                $firewallScript = Join-Path $ProviderDir 'configure-side-by-side-firewall.ps1'
-                $waitScript = Join-Path $ProviderDir 'wait-termservice-ready.ps1'
-
-                . $defaultsScript
-
-                & $installScript `
-                    -ProviderDllPath $dllPath `
-                    -ListenerName 'IRDP-Tcp' `
-                    -PortNumber $Port `
-                    -RestartTermService
-
-                & $firewallScript -Mode Add -PortNumber $Port
-
-                & $waitScript -PortNumber $Port -TimeoutSeconds 90
-            } -ArgumentList $remoteProviderDir, $Port
+            Write-Host "Deploy succeeded" -ForegroundColor Green
+            break
         }
-        finally {
-            Remove-PSSession -Session $session
+        catch {
+            $errorMessage = $_.Exception.Message
+            $canRetry = ($deployAttempt -lt $deployMaxAttempts) -and (Test-DeployRestartRecoverableError -Message $errorMessage)
+            if (-not $canRetry) {
+                throw
+            }
+
+            Write-Warning "Deploy attempt $deployAttempt failed with a recoverable TermService/WinRM interruption; forcing Hyper-V reboot and retrying once"
+            Restart-TestVmViaHyperV -Hostname $Hostname -Credential $adminCred
+            Write-Host "Retrying deploy after Hyper-V reboot..." -ForegroundColor Yellow
         }
     }
-
-    Write-Host "Deploy succeeded" -ForegroundColor Green
 } else {
     Write-Host "`n=== Step 2: Deploy skipped ===" -ForegroundColor Yellow
 }
@@ -423,31 +602,40 @@ try {
                 # Collect Security 4624 LogonType=10 for the configured RDP username since test start.
                 try {
                     $start = $securityStartTime.AddMinutes(-1)
-                    $rows = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4624; StartTime = $start } -ErrorAction SilentlyContinue |
-                        ForEach-Object {
-                            $xml = [xml]$_.ToXml()
+                    $maxSecurityEvents = 1000
+                    $maxRows = 20
+                    $rows = New-Object System.Collections.Generic.List[object]
+
+                    foreach ($evt in (Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4624; StartTime = $start } -MaxEvents $maxSecurityEvents -ErrorAction SilentlyContinue)) {
+                        if ($rows.Count -ge $maxRows) {
+                            break
+                        }
+
+                        try {
+                            $xml = [xml]$evt.ToXml()
                             $data = @{}
                             foreach ($d in $xml.Event.EventData.Data) { $data[$d.Name] = [string]$d.'#text' }
 
                             $userMatches = [string]::IsNullOrWhiteSpace($targetUserName) -or ($data.TargetUserName -eq $targetUserName)
                             if ($userMatches -and $data.LogonType -eq '10') {
-                                [pscustomobject]@{
-                                    TimeCreated  = $_.TimeCreated
+                                $rows.Add([pscustomobject]@{
+                                    TimeCreated  = $evt.TimeCreated
                                     Domain       = $data.TargetDomainName
                                     LogonType    = $data.LogonType
                                     LogonProcess = $data.LogonProcessName
                                     ProcessName  = $data.ProcessName
                                     IpAddress    = $data.IpAddress
-                                }
+                                })
                             }
-                        } |
-                        Sort-Object TimeCreated -Descending |
-                        Select-Object -First 20
+                        } catch {
+                            # Ignore malformed event XML and continue sampling recent events.
+                        }
+                    }
 
-                    if ($rows) {
-                        $result['security_4624_type10_user'] = "Since $start`n" + ($rows | Format-Table -AutoSize | Out-String)
+                    if ($rows.Count -gt 0) {
+                        $result['security_4624_type10_user'] = "Since $start (sampled up to $maxSecurityEvents recent 4624 events)`n" + ($rows | Format-Table -AutoSize | Out-String)
                     } else {
-                        $result['security_4624_type10_user'] = "Since $start`n(no matching 4624 LogonType=10 events for user '$targetUserName')"
+                        $result['security_4624_type10_user'] = "Since $start (sampled up to $maxSecurityEvents recent 4624 events)`n(no matching 4624 LogonType=10 events for user '$targetUserName')"
                     }
                 } catch {
                     $result['security_4624_type10_user'] = "Could not collect Security 4624: $_"
