@@ -53,7 +53,6 @@ pub fn report(sh: &Shell, html_report: bool) -> anyhow::Result<()> {
 
     if html_report {
         cmd!(sh, "{CARGO} llvm-cov --html")
-            .arg("--no-cfg-coverage")
             .arg("--ignore-filename-regex")
             .arg(COV_IGNORE_REGEX)
             .run()?;
@@ -284,7 +283,6 @@ impl CoverageReport {
         let output = cmd!(
             sh,
             "{CARGO} llvm-cov
-            --no-cfg-coverage
             --ignore-filename-regex {COV_IGNORE_REGEX}
             --json"
         )

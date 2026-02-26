@@ -292,7 +292,7 @@ async fn connect(
     )
     .await?;
 
-    debug!("Connection finalized");
+    debug!(?connection_result);
 
     Ok((connection_result, upgraded_framed))
 }

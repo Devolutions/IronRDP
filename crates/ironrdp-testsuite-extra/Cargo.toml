@@ -16,12 +16,14 @@ anyhow = "1.0"
 async-trait = "0.1"
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "dvc", "echo"] }
 ironrdp-async.path = "../ironrdp-async"
+ironrdp-client = { path = "../ironrdp-client" }
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 semver = "1.0"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
 
 [lints]
 workspace = true
