@@ -16,6 +16,7 @@ pub struct Config {
     pub addr: String,
     pub input: InputConfig,
     pub gfx_dump_file: Option<PathBuf>,
+    pub openh264_path: PathBuf,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -139,6 +140,10 @@ struct Args {
     /// Enables dumping the gfx stream to a file location
     #[clap(long, value_parser)]
     gfx_dump_file: Option<PathBuf>,
+
+    /// Path to Cisco's prebuilt OpenH264 shared library (libopenh264.so / openh264.dll)
+    #[clap(long, value_parser, default_value = "libopenh264.so")]
+    openh264_path: PathBuf,
 }
 
 impl Config {
@@ -181,6 +186,7 @@ impl Config {
             addr: args.addr,
             input,
             gfx_dump_file: args.gfx_dump_file,
+            openh264_path: args.openh264_path,
         }
     }
 }
