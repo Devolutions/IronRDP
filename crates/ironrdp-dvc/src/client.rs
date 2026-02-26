@@ -80,8 +80,8 @@ impl DrdynvcClient {
         self.dynamic_channels.get_by_channel_id(channel_id)
     }
 
-    fn create_capabilities_response(&mut self) -> SvcMessage {
-        let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V1));
+    fn create_capabilities_response(&mut self, server_version: CapsVersion) -> SvcMessage {
+        let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(server_version));
         debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
         self.cap_handshake_done = true;
         SvcMessage::from(caps_response)
@@ -112,7 +112,7 @@ impl SvcProcessor for DrdynvcClient {
         match pdu {
             DrdynvcServerPdu::Capabilities(caps_request) => {
                 debug!("Got DVC Capabilities Request PDU: {caps_request:?}");
-                responses.push(self.create_capabilities_response());
+                responses.push(self.create_capabilities_response(caps_request.version()));
             }
             DrdynvcServerPdu::Create(create_request) => {
                 debug!("Got DVC Create Request PDU: {create_request:?}");
@@ -124,7 +124,7 @@ impl SvcProcessor for DrdynvcClient {
                         "Got DVC Create Request PDU before a Capabilities Request PDU. \
                         Sending Capabilities Response PDU before the Create Response PDU."
                     );
-                    responses.push(self.create_capabilities_response());
+                    responses.push(self.create_capabilities_response(CapsVersion::V2));
                 }
 
                 let channel_exists = self.dynamic_channels.get_by_channel_name(&channel_name).is_some();
