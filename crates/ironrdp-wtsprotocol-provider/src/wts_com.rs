@@ -49,6 +49,7 @@ use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolShadowConnection, IWRdsWddmIddProps, IWRdsWddmIddProps_Impl, WTSVirtualChannelClose,
     WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite, WRDS_CONNECTION_SETTINGS,
     WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL,
+    WRDS_LISTENER_SETTINGS_1,
     WRDS_SETTINGS,
     WTS_CERT_TYPE_INVALID, WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH,
     WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL,
@@ -73,18 +74,15 @@ const WTS_PROTOCOL_TYPE_NON_RDP: u16 = 2;
 
 const WTS_VALUE_TYPE_ULONG: u16 = 1;
 const WTS_VALUE_TYPE_STRING: u16 = 2;
+const WTS_VALUE_TYPE_GUID: u16 = 4;
 
 // From Windows SDK `wtsdefs.h`.
 const PROPERTY_TYPE_GET_FAST_RECONNECT: GUID = GUID::from_u128(0x6212_d757_0043_4862_99c3_9f30_59ac_2a3b);
 const PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID: GUID = GUID::from_u128(0x197c_427a_0135_4b6d_9c5e_e657_9a0a_b625);
-// PROPERTY_TYPE_CONNECTION_GUID (9EAA04F6-5B9D-4BA5-BE9D-3748AD6D8AF7) — intentionally omitted from QueryProperty
-// handlers; returning a GUID causes TermService to reload the DLL.  Let it fall through to E_NOTIMPL.
-// PROPERTY_TYPE_SUPPRESS_LOGON_UI (846B20BB-6254-430E-952F-B0C7CA081915) — intentionally omitted; returning 0 causes
-// TermService to show logon UI instead of proceeding to IsUserAllowedToLogon.  Let it fall through to E_NOTIMPL.
-// PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT (2918DB60-6CAE-42A8-9945-8128D7DD8E71) — intentionally omitted;
-// returning 0 stalls TermService before IsUserAllowedToLogon.  Let it fall through to E_NOTIMPL.
-// PROPERTY_TYPE_LICENSE_GUID (4DAA5AB8-8B6A-49CF-9C85-8ADD-504C-D1F7) — intentionally omitted;
-// reference returned E_NOTIMPL and TermService proceeded to IsUserAllowedToLogon.  Let it fall through.
+const PROPERTY_TYPE_CONNECTION_GUID: GUID = GUID::from_u128(0x9eaa_04f6_5b9d_4ba5_be9d_3748_ad6d_8af7);
+const PROPERTY_TYPE_SUPPRESS_LOGON_UI: GUID = GUID::from_u128(0x846b_20bb_6254_430e_952f_b0c7_ca08_1915);
+const PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT: GUID = GUID::from_u128(0x2918_db60_6cae_42a8_9945_8128_d7dd_8e71);
+const PROPERTY_TYPE_LICENSE_GUID: GUID = GUID::from_u128(0x4daa_5ab8_8b6a_49cf_9c85_8add_504c_d1f7);
 
 // From Windows SDK `wtsdefs.h`.
 const WTS_QUERY_AUDIOENUM_DLL: GUID = GUID::from_u128(0x9bf4_fa97_c883_4c2a_80ab_5a39_c9af_00db);
@@ -92,6 +90,16 @@ const PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL: GUID =
     GUID::from_u128(0xed2c_3fda_338d_4d3f_81a3_e767_310d_908e);
 
 const FAST_RECONNECT_ENHANCED: u32 = 2;
+
+fn deterministic_connection_guid(connection_id: u32) -> GUID {
+    const BASE: u128 = 0x89c7ed1e_25e5_4b15_8f52_ae6df4a50000;
+    GUID::from_u128(BASE | u128::from(connection_id))
+}
+
+fn deterministic_license_guid(connection_id: u32) -> GUID {
+    const BASE: u128 = 0x7d5e31f3_0ff8_4a25_9fcb_7b7e2f634000;
+    GUID::from_u128(BASE | u128::from(connection_id))
+}
 
 fn lookup_account_sid_string(username: &str, domain: &str) -> windows_core::Result<String> {
     let username = username.trim();
@@ -1612,15 +1620,32 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
         &self,
         wrdslistenersettinglevel: WRDS_LISTENER_SETTING_LEVEL,
     ) -> windows_core::Result<WRDS_LISTENER_SETTINGS> {
-        // Return E_NOTIMPL for all levels — this activates TermService's "provider auth" mode where
-        // SUPPRESS_LOGON_UI→E_NOTIMPL proceeds to LICENSE_GUID → IsUserAllowedToLogon.
-        // When GetSettings returns Ok(settings), TermService expects SUPPRESS_LOGON_UI→0
-        // (show logon UI) and does not reach IsUserAllowedToLogon via the provider path.
+        let setting_level_1 = WRDS_LISTENER_SETTING_LEVEL(1);
+
+        if wrdslistenersettinglevel != setting_level_1 {
+            debug_log_line(&format!(
+                "IWRdsProtocolListener::GetSettings listener_name={} level={} -> E_NOTIMPL (unsupported level)",
+                self.listener_name, wrdslistenersettinglevel.0
+            ));
+
+            return Err(windows_core::Error::new(E_NOTIMPL, "unsupported listener setting level"));
+        }
+
+        let mut settings = WRDS_LISTENER_SETTINGS::default();
+        settings.WRdsListenerSettingLevel = setting_level_1;
+
+        settings.WRdsListenerSetting.WRdsListenerSettings1 = WRDS_LISTENER_SETTINGS_1 {
+            MaxProtocolListenerConnectionCount: 0,
+            SecurityDescriptorSize: 0,
+            pSecurityDescriptor: core::ptr::null_mut(),
+        };
+
         debug_log_line(&format!(
-            "IWRdsProtocolListener::GetSettings listener_name={} level={} -> E_NOTIMPL (matching MS sample)",
+            "IWRdsProtocolListener::GetSettings listener_name={} level={} -> ok (max_conn=0 sd_size=0 sd_ptr=0x0)",
             self.listener_name, wrdslistenersettinglevel.0
         ));
-        Err(windows_core::Error::new(E_NOTIMPL, "not implemented"))
+
+        Ok(settings)
     }
 
     fn StartListen(&self, pcallback: windows_core::Ref<'_, IWRdsProtocolListenerCallback>) -> windows_core::Result<()> {
@@ -3210,11 +3235,10 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         let is_known_querytype = *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT
             || *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID
             || *_querytype == PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL
-            // PROPERTY_TYPE_CONNECTION_GUID intentionally omitted — returning a GUID causes TermService to reload the DLL
-            // PROPERTY_TYPE_SUPPRESS_LOGON_UI intentionally omitted — returning 0 causes TermService to show logon UI
-            //   and wait for user input instead of proceeding to IsUserAllowedToLogon (reference returned E_NOTIMPL)
-            // PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT intentionally omitted — see handler comment
-            // PROPERTY_TYPE_LICENSE_GUID intentionally omitted — reference returned E_NOTIMPL and proceeded to IsUserAllowedToLogon
+            || *_querytype == PROPERTY_TYPE_CONNECTION_GUID
+            || *_querytype == PROPERTY_TYPE_SUPPRESS_LOGON_UI
+            || *_querytype == PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT
+            || *_querytype == PROPERTY_TYPE_LICENSE_GUID
             || *_querytype == WTS_QUERY_AUDIOENUM_DLL;
 
         let first_time_unknown = if is_known_querytype {
@@ -3254,18 +3278,39 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Ok(());
         }
 
-        // PROPERTY_TYPE_SUPPRESS_LOGON_UI (846B20BB-6254-430E-952F-B0C7CA081915) intentionally omitted.
-        // Returning 0 causes TermService to show the logon UI and wait for user credentials instead of
-        // proceeding to IsUserAllowedToLogon. E_NOTIMPL (fall-through below) matches the reference.
+        if *_querytype == PROPERTY_TYPE_CONNECTION_GUID {
+            let connection_guid = deterministic_connection_guid(self.inner.connection_id());
+            first.Type = WTS_VALUE_TYPE_GUID;
+            first.u.guidVal = connection_guid;
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CONNECTION_GUID -> {connection_guid:?}",
+            ));
+            return Ok(());
+        }
 
-        // PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT (2918DB60-6CAE-42A8-9945-8128D7DD8E71) intentionally
-        // omitted — returning 0 stalls TermService after NotifyCommandProcessCreated (it stops polling
-        // and never calls LICENSE_GUID/IsUserAllowedToLogon).  E_NOTIMPL (fall-through) matches the
-        // reference build and allows TermService to proceed past this query.
+        if *_querytype == PROPERTY_TYPE_SUPPRESS_LOGON_UI {
+            first.Type = WTS_VALUE_TYPE_ULONG;
+            first.u.ulVal = 0;
+            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_SUPPRESS_LOGON_UI -> 0");
+            return Ok(());
+        }
 
-        // PROPERTY_TYPE_LICENSE_GUID (4DAA5AB8-...) intentionally omitted.
-        // Reference returned E_NOTIMPL and TermService proceeded to IsUserAllowedToLogon.
-        // Returning a real GUID may cause TermService to take a different licensing path and stall.
+        if *_querytype == PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT {
+            first.Type = WTS_VALUE_TYPE_ULONG;
+            first.u.ulVal = 0;
+            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT -> 0");
+            return Ok(());
+        }
+
+        if *_querytype == PROPERTY_TYPE_LICENSE_GUID {
+            let license_guid = deterministic_license_guid(self.inner.connection_id());
+            first.Type = WTS_VALUE_TYPE_GUID;
+            first.u.guidVal = license_guid;
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_LICENSE_GUID -> {license_guid:?}",
+            ));
+            return Ok(());
+        }
 
         if *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID {
             let connection_id = self.inner.connection_id();
