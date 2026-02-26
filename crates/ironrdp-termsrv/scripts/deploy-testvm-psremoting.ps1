@@ -69,7 +69,11 @@ param(
     [switch]$NoTermServiceStart,
 
     [Parameter()]
-    [int]$TailLines = 80
+    [int]$TailLines = 80,
+
+    [Parameter()]
+    [ValidateRange(5, 600)]
+    [int]$TermServiceStopTimeoutSeconds = 60
 )
 
 Set-StrictMode -Version Latest
@@ -221,12 +225,25 @@ try {
     $logErr = Join-Path $RemoteRoot 'logs\ironrdp-termsrv.err.log'
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $RdpPasswordPath, $LogOut, $LogErr)
+        param($TaskName, $RdpPasswordPath, $LogOut, $LogErr, $TermServiceStopTimeoutSeconds)
 
         # Stop TermService first so the DLL is unloaded and stops connecting to the pipe
         Write-Host "Stopping TermService..."
         Stop-Service -Name 'TermService' -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
+        $stopDeadline = (Get-Date).AddSeconds($TermServiceStopTimeoutSeconds)
+        while ((Get-Date) -lt $stopDeadline) {
+            $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
+            if ($null -eq $service -or $service.Status -eq 'Stopped') {
+                break
+            }
+
+            Start-Sleep -Seconds 2
+        }
+
+        $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
+        if ($null -ne $service -and $service.Status -ne 'Stopped') {
+            throw "TermService did not stop within ${TermServiceStopTimeoutSeconds}s during deploy pre-cleanup (status=$($service.Status))"
+        }
 
         # Stop ceviche-service if present - it uses the same named pipe and causes accept_connection to fail
         Write-Host "Stopping ceviche-service (if running)..."
@@ -259,7 +276,7 @@ try {
         Remove-Item -LiteralPath $LogErr -Force -ErrorAction SilentlyContinue
         # Clear the DLL debug log so each run has a fresh log
         Remove-Item -LiteralPath 'C:\IronRDPDeploy\logs\wts-provider-debug.log' -Force -ErrorAction SilentlyContinue
-    } -ArgumentList $TaskName, $rdpPasswordRemote, $logOut, $logErr
+    } -ArgumentList $TaskName, $rdpPasswordRemote, $logOut, $logErr, $TermServiceStopTimeoutSeconds
 
     $copyAttempts = 0
     $maxCopyAttempts = 4

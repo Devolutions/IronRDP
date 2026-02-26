@@ -207,13 +207,10 @@ fn normalize_winlogon_credentials(username: &str, domain: &str) -> (String, Stri
         return (username.to_owned(), String::new());
     }
 
-    // If the caller provided a DNS/FQDN-style domain, prefer UPN form.
-    // In practice, passing `Domain=ad.example.com` separately is not consistently accepted
-    // across Winlogon/LSA call paths, while `user@ad.example.com` is.
-    if domain.contains('.') {
-        return (format!("{username}@{domain}"), String::new());
-    }
-
+    // Do NOT convert FQDN domain to UPN form (user@fqdn). TermService rejects
+    // credentials passed to GetClientData/GetUserCredentials in UPN form and
+    // disconnects with PreDisconnect reason=17 before calling GetProtocolStatus.
+    // Pass username and domain through separately.
     (username.to_owned(), domain.to_owned())
 }
 

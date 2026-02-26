@@ -17,7 +17,15 @@ param(
     [int]$PortNumber = 0,
 
     [Parameter()]
-    [switch]$RestartTermService
+    [switch]$RestartTermService,
+
+    [Parameter()]
+    [ValidateRange(5, 600)]
+    [int]$TermServiceStopTimeoutSeconds = 60,
+
+    [Parameter()]
+    [ValidateRange(5, 600)]
+    [int]$TermServiceStartTimeoutSeconds = 60
 )
 
 Set-StrictMode -Version Latest
@@ -141,5 +149,40 @@ Write-Host "  dll: $providerDllPathResolved"
 
 if ($RestartTermService.IsPresent) {
     Write-Warning "Restarting TermService now"
-    Restart-Service -Name "TermService" -Force
+
+    Stop-Service -Name "TermService" -Force -ErrorAction SilentlyContinue
+
+    $stopDeadline = (Get-Date).AddSeconds($TermServiceStopTimeoutSeconds)
+    while ((Get-Date) -lt $stopDeadline) {
+        $service = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+        if ($null -eq $service -or $service.Status -eq "Stopped") {
+            break
+        }
+
+        Start-Sleep -Seconds 2
+    }
+
+    $service = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+    if ($null -ne $service -and $service.Status -ne "Stopped") {
+        throw "TermService did not stop within ${TermServiceStopTimeoutSeconds}s during provider install restart (status=$($service.Status))"
+    }
+
+    Start-Service -Name "TermService" -ErrorAction SilentlyContinue
+
+    $startDeadline = (Get-Date).AddSeconds($TermServiceStartTimeoutSeconds)
+    while ((Get-Date) -lt $startDeadline) {
+        $service = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+        if ($null -ne $service -and $service.Status -eq "Running") {
+            return
+        }
+
+        Start-Sleep -Seconds 2
+    }
+
+    $service = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+    if ($null -eq $service) {
+        throw "TermService service not found after provider install restart"
+    }
+
+    throw "TermService did not reach Running within ${TermServiceStartTimeoutSeconds}s during provider install restart (status=$($service.Status))"
 }
