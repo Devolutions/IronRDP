@@ -45,16 +45,21 @@ use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolConnection, IWRdsProtocolConnectionCallback, IWRdsProtocolConnectionSettings_Impl,
     IWRdsProtocolConnection_Impl, IWRdsProtocolLicenseConnection, IWRdsProtocolLicenseConnection_Impl,
     IWRdsProtocolListener, IWRdsProtocolListenerCallback, IWRdsProtocolListener_Impl,
-    IWRdsProtocolLogonErrorRedirector, IWRdsProtocolManager, IWRdsProtocolManager_Impl, IWRdsProtocolSettings,
+    IWRdsProtocolLogonErrorRedirector, IWRdsProtocolLogonErrorRedirector_Impl, IWRdsProtocolManager,
+    IWRdsProtocolManager_Impl, IWRdsProtocolSettings,
     IWRdsProtocolShadowConnection, IWRdsWddmIddProps, IWRdsWddmIddProps_Impl, WTSVirtualChannelClose,
-    WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite, WRDS_CONNECTION_SETTINGS,
+    WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite, WTSEnumerateProcessesW,
+    WTSEnumerateSessionsW, WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSQueryUserToken, WTS_PROCESS_INFOW,
+    WTS_SESSION_INFOW,
+    WRDS_CONNECTION_SETTINGS,
     WRDS_CONNECTION_SETTING_LEVEL, WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTING_LEVEL,
     WRDS_LISTENER_SETTINGS_1,
     WRDS_SETTINGS,
     WTS_CERT_TYPE_INVALID, WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH,
     WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL,
     WTS_CLIENT_DATA, WTS_KEY_EXCHANGE_ALG_RSA, WTS_LICENSE_CAPABILITIES, WTS_LICENSE_PREAMBLE_VERSION,
-    WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
+    WTS_LOGON_ERROR_REDIRECTOR_RESPONSE, WTS_LOGON_ERR_NOT_HANDLED, WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS,
+    WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
 };
 use windows_core::{implement, Interface as _, BOOL, GUID, PCSTR, PCWSTR, PWSTR};
 use windows_core::{IUnknown, HRESULT};
@@ -99,6 +104,218 @@ fn deterministic_connection_guid(connection_id: u32) -> GUID {
 fn deterministic_license_guid(connection_id: u32) -> GUID {
     const BASE: u128 = 0x7d5e31f3_0ff8_4a25_9fcb_7b7e2f634000;
     GUID::from_u128(BASE | u128::from(connection_id))
+}
+
+fn active_console_session_id() -> Option<u32> {
+    // SAFETY: FFI call has no input parameters and always returns a plain value.
+    let session_id = unsafe { WTSGetActiveConsoleSessionId() };
+    if session_id == u32::MAX {
+        None
+    } else {
+        Some(session_id)
+    }
+}
+
+fn session_has_user_token(session_id: u32) -> bool {
+    let mut token = HANDLE::default();
+    // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
+    let result = unsafe { WTSQueryUserToken(session_id, &mut token) };
+    if result.is_ok() {
+        // SAFETY: close token handle returned by `WTSQueryUserToken`.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(token);
+        }
+        true
+    } else {
+        false
+    }
+}
+
+fn session_has_process(session_id: u32, process_name: &str) -> bool {
+    let mut process_info_ptr: *mut WTS_PROCESS_INFOW = core::ptr::null_mut();
+    let mut process_count = 0u32;
+
+    // SAFETY: WTSEnumerateProcessesW writes a buffer pointer/count pair on success.
+    let enumerate_result = unsafe { WTSEnumerateProcessesW(None, 0, 1, &mut process_info_ptr, &mut process_count) };
+    if enumerate_result.is_err() || process_info_ptr.is_null() || process_count == 0 {
+        return false;
+    }
+
+    let mut found = false;
+
+    if let Ok(process_count_usize) = usize::try_from(process_count) {
+        // SAFETY: `process_info_ptr` references `process_count_usize` entries on success.
+        let processes = unsafe { core::slice::from_raw_parts(process_info_ptr, process_count_usize) };
+
+        for entry in processes {
+            if entry.SessionId != session_id {
+                continue;
+            }
+
+            // SAFETY: pProcessName is a NUL-terminated string owned by the WTS buffer.
+            let name = unsafe { PCWSTR(entry.pProcessName.0).to_string() }.unwrap_or_default();
+            if name.eq_ignore_ascii_case(process_name) {
+                found = true;
+                break;
+            }
+        }
+    }
+
+    // SAFETY: free memory allocated by WTSEnumerateProcessesW.
+    unsafe {
+        WTSFreeMemory(process_info_ptr.cast());
+    }
+
+    found
+}
+
+fn canonicalize_enumerated_session_id(session_id: u32) -> u32 {
+    // Some hosts expose high-bit encoded values via WTSEnumerateSessionsW (for example 0x0001_0002),
+    // while token/process APIs expect the canonical low-word session id (2).
+    if session_id > u32::from(u16::MAX) {
+        let low_word = session_id & u32::from(u16::MAX);
+        if low_word != 0 && low_word != u32::from(u16::MAX) {
+            return low_word;
+        }
+
+        // Values with an empty or all-ones low word (for example 0x0001_0000) are not
+        // valid user sessions for token/process APIs.
+        return u32::MAX;
+    }
+
+    session_id
+}
+
+fn session_selection_snapshot() -> String {
+    let console = active_console_session_id()
+        .map(|session_id| session_id.to_string())
+        .unwrap_or_else(|| "none".to_owned());
+
+    let mut sessions_ptr: *mut WTS_SESSION_INFOW = core::ptr::null_mut();
+    let mut session_count = 0u32;
+
+    // SAFETY: WTSEnumerateSessionsW writes a pointer/count pair on success.
+    let enumerate_result = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
+    if enumerate_result.is_err() || sessions_ptr.is_null() || session_count == 0 {
+        return format!("console={console} sessions=none");
+    }
+
+    let mut rows = Vec::new();
+
+    if let Ok(session_count_usize) = usize::try_from(session_count) {
+        // SAFETY: `sessions_ptr` references `session_count_usize` entries on success.
+        let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
+
+        let mut seen = HashSet::new();
+        for entry in sessions {
+            let raw = entry.SessionId;
+            if raw == u32::MAX {
+                continue;
+            }
+
+            let canonical = canonicalize_enumerated_session_id(raw);
+            if !seen.insert((raw, canonical)) {
+                continue;
+            }
+
+            let has_token = session_has_user_token(canonical);
+            let has_explorer = session_has_process(canonical, "explorer.exe");
+            let has_winlogon = session_has_process(canonical, "winlogon.exe");
+            let has_logonui = session_has_process(canonical, "LogonUI.exe");
+
+            rows.push(format!(
+                "{raw}->{canonical}:token={has_token},explorer={has_explorer},winlogon={has_winlogon},logonui={has_logonui}",
+            ));
+        }
+    }
+
+    // SAFETY: free memory allocated by WTSEnumerateSessionsW.
+    unsafe {
+        WTSFreeMemory(sessions_ptr.cast());
+    }
+
+    if rows.is_empty() {
+        format!("console={console} sessions=empty")
+    } else {
+        format!("console={console} sessions=[{}]", rows.join("; "))
+    }
+}
+
+fn preferred_capture_session_id() -> Option<(u32, &'static str)> {
+    let console_session = active_console_session_id();
+
+    if let Some(session_id) = console_session {
+        if session_has_user_token(session_id) {
+            return Some((session_id, "accept_connection_preferred_console"));
+        }
+    }
+
+    let mut sessions_ptr: *mut WTS_SESSION_INFOW = core::ptr::null_mut();
+    let mut session_count = 0u32;
+
+    // SAFETY: WTSEnumerateSessionsW writes a pointer/count pair on success.
+    let enumerate_result = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
+
+    if enumerate_result.is_ok() && !sessions_ptr.is_null() && session_count > 0 {
+        if let Ok(session_count_usize) = usize::try_from(session_count) {
+            // SAFETY: `sessions_ptr` references `session_count_usize` entries on success.
+            let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
+            let mut candidates: Vec<u32> = sessions
+                .iter()
+                .map(|session| {
+                    let raw = session.SessionId;
+                    let canonical = canonicalize_enumerated_session_id(raw);
+                    if canonical != raw {
+                        debug_log_line(&format!(
+                            "preferred_capture_session_id canonicalized raw_session_id={raw} canonical_session_id={canonical}",
+                        ));
+                    }
+                    canonical
+                })
+                .collect();
+            candidates.sort_unstable();
+            candidates.dedup();
+
+            for &session_id in &candidates {
+                if session_id == u32::MAX {
+                    continue;
+                }
+
+                if session_has_user_token(session_id) {
+                    // SAFETY: free memory allocated by WTSEnumerateSessionsW.
+                    unsafe {
+                        WTSFreeMemory(sessions_ptr.cast());
+                    }
+                    return Some((session_id, "accept_connection_preferred_enumerated"));
+                }
+            }
+
+            for session_id in candidates.into_iter().rev() {
+                if session_id == u32::MAX {
+                    continue;
+                }
+
+                if console_session.is_some() && Some(session_id) == console_session {
+                    continue;
+                }
+
+                if session_has_process(session_id, "winlogon.exe") || session_has_process(session_id, "LogonUI.exe") {
+                    // SAFETY: free memory allocated by WTSEnumerateSessionsW.
+                    unsafe {
+                        WTSFreeMemory(sessions_ptr.cast());
+                    }
+                    return Some((session_id, "accept_connection_prelogon_session"));
+                }
+            }
+        }
+
+        // SAFETY: free memory allocated by WTSEnumerateSessionsW.
+        unsafe {
+            WTSFreeMemory(sessions_ptr.cast());
+        }
+    }
+
+    console_session.map(|session_id| (session_id, "accept_connection_active_console_fallback"))
 }
 
 fn lookup_account_sid_string(username: &str, domain: &str) -> windows_core::Result<String> {
@@ -620,22 +837,49 @@ impl ProviderControlBridge {
         }
     }
 
-    fn set_capture_session_id_retried(&self, connection_id: u32, session_id: u32) -> windows_core::Result<()> {
+    fn set_capture_session_id_retried(
+        &self,
+        connection_id: u32,
+        session_id: u32,
+        source: &'static str,
+    ) -> windows_core::Result<()> {
+        debug_log_line(&format!(
+            "SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_SEND source={source} connection_id={connection_id} session_id={session_id}",
+        ));
+
         let Some(event) = self.send_command_retried(&ProviderCommand::SetCaptureSessionId {
             connection_id,
             session_id,
         })?
         else {
+            debug_log_line(&format!(
+                "SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_PIPE_UNAVAILABLE source={source} connection_id={connection_id} session_id={session_id}",
+            ));
             return Ok(());
         };
 
         match event {
-            ServiceEvent::Ack => Ok(()),
-            ServiceEvent::Error { message } => Err(windows_core::Error::new(E_UNEXPECTED, message)),
-            other => Err(windows_core::Error::new(
-                E_UNEXPECTED,
-                format!("unexpected service event on set capture session id (retried): {other:?}"),
-            )),
+            ServiceEvent::Ack => {
+                debug_log_line(&format!(
+                    "SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_ACK source={source} connection_id={connection_id} session_id={session_id}",
+                ));
+                Ok(())
+            }
+            ServiceEvent::Error { message } => {
+                debug_log_line(&format!(
+                    "SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_ERROR source={source} connection_id={connection_id} session_id={session_id} message={message}",
+                ));
+                Err(windows_core::Error::new(E_UNEXPECTED, message))
+            }
+            other => {
+                debug_log_line(&format!(
+                    "SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_UNEXPECTED source={source} connection_id={connection_id} session_id={session_id} event={other:?}",
+                ));
+                Err(windows_core::Error::new(
+                    E_UNEXPECTED,
+                    format!("unexpected service event on set capture session id (retried): {other:?}"),
+                ))
+            }
         }
     }
 
@@ -2145,6 +2389,45 @@ impl IWRdsProtocolLicenseConnection_Impl for WrdsLicenseConnection_Impl {
     }
 }
 
+#[implement(IWRdsProtocolLogonErrorRedirector)]
+struct WrdsLogonErrorRedirector;
+
+impl IWRdsProtocolLogonErrorRedirector_Impl for WrdsLogonErrorRedirector_Impl {
+    fn OnBeginPainting(&self) -> windows_core::Result<()> {
+        debug_log_line("WrdsLogonErrorRedirector::OnBeginPainting");
+        Ok(())
+    }
+
+    fn RedirectStatus(&self, _pszmessage: &PCWSTR) -> windows_core::Result<WTS_LOGON_ERROR_REDIRECTOR_RESPONSE> {
+        debug_log_line("WrdsLogonErrorRedirector::RedirectStatus");
+        Ok(WTS_LOGON_ERR_NOT_HANDLED)
+    }
+
+    fn RedirectMessage(
+        &self,
+        _pszcaption: &PCWSTR,
+        _pszmessage: &PCWSTR,
+        utype: u32,
+    ) -> windows_core::Result<WTS_LOGON_ERROR_REDIRECTOR_RESPONSE> {
+        debug_log_line(&format!("WrdsLogonErrorRedirector::RedirectMessage utype={utype}"));
+        Ok(WTS_LOGON_ERR_NOT_HANDLED)
+    }
+
+    fn RedirectLogonError(
+        &self,
+        ntsstatus: i32,
+        ntssubstatus: i32,
+        _pszcaption: &PCWSTR,
+        _pszmessage: &PCWSTR,
+        utype: u32,
+    ) -> windows_core::Result<WTS_LOGON_ERROR_REDIRECTOR_RESPONSE> {
+        debug_log_line(&format!(
+            "WrdsLogonErrorRedirector::RedirectLogonError ntsstatus={ntsstatus} ntssubstatus={ntssubstatus} utype={utype}",
+        ));
+        Ok(WTS_LOGON_ERR_NOT_HANDLED)
+    }
+}
+
 #[implement(IWRdsProtocolConnection, IWRdsWddmIddProps, IAgileObject)]
 struct ComProtocolConnection {
     inner: Arc<ProtocolConnection>,
@@ -2556,16 +2839,19 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
 
 impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     fn GetLogonErrorRedirector(&self) -> windows_core::Result<IWRdsProtocolLogonErrorRedirector> {
-        Err(windows_core::Error::new(
-            E_NOTIMPL,
-            "logon error redirector is not implemented",
-        ))
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::GetLogonErrorRedirector called connection_id={}",
+            self.inner.connection_id()
+        ));
+        let redirector: IWRdsProtocolLogonErrorRedirector = WrdsLogonErrorRedirector.into();
+        Ok(redirector)
     }
 
     fn AcceptConnection(&self) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
         debug_log_line(&format!(
             "IWRdsProtocolConnection::AcceptConnection called connection_id={}",
-            self.inner.connection_id()
+            connection_id
         ));
 
         self.auth_bridge.validate_security_protocol(
@@ -2576,9 +2862,78 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         self.inner.accept_connection().map_err(transition_error)?;
         self.notify_ready()?;
 
+        // Best-effort early seed: provide a provisional session id before NotifySessionId/
+        // ConnectNotify callbacks, so the companion can avoid timed fallback to a guessed session.
+        if let Some((session_id, source)) = preferred_capture_session_id() {
+            let bridge = self.control_bridge.clone();
+            thread::spawn(move || {
+                match bridge.set_capture_session_id_retried(connection_id, session_id, source) {
+                    Ok(()) => {
+                        debug_log_line(&format!(
+                            "IWRdsProtocolConnection::AcceptConnection set_capture_session_id ok connection_id={connection_id} session_id={session_id}",
+                        ));
+                    }
+                    Err(error) => {
+                        debug_log_line(&format!(
+                            "IWRdsProtocolConnection::AcceptConnection set_capture_session_id failed connection_id={connection_id} session_id={session_id} error={error}",
+                        ));
+                    }
+                }
+
+                // If we had to fall back to active console before any user token was available,
+                // poll briefly for a token-backed session and reseed once it appears.
+                if source == "accept_connection_active_console_fallback" {
+                    debug_log_line(&format!(
+                        "IWRdsProtocolConnection::AcceptConnection fallback snapshot connection_id={connection_id} {}",
+                        session_selection_snapshot(),
+                    ));
+
+                    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                    let mut promoted = false;
+                    while std::time::Instant::now() < deadline {
+                        thread::sleep(Duration::from_millis(250));
+
+                        let Some((polled_session_id, polled_source)) = preferred_capture_session_id() else {
+                            continue;
+                        };
+
+                        if polled_source == "accept_connection_active_console_fallback" {
+                            continue;
+                        }
+
+                        match bridge.set_capture_session_id_retried(connection_id, polled_session_id, polled_source) {
+                            Ok(()) => {
+                                debug_log_line(&format!(
+                                    "IWRdsProtocolConnection::AcceptConnection delayed set_capture_session_id ok connection_id={connection_id} session_id={polled_session_id} source={polled_source}",
+                                ));
+                            }
+                            Err(error) => {
+                                debug_log_line(&format!(
+                                    "IWRdsProtocolConnection::AcceptConnection delayed set_capture_session_id failed connection_id={connection_id} session_id={polled_session_id} source={polled_source} error={error}",
+                                ));
+                            }
+                        }
+
+                        promoted = true;
+                        break;
+                    }
+
+                    if !promoted {
+                        debug_log_line(&format!(
+                            "IWRdsProtocolConnection::AcceptConnection fallback remained active connection_id={connection_id} {}",
+                            session_selection_snapshot(),
+                        ));
+                    }
+                }
+            });
+        } else {
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::AcceptConnection preferred capture session unavailable connection_id={connection_id}",
+            ));
+        }
+
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::AcceptConnection ok connection_id={}",
-            self.inner.connection_id()
+            "IWRdsProtocolConnection::AcceptConnection ok connection_id={connection_id}",
         ));
         Ok(())
     }
@@ -2759,7 +3114,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         if let Err(error) = self
             .control_bridge
-            .set_capture_session_id_retried(self.inner.connection_id(), wts_session_id)
+            .set_capture_session_id_retried(self.inner.connection_id(), wts_session_id, "notify_session_id")
         {
             debug_log_line(&format!("Failed to notify companion of session id: {error}"));
         }
@@ -2919,7 +3274,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         // before proceeding to QueryProperty(SUPPRESS_LOGON_UI) and IsUserAllowedToLogon.
         let bridge = self.control_bridge.clone();
         thread::spawn(move || {
-            match bridge.set_capture_session_id_retried(connection_id, sessionid) {
+            match bridge.set_capture_session_id_retried(connection_id, sessionid, "connect_notify") {
                 Ok(()) => {
                     debug_log_line(&format!(
                         "IWRdsProtocolConnection::ConnectNotify set_capture_session_id ok connection_id={connection_id} session_id={sessionid}"
@@ -2965,6 +3320,25 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             usertoken.0
         ));
 
+        // Backup path: some hosts delay or skip NotifySessionId.  IsUserAllowedToLogon already
+        // carries the target session ID, so forward it to the companion now to minimize time spent
+        // on guessed-session capture.
+        let bridge = self.control_bridge.clone();
+        thread::spawn(move || {
+            match bridge.set_capture_session_id_retried(connection_id, sessionid, "is_user_allowed_to_logon") {
+                Ok(()) => {
+                    debug_log_line(&format!(
+                        "IWRdsProtocolConnection::IsUserAllowedToLogon set_capture_session_id ok connection_id={connection_id} session_id={sessionid}",
+                    ));
+                }
+                Err(error) => {
+                    debug_log_line(&format!(
+                        "IWRdsProtocolConnection::IsUserAllowedToLogon set_capture_session_id failed connection_id={connection_id} session_id={sessionid} error={error}",
+                    ));
+                }
+            }
+        });
+
         Ok(())
     }
 
@@ -2995,10 +3369,34 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         _sessionid: *const WTS_SESSION_ID,
         _pwrdsconnectionsettings: *mut WRDS_CONNECTION_SETTINGS,
     ) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
         debug_log_line(&format!(
             "IWRdsProtocolConnection::LogonNotify called connection_id={}",
-            self.inner.connection_id()
+            connection_id
         ));
+
+        if !_sessionid.is_null() {
+            // SAFETY: `_sessionid` is checked non-null and points to a TermService-provided
+            // WTS_SESSION_ID valid for this callback invocation.
+            let session_id = unsafe { (*_sessionid).SessionId };
+
+            let bridge = self.control_bridge.clone();
+            thread::spawn(move || {
+                match bridge.set_capture_session_id_retried(connection_id, session_id, "logon_notify") {
+                    Ok(()) => {
+                        debug_log_line(&format!(
+                            "IWRdsProtocolConnection::LogonNotify set_capture_session_id ok connection_id={connection_id} session_id={session_id}",
+                        ));
+                    }
+                    Err(error) => {
+                        debug_log_line(&format!(
+                            "IWRdsProtocolConnection::LogonNotify set_capture_session_id failed connection_id={connection_id} session_id={session_id} error={error}",
+                        ));
+                    }
+                }
+            });
+        }
+
         self.inner.logon_notify().map_err(transition_error)?;
         Ok(())
     }
