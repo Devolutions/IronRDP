@@ -115,9 +115,6 @@ mod windows_main {
     const RDP_USERNAME_ENV: &str = "IRONRDP_RDP_USERNAME";
     const RDP_PASSWORD_ENV: &str = "IRONRDP_RDP_PASSWORD";
     const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
-    const WTS_LOGON_USERNAME_ENV: &str = "IRONRDP_WTS_LOGON_USERNAME";
-    const WTS_LOGON_PASSWORD_ENV: &str = "IRONRDP_WTS_LOGON_PASSWORD";
-    const WTS_LOGON_DOMAIN_ENV: &str = "IRONRDP_WTS_LOGON_DOMAIN";
 
     fn control_pipe_security_attributes() -> anyhow::Result<(SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR)> {
         // Allow TermService (NetworkService) to connect to the control pipe.
@@ -1844,24 +1841,12 @@ mod windows_main {
         session_id: u32,
         credentials: Option<&StoredCredentials>,
     ) -> anyhow::Result<AcquiredSessionToken> {
-        // Prefer tokens from session processes first. This avoids depending on
-        // WTSQueryUserToken behavior during early/pre-logon transitions.
+        // Prefer a token from explorer first when present (interactive desktop).
         if let Ok(token) = token_from_session_process(session_id, "explorer.exe") {
             debug!(session_id, "Using explorer.exe token (default desktop)");
             return Ok(AcquiredSessionToken {
                 token,
                 desktop: HelperDesktop::Default,
-            });
-        }
-
-        if let Ok(token) = token_from_session_process(session_id, "winlogon.exe") {
-            info!(
-                session_id,
-                "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
-            );
-            return Ok(AcquiredSessionToken {
-                token,
-                desktop: HelperDesktop::Winlogon,
             });
         }
 
@@ -1885,6 +1870,17 @@ mod windows_main {
             return Ok(AcquiredSessionToken {
                 token,
                 desktop: HelperDesktop::Default,
+            });
+        }
+
+        if let Ok(token) = token_from_session_process(session_id, "winlogon.exe") {
+            info!(
+                session_id,
+                "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
+            );
+            return Ok(AcquiredSessionToken {
+                token,
+                desktop: HelperDesktop::Winlogon,
             });
         }
 
@@ -3268,32 +3264,6 @@ mod windows_main {
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
-        if provider_mode {
-            if let Some(env_creds) = resolve_wts_logon_credentials_from_env()? {
-                let StoredCredentials {
-                    username,
-                    domain,
-                    password,
-                } = env_creds;
-
-                info!(
-                    connection_id,
-                    username = %username,
-                    domain = %domain,
-                    "Configured WTS logon credentials from env"
-                );
-
-                let mut guard = credentials_slot.lock().await;
-                if guard.is_none() {
-                    *guard = Some(StoredCredentials {
-                        username,
-                        domain,
-                        password,
-                    });
-                }
-            }
-        }
-
         let input_stream_slot: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
         let (input_tx, input_rx) = mpsc::unbounded_channel::<InputPacket>();
         let input_task = tokio::task::spawn_local(run_input_spooler(
@@ -3317,8 +3287,6 @@ mod windows_main {
         let mut server = {
             let builder = RdpServer::builder().with_addr(([127, 0, 0, 1], 0));
 
-            // Provider mode should still negotiate Hybrid/CredSSP so TermService observes
-            // a regular RDP logon flow (Security 4624 LogonType=10).
             let builder = builder.with_hybrid(tls_acceptor, tls_pub_key);
 
             let rfx_only_codecs =
@@ -3470,36 +3438,6 @@ mod windows_main {
                 username,
                 password,
                 domain,
-            })),
-        }
-    }
-
-    fn resolve_wts_logon_credentials_from_env() -> anyhow::Result<Option<StoredCredentials>> {
-        let username = std::env::var(WTS_LOGON_USERNAME_ENV)
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
-
-        let password = std::env::var(WTS_LOGON_PASSWORD_ENV)
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
-
-        let domain = std::env::var(WTS_LOGON_DOMAIN_ENV)
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_default();
-
-        match (username, password) {
-            (None, None) => Ok(None),
-            (Some(_), None) | (None, Some(_)) => Err(anyhow!(
-                "both {WTS_LOGON_USERNAME_ENV} and {WTS_LOGON_PASSWORD_ENV} must be set together"
-            )),
-            (Some(username), Some(password)) => Ok(Some(StoredCredentials {
-                username,
-                domain,
-                password,
             })),
         }
     }
