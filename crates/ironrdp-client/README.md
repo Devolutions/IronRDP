@@ -47,7 +47,7 @@ Property precedence is:
 2. `.rdp` file values
 3. Defaults and interactive prompts
 
-Unknown or unsupported `.rdp` properties are ignored and do not fail parsing. Parse issues and skipped properties are logged at debug level.
+Unknown or unsupported `.rdp` properties are ignored and do not fail parsing.
 
 ## Configuring log filter directives
 
