@@ -212,14 +212,38 @@ impl Processor {
                         // Uncompressed bitmap data is formatted as a bottom-up, left-to-right series of
                         // pixels. Each pixel is a whole number of bytes. Each row contains a multiple of
                         // four bytes (including up to three bytes of padding, as necessary).
+                        // [MS-RDPBCGR] 2.2.9.1.1.3.1.2.2
                         trace!("Uncompressed raw bitmap");
 
-                        match update.bits_per_pixel {
-                            16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
-                            // TODO: support other pixel formats…
-                            unsupported => {
-                                warn!("Invalid raw bitmap with {unsupported} bytes per pixels");
-                                update.rectangle.clone()
+                        let bpp = usize::from(update.bits_per_pixel);
+                        let width = usize::from(update.width);
+                        let bytes_per_pixel = bpp.div_ceil(8);
+                        let row_bytes = width * bytes_per_pixel;
+                        let padded_row_bytes = (row_bytes + 3) & !3;
+
+                        if padded_row_bytes != row_bytes {
+                            // Strip per-row padding before passing to the bitmap apply functions,
+                            // which expect tightly packed pixel data.
+                            buf.clear();
+                            for row in update.bitmap_data.chunks(padded_row_bytes) {
+                                let end = row_bytes.min(row.len());
+                                buf.extend_from_slice(&row[..end]);
+                            }
+
+                            match update.bits_per_pixel {
+                                16 => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
+                                _ => {
+                                    warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
+                                    update.rectangle.clone()
+                                }
+                            }
+                        } else {
+                            match update.bits_per_pixel {
+                                16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
+                                _ => {
+                                    warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
+                                    update.rectangle.clone()
+                                }
                             }
                         }
                     };
