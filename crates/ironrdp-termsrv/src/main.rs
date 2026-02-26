@@ -115,6 +115,9 @@ mod windows_main {
     const RDP_USERNAME_ENV: &str = "IRONRDP_RDP_USERNAME";
     const RDP_PASSWORD_ENV: &str = "IRONRDP_RDP_PASSWORD";
     const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
+    const WTS_LOGON_USERNAME_ENV: &str = "IRONRDP_WTS_LOGON_USERNAME";
+    const WTS_LOGON_PASSWORD_ENV: &str = "IRONRDP_WTS_LOGON_PASSWORD";
+    const WTS_LOGON_DOMAIN_ENV: &str = "IRONRDP_WTS_LOGON_DOMAIN";
 
     fn control_pipe_security_attributes() -> anyhow::Result<(SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR)> {
         // Allow TermService (NetworkService) to connect to the control pipe.
@@ -3264,6 +3267,32 @@ mod windows_main {
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
+        if provider_mode {
+            if let Some(env_creds) = resolve_wts_logon_credentials_from_env()? {
+                let StoredCredentials {
+                    username,
+                    domain,
+                    password,
+                } = env_creds;
+
+                info!(
+                    connection_id,
+                    username = %username,
+                    domain = %domain,
+                    "Configured WTS logon credentials from env"
+                );
+
+                let mut guard = credentials_slot.lock().await;
+                if guard.is_none() {
+                    *guard = Some(StoredCredentials {
+                        username,
+                        domain,
+                        password,
+                    });
+                }
+            }
+        }
+
         let input_stream_slot: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
         let (input_tx, input_rx) = mpsc::unbounded_channel::<InputPacket>();
         let input_task = tokio::task::spawn_local(run_input_spooler(
@@ -3287,7 +3316,15 @@ mod windows_main {
         let mut server = {
             let builder = RdpServer::builder().with_addr(([127, 0, 0, 1], 0));
 
-            let builder = builder.with_hybrid(tls_acceptor, tls_pub_key);
+            // In provider mode we need plaintext credentials to pass to TermService.
+            // Our current CredSSP implementation requires preconfigured passwords (pure-Rust SSPI),
+            // so we capture credentials from the ClientInfo PDU over TLS-only instead.
+            let builder = if provider_mode {
+                let _ = tls_pub_key;
+                builder.with_tls(tls_acceptor)
+            } else {
+                builder.with_hybrid(tls_acceptor, tls_pub_key)
+            };
 
             let rfx_only_codecs =
                 ironrdp_pdu::rdp::capability_sets::server_codecs_capabilities(&["remotefx:on", "qoi:off", "qoiz:off"])
@@ -3301,24 +3338,6 @@ mod windows_main {
         };
 
         if provider_mode {
-            let expected_credentials = resolve_rdp_credentials_from_env()?;
-
-            if let Some(credentials) = expected_credentials {
-                info!(
-                    username = %credentials.username,
-                    domain = ?credentials.domain,
-                    "Configured expected RDP credentials for provider-mode CredSSP"
-                );
-                server.set_credentials(Some(credentials));
-            } else {
-                warn!(
-                    username_env = %RDP_USERNAME_ENV,
-                    password_env = %RDP_PASSWORD_ENV,
-                    domain_env = %RDP_DOMAIN_ENV,
-                    "RDP credentials are not configured; provider-mode CredSSP handshake may fail"
-                );
-            }
-
             server.set_allow_unverified_credentials(true);
 
             let credentials_slot = Arc::clone(&credentials_slot);
@@ -3438,6 +3457,36 @@ mod windows_main {
                 username,
                 password,
                 domain,
+            })),
+        }
+    }
+
+    fn resolve_wts_logon_credentials_from_env() -> anyhow::Result<Option<StoredCredentials>> {
+        let username = std::env::var(WTS_LOGON_USERNAME_ENV)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        let password = std::env::var(WTS_LOGON_PASSWORD_ENV)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        let domain = std::env::var(WTS_LOGON_DOMAIN_ENV)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_default();
+
+        match (username, password) {
+            (None, None) => Ok(None),
+            (Some(_), None) | (None, Some(_)) => Err(anyhow!(
+                "both {WTS_LOGON_USERNAME_ENV} and {WTS_LOGON_PASSWORD_ENV} must be set together"
+            )),
+            (Some(username), Some(password)) => Ok(Some(StoredCredentials {
+                username,
+                domain,
+                password,
             })),
         }
     }
