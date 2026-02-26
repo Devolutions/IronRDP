@@ -163,7 +163,7 @@ async fn launch_client(
             }
         }
     });
-    gui::launch_gui(gui, config.gfx_dump_file, receiver, writer.clone())?;
+    gui::launch_gui(gui, config.gfx_dump_file, config.openh264_path, receiver, writer.clone())?;
     active_stage_handle.await.map_err(|e| RdpError::Io(e.into()))?
 }
 

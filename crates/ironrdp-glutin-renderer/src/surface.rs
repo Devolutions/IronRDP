@@ -7,12 +7,14 @@ use ironrdp::pdu::dvc::gfx::{
     Avc420BitmapStream, Avc444BitmapStream, Codec1Type, CreateSurfacePdu, Encoding, GraphicsPipelineError, PixelFormat,
     WireToSurface1Pdu,
 };
-use ironrdp::pdu::geometry::{
-    Rectangle as _,
-    InclusiveRectangle,
-};
+use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::pdu::PduBufferParsing;
-use openh264::decoder::{DecodedYUV, Decoder};
+#[cfg(feature = "openh264")]
+use openh264::decoder::Decoder;
+#[cfg(feature = "openh264")]
+use openh264::formats::YUVSource;
+#[cfg(feature = "openh264")]
+use openh264::OpenH264API;
 
 use crate::draw::DrawingContext;
 use crate::renderer::RendererError;
@@ -34,18 +36,25 @@ impl Debug for DataRegion {
     }
 }
 
+#[cfg(feature = "openh264")]
 pub struct SurfaceDecoders {
+    library_path: std::path::PathBuf,
     decoders: HashMap<u16, Decoder>,
 }
 
+#[cfg(feature = "openh264")]
 impl SurfaceDecoders {
-    pub fn new() -> Self {
+    pub fn new(library_path: std::path::PathBuf) -> Self {
         SurfaceDecoders {
+            library_path,
             decoders: HashMap::new(),
         }
     }
+
     pub fn add(&mut self, id: u16) -> Result<()> {
-        self.decoders.insert(id, Decoder::new()?);
+        let api = OpenH264API::from_blob_path(&self.library_path)?;
+        let decoder = Decoder::with_api_config(api, Default::default())?;
+        self.decoders.insert(id, decoder);
         Ok(())
     }
 
@@ -64,10 +73,10 @@ impl SurfaceDecoders {
                 let packet = Avc420BitmapStream::from_buffer_consume(&mut pdu.bitmap_data.as_slice())
                     .map_err(GraphicsPipelineError::from)?;
                 let yuv = decoder.decode(packet.data)?.ok_or(RendererError::DecodeError)?;
-                let dimensions = yuv.dimension_rgb();
-                let strides = yuv.strides_yuv();
+                let dimensions = yuv.dimensions();
+                let strides = yuv.strides();
                 let regions = packet.rectangles;
-                let data = convert_to_buffer(yuv);
+                let data = convert_yuv_to_buffer(&yuv);
                 let data1 = DataRegion { data, regions };
                 Ok(DataBuffer {
                     main: Some(data1),
@@ -83,16 +92,16 @@ impl SurfaceDecoders {
                 let packet = Avc444BitmapStream::from_buffer_consume(&mut pdu.bitmap_data.as_slice())
                     .map_err(GraphicsPipelineError::from)?;
                 let yuv = decoder.decode(packet.stream1.data)?.ok_or(RendererError::DecodeError)?;
-                let dimensions = yuv.dimension_rgb();
-                let strides = yuv.strides_yuv();
+                let dimensions = yuv.dimensions();
+                let strides = yuv.strides();
                 let regions = packet.stream1.rectangles;
-                let data = convert_to_buffer(yuv);
+                let data = convert_yuv_to_buffer(&yuv);
                 let data1 = DataRegion { data, regions };
 
                 let data2 = if packet.encoding == Encoding::LUMA_AND_CHROMA {
                     let aux = packet.stream2.unwrap();
                     let yuv = decoder.decode(aux.data)?.ok_or(RendererError::DecodeError)?;
-                    let data = convert_to_buffer(yuv);
+                    let data = convert_yuv_to_buffer(&yuv);
                     let regions = aux.rectangles;
                     Some(DataRegion { data, regions })
                 } else {
@@ -319,17 +328,17 @@ impl Surfaces {
     }
 }
 
-/// Convert the decoded data to a buffer. OpenH264 documentation says that if
-/// the data is not immediately used it should be copied out.
-fn convert_to_buffer(yuv: DecodedYUV) -> Vec<u8> {
-    let y = yuv.y_with_stride();
-    let u = yuv.u_with_stride();
-    let v = yuv.v_with_stride();
+/// Copy YUV planes into a contiguous buffer. OpenH264 documentation says that
+/// decoded data must be copied out if not used immediately.
+#[cfg(feature = "openh264")]
+fn convert_yuv_to_buffer(yuv: &impl YUVSource) -> Vec<u8> {
+    let y = yuv.y();
+    let u = yuv.u();
+    let v = yuv.v();
     let total_len = y.len() + u.len() + v.len();
     let mut data = vec![0; total_len];
-    let data_slice = data.as_mut_slice();
-    data_slice[0..y.len()].copy_from_slice(&y[0..]);
-    data_slice[y.len()..y.len() + u.len()].copy_from_slice(&u[0..]);
-    data_slice[y.len() + u.len()..y.len() + u.len() + v.len()].copy_from_slice(&v[0..]);
+    data[..y.len()].copy_from_slice(y);
+    data[y.len()..y.len() + u.len()].copy_from_slice(u);
+    data[y.len() + u.len()..].copy_from_slice(v);
     data
 }
