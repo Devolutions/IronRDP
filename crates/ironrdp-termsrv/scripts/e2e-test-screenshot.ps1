@@ -13,9 +13,14 @@
     "Standalone" deploys only the companion service with AUTO_LISTEN=1 (no WTS provider).
     "Provider" deploys both the provider DLL and companion service with side-by-side registration.
 
+.PARAMETER StrictSessionProof
+    Opt-in strict proof mode. Treats fallback/session-fidelity diagnostics as hard pass/fail gates.
+    Alias: -Strict
+
 .EXAMPLE
     .\e2e-test-screenshot.ps1 -Mode Standalone
     .\e2e-test-screenshot.ps1 -Mode Provider
+    .\e2e-test-screenshot.ps1 -Mode Provider -StrictSessionProof
 #>
 [CmdletBinding()]
 param(
@@ -81,7 +86,11 @@ param(
     [int]$ScreenshotTimeoutSeconds = 30,
 
     [Parameter()]
-    [int]$AfterFirstGraphicsSeconds = 20
+    [int]$AfterFirstGraphicsSeconds = 20,
+
+    [Parameter()]
+    [Alias('Strict')]
+    [switch]$StrictSessionProof
 )
 
 Set-StrictMode -Version Latest
@@ -263,6 +272,32 @@ $dumpRemoteDir = "C:\IronRDPDeploy\bitmap-dumps-$timestamp"
 $dumpLocalDir = Join-Path $artifactsDir "bitmap-dumps-$timestamp"
 
 $profileDir = if ($Configuration -eq 'Release') { 'release' } else { 'debug' }
+
+$remoteLogCollectionSucceeded = $false
+$remoteServiceRunning = $false
+$remotePortListening = $false
+$securityLogonType10Count = $null
+$termsrvFallbackMarkerCount = $null
+$termsrvFallbackMarkers = ''
+$providerSessionProofMarkerCount = $null
+$providerSessionProofMarkers = ''
+$termsrvSessionProofMarkerCount = $null
+$termsrvSessionProofMarkers = ''
+$iddDriverLoadedNotified = $false
+$iddWddmEnabledSignalCount = $null
+$remoteConnectionSignalCount = $null
+$remoteGraphicsSignalCount = $null
+$remoteConnectionSignalsLog = ''
+$guiTargetSessionId = $null
+$guiTargetSessionSource = ''
+$guiTargetSessionResolved = $false
+$guiTargetSessionProcessProof = $false
+$guiTargetSessionExplorerCount = $null
+$guiTargetSessionGuiProcessCount = $null
+$guiTargetSessionWinlogonCount = $null
+$guiTargetSessionLogonUiCount = $null
+$guiTargetSessionProcesses = ''
+$bitmapDumpCount = 0
 
 # ── Step 1: Build ───────────────────────────────────────────────────────────
 if (-not $SkipBuild.IsPresent) {
@@ -554,6 +589,32 @@ try {
             $logOut = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log'
             $logErr = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log'
             $dllDebugLog = 'C:\IronRDPDeploy\logs\wts-provider-debug.log'
+            $stdoutTail = $null
+
+            $result['security_4624_type10_user_count'] = 0
+            $result['termsrv_fallback_marker_count'] = 0
+            $result['termsrv_fallback_markers'] = ''
+            $result['provider_session_proof_marker_count'] = 0
+            $result['provider_session_proof_markers'] = ''
+            $result['termsrv_session_proof_marker_count'] = 0
+            $result['termsrv_session_proof_markers'] = ''
+            $result['idd_driver_loaded_notified'] = $false
+            $result['idd_wddm_enabled_signal_count'] = 0
+            $result['remote_connection_signal_count'] = 0
+            $result['remote_graphics_signal_count'] = 0
+            $result['remote_connection_signals'] = ''
+            $result['gui_target_session_id'] = -1
+            $result['gui_target_session_source'] = ''
+            $result['gui_target_session_resolved'] = $false
+            $result['gui_target_session_process_proof'] = $false
+            $result['gui_target_session_explorer_count'] = 0
+            $result['gui_target_session_gui_process_count'] = 0
+            $result['gui_target_session_winlogon_count'] = 0
+            $result['gui_target_session_logonui_count'] = 0
+            $result['gui_target_session_processes'] = ''
+
+            $termsrvSessionProofLines = @()
+            $providerSessionProofLines = @()
 
             $targetUserName = $rdpUsernameForAudit
             if (-not [string]::IsNullOrWhiteSpace($targetUserName)) {
@@ -566,10 +627,29 @@ try {
             }
 
             if (Test-Path $logOut) {
-                $result['stdout'] = Get-Content $logOut -Tail 150 -ErrorAction SilentlyContinue | Out-String
+                $stdoutTail = Get-Content $logOut -Tail 5000 -ErrorAction SilentlyContinue
+                $result['stdout'] = ($stdoutTail | Select-Object -Last 150 | Out-String)
             }
             if (Test-Path $logErr) {
                 $result['stderr'] = Get-Content $logErr -Tail 50 -ErrorAction SilentlyContinue | Out-String
+            }
+            if ($mode -eq 'Provider' -and $stdoutTail) {
+                $fallbackPatterns = @(
+                    'falling back to guessed session',
+                    'sending synthetic test pattern'
+                )
+                $fallbackHits = $stdoutTail | Select-String -SimpleMatch -Pattern $fallbackPatterns -ErrorAction SilentlyContinue
+                if ($fallbackHits) {
+                    $result['termsrv_fallback_marker_count'] = ($fallbackHits | Measure-Object).Count
+                    $result['termsrv_fallback_markers'] = ($fallbackHits | Select-Object -Last 20 | ForEach-Object { $_.Line } | Out-String)
+                }
+
+                $termsrvSessionProofHits = $stdoutTail | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_TERMSRV_' -ErrorAction SilentlyContinue
+                if ($termsrvSessionProofHits) {
+                    $termsrvSessionProofLines = $termsrvSessionProofHits | ForEach-Object { $_.Line }
+                    $result['termsrv_session_proof_marker_count'] = ($termsrvSessionProofHits | Measure-Object).Count
+                    $result['termsrv_session_proof_markers'] = ($termsrvSessionProofLines | Select-Object -Last 40 | Out-String)
+                }
             }
             if ($mode -eq 'Provider' -and (Test-Path $dllDebugLog)) {
                 # The provider debug log can be extremely noisy due to polling. Capture a signal-focused view.
@@ -579,6 +659,7 @@ try {
                     'IWRdsProtocolListener::',
                     'IWRdsProtocolListenerCallback::',
                     'IWRdsProtocolConnection::',
+                    'SESSION_PROOF_PROVIDER_',
                     'IWRdsWddmIddProps::',
                     'NotifyIddDriverLoaded',
                     'GetUserCredentials ok',
@@ -595,6 +676,87 @@ try {
                 $matchLines = $dllTail | Select-String -SimpleMatch -Pattern $patterns -ErrorAction SilentlyContinue
                 if ($matchLines) {
                     $result['dll_debug_key'] = ($matchLines | Select-Object -Last 400 | ForEach-Object { $_.Line } | Out-String)
+                }
+
+                $providerSessionProofHits = $dllTail | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_PROVIDER_' -ErrorAction SilentlyContinue
+                if ($providerSessionProofHits) {
+                    $providerSessionProofLines = $providerSessionProofHits | ForEach-Object { $_.Line }
+                    $result['provider_session_proof_marker_count'] = ($providerSessionProofHits | Measure-Object).Count
+                    $result['provider_session_proof_markers'] = ($providerSessionProofLines | Select-Object -Last 40 | Out-String)
+                }
+
+                $iddLoadHit = $dllTail | Select-String -SimpleMatch -Pattern 'NotifyIddDriverLoaded' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($iddLoadHit) {
+                    $result['idd_driver_loaded_notified'] = $true
+                }
+
+                $iddWddmEnableHits = $dllTail | Select-String -SimpleMatch -Pattern 'IWRdsWddmIddProps::EnableWddmIdd enabled=true' -ErrorAction SilentlyContinue
+                if ($iddWddmEnableHits) {
+                    $result['idd_wddm_enabled_signal_count'] = ($iddWddmEnableHits | Measure-Object).Count
+                }
+            }
+
+            if ($mode -eq 'Provider') {
+                $targetSessionId = $null
+                $targetSessionSource = ''
+
+                $providerAckLines = $providerSessionProofLines | Where-Object {
+                    $_ -match 'SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_ACK'
+                }
+
+                if ($providerAckLines) {
+                    foreach ($line in $providerAckLines) {
+                        if ($line -match 'source=([^\s]+)') {
+                            $targetSessionSource = [string]$Matches[1]
+                        }
+                        if ($line -match 'session_id=(\d+)') {
+                            $targetSessionId = [int]$Matches[1]
+                        }
+                    }
+                }
+
+                if ($null -eq $targetSessionId) {
+                    $termsrvApplyLines = $termsrvSessionProofLines | Where-Object {
+                        $_ -match 'SESSION_PROOF_TERMSRV_SET_CAPTURE_SESSION_ID_APPLIED'
+                    }
+
+                    if ($termsrvApplyLines) {
+                        foreach ($line in $termsrvApplyLines) {
+                            if ($line -match 'session_id=(\d+)') {
+                                $targetSessionId = [int]$Matches[1]
+                            }
+                        }
+
+                        if ($null -ne $targetSessionId) {
+                            $targetSessionSource = 'termsrv_applied'
+                        }
+                    }
+                }
+
+                if ($null -ne $targetSessionId) {
+                    $result['gui_target_session_id'] = $targetSessionId
+                    $result['gui_target_session_source'] = $targetSessionSource
+                    $result['gui_target_session_resolved'] = $true
+
+                    try {
+                        $sessionProcesses = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $targetSessionId }
+
+                        $explorerCount = ($sessionProcesses | Where-Object { $_.ProcessName -ieq 'explorer' } | Measure-Object).Count
+                        $guiProcessCount = ($sessionProcesses | Where-Object {
+                            $_.ProcessName -in @('explorer', 'dwm', 'ShellExperienceHost', 'sihost')
+                        } | Measure-Object).Count
+                        $winlogonCount = ($sessionProcesses | Where-Object { $_.ProcessName -ieq 'winlogon' } | Measure-Object).Count
+                        $logonUiCount = ($sessionProcesses | Where-Object { $_.ProcessName -ieq 'LogonUI' } | Measure-Object).Count
+
+                        $result['gui_target_session_explorer_count'] = $explorerCount
+                        $result['gui_target_session_gui_process_count'] = $guiProcessCount
+                        $result['gui_target_session_winlogon_count'] = $winlogonCount
+                        $result['gui_target_session_logonui_count'] = $logonUiCount
+                        $result['gui_target_session_process_proof'] = ($explorerCount -ge 1)
+                        $result['gui_target_session_processes'] = ($sessionProcesses | Select-Object -First 40 Id, ProcessName, SessionId | Sort-Object ProcessName, Id | Format-Table -AutoSize | Out-String)
+                    } catch {
+                        $result['gui_target_session_processes'] = "Could not enumerate target-session processes: $_"
+                    }
                 }
             }
 
@@ -633,11 +795,14 @@ try {
                     }
 
                     if ($rows.Count -gt 0) {
+                        $result['security_4624_type10_user_count'] = $rows.Count
                         $result['security_4624_type10_user'] = "Since $start (sampled up to $maxSecurityEvents recent 4624 events)`n" + ($rows | Format-Table -AutoSize | Out-String)
                     } else {
+                        $result['security_4624_type10_user_count'] = 0
                         $result['security_4624_type10_user'] = "Since $start (sampled up to $maxSecurityEvents recent 4624 events)`n(no matching 4624 LogonType=10 events for user '$targetUserName')"
                     }
                 } catch {
+                    $result['security_4624_type10_user_count'] = -1
                     $result['security_4624_type10_user'] = "Could not collect Security 4624: $_"
                 }
             }
@@ -650,6 +815,39 @@ try {
                     $result['termservice_events'] = ($events | Select-Object TimeCreated, Id, LevelDisplayName, Message | Out-String)
                 } catch {
                     $result['termservice_events'] = "Could not collect TermService events: $_"
+                }
+
+                # Collect authoritative RemoteConnectionManager operational signals.
+                # 261: listener accepted a connection
+                # 263: WDDM graphics mode enabled for the remote connection
+                try {
+                    $start = $securityStartTime.AddMinutes(-1)
+                    $maxRemoteEvents = 200
+                    $remoteEvents = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'; StartTime = $start } -MaxEvents $maxRemoteEvents -ErrorAction SilentlyContinue
+
+                    if ($remoteEvents) {
+                        $connectionSignals = $remoteEvents | Where-Object { $_.Id -eq 261 }
+                        $graphicsSignals = $remoteEvents | Where-Object { $_.Id -eq 263 }
+
+                        $result['remote_connection_signal_count'] = ($connectionSignals | Measure-Object).Count
+                        $result['remote_graphics_signal_count'] = ($graphicsSignals | Measure-Object).Count
+
+                        $signalRows = $remoteEvents |
+                            Where-Object { $_.Id -in @(261, 263, 1149, 20523) } |
+                            Select-Object -First 40 TimeCreated, Id, LevelDisplayName, Message
+
+                        if ($signalRows) {
+                            $result['remote_connection_signals'] = "Since $start (sampled up to $maxRemoteEvents recent RemoteConnectionManager events)`n" + ($signalRows | Format-Table -AutoSize | Out-String)
+                        } else {
+                            $result['remote_connection_signals'] = "Since $start (sampled up to $maxRemoteEvents recent RemoteConnectionManager events)`n(no targeted IDs observed: 261, 263, 1149, 20523)"
+                        }
+                    } else {
+                        $result['remote_connection_signals'] = "Since $start (sampled up to $maxRemoteEvents recent RemoteConnectionManager events)`n(no events returned)"
+                    }
+                } catch {
+                    $result['remote_connection_signal_count'] = -1
+                    $result['remote_graphics_signal_count'] = -1
+                    $result['remote_connection_signals'] = "Could not collect RemoteConnectionManager operational events: $_"
                 }
             }
 
@@ -669,8 +867,80 @@ try {
             $result
         } -ArgumentList $Port, $testStartTime, $Mode, $dumpRemoteDir, $RdpUsername
 
+        $remoteLogCollectionSucceeded = $true
+
         $isRunning = $remoteLogs['running']
         $isListening = $remoteLogs['listening']
+        $remoteServiceRunning = [bool]$isRunning
+        $remotePortListening = [bool]$isListening
+
+        if ($remoteLogs.ContainsKey('security_4624_type10_user_count')) {
+            $securityLogonType10Count = [int]$remoteLogs['security_4624_type10_user_count']
+        }
+        if ($remoteLogs.ContainsKey('termsrv_fallback_marker_count')) {
+            $termsrvFallbackMarkerCount = [int]$remoteLogs['termsrv_fallback_marker_count']
+        }
+        if ($remoteLogs.ContainsKey('termsrv_fallback_markers')) {
+            $termsrvFallbackMarkers = [string]$remoteLogs['termsrv_fallback_markers']
+        }
+        if ($remoteLogs.ContainsKey('provider_session_proof_marker_count')) {
+            $providerSessionProofMarkerCount = [int]$remoteLogs['provider_session_proof_marker_count']
+        }
+        if ($remoteLogs.ContainsKey('provider_session_proof_markers')) {
+            $providerSessionProofMarkers = [string]$remoteLogs['provider_session_proof_markers']
+        }
+        if ($remoteLogs.ContainsKey('termsrv_session_proof_marker_count')) {
+            $termsrvSessionProofMarkerCount = [int]$remoteLogs['termsrv_session_proof_marker_count']
+        }
+        if ($remoteLogs.ContainsKey('termsrv_session_proof_markers')) {
+            $termsrvSessionProofMarkers = [string]$remoteLogs['termsrv_session_proof_markers']
+        }
+        if ($remoteLogs.ContainsKey('idd_driver_loaded_notified')) {
+            $iddDriverLoadedNotified = [bool]$remoteLogs['idd_driver_loaded_notified']
+        }
+        if ($remoteLogs.ContainsKey('idd_wddm_enabled_signal_count')) {
+            $iddWddmEnabledSignalCount = [int]$remoteLogs['idd_wddm_enabled_signal_count']
+        }
+        if ($remoteLogs.ContainsKey('remote_connection_signal_count')) {
+            $remoteConnectionSignalCount = [int]$remoteLogs['remote_connection_signal_count']
+        }
+        if ($remoteLogs.ContainsKey('remote_graphics_signal_count')) {
+            $remoteGraphicsSignalCount = [int]$remoteLogs['remote_graphics_signal_count']
+        }
+        if ($remoteLogs.ContainsKey('remote_connection_signals')) {
+            $remoteConnectionSignalsLog = [string]$remoteLogs['remote_connection_signals']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_id')) {
+            $rawGuiTargetSessionId = [int]$remoteLogs['gui_target_session_id']
+            if ($rawGuiTargetSessionId -ge 0) {
+                $guiTargetSessionId = $rawGuiTargetSessionId
+            }
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_source')) {
+            $guiTargetSessionSource = [string]$remoteLogs['gui_target_session_source']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_resolved')) {
+            $guiTargetSessionResolved = [bool]$remoteLogs['gui_target_session_resolved']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_process_proof')) {
+            $guiTargetSessionProcessProof = [bool]$remoteLogs['gui_target_session_process_proof']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_explorer_count')) {
+            $guiTargetSessionExplorerCount = [int]$remoteLogs['gui_target_session_explorer_count']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_gui_process_count')) {
+            $guiTargetSessionGuiProcessCount = [int]$remoteLogs['gui_target_session_gui_process_count']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_winlogon_count')) {
+            $guiTargetSessionWinlogonCount = [int]$remoteLogs['gui_target_session_winlogon_count']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_logonui_count')) {
+            $guiTargetSessionLogonUiCount = [int]$remoteLogs['gui_target_session_logonui_count']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_processes')) {
+            $guiTargetSessionProcesses = [string]$remoteLogs['gui_target_session_processes']
+        }
+
         Write-Host "Service running: $isRunning$(if ($isRunning) { " (PID $($remoteLogs['pid']))" })"
         Write-Host "Port $Port listening: $isListening"
 
@@ -710,6 +980,39 @@ try {
             Write-Host "`n---- TermService event log (recent) ----" -ForegroundColor Yellow
             Write-Host $remoteLogs['termservice_events']
         }
+        if ($remoteLogs['remote_connection_signals']) {
+            $remoteLogs['remote_connection_signals'] | Set-Content (Join-Path $remoteLogDir 'remote-connection-signals.log')
+            Write-Host "`n---- RemoteConnectionManager operational signals ----" -ForegroundColor Yellow
+            Write-Host $remoteLogs['remote_connection_signals']
+        }
+        if (($Mode -eq 'Provider') -and ($providerSessionProofMarkerCount -gt 0)) {
+            Write-Host "`n---- provider session proof markers ----" -ForegroundColor Cyan
+            Write-Host $providerSessionProofMarkers
+        }
+        if (($Mode -eq 'Provider') -and ($termsrvSessionProofMarkerCount -gt 0)) {
+            Write-Host "`n---- termsrv session proof markers ----" -ForegroundColor Cyan
+            Write-Host $termsrvSessionProofMarkers
+        }
+        if (($Mode -eq 'Provider') -and ($termsrvFallbackMarkerCount -gt 0)) {
+            Write-Host "`n---- termsrv fallback markers (strict-relevant) ----" -ForegroundColor Yellow
+            Write-Host $termsrvFallbackMarkers
+
+            if ($StrictSessionProof.IsPresent) {
+                throw "strict session proof failed: termsrv fallback markers detected (count=$termsrvFallbackMarkerCount)"
+            }
+        }
+
+        if ($Mode -eq 'Provider') {
+            Write-Host "Interactive proof signals: Security4624Type10=$securityLogonType10Count RemoteConnection261=$remoteConnectionSignalCount RemoteGraphics263=$remoteGraphicsSignalCount"
+            Write-Host "IDD diagnostics signals: NotifyIddDriverLoaded=$iddDriverLoadedNotified ProviderEnableWddmIdd=$iddWddmEnabledSignalCount"
+            Write-Host "GUI session proof: TargetSessionId=$guiTargetSessionId Source=$guiTargetSessionSource Explorer=$guiTargetSessionExplorerCount GuiProcesses=$guiTargetSessionGuiProcessCount Winlogon=$guiTargetSessionWinlogonCount LogonUI=$guiTargetSessionLogonUiCount"
+
+            if (-not [string]::IsNullOrWhiteSpace($guiTargetSessionProcesses)) {
+                $guiTargetSessionProcesses | Set-Content (Join-Path $remoteLogDir 'gui-target-session-processes.log')
+                Write-Host "`n---- GUI target-session process snapshot ----" -ForegroundColor Yellow
+                Write-Host $guiTargetSessionProcesses
+            }
+        }
 
         # Pull bitmap dumps (best-effort) so we can prove capture was producing real frames.
         try {
@@ -724,6 +1027,7 @@ try {
                 Copy-Item -FromSession $session -Path (Join-Path $dumpRemoteDir '*') -Destination $dumpLocalDir -Recurse -Force -ErrorAction SilentlyContinue
                 $bmps = Get-ChildItem -LiteralPath $dumpLocalDir -Filter '*.bmp' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
                 if ($bmps -and $bmps.Count -gt 0) {
+                    $bitmapDumpCount = $bmps.Count
                     $latest = $bmps | Select-Object -First 1
                     Copy-Item -LiteralPath $latest.FullName -Destination (Join-Path $artifactsDir 'latest-bitmap-dump.bmp') -Force
                     Write-Host "`nBitmap dumps: $($bmps.Count) file(s) downloaded to $dumpLocalDir" -ForegroundColor Green
@@ -743,6 +1047,9 @@ try {
     }
 } catch {
     Write-Warning "Failed to collect remote logs: $_"
+    if ($StrictSessionProof.IsPresent) {
+        throw
+    }
 }
 
 # ── Summary ─────────────────────────────────────────────────────────────────
@@ -750,13 +1057,17 @@ Write-Host "`n=== Summary ===" -ForegroundColor Cyan
 Write-Host "Mode:       $Mode"
 Write-Host "VM:         $Hostname"
 Write-Host "Port:       $Port"
+Write-Host "Strict:     $($StrictSessionProof.IsPresent)"
 Write-Host "Screenshot: $(if (Test-Path $OutputPng) { "$OutputPng ($($(Get-Item $OutputPng).Length) bytes)" } else { 'NOT PRODUCED' })"
 
-if (Test-Path $OutputPng) {
-    $fileInfo = Get-Item $OutputPng
-    $hasMeaningfulContent = $false
-    $analysisSucceeded = $false
-    $analysisMessage = ''
+$screenshotExists = Test-Path $OutputPng
+$screenshotFileInfo = $null
+$hasMeaningfulContent = $false
+$analysisSucceeded = $false
+$analysisMessage = ''
+
+if ($screenshotExists) {
+    $screenshotFileInfo = Get-Item $OutputPng
 
     try {
         Add-Type -AssemblyName System.Drawing -ErrorAction Stop
@@ -809,8 +1120,8 @@ if (Test-Path $OutputPng) {
 
     Write-Host "Screenshot analysis: $analysisMessage"
 
-    if ($fileInfo.Length -le 1000) {
-        Write-Host "RESULT: WARN (screenshot produced but suspiciously small: $($fileInfo.Length) bytes)" -ForegroundColor Yellow
+    if ($screenshotFileInfo.Length -le 1000) {
+        Write-Host "RESULT: WARN (screenshot produced but suspiciously small: $($screenshotFileInfo.Length) bytes)" -ForegroundColor Yellow
     } elseif (-not $analysisSucceeded) {
         Write-Host "RESULT: WARN (screenshot produced but content analysis failed)" -ForegroundColor Yellow
     } elseif ($hasMeaningfulContent) {
@@ -820,4 +1131,87 @@ if (Test-Path $OutputPng) {
     }
 } else {
     Write-Host "RESULT: FAIL (no screenshot produced)" -ForegroundColor Red
+}
+
+if ($StrictSessionProof.IsPresent) {
+    $strictFailures = New-Object System.Collections.Generic.List[string]
+
+    if (-not $screenshotExists) {
+        $strictFailures.Add('screenshot not produced')
+    } elseif ($screenshotFileInfo.Length -le 1000) {
+        $strictFailures.Add("screenshot too small ($($screenshotFileInfo.Length) bytes)")
+    } elseif (-not $analysisSucceeded) {
+        $strictFailures.Add('screenshot analysis failed')
+    } elseif (-not $hasMeaningfulContent) {
+        $strictFailures.Add('screenshot content is blank or uniform')
+    }
+
+    if (-not $remoteLogCollectionSucceeded) {
+        $strictFailures.Add('remote log collection failed')
+    }
+
+    if ($Mode -eq 'Provider') {
+        $hasSecurityType10Signal = $false
+        if (($null -ne $securityLogonType10Count) -and ($securityLogonType10Count -ge 1)) {
+            $hasSecurityType10Signal = $true
+        }
+
+        $hasRemoteConnectionSignals = $false
+        if (
+            ($null -ne $remoteConnectionSignalCount) -and
+            ($null -ne $remoteGraphicsSignalCount) -and
+            ($remoteConnectionSignalCount -ge 1) -and
+            ($remoteGraphicsSignalCount -ge 1)
+        ) {
+            $hasRemoteConnectionSignals = $true
+        }
+
+        if (-not $hasSecurityType10Signal -and -not $hasRemoteConnectionSignals) {
+            $strictFailures.Add("no interactive-session proof signals observed (Security4624Type10=$securityLogonType10Count, RemoteConnection261=$remoteConnectionSignalCount, RemoteGraphics263=$remoteGraphicsSignalCount)")
+        }
+
+        if ($null -eq $termsrvFallbackMarkerCount) {
+            $strictFailures.Add('termsrv fallback marker count was not collected')
+        } elseif ($termsrvFallbackMarkerCount -gt 0) {
+            $strictFailures.Add("termsrv fallback markers detected (count=$termsrvFallbackMarkerCount)")
+        }
+
+        if ($null -eq $providerSessionProofMarkerCount) {
+            $strictFailures.Add('provider session proof marker count was not collected')
+        } elseif ($providerSessionProofMarkerCount -lt 1) {
+            $strictFailures.Add('provider session proof markers were not observed')
+        }
+
+        if ($null -eq $termsrvSessionProofMarkerCount) {
+            $strictFailures.Add('termsrv session proof marker count was not collected')
+        } elseif ($termsrvSessionProofMarkerCount -lt 1) {
+            $strictFailures.Add('termsrv session proof markers were not observed')
+        }
+
+        if (-not $guiTargetSessionResolved) {
+            $strictFailures.Add('GUI session gate missing: could not resolve target capture session id from provider/termsrv markers')
+        } elseif (-not $guiTargetSessionProcessProof) {
+            $strictFailures.Add("GUI session gate failed: explorer.exe not observed in target session $guiTargetSessionId (source=$guiTargetSessionSource, explorer=$guiTargetSessionExplorerCount, gui_processes=$guiTargetSessionGuiProcessCount, winlogon=$guiTargetSessionWinlogonCount, logonui=$guiTargetSessionLogonUiCount)")
+        }
+
+        if ($bitmapDumpCount -lt 1) {
+            $strictFailures.Add('no bitmap dumps were downloaded')
+        }
+
+        $hasIddDiagnosticsSignal = $iddDriverLoadedNotified -or (($null -ne $iddWddmEnabledSignalCount) -and ($iddWddmEnabledSignalCount -ge 1)) -or (($null -ne $remoteGraphicsSignalCount) -and ($remoteGraphicsSignalCount -ge 1))
+        if (-not $hasIddDiagnosticsSignal) {
+            $strictFailures.Add("IDD diagnostics gate missing (NotifyIddDriverLoaded=$iddDriverLoadedNotified, ProviderEnableWddmIdd=$iddWddmEnabledSignalCount, RemoteGraphics263=$remoteGraphicsSignalCount)")
+        }
+    }
+
+    if ($strictFailures.Count -gt 0) {
+        Write-Host "STRICT RESULT: FAIL" -ForegroundColor Red
+        foreach ($failure in $strictFailures) {
+            Write-Host "  - $failure" -ForegroundColor Red
+        }
+
+        throw "strict session proof failed with $($strictFailures.Count) issue(s)"
+    }
+
+    Write-Host "STRICT RESULT: PASS" -ForegroundColor Green
 }
