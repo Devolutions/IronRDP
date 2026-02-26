@@ -12,7 +12,9 @@ use ironrdp::pdu::dvc::gfx::{Codec1Type, ServerPdu};
 use ironrdp::pdu::geometry::Rectangle;
 use thiserror::Error;
 
-use crate::surface::{DataBuffer, SurfaceDecoders, Surfaces};
+#[cfg(feature = "openh264")]
+use crate::surface::SurfaceDecoders;
+use crate::surface::{DataBuffer, Surfaces};
 
 #[derive(Debug)]
 enum RenderEvent {
@@ -36,14 +38,17 @@ impl Debug for DataRegion {
     }
 }
 
-/// Runs the decode loop to decode any graphics PDU
+/// Runs the decode loop for graphics PDUs, using Cisco's prebuilt OpenH264
+/// binary (loaded at runtime via `libloading`) for H.264 decoding.
+#[cfg(feature = "openh264")]
 fn handle_gfx_pdu(
     graphic_receiver: Receiver<ServerPdu>,
     gfx_dump_file: Option<PathBuf>,
+    openh264_path: PathBuf,
     tx: Sender<RenderEvent>,
 ) -> Result<(), RendererError> {
     let mut file = gfx_dump_file.map(|file| File::create(file).unwrap());
-    let mut decoders = SurfaceDecoders::new();
+    let mut decoders = SurfaceDecoders::new(openh264_path);
     loop {
         let message = graphic_receiver
             .recv()
@@ -124,25 +129,28 @@ fn handle_draw(
     }
 }
 
-/// The renderer launches two threads to handle graphics messages.
-/// The first thread takes any graphics PDU and decodes the messages.
-/// The second thread paints the messages onto the canvas
+/// Launches two threads for graphics handling: one decodes EGFX PDUs (using
+/// OpenH264 for H.264 when the `openh264` feature is enabled), and one paints
+/// decoded frames onto the OpenGL canvas.
+#[cfg(feature = "openh264")]
 pub struct Renderer {
     render_proxy: Sender<RenderEvent>,
     _decode_thread: JoinHandle<Result<(), RendererError>>,
     _draw_thread: JoinHandle<Result<(), RendererError>>,
 }
 
+#[cfg(feature = "openh264")]
 impl Renderer {
     pub fn new(
         window: glutin::ContextWrapper<glutin::NotCurrent, glutin::window::Window>,
         graphic_receiver: Receiver<ServerPdu>,
         gfx_dump_file: Option<PathBuf>,
+        openh264_path: PathBuf,
     ) -> Renderer {
         let (tx, rx) = mpsc::channel::<RenderEvent>();
         let tx2 = tx.clone();
         let decode_thread = thread::spawn(move || {
-            let result = handle_gfx_pdu(graphic_receiver, gfx_dump_file, tx2);
+            let result = handle_gfx_pdu(graphic_receiver, gfx_dump_file, openh264_path, tx2);
             info!("Graphics handler result: {:?}", result);
             result
         });
@@ -171,6 +179,7 @@ pub enum RendererError {
     SendError(String),
     #[error("unable to receive message on channel {0}")]
     ReceiveError(String),
+    #[cfg(feature = "openh264")]
     #[error("failed to decode OpenH264 stream {0}")]
     OpenH264Error(#[from] openh264::Error),
     #[error("graphics pipeline protocol error: {0}")]

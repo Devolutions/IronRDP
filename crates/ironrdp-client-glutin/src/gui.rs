@@ -72,6 +72,7 @@ pub enum UserEvent {}
 pub fn launch_gui(
     context: UiContext,
     gfx_dump_file: Option<PathBuf>,
+    openh264_path: PathBuf,
     graphic_receiver: Receiver<ServerPdu>,
     stream: Arc<Mutex<ErasedWriter>>,
 ) -> Result<(), RdpError> {
@@ -79,7 +80,7 @@ pub fn launch_gui(
 
     tokio::spawn(async move { handle_input_events(receiver, stream).await });
 
-    let renderer = Renderer::new(context.window, graphic_receiver, gfx_dump_file);
+    let renderer = Renderer::new(context.window, graphic_receiver, gfx_dump_file, openh264_path);
     // We handle events differently between targets
 
     let mut last_position: Option<PhysicalPosition<f64>> = None;

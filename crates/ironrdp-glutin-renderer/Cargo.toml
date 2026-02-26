@@ -11,13 +11,17 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = ["openh264"]
+openh264 = ["dep:openh264"]
+
 [dependencies]
 ironrdp.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 glow = "0.12"
 glutin = { version = "0.29" }
-openh264  = { version = "0.4" }
+openh264 = { version = "0.6", optional = true, default-features = false, features = ["libloading"] }
 
 [lints]
 workspace = true
