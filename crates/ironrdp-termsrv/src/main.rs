@@ -103,6 +103,8 @@ mod windows_main {
     const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
     const FIRST_FRAME_BLANK_GRACE: Duration = Duration::from_secs(1);
     const FIRST_FRAME_BLANK_MAX_FRAMES: u32 = 8;
+    const PERSISTENT_BLANK_RESTART_GRACE: Duration = Duration::from_secs(3);
+    const PERSISTENT_BLANK_RESTART_MIN_FRAMES: u32 = 20;
     const CAPTURE_HELPER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
     const CAPTURE_HELPER_RETRY_DELAY: Duration = Duration::from_secs(5);
     const CAPTURE_IPC_ENV: &str = "IRONRDP_WTS_CAPTURE_IPC";
@@ -426,6 +428,9 @@ mod windows_main {
         warned_blank_capture: bool,
         initial_blank_since: Option<Instant>,
         initial_blank_frames: u32,
+        persistent_blank_since: Option<Instant>,
+        persistent_blank_frames: u32,
+        capture_restarted_for_blank: bool,
         last_bitmap: Option<BitmapUpdate>,
         helper_frames_received: u64,
         helper_timeouts: u64,
@@ -477,6 +482,9 @@ mod windows_main {
                 warned_blank_capture: false,
                 initial_blank_since: None,
                 initial_blank_frames: 0,
+                persistent_blank_since: None,
+                persistent_blank_frames: 0,
+                capture_restarted_for_blank: false,
                 last_bitmap: None,
                 helper_frames_received: 0,
                 helper_timeouts: 0,
@@ -620,6 +628,9 @@ mod windows_main {
                     self.warned_blank_capture = false;
                     self.initial_blank_since = None;
                     self.initial_blank_frames = 0;
+                    self.persistent_blank_since = None;
+                    self.persistent_blank_frames = 0;
+                    self.capture_restarted_for_blank = false;
                     self.sent_first_frame = false;
                     self.last_bitmap = None;
                     self.helper_frames_received = 0;
@@ -658,8 +669,17 @@ mod windows_main {
                                 helper_pid = capture.pid(),
                                 "Started interactive capture helper"
                             );
+                            info!(
+                                connection_id = self.connection_id,
+                                session_id = session_id_override.unwrap_or(0),
+                                has_session_override = session_id_override.is_some(),
+                                helper_pid = capture.pid(),
+                                "SESSION_PROOF_TERMSRV_CAPTURE_HELPER_STARTED"
+                            );
                             self.initial_blank_since = None;
                             self.initial_blank_frames = 0;
+                            self.persistent_blank_since = None;
+                            self.persistent_blank_frames = 0;
                             self.capture_started_with_session_override = Some(session_id_override);
                             self.capture = Some(capture);
                         }
@@ -754,9 +774,9 @@ mod windows_main {
                     }
                     CapturedFrame::Raw(bitmap) => {
                         let is_blank = is_probably_blank_bgra32(bitmap.data.as_ref());
+                        let now = Instant::now();
 
                         if !self.sent_first_frame && is_blank {
-                            let now = Instant::now();
                             let initial_blank_since = self.initial_blank_since.get_or_insert(now);
                             self.initial_blank_frames = self.initial_blank_frames.saturating_add(1);
 
@@ -788,6 +808,8 @@ mod windows_main {
                         if !self.sent_first_frame {
                             self.initial_blank_since = None;
                             self.initial_blank_frames = 0;
+                            self.persistent_blank_since = None;
+                            self.persistent_blank_frames = 0;
                         }
 
                         if is_blank && !self.warned_blank_capture {
@@ -796,6 +818,47 @@ mod windows_main {
                                 connection_id = self.connection_id,
                                 "Captured blank frame; sending as-is after first meaningful update"
                             );
+                        }
+
+                        if self.sent_first_frame && self.capture.is_some() && is_blank {
+                            let blank_since = self.persistent_blank_since.get_or_insert(now);
+                            self.persistent_blank_frames = self.persistent_blank_frames.saturating_add(1);
+
+                            let blank_elapsed = now.saturating_duration_since(*blank_since);
+                            let should_restart_for_blank = !self.capture_restarted_for_blank
+                                && blank_elapsed >= PERSISTENT_BLANK_RESTART_GRACE
+                                && self.persistent_blank_frames >= PERSISTENT_BLANK_RESTART_MIN_FRAMES;
+
+                            if should_restart_for_blank {
+                                info!(
+                                    connection_id = self.connection_id,
+                                    blank_frames = self.persistent_blank_frames,
+                                    blank_elapsed_ms = blank_elapsed.as_millis(),
+                                    "Persistent blank capture detected; restarting capture helper once"
+                                );
+
+                                if let Some(capture) = self.capture.take() {
+                                    capture.terminate();
+                                }
+
+                                self.capture_restarted_for_blank = true;
+                                self.next_helper_attempt_at = Instant::now();
+                                self.warned_blank_capture = false;
+                                self.initial_blank_since = None;
+                                self.initial_blank_frames = 0;
+                                self.persistent_blank_since = None;
+                                self.persistent_blank_frames = 0;
+                                self.sent_first_frame = false;
+                                self.last_bitmap = None;
+                                self.helper_frames_received = 0;
+                                self.helper_timeouts = 0;
+
+                                sleep(CAPTURE_INTERVAL).await;
+                                continue;
+                            }
+                        } else if !is_blank {
+                            self.persistent_blank_since = None;
+                            self.persistent_blank_frames = 0;
                         }
 
                         self.sent_first_frame = true;
@@ -1703,10 +1766,10 @@ mod windows_main {
             .to_str()
             .ok_or_else(|| anyhow!("current executable path is not valid unicode"))?;
 
-        let desktop = acquired.desktop.as_lpdesktop();
         let args = format!("\"{exe_path_str}\" --capture-helper {extra_args}");
 
         let app_name: Vec<u16> = exe_path_str.encode_utf16().chain(Some(0)).collect();
+        let desktop = acquired.desktop.as_lpdesktop();
         let mut cmd_line: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
         let mut desktop_w: Vec<u16> = desktop.encode_utf16().chain(Some(0)).collect();
 
@@ -3064,6 +3127,11 @@ mod windows_main {
             if let Ok(mut guard) = self.connection_session_ids.lock() {
                 guard.insert(connection_id, session_id);
                 info!(connection_id, session_id, "Set capture session id for connection");
+                info!(
+                    connection_id,
+                    session_id,
+                    "SESSION_PROOF_TERMSRV_SET_CAPTURE_SESSION_ID_APPLIED"
+                );
             }
             ServiceEvent::Ack
         }
