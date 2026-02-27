@@ -37,7 +37,7 @@ mod windows_main {
     use tracing_subscriber::EnvFilter;
     use windows::core::{w, BOOL, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
-        GetLastError, LocalFree, SetLastError, ERROR_NOT_ALL_ASSIGNED, HANDLE, HLOCAL, LUID, WAIT_OBJECT_0,
+        GetLastError, LocalFree, SetLastError, ERROR_BAD_LENGTH, ERROR_NOT_ALL_ASSIGNED, HANDLE, HLOCAL, LUID, WAIT_OBJECT_0,
         WAIT_TIMEOUT, WIN32_ERROR,
     };
     use windows::Win32::Graphics::Gdi::{
@@ -101,6 +101,7 @@ mod windows_main {
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
     const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:4489";
     const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
+    const LOGON_READINESS_PROBE_INTERVAL: Duration = Duration::from_secs(2);
     const FIRST_FRAME_BLANK_GRACE: Duration = Duration::from_secs(1);
     const FIRST_FRAME_BLANK_MAX_FRAMES: u32 = 8;
     const PERSISTENT_BLANK_RESTART_GRACE: Duration = Duration::from_secs(3);
@@ -434,6 +435,15 @@ mod windows_main {
         last_bitmap: Option<BitmapUpdate>,
         helper_frames_received: u64,
         helper_timeouts: u64,
+        /// True once at least one capture helper process has started successfully.
+        /// Used to disable prelogon fallback token paths on later restart attempts.
+        helper_started_once: bool,
+        /// Session id used for the last logon/shell readiness probe.
+        logon_readiness_session_id: Option<u32>,
+        /// Result of the last throttled logon/shell readiness probe.
+        logon_readiness_ready: bool,
+        /// Next time we may probe logon/shell readiness.
+        next_logon_readiness_probe_at: Instant,
         /// Set the first time we observe `session_id_override` but `WTSQueryUserToken` has not yet
         /// succeeded.  We delay spawning the capture helper until the user is logged in (or until
         /// we decide to fall back to a non-user token).
@@ -488,6 +498,10 @@ mod windows_main {
                 last_bitmap: None,
                 helper_frames_received: 0,
                 helper_timeouts: 0,
+                helper_started_once: false,
+                logon_readiness_session_id: None,
+                logon_readiness_ready: false,
+                next_logon_readiness_probe_at: Instant::now(),
                 waiting_for_user_login_since: None,
                 capture_restarted_for_logon: false,
                 capture_started_with_session_override: None,
@@ -594,16 +608,23 @@ mod windows_main {
                 //     TermService session.
                 //   - The user has now logged into the TermService session.  Restart to pick up
                 //     the real user desktop instead of the pre-login fallback (winlogon) desktop.
-                //     We detect this via either WTSQueryUserToken OR explorer.exe token presence
-                //     (for service contexts where WTSQueryUserToken remains unavailable).
+                //     We detect this via throttled WTSQueryUserToken probing.
                 let session_override_changed = self
                     .capture_started_with_session_override
                     .is_some_and(|started_with| started_with != session_id_override);
 
-                let user_token_available = session_id_override.is_some_and(session_has_user_token);
-                let explorer_token_available = session_id_override.is_some_and(session_has_explorer_token);
-                let should_restart_for_logon =
-                    (user_token_available || explorer_token_available) && !self.capture_restarted_for_logon;
+                let should_probe_logon_readiness = self.logon_readiness_session_id != session_id_override
+                    || Instant::now() >= self.next_logon_readiness_probe_at;
+
+                if should_probe_logon_readiness {
+                    let user_token_available = session_id_override.is_some_and(session_has_user_token);
+
+                    self.logon_readiness_ready = user_token_available;
+                    self.logon_readiness_session_id = session_id_override;
+                    self.next_logon_readiness_probe_at = Instant::now() + LOGON_READINESS_PROBE_INTERVAL;
+                }
+
+                let should_restart_for_logon = self.logon_readiness_ready && !self.capture_restarted_for_logon;
                 let should_restart = self.capture.is_some() && (session_override_changed || should_restart_for_logon);
 
                 if should_restart {
@@ -637,6 +658,9 @@ mod windows_main {
                     self.last_bitmap = None;
                     self.helper_frames_received = 0;
                     self.helper_timeouts = 0;
+                    self.logon_readiness_ready = false;
+                    self.logon_readiness_session_id = None;
+                    self.next_logon_readiness_probe_at = Instant::now();
                     self.capture_started_with_session_override = None;
                     self.waiting_for_user_login_since = None;
                 }
@@ -655,6 +679,17 @@ mod windows_main {
                     }
 
                     let captured_credentials = { self.credentials_slot.lock().await.clone() };
+                    let allow_prelogon_fallback = !self.helper_started_once;
+
+                    let launch_user_token_available = session_id_override.is_some_and(session_has_user_token);
+                    info!(
+                        connection_id = self.connection_id,
+                        session_id = session_id_override.unwrap_or(0),
+                        has_session_override = session_id_override.is_some(),
+                        launch_user_token_available,
+                        allow_prelogon_fallback,
+                        "Capture helper launch attempt"
+                    );
 
                     match CaptureClient::start(
                         self.connection_id,
@@ -662,6 +697,7 @@ mod windows_main {
                         Arc::clone(&self.input_stream_slot),
                         session_id_override,
                         captured_credentials,
+                        allow_prelogon_fallback,
                     )
                     .await
                     {
@@ -682,6 +718,7 @@ mod windows_main {
                             self.initial_blank_frames = 0;
                             self.persistent_blank_since = None;
                             self.persistent_blank_frames = 0;
+                            self.helper_started_once = true;
                             self.capture_started_with_session_override = Some(session_id_override);
                             self.capture = Some(capture);
                         }
@@ -754,6 +791,13 @@ mod windows_main {
                                     "GDI capture failed; re-sending last bitmap"
                                 );
                                 CapturedFrame::Raw(bitmap)
+                            } else if self.provider_mode {
+                                warn!(
+                                    error = %format!("{error:#}"),
+                                    "GDI capture failed with no cached frame in provider mode; waiting for helper retry"
+                                );
+                                sleep(CAPTURE_INTERVAL).await;
+                                continue;
                             } else {
                                 warn!(
                                     error = %format!("{error:#}"),
@@ -828,6 +872,7 @@ mod windows_main {
 
                             let blank_elapsed = now.saturating_duration_since(*blank_since);
                             let should_restart_for_blank = !self.capture_restarted_for_blank
+                                && self.logon_readiness_ready
                                 && blank_elapsed >= PERSISTENT_BLANK_RESTART_GRACE
                                 && self.persistent_blank_frames >= PERSISTENT_BLANK_RESTART_MIN_FRAMES;
 
@@ -925,11 +970,18 @@ mod windows_main {
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             session_id_override: Option<u32>,
             credentials: Option<StoredCredentials>,
+            allow_prelogon_fallback: bool,
         ) -> anyhow::Result<Self> {
             match capture_ipc_from_env() {
                 CaptureIpc::Tcp => Ok(Self::Tcp(
-                    HelperCaptureClient::start(connection_id, input_stream_slot, session_id_override, credentials)
-                        .await?,
+                    HelperCaptureClient::start(
+                        connection_id,
+                        input_stream_slot,
+                        session_id_override,
+                        credentials,
+                        allow_prelogon_fallback,
+                    )
+                    .await?,
                 )),
                 CaptureIpc::SharedMem => {
                     match SharedMemCaptureClient::start(
@@ -938,6 +990,7 @@ mod windows_main {
                         Arc::clone(&input_stream_slot),
                         session_id_override,
                         credentials.clone(),
+                        allow_prelogon_fallback,
                     )
                     .await
                     {
@@ -954,6 +1007,7 @@ mod windows_main {
                                     input_stream_slot,
                                     session_id_override,
                                     credentials,
+                                    allow_prelogon_fallback,
                                 )
                                 .await?,
                             ))
@@ -998,6 +1052,7 @@ mod windows_main {
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             session_id_override: Option<u32>,
             credentials: Option<StoredCredentials>,
+            allow_prelogon_fallback: bool,
         ) -> anyhow::Result<Self> {
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
                 .await
@@ -1017,9 +1072,15 @@ mod windows_main {
 
             info!(connection_id, input_addr = %input_addr, "Capture helper input listener bound");
 
-            let helper =
-                spawn_capture_helper_process_tcp(local_addr, input_addr, true, session_id_override, credentials)
-                    .with_context(|| format!("failed to spawn capture helper for connection {connection_id}"))?;
+            let helper = spawn_capture_helper_process_tcp(
+                local_addr,
+                input_addr,
+                true,
+                session_id_override,
+                credentials,
+                allow_prelogon_fallback,
+            )
+            .with_context(|| format!("failed to spawn capture helper for connection {connection_id}"))?;
 
             let (stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, listener.accept())
                 .await
@@ -1361,6 +1422,7 @@ mod windows_main {
             input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
             session_id_override: Option<u32>,
             credentials: Option<StoredCredentials>,
+            allow_prelogon_fallback: bool,
         ) -> anyhow::Result<Self> {
             let (width, height) = desktop_size_nonzero(desktop_size)?;
             let width_usize = NonZeroUsize::from(width).get();
@@ -1446,6 +1508,7 @@ mod windows_main {
                 input_addr,
                 session_id_override,
                 credentials,
+                allow_prelogon_fallback,
             )
             .with_context(|| format!("failed to spawn shared-memory capture helper for connection {connection_id}"))?;
 
@@ -1722,12 +1785,14 @@ mod windows_main {
         rfx_encode: bool,
         session_id_override: Option<u32>,
         credentials: Option<StoredCredentials>,
+        allow_prelogon_fallback: bool,
     ) -> anyhow::Result<SpawnedProcess> {
         let rfx_flag = if rfx_encode { " --rfx-encode" } else { "" };
         spawn_capture_helper_process_with_args(
             &format!("--connect {connect_addr} --input-connect {input_connect_addr}{rfx_flag}"),
             session_id_override,
             credentials,
+            allow_prelogon_fallback,
         )
     }
 
@@ -1737,11 +1802,13 @@ mod windows_main {
         input_connect_addr: SocketAddr,
         session_id_override: Option<u32>,
         credentials: Option<StoredCredentials>,
+        allow_prelogon_fallback: bool,
     ) -> anyhow::Result<SpawnedProcess> {
         spawn_capture_helper_process_with_args(
             &format!("--shm-map \"{map_name}\" --shm-event \"{event_name}\" --input-connect {input_connect_addr}"),
             session_id_override,
             credentials,
+            allow_prelogon_fallback,
         )
     }
 
@@ -1749,6 +1816,7 @@ mod windows_main {
         extra_args: &str,
         session_id_override: Option<u32>,
         credentials: Option<StoredCredentials>,
+        allow_prelogon_fallback: bool,
     ) -> anyhow::Result<SpawnedProcess> {
         let session_id = match session_id_override {
             Some(id) => {
@@ -1759,7 +1827,7 @@ mod windows_main {
         };
         info!(session_id, "Selected capture session");
 
-        let acquired = acquire_session_token(session_id, credentials.as_ref())
+        let acquired = acquire_session_token(session_id, credentials.as_ref(), allow_prelogon_fallback)
             .context("failed to acquire a token for the capture session")?;
         let user_token = acquired.token;
 
@@ -1908,14 +1976,24 @@ mod windows_main {
     fn acquire_session_token(
         session_id: u32,
         credentials: Option<&StoredCredentials>,
+        allow_prelogon_fallback: bool,
     ) -> anyhow::Result<AcquiredSessionToken> {
         // Prefer a token from explorer first when present (interactive desktop).
-        if let Ok(token) = token_from_session_process(session_id, "explorer.exe") {
-            debug!(session_id, "Using explorer.exe token (default desktop)");
-            return Ok(AcquiredSessionToken {
-                token,
-                desktop: HelperDesktop::Default,
-            });
+        match token_from_session_process(session_id, "explorer.exe") {
+            Ok(token) => {
+                debug!(session_id, "Using explorer.exe token (default desktop)");
+                return Ok(AcquiredSessionToken {
+                    token,
+                    desktop: HelperDesktop::Default,
+                });
+            }
+            Err(error) => {
+                info!(
+                    session_id,
+                    error = %format!("{error:#}"),
+                    "explorer.exe token unavailable for capture session"
+                );
+            }
         }
 
         let mut token = HANDLE::default();
@@ -1941,15 +2019,55 @@ mod windows_main {
             });
         }
 
-        if let Ok(token) = token_from_session_process(session_id, "winlogon.exe") {
+        if !allow_prelogon_fallback {
+            let wts_error = wts_result.err().unwrap_or_else(windows::core::Error::empty);
             info!(
                 session_id,
-                "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
+                error = %wts_error,
+                error_code = %wts_error.code(),
+                "WTSQueryUserToken unavailable and prelogon token fallback is disabled after initial helper start"
             );
-            return Ok(AcquiredSessionToken {
-                token,
-                desktop: HelperDesktop::Winlogon,
-            });
+            return Err(anyhow!("prelogon token fallback disabled after initial helper start"));
+        }
+
+        match token_from_session_process(session_id, "winlogon.exe") {
+            Ok(token) => {
+                info!(
+                    session_id,
+                    "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
+                );
+                return Ok(AcquiredSessionToken {
+                    token,
+                    desktop: HelperDesktop::Winlogon,
+                });
+            }
+            Err(error) => {
+                info!(
+                    session_id,
+                    error = %format!("{error:#}"),
+                    "winlogon.exe token unavailable for capture session"
+                );
+            }
+        }
+
+        match token_from_session_process(session_id, "csrss.exe") {
+            Ok(token) => {
+                info!(
+                    session_id,
+                    "Using csrss.exe token (fallback for session-bound helper startup)"
+                );
+                return Ok(AcquiredSessionToken {
+                    token,
+                    desktop: HelperDesktop::Default,
+                });
+            }
+            Err(error) => {
+                info!(
+                    session_id,
+                    error = %format!("{error:#}"),
+                    "csrss.exe token unavailable for capture session"
+                );
+            }
         }
 
         let wts_error = wts_result.err().unwrap_or_else(windows::core::Error::empty);
@@ -1965,7 +2083,17 @@ mod windows_main {
         let _ = credentials;
 
         debug!(session_id, "Using duplicated service token for capture");
-        let token = duplicate_self_token_for_session(session_id)?;
+        let token = match duplicate_self_token_for_session(session_id) {
+            Ok(token) => token,
+            Err(error) => {
+                warn!(
+                    session_id,
+                    error = %format!("{error:#}"),
+                    "Session-adjusted service token acquisition failed"
+                );
+                return Err(error);
+            }
+        };
 
         Ok(AcquiredSessionToken {
             token,
@@ -1997,10 +2125,46 @@ mod windows_main {
         let mut process_info_ptr: *mut WTS_PROCESS_INFOW = null_mut();
         let mut process_count = 0u32;
 
-        // SAFETY: WTSEnumerateProcessesW writes a buffer pointer into `process_info_ptr` on success.
-        unsafe { WTSEnumerateProcessesW(None, 0, 1, &mut process_info_ptr, &mut process_count) }
-            .map_err(|error| anyhow!("WTSEnumerateProcessesW failed: {error}"))
-            .context("WTSEnumerateProcessesW failed")?;
+        let mut enumerate_success = false;
+        let mut enumerate_error: Option<anyhow::Error> = None;
+
+        for attempt in 0..3 {
+            process_info_ptr = null_mut();
+            process_count = 0;
+
+            // SAFETY: WTSEnumerateProcessesW writes a buffer pointer into `process_info_ptr` on success.
+            let enumerate_result = unsafe { WTSEnumerateProcessesW(None, 0, 1, &mut process_info_ptr, &mut process_count) };
+
+            match enumerate_result {
+                Ok(()) => {
+                    enumerate_success = true;
+                    break;
+                }
+                Err(error) => {
+                    if error.code() == windows::core::HRESULT::from_win32(ERROR_BAD_LENGTH.0) && attempt < 2 {
+                        warn!(
+                            session_id,
+                            process_name,
+                            attempt = attempt + 1,
+                            "WTSEnumerateProcessesW returned ERROR_BAD_LENGTH; retrying"
+                        );
+                        std::thread::sleep(Duration::from_millis(25));
+                        continue;
+                    }
+
+                    enumerate_error = Some(anyhow!("WTSEnumerateProcessesW failed: {error}"));
+                    break;
+                }
+            }
+        }
+
+        if !enumerate_success {
+            return Err(
+                enumerate_error
+                    .unwrap_or_else(|| anyhow!("WTSEnumerateProcessesW failed: unknown error")),
+            )
+            .context("WTSEnumerateProcessesW failed");
+        }
 
         struct ProcessListGuard(*mut WTS_PROCESS_INFOW);
         impl Drop for ProcessListGuard {
