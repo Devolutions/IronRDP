@@ -368,6 +368,7 @@ if (-not $SkipDeploy.IsPresent) {
         # so the provider DLL has nothing to connect to and session management never happens.
         AutoListen           = ($Mode -ne 'Provider')
         WtsProvider          = ($Mode -eq 'Provider')
+        AutoSendSas          = ($Mode -eq 'Provider')
         # In Provider mode, skip the TermService start in the deploy step.  TermService will be
         # started exactly once by the provider-DLL install step below.  A double TermService
         # start/stop cycle triggers StopListen IPC which aborts the companion's TCP listener task,
@@ -535,6 +536,7 @@ if (-not $SkipScreenshot.IsPresent) {
         '-p', $rdpPasswordEffective,
         '--autologon', 'true',
         '-o', $OutputPng,
+        '--no-graphics-timeout-seconds', $ScreenshotTimeoutSeconds,
         '--after-first-graphics-seconds', $AfterFirstGraphicsSeconds
     )
 
@@ -1156,18 +1158,8 @@ if ($StrictSessionProof.IsPresent) {
             $hasSecurityType10Signal = $true
         }
 
-        $hasRemoteConnectionSignals = $false
-        if (
-            ($null -ne $remoteConnectionSignalCount) -and
-            ($null -ne $remoteGraphicsSignalCount) -and
-            ($remoteConnectionSignalCount -ge 1) -and
-            ($remoteGraphicsSignalCount -ge 1)
-        ) {
-            $hasRemoteConnectionSignals = $true
-        }
-
-        if (-not $hasSecurityType10Signal -and -not $hasRemoteConnectionSignals) {
-            $strictFailures.Add("no interactive-session proof signals observed (Security4624Type10=$securityLogonType10Count, RemoteConnection261=$remoteConnectionSignalCount, RemoteGraphics263=$remoteGraphicsSignalCount)")
+        if (-not $hasSecurityType10Signal) {
+            $strictFailures.Add("mandatory logon proof missing: Security 4624 LogonType=10 not observed for configured user '$RdpUsername' (count=$securityLogonType10Count)")
         }
 
         if ($null -eq $termsrvFallbackMarkerCount) {

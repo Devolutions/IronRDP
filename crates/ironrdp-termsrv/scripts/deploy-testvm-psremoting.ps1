@@ -50,6 +50,9 @@ param(
     [switch]$WtsProvider,
 
     [Parameter()]
+    [switch]$AutoSendSas,
+
+    [Parameter()]
     [string]$CaptureSessionId = '',
 
     [Parameter()]
@@ -361,6 +364,9 @@ param(
     [switch]$WtsProvider,
 
     [Parameter()]
+    [switch]$AutoSendSas,
+
+    [Parameter()]
     [string]$CaptureSessionId = '',
 
     [Parameter()]
@@ -392,6 +398,7 @@ $env:IRONRDP_WTS_LISTEN_ADDR = $ListenerAddr
 $env:IRONRDP_WTS_CAPTURE_IPC = $CaptureIpc
 $env:IRONRDP_WTS_AUTO_LISTEN = if ($AutoListen.IsPresent) { '1' } else { '0' }
 $env:IRONRDP_WTS_PROVIDER = if ($WtsProvider.IsPresent) { '1' } else { '0' }
+$env:IRONRDP_WTS_AUTO_SEND_SAS = if ($AutoSendSas.IsPresent) { '1' } else { '0' }
 $env:IRONRDP_LOG = 'info'
 $env:RUST_BACKTRACE = '1'
 
@@ -502,7 +509,7 @@ finally {
     } -ArgumentList ([int]($ListenerAddr.Split(':')[-1]))
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain, $WtsLogonUsername, $WtsLogonDomain)
+        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $AutoSendSas, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain, $WtsLogonUsername, $WtsLogonDomain)
 
         $arguments = @(
             '-NoProfile',
@@ -528,6 +535,10 @@ finally {
                 $arguments += @('-WtsLogonDomain', $WtsLogonDomain)
             }
             $arguments += @('-WtsLogonPasswordFile', $SecretPath)
+        }
+
+        if ($AutoSendSas) {
+            $arguments += @('-AutoSendSas')
         }
 
         if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
@@ -585,7 +596,7 @@ finally {
             LogErr = $LogErr
             Pid = $proc.Id
         }
-    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain, $wtsLogonUsername, $wtsLogonDomain | Format-List
+    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $AutoSendSas.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain, $wtsLogonUsername, $wtsLogonDomain | Format-List
 
     Invoke-Command -Session $session -ScriptBlock {
         param($ListenerAddr, $LogOut, $LogErr, $TailLines, $NoTermServiceStart)
