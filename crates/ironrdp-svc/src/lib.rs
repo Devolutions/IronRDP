@@ -136,6 +136,7 @@ pub enum CompressionCondition {
 #[derive(Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct StaticVirtualChannel {
+    #[cfg_attr(feature = "arbitrary", arbitrary(default))]
     channel_processor: Box<dyn SvcProcessor>,
     chunk_processor: ChunkProcessor,
 }
@@ -298,6 +299,7 @@ assert_obj_safe!(SvcServerProcessor);
 
 /// ChunkProcessor is used to chunkify/de-chunkify static virtual channel PDUs.
 #[derive(Debug)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 struct ChunkProcessor {
     /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
     /// usually chunked when transferred over svc.
@@ -454,12 +456,12 @@ pub fn make_channel_definition(channel: &StaticVirtualChannel) -> ChannelDef {
 /// It’s possible to downcast the trait object and to retrieve the concrete value
 /// since all [`SvcProcessor`]s are also implementing the [`AsAny`] trait.
 #[derive(Debug)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct StaticChannelSet {
     channels: BTreeMap<TypeId, StaticVirtualChannel>,
     to_channel_id: BTreeMap<TypeId, StaticChannelId>,
     to_type_id: BTreeMap<StaticChannelId, TypeId>,
 }
+
 
 impl StaticChannelSet {
     #[inline]
