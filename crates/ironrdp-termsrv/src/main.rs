@@ -112,6 +112,7 @@ mod windows_main {
     const DUMP_BITMAP_UPDATES_DIR_ENV: &str = "IRONRDP_WTS_DUMP_BITMAP_UPDATES_DIR";
     const AUTO_LISTEN_ENV: &str = "IRONRDP_WTS_AUTO_LISTEN";
     const AUTO_LISTEN_NAME_ENV: &str = "IRONRDP_WTS_AUTO_LISTENER_NAME";
+    const AUTO_SEND_SAS_ENV: &str = "IRONRDP_WTS_AUTO_SEND_SAS";
     const TLS_CERT_SUBJECT_FIND: &str = "IronRDP TermSrv";
     const TLS_KEY_NAME: &str = "IronRdpTermSrvTlsKey";
     const RDP_USERNAME_ENV: &str = "IRONRDP_RDP_USERNAME";
@@ -411,10 +412,9 @@ mod windows_main {
     }
 
     /// In Provider mode, how long to wait for the WTS provider DLL to send `SetCaptureSessionId`
-    /// before falling back to `resolve_capture_session_id()`.  Keep this short so first graphics
-    /// can be produced promptly even when TermService does not call `NotifySessionId`/`ConnectNotify`
-    /// for a connection.
-    const PROVIDER_SESSION_ID_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+    /// before logging and continuing to wait. We intentionally do not fall back to a guessed
+    /// session in provider mode to avoid pinning capture to prelogon desktops.
+    const PROVIDER_SESSION_ID_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
     struct GdiDisplayUpdates {
         connection_id: u32,
@@ -553,9 +553,8 @@ mod windows_main {
                 // In Provider mode, the WTS provider DLL will call SetCaptureSessionId from
                 // ConnectNotify (~1-2 s after TCP accept) to tell us the correct TermService session.
                 // Spin here until the session ID arrives so we never start the capture helper with
-                // a wrong (guessed) session.  We must NOT return Ok(None) because the IronRDP server
-                // interprets None as "disconnect".  Fall through after PROVIDER_SESSION_ID_WAIT_TIMEOUT
-                // so we don't stall forever if the DLL fails to deliver the session ID.
+                // a wrong (guessed) session. We must NOT return Ok(None) because the IronRDP server
+                // interprets None as "disconnect".
                 if self.provider_mode && self.capture.is_none() && session_id_override.is_none() {
                     let deadline = self
                         .wait_for_session_id_until
@@ -576,8 +575,11 @@ mod windows_main {
                     if session_id_override.is_none() {
                         info!(
                             connection_id = self.connection_id,
-                            "Timed out waiting for provider SetCaptureSessionId; falling back to guessed session"
+                            "Still waiting for provider SetCaptureSessionId; keeping capture helper stopped"
                         );
+
+                        *deadline = Instant::now() + PROVIDER_SESSION_ID_WAIT_TIMEOUT;
+                        continue;
                     }
                 }
 
@@ -3335,32 +3337,6 @@ mod windows_main {
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
-        if provider_mode {
-            if let Some(env_creds) = resolve_wts_logon_credentials_from_env()? {
-                let StoredCredentials {
-                    username,
-                    domain,
-                    password,
-                } = env_creds;
-
-                info!(
-                    connection_id,
-                    username = %username,
-                    domain = %domain,
-                    "Configured WTS logon credentials from env"
-                );
-
-                let mut guard = credentials_slot.lock().await;
-                if guard.is_none() {
-                    *guard = Some(StoredCredentials {
-                        username,
-                        domain,
-                        password,
-                    });
-                }
-            }
-        }
-
         let input_stream_slot: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
         let (input_tx, input_rx) = mpsc::unbounded_channel::<InputPacket>();
         let input_task = tokio::task::spawn_local(run_input_spooler(
@@ -3383,16 +3359,7 @@ mod windows_main {
 
         let mut server = {
             let builder = RdpServer::builder().with_addr(([127, 0, 0, 1], 0));
-
-            // In provider mode we need plaintext credentials to pass to TermService.
-            // Our current CredSSP implementation requires preconfigured passwords (pure-Rust SSPI),
-            // so we capture credentials from the ClientInfo PDU over TLS-only instead.
-            let builder = if provider_mode {
-                let _ = tls_pub_key;
-                builder.with_tls(tls_acceptor)
-            } else {
-                builder.with_hybrid(tls_acceptor, tls_pub_key)
-            };
+            let builder = builder.with_hybrid(tls_acceptor, tls_pub_key);
 
             let rfx_only_codecs =
                 ironrdp_pdu::rdp::capability_sets::server_codecs_capabilities(&["remotefx:on", "qoi:off", "qoiz:off"])
@@ -3406,6 +3373,24 @@ mod windows_main {
         };
 
         if provider_mode {
+            let expected_credentials = resolve_rdp_credentials_from_env()?;
+
+            if let Some(credentials) = expected_credentials {
+                info!(
+                    username = %credentials.username,
+                    domain = ?credentials.domain,
+                    "Configured expected RDP credentials for provider-mode CredSSP"
+                );
+                server.set_credentials(Some(credentials));
+            } else {
+                warn!(
+                    username_env = %RDP_USERNAME_ENV,
+                    password_env = %RDP_PASSWORD_ENV,
+                    domain_env = %RDP_DOMAIN_ENV,
+                    "RDP credentials are not configured; provider-mode CredSSP handshake may fail"
+                );
+            }
+
             server.set_allow_unverified_credentials(true);
 
             let credentials_slot = Arc::clone(&credentials_slot);
@@ -4458,16 +4443,8 @@ mod windows_main {
                     SCANCODE_CTRL => ctrl_down = !released,
                     SCANCODE_ALT => alt_down = !released,
                     SCANCODE_END | SCANCODE_DEL if !released && ctrl_down && alt_down => {
-                        // Try to generate a real SAS. If this fails, fall back to normal injection.
-                        // SAFETY: SendSAS is an OS API; it returns non-zero on success.
-                        let ok = unsafe { SendSAS(0) };
-                        if ok != 0 {
-                            info!("Generated Secure Attention Sequence (SAS)");
+                        if try_send_sas("input_ctrl_alt_end") {
                             continue;
-                        } else {
-                            // SAFETY: GetLastError returns the last thread error code.
-                            let err = unsafe { GetLastError() };
-                            warn!(error = ?err, "SendSAS failed; falling back to injected key sequence");
                         }
                     }
                     _ => {}
@@ -4477,6 +4454,27 @@ mod windows_main {
             if let Err(error) = inject_helper_input_event(event) {
                 warn!(error = %format!("{error:#}"), "Failed to inject input event");
             }
+        }
+    }
+
+    fn auto_send_sas_enabled() -> bool {
+        let configured = std::env::var(AUTO_SEND_SAS_ENV)
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+
+        matches!(configured.as_str(), "1" | "true" | "yes" | "on")
+    }
+
+    fn try_send_sas(source: &'static str) -> bool {
+        let ok = unsafe { SendSAS(0) };
+        if ok != 0 {
+            info!(source = %source, "Generated Secure Attention Sequence (SAS)");
+            true
+        } else {
+            let err = unsafe { GetLastError() };
+            warn!(error = ?err, source = %source, "SendSAS failed");
+            false
         }
     }
 
@@ -4498,6 +4496,18 @@ mod windows_main {
                 warn!(error = %format!("{error:#}"), "Input injector task stopped");
             }
         });
+
+        if auto_send_sas_enabled() {
+            for attempt in 1..=5 {
+                if try_send_sas("capture_helper_startup") {
+                    break;
+                }
+
+                if attempt < 5 {
+                    sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
 
         let desktop_size = desktop_size_from_gdi().context("failed to query desktop size")?;
         info!(
@@ -4618,6 +4628,18 @@ mod windows_main {
                 warn!(error = %format!("{error:#}"), "Input injector task stopped");
             }
         });
+
+        if auto_send_sas_enabled() {
+            for attempt in 1..=5 {
+                if try_send_sas("capture_helper_startup") {
+                    break;
+                }
+
+                if attempt < 5 {
+                    sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
 
         // SAFETY: mapping has at least the header.
         let (width, height, _stride, slot_len) = unsafe { shm_read_layout(view, SHM_FB_HEADER_LEN)? };
