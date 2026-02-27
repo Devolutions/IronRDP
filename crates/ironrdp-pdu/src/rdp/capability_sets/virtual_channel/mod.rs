@@ -11,6 +11,7 @@ const CHUNK_SIZE_FIELD_SIZE: usize = 4;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct VirtualChannelFlags: u32 {
         const NO_COMPRESSION = 0;
         const COMPRESSION_SERVER_TO_CLIENT = 1;
@@ -30,6 +31,7 @@ bitflags! {
 ///
 /// * [Virtual Channel Capability Set](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8593178-80c0-4b80-876c-cb77e62cecfc)
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct VirtualChannel {
     pub flags: VirtualChannelFlags,
     pub chunk_size: Option<u32>,

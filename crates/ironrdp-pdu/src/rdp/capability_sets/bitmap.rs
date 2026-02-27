@@ -11,6 +11,7 @@ const BITMAP_LENGTH: usize = 24;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct BitmapDrawingFlags: u8 {
         const ALLOW_DYNAMIC_COLOR_FIDELITY = 0x02;
         const ALLOW_COLOR_SUBSAMPLING = 0x04;
@@ -20,6 +21,7 @@ bitflags! {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Bitmap {
     pub pref_bits_per_pix: u16,
     pub desktop_width: u16,

@@ -2,6 +2,7 @@ use bitflags::bitflags;
 use ironrdp_core::{ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LargePointer {
     pub flags: LargePointerSupportFlags,
 }
@@ -42,6 +43,7 @@ impl<'de> Decode<'de> for LargePointer {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct LargePointerSupportFlags: u16 {
         const UP_TO_96X96_PIXELS = 1;
         const UP_TO_384X384_PIXELS = 2;

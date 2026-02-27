@@ -6,6 +6,7 @@ use ironrdp_core::{ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeR
 const OFFSCREEN_BITMAP_CACHE_LENGTH: usize = 8;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct OffscreenBitmapCache {
     pub is_supported: bool,
     pub cache_size: u16,

@@ -17,6 +17,7 @@ bitflags! {
     /// Used to negotiate the security protocol to use during the Connection Initiation phase using
     /// the [`ConnectionConfirm`] and [`ConnectionRequest`] messages.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct SecurityProtocol: u32 {
         /// PROTOCOL_SSL, TLS + login subsystem (winlogon.exe)
         const SSL = 0x0000_0001;
@@ -157,6 +158,7 @@ impl fmt::Display for FailureCode {
 ///
 /// * [Client X.224 Connection Request PDU](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18a27ef9-6f9a-4501-b000-94b1fe3c2c10)
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum NegoRequestData {
     RoutingToken(RoutingToken),
     Cookie(Cookie),
@@ -194,6 +196,7 @@ impl NegoRequestData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Cookie(pub String);
 
 impl Cookie {
@@ -213,6 +216,7 @@ impl Cookie {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RoutingToken(pub String);
 
 impl RoutingToken {

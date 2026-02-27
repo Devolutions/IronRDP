@@ -8,6 +8,7 @@ const SURFACE_COMMANDS_LENGTH: usize = 8;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CmdFlags: u32 {
         const SET_SURFACE_BITS = 0x02;
         const FRAME_MARKER = 0x10;
@@ -16,6 +17,7 @@ bitflags! {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SurfaceCommands {
     pub flags: CmdFlags,
 }

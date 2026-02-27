@@ -16,6 +16,7 @@ const BITMAP_CACHE_REV2_CELL_INFO_NUM: usize = 5;
 const CACHE_ENTRY_LENGTH: usize = 4;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapCache {
     pub caches: [CacheEntry; BITMAP_CACHE_ENTRIES_NUM],
 }
@@ -65,6 +66,7 @@ impl<'de> Decode<'de> for BitmapCache {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CacheEntry {
     pub entries: u16,
     pub max_cell_size: u16,
@@ -108,6 +110,7 @@ impl<'de> Decode<'de> for CacheEntry {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CacheFlags: u16 {
         const PERSISTENT_KEYS_EXPECTED_FLAG = 1;
         const ALLOW_CACHE_WAITING_LIST_FLAG = 2;
@@ -115,6 +118,7 @@ bitflags! {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapCacheRev2 {
     pub cache_flags: CacheFlags,
     pub num_cell_caches: u8,
@@ -178,6 +182,7 @@ impl<'de> Decode<'de> for BitmapCacheRev2 {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CellInfo {
     pub num_entries: u32,
     pub is_cache_persistent: bool,

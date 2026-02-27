@@ -97,6 +97,7 @@ pub struct BitmapConfig {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SmartCardIdentity {
     /// DER-encoded X509 certificate
     pub certificate: Vec<u8>,
@@ -234,6 +235,7 @@ pub struct Config {
     pub enable_audio_playback: bool,
     pub performance_flags: PerformanceFlags,
 
+    #[cfg_attr(feature = "arbitrary",arbitrary(default))]
     pub license_cache: Option<Arc<dyn LicenseCache>>,
 
     // For Timezone Redirection to sync the server's timezone with the client's.

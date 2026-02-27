@@ -107,6 +107,7 @@ impl<'de> Decode<'de> for Guid {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapCodecs(pub Vec<Codec>);
 
 impl BitmapCodecs {
@@ -153,6 +154,7 @@ impl<'de> Decode<'de> for BitmapCodecs {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Codec {
     pub id: u8,
     pub property: CodecProperty,
@@ -304,12 +306,14 @@ impl<'de> Decode<'de> for Codec {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum RemoteFxContainer {
     ClientContainer(RfxClientCapsContainer),
     ServerContainer(usize),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CodecProperty {
     NsCodec(NsCodec),
     RemoteFx(RemoteFxContainer),
@@ -336,6 +340,7 @@ pub enum CodecProperty {
 ///
 /// * [NSCodec Capability Set](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpnsc/0eac0ba8-7bdd-4300-ab8d-9bc784c0a669)
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct NsCodec {
     pub is_dynamic_fidelity_allowed: bool,
     pub is_subsampling_allowed: bool,
@@ -386,6 +391,7 @@ impl<'de> Decode<'de> for NsCodec {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxClientCapsContainer {
     pub capture_flags: CaptureFlags,
     pub caps_data: RfxCaps,
@@ -435,6 +441,7 @@ impl<'de> Decode<'de> for RfxClientCapsContainer {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxCaps(pub RfxCapset);
 
 impl RfxCaps {
@@ -490,6 +497,7 @@ impl<'de> Decode<'de> for RfxCaps {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxCapset(pub Vec<RfxICap>);
 
 impl RfxCapset {
@@ -562,6 +570,7 @@ impl<'de> Decode<'de> for RfxCapset {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxICap {
     pub flags: RfxICapFlags,
     pub entropy_bits: EntropyBits,
@@ -631,6 +640,7 @@ impl<'de> Decode<'de> for RfxICap {
 
 #[repr(u8)]
 #[derive(PartialEq, Eq, Debug, FromPrimitive, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum EntropyBits {
     Rlgr1 = 1,
     Rlgr3 = 4,
@@ -648,6 +658,7 @@ impl EntropyBits {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CaptureFlags: u32 {
         const CARDP_CAPS_CAPTURE_NON_CAC = 1;
     }
@@ -655,6 +666,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct RfxICapFlags: u8 {
         const CODEC_MODE = 2;
     }
