@@ -43,6 +43,7 @@ USAGE:
                                                                         [--autologon <true|false>]
                                                                         [--tls-enabled <true|false>] [--credssp-enabled <true|false>]
                                     [--compression-enabled <true|false>] [--compression-level <0..3>]
+                                                                                                                                                [--no-graphics-timeout-seconds <SECONDS>]
                                                                         [--after-first-graphics-seconds <SECONDS>]
 ";
 
@@ -74,6 +75,7 @@ fn main() -> anyhow::Result<()> {
             credssp_enabled,
             compression_enabled,
             compression_level,
+            no_graphics_timeout_seconds,
             after_first_graphics_seconds,
         } => {
             info!(
@@ -87,6 +89,7 @@ fn main() -> anyhow::Result<()> {
                 credssp_enabled,
                 compression_enabled,
                 compression_level,
+                no_graphics_timeout_seconds,
                 after_first_graphics_seconds,
                 "run"
             );
@@ -102,6 +105,7 @@ fn main() -> anyhow::Result<()> {
                 credssp_enabled,
                 compression_enabled,
                 compression_level,
+                no_graphics_timeout_seconds,
                 after_first_graphics_seconds,
             })
         }
@@ -121,6 +125,7 @@ struct RunConfig {
     credssp_enabled: bool,
     compression_enabled: bool,
     compression_level: u32,
+    no_graphics_timeout_seconds: u64,
     after_first_graphics_seconds: u64,
 }
 
@@ -139,6 +144,7 @@ enum Action {
         credssp_enabled: bool,
         compression_enabled: bool,
         compression_level: u32,
+        no_graphics_timeout_seconds: u64,
         after_first_graphics_seconds: u64,
     },
 }
@@ -162,6 +168,7 @@ fn parse_args() -> anyhow::Result<Action> {
         let credssp_enabled = args.opt_value_from_str("--credssp-enabled")?.unwrap_or(true);
         let compression_enabled = args.opt_value_from_str("--compression-enabled")?.unwrap_or(true);
         let compression_level = args.opt_value_from_str("--compression-level")?.unwrap_or(3);
+        let no_graphics_timeout_seconds = args.opt_value_from_str("--no-graphics-timeout-seconds")?.unwrap_or(3);
         let after_first_graphics_seconds = args.opt_value_from_str("--after-first-graphics-seconds")?.unwrap_or(8);
 
         if compression_level > 3 {
@@ -180,6 +187,7 @@ fn parse_args() -> anyhow::Result<Action> {
             credssp_enabled,
             compression_enabled,
             compression_level,
+            no_graphics_timeout_seconds,
             after_first_graphics_seconds,
         }
     };
@@ -211,7 +219,13 @@ fn setup_logging() -> anyhow::Result<()> {
 fn run(config: RunConfig) -> anyhow::Result<()> {
     let connector_config = build_config(&config)?;
 
-    let (connection_result, framed) = connect(connector_config, config.host, config.port).context("connect")?;
+    let (connection_result, framed) = connect(
+        connector_config,
+        config.host,
+        config.port,
+        Duration::from_secs(config.no_graphics_timeout_seconds),
+    )
+    .context("connect")?;
     info!(compression_type = ?connection_result.compression_type, "Negotiated compression");
 
     let mut image = DecodedImage::new(
@@ -327,6 +341,7 @@ fn connect(
     config: connector::Config,
     server_name: String,
     port: u16,
+    no_graphics_timeout: Duration,
 ) -> anyhow::Result<(ConnectionResult, UpgradedFramed)> {
     let server_addr = lookup_addr(&server_name, port).context("lookup addr")?;
 
@@ -337,7 +352,7 @@ fn connect(
     // Sets the read timeout for the TCP stream so we can break out of the
     // infinite loop during the active stage once there is no more activity.
     tcp_stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
+        .set_read_timeout(Some(no_graphics_timeout))
         .expect("set_read_timeout call failed");
 
     let client_addr = tcp_stream.local_addr().context("get socket local address")?;
