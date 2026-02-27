@@ -3698,8 +3698,10 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         }
 
         if *_querytype == PROPERTY_TYPE_SUPPRESS_LOGON_UI {
-            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_SUPPRESS_LOGON_UI -> E_NOTIMPL");
-            return Err(E_NOTIMPL.into());
+            first.Type = WTS_VALUE_TYPE_ULONG;
+            first.u.ulVal = 0;
+            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_SUPPRESS_LOGON_UI -> 0");
+            return Ok(());
         }
 
         if *_querytype == PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT {
