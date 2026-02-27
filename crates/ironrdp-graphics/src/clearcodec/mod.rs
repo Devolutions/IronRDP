@@ -10,10 +10,13 @@ mod vbar_cache;
 pub use self::glyph_cache::{GlyphCache, GlyphEntry, GLYPH_CACHE_SIZE};
 pub use self::vbar_cache::{FullVBar, ShortVBar, VBarCache};
 
+/// Glyph cache size as u16 for index arithmetic. GLYPH_CACHE_SIZE=4000 fits in u16.
+const GLYPH_CACHE_WRAP: u16 = 4_000;
+
 use ironrdp_core::{invalid_field_err, DecodeResult, ReadCursor};
 use ironrdp_pdu::codecs::clearcodec::{
-    decode_bands_layer, decode_residual_layer, decode_subcodec_layer, ClearCodecBitmapStream, CompositePayload,
-    SubcodecId, VBar, FLAG_GLYPH_INDEX,
+    decode_bands_layer, decode_residual_layer, decode_subcodec_layer, encode_residual_layer, ClearCodecBitmapStream,
+    CompositePayload, RgbRunSegment, SubcodecId, VBar, FLAG_GLYPH_INDEX,
 };
 
 /// ClearCodec decoder maintaining persistent cache state across frames.
@@ -308,6 +311,175 @@ impl Default for ClearCodecDecoder {
     }
 }
 
+/// ClearCodec encoder for server-side bitmap compression.
+///
+/// Encodes BGRA pixel data into ClearCodec bitmap streams using the residual
+/// (BGR RLE) layer. The residual-only strategy gives good compression for
+/// solid regions and text without requiring V-bar cache synchronization.
+pub struct ClearCodecEncoder {
+    seq_number: u8,
+    glyph_cache: GlyphCache,
+    next_glyph_index: u16,
+}
+
+impl ClearCodecEncoder {
+    pub fn new() -> Self {
+        Self {
+            seq_number: 0,
+            glyph_cache: GlyphCache::new(),
+            next_glyph_index: 0,
+        }
+    }
+
+    /// Encode BGRA pixel data into a ClearCodec bitmap stream.
+    ///
+    /// Input: BGRA pixels in row-major order, `width * height * 4` bytes.
+    /// Returns the wire-format ClearCodec bitmap stream ready for
+    /// `WireToSurface1Pdu.bitmap_data`.
+    pub fn encode(&mut self, bgra: &[u8], width: u16, height: u16) -> Vec<u8> {
+        let w = usize::from(width);
+        let h = usize::from(height);
+        let pixel_count = w * h;
+        let use_glyph = pixel_count <= 1024;
+
+        // Check glyph cache for exact match
+        if use_glyph {
+            if let Some((hit_index, _)) = self.find_glyph_match(bgra, width, height) {
+                return self.encode_glyph_hit(hit_index);
+            }
+        }
+
+        // Convert BGRA to BGR run segments
+        let segments = bgra_to_run_segments(bgra, pixel_count);
+        let residual_data = encode_residual_layer(&segments);
+
+        let mut flags = 0u8;
+        let glyph_index = if use_glyph {
+            flags |= FLAG_GLYPH_INDEX;
+            let idx = self.next_glyph_index;
+            self.glyph_cache.store(
+                idx,
+                GlyphEntry {
+                    width,
+                    height,
+                    pixels: bgra.to_vec(),
+                },
+            );
+            self.next_glyph_index = (idx + 1) % GLYPH_CACHE_WRAP;
+            Some(idx)
+        } else {
+            None
+        };
+
+        let seq = self.seq_number;
+        self.seq_number = seq.wrapping_add(1);
+
+        // Build the wire-format bitmap stream
+        let mut out = Vec::with_capacity(2 + 2 + 12 + residual_data.len());
+        out.push(flags);
+        out.push(seq);
+
+        if let Some(idx) = glyph_index {
+            out.extend_from_slice(&idx.to_le_bytes());
+        }
+
+        // Composite payload: residual only (bands=0, subcodec=0)
+        let residual_len = u32::try_from(residual_data.len()).unwrap_or(u32::MAX);
+        out.extend_from_slice(&residual_len.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // bandsByteCount
+        out.extend_from_slice(&0u32.to_le_bytes()); // subcodecByteCount
+        out.extend_from_slice(&residual_data);
+
+        out
+    }
+
+    /// Encode a cache reset message (FLAG_CACHE_RESET).
+    pub fn encode_cache_reset(&mut self) -> Vec<u8> {
+        let seq = self.seq_number;
+        self.seq_number = seq.wrapping_add(1);
+        vec![ironrdp_pdu::codecs::clearcodec::FLAG_CACHE_RESET, seq]
+    }
+
+    fn find_glyph_match(&self, bgra: &[u8], width: u16, height: u16) -> Option<(u16, &GlyphEntry)> {
+        // Linear scan of recently used glyph indices.
+        // For small cache usage this is fine; a hash index could be added later.
+        let search_range = GLYPH_CACHE_WRAP;
+        for idx in 0..search_range {
+            if let Some(entry) = self.glyph_cache.get(idx) {
+                if entry.width == width && entry.height == height && entry.pixels == bgra {
+                    return Some((idx, entry));
+                }
+            }
+        }
+        None
+    }
+
+    fn encode_glyph_hit(&mut self, index: u16) -> Vec<u8> {
+        let seq = self.seq_number;
+        self.seq_number = seq.wrapping_add(1);
+
+        let flags = FLAG_GLYPH_INDEX | ironrdp_pdu::codecs::clearcodec::FLAG_GLYPH_HIT;
+        let mut out = Vec::with_capacity(4);
+        out.push(flags);
+        out.push(seq);
+        out.extend_from_slice(&index.to_le_bytes());
+        out
+    }
+}
+
+impl Default for ClearCodecEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Convert BGRA pixels to BGR run-length segments.
+fn bgra_to_run_segments(bgra: &[u8], pixel_count: usize) -> Vec<RgbRunSegment> {
+    if pixel_count == 0 {
+        return Vec::new();
+    }
+
+    let mut segments = Vec::new();
+    let mut i = 0;
+
+    while i < pixel_count {
+        let offset = i * 4;
+        if offset + 2 >= bgra.len() {
+            break;
+        }
+
+        let blue = bgra[offset];
+        let green = bgra[offset + 1];
+        let red = bgra[offset + 2];
+        // Alpha channel is discarded (ClearCodec is always opaque BGR)
+
+        let mut run_length = 1u32;
+        let mut j = i + 1;
+        while j < pixel_count {
+            let jo = j * 4;
+            if jo + 2 >= bgra.len() {
+                break;
+            }
+            if bgra[jo] == blue && bgra[jo + 1] == green && bgra[jo + 2] == red {
+                run_length += 1;
+                j += 1;
+            } else {
+                break;
+            }
+        }
+
+        segments.push(RgbRunSegment {
+            blue,
+            green,
+            red,
+            run_length,
+        });
+        i = j;
+    }
+
+    segments
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +602,115 @@ mod tests {
         // Cache reset message
         let reset_data = [FLAG_CACHE_RESET, 0x01]; // flags=CACHE_RESET, seq=1
         let _ = decoder.decode(&reset_data, 0, 0); // zero dimensions, but cache reset still processed
+    }
+
+    // --- Encoder tests ---
+
+    #[test]
+    fn encode_solid_color_round_trip() {
+        let mut enc = ClearCodecEncoder::new();
+        let mut dec = ClearCodecDecoder::new();
+
+        // 4x4 solid red (BGRA: 0,0,255,255)
+        let bgra: Vec<u8> = (0..16).flat_map(|_| [0x00, 0x00, 0xFF, 0xFF]).collect();
+
+        let wire = enc.encode(&bgra, 4, 4);
+        let result = dec.decode(&wire, 4, 4).unwrap();
+
+        assert_eq!(result, bgra);
+    }
+
+    #[test]
+    fn encode_two_color_stripe_round_trip() {
+        let mut enc = ClearCodecEncoder::new();
+        let mut dec = ClearCodecDecoder::new();
+
+        // 4x1: 2 red + 2 blue pixels
+        let mut bgra = Vec::new();
+        bgra.extend_from_slice(&[0x00, 0x00, 0xFF, 0xFF]); // red
+        bgra.extend_from_slice(&[0x00, 0x00, 0xFF, 0xFF]); // red
+        bgra.extend_from_slice(&[0xFF, 0x00, 0x00, 0xFF]); // blue
+        bgra.extend_from_slice(&[0xFF, 0x00, 0x00, 0xFF]); // blue
+
+        let wire = enc.encode(&bgra, 4, 1);
+        let result = dec.decode(&wire, 4, 1).unwrap();
+
+        assert_eq!(result, bgra);
+    }
+
+    #[test]
+    fn encode_glyph_cache_hit() {
+        let mut encoder = ClearCodecEncoder::new();
+
+        // Small 1x1 pixel (fits glyph cache: area=1 <= 1024)
+        let bgra = vec![0xFF, 0x00, 0x00, 0xFF]; // blue
+
+        let first = encoder.encode(&bgra, 1, 1);
+        let second = encoder.encode(&bgra, 1, 1);
+
+        // Second encode should be a glyph hit (shorter)
+        assert!(
+            second.len() < first.len(),
+            "glyph hit should be shorter than full encode"
+        );
+
+        // Both should decode to the same pixels
+        let mut decoder = ClearCodecDecoder::new();
+        let p1 = decoder.decode(&first, 1, 1).unwrap();
+        let p2 = decoder.decode(&second, 1, 1).unwrap();
+        assert_eq!(p1, p2);
+        assert_eq!(p1, bgra);
+    }
+
+    #[test]
+    fn encode_sequence_numbers_increment() {
+        let mut encoder = ClearCodecEncoder::new();
+        let bgra = vec![0x00, 0x00, 0x00, 0xFF]; // 1x1 black
+
+        let e1 = encoder.encode(&bgra, 1, 1);
+        let e2 = encoder.encode(&bgra, 1, 1);
+
+        // Seq numbers are at byte offset 1
+        // First frame starts with glyph_index flag + seq=0
+        assert_eq!(e1[1], 0x00);
+        // Second is glyph hit: seq=1
+        assert_eq!(e2[1], 0x01);
+    }
+
+    #[test]
+    fn encode_cache_reset() {
+        let mut encoder = ClearCodecEncoder::new();
+        let reset = encoder.encode_cache_reset();
+
+        let mut decoder = ClearCodecDecoder::new();
+        let _ = decoder.decode(&reset, 0, 0);
+        // Just verifies it doesn't error
+    }
+
+    #[test]
+    fn bgra_to_run_segments_compresses_runs() {
+        // 8 identical pixels should produce 1 segment with run_length=8
+        let bgra: Vec<u8> = (0..8).flat_map(|_| [0xAA, 0xBB, 0xCC, 0xFF]).collect();
+        let segments = bgra_to_run_segments(&bgra, 8);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].run_length, 8);
+        assert_eq!(segments[0].blue, 0xAA);
+        assert_eq!(segments[0].green, 0xBB);
+        assert_eq!(segments[0].red, 0xCC);
+    }
+
+    #[test]
+    fn bgra_to_run_segments_unique_pixels() {
+        // 3 different pixels produce 3 segments
+        let bgra = vec![
+            0x01, 0x02, 0x03, 0xFF, // pixel 1
+            0x04, 0x05, 0x06, 0xFF, // pixel 2
+            0x07, 0x08, 0x09, 0xFF, // pixel 3
+        ];
+        let segments = bgra_to_run_segments(&bgra, 3);
+        assert_eq!(segments.len(), 3);
+        for seg in &segments {
+            assert_eq!(seg.run_length, 1);
+        }
     }
 }
