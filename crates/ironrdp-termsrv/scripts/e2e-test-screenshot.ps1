@@ -283,11 +283,15 @@ $providerSessionProofMarkerCount = $null
 $providerSessionProofMarkers = ''
 $termsrvSessionProofMarkerCount = $null
 $termsrvSessionProofMarkers = ''
+$notifyCommandProcessCreatedCount = $null
 $iddDriverLoadedNotified = $false
 $iddWddmEnabledSignalCount = $null
 $remoteConnectionSignalCount = $null
 $remoteGraphicsSignalCount = $null
 $remoteConnectionSignalsLog = ''
+$activationLicenseStatus = $null
+$activationLicenseStatusReasonHex = ''
+$activationNotificationMode = $false
 $guiTargetSessionId = $null
 $guiTargetSessionSource = ''
 $guiTargetSessionResolved = $false
@@ -298,6 +302,10 @@ $guiTargetSessionWinlogonCount = $null
 $guiTargetSessionLogonUiCount = $null
 $guiTargetSessionProcesses = ''
 $bitmapDumpCount = 0
+$bitmapObservedSessionIds = @()
+$bitmapTargetSessionMatchCount = 0
+$bitmapTargetSessionHasGraphics = $false
+$type10GraphicsSessionConfirmed = $false
 
 # ── Step 1: Build ───────────────────────────────────────────────────────────
 if (-not $SkipBuild.IsPresent) {
@@ -536,7 +544,6 @@ if (-not $SkipScreenshot.IsPresent) {
         '-p', $rdpPasswordEffective,
         '--autologon', 'true',
         '-o', $OutputPng,
-        '--no-graphics-timeout-seconds', $ScreenshotTimeoutSeconds,
         '--after-first-graphics-seconds', $AfterFirstGraphicsSeconds
     )
 
@@ -696,6 +703,13 @@ try {
                 if ($iddWddmEnableHits) {
                     $result['idd_wddm_enabled_signal_count'] = ($iddWddmEnableHits | Measure-Object).Count
                 }
+
+                $notifyCommandProcessCreatedHits = $dllTail | Select-String -SimpleMatch -Pattern 'IWRdsProtocolConnection::NotifyCommandProcessCreated called' -ErrorAction SilentlyContinue
+                if ($notifyCommandProcessCreatedHits) {
+                    $result['notify_command_process_created_count'] = ($notifyCommandProcessCreatedHits | Measure-Object).Count
+                } else {
+                    $result['notify_command_process_created_count'] = 0
+                }
             }
 
             if ($mode -eq 'Provider') {
@@ -851,6 +865,35 @@ try {
                     $result['remote_graphics_signal_count'] = -1
                     $result['remote_connection_signals'] = "Could not collect RemoteConnectionManager operational events: $_"
                 }
+
+                # Collect activation state because notification mode can block shell readiness.
+                try {
+                    $windowsAppId = '{55c92734-d682-4d71-983e-d6ec3f16059f}'
+                    $license = Get-CimInstance -ClassName SoftwareLicensingProduct -ErrorAction SilentlyContinue |
+                        Where-Object { $_.ApplicationID -eq $windowsAppId -and $_.PartialProductKey } |
+                        Select-Object -First 1 LicenseStatus, LicenseStatusReason
+
+                    if ($null -ne $license) {
+                        $status = [int]$license.LicenseStatus
+                        $result['activation_license_status'] = $status
+
+                        $reasonRaw = $license.LicenseStatusReason
+                        if ($null -ne $reasonRaw) {
+                            $reasonInt = [int64]$reasonRaw
+                            if ($reasonInt -lt 0) {
+                                $reasonInt = $reasonInt -band 0xFFFFFFFF
+                            }
+                            $result['activation_license_status_reason_hex'] = ('0x{0:X8}' -f $reasonInt)
+                        }
+
+                        # LicenseStatus=5 is notification mode.
+                        $result['activation_notification_mode'] = ($status -eq 5)
+                    }
+                } catch {
+                    $result['activation_license_status'] = -1
+                    $result['activation_license_status_reason_hex'] = ''
+                    $result['activation_notification_mode'] = $false
+                }
             }
 
             $proc = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
@@ -903,6 +946,9 @@ try {
         if ($remoteLogs.ContainsKey('idd_wddm_enabled_signal_count')) {
             $iddWddmEnabledSignalCount = [int]$remoteLogs['idd_wddm_enabled_signal_count']
         }
+        if ($remoteLogs.ContainsKey('notify_command_process_created_count')) {
+            $notifyCommandProcessCreatedCount = [int]$remoteLogs['notify_command_process_created_count']
+        }
         if ($remoteLogs.ContainsKey('remote_connection_signal_count')) {
             $remoteConnectionSignalCount = [int]$remoteLogs['remote_connection_signal_count']
         }
@@ -911,6 +957,15 @@ try {
         }
         if ($remoteLogs.ContainsKey('remote_connection_signals')) {
             $remoteConnectionSignalsLog = [string]$remoteLogs['remote_connection_signals']
+        }
+        if ($remoteLogs.ContainsKey('activation_license_status')) {
+            $activationLicenseStatus = [int]$remoteLogs['activation_license_status']
+        }
+        if ($remoteLogs.ContainsKey('activation_license_status_reason_hex')) {
+            $activationLicenseStatusReasonHex = [string]$remoteLogs['activation_license_status_reason_hex']
+        }
+        if ($remoteLogs.ContainsKey('activation_notification_mode')) {
+            $activationNotificationMode = [bool]$remoteLogs['activation_notification_mode']
         }
         if ($remoteLogs.ContainsKey('gui_target_session_id')) {
             $rawGuiTargetSessionId = [int]$remoteLogs['gui_target_session_id']
@@ -1007,6 +1062,8 @@ try {
         if ($Mode -eq 'Provider') {
             Write-Host "Interactive proof signals: Security4624Type10=$securityLogonType10Count RemoteConnection261=$remoteConnectionSignalCount RemoteGraphics263=$remoteGraphicsSignalCount"
             Write-Host "IDD diagnostics signals: NotifyIddDriverLoaded=$iddDriverLoadedNotified ProviderEnableWddmIdd=$iddWddmEnabledSignalCount"
+            Write-Host "Shell transition signals: NotifyCommandProcessCreated=$notifyCommandProcessCreatedCount"
+            Write-Host "Environment signals: ActivationStatus=$activationLicenseStatus NotificationMode=$activationNotificationMode Reason=$activationLicenseStatusReasonHex"
             Write-Host "GUI session proof: TargetSessionId=$guiTargetSessionId Source=$guiTargetSessionSource Explorer=$guiTargetSessionExplorerCount GuiProcesses=$guiTargetSessionGuiProcessCount Winlogon=$guiTargetSessionWinlogonCount LogonUI=$guiTargetSessionLogonUiCount"
 
             if (-not [string]::IsNullOrWhiteSpace($guiTargetSessionProcesses)) {
@@ -1027,13 +1084,44 @@ try {
 
             if ($remoteHasDump) {
                 Copy-Item -FromSession $session -Path (Join-Path $dumpRemoteDir '*') -Destination $dumpLocalDir -Recurse -Force -ErrorAction SilentlyContinue
-                $bmps = Get-ChildItem -LiteralPath $dumpLocalDir -Filter '*.bmp' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-                if ($bmps -and $bmps.Count -gt 0) {
-                    $bitmapDumpCount = $bmps.Count
+                $bmps = @(Get-ChildItem -LiteralPath $dumpLocalDir -Filter '*.bmp' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+                $bmpCount = ($bmps | Measure-Object).Count
+                if ($bmpCount -gt 0) {
+                    $bitmapDumpCount = $bmpCount
+
+                    $bitmapSessionIds = @()
+                    foreach ($bmp in $bmps) {
+                        if ($bmp.Name -match 'bitmap-update-s(\d+)-p\d+-\d+\.bmp') {
+                            $bitmapSessionIds += [int]$Matches[1]
+                        }
+                    }
+
+                    if ($bitmapSessionIds.Count -gt 0) {
+                        $bitmapObservedSessionIds = @($bitmapSessionIds | Sort-Object -Unique)
+                        if ($null -ne $guiTargetSessionId) {
+                            $bitmapTargetSessionMatchCount = @($bitmapSessionIds | Where-Object { $_ -eq $guiTargetSessionId }).Count
+                            $bitmapTargetSessionHasGraphics = ($bitmapTargetSessionMatchCount -ge 1)
+                        }
+                    }
+
+                    if (($null -ne $securityLogonType10Count) -and ($securityLogonType10Count -ge 1) -and $guiTargetSessionResolved -and $bitmapTargetSessionHasGraphics) {
+                        $type10GraphicsSessionConfirmed = $true
+                    }
+
                     $latest = $bmps | Select-Object -First 1
                     Copy-Item -LiteralPath $latest.FullName -Destination (Join-Path $artifactsDir 'latest-bitmap-dump.bmp') -Force
-                    Write-Host "`nBitmap dumps: $($bmps.Count) file(s) downloaded to $dumpLocalDir" -ForegroundColor Green
+                    Write-Host "`nBitmap dumps: $bmpCount file(s) downloaded to $dumpLocalDir" -ForegroundColor Green
                     Write-Host "Latest dump: $($latest.Name) ($([math]::Round($latest.Length / 1MB, 2)) MB)" -ForegroundColor Green
+
+                    if ($bitmapObservedSessionIds.Count -gt 0) {
+                        Write-Host "Bitmap session IDs observed: $($bitmapObservedSessionIds -join ',')"
+                    }
+
+                    if ($null -ne $guiTargetSessionId) {
+                        Write-Host "Session-linked graphics proof: target_session=$guiTargetSessionId bitmap_matches=$bitmapTargetSessionMatchCount confirmed=$bitmapTargetSessionHasGraphics"
+                    }
+
+                    Write-Host "Type10+graphics-in-target-session proof: $type10GraphicsSessionConfirmed"
                 } else {
                     Write-Host "`nBitmap dumps: directory exists but no .bmp files were found at $dumpLocalDir" -ForegroundColor Yellow
                 }
@@ -1174,6 +1262,12 @@ if ($StrictSessionProof.IsPresent) {
             $strictFailures.Add('provider session proof markers were not observed')
         }
 
+        if ($null -eq $notifyCommandProcessCreatedCount) {
+            $strictFailures.Add('shell transition marker count was not collected (NotifyCommandProcessCreated)')
+        } elseif ($notifyCommandProcessCreatedCount -lt 1) {
+            $strictFailures.Add('shell transition marker missing: NotifyCommandProcessCreated was not observed')
+        }
+
         if ($null -eq $termsrvSessionProofMarkerCount) {
             $strictFailures.Add('termsrv session proof marker count was not collected')
         } elseif ($termsrvSessionProofMarkerCount -lt 1) {
@@ -1188,11 +1282,22 @@ if ($StrictSessionProof.IsPresent) {
 
         if ($bitmapDumpCount -lt 1) {
             $strictFailures.Add('no bitmap dumps were downloaded')
+        } elseif ($guiTargetSessionResolved -and (-not $bitmapTargetSessionHasGraphics)) {
+            $observedBitmapSessions = if ($bitmapObservedSessionIds.Count -gt 0) { $bitmapObservedSessionIds -join ',' } else { 'none' }
+            $strictFailures.Add("graphics-session proof missing: no bitmap dump matched target session id $guiTargetSessionId (observed_bitmap_sessions=$observedBitmapSessions)")
+        }
+
+        if (-not $type10GraphicsSessionConfirmed) {
+            $strictFailures.Add("mandatory type10+graphics proof missing: Security4624Type10=$securityLogonType10Count target_session=$guiTargetSessionId bitmap_matches=$bitmapTargetSessionMatchCount")
         }
 
         $hasIddDiagnosticsSignal = $iddDriverLoadedNotified -or (($null -ne $iddWddmEnabledSignalCount) -and ($iddWddmEnabledSignalCount -ge 1)) -or (($null -ne $remoteGraphicsSignalCount) -and ($remoteGraphicsSignalCount -ge 1))
         if (-not $hasIddDiagnosticsSignal) {
             $strictFailures.Add("IDD diagnostics gate missing (NotifyIddDriverLoaded=$iddDriverLoadedNotified, ProviderEnableWddmIdd=$iddWddmEnabledSignalCount, RemoteGraphics263=$remoteGraphicsSignalCount)")
+        }
+
+        if ($activationNotificationMode) {
+            $strictFailures.Add("environment blocker detected: Windows activation notification mode is enabled (LicenseStatus=$activationLicenseStatus, Reason=$activationLicenseStatusReasonHex)")
         }
     }
 
