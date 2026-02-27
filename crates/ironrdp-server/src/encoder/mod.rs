@@ -94,6 +94,10 @@ pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
     bitmap_updater: Option<BitmapUpdater>,
+    /// Negotiated MultifragmentUpdate reassembly buffer size. Used to split
+    /// oversized bitmaps into strips that fit within the limit when sent as
+    /// uncompressed surface commands.
+    max_request_size: usize,
 }
 
 impl fmt::Debug for UpdateEncoder {
@@ -106,7 +110,12 @@ impl fmt::Debug for UpdateEncoder {
 
 impl UpdateEncoder {
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
-    pub(crate) fn new(desktop_size: DesktopSize, surface_flags: CmdFlags, codecs: UpdateEncoderCodecs) -> Result<Self> {
+    pub(crate) fn new(
+        desktop_size: DesktopSize,
+        surface_flags: CmdFlags,
+        codecs: UpdateEncoderCodecs,
+        max_request_size: u32,
+    ) -> Result<Self> {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             let mut bitmap = BitmapUpdater::None(NoneHandler);
 
@@ -132,6 +141,7 @@ impl UpdateEncoder {
             desktop_size,
             framebuffer: None,
             bitmap_updater: Some(bitmap_updater),
+            max_request_size: usize::try_from(max_request_size).context("max_request_size")?,
         })
     }
 
@@ -210,7 +220,7 @@ impl UpdateEncoder {
         // TODO: we may want to make it optional for servers that already provide damaged regions
         const USE_DIFFS: bool = true;
 
-        if let Some(Framebuffer {
+        let diffs = if let Some(Framebuffer {
             data,
             stride,
             width,
@@ -237,7 +247,51 @@ impl UpdateEncoder {
                 width: bitmap.width.get().into(),
                 height: bitmap.height.get().into(),
             }]
+        };
+
+        // Subdivide diff rects whose uncompressed size would exceed the
+        // MultifragmentUpdate reassembly buffer.
+        let mut tiled = Vec::with_capacity(diffs.len());
+        for rect in diffs {
+            if rect.width * rect.height * 4 <= self.max_request_size {
+                tiled.push(rect);
+            } else {
+                let rects = self.split_diff(rect);
+                tiled.extend(rects);
+            }
         }
+        tiled
+    }
+
+    /// Split a rect into tiles that fit within `max_request_size`.
+    /// Splits by height first, then by width within each horizontal strip.
+    fn split_diff(&self, rect: Rect) -> Vec<Rect> {
+        let mut rects = Vec::new();
+
+        let max_height = (self.max_request_size / (rect.width * 4)).max(1);
+        let mut y = rect.y;
+        let y_end = rect.y + rect.height;
+        while y < y_end {
+            let h = (y_end - y).min(max_height);
+            // Width splitting is unlikely in practice (would require
+            // max_request_size < ~256 KB), but ensures correctness.
+            let max_width = (self.max_request_size / (h * 4)).max(1);
+            let mut x = rect.x;
+            let x_end = rect.x + rect.width;
+            while x < x_end {
+                let w = (x_end - x).min(max_width);
+                rects.push(Rect {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                });
+                x += max_width;
+            }
+            y += max_height;
+        }
+
+        rects
     }
 
     fn bitmap_update_framebuffer(&mut self, bitmap: BitmapUpdate, diffs: &[Rect]) {
