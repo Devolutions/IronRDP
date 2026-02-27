@@ -98,11 +98,6 @@ const PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL: GUID =
 
 const FAST_RECONNECT_ENHANCED: u32 = 2;
 
-fn deterministic_license_guid(connection_id: u32) -> GUID {
-    const BASE: u128 = 0x7d5e31f3_0ff8_4a25_9fcb_7b7e2f634000;
-    GUID::from_u128(BASE | u128::from(connection_id))
-}
-
 fn active_console_session_id() -> Option<u32> {
     // SAFETY: FFI call has no input parameters and always returns a plain value.
     let session_id = unsafe { WTSGetActiveConsoleSessionId() };
@@ -3699,34 +3694,22 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         if *_querytype == PROPERTY_TYPE_CONNECTION_GUID {
             debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CONNECTION_GUID -> E_NOTIMPL");
-            return Err(windows_core::Error::new(
-                E_NOTIMPL,
-                "connection guid is not implemented",
-            ));
+            return Err(E_NOTIMPL.into());
         }
 
         if *_querytype == PROPERTY_TYPE_SUPPRESS_LOGON_UI {
-            first.Type = WTS_VALUE_TYPE_ULONG;
-            first.u.ulVal = 0;
-            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_SUPPRESS_LOGON_UI -> 0");
-            return Ok(());
+            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_SUPPRESS_LOGON_UI -> E_NOTIMPL");
+            return Err(E_NOTIMPL.into());
         }
 
         if *_querytype == PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT {
-            first.Type = WTS_VALUE_TYPE_ULONG;
-            first.u.ulVal = 0;
-            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT -> 0");
-            return Ok(());
+            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT -> E_NOTIMPL");
+            return Err(E_NOTIMPL.into());
         }
 
         if *_querytype == PROPERTY_TYPE_LICENSE_GUID {
-            let license_guid = deterministic_license_guid(self.inner.connection_id());
-            first.Type = WTS_VALUE_TYPE_GUID;
-            first.u.guidVal = license_guid;
-            debug_log_line(&format!(
-                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_LICENSE_GUID -> {license_guid:?}",
-            ));
-            return Ok(());
+            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_LICENSE_GUID -> E_NOTIMPL");
+            return Err(E_NOTIMPL.into());
         }
 
         if *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID {
