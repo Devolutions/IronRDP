@@ -6,6 +6,7 @@ use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::rle::RlePixelFormat;
+use ironrdp_pdu::bitmap::BitmapUpdateData;
 use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
@@ -148,233 +149,12 @@ impl Processor {
             }
             Ok(FastPathUpdate::Bitmap(bitmap_update)) => {
                 trace!("Received bitmap update");
-
-                let mut buf = Vec::new();
-                let mut update_kind = UpdateKind::None;
-
-                for update in bitmap_update.rectangles {
-                    trace!("{update:?}");
-                    buf.clear();
-
-                    // Bitmap data is either compressed or uncompressed, depending
-                    // on whether the BITMAP_COMPRESSION flag is present in the
-                    // flags field.
-                    let update_rectangle = if update
-                        .compression_flags
-                        .contains(ironrdp_pdu::bitmap::Compression::BITMAP_COMPRESSION)
-                    {
-                        if update.bits_per_pixel == 32 {
-                            // Compressed bitmaps at a color depth of 32 bpp are compressed using RDP 6.0
-                            // Bitmap Compression and stored inside an RDP 6.0 Bitmap Compressed Stream
-                            // structure ([MS-RDPEGDI] section 2.2.2.5.1).
-                            debug!("32 bpp compressed RDP6_BITMAP_STREAM");
-
-                            match self.bitmap_stream_decoder.decode_bitmap_stream_to_rgb24(
-                                update.bitmap_data,
-                                &mut buf,
-                                usize::from(update.width),
-                                usize::from(update.height),
-                            ) {
-                                Ok(()) => image.apply_rgb24(&buf, &update.rectangle, true)?,
-                                Err(err) => {
-                                    warn!("Invalid RDP6_BITMAP_STREAM: {err}");
-                                    update.rectangle.clone()
-                                }
-                            }
-                        } else {
-                            // Compressed bitmaps not in 32 bpp format are compressed using Interleaved
-                            // RLE and encapsulated in an RLE Compressed Bitmap Stream structure (section
-                            // 2.2.9.1.1.3.1.2.4).
-                            debug!(bpp = update.bits_per_pixel, "Non-32 bpp compressed RLE_BITMAP_STREAM",);
-
-                            match ironrdp_graphics::rle::decompress(
-                                update.bitmap_data,
-                                &mut buf,
-                                usize::from(update.width),
-                                usize::from(update.height),
-                                usize::from(update.bits_per_pixel),
-                            ) {
-                                Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
-
-                                // TODO: support other pixel formats…
-                                Ok(format @ (RlePixelFormat::Rgb8 | RlePixelFormat::Rgb15 | RlePixelFormat::Rgb24)) => {
-                                    warn!("Received RLE-compressed bitmap with unsupported color depth: {format:?}");
-                                    update.rectangle.clone()
-                                }
-
-                                Err(e) => {
-                                    warn!("Invalid RLE-compressed bitmap: {e}");
-                                    update.rectangle.clone()
-                                }
-                            }
-                        }
-                    } else {
-                        // Uncompressed bitmap data is formatted as a bottom-up, left-to-right series of
-                        // pixels. Each pixel is a whole number of bytes. Each row contains a multiple of
-                        // four bytes (including up to three bytes of padding, as necessary).
-                        // [MS-RDPBCGR] 2.2.9.1.1.3.1.2.2
-                        trace!("Uncompressed raw bitmap");
-
-                        let bpp = usize::from(update.bits_per_pixel);
-                        let width = usize::from(update.width);
-                        let bytes_per_pixel = bpp.div_ceil(8);
-                        let row_bytes = width * bytes_per_pixel;
-                        let padded_row_bytes = (row_bytes + 3) & !3;
-
-                        if padded_row_bytes != row_bytes {
-                            // Strip per-row padding before passing to the bitmap apply functions,
-                            // which expect tightly packed pixel data.
-                            buf.clear();
-                            for row in update.bitmap_data.chunks(padded_row_bytes) {
-                                let end = row_bytes.min(row.len());
-                                buf.extend_from_slice(&row[..end]);
-                            }
-
-                            match update.bits_per_pixel {
-                                16 => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
-                                _ => {
-                                    warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
-                                    update.rectangle.clone()
-                                }
-                            }
-                        } else {
-                            match update.bits_per_pixel {
-                                16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
-                                _ => {
-                                    warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
-                                    update.rectangle.clone()
-                                }
-                            }
-                        }
-                    };
-
-                    match update_kind {
-                        UpdateKind::Region(current) => {
-                            update_kind = UpdateKind::Region(current.union(&update_rectangle))
-                        }
-                        _ => update_kind = UpdateKind::Region(update_rectangle),
-                    }
-                }
-
-                processor_updates.push(update_kind);
+                let updates = self.process_bitmap_update(image, bitmap_update)?;
+                processor_updates.extend(updates);
             }
             Ok(FastPathUpdate::Pointer(update)) => {
-                if !self.enable_server_pointer {
-                    return Ok(processor_updates);
-                }
-
-                let bitmap_target = if self.pointer_software_rendering {
-                    PointerBitmapTarget::Software
-                } else {
-                    PointerBitmapTarget::Accelerated
-                };
-
-                match update {
-                    PointerUpdateData::SetHidden => {
-                        processor_updates.push(UpdateKind::PointerHidden);
-                        if self.pointer_software_rendering && !self.use_system_pointer {
-                            self.use_system_pointer = true;
-                            if let Some(rect) = image.hide_pointer()? {
-                                processor_updates.push(UpdateKind::Region(rect));
-                            }
-                        }
-                    }
-                    PointerUpdateData::SetDefault => {
-                        processor_updates.push(UpdateKind::PointerDefault);
-                        if self.pointer_software_rendering && !self.use_system_pointer {
-                            self.use_system_pointer = true;
-                            if let Some(rect) = image.hide_pointer()? {
-                                processor_updates.push(UpdateKind::Region(rect));
-                            }
-                        }
-                    }
-                    PointerUpdateData::SetPosition(position) => {
-                        if self.use_system_pointer || !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::PointerPosition {
-                                x: position.x,
-                                y: position.y,
-                            });
-                        } else if let Some(rect) = image.move_pointer(position.x, position.y)? {
-                            processor_updates.push(UpdateKind::Region(rect));
-                        }
-                    }
-                    PointerUpdateData::Color(pointer) => {
-                        let cache_index = pointer.cache_index;
-
-                        let decoded_pointer = Arc::new(
-                            DecodedPointer::decode_color_pointer_attribute(&pointer, bitmap_target)
-                                .map_err(|e| SessionError::custom("failed to decode color pointer attribute", e))?,
-                        );
-
-                        let _ = self
-                            .pointer_cache
-                            .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
-
-                        if !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
-                        } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
-                            processor_updates.push(UpdateKind::Region(rect));
-                        }
-                    }
-                    PointerUpdateData::Cached(cached) => {
-                        let cache_index = cached.cache_index;
-
-                        if let Some(cached_pointer) = self.pointer_cache.get(usize::from(cache_index)) {
-                            // Disable system pointer
-                            processor_updates.push(UpdateKind::PointerHidden);
-                            self.use_system_pointer = false;
-                            // Send graphics update
-                            if !self.pointer_software_rendering {
-                                processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&cached_pointer)));
-                            } else if let Some(rect) = image.update_pointer(cached_pointer)? {
-                                processor_updates.push(UpdateKind::Region(rect));
-                            } else {
-                                // In case pointer was hidden previously
-                                if let Some(rect) = image.show_pointer()? {
-                                    processor_updates.push(UpdateKind::Region(rect));
-                                }
-                            }
-                        } else {
-                            warn!("Cached pointer not found {}", cache_index);
-                        }
-                    }
-                    PointerUpdateData::New(pointer) => {
-                        let cache_index = pointer.color_pointer.cache_index;
-
-                        let decoded_pointer = Arc::new(
-                            DecodedPointer::decode_pointer_attribute(&pointer, bitmap_target)
-                                .map_err(|e| SessionError::custom("failed to decode pointer attribute", e))?,
-                        );
-
-                        let _ = self
-                            .pointer_cache
-                            .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
-
-                        if !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
-                        } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
-                            processor_updates.push(UpdateKind::Region(rect));
-                        }
-                    }
-                    PointerUpdateData::Large(pointer) => {
-                        let cache_index = pointer.cache_index;
-
-                        let decoded_pointer: Arc<DecodedPointer> = Arc::new(
-                            DecodedPointer::decode_large_pointer_attribute(&pointer, bitmap_target)
-                                .map_err(|e| SessionError::custom("failed to decode large pointer attribute", e))?,
-                        );
-
-                        let _ = self
-                            .pointer_cache
-                            .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
-
-                        if !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
-                        } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
-                            processor_updates.push(UpdateKind::Region(rect));
-                        }
-                    }
-                };
+                let updates = self.process_pointer_update(image, update)?;
+                processor_updates.extend(updates);
             }
             Err(e) => {
                 // FIXME: This seems to be a way of special-handling the error case in FastPathUpdate::decode_cursor_with_code
@@ -385,6 +165,248 @@ impl Processor {
                     processor_updates.push(UpdateKind::None);
                 } else {
                     return Err(custom_err!("Fast-Path", e));
+                }
+            }
+        };
+
+        Ok(processor_updates)
+    }
+
+    /// Process a bitmap update, shared between fast-path and slow-path pipelines.
+    pub fn process_bitmap_update(
+        &mut self,
+        image: &mut DecodedImage,
+        bitmap_update: BitmapUpdateData<'_>,
+    ) -> SessionResult<Vec<UpdateKind>> {
+        let mut buf = Vec::new();
+        let mut update_kind = UpdateKind::None;
+
+        for update in bitmap_update.rectangles {
+            trace!("{update:?}");
+            buf.clear();
+
+            // Bitmap data is either compressed or uncompressed, depending
+            // on whether the BITMAP_COMPRESSION flag is present in the
+            // flags field.
+            let update_rectangle = if update
+                .compression_flags
+                .contains(ironrdp_pdu::bitmap::Compression::BITMAP_COMPRESSION)
+            {
+                if update.bits_per_pixel == 32 {
+                    // Compressed bitmaps at a color depth of 32 bpp are compressed using RDP 6.0
+                    // Bitmap Compression and stored inside an RDP 6.0 Bitmap Compressed Stream
+                    // structure ([MS-RDPEGDI] section 2.2.2.5.1).
+                    debug!("32 bpp compressed RDP6_BITMAP_STREAM");
+
+                    match self.bitmap_stream_decoder.decode_bitmap_stream_to_rgb24(
+                        update.bitmap_data,
+                        &mut buf,
+                        usize::from(update.width),
+                        usize::from(update.height),
+                    ) {
+                        Ok(()) => image.apply_rgb24(&buf, &update.rectangle, true)?,
+                        Err(err) => {
+                            warn!("Invalid RDP6_BITMAP_STREAM: {err}");
+                            update.rectangle.clone()
+                        }
+                    }
+                } else {
+                    // Compressed bitmaps not in 32 bpp format are compressed using Interleaved
+                    // RLE and encapsulated in an RLE Compressed Bitmap Stream structure (section
+                    // 2.2.9.1.1.3.1.2.4).
+                    debug!(bpp = update.bits_per_pixel, "Non-32 bpp compressed RLE_BITMAP_STREAM",);
+
+                    match ironrdp_graphics::rle::decompress(
+                        update.bitmap_data,
+                        &mut buf,
+                        usize::from(update.width),
+                        usize::from(update.height),
+                        usize::from(update.bits_per_pixel),
+                    ) {
+                        Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
+
+                        // TODO: support other pixel formats…
+                        Ok(format @ (RlePixelFormat::Rgb8 | RlePixelFormat::Rgb15 | RlePixelFormat::Rgb24)) => {
+                            warn!("Received RLE-compressed bitmap with unsupported color depth: {format:?}");
+                            update.rectangle.clone()
+                        }
+
+                        Err(e) => {
+                            warn!("Invalid RLE-compressed bitmap: {e}");
+                            update.rectangle.clone()
+                        }
+                    }
+                }
+            } else {
+                // Uncompressed bitmap data is formatted as a bottom-up, left-to-right series of
+                // pixels. Each pixel is a whole number of bytes. Each row contains a multiple of
+                // four bytes (including up to three bytes of padding, as necessary).
+                // [MS-RDPBCGR] 2.2.9.1.1.3.1.2.2
+                trace!("Uncompressed raw bitmap");
+
+                let bpp = usize::from(update.bits_per_pixel);
+                let width = usize::from(update.width);
+                let bytes_per_pixel = bpp.div_ceil(8);
+                let row_bytes = width * bytes_per_pixel;
+                let padded_row_bytes = (row_bytes + 3) & !3;
+
+                if padded_row_bytes != row_bytes {
+                    // Strip per-row padding before passing to the bitmap apply functions,
+                    // which expect tightly packed pixel data.
+                    buf.clear();
+                    for row in update.bitmap_data.chunks(padded_row_bytes) {
+                        let end = row_bytes.min(row.len());
+                        buf.extend_from_slice(&row[..end]);
+                    }
+
+                    match update.bits_per_pixel {
+                        16 => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
+                        _ => {
+                            warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
+                            update.rectangle.clone()
+                        }
+                    }
+                } else {
+                    match update.bits_per_pixel {
+                        16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
+                        _ => {
+                            warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
+                            update.rectangle.clone()
+                        }
+                    }
+                }
+            };
+
+            match update_kind {
+                UpdateKind::Region(current) => update_kind = UpdateKind::Region(current.union(&update_rectangle)),
+                _ => update_kind = UpdateKind::Region(update_rectangle),
+            }
+        }
+
+        Ok(vec![update_kind])
+    }
+
+    /// Process a pointer update, shared between fast-path and slow-path pipelines.
+    pub fn process_pointer_update(
+        &mut self,
+        image: &mut DecodedImage,
+        update: PointerUpdateData<'_>,
+    ) -> SessionResult<Vec<UpdateKind>> {
+        let mut processor_updates = Vec::new();
+
+        if !self.enable_server_pointer {
+            return Ok(processor_updates);
+        }
+
+        let bitmap_target = if self.pointer_software_rendering {
+            PointerBitmapTarget::Software
+        } else {
+            PointerBitmapTarget::Accelerated
+        };
+
+        match update {
+            PointerUpdateData::SetHidden => {
+                processor_updates.push(UpdateKind::PointerHidden);
+                if self.pointer_software_rendering && !self.use_system_pointer {
+                    self.use_system_pointer = true;
+                    if let Some(rect) = image.hide_pointer()? {
+                        processor_updates.push(UpdateKind::Region(rect));
+                    }
+                }
+            }
+            PointerUpdateData::SetDefault => {
+                processor_updates.push(UpdateKind::PointerDefault);
+                if self.pointer_software_rendering && !self.use_system_pointer {
+                    self.use_system_pointer = true;
+                    if let Some(rect) = image.hide_pointer()? {
+                        processor_updates.push(UpdateKind::Region(rect));
+                    }
+                }
+            }
+            PointerUpdateData::SetPosition(position) => {
+                if self.use_system_pointer || !self.pointer_software_rendering {
+                    processor_updates.push(UpdateKind::PointerPosition {
+                        x: position.x,
+                        y: position.y,
+                    });
+                } else if let Some(rect) = image.move_pointer(position.x, position.y)? {
+                    processor_updates.push(UpdateKind::Region(rect));
+                }
+            }
+            PointerUpdateData::Color(pointer) => {
+                let cache_index = pointer.cache_index;
+
+                let decoded_pointer = Arc::new(
+                    DecodedPointer::decode_color_pointer_attribute(&pointer, bitmap_target)
+                        .map_err(|e| SessionError::custom("failed to decode color pointer attribute", e))?,
+                );
+
+                let _ = self
+                    .pointer_cache
+                    .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
+
+                if !self.pointer_software_rendering {
+                    processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
+                } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
+                    processor_updates.push(UpdateKind::Region(rect));
+                }
+            }
+            PointerUpdateData::Cached(cached) => {
+                let cache_index = cached.cache_index;
+
+                if let Some(cached_pointer) = self.pointer_cache.get(usize::from(cache_index)) {
+                    // Disable system pointer
+                    processor_updates.push(UpdateKind::PointerHidden);
+                    self.use_system_pointer = false;
+                    // Send graphics update
+                    if !self.pointer_software_rendering {
+                        processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&cached_pointer)));
+                    } else if let Some(rect) = image.update_pointer(cached_pointer)? {
+                        processor_updates.push(UpdateKind::Region(rect));
+                    } else {
+                        // In case pointer was hidden previously
+                        if let Some(rect) = image.show_pointer()? {
+                            processor_updates.push(UpdateKind::Region(rect));
+                        }
+                    }
+                } else {
+                    warn!("Cached pointer not found {}", cache_index);
+                }
+            }
+            PointerUpdateData::New(pointer) => {
+                let cache_index = pointer.color_pointer.cache_index;
+
+                let decoded_pointer = Arc::new(
+                    DecodedPointer::decode_pointer_attribute(&pointer, bitmap_target)
+                        .map_err(|e| SessionError::custom("failed to decode pointer attribute", e))?,
+                );
+
+                let _ = self
+                    .pointer_cache
+                    .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
+
+                if !self.pointer_software_rendering {
+                    processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
+                } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
+                    processor_updates.push(UpdateKind::Region(rect));
+                }
+            }
+            PointerUpdateData::Large(pointer) => {
+                let cache_index = pointer.cache_index;
+
+                let decoded_pointer: Arc<DecodedPointer> = Arc::new(
+                    DecodedPointer::decode_large_pointer_attribute(&pointer, bitmap_target)
+                        .map_err(|e| SessionError::custom("failed to decode large pointer attribute", e))?,
+                );
+
+                let _ = self
+                    .pointer_cache
+                    .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
+
+                if !self.pointer_software_rendering {
+                    processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
+                } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
+                    processor_updates.push(UpdateKind::Region(rect));
                 }
             }
         };
