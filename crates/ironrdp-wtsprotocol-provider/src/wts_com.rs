@@ -3853,9 +3853,18 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     }
 
     fn NotifyCommandProcessCreated(&self, sessionid: u32) -> windows_core::Result<()> {
+        let has_userinit = session_has_process(sessionid, "userinit.exe");
+        let has_explorer = session_has_process(sessionid, "explorer.exe");
+        let has_logonui = session_has_process(sessionid, "LogonUI.exe");
+        let has_winlogon = session_has_process(sessionid, "winlogon.exe");
+
         debug_log_line(&format!(
-            "IWRdsProtocolConnection::NotifyCommandProcessCreated called connection_id={} session_id={sessionid}",
+            "IWRdsProtocolConnection::NotifyCommandProcessCreated called connection_id={} session_id={sessionid} userinit={} explorer={} logonui={} winlogon={}",
             self.inner.connection_id(),
+            has_userinit,
+            has_explorer,
+            has_logonui,
+            has_winlogon,
         ));
         Ok(())
     }
