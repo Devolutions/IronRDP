@@ -98,6 +98,11 @@ const PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL: GUID =
 
 const FAST_RECONNECT_ENHANCED: u32 = 2;
 
+fn deterministic_license_guid(connection_id: u32) -> GUID {
+    const BASE: u128 = 0x7d5e31f3_0ff8_4a25_9fcb_7b7e2f634000;
+    GUID::from_u128(BASE | u128::from(connection_id))
+}
+
 fn active_console_session_id() -> Option<u32> {
     // SAFETY: FFI call has no input parameters and always returns a plain value.
     let session_id = unsafe { WTSGetActiveConsoleSessionId() };
@@ -2543,6 +2548,7 @@ struct ComProtocolConnection {
     wddm_idd_enabled: AtomicBool,
     driver_handle_raw: AtomicUsize,
     ready_notified: Mutex<bool>,
+    cached_credentials: Mutex<Option<(String, String, String)>>,
     last_input_time: Mutex<u64>,
     virtual_channels: Mutex<Vec<VirtualChannelHandle>>,
     virtual_channel_forwarders: Mutex<Vec<VirtualChannelForwarderWorker>>,
@@ -2567,6 +2573,7 @@ impl ComProtocolConnection {
             wddm_idd_enabled: AtomicBool::new(false),
             driver_handle_raw: AtomicUsize::new(0),
             ready_notified: Mutex::new(false),
+            cached_credentials: Mutex::new(None),
             last_input_time: Mutex::new(0),
             virtual_channels: Mutex::new(Vec::new()),
             virtual_channel_forwarders: Mutex::new(Vec::new()),
@@ -2683,6 +2690,34 @@ impl ComProtocolConnection {
 
         *ready_notified = true;
         Ok(())
+    }
+
+    fn fetch_and_cache_connection_credentials(
+        &self,
+        connection_id: u32,
+        source: &'static str,
+    ) -> windows_core::Result<Option<(String, String, String)>> {
+        let Some((username, domain, password)) = self.control_bridge.get_connection_credentials(connection_id)? else {
+            debug_log_line(&format!(
+                "fetch_and_cache_connection_credentials none connection_id={connection_id} source={source}",
+            ));
+            return Ok(None);
+        };
+
+        let (winlogon_username, winlogon_domain) = normalize_winlogon_credentials(&username, &domain);
+        let credentials = (winlogon_username, winlogon_domain, password);
+        *self.cached_credentials.lock() = Some(credentials.clone());
+
+        debug_log_line(&format!(
+            "fetch_and_cache_connection_credentials cached connection_id={connection_id} source={source} user={} domain={}",
+            credentials.0, credentials.1,
+        ));
+
+        Ok(Some(credentials))
+    }
+
+    fn cached_connection_credentials(&self) -> Option<(String, String, String)> {
+        self.cached_credentials.lock().clone()
     }
 
     fn release_connection_callback(&self) {
@@ -2963,6 +2998,10 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         self.inner.accept_connection().map_err(transition_error)?;
         self.notify_ready()?;
 
+        if self.cached_connection_credentials().is_none() {
+            let _ = self.fetch_and_cache_connection_credentials(connection_id, "accept_connection_prefetch")?;
+        }
+
         debug_log_line(&format!(
             "IWRdsProtocolConnection::AcceptConnection ok connection_id={connection_id}",
         ));
@@ -3003,9 +3042,12 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         //
         // The username/password are plaintext per Microsoft docs.
         let connection_id = self.inner.connection_id();
-        match self.control_bridge.get_connection_credentials(connection_id)? {
-            Some((username, domain, password)) => {
-                let (winlogon_username, winlogon_domain) = normalize_winlogon_credentials(&username, &domain);
+        let credentials = self
+            .cached_connection_credentials()
+            .or(self.fetch_and_cache_connection_credentials(connection_id, "get_client_data")?);
+
+        match credentials {
+            Some((winlogon_username, winlogon_domain, password)) => {
 
                 client_data.fInheritAutoLogon = BOOL(1);
                 client_data.fUsingSavedCreds = true;
@@ -3054,7 +3096,11 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Err(windows_core::Error::new(E_POINTER, "null user credentials pointer"));
         }
 
-        let Some((username, domain, password)) = self.control_bridge.get_connection_credentials(connection_id)? else {
+        let credentials = self
+            .cached_connection_credentials()
+            .or(self.fetch_and_cache_connection_credentials(connection_id, "get_user_credentials")?);
+
+        let Some((winlogon_username, winlogon_domain, password)) = credentials else {
             debug_log_line(&format!(
                 "IWRdsProtocolConnection::GetUserCredentials no_credentials connection_id={connection_id}"
             ));
@@ -3063,8 +3109,6 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
                 "no CredSSP credentials available yet",
             ));
         };
-
-        let (winlogon_username, winlogon_domain) = normalize_winlogon_credentials(&username, &domain);
 
         // SAFETY: pusercreds is non-null and points to writable memory owned by TermService.
         let creds = unsafe { &mut *pusercreds };
@@ -3710,8 +3754,13 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         }
 
         if *_querytype == PROPERTY_TYPE_LICENSE_GUID {
-            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_LICENSE_GUID -> E_NOTIMPL");
-            return Err(E_NOTIMPL.into());
+            let license_guid = deterministic_license_guid(self.inner.connection_id());
+            first.Type = WTS_VALUE_TYPE_GUID;
+            first.u.guidVal = license_guid;
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_LICENSE_GUID -> {license_guid:?}",
+            ));
+            return Ok(());
         }
 
         if *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID {
