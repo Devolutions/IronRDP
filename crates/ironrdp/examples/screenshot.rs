@@ -195,7 +195,13 @@ fn setup_logging() -> anyhow::Result<()> {
 fn run(config: RunConfig) -> anyhow::Result<()> {
     let connector_config = build_config(&config)?;
 
-    let (connection_result, framed) = connect(connector_config, config.host, config.port).context("connect")?;
+    let (connection_result, framed) = connect(
+        connector_config,
+        config.host,
+        config.port,
+        Duration::from_secs(config.no_graphics_timeout_seconds),
+    )
+    .context("connect")?;
     info!(compression_type = ?connection_result.compression_type, "Negotiated compression");
 
     let mut image = DecodedImage::new(
@@ -365,6 +371,7 @@ fn connect(
     config: connector::Config,
     server_name: String,
     port: u16,
+    no_graphics_timeout: Duration,
 ) -> anyhow::Result<(ConnectionResult, UpgradedFramed)> {
     let server_addr = lookup_addr(&server_name, port).context("lookup addr")?;
 
@@ -374,7 +381,7 @@ fn connect(
 
     // Bound blocking reads during connection setup.
     tcp_stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
+        .set_read_timeout(Some(no_graphics_timeout))
         .context("set TCP read timeout")?;
 
     let client_addr = tcp_stream.local_addr().context("get socket local address")?;
