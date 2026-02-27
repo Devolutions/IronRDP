@@ -76,7 +76,7 @@ const S_FALSE: HRESULT = HRESULT(1);
 // HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY=14) == 0x8007000E
 const E_OUTOFMEMORY: HRESULT = HRESULT(-2147024882);
 
-const IRONRDP_IDD_HARDWARE_ID: &str = "IronRdpIdd";
+const IRONRDP_IDD_HARDWARE_ID: &str = "RdpIdd_IndirectDisplay";
 const WTS_PROTOCOL_TYPE_NON_RDP: u16 = 2;
 
 const WTS_VALUE_TYPE_ULONG: u16 = 1;
@@ -489,21 +489,25 @@ fn normalize_winlogon_credentials(username: &str, domain: &str) -> (String, Stri
                 return (user.to_owned(), dom.to_owned());
             }
         }
+
+        if let Some((user, upn_domain)) = username.split_once('@') {
+            let user = user.trim();
+            let upn_domain = upn_domain.trim();
+            if !user.is_empty() && !upn_domain.is_empty() {
+                return (user.to_owned(), upn_domain.to_owned());
+            }
+        }
     }
 
-    // If the username already looks like a UPN (`user@domain`), keep it and clear
-    // the domain — Winlogon/LSA accept UPN with an empty domain field.
-    if username.contains('@') {
-        return (username.to_owned(), String::new());
-    }
-
-    // A DNS/FQDN domain (contains '.') is not a valid value for
-    // `WTS_USER_CREDENTIAL::Domain` or `WTS_CLIENT_DATA::Domain`; TermService only
-    // accepts the NetBIOS (down-level) form there.  Convert to UPN so Winlogon
-    // receives a well-formed identity: `user@fqdn` with an empty domain field.
-    // Both forms are equivalent for Kerberos/NTLM on a domain-joined machine.
-    if domain.contains('.') {
-        return (format!("{username}@{domain}"), String::new());
+    if let Some((user, upn_domain)) = username.split_once('@') {
+        let user = user.trim();
+        let upn_domain = upn_domain.trim();
+        if !user.is_empty() {
+            let domain_to_use = if domain.is_empty() { upn_domain } else { domain };
+            if !domain_to_use.is_empty() {
+                return (user.to_owned(), domain_to_use.to_owned());
+            }
+        }
     }
 
     (username.to_owned(), domain.to_owned())
@@ -3488,13 +3492,15 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         let status = unsafe { &mut *pprotocolstatus };
         *status = WTS_PROTOCOL_STATUS::default();
 
-        // Set ProtocolType and Length to match the reference build.
-        // Keep Specific at its default value (0).
+        // Keep ProtocolType/Length aligned with non-RDP provider mode and use
+        // a conservative baseline for the opaque `Specific` counters.
         status.Output.ProtocolType = WTS_PROTOCOL_TYPE_NON_RDP;
         status.Output.Length =
             u16::try_from(size_of::<windows::Win32::System::RemoteDesktop::WTS_PROTOCOL_COUNTERS>()).unwrap_or(0);
+        status.Output.Specific = 0;
         status.Input.ProtocolType = WTS_PROTOCOL_TYPE_NON_RDP;
         status.Input.Length = status.Output.Length;
+        status.Input.Specific = status.Output.Specific;
 
         debug_log_line(&format!(
             "IWRdsProtocolConnection::GetProtocolStatus returned connection_id={} output={{type={},len={},specific={}}} input={{type={},len={},specific={}}}",
