@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ironrdp_core::assert_impl;
-use ironrdp_graphics::color_conversion::rdp_16bit_to_rgb;
+use ironrdp_graphics::color_conversion::{rdp_15bit_to_rgb, rdp_16bit_to_rgb};
 use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_graphics::rectangle_processing::Region;
@@ -572,6 +572,131 @@ impl DecodedImage {
                         self.data[dst_idx + bi] = b;
                         self.data[dst_idx + ai] = 0xff;
                     })
+            });
+
+        let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
+
+        Ok(update_rectangle)
+    }
+
+    /// Apply a 15-bit (RGB555) bitmap. Bottom-up row order, 2 bytes per pixel.
+    pub(crate) fn apply_rgb15_bitmap(
+        &mut self,
+        rgb15: &[u8],
+        update_rectangle: &InclusiveRectangle,
+    ) -> SessionResult<InclusiveRectangle> {
+        const SRC_COLOR_DEPTH: usize = 2;
+        const DST_COLOR_DEPTH: usize = 4;
+
+        let image_width = usize::from(self.width);
+        let rectangle_width = usize::from(update_rectangle.width());
+        let top = usize::from(update_rectangle.top);
+        let left = usize::from(update_rectangle.left);
+        let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
+
+        let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
+
+        rgb15
+            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+            .rev()
+            .enumerate()
+            .for_each(|(row_idx, row)| {
+                row.chunks_exact(SRC_COLOR_DEPTH)
+                    .enumerate()
+                    .for_each(|(col_idx, src_pixel)| {
+                        let rgb15_value = u16::from_le_bytes(
+                            src_pixel
+                                .try_into()
+                                .expect("src_pixel contains exactly two u8 elements"),
+                        );
+                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+
+                        let [r, g, b] = rdp_15bit_to_rgb(rgb15_value);
+                        self.data[dst_idx + ri] = r;
+                        self.data[dst_idx + gi] = g;
+                        self.data[dst_idx + bi] = b;
+                        self.data[dst_idx + ai] = 0xff;
+                    })
+            });
+
+        let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
+
+        Ok(update_rectangle)
+    }
+
+    /// Apply a 24-bit BGR bitmap. RLE 24bpp decompresses to BGR byte order,
+    /// and uncompressed 24bpp bitmaps are also BGR per MS-RDPBCGR.
+    /// Bottom-up row order, 3 bytes per pixel.
+    pub(crate) fn apply_bgr24_bitmap(
+        &mut self,
+        bgr24: &[u8],
+        update_rectangle: &InclusiveRectangle,
+    ) -> SessionResult<InclusiveRectangle> {
+        const SRC_COLOR_DEPTH: usize = 3;
+        const DST_COLOR_DEPTH: usize = 4;
+
+        let image_width = usize::from(self.width);
+        let rectangle_width = usize::from(update_rectangle.width());
+        let top = usize::from(update_rectangle.top);
+        let left = usize::from(update_rectangle.left);
+        let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
+
+        let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
+
+        bgr24
+            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+            .rev()
+            .enumerate()
+            .for_each(|(row_idx, row)| {
+                row.chunks_exact(SRC_COLOR_DEPTH)
+                    .enumerate()
+                    .for_each(|(col_idx, src_pixel)| {
+                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+
+                        // BGR -> RGB channel swap
+                        self.data[dst_idx + ri] = src_pixel[2];
+                        self.data[dst_idx + gi] = src_pixel[1];
+                        self.data[dst_idx + bi] = src_pixel[0];
+                        self.data[dst_idx + ai] = 0xff;
+                    })
+            });
+
+        let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
+
+        Ok(update_rectangle)
+    }
+
+    /// Apply an 8-bit palette-indexed bitmap. Each source byte is a palette index.
+    /// Bottom-up row order.
+    pub(crate) fn apply_rgb8_with_palette(
+        &mut self,
+        indexed: &[u8],
+        update_rectangle: &InclusiveRectangle,
+        palette: &[[u8; 3]; 256],
+    ) -> SessionResult<InclusiveRectangle> {
+        const DST_COLOR_DEPTH: usize = 4;
+
+        let image_width = usize::from(self.width);
+        let rectangle_width = usize::from(update_rectangle.width());
+        let top = usize::from(update_rectangle.top);
+        let left = usize::from(update_rectangle.left);
+        let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
+
+        let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
+
+        indexed
+            .chunks_exact(rectangle_width)
+            .rev()
+            .enumerate()
+            .for_each(|(row_idx, row)| {
+                row.iter().enumerate().for_each(|(col_idx, &index)| {
+                    let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+                    let [r, g, b] = palette[usize::from(index)];
+                    self.data[dst_idx + ri] = r;
+                    self.data[dst_idx + gi] = g;
+                    self.data[dst_idx + bi] = b;
+                    self.data[dst_idx + ai] = 0xff;
+                })
             });
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
