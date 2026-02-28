@@ -19,6 +19,34 @@ use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
 use crate::{custom_err, reason_err, rfx, SessionError, SessionErrorExt as _, SessionResult};
 
+/// Default Windows system palette (VGA colors).
+/// First 10 and last 10 entries are fixed; middle 236 are black.
+/// Per MS-RDPBCGR 2.2.9.1.1.3.1.1.
+const DEFAULT_SYSTEM_PALETTE: [[u8; 3]; 256] = {
+    let mut pal = [[0u8; 3]; 256];
+    // Entries 0-9
+    pal[0] = [0, 0, 0]; // Black
+    pal[1] = [128, 0, 0]; // Dark Red
+    pal[2] = [0, 128, 0]; // Dark Green
+    pal[3] = [128, 128, 0]; // Dark Yellow
+    pal[4] = [0, 0, 128]; // Dark Blue
+    pal[5] = [128, 0, 128]; // Dark Magenta
+    pal[6] = [0, 128, 128]; // Dark Cyan
+    pal[7] = [192, 192, 192]; // Light Gray
+    pal[8] = [128, 128, 128]; // Dark Gray
+    pal[9] = [255, 0, 0]; // Red
+                          // Entries 10-245: black (already zero-initialized)
+                          // Entries 246-255
+    pal[246] = [0, 255, 0]; // Green
+    pal[247] = [255, 255, 0]; // Yellow
+    pal[248] = [0, 0, 255]; // Blue
+    pal[249] = [255, 0, 255]; // Magenta
+    pal[250] = [0, 255, 255]; // Cyan
+    pal[251] = [255, 255, 255]; // White
+                                // 252-255 remain black
+    pal
+};
+
 #[derive(Debug)]
 pub enum UpdateKind {
     None,
@@ -42,6 +70,8 @@ pub struct Processor {
     /// Bulk decompressor for server-to-client compressed PDUs.
     /// `None` when compression was not negotiated.
     bulk_decompressor: Option<BulkCompressor>,
+    /// Current 8bpp color palette (RGB). Updated by Palette fast-path updates.
+    palette: [[u8; 3]; 256],
     #[cfg(feature = "qoiz")]
     zdctx: zstd_safe::DCtx<'static>,
 }
@@ -195,11 +225,10 @@ impl Processor {
                                 usize::from(update.bits_per_pixel),
                             ) {
                                 Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
-
-                                // TODO: support other pixel formats…
-                                Ok(format @ (RlePixelFormat::Rgb8 | RlePixelFormat::Rgb15 | RlePixelFormat::Rgb24)) => {
-                                    warn!("Received RLE-compressed bitmap with unsupported color depth: {format:?}");
-                                    update.rectangle.clone()
+                                Ok(RlePixelFormat::Rgb15) => image.apply_rgb15_bitmap(&buf, &update.rectangle)?,
+                                Ok(RlePixelFormat::Rgb24) => image.apply_bgr24_bitmap(&buf, &update.rectangle)?,
+                                Ok(RlePixelFormat::Rgb8) => {
+                                    image.apply_rgb8_with_palette(&buf, &update.rectangle, &self.palette)?
                                 }
 
                                 Err(e) => {
@@ -231,7 +260,11 @@ impl Processor {
                             }
 
                             match update.bits_per_pixel {
+                                8 => image.apply_rgb8_with_palette(&buf, &update.rectangle, &self.palette)?,
+                                15 => image.apply_rgb15_bitmap(&buf, &update.rectangle)?,
                                 16 => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
+                                24 => image.apply_bgr24_bitmap(&buf, &update.rectangle)?,
+                                32 => image.apply_rgb32_bitmap(&buf, PixelFormat::BgrX32, &update.rectangle)?,
                                 _ => {
                                     warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
                                     update.rectangle.clone()
@@ -239,7 +272,19 @@ impl Processor {
                             }
                         } else {
                             match update.bits_per_pixel {
+                                8 => image.apply_rgb8_with_palette(
+                                    update.bitmap_data,
+                                    &update.rectangle,
+                                    &self.palette,
+                                )?,
+                                15 => image.apply_rgb15_bitmap(update.bitmap_data, &update.rectangle)?,
                                 16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
+                                24 => image.apply_bgr24_bitmap(update.bitmap_data, &update.rectangle)?,
+                                32 => image.apply_rgb32_bitmap(
+                                    update.bitmap_data,
+                                    PixelFormat::BgrX32,
+                                    &update.rectangle,
+                                )?,
                                 _ => {
                                     warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
                                     update.rectangle.clone()
@@ -376,6 +421,10 @@ impl Processor {
                     }
                 };
             }
+            Ok(FastPathUpdate::Palette(palette_data)) => {
+                trace!("Received palette update");
+                self.process_palette_update(&palette_data);
+            }
             Err(e) => {
                 // FIXME: This seems to be a way of special-handling the error case in FastPathUpdate::decode_cursor_with_code
                 // to ignore the unsupported update PDUs, but this is a fragile logic and the rationale behind it is not
@@ -390,6 +439,38 @@ impl Processor {
         };
 
         Ok(processor_updates)
+    }
+
+    /// Parse TS_UPDATE_PALETTE_DATA and update the session palette.
+    /// Format: pad(2) + numberColors(u32) + N x TS_COLOR_QUAD [B, G, R, pad].
+    fn process_palette_update(&mut self, data: &[u8]) {
+        // MS-RDPBCGR 2.2.9.1.1.3.1.1: 2 bytes pad + 4 bytes numberColors + entries
+        if data.len() < 6 {
+            warn!("Palette update too short: {} bytes", data.len());
+            return;
+        }
+
+        let number_colors = usize::try_from(u32::from_le_bytes([data[2], data[3], data[4], data[5]])).unwrap_or(256);
+        let entry_data = &data[6..];
+
+        if entry_data.len() < number_colors * 4 {
+            warn!(
+                "Palette data truncated: expected {} bytes for {} colors, got {}",
+                number_colors * 4,
+                number_colors,
+                entry_data.len()
+            );
+            return;
+        }
+
+        let count = number_colors.min(256);
+        for i in 0..count {
+            let offset = i * 4;
+            // TS_COLOR_QUAD: Blue, Green, Red, Pad
+            self.palette[i] = [entry_data[offset + 2], entry_data[offset + 1], entry_data[offset]];
+        }
+
+        debug!("Updated palette with {} colors", count);
     }
 
     fn process_surface_commands(
@@ -427,18 +508,18 @@ impl Processor {
                     match codec_id {
                         CODEC_ID_NONE => {
                             let ext_data = bits.extended_bitmap_data;
-                            match ext_data.bpp {
-                                32 => {
-                                    let rectangle =
-                                        image.apply_rgb32_bitmap(ext_data.data, PixelFormat::BgrX32, &destination)?;
-                                    update_rectangle = update_rectangle
-                                        .map(|rect: InclusiveRectangle| rect.union(&rectangle))
-                                        .or(Some(rectangle));
-                                }
+                            let rectangle = match ext_data.bpp {
+                                16 => image.apply_rgb16_bitmap(ext_data.data, &destination)?,
+                                24 => image.apply_bgr24_bitmap(ext_data.data, &destination)?,
+                                32 => image.apply_rgb32_bitmap(ext_data.data, PixelFormat::BgrX32, &destination)?,
                                 bpp => {
-                                    warn!("Unsupported bpp: {bpp}")
+                                    warn!("Unsupported surface CODEC_ID_NONE bpp: {bpp}");
+                                    continue;
                                 }
-                            }
+                            };
+                            update_rectangle = update_rectangle
+                                .map(|rect: InclusiveRectangle| rect.union(&rectangle))
+                                .or(Some(rectangle));
                         }
                         CODEC_ID_REMOTEFX => {
                             let mut data = ReadCursor::new(bits.extended_bitmap_data.data);
@@ -551,6 +632,7 @@ impl ProcessorBuilder {
             enable_server_pointer: self.enable_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
             bulk_decompressor: self.bulk_decompressor,
+            palette: DEFAULT_SYSTEM_PALETTE,
             #[cfg(feature = "qoiz")]
             zdctx: zstd_safe::DCtx::default(),
         }
