@@ -63,7 +63,6 @@ pub struct LicenseExchangeSequence {
     pub domain: Option<String>,
     pub hardware_id: [u32; 4],
     pub license_cache: Arc<dyn LicenseCache>,
-    pub _phantom: std::marker::PhantomData<u8>,
 }
 
 // Use RefUnwindSafe so that types that embed LicenseCache remain UnwindSafe
@@ -100,7 +99,6 @@ impl LicenseExchangeSequence {
             domain,
             hardware_id,
             license_cache,
-            _phantom: std::marker::PhantomData,
         }
     }
 }
@@ -118,9 +116,7 @@ impl<'a> arbitrary::Arbitrary<'a> for LicenseExchangeSequence {
                 u32::arbitrary(u)?,
                 u32::arbitrary(u)?,
             ],
-            // MIGHT NEED CHANGE, currently it's not using arbitrary function
             license_cache: Arc::new(NoopLicenseCache),
-            _phantom: std::marker::PhantomData,
         })
     }
 }
