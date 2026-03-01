@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ironrdp_bulk::BulkCompressor;
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
-use ironrdp_core::WriteBuf;
+use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_graphics::pointer::DecodedPointer;
@@ -12,9 +12,10 @@ use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
+use ironrdp_pdu::slow_path::{self, GraphicsUpdateType};
 use ironrdp_pdu::{mcs, Action};
 use ironrdp_svc::{SvcMessage, SvcProcessor, SvcProcessorMessages};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
@@ -144,13 +145,27 @@ impl ActiveStage {
                 )
             }
             Action::X224 => {
-                let outputs = self
-                    .x224_processor
-                    .process(frame)?
-                    .into_iter()
-                    .map(TryFrom::try_from)
-                    .collect::<Result<Vec<_>, _>>()?;
-                (outputs, Vec::new())
+                let x224_outputs = self.x224_processor.process(frame)?;
+                let mut stage_outputs = Vec::new();
+                let mut processor_updates = Vec::new();
+
+                for output in x224_outputs {
+                    match output {
+                        x224::ProcessorOutput::GraphicsUpdate(data) => {
+                            let updates = process_slow_path_graphics(&mut self.fast_path_processor, image, &data)?;
+                            processor_updates.extend(updates);
+                        }
+                        x224::ProcessorOutput::PointerUpdate(data) => {
+                            let updates = process_slow_path_pointer(&mut self.fast_path_processor, image, &data)?;
+                            processor_updates.extend(updates);
+                        }
+                        other => {
+                            stage_outputs.push(ActiveStageOutput::try_from(other)?);
+                        }
+                    }
+                }
+
+                (stage_outputs, processor_updates)
             }
         };
 
@@ -326,6 +341,11 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
             }
             x224::ProcessorOutput::DeactivateAll(cas) => Ok(Self::DeactivateAll(cas)),
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
+            // GraphicsUpdate and PointerUpdate are consumed in ActiveStage::process()
+            // before reaching this conversion.
+            x224::ProcessorOutput::GraphicsUpdate(_) | x224::ProcessorOutput::PointerUpdate(_) => {
+                unreachable!("slow-path updates are handled directly in ActiveStage::process()")
+            }
         }
     }
 }
@@ -353,4 +373,44 @@ impl core::fmt::Display for GracefulDisconnectReason {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&self.description())
     }
+}
+
+/// Parse and process a slow-path graphics update through the shared bitmap pipeline.
+fn process_slow_path_graphics(
+    fast_path_processor: &mut fast_path::Processor,
+    image: &mut DecodedImage,
+    data: &[u8],
+) -> SessionResult<Vec<UpdateKind>> {
+    let mut src = ReadCursor::new(data);
+    let update_type = slow_path::read_graphics_update_type(&mut src).map_err(SessionError::decode)?;
+
+    match update_type {
+        GraphicsUpdateType::Bitmap => {
+            let bitmap = slow_path::decode_slow_path_bitmap(&mut src).map_err(SessionError::decode)?;
+            fast_path_processor.process_bitmap_update(image, bitmap)
+        }
+        GraphicsUpdateType::Orders => {
+            warn!("Slow-path drawing orders not supported (MS-RDPEGDI)");
+            Ok(Vec::new())
+        }
+        GraphicsUpdateType::Palette => {
+            warn!("Slow-path palette update not supported (8bpp)");
+            Ok(Vec::new())
+        }
+        GraphicsUpdateType::Synchronize => {
+            debug!("Ignoring slow-path synchronize update");
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// Parse and process a slow-path pointer update through the shared pointer pipeline.
+fn process_slow_path_pointer(
+    fast_path_processor: &mut fast_path::Processor,
+    image: &mut DecodedImage,
+    data: &[u8],
+) -> SessionResult<Vec<UpdateKind>> {
+    let mut src = ReadCursor::new(data);
+    let pointer = slow_path::decode_slow_path_pointer(&mut src).map_err(SessionError::decode)?;
+    fast_path_processor.process_pointer_update(image, pointer)
 }
