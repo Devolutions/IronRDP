@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.6.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.6.0...ironrdp-svc-v0.6.1)] - 2026-03-01
+
+### <!-- 1 -->Features
+
+- Add SvcMessage::encode_unframed_pdu for headerless encoding ([#1093](https://github.com/Devolutions/IronRDP/issues/1093)) ([a21378e16a](https://github.com/Devolutions/IronRDP/commit/a21378e16a3a5af36428ba9a226b08acc5113eb6)) 
+
+
+
 ## [[0.4.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.4.0...ironrdp-svc-v0.4.1)] - 2025-06-27
 
 ### <!-- 1 -->Features

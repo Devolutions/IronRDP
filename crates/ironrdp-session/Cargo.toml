@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-session"
-version = "0.8.0"
+version = "0.9.0"
 readme = "README.md"
 description = "State machines to drive an RDP session"
 edition.workspace = true
@@ -23,10 +23,10 @@ qoiz = ["dep:zstd-safe", "qoi"]
 [dependencies]
 ironrdp-bulk = { path = "../ironrdp-bulk", version = "0.1" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
-ironrdp-connector = { path = "../ironrdp-connector", version = "0.8" } # public # TODO: at some point, this dependency could be removed (good for compilation speed)
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.9" } # public # TODO: at some point, this dependency could be removed (good for compilation speed)
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.5" } # public
-ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
+ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.7" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7", features = ["std"] } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.5" }

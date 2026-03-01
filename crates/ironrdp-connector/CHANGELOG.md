@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.8.0...ironrdp-connector-v0.9.0)] - 2026-03-01
+
+### <!-- 0 -->Security
+
+- Add alternate_shell and work_dir configuration support ([#1095](https://github.com/Devolutions/IronRDP/issues/1095)) ([a33d27fe67](https://github.com/Devolutions/IronRDP/commit/a33d27fe6771a5a155161ef40a04de88803dd84c)) 
+
+  Add support for configuring `alternate_shell` and `work_dir` fields in
+  ClientInfoPdu, which are used by:
+    - CyberArk PSM (Privileged Session Manager) for session tokens
+    - Remote application scenarios (RemoteApp)
+    - Custom shell configurations
+
+- Dispatch multitransport PDUs on IO channel ([#1096](https://github.com/Devolutions/IronRDP/issues/1096)) ([7853e3cc6f](https://github.com/Devolutions/IronRDP/commit/7853e3cc6f26acaf3da000c6177ca3cef6ef85fd)) 
+
+  `decode_io_channel()` assumes all IO channel PDUs begin with
+  a`ShareControlHeader`. Multitransport Request PDUs use a
+  `BasicSecurityHeader` with `SEC_TRANSPORT_REQ` instead ([MS-RDPBCGR]
+  2.2.15.1).
+  
+  This adds a peek-based dispatch: check the first `u16`
+  for`TRANSPORT_REQ`, decode as `MultitransportRequestPdu` if set,
+  otherwise fall through to the existing `decode_share_control()` path
+  unchanged.
+  
+  The new variant is propagated through `ProcessorOutput` and
+  'ActiveStageOutput` so applications can handle multitransport requests.
+  Client and web consumers log the request (no UDP transport yet).
+
+### <!-- 1 -->Features
+
+- Add bulk compression and wire negotiation ([ebf5da5f33](https://github.com/Devolutions/IronRDP/commit/ebf5da5f3380a3355f6c95814d669f8190425ded)) 
+
+  - add ironrdp-bulk crate with MPPC/NCRUSH/XCRUSH, bitstream, benches, and metrics
+  - advertise compression in Client Info and plumb compression_type through connector
+  - decode compressed FastPath/ShareData updates using BulkCompressor
+  - update CLI to numeric compression flags (enabled by default, level 0-3)
+  - extend screenshot example with compression options and negotiated logging
+  - refresh tests, FFI/web configs, typos, and Cargo.lock
+
+- Advertise multitransport channel in GCC blocks ([#1092](https://github.com/Devolutions/IronRDP/issues/1092)) ([4f5fdd3628](https://github.com/Devolutions/IronRDP/commit/4f5fdd3628f4d0d2c2a4116e4e45269d802740f1)) 
+
+  Add multitransport_flags config option to populate the
+  MultiTransportChannelData GCC block during connection negotiation.
+  When None (the default), behavior is unchanged.
+
+### <!-- 4 -->Bug Fixes
+
+- Make fields of Error private ([#1074](https://github.com/Devolutions/IronRDP/issues/1074)) ([e51ed236ce](https://github.com/Devolutions/IronRDP/commit/e51ed236ce5d55dc1a4bc5f5809fd106bdd2e834)) 
+
+### <!-- 5 -->Performance
+
+- Reduce connection latency when Kerberos is disabled ([#1107](https://github.com/Devolutions/IronRDP/issues/1107)) ([b1b0289e00](https://github.com/Devolutions/IronRDP/commit/b1b0289e0067228dbc973d3edb0e27136f7ca52a)) 
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.1...ironrdp-connector-v0.8.0)] - 2025-12-18
 
 ### <!-- 7 -->Build

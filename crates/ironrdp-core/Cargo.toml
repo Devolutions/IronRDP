@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-core"
-version = "0.1.5"
+version = "0.1.6"
 readme = "README.md"
 description = "IronRDP common traits and types"
 edition.workspace = true
@@ -21,4 +21,4 @@ std = ["alloc", "ironrdp-error/std"]
 alloc = ["ironrdp-error/alloc"]
 
 [dependencies]
-ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
+ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public

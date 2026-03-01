@@ -6,6 +6,84 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.10.0...ironrdp-server-v0.11.0)] - 2026-03-01
+
+### <!-- 1 -->Features
+
+- Add clipboard data locking methods ([#1064](https://github.com/Devolutions/IronRDP/issues/1064)) ([58c3df84bb](https://github.com/Devolutions/IronRDP/commit/58c3df84bb9cafc8669315834cead35a71483c34)) 
+
+  Per [MS-RDPECLIP sections 2.2.4.6 and 2.2.4.7][lock-spec], the Local
+  Clipboard
+  Owner may lock the Shared Clipboard Owner's clipboard data before
+  requesting
+  file contents to ensure data stability during multi-request transfers.
+  
+  This enables server implementations to safely request file data from
+  clients
+  when handling clipboard paste operations.
+  
+  ---------
+
+- Add request_file_contents method ([#1065](https://github.com/Devolutions/IronRDP/issues/1065)) ([c30fc35a28](https://github.com/Devolutions/IronRDP/commit/c30fc35a28d6218603c1662e98e8b3053bea3aa5)) 
+
+  Per [MS-RDPECLIP section 2.2.5.3][file-contents-spec], the Local
+  Clipboard Owner
+  sends File Contents Request PDU to retrieve file data from the Shared
+  Clipboard
+  Owner during paste operations.
+  
+  This enables server implementations to request file contents from
+  clients,
+  completing the bidirectional file transfer capability.
+
+- Add SendFileContentsResponse message variant ([#1066](https://github.com/Devolutions/IronRDP/issues/1066)) ([25f81337aa](https://github.com/Devolutions/IronRDP/commit/25f81337aa494af9a21f55f12ec27fd946465cbe)) 
+
+  Adds `SendFileContentsResponse` to `ClipboardMessage` enum, enabling
+  clipboard
+  backends to signal when file data is ready to send via
+  `submit_file_contents()`.
+  
+  This provides the message-based interface pattern used consistently by
+  server
+  implementations for clipboard operations.
+
+- Expose client display size to RdpServerDisplay ([#1083](https://github.com/Devolutions/IronRDP/issues/1083)) ([3cf570788d](https://github.com/Devolutions/IronRDP/commit/3cf570788d418ef0d83670c8581ddb61582237fe)) 
+
+  This allows the server implementation to handle the requested initial
+  client display size. The default implementation simply returns
+  `self.size()` so there's no change to existing behavior.
+  
+  Note that this method is also called during reactivations.
+
+- Add EGFX server integration with DVC bridge ([#1099](https://github.com/Devolutions/IronRDP/issues/1099)) ([4ba696c266](https://github.com/Devolutions/IronRDP/commit/4ba696c266c7065c93a691b9f818644fd471429b)) 
+
+- Implement ECHO virtual channel ([#1109](https://github.com/Devolutions/IronRDP/issues/1109)) ([6f6496ad29](https://github.com/Devolutions/IronRDP/commit/6f6496ad29395099563d50417d6dfff623914ee6)) 
+
+### <!-- 4 -->Bug Fixes
+
+- Make MultifragmentUpdate max_request_size configurable ([#1100](https://github.com/Devolutions/IronRDP/issues/1100)) ([d437b7e0b9](https://github.com/Devolutions/IronRDP/commit/d437b7e0b9a47f5b9246e24c76554df82f47670e)) 
+
+  The hardcoded `max_request_size` of 16,777,215 in the server's
+  MultifragmentUpdate capability causes mstsc to reject the connection (it
+  likely tries to allocate that buffer upfront). FreeRDP hit the same
+  problem and adjusted their value in FreeRDP/FreeRDP#1313.
+  
+  This adds a configurable `max_request_size` field to `RdpServerOptions`
+  with a default of 8 MB (matching what `ironrdp-connector` already uses
+  on the client side) and exposes it through the builder via
+  `with_max_request_size()`.
+
+- Tile bitmaps that exceed `MultifragmentUpdate` limit ([#1133](https://github.com/Devolutions/IronRDP/issues/1133)) ([db2f40b5b0](https://github.com/Devolutions/IronRDP/commit/db2f40b5b0af66a4c83e0e075e2814467c060b1d)) 
+
+  Split oversized dirty rects into horizontal strips that fit within `max_request_size`
+  before handing them to the bitmap encoder.
+
+### <!-- 99 -->Please Sort
+
+- Add pointer caching support to ironrdp-server ([1a6b4206d5](https://github.com/Devolutions/IronRDP/commit/1a6b4206d5f0fe3333da721adeaea3f7d2aa65cf)) 
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.9.0...ironrdp-server-v0.10.0)] - 2025-12-18
 
 ### <!-- 4 -->Bug Fixes

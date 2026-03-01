@@ -6,6 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.8.0...ironrdp-session-v0.9.0)] - 2026-03-01
+
+### <!-- 0 -->Security
+
+- Dispatch multitransport PDUs on IO channel ([#1096](https://github.com/Devolutions/IronRDP/issues/1096)) ([7853e3cc6f](https://github.com/Devolutions/IronRDP/commit/7853e3cc6f26acaf3da000c6177ca3cef6ef85fd)) 
+
+  `decode_io_channel()` assumes all IO channel PDUs begin with
+  a`ShareControlHeader`. Multitransport Request PDUs use a
+  `BasicSecurityHeader` with `SEC_TRANSPORT_REQ` instead ([MS-RDPBCGR]
+  2.2.15.1).
+  
+  This adds a peek-based dispatch: check the first `u16`
+  for`TRANSPORT_REQ`, decode as `MultitransportRequestPdu` if set,
+  otherwise fall through to the existing `decode_share_control()` path
+  unchanged.
+  
+  The new variant is propagated through `ProcessorOutput` and
+  'ActiveStageOutput` so applications can handle multitransport requests.
+  Client and web consumers log the request (no UDP transport yet).
+
+### <!-- 1 -->Features
+
+- Add bulk compression and wire negotiation ([ebf5da5f33](https://github.com/Devolutions/IronRDP/commit/ebf5da5f3380a3355f6c95814d669f8190425ded)) 
+
+  - add ironrdp-bulk crate with MPPC/NCRUSH/XCRUSH, bitstream, benches, and metrics
+  - advertise compression in Client Info and plumb compression_type through connector
+  - decode compressed FastPath/ShareData updates using BulkCompressor
+  - update CLI to numeric compression flags (enabled by default, level 0-3)
+  - extend screenshot example with compression options and negotiated logging
+  - refresh tests, FFI/web configs, typos, and Cargo.lock
+
+### <!-- 4 -->Bug Fixes
+
+- Make fields of Error private ([#1074](https://github.com/Devolutions/IronRDP/issues/1074)) ([e51ed236ce](https://github.com/Devolutions/IronRDP/commit/e51ed236ce5d55dc1a4bc5f5809fd106bdd2e834)) 
+
+- Fix pixel format handling in bitmap decoders ([#1101](https://github.com/Devolutions/IronRDP/issues/1101)) ([75863245ab](https://github.com/Devolutions/IronRDP/commit/75863245ab376f15e35c00df434860c93b123633)) 
+
+- Handle row padding in uncompressed bitmap updates ([4262ae75ff](https://github.com/Devolutions/IronRDP/commit/4262ae75ffa5cb1fabb4ca07d598e33d855e8fdd)) 
+
+  Uncompressed bitmap data has rows padded to 4-byte boundaries per
+  [MS-RDPBCGR] 2.2.9.1.1.3.1.2.2, but the bitmap apply functions
+  expect tightly packed pixel data. Strip the per-row padding before
+  passing raw bitmap data to the apply functions.
+  
+  This fixes garbled bitmap rendering when connecting to servers that
+  send uncompressed bitmaps with non-aligned row widths, such as XRDP
+  at 16 bpp.
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.7.0...ironrdp-session-v0.8.0)] - 2025-12-18
 
 

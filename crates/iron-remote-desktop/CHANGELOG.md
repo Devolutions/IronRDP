@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.7.0...iron-remote-desktop-v0.8.0)] - 2026-03-01
+
+### <!-- 1 -->Features
+
+- Expose granular RDCleanPath error details ([#1117](https://github.com/Devolutions/IronRDP/issues/1117)) ([2911124e8f](https://github.com/Devolutions/IronRDP/commit/2911124e8fe6160bc8ba03a574b67077e6d2cca9)) 
+
+  Add RDCleanPathDetails struct to provide detailed error information for
+  RDCleanPath errors, including HTTP status codes, WSA error codes, and
+  TLS alert codes.
+  
+  Allows the web client to distinguish between different types of network
+  errors (say, WSAEACCES/10013) instead of showing a generic RDCleanpath
+  error message.
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.6.0...iron-remote-desktop-v0.7.0)] - 2025-09-29
 
 ### <!-- 4 -->Bug Fixes
