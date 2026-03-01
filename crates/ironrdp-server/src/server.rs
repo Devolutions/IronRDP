@@ -906,7 +906,7 @@ impl RdpServer {
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs)
+        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs, self.opts.max_request_size)
             .context("failed to initialize update encoder")?;
 
         let state = self
