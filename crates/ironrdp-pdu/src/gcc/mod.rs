@@ -58,6 +58,7 @@ const USER_DATA_HEADER_SIZE: usize = 4;
 ///
 /// [2.2.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/db6713ee-1c0e-4064-a3b3-0fac30b4037b
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientGccBlocks {
     pub core: ClientCoreData,
     pub security: ClientSecurityData,

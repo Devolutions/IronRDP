@@ -11,6 +11,7 @@ const BRUSH_LENGTH: usize = 4;
 
 #[repr(u32)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum SupportLevel {
     Default = 0,
     Color8x8 = 1,
@@ -28,6 +29,7 @@ impl SupportLevel {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Brush {
     pub support_level: SupportLevel,
 }

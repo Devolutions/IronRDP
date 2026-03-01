@@ -15,6 +15,7 @@ const INPUT_LENGTH: usize = 84;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct InputFlags: u16 {
         const SCANCODES = 0x0001;
         const MOUSEX = 0x0004;
@@ -29,6 +30,7 @@ bitflags! {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Input {
     pub input_flags: InputFlags,
     pub keyboard_layout: u32,

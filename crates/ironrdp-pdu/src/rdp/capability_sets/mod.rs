@@ -244,6 +244,7 @@ impl<'de> Decode<'de> for DemandActive {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CapabilitySet {
     // mandatory
     General(General),

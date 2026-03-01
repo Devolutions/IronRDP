@@ -35,6 +35,7 @@ pub use ironrdp_core::impl_as_any;
 // The idea is to reduce the amount of code required when building a static/dynamic channel to a minimum.
 
 /// The integer type representing a static virtual channel ID.
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub type StaticChannelId = u16;
 
 /// SVC data to be sent to the server. See [`SvcMessage`] for more information.
@@ -133,7 +134,9 @@ pub enum CompressionCondition {
 
 /// A static virtual channel.
 #[derive(Debug)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct StaticVirtualChannel {
+    #[cfg_attr(feature = "arbitrary", arbitrary(default))]
     channel_processor: Box<dyn SvcProcessor>,
     chunk_processor: ChunkProcessor,
 }
@@ -296,6 +299,7 @@ assert_obj_safe!(SvcServerProcessor);
 
 /// ChunkProcessor is used to chunkify/de-chunkify static virtual channel PDUs.
 #[derive(Debug)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 struct ChunkProcessor {
     /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
     /// usually chunked when transferred over svc.
@@ -457,6 +461,7 @@ pub struct StaticChannelSet {
     to_channel_id: BTreeMap<TypeId, StaticChannelId>,
     to_type_id: BTreeMap<StaticChannelId, TypeId>,
 }
+
 
 impl StaticChannelSet {
     #[inline]

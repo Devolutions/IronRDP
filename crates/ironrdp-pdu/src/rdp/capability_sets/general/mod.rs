@@ -12,6 +12,7 @@ const GENERAL_LENGTH: usize = 20;
 pub const PROTOCOL_VER: u16 = 0x0200;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MajorPlatformType(u16);
 
 impl fmt::Debug for MajorPlatformType {
@@ -46,6 +47,7 @@ impl MajorPlatformType {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MinorPlatformType(u16);
 
 impl fmt::Debug for MinorPlatformType {
@@ -83,6 +85,7 @@ impl MinorPlatformType {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct GeneralExtraFlags: u16 {
         const FASTPATH_OUTPUT_SUPPORTED = 0x0001;
         const NO_BITMAP_COMPRESSION_HDR = 0x0400;
@@ -93,6 +96,7 @@ bitflags! {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct General {
     pub major_platform_type: MajorPlatformType,
     pub minor_platform_type: MinorPlatformType,

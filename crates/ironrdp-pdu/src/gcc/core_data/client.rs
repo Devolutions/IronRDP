@@ -44,6 +44,7 @@ const DEVICE_SCALE_FACTOR_SIZE: usize = 4;
 ///
 /// [2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientCoreData {
     pub version: RdpVersion,
     pub desktop_width: u16,
@@ -194,6 +195,7 @@ impl<'de> Decode<'de> for ClientCoreData {
 ///
 /// [2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientCoreOptionalData {
     /// The requested color depth. Values in this field MUST be ignored if the highColorDepth field is present.
     pub post_beta2_color_depth: Option<ColorDepth>,
@@ -507,6 +509,7 @@ impl From<HighColorDepth> for ClientColorDepth {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ColorDepth {
     Bpp4 = 0xCA00,
     Bpp8 = 0xCA01,
@@ -527,6 +530,7 @@ impl ColorDepth {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, FromPrimitive, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum HighColorDepth {
     Bpp4 = 0x0004,
     Bpp8 = 0x0008,
@@ -547,6 +551,7 @@ impl HighColorDepth {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum SecureAccessSequence {
     Del = 0xAA03,
 }
@@ -563,6 +568,7 @@ impl SecureAccessSequence {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum KeyboardType {
     IbmPcXt = 1,
     OlivettiIco = 2,
@@ -585,6 +591,7 @@ impl KeyboardType {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ConnectionType {
     NotUsed = 0, // not used as ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE not set
     Modem = 1,
@@ -608,6 +615,7 @@ impl ConnectionType {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct SupportedColorDepths: u16 {
         const BPP24 = 1;
         const BPP16 = 2;
@@ -618,6 +626,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct ClientEarlyCapabilityFlags: u16 {
         const SUPPORT_ERR_INFO_PDU = 0x0001;
         const WANT_32_BPP_SESSION = 0x0002;

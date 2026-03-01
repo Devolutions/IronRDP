@@ -14,6 +14,7 @@ const FLAGS_SIZE: usize = 4;
 const REDIRECTED_SESSION_ID_SIZE: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientClusterData {
     pub flags: RedirectionFlags,
     pub redirection_version: RedirectionVersion,
@@ -69,6 +70,7 @@ impl<'de> Decode<'de> for ClientClusterData {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct RedirectionFlags: u32 {
         const REDIRECTION_SUPPORTED = 0x0000_0001;
         const REDIRECTED_SESSION_FIELD_VALID = 0x0000_0002;
@@ -78,6 +80,7 @@ bitflags! {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum RedirectionVersion {
     V1 = 0,
     V2 = 1,
