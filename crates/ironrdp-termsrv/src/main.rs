@@ -37,8 +37,11 @@ mod windows_main {
     use tracing_subscriber::EnvFilter;
     use windows::core::{w, BOOL, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
-        GetLastError, LocalFree, SetLastError, ERROR_BAD_LENGTH, ERROR_NOT_ALL_ASSIGNED, HANDLE, HLOCAL, LUID, WAIT_OBJECT_0,
-        WAIT_TIMEOUT, WIN32_ERROR,
+        GetLastError, LocalFree, SetLastError, ERROR_BAD_LENGTH, ERROR_NO_MORE_FILES, ERROR_NOT_ALL_ASSIGNED, HANDLE,
+        HLOCAL, LUID, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
+    };
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
     use windows::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
@@ -102,6 +105,8 @@ mod windows_main {
     const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:4489";
     const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
     const LOGON_READINESS_PROBE_INTERVAL: Duration = Duration::from_secs(2);
+    const SHELL_BOOTSTRAP_GRACE: Duration = Duration::from_secs(0);
+    const SHELL_BOOTSTRAP_RETRY_INTERVAL: Duration = Duration::from_secs(1);
     const FIRST_FRAME_BLANK_GRACE: Duration = Duration::from_secs(1);
     const FIRST_FRAME_BLANK_MAX_FRAMES: u32 = 8;
     const PERSISTENT_BLANK_RESTART_GRACE: Duration = Duration::from_secs(3);
@@ -451,6 +456,11 @@ mod windows_main {
         /// Set to `true` after we have restarted the capture helper once the user has logged in.
         /// Prevents repeated restarts if `WTSQueryUserToken` briefly flaps.
         capture_restarted_for_logon: bool,
+        /// First time we observed a valid user token for the provider-selected session while
+        /// explorer was still missing.
+        waiting_for_shell_ready_since: Option<Instant>,
+        /// Next time we may attempt a best-effort shell bootstrap in provider mode.
+        next_shell_bootstrap_attempt_at: Instant,
         /// The `session_id_override` value that was in effect when the capture helper was last
         /// started.
         ///
@@ -504,6 +514,8 @@ mod windows_main {
                 next_logon_readiness_probe_at: Instant::now(),
                 waiting_for_user_login_since: None,
                 capture_restarted_for_logon: false,
+                waiting_for_shell_ready_since: None,
+                next_shell_bootstrap_attempt_at: Instant::now(),
                 capture_started_with_session_override: None,
                 provider_mode,
                 wait_for_session_id_until: None,
@@ -618,10 +630,102 @@ mod windows_main {
 
                 if should_probe_logon_readiness {
                     let user_token_available = session_id_override.is_some_and(session_has_user_token);
+                    let explorer_ready = session_id_override.is_some_and(session_has_explorer_token);
+                    let interactive_shell_ready = user_token_available && explorer_ready;
 
-                    self.logon_readiness_ready = user_token_available;
+                    self.logon_readiness_ready = interactive_shell_ready;
                     self.logon_readiness_session_id = session_id_override;
                     self.next_logon_readiness_probe_at = Instant::now() + LOGON_READINESS_PROBE_INTERVAL;
+
+                    if self.provider_mode {
+                        match session_id_override {
+                            Some(_session_id) if explorer_ready => {
+                                self.waiting_for_shell_ready_since = None;
+                            }
+                            Some(session_id) => {
+                                let now = Instant::now();
+                                let waiting_since = self.waiting_for_shell_ready_since.get_or_insert(now);
+
+                                if now.saturating_duration_since(*waiting_since) >= SHELL_BOOTSTRAP_GRACE
+                                    && now >= self.next_shell_bootstrap_attempt_at
+                                {
+                                    self.next_shell_bootstrap_attempt_at = now + SHELL_BOOTSTRAP_RETRY_INTERVAL;
+
+                                    info!(
+                                        connection_id = self.connection_id,
+                                        session_id,
+                                        user_token_available,
+                                        "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ATTEMPT"
+                                    );
+
+                                    let bootstrap_task = tokio::task::spawn_blocking(move || {
+                                        try_start_explorer_process(session_id, true)
+                                    });
+
+                                    match timeout(Duration::from_secs(3), bootstrap_task).await {
+                                        Ok(Ok(Ok(pid))) => {
+                                            info!(
+                                                connection_id = self.connection_id,
+                                                session_id,
+                                                explorer_pid = pid,
+                                                "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_SUCCESS"
+                                            );
+
+                                            if let Some(capture) = self.capture.take() {
+                                                capture.terminate();
+
+                                                info!(
+                                                    connection_id = self.connection_id,
+                                                    session_id,
+                                                    explorer_pid = pid,
+                                                    "Restarting capture helper after shell bootstrap success"
+                                                );
+
+                                                self.next_helper_attempt_at = Instant::now();
+                                                self.warned_blank_capture = false;
+                                                self.initial_blank_since = None;
+                                                self.initial_blank_frames = 0;
+                                                self.persistent_blank_since = None;
+                                                self.persistent_blank_frames = 0;
+                                                self.capture_restarted_for_blank = false;
+                                                self.sent_first_frame = false;
+                                                self.last_bitmap = None;
+                                                self.helper_frames_received = 0;
+                                                self.helper_timeouts = 0;
+                                            }
+                                        }
+                                        Ok(Ok(Err(error))) => {
+                                            warn!(
+                                                connection_id = self.connection_id,
+                                                session_id,
+                                                error = %format!("{error:#}"),
+                                                "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ERROR"
+                                            );
+                                        }
+                                        Ok(Err(join_error)) => {
+                                            warn!(
+                                                connection_id = self.connection_id,
+                                                session_id,
+                                                error = %join_error,
+                                                "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ERROR"
+                                            );
+                                        }
+                                        Err(_) => {
+                                            warn!(
+                                                connection_id = self.connection_id,
+                                                session_id,
+                                                error = "bootstrap attempt timed out",
+                                                "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ERROR"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                self.waiting_for_shell_ready_since = None;
+                            }
+                        }
+                    }
                 }
 
                 let should_restart_for_logon = self.logon_readiness_ready && !self.capture_restarted_for_logon;
@@ -661,6 +765,8 @@ mod windows_main {
                     self.logon_readiness_ready = false;
                     self.logon_readiness_session_id = None;
                     self.next_logon_readiness_probe_at = Instant::now();
+                    self.waiting_for_shell_ready_since = None;
+                    self.next_shell_bootstrap_attempt_at = Instant::now();
                     self.capture_started_with_session_override = None;
                     self.waiting_for_user_login_since = None;
                 }
@@ -760,24 +866,56 @@ mod windows_main {
                             if let Some(bitmap) = self.last_bitmap.clone() {
                                 CapturedFrame::Raw(bitmap)
                             } else {
-                                // Helper died before sending its first frame.  Retry rather than
-                                // sending the synthetic test pattern — a GDI fallback or a fresh
-                                // helper spawn will produce real (possibly blank) content instead.
-                                sleep(CAPTURE_INTERVAL).await;
-                                continue;
+                                match capture_bitmap_update(self.desktop_size) {
+                                    Ok(bitmap) => CapturedFrame::Raw(bitmap),
+                                    Err(capture_error) => {
+                                        warn!(
+                                            connection_id = self.connection_id,
+                                            error = %format!("{capture_error:#}"),
+                                            "Capture helper failed before first frame and GDI fallback failed"
+                                        );
+                                        sleep(CAPTURE_INTERVAL).await;
+                                        continue;
+                                    }
+                                }
                             }
                         }
                         Err(_) => {
                             self.helper_timeouts = self.helper_timeouts.saturating_add(1);
+
+                            if self.helper_frames_received == 0 && self.helper_timeouts >= 3 {
+                                warn!(
+                                    connection_id = self.connection_id,
+                                    helper_timeouts = self.helper_timeouts,
+                                    "Capture helper timed out before first frame; restarting helper"
+                                );
+
+                                if let Some(capture) = self.capture.take() {
+                                    capture.terminate();
+                                }
+
+                                self.next_helper_attempt_at = Instant::now();
+                                self.helper_timeouts = 0;
+                                sleep(CAPTURE_INTERVAL).await;
+                                continue;
+                            }
+
                             sleep(CAPTURE_INTERVAL).await;
 
                             if let Some(bitmap) = self.last_bitmap.clone() {
                                 CapturedFrame::Raw(bitmap)
                             } else {
-                                // Helper timed out before its first frame arrived (session still
-                                // initialising).  Loop back and wait rather than sending the
-                                // synthetic test pattern.
-                                continue;
+                                match capture_bitmap_update(self.desktop_size) {
+                                    Ok(bitmap) => CapturedFrame::Raw(bitmap),
+                                    Err(capture_error) => {
+                                        warn!(
+                                            connection_id = self.connection_id,
+                                            error = %format!("{capture_error:#}"),
+                                            "Capture helper timed out before first frame and GDI fallback failed"
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1827,7 +1965,7 @@ mod windows_main {
         };
         info!(session_id, "Selected capture session");
 
-        let acquired = acquire_session_token(session_id, credentials.as_ref(), allow_prelogon_fallback)
+        let acquired = acquire_session_token(session_id, credentials.as_ref(), allow_prelogon_fallback, true)
             .context("failed to acquire a token for the capture session")?;
         let user_token = acquired.token;
 
@@ -1889,6 +2027,62 @@ mod windows_main {
         })
     }
 
+    fn try_start_explorer_process(session_id: u32, allow_prelogon_fallback: bool) -> anyhow::Result<u32> {
+        let acquired = acquire_session_token(session_id, None, allow_prelogon_fallback, false)
+            .context("failed to acquire a user token for explorer bootstrap")?;
+        let user_token = acquired.token;
+
+        let exe_path = r"C:\Windows\explorer.exe";
+        let args = format!("\"{exe_path}\"");
+
+        let app_name: Vec<u16> = exe_path.encode_utf16().chain(Some(0)).collect();
+        let mut cmd_line: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
+        let mut desktop_w: Vec<u16> = acquired.desktop.as_lpdesktop().encode_utf16().chain(Some(0)).collect();
+
+        let startup_info = STARTUPINFOW {
+            cb: u32::try_from(size_of::<STARTUPINFOW>()).map_err(|_| anyhow!("STARTUPINFOW size overflow"))?,
+            lpDesktop: PWSTR(desktop_w.as_mut_ptr()),
+            ..Default::default()
+        };
+
+        let mut process_info = PROCESS_INFORMATION::default();
+
+        // SAFETY:
+        // - user token handle is valid on successful acquisition
+        // - app/cmd/desktop buffers are NUL-terminated and live for the call
+        // - startup/process structures are valid out-parameters
+        let create_ok = unsafe {
+            CreateProcessAsUserW(
+                Some(user_token),
+                PCWSTR(app_name.as_ptr()),
+                Some(PWSTR(cmd_line.as_mut_ptr())),
+                None,
+                None,
+                false,
+                windows::Win32::System::Threading::PROCESS_CREATION_FLAGS(0),
+                None,
+                None,
+                &startup_info,
+                &mut process_info,
+            )
+        };
+
+        // SAFETY: close token handle acquired for this launch attempt.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(user_token);
+        }
+
+        create_ok.ok().context("CreateProcessAsUserW(explorer) failed")?;
+
+        // SAFETY: close thread/process handles from successful process creation.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(process_info.hThread);
+            let _ = windows::Win32::Foundation::CloseHandle(process_info.hProcess);
+        }
+
+        Ok(process_info.dwProcessId)
+    }
+
     fn session_has_user_token(session_id: u32) -> bool {
         let mut token = HANDLE::default();
         // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
@@ -1905,7 +2099,7 @@ mod windows_main {
     }
 
     fn session_has_explorer_token(session_id: u32) -> bool {
-        match token_from_session_process(session_id, "explorer.exe") {
+        match token_from_session_process_with_retries(session_id, "explorer.exe", 1) {
             Ok(token) => {
                 close_handle_best_effort(token);
                 true
@@ -1977,46 +2171,59 @@ mod windows_main {
         session_id: u32,
         credentials: Option<&StoredCredentials>,
         allow_prelogon_fallback: bool,
+        allow_service_token_fallback: bool,
     ) -> anyhow::Result<AcquiredSessionToken> {
-        // Prefer a token from explorer first when present (interactive desktop).
-        match token_from_session_process(session_id, "explorer.exe") {
-            Ok(token) => {
-                debug!(session_id, "Using explorer.exe token (default desktop)");
+        let process_lookup_retries = if allow_service_token_fallback && allow_prelogon_fallback {
+            8
+        } else {
+            1
+        };
+
+        if allow_service_token_fallback && allow_prelogon_fallback {
+            // Prefer a token from explorer first when present (interactive desktop).
+            match token_from_session_process_with_retries(session_id, "explorer.exe", process_lookup_retries) {
+                Ok(token) => {
+                    debug!(session_id, "Using explorer.exe token (default desktop)");
+                    return Ok(AcquiredSessionToken {
+                        token,
+                        desktop: HelperDesktop::Default,
+                    });
+                }
+                Err(error) => {
+                    info!(
+                        session_id,
+                        error = %format!("{error:#}"),
+                        "explorer.exe token unavailable for capture session"
+                    );
+                }
+            }
+        }
+
+        let mut token = HANDLE::default();
+        let mut wts_result = Err(windows::core::Error::empty());
+
+        if allow_service_token_fallback {
+            // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
+            wts_result = unsafe { WTSQueryUserToken(session_id, &mut token) };
+
+            if wts_result.is_ok() {
+                // If the user is logged in, we can start the keepalive using the real session token
+                // instead of manufacturing an interactive logon via LogonUserW.
+                if let Ok(dup_for_keepalive) = duplicate_primary_token(token) {
+                    if let Err(error) = ensure_session_keepalive_started(session_id, dup_for_keepalive) {
+                        warn!(
+                            session_id,
+                            error = %format!("{error:#}"),
+                            "Failed to start session keepalive process"
+                        );
+                    }
+                }
+
                 return Ok(AcquiredSessionToken {
                     token,
                     desktop: HelperDesktop::Default,
                 });
             }
-            Err(error) => {
-                info!(
-                    session_id,
-                    error = %format!("{error:#}"),
-                    "explorer.exe token unavailable for capture session"
-                );
-            }
-        }
-
-        let mut token = HANDLE::default();
-
-        // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
-        let wts_result = unsafe { WTSQueryUserToken(session_id, &mut token) };
-        if wts_result.is_ok() {
-            // If the user is logged in, we can start the keepalive using the real session token
-            // instead of manufacturing an interactive logon via LogonUserW.
-            if let Ok(dup_for_keepalive) = duplicate_primary_token(token) {
-                if let Err(error) = ensure_session_keepalive_started(session_id, dup_for_keepalive) {
-                    warn!(
-                        session_id,
-                        error = %format!("{error:#}"),
-                        "Failed to start session keepalive process"
-                    );
-                }
-            }
-
-            return Ok(AcquiredSessionToken {
-                token,
-                desktop: HelperDesktop::Default,
-            });
         }
 
         if !allow_prelogon_fallback {
@@ -2030,7 +2237,7 @@ mod windows_main {
             return Err(anyhow!("prelogon token fallback disabled after initial helper start"));
         }
 
-        match token_from_session_process(session_id, "winlogon.exe") {
+        match token_from_session_process_with_retries(session_id, "winlogon.exe", process_lookup_retries) {
             Ok(token) => {
                 info!(
                     session_id,
@@ -2050,27 +2257,42 @@ mod windows_main {
             }
         }
 
-        match token_from_session_process(session_id, "csrss.exe") {
-            Ok(token) => {
-                info!(
-                    session_id,
-                    "Using csrss.exe token (fallback for session-bound helper startup)"
-                );
-                return Ok(AcquiredSessionToken {
-                    token,
-                    desktop: HelperDesktop::Default,
-                });
-            }
-            Err(error) => {
-                info!(
-                    session_id,
-                    error = %format!("{error:#}"),
-                    "csrss.exe token unavailable for capture session"
-                );
+        if allow_service_token_fallback {
+            match token_from_session_process_with_retries(session_id, "csrss.exe", process_lookup_retries) {
+                Ok(token) => {
+                    info!(
+                        session_id,
+                        "Using csrss.exe token (fallback for session-bound helper startup)"
+                    );
+                    return Ok(AcquiredSessionToken {
+                        token,
+                        desktop: HelperDesktop::Default,
+                    });
+                }
+                Err(error) => {
+                    info!(
+                        session_id,
+                        error = %format!("{error:#}"),
+                        "csrss.exe token unavailable for capture session"
+                    );
+                }
             }
         }
 
         let wts_error = wts_result.err().unwrap_or_else(windows::core::Error::empty);
+
+        if !allow_service_token_fallback {
+            info!(
+                session_id,
+                error = %wts_error,
+                error_code = %wts_error.code(),
+                "interactive session token unavailable and service-token fallback is disabled"
+            );
+            return Err(anyhow!(
+                "interactive session token unavailable and service-token fallback is disabled"
+            ));
+        }
+
         warn!(
             session_id,
             error = %wts_error,
@@ -2121,14 +2343,25 @@ mod windows_main {
         Ok(primary_token)
     }
 
-    fn token_from_session_process(session_id: u32, process_name: &str) -> anyhow::Result<HANDLE> {
+    fn token_from_session_process_with_retries(
+        session_id: u32,
+        process_name: &str,
+        enumerate_process_retries: u32,
+    ) -> anyhow::Result<HANDLE> {
         let mut process_info_ptr: *mut WTS_PROCESS_INFOW = null_mut();
         let mut process_count = 0u32;
 
         let mut enumerate_success = false;
         let mut enumerate_error: Option<anyhow::Error> = None;
 
-        for attempt in 0..3 {
+        let enumerate_process_retries = enumerate_process_retries.max(1);
+
+        if enumerate_process_retries == 1 {
+            let pid = find_session_process_pid_toolhelp(session_id, process_name)?;
+            return duplicate_primary_token_from_process(pid, process_name);
+        }
+
+        for attempt in 0..enumerate_process_retries {
             process_info_ptr = null_mut();
             process_count = 0;
 
@@ -2141,14 +2374,16 @@ mod windows_main {
                     break;
                 }
                 Err(error) => {
-                    if error.code() == windows::core::HRESULT::from_win32(ERROR_BAD_LENGTH.0) && attempt < 2 {
+                    if error.code() == windows::core::HRESULT::from_win32(ERROR_BAD_LENGTH.0)
+                        && attempt + 1 < enumerate_process_retries
+                    {
                         warn!(
                             session_id,
                             process_name,
                             attempt = attempt + 1,
                             "WTSEnumerateProcessesW returned ERROR_BAD_LENGTH; retrying"
                         );
-                        std::thread::sleep(Duration::from_millis(25));
+                        std::thread::sleep(Duration::from_millis(50));
                         continue;
                     }
 
@@ -2158,55 +2393,65 @@ mod windows_main {
             }
         }
 
-        if !enumerate_success {
-            return Err(
-                enumerate_error
-                    .unwrap_or_else(|| anyhow!("WTSEnumerateProcessesW failed: unknown error")),
-            )
-            .context("WTSEnumerateProcessesW failed");
-        }
+        let mut found_pid: Option<u32> = None;
 
-        struct ProcessListGuard(*mut WTS_PROCESS_INFOW);
-        impl Drop for ProcessListGuard {
-            fn drop(&mut self) {
-                if !self.0.is_null() {
-                    // SAFETY: pointer was allocated by WTSEnumerateProcessesW and must be freed with WTSFreeMemory.
-                    unsafe { WTSFreeMemory(self.0.cast()) };
+        if enumerate_success {
+            struct ProcessListGuard(*mut WTS_PROCESS_INFOW);
+            impl Drop for ProcessListGuard {
+                fn drop(&mut self) {
+                    if !self.0.is_null() {
+                        // SAFETY: pointer was allocated by WTSEnumerateProcessesW and must be freed with WTSFreeMemory.
+                        unsafe { WTSFreeMemory(self.0.cast()) };
+                    }
+                }
+            }
+
+            let _guard = ProcessListGuard(process_info_ptr);
+
+            if process_info_ptr.is_null() {
+                return Err(anyhow!("WTSEnumerateProcessesW returned a null process list pointer"));
+            }
+
+            let process_count_usize = usize::try_from(process_count)
+                .map_err(|_| anyhow!("WTSEnumerateProcessesW returned too many process entries: {process_count}"))?;
+
+            // SAFETY: WTSEnumerateProcessesW returned `process_count` entries at `process_info_ptr`.
+            let processes = unsafe { core::slice::from_raw_parts(process_info_ptr, process_count_usize) };
+
+            for entry in processes {
+                if entry.SessionId != session_id {
+                    continue;
+                }
+
+                // SAFETY: pProcessName is a nul-terminated wide string pointer returned by WTSEnumerateProcessesW.
+                let name = unsafe { PCWSTR(entry.pProcessName.0).to_string() }.unwrap_or_default();
+                if name.eq_ignore_ascii_case(process_name) {
+                    found_pid = Some(entry.ProcessId);
+                    break;
                 }
             }
         }
 
-        let _guard = ProcessListGuard(process_info_ptr);
+        let pid = if let Some(pid) = found_pid {
+            pid
+        } else {
+            find_session_process_pid_toolhelp(session_id, process_name).map_err(|toolhelp_error| {
+                if let Some(enumerate_error) = &enumerate_error {
+                    anyhow!(
+                        "{process_name} lookup failed via WTSEnumerateProcessesW ({enumerate_error:#}) and Toolhelp fallback ({toolhelp_error:#})"
+                    )
+                } else {
+                    toolhelp_error
+                }
+            })?
+        };
 
-        if process_info_ptr.is_null() {
-            return Err(anyhow!("WTSEnumerateProcessesW returned a null process list pointer"));
-        }
+        duplicate_primary_token_from_process(pid, process_name)
+    }
 
-        let process_count_usize = usize::try_from(process_count)
-            .map_err(|_| anyhow!("WTSEnumerateProcessesW returned too many process entries: {process_count}"))?;
-
-        // SAFETY: WTSEnumerateProcessesW returned `process_count` entries at `process_info_ptr`.
-        let processes = unsafe { core::slice::from_raw_parts(process_info_ptr, process_count_usize) };
-
-        let mut found_pid: Option<u32> = None;
-
-        for entry in processes {
-            if entry.SessionId != session_id {
-                continue;
-            }
-
-            // SAFETY: pProcessName is a nul-terminated wide string pointer returned by WTSEnumerateProcessesW.
-            let name = unsafe { PCWSTR(entry.pProcessName.0).to_string() }.unwrap_or_default();
-            if name.eq_ignore_ascii_case(process_name) {
-                found_pid = Some(entry.ProcessId);
-                break;
-            }
-        }
-
-        let pid = found_pid.ok_or_else(|| anyhow!("{process_name} not found in session {session_id}"))?;
-
+    fn duplicate_primary_token_from_process(process_id: u32, process_name: &str) -> anyhow::Result<HANDLE> {
         // SAFETY: OpenProcess returns a handle for the specified PID when permitted.
-        let process_handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+        let process_handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
             .map_err(|error| anyhow!("OpenProcess failed: {error}"))
             .context("OpenProcess failed")?;
 
@@ -2222,27 +2467,27 @@ mod windows_main {
 
         let _process_guard = HandleGuard(process_handle);
 
-        let mut winlogon_token = HANDLE::default();
+        let mut process_token = HANDLE::default();
 
-        // SAFETY: OpenProcessToken writes a token handle into `winlogon_token` on success.
+        // SAFETY: OpenProcessToken writes a token handle into `process_token` on success.
         unsafe {
             OpenProcessToken(
                 process_handle,
                 TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY,
-                &mut winlogon_token,
+                &mut process_token,
             )
         }
         .map_err(|error| anyhow!("OpenProcessToken({process_name}) failed: {error}"))
         .context("OpenProcessToken failed")?;
 
-        let _token_guard = HandleGuard(winlogon_token);
+        let _token_guard = HandleGuard(process_token);
 
         let mut primary_token = HANDLE::default();
 
         // SAFETY: DuplicateTokenEx writes a new token handle into `primary_token` on success.
         unsafe {
             DuplicateTokenEx(
-                winlogon_token,
+                process_token,
                 TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_SESSIONID,
                 None,
                 SecurityImpersonation,
@@ -2575,13 +2820,12 @@ mod windows_main {
     const BITMAP_DUMP_INTERVAL_MS: u64 = 5_000;
     const BITMAP_DUMP_MAX_COUNT: u64 = 30;
 
-    fn current_process_session_id() -> Option<u32> {
+    fn process_id_to_session_id(pid: u32) -> Option<u32> {
         #[link(name = "kernel32")]
         unsafe extern "system" {
             fn ProcessIdToSessionId(process_id: u32, session_id: *mut u32) -> BOOL;
         }
 
-        let pid = unsafe { GetCurrentProcessId() };
         let mut session_id = 0u32;
 
         // SAFETY: `ProcessIdToSessionId` writes to `session_id` on success.
@@ -2591,6 +2835,11 @@ mod windows_main {
         } else {
             None
         }
+    }
+
+    fn current_process_session_id() -> Option<u32> {
+        let pid = unsafe { GetCurrentProcessId() };
+        process_id_to_session_id(pid)
     }
 
     fn now_unix_ms_best_effort() -> Option<u64> {
@@ -3040,8 +3289,8 @@ mod windows_main {
                     session_id,
                 } => self.set_capture_session_id(connection_id, session_id).await,
                 ProviderCommand::NotifyIddDriverLoaded { session_id } => {
-                    info!(session_id, "WDDM IDD driver loaded (notification)");
-                    ServiceEvent::Ack
+                    let mut guard = self.state.lock().await;
+                    guard.notify_idd_driver_loaded(session_id)
                 }
             }
         }
@@ -3169,43 +3418,17 @@ mod windows_main {
                 }
             }
 
-            let timeout = Duration::from_millis(u64::from(timeout_ms));
-            if timeout.is_zero() {
-                return ServiceEvent::NoIncoming;
-            }
-
-            // Wait (without holding the global state lock) for either:
-            // - pending_incoming to change (notified by the accept-drain task), or
-            // - the timeout to expire.
-            //
-            // This avoids a tight client-side polling loop that can exhaust the pipe server
-            // instance pool and trigger ERROR_PIPE_BUSY.
-            let deadline = Instant::now() + timeout;
-
-            loop {
-                {
+            let timeout_duration = Duration::from_millis(u64::from(timeout_ms));
+            match timeout(timeout_duration, pending_wakeup_rx.changed()).await {
+                Ok(Ok(())) => {
                     let mut guard = self.state.lock().await;
                     if let Some(event) = guard.pop_pending_for_listener(&listener_name) {
-                        return event;
+                        event
+                    } else {
+                        ServiceEvent::NoIncoming
                     }
                 }
-
-                let now = Instant::now();
-                if now >= deadline {
-                    return ServiceEvent::NoIncoming;
-                }
-
-                let remaining = deadline - now;
-
-                tokio::select! {
-                    _ = sleep(remaining) => return ServiceEvent::NoIncoming,
-                    changed = pending_wakeup_rx.changed() => {
-                        if changed.is_err() {
-                            // Control-plane notifier dropped; treat as no incoming.
-                            return ServiceEvent::NoIncoming;
-                        }
-                    }
-                }
+                Ok(Err(_)) | Err(_) => ServiceEvent::NoIncoming,
             }
         }
 
@@ -3240,7 +3463,7 @@ mod windows_main {
         }
 
         async fn set_capture_session_id(&self, connection_id: u32, session_id: u32) -> ServiceEvent {
-            let guard = self.state.lock().await;
+            let mut guard = self.state.lock().await;
             guard.set_capture_session_id(connection_id, session_id)
         }
 
@@ -3248,6 +3471,62 @@ mod windows_main {
             let mut guard = self.state.lock().await;
             guard.close_connection(connection_id)
         }
+    }
+
+    fn find_session_process_pid_toolhelp(session_id: u32, process_name: &str) -> anyhow::Result<u32> {
+        // SAFETY: CreateToolhelp32Snapshot returns a process snapshot handle on success.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
+            .map_err(|error| anyhow!("CreateToolhelp32Snapshot failed: {error}"))
+            .context("CreateToolhelp32Snapshot failed")?;
+
+        struct SnapshotGuard(HANDLE);
+        impl Drop for SnapshotGuard {
+            fn drop(&mut self) {
+                close_handle_best_effort(self.0);
+            }
+        }
+
+        let _snapshot_guard = SnapshotGuard(snapshot);
+
+        let mut entry = PROCESSENTRY32W {
+            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).map_err(|_| anyhow!("PROCESSENTRY32W size overflow"))?,
+            ..Default::default()
+        };
+
+        // SAFETY: snapshot is valid and entry points to writable PROCESSENTRY32W with initialized dwSize.
+        unsafe { Process32FirstW(snapshot, &mut entry) }
+            .map_err(|error| anyhow!("Process32FirstW failed: {error}"))
+            .context("Process32FirstW failed")?;
+
+        loop {
+            let pid = entry.th32ProcessID;
+            if pid != 0 && process_id_to_session_id(pid) == Some(session_id) {
+                let process_name_len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&code_unit| code_unit == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let exe_name = String::from_utf16_lossy(&entry.szExeFile[..process_name_len]);
+
+                if exe_name.eq_ignore_ascii_case(process_name) {
+                    return Ok(pid);
+                }
+            }
+
+            // SAFETY: snapshot is valid and entry remains a valid output buffer between iterations.
+            match unsafe { Process32NextW(snapshot, &mut entry) } {
+                Ok(()) => {}
+                Err(error) => {
+                    if error.code() == windows::core::HRESULT::from_win32(ERROR_NO_MORE_FILES.0) {
+                        break;
+                    }
+
+                    return Err(anyhow!("Process32NextW failed: {error}")).context("Process32NextW failed");
+                }
+            }
+        }
+
+        Err(anyhow!("{process_name} not found in session {session_id}"))
     }
 
     struct ServiceState {
@@ -3261,6 +3540,8 @@ mod windows_main {
         broken_tx: mpsc::UnboundedSender<BrokenNotification>,
         /// Session ID per connection, set when the provider receives NotifySessionId from WTS.
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
+        /// Session IDs for which the provider has signaled `NotifyIddDriverLoaded`.
+        idd_loaded_sessions: HashSet<u32>,
     }
 
     impl ServiceState {
@@ -3284,12 +3565,15 @@ mod windows_main {
                 accepted_tx,
                 broken_tx,
                 connection_session_ids: Arc::new(StdMutex::new(HashMap::new())),
+                idd_loaded_sessions: HashSet::new(),
             };
 
             (state, accepted_rx, broken_rx)
         }
 
-        fn set_capture_session_id(&self, connection_id: u32, session_id: u32) -> ServiceEvent {
+        fn set_capture_session_id(&mut self, connection_id: u32, session_id: u32) -> ServiceEvent {
+            let idd_loaded_for_session = self.idd_loaded_sessions.contains(&session_id);
+
             if let Ok(mut guard) = self.connection_session_ids.lock() {
                 guard.insert(connection_id, session_id);
                 info!(connection_id, session_id, "Set capture session id for connection");
@@ -3298,7 +3582,44 @@ mod windows_main {
                     session_id,
                     "SESSION_PROOF_TERMSRV_SET_CAPTURE_SESSION_ID_APPLIED"
                 );
+                info!(
+                    connection_id,
+                    session_id,
+                    idd_loaded_for_session,
+                    "SESSION_PROOF_TERMSRV_IDD_SESSION_BIND"
+                );
+
+                if idd_loaded_for_session {
+                    info!(
+                        connection_id,
+                        session_id,
+                        "SESSION_PROOF_TERMSRV_IDD_READY_FOR_CAPTURE"
+                    );
+                }
             }
+            ServiceEvent::Ack
+        }
+
+        fn notify_idd_driver_loaded(&mut self, session_id: u32) -> ServiceEvent {
+            let inserted = self.idd_loaded_sessions.insert(session_id);
+
+            info!(session_id, inserted, "WDDM IDD driver loaded (notification)");
+            info!(session_id, inserted, "SESSION_PROOF_TERMSRV_IDD_DRIVER_LOADED");
+
+            if let Ok(guard) = self.connection_session_ids.lock() {
+                for (connection_id, mapped_session_id) in guard.iter() {
+                    if *mapped_session_id != session_id {
+                        continue;
+                    }
+
+                    info!(
+                        connection_id = *connection_id,
+                        session_id,
+                        "SESSION_PROOF_TERMSRV_IDD_READY_FOR_CAPTURE"
+                    );
+                }
+            }
+
             ServiceEvent::Ack
         }
 
@@ -4737,6 +5058,10 @@ mod windows_main {
                         error = %format!("{error:#}"),
                         "Capture helper failed to capture frame"
                     );
+                    let bitmap = fallback_bitmap_update(desktop_size)
+                        .context("failed to generate fallback bitmap in capture helper")?;
+                    maybe_dump_bitmap_update_bgra32(bitmap.width, bitmap.height, bitmap.stride, bitmap.data.as_ref());
+                    write_capture_frame(&mut stream, &bitmap).await?;
                     sleep(CAPTURE_INTERVAL).await;
                 }
             }
@@ -4851,6 +5176,20 @@ mod windows_main {
                         error = %format!("{error:#}"),
                         "Capture helper failed to capture frame"
                     );
+                    let bitmap = fallback_bitmap_update(desktop_size)
+                        .context("failed to generate fallback bitmap in shared-memory capture helper")?;
+                    maybe_dump_bitmap_update_bgra32(bitmap.width, bitmap.height, bitmap.stride, bitmap.data.as_ref());
+
+                    seq = seq.wrapping_add(1);
+                    slot_idx = (slot_idx + 1) % SHM_FB_SLOTS;
+
+                    unsafe {
+                        shm_publish_frame(view, view_len, slot_idx, slot_len, seq, bitmap.data.as_ref())?;
+                    }
+
+                    unsafe { SetEvent(frame_ready_event) }
+                        .map_err(|set_event_error| anyhow!("SetEvent failed: {set_event_error}"))
+                        .context("SetEvent failed")?;
                     sleep(CAPTURE_INTERVAL).await;
                 }
             }
