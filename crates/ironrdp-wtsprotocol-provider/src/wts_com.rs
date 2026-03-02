@@ -4,7 +4,7 @@
     clippy::multiple_unsafe_ops_per_block
 )]
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -2546,6 +2546,8 @@ struct ComProtocolConnection {
     connection_callback: Arc<Mutex<Option<AgileReference<IWRdsProtocolConnectionCallback>>>>,
     control_bridge: ProviderControlBridge,
     wddm_idd_enabled: AtomicBool,
+    idd_last_driver_load_session_id: AtomicU32,
+    idd_driver_load_notified: AtomicBool,
     driver_handle_raw: AtomicUsize,
     ready_notified: Mutex<bool>,
     cached_credentials: Mutex<Option<(String, String, String)>>,
@@ -2555,6 +2557,24 @@ struct ComProtocolConnection {
     keyboard_handle: Mutex<Option<HANDLE>>,
     mouse_handle: Mutex<Option<HANDLE>>,
     video_handle: Mutex<Option<HANDLE>>,
+    video_handle_source: Mutex<VideoHandleSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VideoHandleSource {
+    Unknown,
+    IronRdpIdd,
+    RdpVideoMiniport,
+}
+
+impl VideoHandleSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::IronRdpIdd => "ironrdp_idd",
+            Self::RdpVideoMiniport => "rdp_video_miniport",
+        }
+    }
 }
 
 impl IAgileObject_Impl for ComProtocolConnection_Impl {}
@@ -2571,6 +2591,8 @@ impl ComProtocolConnection {
             connection_callback,
             control_bridge,
             wddm_idd_enabled: AtomicBool::new(false),
+            idd_last_driver_load_session_id: AtomicU32::new(0),
+            idd_driver_load_notified: AtomicBool::new(false),
             driver_handle_raw: AtomicUsize::new(0),
             ready_notified: Mutex::new(false),
             cached_credentials: Mutex::new(None),
@@ -2580,6 +2602,7 @@ impl ComProtocolConnection {
             keyboard_handle: Mutex::new(None),
             mouse_handle: Mutex::new(None),
             video_handle: Mutex::new(None),
+            video_handle_source: Mutex::new(VideoHandleSource::Unknown),
         }
     }
 
@@ -2594,6 +2617,25 @@ impl ComProtocolConnection {
                 }
             }
         }
+
+        *self.video_handle_source.lock() = VideoHandleSource::Unknown;
+    }
+
+    fn idd_readiness_snapshot(&self) -> (bool, bool, bool, Option<u32>) {
+        let wddm_enabled = self.wddm_idd_enabled.load(Ordering::SeqCst);
+        let driver_handle_seen = self.driver_handle_raw.load(Ordering::SeqCst) != 0;
+        let driver_load_notified = self.idd_driver_load_notified.load(Ordering::SeqCst);
+        let driver_load_session_id = match self.idd_last_driver_load_session_id.load(Ordering::SeqCst) {
+            0 => None,
+            value => Some(value),
+        };
+
+        (
+            wddm_enabled,
+            driver_handle_seen,
+            driver_load_notified,
+            driver_load_session_id,
+        )
     }
 
     fn open_device_handle_with_access(path: &str, desired_access: u32) -> windows_core::Result<HANDLE> {
@@ -2946,34 +2988,61 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
     }
 
     fn OnDriverLoad(&self, sessionid: u32, driverhandle: HANDLE_PTR) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
         debug_log_line(&format!(
             "IWRdsWddmIddProps::OnDriverLoad session_id={sessionid} handle={driverhandle:?}",
         ));
+        debug_log_line(&format!(
+            "SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_LOAD connection_id={connection_id} session_id={sessionid} handle_nonzero={}",
+            driverhandle.0 != 0,
+        ));
 
         self.driver_handle_raw.store(driverhandle.0, Ordering::SeqCst);
+        self.idd_last_driver_load_session_id
+            .store(sessionid, Ordering::SeqCst);
+        self.idd_driver_load_notified.store(false, Ordering::SeqCst);
 
         if let Err(error) = self.control_bridge.notify_idd_driver_loaded(sessionid) {
             debug_log_line(&format!(
                 "IWRdsWddmIddProps::OnDriverLoad notify_idd_driver_loaded failed: {error}"
+            ));
+            debug_log_line(&format!(
+                "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ERROR connection_id={connection_id} session_id={sessionid} error={error}",
+            ));
+        } else {
+            self.idd_driver_load_notified.store(true, Ordering::SeqCst);
+            debug_log_line(&format!(
+                "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK connection_id={connection_id} session_id={sessionid}",
             ));
         }
         Ok(())
     }
 
     fn OnDriverUnload(&self, sessionid: u32) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
         debug_log_line(&format!("IWRdsWddmIddProps::OnDriverUnload session_id={sessionid}"));
+        debug_log_line(&format!(
+            "SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_UNLOAD connection_id={connection_id} session_id={sessionid}",
+        ));
 
         self.driver_handle_raw.store(0, Ordering::SeqCst);
+        self.idd_last_driver_load_session_id.store(0, Ordering::SeqCst);
+        self.idd_driver_load_notified.store(false, Ordering::SeqCst);
         Ok(())
     }
 
     fn EnableWddmIdd(&self, enabled: BOOL) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
+        let enabled_bool = enabled.as_bool();
         debug_log_line(&format!(
             "IWRdsWddmIddProps::EnableWddmIdd enabled={}",
-            enabled.as_bool()
+            enabled_bool
+        ));
+        debug_log_line(&format!(
+            "SESSION_PROOF_PROVIDER_IDD_WDDM_ENABLE connection_id={connection_id} enabled={enabled_bool}",
         ));
 
-        self.wddm_idd_enabled.store(enabled.as_bool(), Ordering::SeqCst);
+        self.wddm_idd_enabled.store(enabled_bool, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -3200,18 +3269,21 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             ));
         }
 
-        let wddm_enabled = self.wddm_idd_enabled.load(Ordering::SeqCst);
-        let driver_handle_seen = self.driver_handle_raw.load(Ordering::SeqCst) != 0;
-        if wddm_enabled && !driver_handle_seen {
-            debug_log_line(&format!(
-                "IWRdsProtocolConnection::NotifySessionId fallback notify_idd_driver_loaded session_id={wts_session_id}",
-            ));
-            if let Err(error) = self.control_bridge.notify_idd_driver_loaded(wts_session_id) {
-                debug_log_line(&format!(
-                    "IWRdsProtocolConnection::NotifySessionId fallback notify_idd_driver_loaded failed: {error}",
-                ));
-            }
-        }
+        let (wddm_enabled, driver_handle_seen, driver_load_notified, driver_load_session_id) =
+            self.idd_readiness_snapshot();
+        let driver_load_session = driver_load_session_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_owned());
+
+        debug_log_line(&format!(
+            "SESSION_PROOF_PROVIDER_IDD_NOTIFY_SESSION_ID connection_id={} session_id={} wddm_enabled={} driver_handle_seen={} driver_load_notified={} driver_load_session={}",
+            self.inner.connection_id(),
+            wts_session_id,
+            wddm_enabled,
+            driver_handle_seen,
+            driver_load_notified,
+            driver_load_session,
+        ));
 
         Ok(())
     }
@@ -3304,34 +3376,62 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     }
 
     fn GetVideoHandle(&self) -> windows_core::Result<HANDLE_PTR> {
+        let connection_id = self.inner.connection_id();
         debug_log_line(&format!(
             "IWRdsProtocolConnection::GetVideoHandle called connection_id={}",
-            self.inner.connection_id()
+            connection_id
         ));
 
         let mut slot = self.video_handle.lock();
+        let mut source_slot = self.video_handle_source.lock();
+
         if slot.is_none() {
+            let (wddm_enabled, driver_handle_seen, driver_load_notified, driver_load_session_id) =
+                self.idd_readiness_snapshot();
+            let driver_load_session = driver_load_session_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_owned());
+
             match ComProtocolConnection::open_device_handle(r"\\.\IronRdpIddVideo") {
                 Ok(handle) => {
                     debug_log_line("GetVideoHandle: opened \\.\\IronRdpIddVideo");
                     *slot = Some(handle);
+                    *source_slot = VideoHandleSource::IronRdpIdd;
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=ironrdp_idd wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
+                    ));
                 }
                 Err(error) => {
                     debug_log_line(&format!(
                         "GetVideoHandle: failed to open custom IDD: {error}, falling back to RdpVideoMiniport"
+                    ));
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_PRIMARY_OPEN_FAILED connection_id={connection_id} source=ironrdp_idd wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session} error={error}",
                     ));
 
                     match ComProtocolConnection::open_device_handle(r"\\.\RdpVideoMiniport") {
                         Ok(handle) => {
                             debug_log_line("GetVideoHandle: opened \\.\\RdpVideoMiniport (fallback)");
                             *slot = Some(handle);
+                            *source_slot = VideoHandleSource::RdpVideoMiniport;
+                            debug_log_line(&format!(
+                                "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=rdp_video_miniport fallback_from=ironrdp_idd wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
+                            ));
                         }
                         Err(error) => {
                             debug_log_line(&format!("GetVideoHandle: failed to open fallback: {error}"));
+                            debug_log_line(&format!(
+                                "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_UNAVAILABLE connection_id={connection_id} primary=ironrdp_idd fallback=rdp_video_miniport wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session} error={error}",
+                            ));
                         }
                     }
                 }
             }
+        } else {
+            debug_log_line(&format!(
+                "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_CACHED connection_id={connection_id} source={}",
+                source_slot.as_str(),
+            ));
         }
 
         Ok(HANDLE_PTR(slot.map(handle_to_raw_usize).unwrap_or_default()))
@@ -3387,6 +3487,20 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         debug_log_line(&format!(
             "IWRdsProtocolConnection::IsUserAllowedToLogon called connection_id={connection_id} session_id={sessionid} usertoken=0x{:X} user={domain_name}\\{user_name}",
             usertoken.0
+        ));
+
+        let has_userinit = session_has_process(sessionid, "userinit.exe");
+        let has_explorer = session_has_process(sessionid, "explorer.exe");
+        let has_logonui = session_has_process(sessionid, "LogonUI.exe");
+        let has_winlogon = session_has_process(sessionid, "winlogon.exe");
+
+        debug_log_line(&format!(
+            "SESSION_PROOF_PROVIDER_LOGON_GATE connection_id={connection_id} session_id={sessionid} usertoken_nonzero={} userinit={} explorer={} logonui={} winlogon={}",
+            usertoken.0 != 0,
+            has_userinit,
+            has_explorer,
+            has_logonui,
+            has_winlogon,
         ));
 
         // Backup path: some hosts delay or skip NotifySessionId.  IsUserAllowedToLogon already
@@ -3742,15 +3856,31 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         }
 
         if *_querytype == PROPERTY_TYPE_SUPPRESS_LOGON_UI {
+            let connection_id = self.inner.connection_id();
+            let has_credentials = self
+                .cached_connection_credentials()
+                .is_some()
+                || self
+                    .fetch_and_cache_connection_credentials(connection_id, "query_property_suppress_logon_ui")?
+                    .is_some();
+
+            let suppress_logon_ui = u32::from(has_credentials);
             first.Type = WTS_VALUE_TYPE_ULONG;
-            first.u.ulVal = 0;
-            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_SUPPRESS_LOGON_UI -> 0");
+            first.u.ulVal = suppress_logon_ui;
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_SUPPRESS_LOGON_UI -> {suppress_logon_ui} creds_available={has_credentials}",
+            ));
+            debug_log_line(&format!(
+                "SESSION_PROOF_PROVIDER_SUPPRESS_LOGON_UI connection_id={connection_id} value={suppress_logon_ui} creds_available={has_credentials}",
+            ));
             return Ok(());
         }
 
         if *_querytype == PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT {
-            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT -> E_NOTIMPL");
-            return Err(E_NOTIMPL.into());
+            first.Type = WTS_VALUE_TYPE_ULONG;
+            first.u.ulVal = 0;
+            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT -> 0");
+            return Ok(());
         }
 
         if *_querytype == PROPERTY_TYPE_LICENSE_GUID {
@@ -3800,11 +3930,23 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         if *_querytype == PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL {
             // `wtsdefs.h`: 0 = don't enable, 1 = enable.
+            let connection_id = self.inner.connection_id();
+            let has_credentials = self
+                .cached_connection_credentials()
+                .is_some()
+                || self
+                    .fetch_and_cache_connection_credentials(connection_id, "query_property_universal_apps")?
+                    .is_some();
+            let enable_universal_apps = u32::from(has_credentials);
+
             first.Type = WTS_VALUE_TYPE_ULONG;
-            first.u.ulVal = 0;
-            debug_log_line(
-                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL -> 0",
-            );
+            first.u.ulVal = enable_universal_apps;
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL -> {enable_universal_apps} creds_available={has_credentials}",
+            ));
+            debug_log_line(&format!(
+                "SESSION_PROOF_PROVIDER_UNIVERSAL_APPS connection_id={connection_id} value={enable_universal_apps} creds_available={has_credentials}",
+            ));
             return Ok(());
         }
 
@@ -3853,18 +3995,30 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     }
 
     fn NotifyCommandProcessCreated(&self, sessionid: u32) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
         let has_userinit = session_has_process(sessionid, "userinit.exe");
         let has_explorer = session_has_process(sessionid, "explorer.exe");
         let has_logonui = session_has_process(sessionid, "LogonUI.exe");
         let has_winlogon = session_has_process(sessionid, "winlogon.exe");
+        let (video_handle_open, video_handle_nonzero, video_source) = {
+            let slot = self.video_handle.lock();
+            let source_slot = self.video_handle_source.lock();
+            let source = *source_slot;
+            let handle_raw = slot.map(handle_to_raw_usize).unwrap_or_default();
+            (slot.is_some(), handle_raw != 0, source)
+        };
 
         debug_log_line(&format!(
             "IWRdsProtocolConnection::NotifyCommandProcessCreated called connection_id={} session_id={sessionid} userinit={} explorer={} logonui={} winlogon={}",
-            self.inner.connection_id(),
+            connection_id,
             has_userinit,
             has_explorer,
             has_logonui,
             has_winlogon,
+        ));
+        debug_log_line(&format!(
+            "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_STATE connection_id={connection_id} session_id={sessionid} opened={video_handle_open} handle_nonzero={video_handle_nonzero} source={}",
+            video_source.as_str(),
         ));
         Ok(())
     }

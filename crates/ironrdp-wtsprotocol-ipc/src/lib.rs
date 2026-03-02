@@ -44,8 +44,9 @@ pub enum ProviderCommand {
     },
     /// Notify the companion service that the WDDM IDD driver has been loaded for a session.
     ///
-    /// This is a best-effort signal used for diagnostics and future IDD frame-pipeline wiring.
-    /// The companion service does not receive a usable driver handle (handles are process-local).
+    /// The companion service consumes this signal to correlate provider session assignment with
+    /// IDD readiness diagnostics. The companion service does not receive a usable driver handle
+    /// (handles are process-local).
     NotifyIddDriverLoaded {
         session_id: u32,
     },
