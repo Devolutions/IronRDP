@@ -286,6 +286,12 @@ $termsrvSessionProofMarkers = ''
 $notifyCommandProcessCreatedCount = $null
 $iddDriverLoadedNotified = $false
 $iddWddmEnabledSignalCount = $null
+$providerVideoHandleMarkerCount = $null
+$providerVideoHandleMarkers = ''
+$termsrvIddMarkerCount = $null
+$termsrvIddMarkers = ''
+$providerLogonPolicyMarkerCount = $null
+$providerLogonPolicyMarkers = ''
 $remoteConnectionSignalCount = $null
 $remoteGraphicsSignalCount = $null
 $remoteConnectionSignalsLog = ''
@@ -609,6 +615,12 @@ try {
             $result['termsrv_session_proof_markers'] = ''
             $result['idd_driver_loaded_notified'] = $false
             $result['idd_wddm_enabled_signal_count'] = 0
+            $result['provider_video_handle_marker_count'] = 0
+            $result['provider_video_handle_markers'] = ''
+            $result['termsrv_idd_marker_count'] = 0
+            $result['termsrv_idd_markers'] = ''
+            $result['provider_logon_policy_marker_count'] = 0
+            $result['provider_logon_policy_markers'] = ''
             $result['remote_connection_signal_count'] = 0
             $result['remote_graphics_signal_count'] = 0
             $result['remote_connection_signals'] = ''
@@ -659,6 +671,25 @@ try {
                     $result['termsrv_session_proof_marker_count'] = ($termsrvSessionProofHits | Measure-Object).Count
                     $result['termsrv_session_proof_markers'] = ($termsrvSessionProofLines | Select-Object -Last 40 | Out-String)
                 }
+
+                $termsrvShellBootstrapHits = $stdoutTail | Select-String -SimpleMatch -Pattern @(
+                    'SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ATTEMPT',
+                    'SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_SUCCESS',
+                    'SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ERROR'
+                ) -ErrorAction SilentlyContinue
+                if ($termsrvShellBootstrapHits) {
+                    $termsrvShellBootstrapLines = $termsrvShellBootstrapHits | ForEach-Object { $_.Line }
+                    $existing = [string]$result['termsrv_session_proof_markers']
+                    $bootstrap = ($termsrvShellBootstrapLines | Select-Object -Last 40 | Out-String)
+                    $result['termsrv_session_proof_markers'] = ($existing + $bootstrap)
+                }
+
+                $termsrvIddHits = $stdoutTail | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_TERMSRV_IDD_' -ErrorAction SilentlyContinue
+                if ($termsrvIddHits) {
+                    $termsrvIddLines = $termsrvIddHits | ForEach-Object { $_.Line }
+                    $result['termsrv_idd_marker_count'] = ($termsrvIddHits | Measure-Object).Count
+                    $result['termsrv_idd_markers'] = ($termsrvIddLines | Select-Object -Last 40 | Out-String)
+                }
             }
             if ($mode -eq 'Provider' -and (Test-Path $dllDebugLog)) {
                 # The provider debug log can be extremely noisy due to polling. Capture a signal-focused view.
@@ -669,6 +700,7 @@ try {
                     'IWRdsProtocolListenerCallback::',
                     'IWRdsProtocolConnection::',
                     'SESSION_PROOF_PROVIDER_',
+                    'SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK',
                     'IWRdsWddmIddProps::',
                     'NotifyIddDriverLoaded',
                     'GetUserCredentials ok',
@@ -694,7 +726,28 @@ try {
                     $result['provider_session_proof_markers'] = ($providerSessionProofLines | Select-Object -Last 40 | Out-String)
                 }
 
-                $iddLoadHit = $dllTail | Select-String -SimpleMatch -Pattern 'NotifyIddDriverLoaded' -ErrorAction SilentlyContinue | Select-Object -First 1
+                $providerVideoHandleHits = $dllTail | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_PROVIDER_VIDEO_HANDLE_' -ErrorAction SilentlyContinue
+                if ($providerVideoHandleHits) {
+                    $providerVideoHandleLines = $providerVideoHandleHits | ForEach-Object { $_.Line }
+                    $result['provider_video_handle_marker_count'] = ($providerVideoHandleHits | Measure-Object).Count
+                    $result['provider_video_handle_markers'] = ($providerVideoHandleLines | Select-Object -Last 40 | Out-String)
+                }
+
+                $providerLogonPolicyHits = $dllTail | Select-String -SimpleMatch -Pattern @(
+                    'SESSION_PROOF_PROVIDER_SUPPRESS_LOGON_UI',
+                    'SESSION_PROOF_PROVIDER_UNIVERSAL_APPS',
+                    'SESSION_PROOF_PROVIDER_LOGON_GATE'
+                ) -ErrorAction SilentlyContinue
+                if ($providerLogonPolicyHits) {
+                    $providerLogonPolicyLines = $providerLogonPolicyHits | ForEach-Object { $_.Line }
+                    $result['provider_logon_policy_marker_count'] = ($providerLogonPolicyHits | Measure-Object).Count
+                    $result['provider_logon_policy_markers'] = ($providerLogonPolicyLines | Select-Object -Last 40 | Out-String)
+                }
+
+                $iddLoadHit = $dllTail | Select-String -SimpleMatch -Pattern @(
+                    'SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK',
+                    'NotifyIddDriverLoaded'
+                ) -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($iddLoadHit) {
                     $result['idd_driver_loaded_notified'] = $true
                 }
@@ -946,6 +999,24 @@ try {
         if ($remoteLogs.ContainsKey('idd_wddm_enabled_signal_count')) {
             $iddWddmEnabledSignalCount = [int]$remoteLogs['idd_wddm_enabled_signal_count']
         }
+        if ($remoteLogs.ContainsKey('provider_video_handle_marker_count')) {
+            $providerVideoHandleMarkerCount = [int]$remoteLogs['provider_video_handle_marker_count']
+        }
+        if ($remoteLogs.ContainsKey('provider_video_handle_markers')) {
+            $providerVideoHandleMarkers = [string]$remoteLogs['provider_video_handle_markers']
+        }
+        if ($remoteLogs.ContainsKey('termsrv_idd_marker_count')) {
+            $termsrvIddMarkerCount = [int]$remoteLogs['termsrv_idd_marker_count']
+        }
+        if ($remoteLogs.ContainsKey('termsrv_idd_markers')) {
+            $termsrvIddMarkers = [string]$remoteLogs['termsrv_idd_markers']
+        }
+        if ($remoteLogs.ContainsKey('provider_logon_policy_marker_count')) {
+            $providerLogonPolicyMarkerCount = [int]$remoteLogs['provider_logon_policy_marker_count']
+        }
+        if ($remoteLogs.ContainsKey('provider_logon_policy_markers')) {
+            $providerLogonPolicyMarkers = [string]$remoteLogs['provider_logon_policy_markers']
+        }
         if ($remoteLogs.ContainsKey('notify_command_process_created_count')) {
             $notifyCommandProcessCreatedCount = [int]$remoteLogs['notify_command_process_created_count']
         }
@@ -1050,6 +1121,18 @@ try {
             Write-Host "`n---- termsrv session proof markers ----" -ForegroundColor Cyan
             Write-Host $termsrvSessionProofMarkers
         }
+        if (($Mode -eq 'Provider') -and ($providerVideoHandleMarkerCount -gt 0)) {
+            Write-Host "`n---- provider video-handle markers ----" -ForegroundColor Cyan
+            Write-Host $providerVideoHandleMarkers
+        }
+        if (($Mode -eq 'Provider') -and ($termsrvIddMarkerCount -gt 0)) {
+            Write-Host "`n---- termsrv IDD markers ----" -ForegroundColor Cyan
+            Write-Host $termsrvIddMarkers
+        }
+        if (($Mode -eq 'Provider') -and ($providerLogonPolicyMarkerCount -gt 0)) {
+            Write-Host "`n---- provider logon-policy markers ----" -ForegroundColor Cyan
+            Write-Host $providerLogonPolicyMarkers
+        }
         if (($Mode -eq 'Provider') -and ($termsrvFallbackMarkerCount -gt 0)) {
             Write-Host "`n---- termsrv fallback markers (strict-relevant) ----" -ForegroundColor Yellow
             Write-Host $termsrvFallbackMarkers
@@ -1061,7 +1144,7 @@ try {
 
         if ($Mode -eq 'Provider') {
             Write-Host "Interactive proof signals: Security4624Type10=$securityLogonType10Count RemoteConnection261=$remoteConnectionSignalCount RemoteGraphics263=$remoteGraphicsSignalCount"
-            Write-Host "IDD diagnostics signals: NotifyIddDriverLoaded=$iddDriverLoadedNotified ProviderEnableWddmIdd=$iddWddmEnabledSignalCount"
+            Write-Host "IDD diagnostics signals: NotifyIddDriverLoaded=$iddDriverLoadedNotified ProviderEnableWddmIdd=$iddWddmEnabledSignalCount ProviderVideoHandleMarkers=$providerVideoHandleMarkerCount TermsrvIddMarkers=$termsrvIddMarkerCount ProviderLogonPolicyMarkers=$providerLogonPolicyMarkerCount"
             Write-Host "Shell transition signals: NotifyCommandProcessCreated=$notifyCommandProcessCreatedCount"
             Write-Host "Environment signals: ActivationStatus=$activationLicenseStatus NotificationMode=$activationNotificationMode Reason=$activationLicenseStatusReasonHex"
             Write-Host "GUI session proof: TargetSessionId=$guiTargetSessionId Source=$guiTargetSessionSource Explorer=$guiTargetSessionExplorerCount GuiProcesses=$guiTargetSessionGuiProcessCount Winlogon=$guiTargetSessionWinlogonCount LogonUI=$guiTargetSessionLogonUiCount"
@@ -1291,9 +1374,21 @@ if ($StrictSessionProof.IsPresent) {
             $strictFailures.Add("mandatory type10+graphics proof missing: Security4624Type10=$securityLogonType10Count target_session=$guiTargetSessionId bitmap_matches=$bitmapTargetSessionMatchCount")
         }
 
-        $hasIddDiagnosticsSignal = $iddDriverLoadedNotified -or (($null -ne $iddWddmEnabledSignalCount) -and ($iddWddmEnabledSignalCount -ge 1)) -or (($null -ne $remoteGraphicsSignalCount) -and ($remoteGraphicsSignalCount -ge 1))
+        if ($null -eq $providerVideoHandleMarkerCount) {
+            $strictFailures.Add('IDD provider video-handle marker count was not collected')
+        }
+
+        if ($null -eq $termsrvIddMarkerCount) {
+            $strictFailures.Add('IDD termsrv marker count was not collected')
+        }
+
+        if ($null -eq $providerLogonPolicyMarkerCount) {
+            $strictFailures.Add('provider logon-policy marker count was not collected')
+        }
+
+        $hasIddDiagnosticsSignal = $iddDriverLoadedNotified -or (($null -ne $iddWddmEnabledSignalCount) -and ($iddWddmEnabledSignalCount -ge 1)) -or (($null -ne $remoteGraphicsSignalCount) -and ($remoteGraphicsSignalCount -ge 1)) -or (($null -ne $providerVideoHandleMarkerCount) -and ($providerVideoHandleMarkerCount -ge 1)) -or (($null -ne $termsrvIddMarkerCount) -and ($termsrvIddMarkerCount -ge 1))
         if (-not $hasIddDiagnosticsSignal) {
-            $strictFailures.Add("IDD diagnostics gate missing (NotifyIddDriverLoaded=$iddDriverLoadedNotified, ProviderEnableWddmIdd=$iddWddmEnabledSignalCount, RemoteGraphics263=$remoteGraphicsSignalCount)")
+            $strictFailures.Add("IDD diagnostics gate missing (NotifyIddDriverLoaded=$iddDriverLoadedNotified, ProviderEnableWddmIdd=$iddWddmEnabledSignalCount, ProviderVideoHandleMarkers=$providerVideoHandleMarkerCount, TermsrvIddMarkers=$termsrvIddMarkerCount, RemoteGraphics263=$remoteGraphicsSignalCount)")
         }
 
         if ($activationNotificationMode) {
