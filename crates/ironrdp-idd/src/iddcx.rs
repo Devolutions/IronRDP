@@ -12,8 +12,8 @@ pub(crate) struct IDD_DRIVER_GLOBALS {
 
 type PFN_IDD_CX = unsafe extern "system" fn();
 
-// Matches IddCx 1.2 (`IddCx0102`) headers.
-const IDD_FUNCTION_TABLE_NUM_ENTRIES: usize = 23;
+// Matches IddCx 1.4 (`IddCx0104`) headers.
+const IDD_FUNCTION_TABLE_NUM_ENTRIES: usize = 25;
 
 unsafe extern "C" {
     static mut IddDriverGlobals: *mut IDD_DRIVER_GLOBALS;
@@ -27,6 +27,7 @@ const IDDCX_SWAPCHAIN_FINISHED_PROCESSING_FRAME_TABLE_INDEX: usize = 14;
 const IDDCX_MONITOR_CREATE_TABLE_INDEX: usize = 3;
 const IDDCX_MONITOR_ARRIVAL_TABLE_INDEX: usize = 4;
 const IDDCX_MONITOR_DEPARTURE_TABLE_INDEX: usize = 5;
+const IDDCX_GET_VERSION_TABLE_INDEX: usize = 19;
 
 #[repr(C)]
 pub(crate) struct IDDCX_MONITOR_DESCRIPTION {
@@ -136,6 +137,14 @@ type PFN_IDDCX_MONITOR_ARRIVAL =
 
 type PFN_IDDCX_MONITOR_DEPARTURE = unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, IDDCX_MONITOR) -> NTSTATUS;
 
+type PFN_IDDCX_GET_VERSION =
+    unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, *mut IDARG_OUT_GETVERSION) -> NTSTATUS;
+
+#[repr(C)]
+pub(crate) struct IDARG_OUT_GETVERSION {
+    pub(crate) IddCxVersion: u32,
+}
+
 pub(crate) unsafe fn swapchain_set_device(swapchain: IDDCX_SWAPCHAIN, dxgi_device: *mut c_void) -> HRESULT {
     let in_args = IDARG_IN_SWAPCHAINSETDEVICE { pDevice: dxgi_device };
 
@@ -221,13 +230,24 @@ pub(crate) unsafe fn monitor_departure(monitor: IDDCX_MONITOR) -> NTSTATUS {
     unsafe { func(globals, monitor) }
 }
 
+pub(crate) unsafe fn get_version(out_args: &mut IDARG_OUT_GETVERSION) -> NTSTATUS {
+    // SAFETY: read from a mutable static.
+    let raw = unsafe { IddFunctions[IDDCX_GET_VERSION_TABLE_INDEX] };
+    // SAFETY: function pointer table uses a generic PFN type; we cast to the typed signature.
+    let func: PFN_IDDCX_GET_VERSION = unsafe { core::mem::transmute::<PFN_IDD_CX, PFN_IDDCX_GET_VERSION>(raw) };
+    // SAFETY: read from a mutable static.
+    let globals = unsafe { IddDriverGlobals };
+    // SAFETY: calls into the IddCx function table.
+    unsafe { func(globals, out_args) }
+}
+
 // ────────────────────── Device init / adapter init dispatch ──────────────────────────────────
 
-/// `IddCxDeviceInitConfigTableIndex` from `IddCxFuncEnum.h` (IddCx 1.2 / `IddCx0102`).
+/// `IddCxDeviceInitConfigTableIndex` from `IddCxFuncEnum.h` (IddCx 1.4 / `IddCx0104`).
 const IDDCX_DEVICE_INIT_CONFIG_TABLE_INDEX: usize = 0;
-/// `IddCxDeviceInitializeTableIndex` from `IddCxFuncEnum.h` (IddCx 1.2 / `IddCx0102`).
+/// `IddCxDeviceInitializeTableIndex` from `IddCxFuncEnum.h` (IddCx 1.4 / `IddCx0104`).
 const IDDCX_DEVICE_INITIALIZE_TABLE_INDEX: usize = 1;
-/// `IddCxAdapterInitAsyncTableIndex` from `IddCxFuncEnum.h` (IddCx 1.2 / `IddCx0102`).
+/// `IddCxAdapterInitAsyncTableIndex` from `IddCxFuncEnum.h` (IddCx 1.4 / `IddCx0104`).
 const IDDCX_ADAPTER_INIT_ASYNC_TABLE_INDEX: usize = 2;
 
 type PFN_IDDCX_DEVICE_INIT_CONFIG =
@@ -423,11 +443,11 @@ pub(crate) static ENDPOINT_MODEL_NAME_UTF16: [u16; 12] = [73, 114, 111, 110, 82,
 pub(crate) static ENDPOINT_MANUFACTURER_UTF16: [u16; 12] = [68, 101, 118, 111, 108, 117, 116, 105, 111, 110, 115, 0];
 
 /// IddCx version binding: the driver exports this symbol so `iddcxstub.lib` can verify version
-/// compatibility. Value is `IDDCX_VERSION_MINOR` = 2 for IddCx 1.2 (`IddCx0102`).
+/// compatibility. Value is `IDDCX_VERSION_MINOR` = 4 for IddCx 1.4 (`IddCx0104`).
 #[unsafe(no_mangle)]
-pub static IddMinimumVersionRequired: u32 = 2;
+pub static IddMinimumVersionRequired: u32 = 4;
 
-/// Calls `IddCxDeviceInitConfig` through the IddCx 1.2 dispatch table.
+/// Calls `IddCxDeviceInitConfig` through the IddCx 1.4 dispatch table.
 ///
 /// Must be called from `EvtDriverDeviceAdd` before `WdfDeviceCreate`.
 ///
@@ -448,7 +468,7 @@ pub(crate) unsafe fn device_init_config(
     unsafe { func(globals, device_init, config) }
 }
 
-/// Calls `IddCxDeviceInitialize` through the IddCx 1.2 dispatch table.
+/// Calls `IddCxDeviceInitialize` through the IddCx 1.4 dispatch table.
 ///
 /// Must be called from `EvtDriverDeviceAdd` after `WdfDeviceCreate`.
 ///
@@ -466,9 +486,9 @@ pub(crate) unsafe fn device_initialize(device: WDFDEVICE) -> NTSTATUS {
     unsafe { func(globals, device) }
 }
 
-/// Calls `IddCxAdapterInitAsync` through the IddCx 1.2 dispatch table.
+/// Calls `IddCxAdapterInitAsync` through the IddCx 1.4 dispatch table.
 ///
-/// Must be called from `EvtDriverDeviceAdd` after `IddCxDeviceInitialize`.
+/// Must be called after `EvtDeviceD0Entry` begins and before device D0 exit.
 ///
 /// # Safety
 /// `in_args` and `out_args` must point to valid initialized structures.

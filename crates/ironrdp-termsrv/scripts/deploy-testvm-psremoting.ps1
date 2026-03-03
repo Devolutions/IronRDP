@@ -232,7 +232,7 @@ try {
 
         # Stop TermService first so the DLL is unloaded and stops connecting to the pipe
         Write-Host "Stopping TermService..."
-        Stop-Service -Name 'TermService' -Force -ErrorAction SilentlyContinue
+        & sc.exe stop TermService | Out-Null
         $stopDeadline = (Get-Date).AddSeconds($TermServiceStopTimeoutSeconds)
         while ((Get-Date) -lt $stopDeadline) {
             $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
