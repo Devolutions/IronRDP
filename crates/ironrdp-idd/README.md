@@ -36,6 +36,11 @@ This crate is intentionally *safe-by-default* for normal workspace builds:
   - Enables an **experimental** `repr(C)` layout for `IDARG_IN_SETSWAPCHAIN` used by the monitor swapchain callbacks.
   - Off by default because the public documentation does not guarantee these layouts.
 
+- `IRONRDP_IDD_DUMP_BITMAP_UPDATES_DIR=C:\path\to\dump\dir`
+  - Optional diagnostics switch.
+  - When set, the IDD swapchain thread performs best-effort CPU readback of acquired `pSurface` frames and writes BGRA32 BMP files.
+  - Dumps are rate-limited and capped to avoid unbounded disk usage.
+
 ## Scripts
 
 All scripts live in [crates/ironrdp-idd/scripts](scripts).
@@ -54,5 +59,6 @@ All scripts live in [crates/ironrdp-idd/scripts](scripts).
 ## Current status
 
 - Swapchain processing is a thread lifecycle scaffold (waits on the “new frame” event, uses a terminate event for shutdown, and enables MMCSS best-effort).
+- Optional diagnostics path can dump acquired swapchain surfaces to BMP when `IRONRDP_IDD_DUMP_BITMAP_UPDATES_DIR` is set.
 - Real IddCx swapchain acquire/release calls and accurate callback arg layouts require WDK headers/import libs.
   - Use [find-wdk-tools.ps1](scripts/find-wdk-tools.ps1) to confirm `iddcx.h`, `iddcxstub.lib`, and `Inf2Cat.exe` are present.
