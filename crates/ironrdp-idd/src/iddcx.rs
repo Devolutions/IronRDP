@@ -12,8 +12,8 @@ pub(crate) struct IDD_DRIVER_GLOBALS {
 
 type PFN_IDD_CX = unsafe extern "system" fn();
 
-// Matches IddCx 1.4 (`IddCx0104`) headers.
-const IDD_FUNCTION_TABLE_NUM_ENTRIES: usize = 25;
+// Matches IddCx 1.2 (`IddCx0102`) headers.
+const IDD_FUNCTION_TABLE_NUM_ENTRIES: usize = 23;
 
 unsafe extern "C" {
     static mut IddDriverGlobals: *mut IDD_DRIVER_GLOBALS;
@@ -243,11 +243,11 @@ pub(crate) unsafe fn get_version(out_args: &mut IDARG_OUT_GETVERSION) -> NTSTATU
 
 // ────────────────────── Device init / adapter init dispatch ──────────────────────────────────
 
-/// `IddCxDeviceInitConfigTableIndex` from `IddCxFuncEnum.h` (IddCx 1.4 / `IddCx0104`).
+/// `IddCxDeviceInitConfigTableIndex` from `IddCxFuncEnum.h` (IddCx 1.2 / `IddCx0102`).
 const IDDCX_DEVICE_INIT_CONFIG_TABLE_INDEX: usize = 0;
-/// `IddCxDeviceInitializeTableIndex` from `IddCxFuncEnum.h` (IddCx 1.4 / `IddCx0104`).
+/// `IddCxDeviceInitializeTableIndex` from `IddCxFuncEnum.h` (IddCx 1.2 / `IddCx0102`).
 const IDDCX_DEVICE_INITIALIZE_TABLE_INDEX: usize = 1;
-/// `IddCxAdapterInitAsyncTableIndex` from `IddCxFuncEnum.h` (IddCx 1.4 / `IddCx0104`).
+/// `IddCxAdapterInitAsyncTableIndex` from `IddCxFuncEnum.h` (IddCx 1.2 / `IddCx0102`).
 const IDDCX_ADAPTER_INIT_ASYNC_TABLE_INDEX: usize = 2;
 
 type PFN_IDDCX_DEVICE_INIT_CONFIG =
@@ -385,7 +385,7 @@ const _: () = {
 #[repr(C)]
 pub(crate) struct IDDCX_ADAPTER_CAPS {
     pub Size: u32,
-    /// `IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER(4) | IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE(1)`
+    /// `IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE(1)`
     pub Flags: u32,
     pub MaxDisplayPipelineRate: u64,
     pub MaxMonitorsSupported: u32,
@@ -443,11 +443,11 @@ pub(crate) static ENDPOINT_MODEL_NAME_UTF16: [u16; 12] = [73, 114, 111, 110, 82,
 pub(crate) static ENDPOINT_MANUFACTURER_UTF16: [u16; 12] = [68, 101, 118, 111, 108, 117, 116, 105, 111, 110, 115, 0];
 
 /// IddCx version binding: the driver exports this symbol so `iddcxstub.lib` can verify version
-/// compatibility. Value is `IDDCX_VERSION_MINOR` = 4 for IddCx 1.4 (`IddCx0104`).
+/// compatibility. Value is `IDDCX_VERSION_MINOR` = 2 for IddCx 1.2 (`IddCx0102`).
 #[unsafe(no_mangle)]
-pub static IddMinimumVersionRequired: u32 = 4;
+pub static IddMinimumVersionRequired: u32 = 2;
 
-/// Calls `IddCxDeviceInitConfig` through the IddCx 1.4 dispatch table.
+/// Calls `IddCxDeviceInitConfig` through the IddCx 1.2 dispatch table.
 ///
 /// Must be called from `EvtDriverDeviceAdd` before `WdfDeviceCreate`.
 ///
@@ -468,7 +468,7 @@ pub(crate) unsafe fn device_init_config(
     unsafe { func(globals, device_init, config) }
 }
 
-/// Calls `IddCxDeviceInitialize` through the IddCx 1.4 dispatch table.
+/// Calls `IddCxDeviceInitialize` through the IddCx 1.2 dispatch table.
 ///
 /// Must be called from `EvtDriverDeviceAdd` after `WdfDeviceCreate`.
 ///
@@ -486,7 +486,7 @@ pub(crate) unsafe fn device_initialize(device: WDFDEVICE) -> NTSTATUS {
     unsafe { func(globals, device) }
 }
 
-/// Calls `IddCxAdapterInitAsync` through the IddCx 1.4 dispatch table.
+/// Calls `IddCxAdapterInitAsync` through the IddCx 1.2 dispatch table.
 ///
 /// Must be called after `EvtDeviceD0Entry` begins and before device D0 exit.
 ///

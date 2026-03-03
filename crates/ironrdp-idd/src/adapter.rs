@@ -4,10 +4,9 @@ use crate::monitor::DISPLAYCONFIG_VIDEO_SIGNAL_INFO;
 #[cfg(ironrdp_idd_link)]
 const IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE: u32 = 1;
 #[cfg(ironrdp_idd_link)]
-const IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER: u32 = 4;
-#[cfg(ironrdp_idd_link)]
-const IDDCX_TRANSMISSION_TYPE_WIRED_OTHER: u32 = 0x0000_0003;
+const IDDCX_TRANSMISSION_TYPE_NETWORK_OTHER: u32 = 0x0000_0009;
 const STATUS_INVALID_PARAMETER: NTSTATUS = crate::ntstatus_from_u32(0xC000_000D);
+const STATUS_OBJECT_NAME_COLLISION: NTSTATUS = crate::ntstatus_from_u32(0xC000_0035);
 
 const IDDCX_PATH_FLAGS_CHANGED: u32 = 1;
 const IDDCX_PATH_FLAGS_ACTIVE: u32 = 2;
@@ -191,26 +190,18 @@ pub(crate) extern "system" fn adapter_commit_modes(
 unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
     use crate::iddcx::{
         ENDPOINT_MANUFACTURER_UTF16, ENDPOINT_MODEL_NAME_UTF16, IDARG_IN_ADAPTER_INIT, IDARG_OUT_ADAPTER_INIT,
-        IDDCX_ADAPTER_CAPS, IDDCX_ENDPOINT_DIAGNOSTIC_INFO, IDDCX_ENDPOINT_VERSION,
+        IDDCX_ADAPTER_CAPS, IDDCX_ENDPOINT_DIAGNOSTIC_INFO,
     };
     use core::mem::size_of;
 
-    let endpoint_version = IDDCX_ENDPOINT_VERSION {
-        Size: size_of::<IDDCX_ENDPOINT_VERSION>() as u32,
-        MajorVer: 1,
-        MinorVer: 0,
-        Build: 0,
-        SKU: 0,
-    };
-
     let diag = IDDCX_ENDPOINT_DIAGNOSTIC_INFO {
         Size: size_of::<IDDCX_ENDPOINT_DIAGNOSTIC_INFO>() as u32,
-        TransmissionType: IDDCX_TRANSMISSION_TYPE_WIRED_OTHER,
-        pEndPointFriendlyName: core::ptr::null(),
+        TransmissionType: IDDCX_TRANSMISSION_TYPE_NETWORK_OTHER,
+        pEndPointFriendlyName: ENDPOINT_MODEL_NAME_UTF16.as_ptr(),
         pEndPointModelName: ENDPOINT_MODEL_NAME_UTF16.as_ptr(),
         pEndPointManufacturerName: ENDPOINT_MANUFACTURER_UTF16.as_ptr(),
-        pHardwareVersion: &endpoint_version,
-        pFirmwareVersion: &endpoint_version,
+        pHardwareVersion: core::ptr::null(),
+        pFirmwareVersion: core::ptr::null(),
         // IDDCX_FEATURE_IMPLEMENTATION_NONE = 1
         GammaSupport: 1,
         _pad: 0,
@@ -218,7 +209,7 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
 
     let mut caps = IDDCX_ADAPTER_CAPS {
         Size: size_of::<IDDCX_ADAPTER_CAPS>() as u32,
-        Flags: IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE | IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER,
+        Flags: IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE,
         MaxDisplayPipelineRate: 0,
         MaxMonitorsSupported: 1,
         _pad: 0,
@@ -227,25 +218,17 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
         _pad2: 0,
     };
 
-    let adapter_object_attributes = crate::wdf::WDF_OBJECT_ATTRIBUTES::init_no_context();
-
-    let mut in_args = IDARG_IN_ADAPTER_INIT {
+    let in_args = IDARG_IN_ADAPTER_INIT {
         WdfDevice: device,
         pCaps: &mut caps,
-        ObjectAttributes: &adapter_object_attributes,
+        ObjectAttributes: core::ptr::null(),
     };
     let mut out_args = IDARG_OUT_ADAPTER_INIT {
         AdapterObject: core::ptr::null_mut(),
     };
 
     // SAFETY: in/out args are valid stack structures for this call.
-    let mut status = unsafe { crate::iddcx::adapter_init_async(&in_args, &mut out_args) };
-    if status == STATUS_INVALID_PARAMETER {
-        in_args.ObjectAttributes = core::ptr::null();
-        out_args.AdapterObject = core::ptr::null_mut();
-        // SAFETY: in/out args are valid stack structures for this retry.
-        status = unsafe { crate::iddcx::adapter_init_async(&in_args, &mut out_args) };
-    }
+    let status = unsafe { crate::iddcx::adapter_init_async(&in_args, &mut out_args) };
     crate::debug_trace(&format!(
         "EvtDeviceD0Entry: IddCxAdapterInitAsync status=0x{:08X}",
         ntstatus_to_u32(status)
@@ -379,6 +362,34 @@ pub(crate) unsafe extern "system" fn device_add(
         status_hex = format_args!("0x{:08X}", ntstatus_to_u32(status)),
         device = ?device,
         "WdfDeviceCreate succeeded"
+    );
+
+    // Expose a stable DOS symbolic link so the provider can open `\\.\IronRdpIddVideo`.
+    let mut symbolic_link_utf16: Vec<u16> = r"\DosDevices\IronRdpIddVideo".encode_utf16().collect();
+    let symbolic_link = crate::UNICODE_STRING {
+        Length: (symbolic_link_utf16.len() * core::mem::size_of::<u16>()) as u16,
+        MaximumLength: (symbolic_link_utf16.len() * core::mem::size_of::<u16>()) as u16,
+        Buffer: symbolic_link_utf16.as_mut_ptr(),
+    };
+
+    // SAFETY: `device` is valid and UNICODE_STRING points to stack-local UTF-16 for call duration.
+    let symbolic_link_status = unsafe { crate::wdf::device_create_symbolic_link(device, &symbolic_link) };
+    crate::debug_trace(&format!(
+        "EvtDriverDeviceAdd: WdfDeviceCreateSymbolicLink status=0x{:08X}",
+        ntstatus_to_u32(symbolic_link_status)
+    ));
+    if symbolic_link_status < 0 && symbolic_link_status != STATUS_OBJECT_NAME_COLLISION {
+        tracing::error!(
+            status = symbolic_link_status,
+            status_hex = format_args!("0x{:08X}", ntstatus_to_u32(symbolic_link_status)),
+            "WdfDeviceCreateSymbolicLink failed"
+        );
+        return symbolic_link_status;
+    }
+    tracing::info!(
+        status = symbolic_link_status,
+        status_hex = format_args!("0x{:08X}", ntstatus_to_u32(symbolic_link_status)),
+        "WdfDeviceCreateSymbolicLink completed"
     );
 
     // ── 4. IddCxDeviceInitialize ─────────────────────────────────────────────────────────────
