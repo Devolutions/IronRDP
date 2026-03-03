@@ -53,7 +53,7 @@ impl<'de> Decode<'de> for ChannelPduHeader {
         ensure_fixed_part_size!(in: src);
 
         let total_length = src.read_u32();
-        let flags = ChannelControlFlags::from_bits_truncate(src.read_u32());
+        let flags = ChannelControlFlags::from_bits_retain(src.read_u32());
         Ok(Self {
             length: total_length,
             flags,

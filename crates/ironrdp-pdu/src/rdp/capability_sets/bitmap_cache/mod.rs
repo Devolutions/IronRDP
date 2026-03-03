@@ -157,7 +157,7 @@ impl<'de> Decode<'de> for BitmapCacheRev2 {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let cache_flags = CacheFlags::from_bits_truncate(src.read_u16());
+        let cache_flags = CacheFlags::from_bits_retain(src.read_u16());
         let _padding = src.read_u8();
         let num_cell_caches = src.read_u8();
 

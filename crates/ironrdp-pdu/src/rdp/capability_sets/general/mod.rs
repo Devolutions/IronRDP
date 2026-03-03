@@ -165,7 +165,7 @@ impl<'de> Decode<'de> for General {
             return Err(invalid_field_err!("compressionTypes", "invalid compression types"));
         }
 
-        let extra_flags = GeneralExtraFlags::from_bits_truncate(src.read_u16());
+        let extra_flags = GeneralExtraFlags::from_bits_retain(src.read_u16());
 
         let update_cap_flags = src.read_u16();
         if update_cap_flags != 0 {

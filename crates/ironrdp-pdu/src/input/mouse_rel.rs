@@ -38,7 +38,7 @@ impl<'de> Decode<'de> for MouseRelPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = PointerRelFlags::from_bits_truncate(src.read_u16());
+        let flags = PointerRelFlags::from_bits_retain(src.read_u16());
         let x_delta = src.read_i16();
         let y_delta = src.read_i16();
 

@@ -143,13 +143,13 @@ impl<'de> Decode<'de> for CapabilitySet {
         ensure_size!(in: cur, size: size);
         match version {
             CapabilityVersion::V8 => Ok(CapabilitySet::V8 {
-                flags: CapabilitiesV8Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV8Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V8_1 => Ok(CapabilitySet::V8_1 {
-                flags: CapabilitiesV81Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV81Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10 => Ok(CapabilitySet::V10 {
-                flags: CapabilitiesV10Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV10Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_1 => {
                 cur.read_u128();
@@ -157,25 +157,25 @@ impl<'de> Decode<'de> for CapabilitySet {
                 Ok(CapabilitySet::V10_1)
             }
             CapabilityVersion::V10_2 => Ok(CapabilitySet::V10_2 {
-                flags: CapabilitiesV10Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV10Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_3 => Ok(CapabilitySet::V10_3 {
-                flags: CapabilitiesV103Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV103Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_4 => Ok(CapabilitySet::V10_4 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_5 => Ok(CapabilitySet::V10_5 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_6 => Ok(CapabilitySet::V10_6 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_6Err => Ok(CapabilitySet::V10_6Err {
-                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_7 => Ok(CapabilitySet::V10_7 {
-                flags: CapabilitiesV107Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV107Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::Unknown => Ok(CapabilitySet::Unknown(data.to_vec())),
         }

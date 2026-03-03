@@ -69,7 +69,7 @@ impl<'de> Decode<'de> for PartialHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let message_flags = ClipboardPduFlags::from_bits_truncate(src.read_u16());
+        let message_flags = ClipboardPduFlags::from_bits_retain(src.read_u16());
         let data_length = src.read_u32();
 
         Ok(Self {

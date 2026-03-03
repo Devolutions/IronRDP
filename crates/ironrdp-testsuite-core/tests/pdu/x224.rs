@@ -170,7 +170,7 @@ encode_decode_test! {
 
     nego_confirm_response:
         X224(ConnectionConfirm::Response {
-            flags: ResponseFlags::from_bits_truncate(0x1F),
+            flags: ResponseFlags::from_bits_retain(0x1F),
             protocol: SecurityProtocol::HYBRID,
         }),
         [

@@ -229,7 +229,7 @@ impl<'de> Decode<'de> for FileContentsRequest {
 
         let stream_id = src.read_u32();
         let index = src.read_u32();
-        let flags = FileContentsFlags::from_bits_truncate(src.read_u32());
+        let flags = FileContentsFlags::from_bits_retain(src.read_u32());
         let position_lo = src.read_u32();
         let position_hi = src.read_u32();
         let position = combine_u64(position_lo, position_hi);

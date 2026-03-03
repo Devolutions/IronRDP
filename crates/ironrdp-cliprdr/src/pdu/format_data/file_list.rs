@@ -119,10 +119,10 @@ impl<'de> Decode<'de> for FileDescriptor {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = ClipboardFileFlags::from_bits_truncate(src.read_u32());
+        let flags = ClipboardFileFlags::from_bits_retain(src.read_u32());
         src.read_array::<32>();
         let attributes = if flags.contains(ClipboardFileFlags::ATTRIBUTES) {
-            Some(ClipboardFileAttributes::from_bits_truncate(src.read_u32()))
+            Some(ClipboardFileAttributes::from_bits_retain(src.read_u32()))
         } else {
             let _ = src.read_u32();
             None

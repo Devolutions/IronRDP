@@ -292,7 +292,7 @@ impl<'de> Decode<'de> for ShareDataHeader {
         let compression_flags_with_type = src.read_u8();
 
         let compression_flags =
-            CompressionFlags::from_bits_truncate(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
+            CompressionFlags::from_bits_retain(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
         let compression_type =
             client_info::CompressionType::from_u8(compression_flags_with_type & SHARE_DATA_HEADER_COMPRESSION_MASK)
                 .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type"))?;

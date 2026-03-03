@@ -76,7 +76,7 @@ impl<'de> Decode<'de> for VirtualChannel {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = VirtualChannelFlags::from_bits_truncate(src.read_u32());
+        let flags = VirtualChannelFlags::from_bits_retain(src.read_u32());
 
         let mut virtual_channel_pdu = Self {
             flags,

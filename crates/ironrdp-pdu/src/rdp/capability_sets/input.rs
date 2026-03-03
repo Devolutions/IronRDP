@@ -85,7 +85,7 @@ impl<'de> Decode<'de> for Input {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let input_flags = InputFlags::from_bits_truncate(src.read_u16());
+        let input_flags = InputFlags::from_bits_retain(src.read_u16());
         read_padding!(src, 2);
         let keyboard_layout = src.read_u32();
 

@@ -67,7 +67,7 @@ impl<'de> Decode<'de> for BitmapUpdateData<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let update_type = BitmapFlags::from_bits_truncate(src.read_u16());
+        let update_type = BitmapFlags::from_bits_retain(src.read_u16());
         if !update_type.contains(BitmapFlags::BITMAP_UPDATE_TYPE) {
             return Err(invalid_field_err!("updateType", "invalid update type"));
         }
@@ -142,7 +142,7 @@ impl<'de> Decode<'de> for BitmapData<'de> {
         let width = src.read_u16();
         let height = src.read_u16();
         let bits_per_pixel = src.read_u16();
-        let compression_flags = Compression::from_bits_truncate(src.read_u16());
+        let compression_flags = Compression::from_bits_retain(src.read_u16());
 
         // A 16-bit, unsigned integer. The size in bytes of the data in the bitmapComprHdr
         // and bitmapDataStream fields.

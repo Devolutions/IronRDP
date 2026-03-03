@@ -87,7 +87,7 @@ impl<'de> Decode<'de> for Bitmap {
         }
 
         let _high_color_flags = src.read_u8();
-        let drawing_flags = BitmapDrawingFlags::from_bits_truncate(src.read_u8());
+        let drawing_flags = BitmapDrawingFlags::from_bits_retain(src.read_u8());
 
         // According to the spec:
         // "This field MUST be set to TRUE (0x0001) because multiple rectangle support is required for a connection to proceed."

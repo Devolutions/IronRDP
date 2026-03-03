@@ -58,7 +58,7 @@ impl<'de> Decode<'de> for MousePdu {
 
         let flags_raw = src.read_u16();
 
-        let flags = PointerFlags::from_bits_truncate(flags_raw);
+        let flags = PointerFlags::from_bits_retain(flags_raw);
 
         #[expect(
             clippy::as_conversions,

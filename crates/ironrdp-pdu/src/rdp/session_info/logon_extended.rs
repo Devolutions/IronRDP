@@ -71,7 +71,7 @@ impl<'de> Decode<'de> for LogonInfoExtended {
         ensure_fixed_part_size!(in: src);
 
         let _self_length = src.read_u16();
-        let present_fields_flags = LogonExFlags::from_bits_truncate(src.read_u32());
+        let present_fields_flags = LogonExFlags::from_bits_retain(src.read_u32());
 
         let auto_reconnect = if present_fields_flags.contains(LogonExFlags::AUTO_RECONNECT_COOKIE) {
             Some(ServerAutoReconnect::decode(src)?)

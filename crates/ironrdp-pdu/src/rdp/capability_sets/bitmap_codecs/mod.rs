@@ -423,7 +423,7 @@ impl<'de> Decode<'de> for RfxClientCapsContainer {
         ensure_fixed_part_size!(in: src);
 
         let _length = src.read_u32();
-        let capture_flags = CaptureFlags::from_bits_truncate(src.read_u32());
+        let capture_flags = CaptureFlags::from_bits_retain(src.read_u32());
         let _caps_length = src.read_u32();
         let caps_data = RfxCaps::decode(src)?;
 
@@ -610,7 +610,7 @@ impl<'de> Decode<'de> for RfxICap {
             return Err(invalid_field_err!("tileSize", "invalid rfx icap tile size"));
         }
 
-        let flags = RfxICapFlags::from_bits_truncate(src.read_u8());
+        let flags = RfxICapFlags::from_bits_retain(src.read_u8());
 
         let color_conversion = src.read_u8();
         if color_conversion != RFX_ICAP_COLOR_CONVERSION {

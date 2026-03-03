@@ -149,12 +149,12 @@ impl<'de> Decode<'de> for Order {
         let _max_order_level = src.read_u16();
         let _num_fonts = src.read_u16();
 
-        let order_flags = OrderFlags::from_bits_truncate(src.read_u16());
+        let order_flags = OrderFlags::from_bits_retain(src.read_u16());
         let order_support = src.read_array();
 
         let _text_flags = src.read_u16();
 
-        let order_support_ex_flags = OrderSupportExFlags::from_bits_truncate(src.read_u16());
+        let order_support_ex_flags = OrderSupportExFlags::from_bits_retain(src.read_u16());
 
         let _padding = src.read_u32();
         let desktop_save_size = src.read_u32();
