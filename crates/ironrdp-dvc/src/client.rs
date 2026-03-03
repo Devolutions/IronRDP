@@ -1,7 +1,10 @@
+use alloc::boxed::Box;
+use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
 
+use crate::alloc::borrow::ToOwned as _;
 use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
@@ -13,9 +16,36 @@ use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
     DrdynvcServerPdu,
 };
-use crate::{DvcProcessor, DynamicChannelSet, DynamicVirtualChannel, encode_dvc_messages};
+use crate::{DvcProcessor, DynamicChannelId, DynamicChannelName, DynamicVirtualChannel, encode_dvc_messages};
 
 pub trait DvcClientProcessor: DvcProcessor {}
+
+pub trait DvcChannelListener: Send {
+    /// Called for each incoming DYNVC_CREATE_REQ matching this name.
+    /// Return `None` to reject (NO_LISTENER).
+    fn create(&mut self) -> Option<Box<dyn DvcClientProcessor + Send>>;
+}
+
+pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
+
+/// For pre-registered Dvc
+pub struct OnceListener {
+    inner: Option<Box<dyn DvcClientProcessor + Send>>,
+}
+
+impl OnceListener {
+    pub fn new(dvc_processor: impl DvcClientProcessor) -> Self {
+        Self {
+            inner: Some(Box::new(dvc_processor)),
+        }
+    }
+}
+
+impl DvcChannelListener for OnceListener {
+    fn create(&mut self) -> Option<Box<dyn DvcClientProcessor + Send>> {
+        self.inner.take()
+    }
+}
 
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
@@ -182,6 +212,79 @@ impl SvcProcessor for DrdynvcClient {
     }
 }
 
+struct DynamicChannelSet {
+    channels: BTreeMap<DynamicChannelName, DynamicVirtualChannel>,
+    name_to_channel_id: BTreeMap<DynamicChannelName, DynamicChannelId>,
+    channel_id_to_name: BTreeMap<DynamicChannelId, DynamicChannelName>,
+    type_id_to_name: BTreeMap<TypeId, DynamicChannelName>,
+}
+
+impl DynamicChannelSet {
+    #[inline]
+    fn new() -> Self {
+        Self {
+            channels: BTreeMap::new(),
+            name_to_channel_id: BTreeMap::new(),
+            channel_id_to_name: BTreeMap::new(),
+            type_id_to_name: BTreeMap::new(),
+        }
+    }
+
+    fn insert<T: DvcProcessor + 'static>(&mut self, channel: T) -> Option<DynamicVirtualChannel> {
+        let name = channel.channel_name().to_owned();
+        self.type_id_to_name.insert(TypeId::of::<T>(), name.clone());
+        self.channels.insert(name, DynamicVirtualChannel::new(channel))
+    }
+
+    fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
+        self.channel_id_to_name.insert(id, name.clone());
+        self.name_to_channel_id.insert(name.clone(), id);
+        let dvc = self.get_by_channel_name_mut(&name)?;
+        let old_id = dvc.channel_id;
+        dvc.channel_id = Some(id);
+        old_id
+    }
+
+    fn get_by_type_id(&self, type_id: TypeId) -> Option<&DynamicVirtualChannel> {
+        self.type_id_to_name
+            .get(&type_id)
+            .and_then(|name| self.channels.get(name))
+    }
+
+    fn get_by_channel_name(&self, name: &DynamicChannelName) -> Option<&DynamicVirtualChannel> {
+        self.channels.get(name)
+    }
+
+    fn get_by_channel_name_mut(&mut self, name: &DynamicChannelName) -> Option<&mut DynamicVirtualChannel> {
+        self.channels.get_mut(name)
+    }
+
+    fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {
+        self.channel_id_to_name
+            .get(&id)
+            .and_then(|name| self.channels.get(name))
+    }
+
+    fn get_by_channel_id_mut(&mut self, id: DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {
+        self.channel_id_to_name
+            .get(&id)
+            .and_then(|name| self.channels.get_mut(name))
+    }
+
+    fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> Option<DynamicChannelId> {
+        if let Some(name) = self.channel_id_to_name.remove(&id) {
+            return self.name_to_channel_id.remove(&name);
+            // Channels are retained in the `self.channels` and `self.type_id_to_name` map to allow potential
+            // dynamic re-addition by the server.
+        }
+        None
+    }
+
+    #[inline]
+    fn values(&self) -> impl Iterator<Item = &DynamicVirtualChannel> {
+        self.channels.values()
+    }
+}
 impl SvcClientProcessor for DrdynvcClient {}
 
 fn decode_dvc_message(user_data: &[u8]) -> DecodeResult<DrdynvcServerPdu> {
