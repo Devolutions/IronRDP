@@ -32,6 +32,9 @@ pub struct WDF_DRIVER_GLOBALS {
 /// Generic untyped WDF function table entry.
 pub(crate) type PFN_WDF_FUNCTION = unsafe extern "system" fn();
 
+#[unsafe(no_mangle)]
+pub static WdfMinimumVersionRequired: u32 = 33;
+
 // ───────────────────────────── Callback function types ───────────────────────────────────────
 
 /// `EVT_WDF_DRIVER_DEVICE_ADD` — called by PnP to attach a device to the driver.
@@ -210,6 +213,12 @@ type PFN_WDF_DEVICE_CREATE = unsafe extern "system" fn(
     device: *mut WDFDEVICE,
 ) -> NTSTATUS;
 
+type PFN_WDF_DEVICE_CREATE_SYMBOLIC_LINK = unsafe extern "system" fn(
+    globals: *mut WDF_DRIVER_GLOBALS,
+    device: WDFDEVICE,
+    symbolic_link_name: *const UNICODE_STRING,
+) -> NTSTATUS;
+
 /// `PFN_WDFDEVICEINITSETPNPPOWEREVENTCALLBACKS` dispatch signature.
 type PFN_WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS = unsafe extern "system" fn(
     globals: *mut WDF_DRIVER_GLOBALS,
@@ -223,6 +232,9 @@ const WDF_DRIVER_CREATE_TABLE_INDEX: usize = 57;
 /// `WdfDeviceCreateTableIndex` from `wdffuncenum.h` (UMDF 2.33).
 const WDF_DEVICE_CREATE_TABLE_INDEX: usize = 25;
 
+/// `WdfDeviceCreateSymbolicLinkTableIndex` from `wdffuncenum.h` (UMDF 2.33).
+const WDF_DEVICE_CREATE_SYMBOLIC_LINK_TABLE_INDEX: usize = 30;
+
 /// `WdfDeviceInitSetPnpPowerEventCallbacksTableIndex` from `wdffuncenum.h` (UMDF 2.33).
 const WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS_TABLE_INDEX: usize = 19;
 
@@ -234,23 +246,8 @@ unsafe extern "C" {
     #[link_name = "WdfFunctions_02033"]
     static WDF_FUNCTION_TABLE: *const Option<PFN_WDF_FUNCTION>;
 
-    /// WDF minimum version required by this driver.
-    ///
-    /// With newer iddcx stubs this symbol is provided by the stub object;
-    /// we set it at runtime before `WdfDriverCreate`.
-    pub static mut WdfMinimumVersionRequired: u32;
-
     /// WDF driver globals pointer — set by the WDF framework on load.
     pub static mut WdfDriverGlobals: *mut WDF_DRIVER_GLOBALS;
-}
-
-/// Sets `WdfMinimumVersionRequired` for UMDF binding.
-///
-/// # Safety
-/// Must be called before `WdfDriverCreate`.
-pub unsafe fn set_minimum_version_required(version: u32) {
-    // SAFETY: symbol is provided by linked framework stubs.
-    unsafe { WdfMinimumVersionRequired = version };
 }
 
 /// Calls `WdfDriverCreate` through the WDF 2.33 dispatch table.
@@ -307,6 +304,18 @@ pub unsafe fn device_create(
     // SAFETY: caller guarantees device_init and attributes are valid.
     let status = unsafe { func(globals, device_init, attributes, &mut device) };
     (status, device)
+}
+
+pub unsafe fn device_create_symbolic_link(device: WDFDEVICE, symbolic_link_name: *const UNICODE_STRING) -> NTSTATUS {
+    // SAFETY: WDF_FUNCTION_TABLE populated by framework.
+    let entry = unsafe { WDF_FUNCTION_TABLE.add(WDF_DEVICE_CREATE_SYMBOLIC_LINK_TABLE_INDEX).read() };
+    let func: PFN_WDF_DEVICE_CREATE_SYMBOLIC_LINK =
+        // SAFETY: all WDF function table entries share the same pointer representation.
+        unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_CREATE_SYMBOLIC_LINK>(entry) };
+    // SAFETY: populated by the WDF framework on load.
+    let globals = unsafe { WdfDriverGlobals };
+    // SAFETY: caller guarantees device and symbolic link pointer validity.
+    unsafe { func(globals, device, symbolic_link_name) }
 }
 
 /// Calls `WdfDeviceInitSetPnpPowerEventCallbacks` through the WDF 2.33 dispatch table.

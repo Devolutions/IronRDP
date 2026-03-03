@@ -67,7 +67,7 @@ UmdfImpersonationLevel=Identification
 [IronRdpIdd_Install]
 UmdfLibraryVersion=2.33.0
 ServiceBinary=%13%\IronRdpIdd.dll
-UmdfExtensions=IddCx0104
+UmdfExtensions=IddCx0102
 
 [Strings]
 ; non localizable

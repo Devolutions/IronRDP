@@ -3269,6 +3269,58 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             ));
         }
 
+        // Some server builds do not consistently invoke IWRdsWddmIddProps::OnDriverLoad.
+        // Prime the video handle and emit NotifyIddDriverLoaded from NotifySessionId when
+        // WDDM IDD is enabled.
+        if self.wddm_idd_enabled.load(Ordering::SeqCst) {
+            let mut has_ironrdp_video_handle = false;
+
+            match self.GetVideoHandle() {
+                Ok(handle_ptr) if handle_ptr.0 != 0 => {
+                    let source = *self.video_handle_source.lock();
+                    if source == VideoHandleSource::IronRdpIdd {
+                        has_ironrdp_video_handle = true;
+                        self.driver_handle_raw.store(handle_ptr.0, Ordering::SeqCst);
+                    }
+                }
+                Ok(_) => {
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_SKIPPED source=notify_session_id connection_id={} session_id={} reason=no_video_handle",
+                        self.inner.connection_id(),
+                        wts_session_id,
+                    ));
+                }
+                Err(error) => {
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_SKIPPED source=notify_session_id connection_id={} session_id={} reason=get_video_handle_failed error={error}",
+                        self.inner.connection_id(),
+                        wts_session_id,
+                    ));
+                }
+            }
+
+            self.idd_last_driver_load_session_id
+                .store(wts_session_id, Ordering::SeqCst);
+
+            if let Err(error) = self.control_bridge.notify_idd_driver_loaded(wts_session_id) {
+                self.idd_driver_load_notified.store(false, Ordering::SeqCst);
+                debug_log_line(&format!(
+                    "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ERROR source=notify_session_id connection_id={} session_id={} has_video_handle={} error={error}",
+                    self.inner.connection_id(),
+                    wts_session_id,
+                    has_ironrdp_video_handle,
+                ));
+            } else {
+                self.idd_driver_load_notified.store(true, Ordering::SeqCst);
+                debug_log_line(&format!(
+                    "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK source=notify_session_id connection_id={} session_id={} has_video_handle={}",
+                    self.inner.connection_id(),
+                    wts_session_id,
+                    has_ironrdp_video_handle,
+                ));
+            }
+        }
+
         let (wddm_enabled, driver_handle_seen, driver_load_notified, driver_load_session_id) =
             self.idd_readiness_snapshot();
         let driver_load_session = driver_load_session_id

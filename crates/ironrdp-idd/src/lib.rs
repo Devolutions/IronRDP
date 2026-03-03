@@ -38,17 +38,29 @@ pub const STATUS_NOT_SUPPORTED: NTSTATUS = ntstatus_from_u32(0xC000_00BB);
 pub(crate) fn debug_trace(message: &str) {
     use std::fs::{OpenOptions, create_dir_all};
     use std::io::Write;
+    use std::path::PathBuf;
 
-    let path = std::env::var("IRONRDP_IDD_DEBUG_TRACE_FILE")
-        .unwrap_or_else(|_| String::from(r"C:\ProgramData\IronRDP\idd-debug.log"));
+    let mut candidates = Vec::with_capacity(3);
 
-    let path = std::path::PathBuf::from(path);
-    if let Some(parent) = path.parent() {
-        let _ = create_dir_all(parent);
+    if let Ok(path) = std::env::var("IRONRDP_IDD_DEBUG_TRACE_FILE") {
+        candidates.push(PathBuf::from(path));
     }
 
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{message}");
+    candidates.push(PathBuf::from(r"C:\Windows\Temp\ironrdp-idd-debug.log"));
+
+    if let Ok(temp_dir) = std::env::var("TEMP") {
+        candidates.push(PathBuf::from(temp_dir).join("ironrdp-idd-debug.log"));
+    }
+
+    for path in candidates {
+        if let Some(parent) = path.parent() {
+            let _ = create_dir_all(parent);
+        }
+
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{message}");
+            return;
+        }
     }
 }
 
@@ -60,7 +72,9 @@ pub struct DRIVER_OBJECT {
 
 #[repr(C)]
 pub struct UNICODE_STRING {
-    _private: [u8; 0],
+    pub Length: u16,
+    pub MaximumLength: u16,
+    pub Buffer: *mut u16,
 }
 
 // Opaque IDDCX handles (IddCx types come from WDK headers / import libs).
@@ -83,8 +97,6 @@ pub extern "system" fn DriverEntry(
     {
         use core::mem::size_of;
         debug_trace("DriverEntry: entered");
-        // SAFETY: must be set before WdfDriverCreate; value 33 selects UMDF 2.33.
-        unsafe { wdf::set_minimum_version_required(33) };
         let config = wdf::WDF_DRIVER_CONFIG {
             Size: size_of::<wdf::WDF_DRIVER_CONFIG>() as u32,
             EvtDriverDeviceAdd: Some(adapter::device_add),
