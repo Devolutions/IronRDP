@@ -108,9 +108,9 @@ pub struct DynamicVirtualChannel {
 }
 
 impl DynamicVirtualChannel {
-    fn new<T: DvcProcessor + 'static>(handler: T) -> Self {
+    fn from_boxed(processor: Box<dyn DvcProcessor + Send>) -> Self {
         Self {
-            channel_processor: Box::new(handler),
+            channel_processor: processor,
             complete_data: CompleteData::new(),
             channel_id: None,
         }
