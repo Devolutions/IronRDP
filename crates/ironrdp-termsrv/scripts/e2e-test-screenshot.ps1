@@ -453,21 +453,28 @@ if (-not $SkipDeploy.IsPresent) {
                     Invoke-Command -Session $session -ScriptBlock {
                         param($StopTimeoutSeconds)
 
-                        & sc.exe stop TermService | Out-Null
+                        & sc.exe config TermService start= disabled | Out-Null
 
+                        $termServiceStopped = $false
+                        $termServicePid = 0
                         $stopDeadline = (Get-Date).AddSeconds($StopTimeoutSeconds)
                         while ((Get-Date) -lt $stopDeadline) {
-                            $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
-                            if ($null -eq $service -or $service.Status -eq 'Stopped') {
-                                break
+                            & sc.exe stop TermService | Out-Null
+
+                            $waitDeadline = (Get-Date).AddSeconds(8)
+                            while ((Get-Date) -lt $waitDeadline) {
+                                $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
+                                if ($null -eq $service -or $service.Status -eq 'Stopped') {
+                                    $termServiceStopped = $true
+                                    break
+                                }
+
+                                Start-Sleep -Milliseconds 500
                             }
 
-                            Start-Sleep -Seconds 2
-                        }
-
-                        $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
-                        if ($null -ne $service -and $service.Status -ne 'Stopped') {
-                            Write-Warning "TermService did not stop gracefully within ${StopTimeoutSeconds}s (status=$($service.Status)); attempting force-stop via hosting process"
+                            if ($termServiceStopped) {
+                                break
+                            }
 
                             $serviceCim = Get-CimInstance Win32_Service -Filter "Name='TermService'" -ErrorAction SilentlyContinue
                             $termServicePid = 0
@@ -476,25 +483,21 @@ if (-not $SkipDeploy.IsPresent) {
                             }
 
                             if ($termServicePid -gt 0) {
-                                Write-Host "Force-stopping TermService host process PID $termServicePid"
+                                Write-Warning "TermService still running; force-stopping host process PID $termServicePid"
                                 Stop-Process -Id $termServicePid -Force -ErrorAction SilentlyContinue
-
-                                $forceStopDeadline = (Get-Date).AddSeconds(20)
-                                while ((Get-Date) -lt $forceStopDeadline) {
-                                    $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
-                                    if ($null -eq $service -or $service.Status -eq 'Stopped') {
-                                        break
-                                    }
-
-                                    Start-Sleep -Seconds 1
-                                }
+                                & taskkill.exe /PID $termServicePid /F /T 2>$null | Out-Null
                             }
 
-                            $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
-                            if ($null -ne $service -and $service.Status -ne 'Stopped') {
-                                throw "TermService did not stop within ${StopTimeoutSeconds}s during provider DLL update; fallback force-stop failed (status=$($service.Status), pid=$termServicePid)"
-                            }
+                            Start-Sleep -Seconds 1
                         }
+
+                        if (-not $termServiceStopped) {
+                            $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
+                            $statusText = if ($null -eq $service) { 'missing' } else { $service.Status }
+                            throw "TermService did not stop within ${StopTimeoutSeconds}s during provider DLL update (status=$statusText, last_pid=$termServicePid)"
+                        }
+
+                        & sc.exe config TermService start= demand | Out-Null
                     } -ArgumentList 60
 
                     # Wait for the remote DLL file to be released (svchost may still hold it briefly after Stop)

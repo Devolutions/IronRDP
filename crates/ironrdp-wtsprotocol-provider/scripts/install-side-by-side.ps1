@@ -150,22 +150,51 @@ Write-Host "  dll: $providerDllPathResolved"
 if ($RestartTermService.IsPresent) {
     Write-Warning "Restarting TermService now"
 
-    & sc.exe stop TermService | Out-Null
+    & sc.exe config TermService start= disabled | Out-Null
 
+    $termServiceStopped = $false
+    $termServicePid = 0
     $stopDeadline = (Get-Date).AddSeconds($TermServiceStopTimeoutSeconds)
     while ((Get-Date) -lt $stopDeadline) {
-        $service = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
-        if ($null -eq $service -or $service.Status -eq "Stopped") {
+        & sc.exe stop TermService | Out-Null
+
+        $waitDeadline = (Get-Date).AddSeconds(8)
+        while ((Get-Date) -lt $waitDeadline) {
+            $service = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+            if ($null -eq $service -or $service.Status -eq "Stopped") {
+                $termServiceStopped = $true
+                break
+            }
+
+            Start-Sleep -Milliseconds 500
+        }
+
+        if ($termServiceStopped) {
             break
         }
 
-        Start-Sleep -Seconds 2
+        $serviceCim = Get-CimInstance Win32_Service -Filter "Name='TermService'" -ErrorAction SilentlyContinue
+        $termServicePid = 0
+        if ($null -ne $serviceCim) {
+            $termServicePid = [int]$serviceCim.ProcessId
+        }
+
+        if ($termServicePid -gt 0) {
+            Write-Warning "TermService still running; force-stopping host process PID $termServicePid"
+            Stop-Process -Id $termServicePid -Force -ErrorAction SilentlyContinue
+            & taskkill.exe /PID $termServicePid /F /T 2>$null | Out-Null
+        }
+
+        Start-Sleep -Seconds 1
     }
 
-    $service = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
-    if ($null -ne $service -and $service.Status -ne "Stopped") {
-        throw "TermService did not stop within ${TermServiceStopTimeoutSeconds}s during provider install restart (status=$($service.Status))"
+    if (-not $termServiceStopped) {
+        $service = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+        $statusText = if ($null -eq $service) { 'missing' } else { $service.Status }
+        throw "TermService did not stop within ${TermServiceStopTimeoutSeconds}s during provider install restart (status=$statusText, last_pid=$termServicePid)"
     }
+
+    & sc.exe config TermService start= demand | Out-Null
 
     & sc.exe start TermService | Out-Null
 
