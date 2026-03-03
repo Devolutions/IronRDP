@@ -65,13 +65,9 @@ UmdfHostProcessSharing=ProcessSharingDisabled
 UmdfImpersonationLevel=Identification
 
 [IronRdpIdd_Install]
-UmdfLibraryVersion=2.23.0
+UmdfLibraryVersion=2.33.0
 ServiceBinary=%13%\IronRdpIdd.dll
-UmdfExtensions=IddCx0102
-AddReg=IronRdpIdd_Install.AddReg
-
-[IronRdpIdd_Install.AddReg]
-HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "IronRdpIddGroup"
+UmdfExtensions=IddCx0104
 
 [Strings]
 ; non localizable

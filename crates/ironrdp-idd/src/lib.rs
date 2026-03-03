@@ -34,6 +34,24 @@ pub const fn ntstatus_to_u32(value: NTSTATUS) -> u32 {
 
 pub const STATUS_NOT_SUPPORTED: NTSTATUS = ntstatus_from_u32(0xC000_00BB);
 
+#[cfg(ironrdp_idd_link)]
+pub(crate) fn debug_trace(message: &str) {
+    use std::fs::{OpenOptions, create_dir_all};
+    use std::io::Write;
+
+    let path = std::env::var("IRONRDP_IDD_DEBUG_TRACE_FILE")
+        .unwrap_or_else(|_| String::from(r"C:\ProgramData\IronRDP\idd-debug.log"));
+
+    let path = std::path::PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        let _ = create_dir_all(parent);
+    }
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{message}");
+    }
+}
+
 // Opaque stand-ins for WDK types. The real UMDF/KMDF integration will replace these.
 #[repr(C)]
 pub struct DRIVER_OBJECT {
@@ -64,6 +82,9 @@ pub extern "system" fn DriverEntry(
     #[cfg(ironrdp_idd_link)]
     {
         use core::mem::size_of;
+        debug_trace("DriverEntry: entered");
+        // SAFETY: must be set before WdfDriverCreate; value 33 selects UMDF 2.33.
+        unsafe { wdf::set_minimum_version_required(33) };
         let config = wdf::WDF_DRIVER_CONFIG {
             Size: size_of::<wdf::WDF_DRIVER_CONFIG>() as u32,
             EvtDriverDeviceAdd: Some(adapter::device_add),
@@ -79,6 +100,10 @@ pub extern "system" fn DriverEntry(
         );
         // SAFETY: driver_object and registry_path are valid pointers from the WDF kernel reflector.
         let status = unsafe { wdf::driver_create(driver_object, registry_path, &config) };
+        debug_trace(&format!(
+            "DriverEntry: WdfDriverCreate returned status=0x{:08X}",
+            ntstatus_to_u32(status)
+        ));
         if status < 0 {
             tracing::error!(
                 status,
