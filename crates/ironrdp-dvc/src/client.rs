@@ -21,20 +21,21 @@ use crate::{DvcProcessor, DynamicChannelId, DynamicChannelName, DynamicVirtualCh
 pub trait DvcClientProcessor: DvcProcessor {}
 
 pub trait DvcChannelListener: Send {
+    fn channel_name(&self) -> &str;
     /// Called for each incoming DYNVC_CREATE_REQ matching this name.
     /// Return `None` to reject (NO_LISTENER).
-    fn create(&mut self) -> Option<Box<dyn DvcClientProcessor + Send>>;
+    fn create(&mut self) -> Option<Box<dyn DvcProcessor + Send>>;
 }
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
 
 /// For pre-registered Dvc
-pub struct OnceListener {
-    inner: Option<Box<dyn DvcClientProcessor + Send>>,
+struct OnceListener {
+    inner: Option<Box<dyn DvcProcessor + Send>>,
 }
 
 impl OnceListener {
-    pub fn new(dvc_processor: impl DvcClientProcessor) -> Self {
+    fn new(dvc_processor: impl DvcProcessor) -> Self {
         Self {
             inner: Some(Box::new(dvc_processor)),
         }
@@ -42,7 +43,13 @@ impl OnceListener {
 }
 
 impl DvcChannelListener for OnceListener {
-    fn create(&mut self) -> Option<Box<dyn DvcClientProcessor + Send>> {
+    fn channel_name(&self) -> &str {
+        self.inner
+            .as_ref()
+            .expect("channel name called after created")
+            .channel_name()
+    }
+    fn create(&mut self) -> Option<Box<dyn DvcProcessor + Send>> {
         self.inner.take()
     }
 }
@@ -81,14 +88,22 @@ impl DrdynvcClient {
         }
     }
 
-    // FIXME(#61): it’s likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
-
     #[must_use]
+    /// with a pre-registered dynamic virtual channel
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
         T: DvcProcessor + 'static,
     {
-        self.dynamic_channels.insert(channel);
+        self.dynamic_channels.insert_dvc(channel);
+        self
+    }
+
+    #[must_use]
+    pub fn with_listener<T>(mut self, listener: T) -> Self
+    where
+        T: DvcChannelListener + 'static,
+    {
+        self.dynamic_channels.insert_listener(listener);
         self
     }
 
@@ -96,7 +111,7 @@ impl DrdynvcClient {
     where
         T: DvcProcessor + 'static,
     {
-        self.dynamic_channels.insert(channel);
+        self.dynamic_channels.insert_dvc(channel);
     }
 
     pub fn get_dvc_by_type_id<T>(&self) -> Option<&DynamicVirtualChannel>
@@ -157,20 +172,12 @@ impl SvcProcessor for DrdynvcClient {
                     responses.push(self.create_capabilities_response(CapsVersion::V2));
                 }
 
-                let channel_exists = self.dynamic_channels.get_by_channel_name(&channel_name).is_some();
-                let (creation_status, start_messages) = if channel_exists {
-                    // If we have a handler for this channel, attach the channel ID
-                    // and get any start messages.
-                    self.dynamic_channels
-                        .attach_channel_id(channel_name.clone(), channel_id);
-                    let dynamic_channel = self
-                        .dynamic_channels
-                        .get_by_channel_name_mut(&channel_name)
-                        .expect("channel exists");
-                    (CreationStatus::OK, dynamic_channel.start()?)
-                } else {
-                    (CreationStatus::NO_LISTENER, Vec::new())
-                };
+                let (creation_status, start_messages) =
+                    if let Some(dvc) = self.dynamic_channels.try_create_channel(&channel_name, channel_id) {
+                        (CreationStatus::OK, dvc.start()?)
+                    } else {
+                        (CreationStatus::NO_LISTENER, Vec::new())
+                    };
 
                 let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
                 debug!("Send DVC Create Response PDU: {create_response:?}");
@@ -212,77 +219,95 @@ impl SvcProcessor for DrdynvcClient {
     }
 }
 
+struct ListenerEntry {
+    listener: DynamicChannelListener,
+    /// `Some` only for channels registered via `with_dynamic_channel<T>()`.
+    type_id: Option<TypeId>,
+}
+
 struct DynamicChannelSet {
-    channels: BTreeMap<DynamicChannelName, DynamicVirtualChannel>,
-    name_to_channel_id: BTreeMap<DynamicChannelName, DynamicChannelId>,
-    channel_id_to_name: BTreeMap<DynamicChannelId, DynamicChannelName>,
-    type_id_to_name: BTreeMap<TypeId, DynamicChannelName>,
+    listeners: BTreeMap<DynamicChannelName, ListenerEntry>,
+    active_channels: BTreeMap<DynamicChannelId, DynamicVirtualChannel>,
+    type_id_to_channel_id: BTreeMap<TypeId, DynamicChannelId>,
 }
 
 impl DynamicChannelSet {
     #[inline]
     fn new() -> Self {
         Self {
-            channels: BTreeMap::new(),
-            name_to_channel_id: BTreeMap::new(),
-            channel_id_to_name: BTreeMap::new(),
-            type_id_to_name: BTreeMap::new(),
+            listeners: BTreeMap::new(),
+            active_channels: BTreeMap::new(),
+            type_id_to_channel_id: BTreeMap::new(),
         }
     }
 
-    fn insert<T: DvcProcessor + 'static>(&mut self, channel: T) -> Option<DynamicVirtualChannel> {
-        let name = channel.channel_name().to_owned();
-        self.type_id_to_name.insert(TypeId::of::<T>(), name.clone());
-        self.channels.insert(name, DynamicVirtualChannel::new(channel))
+    fn insert_listener<T: DvcChannelListener + 'static>(&mut self, listener: T) {
+        let name = listener.channel_name().to_owned();
+        self.listeners.insert(
+            name,
+            ListenerEntry {
+                listener: Box::new(listener),
+                type_id: None,
+            },
+        );
     }
 
-    fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
-        self.channel_id_to_name.insert(id, name.clone());
-        self.name_to_channel_id.insert(name.clone(), id);
-        let dvc = self.get_by_channel_name_mut(&name)?;
-        let old_id = dvc.channel_id;
-        dvc.channel_id = Some(id);
-        old_id
+    fn insert_dvc<T: DvcProcessor + 'static>(&mut self, channel: T) {
+        let name = channel.channel_name().to_owned();
+        self.listeners.insert(
+            name,
+            ListenerEntry {
+                listener: Box::new(OnceListener::new(channel)),
+                type_id: Some(TypeId::of::<T>()),
+            },
+        );
+    }
+
+    fn try_create_channel(
+        &mut self,
+        name: &DynamicChannelName,
+        channel_id: DynamicChannelId,
+    ) -> Option<&mut DynamicVirtualChannel> {
+        let entry = self.listeners.get_mut(name)?;
+        let processor = entry.listener.create()?;
+
+        if let Some(type_id) = entry.type_id {
+            self.type_id_to_channel_id.insert(type_id, channel_id);
+        }
+
+        let mut dvc = DynamicVirtualChannel::from_boxed(processor);
+        dvc.channel_id = Some(channel_id);
+        let dvc = match self.active_channels.entry(channel_id) {
+            alloc::collections::btree_map::Entry::Occupied(mut e) => {
+                e.insert(dvc);
+                e.into_mut()
+            }
+            alloc::collections::btree_map::Entry::Vacant(e) => e.insert(dvc),
+        };
+        Some(dvc)
     }
 
     fn get_by_type_id(&self, type_id: TypeId) -> Option<&DynamicVirtualChannel> {
-        self.type_id_to_name
+        self.type_id_to_channel_id
             .get(&type_id)
-            .and_then(|name| self.channels.get(name))
-    }
-
-    fn get_by_channel_name(&self, name: &DynamicChannelName) -> Option<&DynamicVirtualChannel> {
-        self.channels.get(name)
-    }
-
-    fn get_by_channel_name_mut(&mut self, name: &DynamicChannelName) -> Option<&mut DynamicVirtualChannel> {
-        self.channels.get_mut(name)
+            .and_then(|id| self.active_channels.get(id))
     }
 
     fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {
-        self.channel_id_to_name
-            .get(&id)
-            .and_then(|name| self.channels.get(name))
+        self.active_channels.get(&id)
     }
 
     fn get_by_channel_id_mut(&mut self, id: DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {
-        self.channel_id_to_name
-            .get(&id)
-            .and_then(|name| self.channels.get_mut(name))
+        self.active_channels.get_mut(&id)
     }
 
-    fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> Option<DynamicChannelId> {
-        if let Some(name) = self.channel_id_to_name.remove(&id) {
-            return self.name_to_channel_id.remove(&name);
-            // Channels are retained in the `self.channels` and `self.type_id_to_name` map to allow potential
-            // dynamic re-addition by the server.
-        }
-        None
+    fn remove_by_channel_id(&mut self, id: DynamicChannelId) {
+        self.active_channels.remove(&id);
     }
 
     #[inline]
     fn values(&self) -> impl Iterator<Item = &DynamicVirtualChannel> {
-        self.channels.values()
+        self.active_channels.values()
     }
 }
 impl SvcClientProcessor for DrdynvcClient {}
