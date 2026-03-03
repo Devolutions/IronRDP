@@ -38,6 +38,13 @@ pub(crate) type PFN_WDF_FUNCTION = unsafe extern "system" fn();
 pub type PFN_WDF_DRIVER_DEVICE_ADD =
     unsafe extern "system" fn(driver: WDFDRIVER, device_init: *mut WDFDEVICE_INIT) -> NTSTATUS;
 
+/// `WDF_POWER_DEVICE_STATE` enum underlying type.
+pub type WDF_POWER_DEVICE_STATE = u32;
+
+/// `EVT_WDF_DEVICE_D0_ENTRY` callback type.
+pub type PFN_WDF_DEVICE_D0_ENTRY =
+    unsafe extern "system" fn(device: WDFDEVICE, previous_state: WDF_POWER_DEVICE_STATE) -> NTSTATUS;
+
 // ───────────────────────────── WDF structures ────────────────────────────────────────────────
 
 /// `WDF_DRIVER_CONFIG` — passed to `WdfDriverCreate`.
@@ -118,10 +125,67 @@ impl WDF_OBJECT_ATTRIBUTES {
             EvtCleanupCallback: None,
             EvtDestroyCallback: None,
             ExecutionLevel: 1,       // WdfExecutionLevelInheritFromParent
-            SynchronizationScope: 3, // WdfSynchronizationScopeNone
+            SynchronizationScope: 1, // WdfSynchronizationScopeInheritFromParent
             ParentObject: core::ptr::null_mut(),
             ContextSizeOverride: 0,
             ContextTypeInfo: core::ptr::null(),
+        }
+    }
+}
+
+/// `WDF_PNPPOWER_EVENT_CALLBACKS` — device PnP/power callback table.
+///
+/// Layout (x64 UMDF 2.33, 144 bytes): `Size` + implicit padding + 17 callback pointers.
+#[repr(C)]
+pub struct WDF_PNPPOWER_EVENT_CALLBACKS {
+    pub Size: u32,
+    pub EvtDeviceD0Entry: Option<PFN_WDF_DEVICE_D0_ENTRY>,
+    pub EvtDeviceD0EntryPostInterruptsEnabled: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceD0Exit: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceD0ExitPreInterruptsDisabled: Option<unsafe extern "system" fn()>,
+    pub EvtDevicePrepareHardware: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceReleaseHardware: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceSelfManagedIoCleanup: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceSelfManagedIoFlush: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceSelfManagedIoInit: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceSelfManagedIoSuspend: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceSelfManagedIoRestart: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceSurpriseRemoval: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceQueryRemove: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceQueryStop: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceUsageNotification: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceRelationsQuery: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceUsageNotificationEx: Option<unsafe extern "system" fn()>,
+}
+
+const _: () = {
+    assert!(
+        core::mem::size_of::<WDF_PNPPOWER_EVENT_CALLBACKS>() == 144,
+        "WDF_PNPPOWER_EVENT_CALLBACKS size mismatch",
+    );
+};
+
+impl WDF_PNPPOWER_EVENT_CALLBACKS {
+    pub const fn init() -> Self {
+        WDF_PNPPOWER_EVENT_CALLBACKS {
+            Size: core::mem::size_of::<WDF_PNPPOWER_EVENT_CALLBACKS>() as u32,
+            EvtDeviceD0Entry: None,
+            EvtDeviceD0EntryPostInterruptsEnabled: None,
+            EvtDeviceD0Exit: None,
+            EvtDeviceD0ExitPreInterruptsDisabled: None,
+            EvtDevicePrepareHardware: None,
+            EvtDeviceReleaseHardware: None,
+            EvtDeviceSelfManagedIoCleanup: None,
+            EvtDeviceSelfManagedIoFlush: None,
+            EvtDeviceSelfManagedIoInit: None,
+            EvtDeviceSelfManagedIoSuspend: None,
+            EvtDeviceSelfManagedIoRestart: None,
+            EvtDeviceSurpriseRemoval: None,
+            EvtDeviceQueryRemove: None,
+            EvtDeviceQueryStop: None,
+            EvtDeviceUsageNotification: None,
+            EvtDeviceRelationsQuery: None,
+            EvtDeviceUsageNotificationEx: None,
         }
     }
 }
@@ -146,17 +210,21 @@ type PFN_WDF_DEVICE_CREATE = unsafe extern "system" fn(
     device: *mut WDFDEVICE,
 ) -> NTSTATUS;
 
+/// `PFN_WDFDEVICEINITSETPNPPOWEREVENTCALLBACKS` dispatch signature.
+type PFN_WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS = unsafe extern "system" fn(
+    globals: *mut WDF_DRIVER_GLOBALS,
+    device_init: *mut WDFDEVICE_INIT,
+    pnp_power_callbacks: *const WDF_PNPPOWER_EVENT_CALLBACKS,
+);
+
 /// `WdfDriverCreateTableIndex` from `wdffuncenum.h` (UMDF 2.33).
 const WDF_DRIVER_CREATE_TABLE_INDEX: usize = 57;
 
 /// `WdfDeviceCreateTableIndex` from `wdffuncenum.h` (UMDF 2.33).
 const WDF_DEVICE_CREATE_TABLE_INDEX: usize = 25;
 
-/// WDF version binding required by `WdfDriverStubUm.lib`.
-///
-/// In UMDF 2.x headers this resolves to `UMDF_VERSION_MINOR`; for 2.33 this is `33`.
-#[unsafe(no_mangle)]
-pub static WdfMinimumVersionRequired: u32 = 33;
+/// `WdfDeviceInitSetPnpPowerEventCallbacksTableIndex` from `wdffuncenum.h` (UMDF 2.33).
+const WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS_TABLE_INDEX: usize = 19;
 
 // External symbols exported from `WdfDriverStubUm.lib`.
 // The WDK header `wdf.h` defines `#define WdfFunctions WdfFunctions_02033`;
@@ -166,8 +234,23 @@ unsafe extern "C" {
     #[link_name = "WdfFunctions_02033"]
     static WDF_FUNCTION_TABLE: *const Option<PFN_WDF_FUNCTION>;
 
+    /// WDF minimum version required by this driver.
+    ///
+    /// With newer iddcx stubs this symbol is provided by the stub object;
+    /// we set it at runtime before `WdfDriverCreate`.
+    pub static mut WdfMinimumVersionRequired: u32;
+
     /// WDF driver globals pointer — set by the WDF framework on load.
     pub static mut WdfDriverGlobals: *mut WDF_DRIVER_GLOBALS;
+}
+
+/// Sets `WdfMinimumVersionRequired` for UMDF binding.
+///
+/// # Safety
+/// Must be called before `WdfDriverCreate`.
+pub unsafe fn set_minimum_version_required(version: u32) {
+    // SAFETY: symbol is provided by linked framework stubs.
+    unsafe { WdfMinimumVersionRequired = version };
 }
 
 /// Calls `WdfDriverCreate` through the WDF 2.33 dispatch table.
@@ -224,4 +307,31 @@ pub unsafe fn device_create(
     // SAFETY: caller guarantees device_init and attributes are valid.
     let status = unsafe { func(globals, device_init, attributes, &mut device) };
     (status, device)
+}
+
+/// Calls `WdfDeviceInitSetPnpPowerEventCallbacks` through the WDF 2.33 dispatch table.
+///
+/// Must be called from `EvtDriverDeviceAdd` before `WdfDeviceCreate`.
+///
+/// # Safety
+/// `device_init` must be valid for the current add-device callback.
+pub unsafe fn device_init_set_pnp_power_event_callbacks(
+    device_init: *mut WDFDEVICE_INIT,
+    callbacks: *const WDF_PNPPOWER_EVENT_CALLBACKS,
+) {
+    // SAFETY: WDF_FUNCTION_TABLE populated by framework.
+    let entry = unsafe {
+        WDF_FUNCTION_TABLE
+            .add(WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS_TABLE_INDEX)
+            .read()
+    };
+    let func: PFN_WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS =
+        // SAFETY: all WDF function table entries share the same pointer representation.
+        unsafe {
+            core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS>(entry)
+        };
+    // SAFETY: populated by the WDF framework on load.
+    let globals = unsafe { WdfDriverGlobals };
+    // SAFETY: caller guarantees pointers are valid.
+    unsafe { func(globals, device_init, callbacks) };
 }
