@@ -10,6 +10,8 @@ use windows::Win32::Foundation::{HANDLE, LUID};
 
 #[cfg(ironrdp_idd_link)]
 use crate::iddcx;
+#[cfg(ironrdp_idd_link)]
+use crate::wdf;
 use crate::SwapChainProcessor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -227,13 +229,18 @@ impl IronRdpIddMonitor {
 
         #[cfg(ironrdp_idd_link)]
         {
+            crate::debug_trace(&format!(
+                "Monitor::create_and_arrive: entered connector_idx={} has_edid={}",
+                connector_idx,
+                edid.is_some_and(|bytes| !bytes.is_empty())
+            ));
             let (description_type, description_size, description_ptr) = match edid {
                 Some(bytes) if !bytes.is_empty() => (
                     IDDCX_MONITOR_DESCRIPTION_TYPE_EDID,
                     bytes.len() as u32,
                     bytes.as_ptr() as *mut c_void,
                 ),
-                _ => (0, 0, core::ptr::null_mut()),
+                _ => (IDDCX_MONITOR_DESCRIPTION_TYPE_EDID, 0, core::ptr::null_mut()),
             };
 
             let mut monitor_info = iddcx::IDDCX_MONITOR_INFO {
@@ -250,8 +257,10 @@ impl IronRdpIddMonitor {
                 MonitorContainerId: monitor_container_id(connector_idx),
             };
 
-            let in_args = iddcx::IDARG_IN_MONITORCREATE {
-                ObjectAttributes: core::ptr::null(),
+            let monitor_object_attributes = wdf::WDF_OBJECT_ATTRIBUTES::init_no_context();
+
+            let mut in_args = iddcx::IDARG_IN_MONITORCREATE {
+                ObjectAttributes: &monitor_object_attributes,
                 pMonitorInfo: &mut monitor_info,
             };
             let mut out_create = iddcx::IDARG_OUT_MONITORCREATE {
@@ -259,7 +268,30 @@ impl IronRdpIddMonitor {
             };
 
             // SAFETY: all pointers in `in_args` and `out_create` are valid for the duration of the call.
-            let create_status = unsafe { iddcx::monitor_create(adapter, &in_args, &mut out_create) };
+            let mut create_status = unsafe { iddcx::monitor_create(adapter, &in_args, &mut out_create) };
+            crate::debug_trace(&format!(
+                "Monitor::create_and_arrive: IddCxMonitorCreate(initial) status=0x{:08X}",
+                ntstatus_to_u32(create_status)
+            ));
+
+            if create_status < 0 {
+                tracing::warn!(
+                    status = create_status,
+                    status_hex = format_args!("0x{:08X}", ntstatus_to_u32(create_status)),
+                    connector_idx,
+                    "IddCxMonitorCreate failed with default object attributes, retrying with null object attributes"
+                );
+
+                in_args.ObjectAttributes = core::ptr::null();
+                out_create.MonitorObject = core::ptr::null_mut();
+                // SAFETY: all pointers in `in_args` and `out_create` are valid for the duration of the call.
+                create_status = unsafe { iddcx::monitor_create(adapter, &in_args, &mut out_create) };
+                crate::debug_trace(&format!(
+                    "Monitor::create_and_arrive: IddCxMonitorCreate(null_object_attrs) status=0x{:08X}",
+                    ntstatus_to_u32(create_status)
+                ));
+            }
+
             if create_status < 0 {
                 tracing::error!(
                     status = create_status,
@@ -280,6 +312,10 @@ impl IronRdpIddMonitor {
 
             // SAFETY: `MonitorObject` is produced by a successful `IddCxMonitorCreate` call.
             let arrival_status = unsafe { iddcx::monitor_arrival(out_create.MonitorObject, &mut out_arrival) };
+            crate::debug_trace(&format!(
+                "Monitor::create_and_arrive: IddCxMonitorArrival status=0x{:08X}",
+                ntstatus_to_u32(arrival_status)
+            ));
             if arrival_status < 0 {
                 tracing::error!(
                     status = arrival_status,

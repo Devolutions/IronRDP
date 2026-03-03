@@ -150,7 +150,7 @@ Write-Host "  dll: $providerDllPathResolved"
 if ($RestartTermService.IsPresent) {
     Write-Warning "Restarting TermService now"
 
-    Stop-Service -Name "TermService" -Force -ErrorAction SilentlyContinue
+    & sc.exe stop TermService | Out-Null
 
     $stopDeadline = (Get-Date).AddSeconds($TermServiceStopTimeoutSeconds)
     while ((Get-Date) -lt $stopDeadline) {
@@ -167,7 +167,7 @@ if ($RestartTermService.IsPresent) {
         throw "TermService did not stop within ${TermServiceStopTimeoutSeconds}s during provider install restart (status=$($service.Status))"
     }
 
-    Start-Service -Name "TermService" -ErrorAction SilentlyContinue
+    & sc.exe start TermService | Out-Null
 
     $startDeadline = (Get-Date).AddSeconds($TermServiceStartTimeoutSeconds)
     while ((Get-Date) -lt $startDeadline) {

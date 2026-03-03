@@ -31,6 +31,7 @@ fn main() {
 
     if let Some(iddcx_lib_dir) = resolve_iddcx_stub_lib_dir() {
         println!("cargo:rustc-link-search=native={}", iddcx_lib_dir.display());
+        println!("cargo:warning=Using iddcxstub.lib from {}", iddcx_lib_dir.display());
     } else {
         println!(
             "cargo:warning=iddcxstub.lib not found (WDK missing). Run crates/ironrdp-idd/scripts/find-wdk-tools.ps1 or set IRONRDP_IDDCX_LIB_DIR"
@@ -109,10 +110,10 @@ fn resolve_iddcx_stub_lib_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10"));
 
-    // Keep stub selection aligned with the INF's `UmdfExtensions=IddCx0102` by default.
+    // Keep stub selection aligned with the INF's `UmdfExtensions=IddCx0104` by default.
     // Can be overridden for diagnostics/experimentation.
     let preferred_stub_version = std::env::var("IRONRDP_IDDCX_STUB_VERSION")
-        .unwrap_or_else(|_| "1.2".to_owned());
+        .unwrap_or_else(|_| "1.4".to_owned());
 
     find_windows_kits_iddcx_stub_lib_dir(&kits_root, &preferred_stub_version)
 }
