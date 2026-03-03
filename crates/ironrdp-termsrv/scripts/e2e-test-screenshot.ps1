@@ -89,6 +89,12 @@ param(
     [int]$AfterFirstGraphicsSeconds = 20,
 
     [Parameter()]
+    [switch]$DisableFreshSessionCleanup,
+
+    [Parameter()]
+    [switch]$AggressiveFreshSessionCleanup,
+
+    [Parameter()]
     [Alias('Strict')]
     [switch]$StrictSessionProof
 )
@@ -307,11 +313,34 @@ $guiTargetSessionGuiProcessCount = $null
 $guiTargetSessionWinlogonCount = $null
 $guiTargetSessionLogonUiCount = $null
 $guiTargetSessionProcesses = ''
+$guiTargetSessionExplorerBootstrapPid = $null
+$guiTargetSessionExplorerBootstrapTimeUtc = ''
+$guiTargetSessionExplorerBootstrapPidAlive = $false
+$guiTargetSessionExplorerEarliestStartUtc = ''
+$guiTargetSessionExplorerAfterCreationKnown = $false
+$guiTargetSessionExplorerAfterCreation = $false
+$guiTargetSessionCreationSignalUtc = ''
+$guiTargetSessionCreationSignals = ''
+$guiTargetSessionExplorerDetails = ''
+$explorerCrashEventCount = $null
+$explorerHangEventCount = $null
+$explorerWerEventCount = $null
+$explorerLifecycleEvents = ''
 $bitmapDumpCount = 0
 $bitmapObservedSessionIds = @()
 $bitmapTargetSessionMatchCount = 0
 $bitmapTargetSessionHasGraphics = $false
 $type10GraphicsSessionConfirmed = $false
+$freshSessionCleanupAttempted = $false
+$freshSessionCleanupSucceeded = $false
+$freshSessionCleanupTargetUser = ''
+$freshSessionCleanupDiscoveredSessionIds = ''
+$freshSessionCleanupLoggedOffSessionIds = ''
+$freshSessionCleanupExplorerMatches = ''
+$freshSessionCleanupQuserMatches = ''
+$freshSessionCleanupLogoffErrors = ''
+$freshSessionCleanupError = ''
+$freshSessionCleanupAggressiveMode = $false
 
 # ── Step 1: Build ───────────────────────────────────────────────────────────
 if (-not $SkipBuild.IsPresent) {
@@ -533,6 +562,250 @@ if (-not $SkipDeploy.IsPresent) {
     Write-Host "`n=== Step 2: Deploy skipped ===" -ForegroundColor Yellow
 }
 
+# ── Step 2.5: Fresh-session cleanup (Provider mode) ─────────────────────────
+if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -and (-not $SkipScreenshot.IsPresent)) {
+    Write-Host "`n=== Step 2.5: Fresh-session cleanup for target user ===" -ForegroundColor Cyan
+    $freshSessionCleanupAttempted = $true
+    $freshSessionCleanupAggressiveMode = $AggressiveFreshSessionCleanup.IsPresent
+
+    try {
+        $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+        try {
+            $cleanup = Invoke-Command -Session $session -ScriptBlock {
+                param($RdpUsernameRaw, $RdpDomainRaw, $AggressiveModeRaw)
+
+                $result = @{}
+                $result['target_user'] = ''
+                $result['aggressive_mode'] = $false
+                $result['discovered_session_ids'] = ''
+                $result['logged_off_session_ids'] = ''
+                $result['explorer_matches'] = ''
+                $result['quser_matches'] = ''
+                $result['logoff_errors'] = ''
+
+                $aggressiveMode = [bool]$AggressiveModeRaw
+                $result['aggressive_mode'] = $aggressiveMode
+
+                $targetUser = [string]$RdpUsernameRaw
+                if ($targetUser.Contains('\')) {
+                    $targetUser = $targetUser.Split('\\')[-1]
+                }
+                if ($targetUser.Contains('@')) {
+                    $targetUser = $targetUser.Split('@')[0]
+                }
+                $targetUser = $targetUser.Trim()
+                $result['target_user'] = $targetUser
+
+                $domainHints = New-Object System.Collections.Generic.List[string]
+                $rdpDomain = [string]$RdpDomainRaw
+                if (-not [string]::IsNullOrWhiteSpace($rdpDomain)) {
+                    $rdpDomain = $rdpDomain.Trim()
+                    $domainHints.Add($rdpDomain)
+                    $domainShort = ($rdpDomain -split '\\.')[0]
+                    if (-not [string]::IsNullOrWhiteSpace($domainShort)) {
+                        $domainHints.Add($domainShort)
+                    }
+                }
+
+                $sessionIds = New-Object System.Collections.Generic.List[int]
+                $explorerRows = New-Object System.Collections.Generic.List[object]
+
+                $explorerProcs = @(Get-Process -Name 'explorer' -IncludeUserName -ErrorAction SilentlyContinue)
+                foreach ($proc in $explorerProcs) {
+                    $rawUserName = [string]$proc.UserName
+                    if ([string]::IsNullOrWhiteSpace($rawUserName)) {
+                        continue
+                    }
+
+                    $userPart = $rawUserName
+                    $domainPart = ''
+
+                    if ($rawUserName.Contains('\\')) {
+                        $split = $rawUserName.Split('\\', 2)
+                        $domainPart = [string]$split[0]
+                        $userPart = [string]$split[1]
+                    } elseif ($rawUserName.Contains('@')) {
+                        $split = $rawUserName.Split('@', 2)
+                        $userPart = [string]$split[0]
+                        $domainPart = [string]$split[1]
+                    }
+
+                    if (-not ($userPart -ieq $targetUser)) {
+                        continue
+                    }
+
+                    if (($domainHints.Count -gt 0) -and (-not [string]::IsNullOrWhiteSpace($domainPart))) {
+                        $matchesDomain = $false
+                        foreach ($hint in $domainHints) {
+                            if ($domainPart -ieq $hint) {
+                                $matchesDomain = $true
+                                break
+                            }
+
+                            $domainPartShort = ($domainPart -split '\\.')[0]
+                            if (-not [string]::IsNullOrWhiteSpace($domainPartShort) -and ($domainPartShort -ieq $hint)) {
+                                $matchesDomain = $true
+                                break
+                            }
+                        }
+
+                        if (-not $matchesDomain) {
+                            continue
+                        }
+                    }
+
+                    $sessionId = [int]$proc.SessionId
+                    if (($sessionId -gt 0) -and (-not $sessionIds.Contains($sessionId))) {
+                        $sessionIds.Add($sessionId)
+                    }
+
+                    $startUtc = ''
+                    try {
+                        $startUtc = $proc.StartTime.ToUniversalTime().ToString('o')
+                    } catch {
+                        $startUtc = ''
+                    }
+
+                    $explorerRows.Add([pscustomobject]@{
+                        SessionId    = $sessionId
+                        Id           = $proc.Id
+                        UserName     = $rawUserName
+                        StartTimeUtc = $startUtc
+                    })
+                }
+
+                if ($explorerRows.Count -gt 0) {
+                    $result['explorer_matches'] = ($explorerRows | Sort-Object SessionId, Id | Format-Table -AutoSize | Out-String)
+                }
+
+                if ($aggressiveMode) {
+                    $quserRows = New-Object System.Collections.Generic.List[object]
+                    $quserLines = @(& quser 2>$null)
+                    if ($quserLines.Count -gt 1) {
+                        foreach ($line in ($quserLines | Select-Object -Skip 1)) {
+                            if ([string]::IsNullOrWhiteSpace([string]$line)) {
+                                continue
+                            }
+
+                            $m = [regex]::Match([string]$line, '^\s*>?\s*(?<user>\S+)\s+(?:(?<session>\S+)\s+)?(?<id>\d+)\s+(?<state>\S+)\s+')
+                            if (-not $m.Success) {
+                                continue
+                            }
+
+                            $quserUser = [string]$m.Groups['user'].Value
+                            $quserSessionName = [string]$m.Groups['session'].Value
+                            $quserSessionId = [int]$m.Groups['id'].Value
+                            $quserState = [string]$m.Groups['state'].Value
+
+                            if (-not ($quserUser -ieq $targetUser)) {
+                                continue
+                            }
+
+                            $quserRows.Add([pscustomobject]@{
+                                UserName    = $quserUser
+                                SessionName = $quserSessionName
+                                SessionId   = $quserSessionId
+                                State       = $quserState
+                                Raw         = [string]$line
+                            })
+
+                            if (($quserSessionId -gt 0) -and ($quserState -match '^(?i:disc|disconnected)$')) {
+                                if (-not $sessionIds.Contains($quserSessionId)) {
+                                    $sessionIds.Add($quserSessionId)
+                                }
+                            }
+                        }
+                    }
+
+                    if ($quserRows.Count -gt 0) {
+                        $result['quser_matches'] = ($quserRows | Sort-Object SessionId | Format-Table -AutoSize | Out-String)
+                    }
+                }
+
+                $sortedSessionIds = @($sessionIds | Sort-Object -Unique)
+                if ($sortedSessionIds.Count -gt 0) {
+                    $result['discovered_session_ids'] = ($sortedSessionIds -join ',')
+
+                    $loggedOff = New-Object System.Collections.Generic.List[int]
+                    $logoffErrors = New-Object System.Collections.Generic.List[string]
+
+                    foreach ($sid in $sortedSessionIds) {
+                        try {
+                            logoff $sid 2>$null | Out-Null
+                            $loggedOff.Add($sid)
+                        } catch {
+                            $logoffErrors.Add("session_id=$sid error=$($_.Exception.Message)")
+                        }
+                    }
+
+                    if ($loggedOff.Count -gt 0) {
+                        $result['logged_off_session_ids'] = (($loggedOff | Sort-Object -Unique) -join ',')
+                    }
+
+                    if ($logoffErrors.Count -gt 0) {
+                        $result['logoff_errors'] = ($logoffErrors | Out-String)
+                    }
+                }
+
+                $result
+            } -ArgumentList $RdpUsername, $RdpDomain, $AggressiveFreshSessionCleanup.IsPresent
+
+            if ($cleanup.ContainsKey('target_user')) {
+                $freshSessionCleanupTargetUser = [string]$cleanup['target_user']
+            }
+            if ($cleanup.ContainsKey('aggressive_mode')) {
+                $freshSessionCleanupAggressiveMode = [bool]$cleanup['aggressive_mode']
+            }
+            if ($cleanup.ContainsKey('discovered_session_ids')) {
+                $freshSessionCleanupDiscoveredSessionIds = [string]$cleanup['discovered_session_ids']
+            }
+            if ($cleanup.ContainsKey('logged_off_session_ids')) {
+                $freshSessionCleanupLoggedOffSessionIds = [string]$cleanup['logged_off_session_ids']
+            }
+            if ($cleanup.ContainsKey('explorer_matches')) {
+                $freshSessionCleanupExplorerMatches = [string]$cleanup['explorer_matches']
+            }
+            if ($cleanup.ContainsKey('quser_matches')) {
+                $freshSessionCleanupQuserMatches = [string]$cleanup['quser_matches']
+            }
+            if ($cleanup.ContainsKey('logoff_errors')) {
+                $freshSessionCleanupLogoffErrors = [string]$cleanup['logoff_errors']
+            }
+
+            $freshSessionCleanupSucceeded = $true
+
+            Write-Host "Fresh-session cleanup target user: $freshSessionCleanupTargetUser"
+            Write-Host "Fresh-session cleanup aggressive mode: $freshSessionCleanupAggressiveMode"
+            Write-Host "Fresh-session cleanup discovered session IDs: $(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupDiscoveredSessionIds)) { 'none' } else { $freshSessionCleanupDiscoveredSessionIds })"
+            Write-Host "Fresh-session cleanup logged off session IDs: $(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupLoggedOffSessionIds)) { 'none' } else { $freshSessionCleanupLoggedOffSessionIds })"
+
+            if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupExplorerMatches)) {
+                Write-Host "`n---- Fresh-session cleanup explorer matches ----" -ForegroundColor Yellow
+                Write-Host $freshSessionCleanupExplorerMatches
+            }
+            if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupQuserMatches)) {
+                Write-Host "`n---- Fresh-session cleanup quser matches ----" -ForegroundColor Yellow
+                Write-Host $freshSessionCleanupQuserMatches
+            }
+            if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupLogoffErrors)) {
+                Write-Warning "Fresh-session cleanup logoff errors:`n$freshSessionCleanupLogoffErrors"
+            }
+        }
+        finally {
+            if ($null -ne $session) {
+                Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {
+        $freshSessionCleanupError = [string]$_
+        Write-Warning "Fresh-session cleanup failed: $_"
+    }
+} elseif (($Mode -eq 'Provider') -and $DisableFreshSessionCleanup.IsPresent) {
+    Write-Host "`n=== Step 2.5: Fresh-session cleanup disabled ===" -ForegroundColor Yellow
+} elseif (($Mode -eq 'Provider') -and (-not $SkipScreenshot.IsPresent)) {
+    $freshSessionCleanupAggressiveMode = $AggressiveFreshSessionCleanup.IsPresent
+}
+
 # ── Step 3: Run screenshot client ───────────────────────────────────────────
 if (-not $SkipScreenshot.IsPresent) {
     Write-Host "`n=== Step 3: Running screenshot client against ${Hostname}:${Port} ===" -ForegroundColor Cyan
@@ -633,6 +906,19 @@ try {
             $result['gui_target_session_winlogon_count'] = 0
             $result['gui_target_session_logonui_count'] = 0
             $result['gui_target_session_processes'] = ''
+            $result['gui_target_session_explorer_bootstrap_pid'] = 0
+            $result['gui_target_session_explorer_bootstrap_time_utc'] = ''
+            $result['gui_target_session_explorer_bootstrap_pid_alive'] = $false
+            $result['gui_target_session_explorer_earliest_start_utc'] = ''
+            $result['gui_target_session_explorer_after_creation_known'] = $false
+            $result['gui_target_session_explorer_after_creation'] = $false
+            $result['gui_target_session_creation_signal_utc'] = ''
+            $result['gui_target_session_creation_signals'] = ''
+            $result['gui_target_session_explorer_details'] = ''
+            $result['explorer_crash_event_count'] = 0
+            $result['explorer_hang_event_count'] = 0
+            $result['explorer_wer_event_count'] = 0
+            $result['explorer_lifecycle_events'] = ''
 
             $termsrvSessionProofLines = @()
             $providerSessionProofLines = @()
@@ -657,7 +943,9 @@ try {
             if ($mode -eq 'Provider' -and $stdoutTail) {
                 $fallbackPatterns = @(
                     'falling back to guessed session',
-                    'sending synthetic test pattern'
+                    'sending synthetic test pattern',
+                    'falling back to in-process GDI',
+                    'prelogon token fallback disabled after initial helper start'
                 )
                 $fallbackHits = $stdoutTail | Select-String -SimpleMatch -Pattern $fallbackPatterns -ErrorAction SilentlyContinue
                 if ($fallbackHits) {
@@ -769,6 +1057,55 @@ try {
                 $targetSessionId = $null
                 $targetSessionSource = ''
 
+                $termsrvBootstrapSuccessLines = $termsrvSessionProofLines | Where-Object {
+                    $_ -match 'SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_SUCCESS'
+                }
+                if ($termsrvBootstrapSuccessLines) {
+                    $lastBootstrapLine = $termsrvBootstrapSuccessLines | Select-Object -Last 1
+                    if ($lastBootstrapLine -match 'explorer_pid=(\d+)') {
+                        $result['gui_target_session_explorer_bootstrap_pid'] = [int]$Matches[1]
+                    }
+                    if ($lastBootstrapLine -match '^(\d{4}-\d{2}-\d{2}T[^\s]+Z)') {
+                        $result['gui_target_session_explorer_bootstrap_time_utc'] = [string]$Matches[1]
+                    }
+                }
+
+                $termsrvProofText = [string]$result['termsrv_session_proof_markers']
+                if (-not [string]::IsNullOrWhiteSpace($termsrvProofText)) {
+                    $bootstrapPidMatches = [regex]::Matches($termsrvProofText, 'SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_SUCCESS[^\r\n]*explorer_pid=(\d+)')
+                    if ($bootstrapPidMatches.Count -gt 0) {
+                        $lastPidMatch = $bootstrapPidMatches[$bootstrapPidMatches.Count - 1]
+                        $result['gui_target_session_explorer_bootstrap_pid'] = [int]$lastPidMatch.Groups[1].Value
+                    }
+
+                    if ($result['gui_target_session_explorer_bootstrap_pid'] -le 0) {
+                        $genericPidMatches = [regex]::Matches($termsrvProofText, 'explorer_pid=(\d+)')
+                        if ($genericPidMatches.Count -gt 0) {
+                            $lastGenericPid = $genericPidMatches[$genericPidMatches.Count - 1]
+                            $result['gui_target_session_explorer_bootstrap_pid'] = [int]$lastGenericPid.Groups[1].Value
+                        }
+                    }
+
+                    $bootstrapTimeMatches = [regex]::Matches($termsrvProofText, '(\d{4}-\d{2}-\d{2}T[^\s]+Z)[^\r\n]*SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_SUCCESS')
+                    if ($bootstrapTimeMatches.Count -gt 0) {
+                        $lastTimeMatch = $bootstrapTimeMatches[$bootstrapTimeMatches.Count - 1]
+                        $result['gui_target_session_explorer_bootstrap_time_utc'] = [string]$lastTimeMatch.Groups[1].Value
+                    }
+                }
+
+                if (($result['gui_target_session_explorer_bootstrap_pid'] -le 0) -and $stdoutTail) {
+                    $rawBootstrapHits = $stdoutTail | Select-String -Pattern 'SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_SUCCESS.*explorer_pid=(\d+)' -ErrorAction SilentlyContinue
+                    if ($rawBootstrapHits) {
+                        $lastRawBootstrap = $rawBootstrapHits | Select-Object -Last 1
+                        if ($lastRawBootstrap.Matches.Count -gt 0) {
+                            $result['gui_target_session_explorer_bootstrap_pid'] = [int]$lastRawBootstrap.Matches[0].Groups[1].Value
+                        }
+                        if ($lastRawBootstrap.Line -match '^(\d{4}-\d{2}-\d{2}T[^\s]+Z)') {
+                            $result['gui_target_session_explorer_bootstrap_time_utc'] = [string]$Matches[1]
+                        }
+                    }
+                }
+
                 $providerAckLines = $providerSessionProofLines | Where-Object {
                     $_ -match 'SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_ACK'
                 }
@@ -809,8 +1146,9 @@ try {
 
                     try {
                         $sessionProcesses = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $targetSessionId }
+                        $explorerProcesses = @($sessionProcesses | Where-Object { $_.ProcessName -ieq 'explorer' })
 
-                        $explorerCount = ($sessionProcesses | Where-Object { $_.ProcessName -ieq 'explorer' } | Measure-Object).Count
+                        $explorerCount = ($explorerProcesses | Measure-Object).Count
                         $guiProcessCount = ($sessionProcesses | Where-Object {
                             $_.ProcessName -in @('explorer', 'dwm', 'ShellExperienceHost', 'sihost')
                         } | Measure-Object).Count
@@ -823,9 +1161,227 @@ try {
                         $result['gui_target_session_logonui_count'] = $logonUiCount
                         $result['gui_target_session_process_proof'] = ($explorerCount -ge 1)
                         $result['gui_target_session_processes'] = ($sessionProcesses | Select-Object -First 40 Id, ProcessName, SessionId | Sort-Object ProcessName, Id | Format-Table -AutoSize | Out-String)
+
+                        if ($explorerCount -ge 1) {
+                            $explorerRows = New-Object System.Collections.Generic.List[object]
+                            $explorerEarliestStartUtc = $null
+
+                            foreach ($explorerProc in ($explorerProcesses | Sort-Object Id)) {
+                                $startUtc = ''
+                                try {
+                                    $startLocal = $explorerProc.StartTime
+                                    if ($null -ne $startLocal) {
+                                        $startUtcDate = $startLocal.ToUniversalTime()
+                                        $startUtc = $startUtcDate.ToString('o')
+                                        if (($null -eq $explorerEarliestStartUtc) -or ($startUtcDate -lt $explorerEarliestStartUtc)) {
+                                            $explorerEarliestStartUtc = $startUtcDate
+                                        }
+                                    }
+                                } catch {
+                                    # Best-effort only: process may exit while sampling details.
+                                }
+
+                                $cpuSeconds = 0.0
+                                try {
+                                    if ($null -ne $explorerProc.CPU) {
+                                        $cpuSeconds = [double]$explorerProc.CPU
+                                    }
+                                } catch {
+                                    $cpuSeconds = 0.0
+                                }
+
+                                $respondingValue = 'n/a'
+                                try {
+                                    if (($null -ne $explorerProc.MainWindowHandle) -and ($explorerProc.MainWindowHandle -ne 0)) {
+                                        $respondingValue = [string]([bool]$explorerProc.Responding)
+                                    }
+                                } catch {
+                                    $respondingValue = 'n/a'
+                                }
+
+                                $explorerRows.Add([pscustomobject]@{
+                                    Id           = $explorerProc.Id
+                                    StartTimeUtc = $startUtc
+                                    CpuSec       = [math]::Round($cpuSeconds, 2)
+                                    Handles      = $explorerProc.HandleCount
+                                    Responding   = $respondingValue
+                                })
+                            }
+
+                            if ($null -ne $explorerEarliestStartUtc) {
+                                $result['gui_target_session_explorer_earliest_start_utc'] = $explorerEarliestStartUtc.ToString('o')
+                            }
+
+                            $result['gui_target_session_explorer_details'] = ($explorerRows | Sort-Object StartTimeUtc, Id | Format-Table -AutoSize | Out-String)
+
+                            if ($result['gui_target_session_explorer_bootstrap_pid'] -le 0) {
+                                $bootstrapTimeUtcRaw = [string]$result['gui_target_session_explorer_bootstrap_time_utc']
+                                if (-not [string]::IsNullOrWhiteSpace($bootstrapTimeUtcRaw)) {
+                                    try {
+                                        $bootstrapTimeUtc = [datetime]::Parse($bootstrapTimeUtcRaw)
+                                        $closestExplorer = $null
+                                        $closestDelta = [timespan]::MaxValue
+
+                                        foreach ($row in $explorerRows) {
+                                            if ([string]::IsNullOrWhiteSpace([string]$row.StartTimeUtc)) {
+                                                continue
+                                            }
+
+                                            $rowStartUtc = [datetime]::Parse([string]$row.StartTimeUtc)
+                                            $delta = ($rowStartUtc - $bootstrapTimeUtc).Duration()
+                                            if ($delta -lt $closestDelta) {
+                                                $closestDelta = $delta
+                                                $closestExplorer = $row
+                                            }
+                                        }
+
+                                        if (($null -ne $closestExplorer) -and ($closestDelta.TotalSeconds -le 5)) {
+                                            $result['gui_target_session_explorer_bootstrap_pid'] = [int]$closestExplorer.Id
+                                        }
+                                    } catch {
+                                        # Best-effort only.
+                                    }
+                                }
+                            }
+                        }
+
+                        $bootstrapExplorerPid = [int]$result['gui_target_session_explorer_bootstrap_pid']
+                        if ($bootstrapExplorerPid -gt 0) {
+                            $bootstrapExplorerProc = Get-Process -Id $bootstrapExplorerPid -ErrorAction SilentlyContinue
+                            $result['gui_target_session_explorer_bootstrap_pid_alive'] = ($null -ne $bootstrapExplorerProc)
+                        }
+
+                        try {
+                            $start = $securityStartTime.AddMinutes(-2)
+                            $maxSessionEvents = 500
+                            $targetSessionLifecycleEventIds = @(21, 22, 24, 25)
+                            $sessionEvents = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational'; StartTime = $start } -MaxEvents $maxSessionEvents -ErrorAction SilentlyContinue
+
+                            $sessionRows = New-Object System.Collections.Generic.List[object]
+                            foreach ($evt in $sessionEvents) {
+                                try {
+                                    if ($evt.Id -notin $targetSessionLifecycleEventIds) {
+                                        continue
+                                    }
+
+                                    $xml = [xml]$evt.ToXml()
+                                    $data = @{}
+                                    foreach ($d in $xml.Event.EventData.Data) { $data[$d.Name] = [string]$d.'#text' }
+
+                                    $eventSessionId = $null
+                                    if ($data.ContainsKey('SessionID') -and ($data.SessionID -match '^\d+$')) {
+                                        $eventSessionId = [int]$data.SessionID
+                                    } elseif ($data.ContainsKey('SessionId') -and ($data.SessionId -match '^\d+$')) {
+                                        $eventSessionId = [int]$data.SessionId
+                                    } elseif ($evt.Message -match '(?i)\bsession\s+(\d+)\b') {
+                                        $eventSessionId = [int]$Matches[1]
+                                    }
+
+                                    if (($null -eq $eventSessionId) -or ($eventSessionId -ne $targetSessionId)) {
+                                        continue
+                                    }
+
+                                    $sessionRows.Add([pscustomobject]@{
+                                        TimeCreated = $evt.TimeCreated
+                                        Id          = $evt.Id
+                                        Message     = ([string]$evt.Message -replace '\r?\n', ' ')
+                                    })
+                                } catch {
+                                    # Ignore malformed/partial event payloads.
+                                }
+                            }
+
+                            if ($sessionRows.Count -gt 0) {
+                                $orderedSessionRows = @($sessionRows | Sort-Object TimeCreated)
+                                $firstSessionRow = $orderedSessionRows | Select-Object -First 1
+                                $result['gui_target_session_creation_signal_utc'] = $firstSessionRow.TimeCreated.ToUniversalTime().ToString('o')
+                                $result['gui_target_session_creation_signals'] = "Since $start (sampled up to $maxSessionEvents recent LocalSessionManager events; IDs=$($targetSessionLifecycleEventIds -join ','))`n" + ($orderedSessionRows | Select-Object -First 20 TimeCreated, Id, Message | Format-Table -AutoSize | Out-String)
+
+                                $explorerStartUtcRaw = [string]$result['gui_target_session_explorer_earliest_start_utc']
+                                if (-not [string]::IsNullOrWhiteSpace($explorerStartUtcRaw)) {
+                                    try {
+                                        $sessionCreateUtc = [datetime]::Parse([string]$result['gui_target_session_creation_signal_utc'])
+                                        $explorerStartUtc = [datetime]::Parse($explorerStartUtcRaw)
+                                        $result['gui_target_session_explorer_after_creation_known'] = $true
+                                        $result['gui_target_session_explorer_after_creation'] = ($explorerStartUtc -ge $sessionCreateUtc.AddSeconds(-2))
+                                    } catch {
+                                        $result['gui_target_session_explorer_after_creation_known'] = $false
+                                        $result['gui_target_session_explorer_after_creation'] = $false
+                                    }
+                                }
+                            } else {
+                                # Fallback for hosts where LocalSessionManager operational events are sparse or unavailable:
+                                # use the latest Security 4624 LogonType=10 event for the target user as a session-start proxy.
+                                $targetUserForFallback = $targetUserName
+                                if (-not [string]::IsNullOrWhiteSpace($targetUserForFallback)) {
+                                    $securityRows = New-Object System.Collections.Generic.List[object]
+                                    foreach ($evt in (Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4624; StartTime = $start } -MaxEvents 400 -ErrorAction SilentlyContinue)) {
+                                        try {
+                                            $xml = [xml]$evt.ToXml()
+                                            $data = @{}
+                                            foreach ($d in $xml.Event.EventData.Data) { $data[$d.Name] = [string]$d.'#text' }
+
+                                            if (($data.LogonType -eq '10') -and ($data.TargetUserName -eq $targetUserForFallback)) {
+                                                $securityRows.Add([pscustomobject]@{
+                                                    TimeCreated  = $evt.TimeCreated
+                                                    LogonProcess = $data.LogonProcessName
+                                                    ProcessName  = $data.ProcessName
+                                                    IpAddress    = $data.IpAddress
+                                                })
+                                            }
+                                        } catch {
+                                            # Ignore malformed event payloads.
+                                        }
+                                    }
+
+                                    if ($securityRows.Count -gt 0) {
+                                        $latestSecurityRow = @($securityRows | Sort-Object TimeCreated -Descending | Select-Object -First 1)[0]
+                                        $result['gui_target_session_creation_signal_utc'] = $latestSecurityRow.TimeCreated.ToUniversalTime().ToString('o')
+                                        $result['gui_target_session_creation_signals'] = "Fallback source: Security 4624 LogonType=10 for '$targetUserForFallback' since $start`n" + ($securityRows | Sort-Object TimeCreated -Descending | Select-Object -First 10 TimeCreated, LogonProcess, ProcessName, IpAddress | Format-Table -AutoSize | Out-String)
+
+                                        $explorerStartUtcRaw = [string]$result['gui_target_session_explorer_earliest_start_utc']
+                                        if (-not [string]::IsNullOrWhiteSpace($explorerStartUtcRaw)) {
+                                            try {
+                                                $sessionCreateUtc = [datetime]::Parse([string]$result['gui_target_session_creation_signal_utc'])
+                                                $explorerStartUtc = [datetime]::Parse($explorerStartUtcRaw)
+                                                $result['gui_target_session_explorer_after_creation_known'] = $true
+                                                $result['gui_target_session_explorer_after_creation'] = ($explorerStartUtc -ge $sessionCreateUtc.AddSeconds(-2))
+                                            } catch {
+                                                $result['gui_target_session_explorer_after_creation_known'] = $false
+                                                $result['gui_target_session_explorer_after_creation'] = $false
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch {
+                            $result['gui_target_session_creation_signals'] = "Could not collect LocalSessionManager session events: $_"
+                        }
                     } catch {
                         $result['gui_target_session_processes'] = "Could not enumerate target-session processes: $_"
                     }
+                }
+
+                try {
+                    $start = $securityStartTime.AddMinutes(-1)
+                    $maxExplorerLifecycleEvents = 500
+                    $explorerLifecycleEvents = Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $start; Id = @(1000, 1001, 1002) } -MaxEvents $maxExplorerLifecycleEvents -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Message -match '(?i)explorer\.exe' }
+
+                    $result['explorer_crash_event_count'] = @($explorerLifecycleEvents | Where-Object { $_.Id -eq 1000 }).Count
+                    $result['explorer_wer_event_count'] = @($explorerLifecycleEvents | Where-Object { $_.Id -eq 1001 }).Count
+                    $result['explorer_hang_event_count'] = @($explorerLifecycleEvents | Where-Object { $_.Id -eq 1002 }).Count
+
+                    if ($explorerLifecycleEvents) {
+                        $rows = $explorerLifecycleEvents |
+                            Select-Object -First 20 TimeCreated, Id, ProviderName, Message
+                        $result['explorer_lifecycle_events'] = "Since $start (sampled up to $maxExplorerLifecycleEvents recent Application events)`n" + ($rows | Format-Table -AutoSize | Out-String)
+                    }
+                } catch {
+                    $result['explorer_crash_event_count'] = -1
+                    $result['explorer_wer_event_count'] = -1
+                    $result['explorer_hang_event_count'] = -1
+                    $result['explorer_lifecycle_events'] = "Could not collect explorer lifecycle events from Application log: $_"
                 }
             }
 
@@ -1068,6 +1624,48 @@ try {
         if ($remoteLogs.ContainsKey('gui_target_session_processes')) {
             $guiTargetSessionProcesses = [string]$remoteLogs['gui_target_session_processes']
         }
+        if ($remoteLogs.ContainsKey('gui_target_session_explorer_bootstrap_pid')) {
+            $rawBootstrapPid = [int]$remoteLogs['gui_target_session_explorer_bootstrap_pid']
+            if ($rawBootstrapPid -gt 0) {
+                $guiTargetSessionExplorerBootstrapPid = $rawBootstrapPid
+            }
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_explorer_bootstrap_time_utc')) {
+            $guiTargetSessionExplorerBootstrapTimeUtc = [string]$remoteLogs['gui_target_session_explorer_bootstrap_time_utc']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_explorer_bootstrap_pid_alive')) {
+            $guiTargetSessionExplorerBootstrapPidAlive = [bool]$remoteLogs['gui_target_session_explorer_bootstrap_pid_alive']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_explorer_earliest_start_utc')) {
+            $guiTargetSessionExplorerEarliestStartUtc = [string]$remoteLogs['gui_target_session_explorer_earliest_start_utc']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_explorer_after_creation_known')) {
+            $guiTargetSessionExplorerAfterCreationKnown = [bool]$remoteLogs['gui_target_session_explorer_after_creation_known']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_explorer_after_creation')) {
+            $guiTargetSessionExplorerAfterCreation = [bool]$remoteLogs['gui_target_session_explorer_after_creation']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_creation_signal_utc')) {
+            $guiTargetSessionCreationSignalUtc = [string]$remoteLogs['gui_target_session_creation_signal_utc']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_creation_signals')) {
+            $guiTargetSessionCreationSignals = [string]$remoteLogs['gui_target_session_creation_signals']
+        }
+        if ($remoteLogs.ContainsKey('gui_target_session_explorer_details')) {
+            $guiTargetSessionExplorerDetails = [string]$remoteLogs['gui_target_session_explorer_details']
+        }
+        if ($remoteLogs.ContainsKey('explorer_crash_event_count')) {
+            $explorerCrashEventCount = [int]$remoteLogs['explorer_crash_event_count']
+        }
+        if ($remoteLogs.ContainsKey('explorer_hang_event_count')) {
+            $explorerHangEventCount = [int]$remoteLogs['explorer_hang_event_count']
+        }
+        if ($remoteLogs.ContainsKey('explorer_wer_event_count')) {
+            $explorerWerEventCount = [int]$remoteLogs['explorer_wer_event_count']
+        }
+        if ($remoteLogs.ContainsKey('explorer_lifecycle_events')) {
+            $explorerLifecycleEvents = [string]$remoteLogs['explorer_lifecycle_events']
+        }
 
         Write-Host "Service running: $isRunning$(if ($isRunning) { " (PID $($remoteLogs['pid']))" })"
         Write-Host "Port $Port listening: $isListening"
@@ -1148,11 +1746,28 @@ try {
             Write-Host "Shell transition signals: NotifyCommandProcessCreated=$notifyCommandProcessCreatedCount"
             Write-Host "Environment signals: ActivationStatus=$activationLicenseStatus NotificationMode=$activationNotificationMode Reason=$activationLicenseStatusReasonHex"
             Write-Host "GUI session proof: TargetSessionId=$guiTargetSessionId Source=$guiTargetSessionSource Explorer=$guiTargetSessionExplorerCount GuiProcesses=$guiTargetSessionGuiProcessCount Winlogon=$guiTargetSessionWinlogonCount LogonUI=$guiTargetSessionLogonUiCount"
+            Write-Host "Explorer lifecycle signals: BootstrapPid=$guiTargetSessionExplorerBootstrapPid BootstrapPidAlive=$guiTargetSessionExplorerBootstrapPidAlive BootstrapTimeUtc=$guiTargetSessionExplorerBootstrapTimeUtc EarliestStartUtc=$guiTargetSessionExplorerEarliestStartUtc SessionCreateUtc=$guiTargetSessionCreationSignalUtc AfterCreateKnown=$guiTargetSessionExplorerAfterCreationKnown AfterCreate=$guiTargetSessionExplorerAfterCreation"
+            Write-Host "Explorer error signals: Crash1000=$explorerCrashEventCount Wer1001=$explorerWerEventCount Hang1002=$explorerHangEventCount"
 
             if (-not [string]::IsNullOrWhiteSpace($guiTargetSessionProcesses)) {
                 $guiTargetSessionProcesses | Set-Content (Join-Path $remoteLogDir 'gui-target-session-processes.log')
                 Write-Host "`n---- GUI target-session process snapshot ----" -ForegroundColor Yellow
                 Write-Host $guiTargetSessionProcesses
+            }
+            if (-not [string]::IsNullOrWhiteSpace($guiTargetSessionExplorerDetails)) {
+                $guiTargetSessionExplorerDetails | Set-Content (Join-Path $remoteLogDir 'gui-target-session-explorer-details.log')
+                Write-Host "`n---- GUI target-session explorer details ----" -ForegroundColor Yellow
+                Write-Host $guiTargetSessionExplorerDetails
+            }
+            if (-not [string]::IsNullOrWhiteSpace($guiTargetSessionCreationSignals)) {
+                $guiTargetSessionCreationSignals | Set-Content (Join-Path $remoteLogDir 'gui-target-session-creation-signals.log')
+                Write-Host "`n---- GUI target-session creation signals ----" -ForegroundColor Yellow
+                Write-Host $guiTargetSessionCreationSignals
+            }
+            if (-not [string]::IsNullOrWhiteSpace($explorerLifecycleEvents)) {
+                $explorerLifecycleEvents | Set-Content (Join-Path $remoteLogDir 'explorer-lifecycle-events.log')
+                Write-Host "`n---- explorer lifecycle events (Application log) ----" -ForegroundColor Yellow
+                Write-Host $explorerLifecycleEvents
             }
         }
 
@@ -1232,6 +1847,36 @@ Write-Host "VM:         $Hostname"
 Write-Host "Port:       $Port"
 Write-Host "Strict:     $($StrictSessionProof.IsPresent)"
 Write-Host "Screenshot: $(if (Test-Path $OutputPng) { "$OutputPng ($($(Get-Item $OutputPng).Length) bytes)" } else { 'NOT PRODUCED' })"
+
+if ($Mode -eq 'Provider') {
+    $cleanupStatus = if ($DisableFreshSessionCleanup.IsPresent) {
+        'disabled'
+    } elseif (-not $freshSessionCleanupAttempted) {
+        'not-attempted'
+    } elseif ($freshSessionCleanupSucceeded) {
+        'ok'
+    } else {
+        'failed'
+    }
+
+    Write-Host "Fresh cleanup: status=$cleanupStatus aggressive=$freshSessionCleanupAggressiveMode target_user=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupTargetUser)) { 'n/a' } else { $freshSessionCleanupTargetUser }) discovered=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupDiscoveredSessionIds)) { 'none' } else { $freshSessionCleanupDiscoveredSessionIds }) logged_off=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupLoggedOffSessionIds)) { 'none' } else { $freshSessionCleanupLoggedOffSessionIds })"
+
+    if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupExplorerMatches)) {
+        $freshSessionCleanupExplorerMatches | Set-Content (Join-Path $artifactsDir 'fresh-session-cleanup-explorer-matches.log')
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupQuserMatches)) {
+        $freshSessionCleanupQuserMatches | Set-Content (Join-Path $artifactsDir 'fresh-session-cleanup-quser-matches.log')
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupLogoffErrors)) {
+        $freshSessionCleanupLogoffErrors | Set-Content (Join-Path $artifactsDir 'fresh-session-cleanup-logoff-errors.log')
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupError)) {
+        Write-Warning "Fresh-session cleanup error: $freshSessionCleanupError"
+    }
+}
 
 $screenshotExists = Test-Path $OutputPng
 $screenshotFileInfo = $null
