@@ -232,20 +232,28 @@ try {
 
         # Stop TermService first so the DLL is unloaded and stops connecting to the pipe
         Write-Host "Stopping TermService..."
-        & sc.exe stop TermService | Out-Null
+        & sc.exe config TermService start= disabled | Out-Null
+
+        $termServiceStopped = $false
+        $termServicePid = 0
         $stopDeadline = (Get-Date).AddSeconds($TermServiceStopTimeoutSeconds)
         while ((Get-Date) -lt $stopDeadline) {
-            $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
-            if ($null -eq $service -or $service.Status -eq 'Stopped') {
-                break
+            & sc.exe stop TermService | Out-Null
+
+            $waitDeadline = (Get-Date).AddSeconds(8)
+            while ((Get-Date) -lt $waitDeadline) {
+                $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
+                if ($null -eq $service -or $service.Status -eq 'Stopped') {
+                    $termServiceStopped = $true
+                    break
+                }
+
+                Start-Sleep -Milliseconds 500
             }
 
-            Start-Sleep -Seconds 2
-        }
-
-        $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
-        if ($null -ne $service -and $service.Status -ne 'Stopped') {
-            Write-Warning "TermService did not stop gracefully within ${TermServiceStopTimeoutSeconds}s (status=$($service.Status)); attempting force-stop via hosting process"
+            if ($termServiceStopped) {
+                break
+            }
 
             $serviceCim = Get-CimInstance Win32_Service -Filter "Name='TermService'" -ErrorAction SilentlyContinue
             $termServicePid = 0
@@ -254,24 +262,18 @@ try {
             }
 
             if ($termServicePid -gt 0) {
-                Write-Host "Force-stopping TermService host process PID $termServicePid"
+                Write-Warning "TermService still running; force-stopping host process PID $termServicePid"
                 Stop-Process -Id $termServicePid -Force -ErrorAction SilentlyContinue
-
-                $forceStopDeadline = (Get-Date).AddSeconds(20)
-                while ((Get-Date) -lt $forceStopDeadline) {
-                    $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
-                    if ($null -eq $service -or $service.Status -eq 'Stopped') {
-                        break
-                    }
-
-                    Start-Sleep -Seconds 1
-                }
+                & taskkill.exe /PID $termServicePid /F /T 2>$null | Out-Null
             }
 
+            Start-Sleep -Seconds 1
+        }
+
+        if (-not $termServiceStopped) {
             $service = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
-            if ($null -ne $service -and $service.Status -ne 'Stopped') {
-                throw "TermService did not stop within ${TermServiceStopTimeoutSeconds}s during deploy pre-cleanup; fallback force-stop failed (status=$($service.Status), pid=$termServicePid)"
-            }
+            $statusText = if ($null -eq $service) { 'missing' } else { $service.Status }
+            throw "TermService did not stop within ${TermServiceStopTimeoutSeconds}s during deploy pre-cleanup (status=$statusText, last_pid=$termServicePid)"
         }
 
         # Stop ceviche-service if present - it uses the same named pipe and causes accept_connection to fail
@@ -600,6 +602,8 @@ finally {
 
     Invoke-Command -Session $session -ScriptBlock {
         param($ListenerAddr, $LogOut, $LogErr, $TailLines, $NoTermServiceStart)
+
+        & sc.exe config TermService start= demand | Out-Null
 
         if (-not $NoTermServiceStart) {
             # Restart TermService NOW (after companion is running) so the DLL connects to THIS instance.
