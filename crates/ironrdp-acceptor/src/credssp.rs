@@ -3,7 +3,7 @@ use ironrdp_connector::sspi::credssp::{
     CredSspServer, CredentialsProxy, ServerError, ServerMode, ServerState, TsRequest,
 };
 use ironrdp_connector::sspi::generator::{Generator, GeneratorState};
-use ironrdp_connector::sspi::negotiate::ProtocolConfig;
+use ironrdp_connector::sspi::ntlm::NtlmConfig;
 use ironrdp_connector::sspi::{self, AuthIdentity, KerberosServerConfig, NegotiateConfig, NetworkRequest, Username};
 use ironrdp_connector::{
     custom_err, general_err, ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written,
@@ -107,22 +107,18 @@ impl<'a> CredsspSequence<'a> {
         let client_computer_name = client_computer_name.into_inner();
         let credentials = CredentialsProxyImpl::new(creds);
 
-        let credssp_config: Box<dyn ProtocolConfig> = if let Some(krb_config) = krb_config {
-            Box::new(krb_config)
-        } else {
-            Box::<sspi::ntlm::NtlmConfig>::default()
-        };
-
-        let server = CredSspServer::new(
-            public_key,
-            credentials,
+        let server_mode = if let Some(krb_config) = krb_config {
             ServerMode::Negotiate(NegotiateConfig {
-                protocol_config: credssp_config,
+                protocol_config: Box::new(krb_config),
                 package_list: None,
                 client_computer_name,
-            }),
-        )
-        .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
+            })
+        } else {
+            ServerMode::Ntlm(NtlmConfig::new(client_computer_name))
+        };
+
+        let server = CredSspServer::new(public_key, credentials, server_mode)
+            .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
 
         let sequence = Self {
             server,
