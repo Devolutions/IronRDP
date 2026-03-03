@@ -422,6 +422,35 @@ mod windows_main {
     /// session in provider mode to avoid pinning capture to prelogon desktops.
     const PROVIDER_SESSION_ID_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CaptureOutputSource {
+        HelperFrame,
+        HelperPreEncodedFrame,
+        GdiFrame,
+        GdiFrameAfterHelperError,
+        GdiFrameAfterHelperTimeout,
+        CachedFrameAfterHelperError,
+        CachedFrameAfterHelperTimeout,
+        CachedFrameAfterGdiError,
+        SyntheticTestPattern,
+    }
+
+    impl CaptureOutputSource {
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::HelperFrame => "helper_frame",
+                Self::HelperPreEncodedFrame => "helper_preencoded_frame",
+                Self::GdiFrame => "gdi_frame",
+                Self::GdiFrameAfterHelperError => "gdi_frame_after_helper_error",
+                Self::GdiFrameAfterHelperTimeout => "gdi_frame_after_helper_timeout",
+                Self::CachedFrameAfterHelperError => "cached_frame_after_helper_error",
+                Self::CachedFrameAfterHelperTimeout => "cached_frame_after_helper_timeout",
+                Self::CachedFrameAfterGdiError => "cached_frame_after_gdi_error",
+                Self::SyntheticTestPattern => "synthetic_test_pattern",
+            }
+        }
+    }
+
     struct GdiDisplayUpdates {
         connection_id: u32,
         desktop_size: DesktopSize,
@@ -477,6 +506,8 @@ mod windows_main {
         provider_mode: bool,
         /// Deadline for the provider-session-ID wait.  Initialized lazily on first poll.
         wait_for_session_id_until: Option<Instant>,
+        /// Last emitted capture output source marker for this connection.
+        last_capture_output_source: Option<CaptureOutputSource>,
     }
 
     impl GdiDisplayUpdates {
@@ -519,7 +550,22 @@ mod windows_main {
                 capture_started_with_session_override: None,
                 provider_mode,
                 wait_for_session_id_until: None,
+                last_capture_output_source: None,
             })
+        }
+
+        fn log_capture_output_source_transition(&mut self, source: CaptureOutputSource) {
+            if self.last_capture_output_source == Some(source) {
+                return;
+            }
+
+            info!(
+                connection_id = self.connection_id,
+                source = source.as_str(),
+                "SESSION_PROOF_TERMSRV_CAPTURE_OUTPUT_SOURCE"
+            );
+
+            self.last_capture_output_source = Some(source);
         }
     }
 
@@ -834,12 +880,17 @@ mod windows_main {
                                 error = %format!("{error:#}"),
                                 "Failed to start interactive capture helper; falling back to in-process GDI"
                             );
+                            warn!(
+                                connection_id = self.connection_id,
+                                error = %format!("{error:#}"),
+                                "SESSION_PROOF_TERMSRV_CAPTURE_HELPER_FALLBACK_GDI"
+                            );
                             self.next_helper_attempt_at = Instant::now() + CAPTURE_HELPER_RETRY_DELAY;
                         }
                     }
                 }
 
-                let captured = if let Some(capture) = &mut self.capture {
+                let (captured, capture_output_source) = if let Some(capture) = &mut self.capture {
                     let read_timeout = if self.helper_frames_received == 0 {
                         Duration::from_secs(1)
                     } else {
@@ -849,7 +900,7 @@ mod windows_main {
                     match timeout(read_timeout, capture.read_frame()).await {
                         Ok(Ok(frame)) => {
                             self.helper_frames_received = self.helper_frames_received.saturating_add(1);
-                            frame
+                            (frame, CaptureOutputSource::HelperFrame)
                         }
                         Ok(Err(error)) => {
                             warn!(
@@ -864,10 +915,15 @@ mod windows_main {
                             self.next_helper_attempt_at = Instant::now() + CAPTURE_HELPER_RETRY_DELAY;
 
                             if let Some(bitmap) = self.last_bitmap.clone() {
-                                CapturedFrame::Raw(bitmap)
+                                (
+                                    CapturedFrame::Raw(bitmap),
+                                    CaptureOutputSource::CachedFrameAfterHelperError,
+                                )
                             } else {
                                 match capture_bitmap_update(self.desktop_size) {
-                                    Ok(bitmap) => CapturedFrame::Raw(bitmap),
+                                    Ok(bitmap) => {
+                                        (CapturedFrame::Raw(bitmap), CaptureOutputSource::GdiFrameAfterHelperError)
+                                    }
                                     Err(capture_error) => {
                                         warn!(
                                             connection_id = self.connection_id,
@@ -903,10 +959,15 @@ mod windows_main {
                             sleep(CAPTURE_INTERVAL).await;
 
                             if let Some(bitmap) = self.last_bitmap.clone() {
-                                CapturedFrame::Raw(bitmap)
+                                (
+                                    CapturedFrame::Raw(bitmap),
+                                    CaptureOutputSource::CachedFrameAfterHelperTimeout,
+                                )
                             } else {
                                 match capture_bitmap_update(self.desktop_size) {
-                                    Ok(bitmap) => CapturedFrame::Raw(bitmap),
+                                    Ok(bitmap) => {
+                                        (CapturedFrame::Raw(bitmap), CaptureOutputSource::GdiFrameAfterHelperTimeout)
+                                    }
                                     Err(capture_error) => {
                                         warn!(
                                             connection_id = self.connection_id,
@@ -921,14 +982,17 @@ mod windows_main {
                     }
                 } else {
                     match capture_bitmap_update(self.desktop_size) {
-                        Ok(bitmap) => CapturedFrame::Raw(bitmap),
+                        Ok(bitmap) => (CapturedFrame::Raw(bitmap), CaptureOutputSource::GdiFrame),
                         Err(error) => {
                             if let Some(bitmap) = self.last_bitmap.clone() {
                                 warn!(
                                     error = %format!("{error:#}"),
                                     "GDI capture failed; re-sending last bitmap"
                                 );
-                                CapturedFrame::Raw(bitmap)
+                                (
+                                    CapturedFrame::Raw(bitmap),
+                                    CaptureOutputSource::CachedFrameAfterGdiError,
+                                )
                             } else if self.provider_mode {
                                 warn!(
                                     error = %format!("{error:#}"),
@@ -943,14 +1007,17 @@ mod windows_main {
                                 );
                                 let bitmap = fallback_bitmap_update(self.desktop_size)
                                     .context("failed to generate fallback bitmap update")?;
-                                CapturedFrame::Raw(bitmap)
+                                (CapturedFrame::Raw(bitmap), CaptureOutputSource::SyntheticTestPattern)
                             }
                         }
                     }
                 };
 
+                self.log_capture_output_source_transition(capture_output_source);
+
                 match captured {
                     CapturedFrame::PreEncoded(surface) => {
+                        self.log_capture_output_source_transition(CaptureOutputSource::HelperPreEncodedFrame);
                         self.initial_blank_since = None;
                         self.initial_blank_frames = 0;
                         self.sent_first_frame = true;
