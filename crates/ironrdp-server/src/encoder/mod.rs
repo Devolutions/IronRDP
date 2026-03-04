@@ -354,6 +354,15 @@ impl EncoderIter<'_> {
             let res = match state {
                 State::Start(update) => match update {
                     DisplayUpdate::Bitmap(bitmap) => {
+                        let ds = encoder.desktop_size;
+                        if bitmap.x + bitmap.width.get() > ds.width || bitmap.y + bitmap.height.get() > ds.height {
+                            debug!(
+                                "Dropping bitmap update that exceeds desktop size: \
+                                 bitmap ({}, {}) {}x{} vs desktop {}x{}",
+                                bitmap.x, bitmap.y, bitmap.width, bitmap.height, ds.width, ds.height,
+                            );
+                            continue;
+                        }
                         let diffs = encoder.bitmap_diffs(&bitmap);
                         self.state = State::BitmapDiffs { diffs, bitmap, pos: 0 };
                         continue;

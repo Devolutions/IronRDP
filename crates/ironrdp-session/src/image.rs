@@ -6,7 +6,7 @@ use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelForma
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
-use tracing::trace;
+use tracing::{debug, trace};
 
 use crate::{custom_err, SessionResult};
 
@@ -198,6 +198,11 @@ impl DecodedImage {
 
     pub fn height(&self) -> u16 {
         self.height
+    }
+
+    /// Returns `true` if the rectangle fits entirely within the image bounds.
+    fn rect_fits(&self, rect: &InclusiveRectangle) -> bool {
+        rect.right < self.width && rect.bottom < self.height
     }
 
     fn apply_pointer_layer(&mut self, layer: PointerLayer) -> SessionResult<Option<InclusiveRectangle>> {
@@ -496,6 +501,14 @@ impl DecodedImage {
     ) -> SessionResult<InclusiveRectangle> {
         trace!("Tile: {:?}", update_rectangle);
 
+        if !self.rect_fits(&clipping_rectangles.extents) {
+            debug!(
+                "Skipping tile update {:?} outside image bounds {}x{}",
+                clipping_rectangles.extents, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+
         let pointer_rendering_state = self.pointer_rendering_begin(&clipping_rectangles.extents)?;
 
         let update_region = clipping_rectangles.intersect_rectangle(update_rectangle);
@@ -540,6 +553,14 @@ impl DecodedImage {
         rgb16: &[u8],
         update_rectangle: &InclusiveRectangle,
     ) -> SessionResult<InclusiveRectangle> {
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgb16 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+
         const SRC_COLOR_DEPTH: usize = 2;
         const DST_COLOR_DEPTH: usize = 4;
 
@@ -587,6 +608,14 @@ impl DecodedImage {
     where
         I: Iterator<Item = &'a [u8]>,
     {
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgb24 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+
         const SRC_COLOR_DEPTH: usize = 3;
         const DST_COLOR_DEPTH: usize = 4;
 
@@ -637,6 +666,14 @@ impl DecodedImage {
         format: PixelFormat,
         update_rectangle: &InclusiveRectangle,
     ) -> SessionResult<InclusiveRectangle> {
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgb32 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+
         const SRC_COLOR_DEPTH: usize = 4;
         const DST_COLOR_DEPTH: usize = 4;
 
