@@ -34,7 +34,7 @@ use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 const HELP: &str = "\
 USAGE:
@@ -484,7 +484,7 @@ fn capture_frames<S: Read + io::Write>(
             }
             Err(e) if got_graphics => {
                 // Server closed without TLS close_notify; save what we have
-                info!("Connection closed ({}); saving received graphics", e);
+                warn!("Connection closed ({}); saving received graphics", e);
                 break 'outer;
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read frame")),
@@ -505,7 +505,10 @@ fn capture_frames<S: Read + io::Write>(
                     got_graphics = true;
                     deadline = capture_deadline(now(), after_first_graphics)?;
                 }
-                ActiveStageOutput::Terminate(_) => break 'outer,
+                ActiveStageOutput::Terminate(reason) => {
+                    warn!(?reason, got_graphics, "Server sent Terminate PDU");
+                    break 'outer;
+                }
                 _ => {}
             }
         }

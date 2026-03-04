@@ -1,3 +1,12 @@
+// Use the `windows` PE subsystem so that this binary can be spawned via
+// CreateProcessAsUserW into another session without STATUS_DLL_INIT_FAILED
+// (0xC0000142). Console-subsystem binaries require CSRSS interaction during
+// DLL initialization, which fails when the target session's CSRSS is not
+// reachable (e.g. winlogon desktop of a partially-initialized session).
+// The binary runs as a service/scheduled task with redirected stdout/stderr,
+// so the lack of an auto-allocated console is harmless.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("ironrdp-termsrv is only supported on windows");
@@ -111,7 +120,7 @@ mod windows_main {
     const FIRST_FRAME_BLANK_MAX_FRAMES: u32 = 8;
     const PERSISTENT_BLANK_RESTART_GRACE: Duration = Duration::from_secs(3);
     const PERSISTENT_BLANK_RESTART_MIN_FRAMES: u32 = 20;
-    const CAPTURE_HELPER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+    const CAPTURE_HELPER_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
     const CAPTURE_HELPER_RETRY_DELAY: Duration = Duration::from_secs(5);
     const CAPTURE_IPC_ENV: &str = "IRONRDP_WTS_CAPTURE_IPC";
     const CAPTURE_SESSION_ID_ENV: &str = "IRONRDP_WTS_CAPTURE_SESSION_ID";
@@ -1287,10 +1296,51 @@ mod windows_main {
             )
             .with_context(|| format!("failed to spawn capture helper for connection {connection_id}"))?;
 
-            let (stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, listener.accept())
-                .await
-                .map_err(|_| anyhow!("capture helper did not connect within timeout"))?
-                .context("failed to accept capture helper connection")?;
+            info!(
+                connection_id,
+                helper_pid = helper.pid,
+                "Waiting for capture helper TCP connection"
+            );
+
+            let (stream, _peer) = match timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, listener.accept()).await {
+                Ok(Ok(pair)) => {
+                    info!(connection_id, helper_pid = helper.pid, "Capture helper capture stream connected");
+                    pair
+                }
+                Ok(Err(accept_err)) => {
+                    // Check if the helper process has exited
+                    let mut exit_code = 0u32;
+                    let exited = unsafe {
+                        windows::Win32::System::Threading::GetExitCodeProcess(helper.process.0, &mut exit_code)
+                    };
+                    warn!(
+                        connection_id,
+                        helper_pid = helper.pid,
+                        exit_code,
+                        exited_ok = exited.is_ok(),
+                        still_active = (exit_code == 259), // STILL_ACTIVE
+                        error = %accept_err,
+                        "Capture helper: accept failed"
+                    );
+                    return Err(accept_err).context("failed to accept capture helper connection");
+                }
+                Err(_timeout) => {
+                    // Check if the helper process has exited
+                    let mut exit_code = 0u32;
+                    let exited = unsafe {
+                        windows::Win32::System::Threading::GetExitCodeProcess(helper.process.0, &mut exit_code)
+                    };
+                    warn!(
+                        connection_id,
+                        helper_pid = helper.pid,
+                        exit_code,
+                        exited_ok = exited.is_ok(),
+                        still_active = (exit_code == 259), // STILL_ACTIVE
+                        "Capture helper did not connect within timeout (process exit check)"
+                    );
+                    return Err(anyhow!("capture helper did not connect within timeout (pid={}, exit_code={exit_code}, still_active={})", helper.pid, exit_code == 259));
+                }
+            };
 
             let (input_stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, input_listener.accept())
                 .await
@@ -2044,7 +2094,11 @@ mod windows_main {
         let args = format!("\"{exe_path_str}\" --capture-helper {extra_args}");
 
         let app_name: Vec<u16> = exe_path_str.encode_utf16().chain(Some(0)).collect();
-        let desktop = acquired.desktop.as_lpdesktop();
+        // Always place the capture helper on the Default desktop. The capture
+        // helper needs to GDI-capture the user-visible desktop, not the Winlogon
+        // desktop. The SYSTEM token from winlogon.exe has access to both desktops
+        // in the session's window station.
+        let desktop = "winsta0\\default";
         let mut cmd_line: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
         let mut desktop_w: Vec<u16> = desktop.encode_utf16().chain(Some(0)).collect();
 
@@ -2060,6 +2114,10 @@ mod windows_main {
         // - token handle is valid on success from WTSQueryUserToken
         // - app/cmd/desktop buffers are nul-terminated and live for the call
         // - process_info/startup_info are valid out-pointers
+        //
+        // NOTE: CREATE_NO_WINDOW is safe here because the binary uses the `windows`
+        // PE subsystem (#![windows_subsystem = "windows"]), so the DLL loader does
+        // not attempt to create a console via CSRSS during process initialization.
         let create_ok = unsafe {
             CreateProcessAsUserW(
                 Some(user_token),
@@ -4412,9 +4470,44 @@ mod windows_main {
     }
 
     async fn run() -> anyhow::Result<()> {
-        init_tracing()?;
+        // Check capture helper mode BEFORE init_tracing, because when spawned via
+        // CreateProcessAsUserW with CREATE_NO_WINDOW and bInheritHandles=false,
+        // stderr may be invalid and the tracing subscriber could panic on first write.
+        let capture_helper_mode = parse_capture_helper_mode()?;
+        let is_capture_helper = capture_helper_mode.is_some();
 
-        if let Some(mode) = parse_capture_helper_mode()? {
+        if is_capture_helper {
+            // In capture helper mode, redirect tracing to a per-PID log file so we
+            // get diagnostics even when stderr is unavailable (spawned with no console).
+            let pid = std::process::id();
+            let diag_dir = "C:\\IronRDPDeploy\\logs";
+            let _ = std::fs::create_dir_all(diag_dir);
+            let diag_path = format!("{diag_dir}\\capture-helper-{pid}.log");
+            match std::fs::File::create(&diag_path) {
+                Ok(file) => {
+                    let env_filter = EnvFilter::builder()
+                        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+                        .with_env_var("IRONRDP_LOG")
+                        .from_env_lossy();
+
+                    let _ = tracing_subscriber::fmt()
+                        .with_env_filter(env_filter)
+                        .with_target(true)
+                        .with_ansi(false)
+                        .with_writer(std::sync::Mutex::new(file))
+                        .compact()
+                        .try_init();
+                }
+                Err(_) => {
+                    // Fall back to stderr-based tracing if file creation fails.
+                    let _ = init_tracing();
+                }
+            }
+        } else {
+            init_tracing()?;
+        }
+
+        if let Some(mode) = capture_helper_mode {
             match mode {
                 CaptureHelperMode::Tcp {
                     connect_addr,
@@ -5035,13 +5128,43 @@ mod windows_main {
         input_connect_addr: SocketAddr,
         rfx_encode: bool,
     ) -> anyhow::Result<()> {
-        let mut stream = TcpStream::connect(connect_addr)
-            .await
-            .with_context(|| format!("failed to connect to capture consumer at {connect_addr}"))?;
+        info!(
+            pid = std::process::id(),
+            session_id = unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() },
+            connect_addr = %connect_addr,
+            input_connect_addr = %input_connect_addr,
+            "Capture helper TCP: starting connection"
+        );
 
-        let input_stream = TcpStream::connect(input_connect_addr)
-            .await
-            .with_context(|| format!("failed to connect to input consumer at {input_connect_addr}"))?;
+        let mut stream = match TcpStream::connect(connect_addr).await {
+            Ok(stream) => {
+                info!(connect_addr = %connect_addr, "Capture helper: connected to capture consumer");
+                stream
+            }
+            Err(error) => {
+                error!(
+                    connect_addr = %connect_addr,
+                    error = %error,
+                    "Capture helper: failed to connect to capture consumer"
+                );
+                return Err(error).with_context(|| format!("failed to connect to capture consumer at {connect_addr}"));
+            }
+        };
+
+        let input_stream = match TcpStream::connect(input_connect_addr).await {
+            Ok(stream) => {
+                info!(input_connect_addr = %input_connect_addr, "Capture helper: connected to input consumer");
+                stream
+            }
+            Err(error) => {
+                error!(
+                    input_connect_addr = %input_connect_addr,
+                    error = %error,
+                    "Capture helper: failed to connect to input consumer"
+                );
+                return Err(error).with_context(|| format!("failed to connect to input consumer at {input_connect_addr}"));
+            }
+        };
 
         tokio::spawn(async move {
             if let Err(error) = run_input_injector(input_stream).await {
@@ -5458,6 +5581,24 @@ mod windows_main {
     }
 
     pub(crate) fn main() {
+        // Ultra-early diagnostic for capture helper debugging.
+        // When spawned via CreateProcessAsUserW with CREATE_NO_WINDOW, the process
+        // may crash silently before Tokio initializes. Write a breadcrumb file before
+        // anything else so we know the process at least started.
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().any(|a| a == "--capture-helper") {
+            let pid = std::process::id();
+            let diag = format!(
+                "Capture helper process started\nPID: {pid}\nArgs: {args:?}\nTime: {:?}\n",
+                std::time::SystemTime::now()
+            );
+            let _ = std::fs::create_dir_all("C:\\IronRDPDeploy\\logs");
+            let _ = std::fs::write(
+                format!("C:\\IronRDPDeploy\\logs\\capture-helper-early-{pid}.txt"),
+                &diag,
+            );
+        }
+
         main_impl();
     }
 }
