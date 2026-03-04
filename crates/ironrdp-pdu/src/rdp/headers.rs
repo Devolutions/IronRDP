@@ -253,13 +253,7 @@ impl Encode for ShareDataHeader {
 
             write_padding!(dst, 1);
             dst.write_u8(self.stream_priority.as_u8());
-            dst.write_u16(cast_length!(
-                "uncompressedLength",
-                self.share_data_pdu.size()
-                    + PDU_TYPE_FIELD_SIZE
-                    + COMPRESSION_TYPE_FIELD_SIZE
-                    + COMPRESSED_LENGTH_FIELD_SIZE
-            )?);
+            dst.write_u16(cast_length!("uncompressedLength", self.share_data_pdu.size())?);
             dst.write_u8(self.share_data_pdu.share_header_type().as_u8());
             dst.write_u8(compression_flags_with_type);
             dst.write_u16(0); // compressed length
