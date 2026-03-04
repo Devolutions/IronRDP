@@ -12,8 +12,12 @@ PnpLockdown=1
 %ManufacturerName%=Standard,NTamd64
 
 [Standard.NTamd64]
+; Only match our custom hardware ID. Do NOT list RdpIdd_IndirectDisplay here:
+; OEM drivers (oem*.inf) outrank inbox drivers, so listing the inbox hardware ID
+; causes PnP to select our driver instead of the inbox rdpidd.inf.  Our driver
+; then fails with STATUS_USER_SESSION_DELETED because IddCx rejects START_DEVICE
+; for sessions that are not fully active during the pre-login SWD creation phase.
 %DeviceDesc%=IronRdpIdd_Device, IronRdpIdd
-%DeviceDesc%=IronRdpIdd_Device, RdpIdd_IndirectDisplay
 
 ; DDInstall section: copy DLL and include WDF base requirements.
 [IronRdpIdd_Device.NT]
@@ -30,6 +34,7 @@ AddReg=IronRdpIdd_AddReg
 [IronRdpIdd_AddReg]
 HKR,,FriendlyName,,%DeviceDesc%
 HKR,, "UpperFilters",  %REG_MULTI_SZ%, "IndirectKmd"
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;LS)(A;;GA;;;NS)(A;;GRGW;;;WD)"
 
 [UmdfCopyFiles]
 IronRdpIdd.dll
