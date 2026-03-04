@@ -22,6 +22,7 @@ use crate::{
 pub struct ConnectionResult {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
+    pub share_id: u32,
     pub static_channels: StaticChannelSet,
     pub desktop_size: DesktopSize,
     pub enable_server_pointer: bool,
@@ -580,12 +581,14 @@ impl Sequence for ClientConnector {
                             io_channel_id,
                             user_channel_id,
                             desktop_size,
+                            share_id,
                             enable_server_pointer,
                             pointer_software_rendering,
                         } => ClientConnectorState::Connected {
                             result: ConnectionResult {
                                 io_channel_id,
                                 user_channel_id,
+                                share_id,
                                 static_channels: mem::take(&mut self.static_channels),
                                 desktop_size,
                                 enable_server_pointer,

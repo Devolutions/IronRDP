@@ -529,6 +529,7 @@ public partial class MainWindow : Window
                         var desktopSize = finalized.GetDesktopSize();
                         var ioChannelId = finalized.GetIoChannelId();
                         var userChannelId = finalized.GetUserChannelId();
+                        var shareId = finalized.GetShareId();
                         var enableServerPointer = finalized.GetEnableServerPointer();
                         var pointerSoftwareRendering = finalized.GetPointerSoftwareRendering();
 
@@ -538,6 +539,7 @@ public partial class MainWindow : Window
                         _activeStage!.SetFastpathProcessor(
                             ioChannelId,
                             userChannelId,
+                            shareId,
                             enableServerPointer,
                             pointerSoftwareRendering
                         );

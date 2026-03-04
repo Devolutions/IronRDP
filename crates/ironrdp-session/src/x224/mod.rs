@@ -51,6 +51,7 @@ pub struct Processor {
     static_channels: StaticChannelSet,
     user_channel_id: u16,
     io_channel_id: u16,
+    share_id: u32,
     connection_activation: ConnectionActivationSequence,
 }
 
@@ -59,12 +60,14 @@ impl Processor {
         static_channels: StaticChannelSet,
         user_channel_id: u16,
         io_channel_id: u16,
+        share_id: u32,
         connection_activation: ConnectionActivationSequence,
     ) -> Self {
         Self {
             static_channels,
             user_channel_id,
             io_channel_id,
+            share_id,
             connection_activation,
         }
     }
@@ -196,9 +199,14 @@ impl Processor {
 
     /// Send a pdu on the static global channel. Typically used to send input events
     pub fn encode_static(&self, output: &mut WriteBuf, pdu: ShareDataPdu) -> SessionResult<usize> {
-        let written =
-            ironrdp_connector::legacy::encode_share_data(self.user_channel_id, self.io_channel_id, 0, pdu, output)
-                .map_err(crate::legacy::map_error)?;
+        let written = ironrdp_connector::legacy::encode_share_data(
+            self.user_channel_id,
+            self.io_channel_id,
+            self.share_id,
+            pdu,
+            output,
+        )
+        .map_err(crate::legacy::map_error)?;
         Ok(written)
     }
 }

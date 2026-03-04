@@ -527,6 +527,7 @@ fn qoi_apply(
 pub struct ProcessorBuilder {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
+    pub share_id: u32,
     /// Ignore server pointer updates.
     pub enable_server_pointer: bool,
     /// Use software rendering mode for pointer bitmap generation. When this option is active,
@@ -543,7 +544,7 @@ impl ProcessorBuilder {
         Processor {
             complete_data: CompleteData::new(),
             rfx_handler: rfx::DecodingContext::new(),
-            marker_processor: FrameMarkerProcessor::new(self.user_channel_id, self.io_channel_id),
+            marker_processor: FrameMarkerProcessor::new(self.user_channel_id, self.io_channel_id, self.share_id),
             bitmap_stream_decoder: BitmapStreamDecoder::default(),
             pointer_cache: PointerCache::default(),
             use_system_pointer: true,
@@ -613,13 +614,15 @@ impl CompleteData {
 struct FrameMarkerProcessor {
     user_channel_id: u16,
     io_channel_id: u16,
+    share_id: u32,
 }
 
 impl FrameMarkerProcessor {
-    fn new(user_channel_id: u16, io_channel_id: u16) -> Self {
+    fn new(user_channel_id: u16, io_channel_id: u16, share_id: u32) -> Self {
         Self {
             user_channel_id,
             io_channel_id,
+            share_id,
         }
     }
 
@@ -630,7 +633,7 @@ impl FrameMarkerProcessor {
                 ironrdp_connector::legacy::encode_share_data(
                     self.user_channel_id,
                     self.io_channel_id,
-                    0,
+                    self.share_id,
                     ShareDataPdu::FrameAcknowledge(FrameAcknowledgePdu {
                         frame_id: marker.frame_id.unwrap_or(0),
                     }),

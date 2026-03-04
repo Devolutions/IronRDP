@@ -54,14 +54,16 @@ pub struct ConnectionFinalizationSequence {
     pub state: ConnectionFinalizationState,
     pub io_channel_id: u16,
     pub user_channel_id: u16,
+    pub share_id: u32,
 }
 
 impl ConnectionFinalizationSequence {
-    pub fn new(io_channel_id: u16, user_channel_id: u16) -> Self {
+    pub fn new(io_channel_id: u16, user_channel_id: u16, share_id: u32) -> Self {
         Self {
             state: ConnectionFinalizationState::SendSynchronize,
             io_channel_id,
             user_channel_id,
+            share_id,
         }
     }
 }
@@ -98,7 +100,13 @@ impl Sequence for ConnectionFinalizationSequence {
 
                 debug!(?message, "Send");
 
-                let written = legacy::encode_share_data(self.user_channel_id, self.io_channel_id, 0, message, output)?;
+                let written = legacy::encode_share_data(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    self.share_id,
+                    message,
+                    output,
+                )?;
 
                 (
                     Written::from_size(written)?,
@@ -115,7 +123,13 @@ impl Sequence for ConnectionFinalizationSequence {
 
                 debug!(?message, "Send");
 
-                let written = legacy::encode_share_data(self.user_channel_id, self.io_channel_id, 0, message, output)?;
+                let written = legacy::encode_share_data(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    self.share_id,
+                    message,
+                    output,
+                )?;
 
                 (
                     Written::from_size(written)?,
@@ -132,7 +146,13 @@ impl Sequence for ConnectionFinalizationSequence {
 
                 debug!(?message, "Send");
 
-                let written = legacy::encode_share_data(self.user_channel_id, self.io_channel_id, 0, message, output)?;
+                let written = legacy::encode_share_data(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    self.share_id,
+                    message,
+                    output,
+                )?;
 
                 (Written::from_size(written)?, ConnectionFinalizationState::SendFontList)
             }
@@ -142,7 +162,13 @@ impl Sequence for ConnectionFinalizationSequence {
 
                 debug!(?message, "Send");
 
-                let written = legacy::encode_share_data(self.user_channel_id, self.io_channel_id, 0, message, output)?;
+                let written = legacy::encode_share_data(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    self.share_id,
+                    message,
+                    output,
+                )?;
 
                 (
                     Written::from_size(written)?,

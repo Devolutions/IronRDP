@@ -49,6 +49,14 @@ pub mod ffi {
                 .user_channel_id)
         }
 
+        pub fn get_share_id(&self) -> Result<u32, Box<IronRdpError>> {
+            Ok(self
+                .0
+                .as_ref()
+                .ok_or_else(|| ValueConsumedError::for_item("ConnectionResult"))?
+                .share_id)
+        }
+
         pub fn get_desktop_size(&self) -> Result<Box<DesktopSize>, Box<IronRdpError>> {
             Ok(Box::new(DesktopSize(
                 self.0

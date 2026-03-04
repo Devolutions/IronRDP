@@ -42,6 +42,7 @@ impl ActiveStage {
             connection_result.static_channels,
             connection_result.user_channel_id,
             connection_result.io_channel_id,
+            connection_result.share_id,
             connection_result.connection_activation,
         );
 
@@ -63,6 +64,7 @@ impl ActiveStage {
         let fast_path_processor = fast_path::ProcessorBuilder {
             io_channel_id: connection_result.io_channel_id,
             user_channel_id: connection_result.user_channel_id,
+            share_id: connection_result.share_id,
             enable_server_pointer: connection_result.enable_server_pointer,
             pointer_software_rendering: connection_result.pointer_software_rendering,
             bulk_decompressor,

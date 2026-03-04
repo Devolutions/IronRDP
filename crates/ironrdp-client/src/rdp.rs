@@ -748,6 +748,7 @@ async fn active_session(
                             io_channel_id,
                             user_channel_id,
                             desktop_size,
+                            share_id,
                             enable_server_pointer,
                             pointer_software_rendering,
                         } = connection_activation.connection_activation_state()
@@ -760,6 +761,7 @@ async fn active_session(
                                 fast_path::ProcessorBuilder {
                                     io_channel_id,
                                     user_channel_id,
+                                    share_id,
                                     enable_server_pointer,
                                     pointer_software_rendering,
                                     bulk_decompressor: None,
