@@ -364,33 +364,59 @@ pub(crate) unsafe extern "system" fn device_add(
         "WdfDeviceCreate succeeded"
     );
 
-    // Expose a stable DOS symbolic link so the provider can open `\\.\IronRdpIddVideo`.
-    let mut symbolic_link_utf16: Vec<u16> = r"\DosDevices\IronRdpIddVideo".encode_utf16().collect();
-    let symbolic_link = crate::UNICODE_STRING {
-        Length: (symbolic_link_utf16.len() * core::mem::size_of::<u16>()) as u16,
-        MaximumLength: (symbolic_link_utf16.len() * core::mem::size_of::<u16>()) as u16,
-        Buffer: symbolic_link_utf16.as_mut_ptr(),
-    };
+    // Expose stable DOS symbolic links so the provider can open from Session 0 and
+    // from regular session namespaces.
+    let mut symbolic_link_status = STATUS_SUCCESS;
+    let mut symbolic_link_created = false;
 
-    // SAFETY: `device` is valid and UNICODE_STRING points to stack-local UTF-16 for call duration.
-    let symbolic_link_status = unsafe { crate::wdf::device_create_symbolic_link(device, &symbolic_link) };
-    crate::debug_trace(&format!(
-        "EvtDriverDeviceAdd: WdfDeviceCreateSymbolicLink status=0x{:08X}",
-        ntstatus_to_u32(symbolic_link_status)
-    ));
-    if symbolic_link_status < 0 && symbolic_link_status != STATUS_OBJECT_NAME_COLLISION {
+    for symbolic_link_name in [
+        r"\DosDevices\Global\IronRdpIddVideo",
+        r"\DosDevices\IronRdpIddVideo",
+        r"\??\Global\IronRdpIddVideo",
+        r"\??\IronRdpIddVideo",
+        r"\Global??\IronRdpIddVideo",
+    ] {
+        let mut symbolic_link_utf16: Vec<u16> = symbolic_link_name.encode_utf16().collect();
+        let symbolic_link = crate::UNICODE_STRING {
+            Length: (symbolic_link_utf16.len() * core::mem::size_of::<u16>()) as u16,
+            MaximumLength: (symbolic_link_utf16.len() * core::mem::size_of::<u16>()) as u16,
+            Buffer: symbolic_link_utf16.as_mut_ptr(),
+        };
+
+        // SAFETY: `device` is valid and UNICODE_STRING points to stack-local UTF-16 for call duration.
+        symbolic_link_status = unsafe { crate::wdf::device_create_symbolic_link(device, &symbolic_link) };
+        crate::debug_trace(&format!(
+            "EvtDriverDeviceAdd: WdfDeviceCreateSymbolicLink name={} status=0x{:08X}",
+            symbolic_link_name,
+            ntstatus_to_u32(symbolic_link_status)
+        ));
+
+        if symbolic_link_status >= 0 || symbolic_link_status == STATUS_OBJECT_NAME_COLLISION {
+            symbolic_link_created = true;
+            tracing::info!(
+                status = symbolic_link_status,
+                status_hex = format_args!("0x{:08X}", ntstatus_to_u32(symbolic_link_status)),
+                symbolic_link = symbolic_link_name,
+                "WdfDeviceCreateSymbolicLink completed"
+            );
+        } else {
+            tracing::warn!(
+                status = symbolic_link_status,
+                status_hex = format_args!("0x{:08X}", ntstatus_to_u32(symbolic_link_status)),
+                symbolic_link = symbolic_link_name,
+                "WdfDeviceCreateSymbolicLink failed"
+            );
+        }
+    }
+
+    if !symbolic_link_created {
         tracing::error!(
             status = symbolic_link_status,
             status_hex = format_args!("0x{:08X}", ntstatus_to_u32(symbolic_link_status)),
-            "WdfDeviceCreateSymbolicLink failed"
+            "all WdfDeviceCreateSymbolicLink attempts failed"
         );
         return symbolic_link_status;
     }
-    tracing::info!(
-        status = symbolic_link_status,
-        status_hex = format_args!("0x{:08X}", ntstatus_to_u32(symbolic_link_status)),
-        "WdfDeviceCreateSymbolicLink completed"
-    );
 
     // ── 4. IddCxDeviceInitialize ─────────────────────────────────────────────────────────────
     // SAFETY: device is a valid WDFDEVICE handle created by WdfDeviceCreate.

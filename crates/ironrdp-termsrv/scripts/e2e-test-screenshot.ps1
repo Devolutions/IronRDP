@@ -552,6 +552,25 @@ if (-not $SkipDeploy.IsPresent) {
 
                         . $defaultsScript
 
+                        # Configure WUDFRd for auto-start BEFORE TermService restart.
+                        # The actual start is done AFTER install-side-by-side restarts TermService
+                        # because WUDFRd may stop when TermService restarts and there are no active UMDF devices.
+                        $wudfrd = Get-Service -Name WUDFRd -ErrorAction SilentlyContinue
+                        if ($null -ne $wudfrd -and $wudfrd.StartType -ne 'Automatic') {
+                            Write-Host "Setting WUDFRd to auto-start..."
+                            sc.exe config WUDFRd start= auto | Out-Null
+                        }
+
+                        # Clean up stale IDD phantom devices from previous sessions
+                        $staleDevices = @(Get-PnpDevice -FriendlyName 'IronRDP Indirect Display*' -ErrorAction SilentlyContinue |
+                            Where-Object { $_.Status -eq 'Unknown' -or $_.Status -eq 'Error' })
+                        if ($staleDevices.Count -gt 0) {
+                            Write-Host "Removing $($staleDevices.Count) stale IDD device(s)..."
+                            foreach ($dev in $staleDevices) {
+                                pnputil /remove-device $dev.InstanceId 2>$null | Out-Null
+                            }
+                        }
+
                         & $installScript `
                             -ProviderDllPath $dllPath `
                             -ListenerName 'IRDP-Tcp' `
@@ -559,6 +578,21 @@ if (-not $SkipDeploy.IsPresent) {
                             -RestartTermService `
                             -TermServiceStopTimeoutSeconds 60 `
                             -TermServiceStartTimeoutSeconds 60
+
+                        # Ensure WUDFRd is running AFTER TermService restart.
+                        # install-side-by-side restarts TermService which can stop WUDFRd.
+                        # Without WUDFRd, the IDD UMDF driver cannot load when TermService
+                        # creates the SWD device for the next RDP connection.
+                        $wudfrd = Get-Service -Name WUDFRd -ErrorAction SilentlyContinue
+                        if ($null -ne $wudfrd) {
+                            if ($wudfrd.Status -ne 'Running') {
+                                Write-Host "Starting WUDFRd after TermService restart..."
+                                Start-Service -Name WUDFRd -ErrorAction Stop
+                            }
+                            Write-Host "WUDFRd: Status=$((Get-Service WUDFRd).Status), StartType=$((Get-Service WUDFRd).StartType)"
+                        } else {
+                            Write-Warning "WUDFRd service not found - UMDF IDD driver will not load"
+                        }
 
                         & $firewallScript -Mode Add -PortNumber $Port
 
@@ -726,8 +760,41 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                             $quserSessionId = [int]$m.Groups['id'].Value
                             $quserState = [string]$m.Groups['state'].Value
 
-                            if (-not ($quserUser -ieq $targetUser)) {
+                            $quserUserPart = $quserUser
+                            $quserDomainPart = ''
+
+                            if ($quserUser.Contains('\')) {
+                                $splitUser = $quserUser.Split('\\', 2)
+                                $quserDomainPart = [string]$splitUser[0]
+                                $quserUserPart = [string]$splitUser[1]
+                            } elseif ($quserUser.Contains('@')) {
+                                $splitUser = $quserUser.Split('@', 2)
+                                $quserUserPart = [string]$splitUser[0]
+                                $quserDomainPart = [string]$splitUser[1]
+                            }
+
+                            if (-not ($quserUserPart -ieq $targetUser)) {
                                 continue
+                            }
+
+                            if (($domainHints.Count -gt 0) -and (-not [string]::IsNullOrWhiteSpace($quserDomainPart))) {
+                                $matchesDomain = $false
+                                foreach ($hint in $domainHints) {
+                                    if ($quserDomainPart -ieq $hint) {
+                                        $matchesDomain = $true
+                                        break
+                                    }
+
+                                    $quserDomainPartShort = ($quserDomainPart -split '\\.')[0]
+                                    if (-not [string]::IsNullOrWhiteSpace($quserDomainPartShort) -and ($quserDomainPartShort -ieq $hint)) {
+                                        $matchesDomain = $true
+                                        break
+                                    }
+                                }
+
+                                if (-not $matchesDomain) {
+                                    continue
+                                }
                             }
 
                             $quserRows.Add([pscustomobject]@{
@@ -838,6 +905,40 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
 # ── Step 3: Run screenshot client ───────────────────────────────────────────
 if (-not $SkipScreenshot.IsPresent) {
     Write-Host "`n=== Step 3: Running screenshot client against ${Hostname}:${Port} ===" -ForegroundColor Cyan
+
+    # Ensure WUDFRd is running on the VM right before the RDP connection.
+    # WUDFRd (UMDF kernel reflector) tends to stop when no UMDF devices are active.
+    # If it's not running when TermService creates the IDD SWD device, the UMDF
+    # driver fails with CM_PROB_FAILED_START and the session disconnects quickly.
+    if ($Mode -eq 'Provider') {
+        try {
+            $wudfSession = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+            Invoke-Command -Session $wudfSession -ScriptBlock {
+                $svc = Get-Service -Name WUDFRd -ErrorAction SilentlyContinue
+                if ($null -ne $svc) {
+                    if ($svc.StartType -ne 'Automatic') {
+                        sc.exe config WUDFRd start= auto | Out-Null
+                    }
+                    if ($svc.Status -ne 'Running') {
+                        Start-Service -Name WUDFRd -ErrorAction Stop
+                        Write-Host "WUDFRd started (was $($svc.Status))"
+                    } else {
+                        Write-Host "WUDFRd already running"
+                    }
+                }
+                # Also clean up stale IDD devices from previous sessions
+                $stale = @(Get-PnpDevice -InstanceId 'SWD\REMOTEDISPLAYENUM\*' -EA SilentlyContinue |
+                    Where-Object { $_.Status -eq 'Unknown' -or $_.Status -eq 'Error' })
+                if ($stale.Count -gt 0) {
+                    Write-Host "Removing $($stale.Count) stale IDD device(s)..."
+                    foreach ($d in $stale) { pnputil /remove-device $d.InstanceId 2>$null | Out-Null }
+                }
+            }
+            Remove-PSSession $wudfSession -ErrorAction SilentlyContinue
+        } catch {
+            Write-Warning "WUDFRd pre-connection check failed: $_"
+        }
+    }
 
     $env:IRONRDP_LOG = 'debug'
 
