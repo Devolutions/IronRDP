@@ -23,10 +23,18 @@ use ironrdp_wtsprotocol_ipc::{
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 use windows::core::AgileReference;
+use windows::Win32::Devices::DeviceAndDriverInstallation::{
+    SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
+    SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceInterfaceDetailW, SetupDiGetDeviceRegistryPropertyW,
+    DIGCF_ALLCLASSES, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, SP_DEVICE_INTERFACE_DATA,
+    SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA, SPDRP_PHYSICAL_DEVICE_OBJECT_NAME,
+    SETUP_DI_REGISTRY_PROPERTY,
+};
 use windows::Win32::Foundation::{
     LocalFree, CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, ERROR_BROKEN_PIPE, ERROR_INSUFFICIENT_BUFFER,
-    ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_SEM_TIMEOUT, E_NOINTERFACE, E_NOTIMPL,
+    ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_NO_MORE_ITEMS, ERROR_SEM_TIMEOUT, E_NOINTERFACE, E_NOTIMPL,
     E_POINTER, E_UNEXPECTED,
+    ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
     HANDLE,
     HANDLE_PTR, HLOCAL,
 };
@@ -35,13 +43,17 @@ use windows::Win32::Security::{
     IsValidSecurityDescriptor, LookupAccountNameW, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, QueryDosDeviceW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows::Win32::System::Com::{
     CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IAgileObject_Impl, IClassFactory, IClassFactory_Impl,
     COINIT_MULTITHREADED,
 };
 use windows::Win32::System::Pipes::PeekNamedPipe;
+use windows::Win32::System::Services::{
+    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, StartServiceW, SC_MANAGER_CONNECT,
+    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING, SERVICE_STATUS,
+};
 use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolConnection, IWRdsProtocolConnectionCallback, IWRdsProtocolConnectionSettings_Impl,
     IWRdsProtocolConnection_Impl, IWRdsProtocolLicenseConnection, IWRdsProtocolLicenseConnection_Impl,
@@ -76,7 +88,14 @@ const S_FALSE: HRESULT = HRESULT(1);
 // HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY=14) == 0x8007000E
 const E_OUTOFMEMORY: HRESULT = HRESULT(-2147024882);
 
+// Use the inbox hardware ID to leverage the standard Microsoft IddCx session
+// lifecycle integration. "IronRdpIdd" causes IddCx to reject START_DEVICE with
+// STATUS_USER_SESSION_DELETED because the session isn't fully active when PnP
+// tries to start the device. The inbox driver handles this timing properly.
+// TODO: Once we can coordinate IddCx session lifecycle, switch back to "IronRdpIdd"
+// to use our custom IDD driver for direct bitmap capture.
 const IRONRDP_IDD_HARDWARE_ID: &str = "RdpIdd_IndirectDisplay";
+const IRONRDP_IDD_DEVICE_MARKERS: [&str; 2] = ["IronRdpIdd", "RdpIdd_IndirectDisplay"];
 const WTS_PROTOCOL_TYPE_NON_RDP: u16 = 2;
 
 const WTS_VALUE_TYPE_ULONG: u16 = 1;
@@ -547,6 +566,144 @@ fn command_kind(command: &ProviderCommand) -> &'static str {
     }
 }
 
+/// Ensures the WUDFRd (UMDF kernel reflector) service is running.
+///
+/// WUDFRd is required for UMDF IDD drivers to load. It auto-stops when idle,
+/// so we start it proactively before TermService creates the SWD device.
+/// This is called from `GetHardwareId` so WUDFRd is ready when PnP tries
+/// to start the IDD driver.
+fn ensure_wudfrd_running() {
+    let service_name_wide: Vec<u16> = "WUDFRd\0".encode_utf16().collect();
+    let service_name = PCWSTR(service_name_wide.as_ptr());
+
+    // SAFETY: OpenSCManagerW with SC_MANAGER_CONNECT is safe for querying/starting services.
+    let scm = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT) };
+    let Ok(scm) = scm else {
+        let error = std::io::Error::last_os_error();
+        debug_log_line(&format!("ensure_wudfrd_running: OpenSCManagerW failed: {error}"));
+        // Fallback: try via sc.exe
+        ensure_wudfrd_running_via_sc_exe();
+        return;
+    };
+
+    // SAFETY: scm is a valid SC_HANDLE from OpenSCManagerW.
+    let svc = unsafe { OpenServiceW(scm, service_name, SERVICE_QUERY_STATUS | SERVICE_START) };
+    let Ok(svc) = svc else {
+        let error = std::io::Error::last_os_error();
+        debug_log_line(&format!("ensure_wudfrd_running: OpenServiceW(WUDFRd) failed: {error}"));
+        unsafe { let _ = CloseServiceHandle(scm); }
+        // Fallback: try via sc.exe
+        ensure_wudfrd_running_via_sc_exe();
+        return;
+    };
+
+    let mut status = SERVICE_STATUS::default();
+    // SAFETY: svc is a valid service handle.
+    let query_ok = unsafe { QueryServiceStatus(svc, &mut status) };
+    if query_ok.is_err() {
+        let error = std::io::Error::last_os_error();
+        debug_log_line(&format!("ensure_wudfrd_running: QueryServiceStatus failed: {error}"));
+        unsafe {
+            let _ = CloseServiceHandle(svc);
+            let _ = CloseServiceHandle(scm);
+        }
+        return;
+    }
+
+    if status.dwCurrentState == SERVICE_RUNNING || status.dwCurrentState == SERVICE_START_PENDING {
+        debug_log_line(&format!(
+            "ensure_wudfrd_running: WUDFRd already in state {:?}",
+            status.dwCurrentState
+        ));
+        unsafe {
+            let _ = CloseServiceHandle(svc);
+            let _ = CloseServiceHandle(scm);
+        }
+        return;
+    }
+
+    debug_log_line(&format!(
+        "ensure_wudfrd_running: WUDFRd in state {:?}, starting...",
+        status.dwCurrentState
+    ));
+
+    // SAFETY: svc is a valid service handle with SERVICE_START access.
+    let start_result = unsafe { StartServiceW(svc, None) };
+    match start_result {
+        Ok(()) => {
+            debug_log_line("ensure_wudfrd_running: StartServiceW(WUDFRd) succeeded");
+
+            // Wait up to 5 seconds for WUDFRd to reach RUNNING state.
+            for attempt in 0..50 {
+                std::thread::sleep(Duration::from_millis(100));
+                let mut poll_status = SERVICE_STATUS::default();
+                // SAFETY: svc is still a valid handle.
+                if unsafe { QueryServiceStatus(svc, &mut poll_status) }.is_ok() {
+                    if poll_status.dwCurrentState == SERVICE_RUNNING {
+                        debug_log_line(&format!(
+                            "ensure_wudfrd_running: WUDFRd running after {} ms",
+                            (attempt + 1) * 100
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            debug_log_line(&format!("ensure_wudfrd_running: StartServiceW failed: {error}"));
+        }
+    }
+
+    unsafe {
+        let _ = CloseServiceHandle(svc);
+        let _ = CloseServiceHandle(scm);
+    }
+}
+
+/// Fallback: start WUDFRd by spawning `sc.exe start WUDFRd`.
+/// Used when the SCM API fails (e.g., insufficient permissions for NETWORK SERVICE).
+fn ensure_wudfrd_running_via_sc_exe() {
+    debug_log_line("ensure_wudfrd_running_via_sc_exe: attempting sc.exe start WUDFRd");
+    match std::process::Command::new("sc.exe")
+        .args(["start", "WUDFRd"])
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            debug_log_line(&format!(
+                "ensure_wudfrd_running_via_sc_exe: exit={} stdout={} stderr={}",
+                output.status.code().unwrap_or(-1),
+                stdout.trim(),
+                stderr.trim()
+            ));
+            if output.status.success() {
+                // Wait up to 5 seconds for WUDFRd to start.
+                for attempt in 0..50 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    if let Ok(check) = std::process::Command::new("sc.exe")
+                        .args(["query", "WUDFRd"])
+                        .output()
+                    {
+                        let query_out = String::from_utf8_lossy(&check.stdout);
+                        if query_out.contains("RUNNING") {
+                            debug_log_line(&format!(
+                                "ensure_wudfrd_running_via_sc_exe: WUDFRd running after {} ms",
+                                (attempt + 1) * 100
+                            ));
+                            return;
+                        }
+                    }
+                }
+                debug_log_line("ensure_wudfrd_running_via_sc_exe: WUDFRd did not reach RUNNING in 5s");
+            }
+        }
+        Err(error) => {
+            debug_log_line(&format!("ensure_wudfrd_running_via_sc_exe: failed to spawn sc.exe: {error}"));
+        }
+    }
+}
+
 fn event_kind(event: &ServiceEvent) -> &'static str {
     match event {
         ServiceEvent::Ack => "ack",
@@ -954,6 +1111,31 @@ impl ProviderControlBridge {
                     format!("unexpected service event on set capture session id (retried): {other:?}"),
                 ))
             }
+        }
+    }
+
+    fn set_capture_session_id_async(&self, connection_id: u32, session_id: u32, source: &'static str) {
+        let bridge = self.clone();
+        if let Err(error) = thread::Builder::new()
+            .name(format!("irdp-set-capture-{connection_id}"))
+            .spawn(move || {
+                debug_log_line(&format!(
+                    "SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_ASYNC_BEGIN source={source} connection_id={connection_id} session_id={session_id}",
+                ));
+                if let Err(error) = bridge.set_capture_session_id_retried(connection_id, session_id, source) {
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_ASYNC_ERROR source={source} connection_id={connection_id} session_id={session_id} error={error}",
+                    ));
+                } else {
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_ASYNC_OK source={source} connection_id={connection_id} session_id={session_id}",
+                    ));
+                }
+            })
+        {
+            debug_log_line(&format!(
+                "SESSION_PROOF_PROVIDER_SET_CAPTURE_SESSION_ID_ASYNC_SPAWN_ERROR source={source} connection_id={connection_id} session_id={session_id} error={error}",
+            ));
         }
     }
 
@@ -2563,6 +2745,7 @@ struct ComProtocolConnection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VideoHandleSource {
     Unknown,
+    DriverLoadCallback,
     IronRdpIdd,
     RdpVideoMiniport,
 }
@@ -2571,6 +2754,7 @@ impl VideoHandleSource {
     fn as_str(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
+            Self::DriverLoadCallback => "driver_load_callback",
             Self::IronRdpIdd => "ironrdp_idd",
             Self::RdpVideoMiniport => "rdp_video_miniport",
         }
@@ -2638,6 +2822,102 @@ impl ComProtocolConnection {
         )
     }
 
+    fn probe_idd_driver_load(&self, session_id: u32, source: &'static str, attempts: u32, retry_delay: Duration) -> bool {
+        if !self.wddm_idd_enabled.load(Ordering::SeqCst) {
+            return false;
+        }
+
+        let connection_id = self.inner.connection_id();
+        let probe_attempts = attempts.max(1);
+
+        for attempt in 1..=probe_attempts {
+            let existing_driver_handle = self.driver_handle_raw.load(Ordering::SeqCst);
+            if existing_driver_handle != 0 {
+                self.idd_last_driver_load_session_id
+                    .store(session_id, Ordering::SeqCst);
+
+                if let Err(error) = self.control_bridge.notify_idd_driver_loaded(session_id) {
+                    self.idd_driver_load_notified.store(false, Ordering::SeqCst);
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ERROR source={source} connection_id={connection_id} session_id={session_id} has_video_handle=true error={error}",
+                    ));
+                    return false;
+                }
+
+                self.idd_driver_load_notified.store(true, Ordering::SeqCst);
+                debug_log_line(&format!(
+                    "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK source={source} connection_id={connection_id} session_id={session_id} has_video_handle=true",
+                ));
+                return true;
+            }
+
+            let open_result = ComProtocolConnection::open_ironrdp_idd_from_query_dos_device()
+                .or_else(|_| ComProtocolConnection::open_ironrdp_idd_from_setupapi_interface(Some(session_id)))
+                .or_else(|_| ComProtocolConnection::open_ironrdp_idd_from_setupapi_pdo(Some(session_id)));
+
+            match open_result {
+                Ok((handle, path)) => {
+                    let selected_handle_raw;
+
+                    {
+                        let mut slot = self.video_handle.lock();
+                        if let Some(existing_handle) = *slot {
+                            // SAFETY: `handle` came from CreateFileW in this function and must be closed.
+                            unsafe {
+                                let _ = windows::Win32::Foundation::CloseHandle(handle);
+                            }
+                            selected_handle_raw = handle_to_raw_usize(existing_handle);
+                        } else {
+                            *slot = Some(handle);
+                            selected_handle_raw = handle_to_raw_usize(handle);
+                        }
+                    }
+
+                    self.driver_handle_raw.store(selected_handle_raw, Ordering::SeqCst);
+                    *self.video_handle_source.lock() = VideoHandleSource::IronRdpIdd;
+
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_PROBED source={source} connection_id={connection_id} session_id={session_id} attempt={attempt} handle_nonzero=true path={path}",
+                    ));
+
+                    self.idd_last_driver_load_session_id
+                        .store(session_id, Ordering::SeqCst);
+
+                    if let Err(error) = self.control_bridge.notify_idd_driver_loaded(session_id) {
+                        self.idd_driver_load_notified.store(false, Ordering::SeqCst);
+                        debug_log_line(&format!(
+                            "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ERROR source={source} connection_id={connection_id} session_id={session_id} has_video_handle=true error={error}",
+                        ));
+                        return false;
+                    }
+
+                    self.idd_driver_load_notified.store(true, Ordering::SeqCst);
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK source={source} connection_id={connection_id} session_id={session_id} has_video_handle=true",
+                    ));
+                    return true;
+                }
+                Err(error) => {
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_PROBE_RETRY source={source} connection_id={connection_id} session_id={session_id} attempt={attempt} error={error}",
+                    ));
+
+                    if attempt == probe_attempts || !ComProtocolConnection::is_transient_idd_open_error(&error) {
+                        break;
+                    }
+
+                    thread::sleep(retry_delay);
+                }
+            }
+        }
+
+        debug_log_line(&format!(
+            "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_SKIPPED source={source} connection_id={connection_id} session_id={session_id} reason=no_driver_handle_yet_after_probe",
+        ));
+
+        false
+    }
+
     fn open_device_handle_with_access(path: &str, desired_access: u32) -> windows_core::Result<HANDLE> {
         let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
 
@@ -2655,25 +2935,532 @@ impl ComProtocolConnection {
         }
     }
 
-    fn open_device_handle(path: &str) -> windows_core::Result<HANDLE> {
-        // Best-effort: request read/write; these are device objects.
-        // If access is denied, TermService will likely fail to advance the connection sequence.
-        let access = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
-            | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
-            .0;
-        Self::open_device_handle_with_access(path, access)
+    fn open_first_device_handle(candidates: &[(&'static str, u32)]) -> windows_core::Result<HANDLE> {
+        Self::open_first_device_handle_with_path(candidates).map(|(handle, _)| handle)
     }
 
-    fn open_first_device_handle(candidates: &[(&'static str, u32)]) -> windows_core::Result<HANDLE> {
+    fn open_first_device_handle_with_path(
+        candidates: &[(&'static str, u32)],
+    ) -> windows_core::Result<(HANDLE, &'static str)> {
         let mut last_error: Option<windows_core::Error> = None;
         for (path, access) in candidates {
             match Self::open_device_handle_with_access(path, *access) {
-                Ok(handle) => return Ok(handle),
+                Ok(handle) => return Ok((handle, path)),
                 Err(error) => last_error = Some(error),
             }
         }
 
         Err(last_error.unwrap_or_else(|| windows_core::Error::new(E_UNEXPECTED, "no device handle candidates")))
+    }
+
+    fn parse_multi_sz(buffer: &[u16]) -> Vec<String> {
+        let mut values = Vec::new();
+        let mut start = 0usize;
+
+        for (index, ch) in buffer.iter().enumerate() {
+            if *ch != 0 {
+                continue;
+            }
+
+            if index == start {
+                break;
+            }
+
+            values.push(String::from_utf16_lossy(&buffer[start..index]));
+            start = index + 1;
+        }
+
+        values
+    }
+
+    fn query_dos_device_targets(device_name: &str) -> windows_core::Result<Vec<String>> {
+        let mut buffer_len: u32 = 1024;
+        let device_name_utf16: Vec<u16> = device_name.encode_utf16().chain(Some(0)).collect();
+
+        loop {
+            let mut buffer = vec![0u16; usize::try_from(buffer_len).unwrap_or(1024)];
+
+            // SAFETY: `device_name_utf16` is NUL-terminated and `buffer` is writable for the call duration.
+            let written = unsafe { QueryDosDeviceW(PCWSTR(device_name_utf16.as_ptr()), Some(&mut buffer)) };
+
+            if written != 0 {
+                return Ok(Self::parse_multi_sz(&buffer));
+            }
+
+            let error = windows_core::Error::from_thread();
+            if error.code() == HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0) && buffer_len < 65_536 {
+                buffer_len = buffer_len.saturating_mul(2);
+                continue;
+            }
+
+            return Err(error);
+        }
+    }
+
+    fn open_ironrdp_idd_from_query_dos_device() -> windows_core::Result<(HANDLE, String)> {
+        let mut last_error: Option<windows_core::Error> = None;
+        let rw = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+            | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
+            .0;
+        let access_modes = [rw, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ.0, 0];
+
+        for dos_name in ["IronRdpIddVideo", r"Global\IronRdpIddVideo"] {
+            match Self::query_dos_device_targets(dos_name) {
+                Ok(targets) => {
+                    if targets.is_empty() {
+                        debug_log_line(&format!("GetVideoHandle: QueryDosDevice no targets for {dos_name}"));
+                        continue;
+                    }
+
+                    debug_log_line(&format!(
+                        "GetVideoHandle: QueryDosDevice targets for {dos_name}: {}",
+                        targets.join(" | "),
+                    ));
+
+                    for target in targets {
+                        let normalized_target = target.trim_matches('\0').trim();
+                        if normalized_target.is_empty() {
+                            continue;
+                        }
+
+                        for prefix in [r"\\?\GLOBALROOT", r"\\.\GLOBALROOT"] {
+                            let open_path = format!("{prefix}{normalized_target}");
+                            for access in access_modes {
+                                match Self::open_device_handle_with_access(&open_path, access) {
+                                    Ok(handle) => {
+                                        return Ok((
+                                            handle,
+                                            format!("querydosdevice:{dos_name}->{open_path}:access=0x{access:08X}"),
+                                        ));
+                                    }
+                                    Err(error) => {
+                                        last_error = Some(error);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    debug_log_line(&format!("GetVideoHandle: QueryDosDevice failed for {dos_name}: {error}"));
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            windows_core::Error::new(E_UNEXPECTED, "no QueryDosDevice mapping available for IronRdpIddVideo")
+        }))
+    }
+
+    fn setupdi_get_registry_property_strings(
+        device_info_set: windows::Win32::Devices::DeviceAndDriverInstallation::HDEVINFO,
+        device_info_data: &SP_DEVINFO_DATA,
+        property: SETUP_DI_REGISTRY_PROPERTY,
+    ) -> windows_core::Result<Vec<String>> {
+        let mut required_size = 0u32;
+        // SAFETY: probing required size with null output buffers follows SetupAPI contract.
+        let first_try = unsafe {
+            SetupDiGetDeviceRegistryPropertyW(
+                device_info_set,
+                device_info_data,
+                property,
+                None,
+                None,
+                Some(&mut required_size),
+            )
+        };
+
+        match first_try {
+            Ok(()) => {}
+            Err(error) if error.code() == HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0) => {}
+            Err(error) => return Err(error),
+        }
+
+        if required_size == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut buffer = vec![0u8; usize::try_from(required_size).unwrap_or(0)];
+        // SAFETY: `buffer` is writable and sized from SetupAPI-provided required size.
+        unsafe {
+            SetupDiGetDeviceRegistryPropertyW(
+                device_info_set,
+                device_info_data,
+                property,
+                None,
+                Some(&mut buffer),
+                Some(&mut required_size),
+            )?;
+        }
+
+        if buffer.len() < 2 {
+            return Ok(Vec::new());
+        }
+
+        let wide: Vec<u16> = buffer
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+
+        Ok(Self::parse_multi_sz(&wide))
+    }
+
+    fn setupdi_get_device_instance_id(
+        device_info_set: windows::Win32::Devices::DeviceAndDriverInstallation::HDEVINFO,
+        device_info_data: &SP_DEVINFO_DATA,
+    ) -> windows_core::Result<String> {
+        let mut required_size = 0u32;
+        let required_size_ptr = &mut required_size as *mut u32;
+        let first_try = unsafe {
+            SetupDiGetDeviceInstanceIdW(device_info_set, device_info_data, None, Some(required_size_ptr))
+        };
+
+        match first_try {
+            Ok(()) => {}
+            Err(error) if error.code() == HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0) => {}
+            Err(error) => return Err(error),
+        }
+
+        if required_size == 0 {
+            return Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                "SetupAPI returned empty size for device instance id",
+            ));
+        }
+
+        let mut buffer = vec![0u16; usize::try_from(required_size).unwrap_or(0)];
+        let required_size_ptr = &mut required_size as *mut u32;
+        unsafe {
+            SetupDiGetDeviceInstanceIdW(
+                device_info_set,
+                device_info_data,
+                Some(buffer.as_mut_slice()),
+                Some(required_size_ptr),
+            )?;
+        }
+
+        let end = buffer.iter().position(|ch| *ch == 0).unwrap_or(buffer.len());
+        Ok(String::from_utf16_lossy(&buffer[..end]))
+    }
+
+    fn setupapi_instance_matches(instance_id: &str, session_id: Option<u32>) -> bool {
+        let instance_id_lower = instance_id.to_ascii_lowercase();
+        let matches_ironrdp_idd = IRONRDP_IDD_DEVICE_MARKERS
+            .iter()
+            .any(|marker| instance_id_lower.contains(&marker.to_ascii_lowercase()));
+        if !matches_ironrdp_idd {
+            return false;
+        }
+
+        let session_marker_padded = session_id.map(|value| format!("sessionid_{value:04}"));
+        let session_marker_plain = session_id.map(|value| format!("sessionid_{value}"));
+
+        match (session_marker_padded, session_marker_plain) {
+            (Some(padded), Some(plain)) => instance_id_lower.contains(&padded) || instance_id_lower.contains(&plain),
+            _ => true,
+        }
+    }
+
+    fn open_ironrdp_idd_from_setupapi_interface(session_id: Option<u32>) -> windows_core::Result<(HANDLE, String)> {
+        let rw = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+            | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
+            .0;
+        let access_modes = [rw, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ.0, 0];
+
+        let device_info_set = unsafe {
+            SetupDiGetClassDevsW(
+                None,
+                PCWSTR::null(),
+                None,
+                DIGCF_ALLCLASSES | DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+            )?
+        };
+
+        let result = (|| {
+            let mut device_index = 0u32;
+            let mut last_error: Option<windows_core::Error> = None;
+
+            loop {
+                let mut device_info_data = SP_DEVINFO_DATA {
+                    cbSize: u32::try_from(size_of::<SP_DEVINFO_DATA>()).unwrap_or(0),
+                    ..Default::default()
+                };
+
+                let enum_result = unsafe { SetupDiEnumDeviceInfo(device_info_set, device_index, &mut device_info_data) };
+
+                match enum_result {
+                    Ok(()) => {}
+                    Err(error) if error.code() == HRESULT::from_win32(ERROR_NO_MORE_ITEMS.0) => break,
+                    Err(error) => {
+                        last_error = Some(error);
+                        break;
+                    }
+                }
+
+                device_index = device_index.saturating_add(1);
+
+                let instance_id = match Self::setupdi_get_device_instance_id(device_info_set, &device_info_data) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        last_error = Some(error);
+                        continue;
+                    }
+                };
+
+                if !Self::setupapi_instance_matches(&instance_id, session_id) {
+                    continue;
+                }
+
+                let mut interface_index = 0u32;
+                loop {
+                    let mut interface_data = SP_DEVICE_INTERFACE_DATA {
+                        cbSize: u32::try_from(size_of::<SP_DEVICE_INTERFACE_DATA>()).unwrap_or(0),
+                        ..Default::default()
+                    };
+
+                    let interface_result = unsafe {
+                        SetupDiEnumDeviceInterfaces(
+                            device_info_set,
+                            Some(&device_info_data as *const SP_DEVINFO_DATA),
+                            core::ptr::null(),
+                            interface_index,
+                            &mut interface_data,
+                        )
+                    };
+
+                    match interface_result {
+                        Ok(()) => {}
+                        Err(error) if error.code() == HRESULT::from_win32(ERROR_NO_MORE_ITEMS.0) => break,
+                        Err(error) => {
+                            last_error = Some(error);
+                            break;
+                        }
+                    }
+
+                    interface_index = interface_index.saturating_add(1);
+
+                    let mut required_size = 0u32;
+                    let first_try = unsafe {
+                        SetupDiGetDeviceInterfaceDetailW(
+                            device_info_set,
+                            &interface_data,
+                            None,
+                            0,
+                            Some(&mut required_size as *mut u32),
+                            Some(&mut device_info_data as *mut SP_DEVINFO_DATA),
+                        )
+                    };
+
+                    match first_try {
+                        Ok(()) => {}
+                        Err(error) if error.code() == HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0) => {}
+                        Err(error) => {
+                            last_error = Some(error);
+                            continue;
+                        }
+                    }
+
+                    if required_size == 0 {
+                        continue;
+                    }
+
+                    let mut detail_buffer = vec![0u8; usize::try_from(required_size).unwrap_or(0)];
+                    let detail_ptr = detail_buffer.as_mut_ptr().cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
+
+                    // SAFETY: detail_ptr points to `detail_buffer`, which is writable for `required_size` bytes.
+                    unsafe {
+                        (*detail_ptr).cbSize = u32::try_from(size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>()).unwrap_or(0);
+                    }
+
+                    let detail_result = unsafe {
+                        SetupDiGetDeviceInterfaceDetailW(
+                            device_info_set,
+                            &interface_data,
+                            Some(detail_ptr),
+                            required_size,
+                            Some(&mut required_size as *mut u32),
+                            Some(&mut device_info_data as *mut SP_DEVINFO_DATA),
+                        )
+                    };
+
+                    if let Err(error) = detail_result {
+                        last_error = Some(error);
+                        continue;
+                    }
+
+                    let device_path = unsafe {
+                        let ptr = (*detail_ptr).DevicePath.as_ptr();
+                        let mut len = 0usize;
+                        while *ptr.add(len) != 0 {
+                            len = len.saturating_add(1);
+                        }
+
+                        String::from_utf16_lossy(core::slice::from_raw_parts(ptr, len))
+                    };
+
+                    if device_path.is_empty() {
+                        continue;
+                    }
+
+                    debug_log_line(&format!(
+                        "GetVideoHandle: SetupAPI interface matched instance_id={} device_path={} session_filter={:?}",
+                        instance_id,
+                        device_path,
+                        session_id,
+                    ));
+
+                    for access in access_modes {
+                        match Self::open_device_handle_with_access(&device_path, access) {
+                            Ok(handle) => {
+                                return Ok((
+                                    handle,
+                                    format!("setupapi_interface:{device_path}:access=0x{access:08X}"),
+                                ));
+                            }
+                            Err(error) => {
+                                last_error = Some(error);
+                            }
+                        }
+                    }
+                }
+            }
+
+            Err(last_error.unwrap_or_else(|| {
+                windows_core::Error::new(
+                    HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0),
+                    "no SetupAPI device interface available for IronRdpIdd marker/session",
+                )
+            }))
+        })();
+
+        // SAFETY: `device_info_set` was returned by SetupDiGetClassDevsW and must be destroyed exactly once.
+        unsafe {
+            let _ = SetupDiDestroyDeviceInfoList(device_info_set);
+        }
+
+        result
+    }
+
+    fn open_ironrdp_idd_from_setupapi_pdo(session_id: Option<u32>) -> windows_core::Result<(HANDLE, String)> {
+        let rw = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+            | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
+            .0;
+        let access_modes = [rw, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ.0, 0];
+
+        let device_info_set = unsafe {
+            SetupDiGetClassDevsW(
+                None,
+                PCWSTR::null(),
+                None,
+                DIGCF_ALLCLASSES | DIGCF_PRESENT,
+            )?
+        };
+
+        let result = (|| {
+            let mut index = 0u32;
+            let mut last_error: Option<windows_core::Error> = None;
+
+            loop {
+                let mut device_info_data = SP_DEVINFO_DATA {
+                    cbSize: u32::try_from(size_of::<SP_DEVINFO_DATA>()).unwrap_or(0),
+                    ..Default::default()
+                };
+
+                let enum_result =
+                    unsafe { SetupDiEnumDeviceInfo(device_info_set, index, &mut device_info_data) };
+
+                match enum_result {
+                    Ok(()) => {}
+                    Err(error) if error.code() == HRESULT::from_win32(ERROR_NO_MORE_ITEMS.0) => break,
+                    Err(error) => {
+                        last_error = Some(error);
+                        break;
+                    }
+                }
+
+                index = index.saturating_add(1);
+
+                let instance_id = match Self::setupdi_get_device_instance_id(device_info_set, &device_info_data) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        last_error = Some(error);
+                        continue;
+                    }
+                };
+
+                if !Self::setupapi_instance_matches(&instance_id, session_id) {
+                    continue;
+                }
+
+                debug_log_line(&format!(
+                    "GetVideoHandle: SetupAPI matched device instance id {} (session_filter={:?})",
+                    instance_id,
+                    session_id,
+                ));
+
+                let pdo_names = match Self::setupdi_get_registry_property_strings(
+                    device_info_set,
+                    &device_info_data,
+                    SPDRP_PHYSICAL_DEVICE_OBJECT_NAME,
+                ) {
+                    Ok(names) => names,
+                    Err(error) => {
+                        last_error = Some(error);
+                        continue;
+                    }
+                };
+
+                for pdo_name in pdo_names {
+                    let normalized_pdo_name = pdo_name.trim_matches('\0').trim();
+                    if normalized_pdo_name.is_empty() {
+                        continue;
+                    }
+
+                    for prefix in [r"\\?\GLOBALROOT", r"\\.\GLOBALROOT"] {
+                        let open_path = format!("{prefix}{normalized_pdo_name}");
+                        debug_log_line(&format!(
+                            "GetVideoHandle: SetupAPI matched device_markers={:?} pdo_name={} open_path={}",
+                            IRONRDP_IDD_DEVICE_MARKERS,
+                            normalized_pdo_name,
+                            open_path,
+                        ));
+
+                        for access in access_modes {
+                            match Self::open_device_handle_with_access(&open_path, access) {
+                                Ok(handle) => {
+                                    return Ok((handle, format!("setupapi_pdo:{open_path}:access=0x{access:08X}")));
+                                }
+                                Err(error) => {
+                                    last_error = Some(error);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Err(last_error.unwrap_or_else(|| {
+                windows_core::Error::new(
+                    HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0),
+                    "no SetupAPI PDO mapping available for IronRdpIdd device marker/session",
+                )
+            }))
+        })();
+
+        // SAFETY: `device_info_set` was returned by SetupDiGetClassDevsW and must be destroyed exactly once.
+        unsafe {
+            let _ = SetupDiDestroyDeviceInfoList(device_info_set);
+        }
+
+        result
+    }
+
+    fn is_transient_idd_open_error(error: &windows_core::Error) -> bool {
+        let code = error.code();
+        code == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0)
+            || code == HRESULT::from_win32(ERROR_PATH_NOT_FOUND.0)
+            || code == HRESULT::from_win32(0x1B1)
     }
 
     fn open_keyboard_device_handle() -> windows_core::Result<HANDLE> {
@@ -2951,6 +3738,12 @@ impl IWRdsProtocolConnectionSettings_Impl for ComProtocolConnection_Impl {
 
 impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
     fn GetHardwareId(&self, pdisplaydriverhardwareid: &PCWSTR, count: u32) -> windows_core::Result<()> {
+        // Ensure WUDFRd (UMDF kernel reflector) is running before TermService creates
+        // the SWD device. WUDFRd auto-stops when idle, so we start it proactively here.
+        // This prevents CM_PROB_FAILED_START / STATUS_USER_SESSION_DELETED errors
+        // caused by WUDFRd being stopped when PnP tries to load the IDD UMDF driver.
+        ensure_wudfrd_running();
+
         // TermService uses this to locate the WDDM IDD display driver to load for a session.
         let hardware_id = IRONRDP_IDD_HARDWARE_ID;
 
@@ -2998,6 +3791,7 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
         ));
 
         self.driver_handle_raw.store(driverhandle.0, Ordering::SeqCst);
+        *self.video_handle_source.lock() = VideoHandleSource::DriverLoadCallback;
         self.idd_last_driver_load_session_id
             .store(sessionid, Ordering::SeqCst);
         self.idd_driver_load_notified.store(false, Ordering::SeqCst);
@@ -3026,6 +3820,7 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
         ));
 
         self.driver_handle_raw.store(0, Ordering::SeqCst);
+        *self.video_handle_source.lock() = VideoHandleSource::Unknown;
         self.idd_last_driver_load_session_id.store(0, Ordering::SeqCst);
         self.idd_driver_load_notified.store(false, Ordering::SeqCst);
         Ok(())
@@ -3269,57 +4064,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             ));
         }
 
-        // Some server builds do not consistently invoke IWRdsWddmIddProps::OnDriverLoad.
-        // Prime the video handle and emit NotifyIddDriverLoaded from NotifySessionId when
-        // WDDM IDD is enabled.
-        if self.wddm_idd_enabled.load(Ordering::SeqCst) {
-            let mut has_ironrdp_video_handle = false;
-
-            match self.GetVideoHandle() {
-                Ok(handle_ptr) if handle_ptr.0 != 0 => {
-                    let source = *self.video_handle_source.lock();
-                    if source == VideoHandleSource::IronRdpIdd {
-                        has_ironrdp_video_handle = true;
-                        self.driver_handle_raw.store(handle_ptr.0, Ordering::SeqCst);
-                    }
-                }
-                Ok(_) => {
-                    debug_log_line(&format!(
-                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_SKIPPED source=notify_session_id connection_id={} session_id={} reason=no_video_handle",
-                        self.inner.connection_id(),
-                        wts_session_id,
-                    ));
-                }
-                Err(error) => {
-                    debug_log_line(&format!(
-                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_SKIPPED source=notify_session_id connection_id={} session_id={} reason=get_video_handle_failed error={error}",
-                        self.inner.connection_id(),
-                        wts_session_id,
-                    ));
-                }
-            }
-
-            self.idd_last_driver_load_session_id
-                .store(wts_session_id, Ordering::SeqCst);
-
-            if let Err(error) = self.control_bridge.notify_idd_driver_loaded(wts_session_id) {
-                self.idd_driver_load_notified.store(false, Ordering::SeqCst);
-                debug_log_line(&format!(
-                    "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ERROR source=notify_session_id connection_id={} session_id={} has_video_handle={} error={error}",
-                    self.inner.connection_id(),
-                    wts_session_id,
-                    has_ironrdp_video_handle,
-                ));
-            } else {
-                self.idd_driver_load_notified.store(true, Ordering::SeqCst);
-                debug_log_line(&format!(
-                    "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK source=notify_session_id connection_id={} session_id={} has_video_handle={}",
-                    self.inner.connection_id(),
-                    wts_session_id,
-                    has_ironrdp_video_handle,
-                ));
-            }
-        }
+        let _ = self.probe_idd_driver_load(wts_session_id, "notify_session_id", 10, Duration::from_millis(200));
 
         let (wddm_enabled, driver_handle_seen, driver_load_notified, driver_load_session_id) =
             self.idd_readiness_snapshot();
@@ -3437,37 +4182,144 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         let mut slot = self.video_handle.lock();
         let mut source_slot = self.video_handle_source.lock();
 
-        if slot.is_none() {
+        let driver_handle_raw = self.driver_handle_raw.load(Ordering::SeqCst);
+        if driver_handle_raw != 0 {
             let (wddm_enabled, driver_handle_seen, driver_load_notified, driver_load_session_id) =
                 self.idd_readiness_snapshot();
             let driver_load_session = driver_load_session_id
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_owned());
 
-            match ComProtocolConnection::open_device_handle(r"\\.\IronRdpIddVideo") {
-                Ok(handle) => {
-                    debug_log_line("GetVideoHandle: opened \\.\\IronRdpIddVideo");
+            *source_slot = VideoHandleSource::DriverLoadCallback;
+            debug_log_line(&format!(
+                "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=driver_load_callback wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
+            ));
+
+            return Ok(HANDLE_PTR(driver_handle_raw));
+        }
+
+        if slot.is_none() {
+            let (wddm_enabled, driver_handle_seen, driver_load_notified, driver_load_session_id) =
+                self.idd_readiness_snapshot();
+            let driver_load_session = driver_load_session_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_owned());
+            let rw = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+                | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
+                .0;
+
+            match ComProtocolConnection::open_first_device_handle_with_path(&[
+                (r"\\.\IronRdpIddVideo", rw),
+                (r"\\.\Global\IronRdpIddVideo", rw),
+                (r"\\?\GLOBALROOT\Device\IronRdpIddVideo", 0),
+                (r"\\?\GLOBALROOT\??\IronRdpIddVideo", 0),
+                (r"\\?\GLOBALROOT\GLOBAL??\IronRdpIddVideo", 0),
+                (r"\\?\GLOBALROOT\DosDevices\IronRdpIddVideo", 0),
+                (r"\\?\GLOBALROOT\DosDevices\Global\IronRdpIddVideo", 0),
+            ]) {
+                Ok((handle, path)) => {
+                    debug_log_line(&format!("GetVideoHandle: opened {path}"));
                     *slot = Some(handle);
                     *source_slot = VideoHandleSource::IronRdpIdd;
                     debug_log_line(&format!(
-                        "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=ironrdp_idd wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
+                        "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=ironrdp_idd path={path} wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
                     ));
                 }
                 Err(error) => {
+                    let setupapi_transient_failure;
+
+                    match ComProtocolConnection::open_ironrdp_idd_from_query_dos_device() {
+                        Ok((handle, path)) => {
+                            debug_log_line(&format!("GetVideoHandle: opened {path} via QueryDosDevice"));
+                            *slot = Some(handle);
+                            *source_slot = VideoHandleSource::IronRdpIdd;
+                            debug_log_line(&format!(
+                                "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=ironrdp_idd path={path} wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
+                            ));
+
+                            return Ok(HANDLE_PTR(slot.map(handle_to_raw_usize).unwrap_or_default()));
+                        }
+                        Err(query_error) => {
+                            debug_log_line(&format!(
+                                "GetVideoHandle: QueryDosDevice resolution failed for custom IDD paths: {query_error}"
+                            ));
+
+                            setupapi_transient_failure =
+                                match ComProtocolConnection::open_ironrdp_idd_from_setupapi_interface(self.inner.session_id())
+                                    .or_else(|_| ComProtocolConnection::open_ironrdp_idd_from_setupapi_pdo(self.inner.session_id())) {
+                                Ok((handle, path)) => {
+                                    debug_log_line(&format!("GetVideoHandle: opened {path} via SetupAPI PDO"));
+                                    *slot = Some(handle);
+                                    *source_slot = VideoHandleSource::IronRdpIdd;
+                                    debug_log_line(&format!(
+                                        "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=ironrdp_idd path={path} wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
+                                    ));
+
+                                    return Ok(HANDLE_PTR(slot.map(handle_to_raw_usize).unwrap_or_default()));
+                                }
+                                Err(setupapi_error) => {
+                                    debug_log_line(&format!(
+                                        "GetVideoHandle: SetupAPI PDO resolution failed for custom IDD paths: {setupapi_error}"
+                                    ));
+                                    ComProtocolConnection::is_transient_idd_open_error(&setupapi_error)
+                                }
+                            };
+                        }
+                    }
+
+                    if setupapi_transient_failure {
+                        for retry in 1..=8 {
+                            thread::sleep(Duration::from_millis(75));
+
+                            match ComProtocolConnection::open_ironrdp_idd_from_setupapi_interface(self.inner.session_id())
+                                .or_else(|_| ComProtocolConnection::open_ironrdp_idd_from_setupapi_pdo(self.inner.session_id())) {
+                                Ok((handle, path)) => {
+                                    debug_log_line(&format!(
+                                        "GetVideoHandle: opened {path} via SetupAPI PDO retry={retry}"
+                                    ));
+                                    *slot = Some(handle);
+                                    *source_slot = VideoHandleSource::IronRdpIdd;
+                                    debug_log_line(&format!(
+                                        "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=ironrdp_idd path={path} retry={retry} wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
+                                    ));
+
+                                    return Ok(HANDLE_PTR(slot.map(handle_to_raw_usize).unwrap_or_default()));
+                                }
+                                Err(retry_error) => {
+                                    debug_log_line(&format!(
+                                        "GetVideoHandle: SetupAPI PDO retry failed retry={retry} error={retry_error}"
+                                    ));
+
+                                    if !ComProtocolConnection::is_transient_idd_open_error(&retry_error) {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     debug_log_line(&format!(
-                        "GetVideoHandle: failed to open custom IDD: {error}, falling back to RdpVideoMiniport"
+                        "GetVideoHandle: failed to open custom IDD paths: {error}, falling back to RdpVideoMiniport"
                     ));
                     debug_log_line(&format!(
                         "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_PRIMARY_OPEN_FAILED connection_id={connection_id} source=ironrdp_idd wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session} error={error}",
                     ));
 
-                    match ComProtocolConnection::open_device_handle(r"\\.\RdpVideoMiniport") {
-                        Ok(handle) => {
-                            debug_log_line("GetVideoHandle: opened \\.\\RdpVideoMiniport (fallback)");
+                    match ComProtocolConnection::open_first_device_handle_with_path(&[
+                        (r"\\.\RdpVideoMiniport", rw),
+                        (r"\\.\Global\RdpVideoMiniport", rw),
+                        (r"\\?\GLOBALROOT\Device\RdpVideoMiniport", 0),
+                        (r"\\?\GLOBALROOT\??\RdpVideoMiniport", 0),
+                        (r"\\?\GLOBALROOT\GLOBAL??\RdpVideoMiniport", 0),
+                        (r"\\?\GLOBALROOT\DosDevices\RdpVideoMiniport", 0),
+                        (r"\\?\GLOBALROOT\DosDevices\Global\RdpVideoMiniport", 0),
+                    ]) {
+                        Ok((handle, path)) => {
+                            debug_log_line(&format!("GetVideoHandle: opened {path} (fallback)"));
                             *slot = Some(handle);
                             *source_slot = VideoHandleSource::RdpVideoMiniport;
                             debug_log_line(&format!(
-                                "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=rdp_video_miniport fallback_from=ironrdp_idd wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
+                                "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED connection_id={connection_id} source=rdp_video_miniport path={path} fallback_from=ironrdp_idd wddm_enabled={wddm_enabled} driver_handle_seen={driver_handle_seen} driver_load_notified={driver_load_notified} driver_load_session={driver_load_session}",
                             ));
                         }
                         Err(error) => {
@@ -3496,18 +4348,13 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         ));
         self.inner.connect_notify().map_err(transition_error)?;
 
-        if let Err(error) = self
-            .control_bridge
-            .set_capture_session_id_retried(connection_id, sessionid, "connect_notify")
-        {
-            debug_log_line(&format!(
-                "IWRdsProtocolConnection::ConnectNotify set_capture_session_id failed connection_id={connection_id} session_id={sessionid} error={error}"
-            ));
-        } else {
-            debug_log_line(&format!(
-                "IWRdsProtocolConnection::ConnectNotify set_capture_session_id ok connection_id={connection_id} session_id={sessionid}"
-            ));
-        }
+        self.control_bridge
+            .set_capture_session_id_async(connection_id, sessionid, "connect_notify");
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::ConnectNotify set_capture_session_id queued_async connection_id={connection_id} session_id={sessionid}"
+        ));
+
+        let _ = self.probe_idd_driver_load(sessionid, "connect_notify", 50, Duration::from_millis(200));
 
         Ok(())
     }
@@ -3925,6 +4772,16 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             debug_log_line(&format!(
                 "SESSION_PROOF_PROVIDER_SUPPRESS_LOGON_UI connection_id={connection_id} value={suppress_logon_ui} creds_available={has_credentials}",
             ));
+
+            if let Some(session_id) = self.inner.session_id() {
+                let _ = self.probe_idd_driver_load(
+                    session_id,
+                    "query_property_suppress_logon_ui",
+                    10,
+                    Duration::from_millis(200),
+                );
+            }
+
             return Ok(());
         }
 
@@ -4048,16 +4905,71 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
     fn NotifyCommandProcessCreated(&self, sessionid: u32) -> windows_core::Result<()> {
         let connection_id = self.inner.connection_id();
+
+        if self.wddm_idd_enabled.load(Ordering::SeqCst) && self.driver_handle_raw.load(Ordering::SeqCst) == 0 {
+            match self.GetVideoHandle() {
+                Ok(handle_ptr) if handle_ptr.0 != 0 => {
+                    let source = *self.video_handle_source.lock();
+                    if matches!(source, VideoHandleSource::IronRdpIdd | VideoHandleSource::DriverLoadCallback) {
+                        self.driver_handle_raw.store(handle_ptr.0, Ordering::SeqCst);
+                        self.idd_last_driver_load_session_id.store(sessionid, Ordering::SeqCst);
+
+                        match self.control_bridge.notify_idd_driver_loaded(sessionid) {
+                            Ok(()) => {
+                                self.idd_driver_load_notified.store(true, Ordering::SeqCst);
+                                debug_log_line(&format!(
+                                    "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK source=notify_command_process_created connection_id={connection_id} session_id={sessionid} has_video_handle=true video_source={}",
+                                    source.as_str(),
+                                ));
+                            }
+                            Err(error) => {
+                                self.idd_driver_load_notified.store(false, Ordering::SeqCst);
+                                debug_log_line(&format!(
+                                    "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ERROR source=notify_command_process_created connection_id={connection_id} session_id={sessionid} has_video_handle=true video_source={} error={error}",
+                                    source.as_str(),
+                                ));
+                            }
+                        }
+                    } else {
+                        debug_log_line(&format!(
+                            "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_SKIPPED source=notify_command_process_created connection_id={connection_id} session_id={sessionid} reason=non_idd_video_source video_source={}",
+                            source.as_str(),
+                        ));
+                    }
+                }
+                Ok(_) => {
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_SKIPPED source=notify_command_process_created connection_id={connection_id} session_id={sessionid} reason=no_video_handle",
+                    ));
+                }
+                Err(error) => {
+                    debug_log_line(&format!(
+                        "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_SKIPPED source=notify_command_process_created connection_id={connection_id} session_id={sessionid} reason=get_video_handle_failed error={error}",
+                    ));
+                }
+            }
+        }
+
         let has_userinit = session_has_process(sessionid, "userinit.exe");
         let has_explorer = session_has_process(sessionid, "explorer.exe");
         let has_logonui = session_has_process(sessionid, "LogonUI.exe");
         let has_winlogon = session_has_process(sessionid, "winlogon.exe");
         let (video_handle_open, video_handle_nonzero, video_source) = {
+            let driver_handle_raw = self.driver_handle_raw.load(Ordering::SeqCst);
             let slot = self.video_handle.lock();
             let source_slot = self.video_handle_source.lock();
-            let source = *source_slot;
-            let handle_raw = slot.map(handle_to_raw_usize).unwrap_or_default();
-            (slot.is_some(), handle_raw != 0, source)
+            let source = if driver_handle_raw != 0 {
+                VideoHandleSource::DriverLoadCallback
+            } else {
+                *source_slot
+            };
+            let cached_handle_raw = slot.map(handle_to_raw_usize).unwrap_or_default();
+            let effective_raw = if driver_handle_raw != 0 {
+                driver_handle_raw
+            } else {
+                cached_handle_raw
+            };
+            (driver_handle_raw != 0 || slot.is_some(), effective_raw != 0, source)
         };
 
         debug_log_line(&format!(

@@ -142,6 +142,35 @@ try {
         }
 
         Write-Host "Driver installed successfully"
+
+        # Ensure WUDFRd (UMDF kernel reflector) is running and set to auto-start.
+        # Without WUDFRd, no UMDF driver (including our IDD) can load.
+        $wudfrd = Get-Service -Name WUDFRd -ErrorAction SilentlyContinue
+        if ($null -ne $wudfrd) {
+            if ($wudfrd.StartType -ne 'Automatic') {
+                Write-Host "Setting WUDFRd to auto-start..."
+                sc.exe config WUDFRd start= auto | Out-Null
+            }
+            if ($wudfrd.Status -ne 'Running') {
+                Write-Host "Starting WUDFRd service..."
+                Start-Service -Name WUDFRd -ErrorAction Stop
+            }
+            Write-Host "WUDFRd: Status=$((Get-Service WUDFRd).Status), StartType=$((Get-Service WUDFRd).StartType)"
+        } else {
+            Write-Warning "WUDFRd service not found - UMDF drivers will not load"
+        }
+
+        # Clean up stale IDD phantom devices from previous sessions.
+        # These can accumulate and cause PnP confusion.
+        $staleDevices = @(Get-PnpDevice -FriendlyName 'IronRDP Indirect Display*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Status -eq 'Unknown' -or $_.Status -eq 'Error' })
+        if ($staleDevices.Count -gt 0) {
+            Write-Host "Removing $($staleDevices.Count) stale IDD device(s)..."
+            foreach ($dev in $staleDevices) {
+                Write-Host "  Removing: $($dev.InstanceId) (Status=$($dev.Status))"
+                pnputil /remove-device $dev.InstanceId 2>$null | Out-Null
+            }
+        }
     } -ArgumentList $RemotePath
 }
 finally {

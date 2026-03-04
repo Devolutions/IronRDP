@@ -33,7 +33,7 @@ use ironrdp::session::{ActiveStage, ActiveStageOutput};
 use ironrdp_pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 const HELP: &str = "\
 USAGE:
@@ -422,7 +422,7 @@ fn active_stage(
             }
             Err(e) if got_graphics => {
                 // Server closed without TLS close_notify; save what we have
-                info!("Connection closed ({}); saving received graphics", e);
+                warn!("Connection closed ({}); saving received graphics", e);
                 break 'outer;
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read frame")),
@@ -440,7 +440,10 @@ fn active_stage(
                     first_graphic_time = Some(std::time::Instant::now());
                     info!("First graphics update received");
                 }
-                ActiveStageOutput::Terminate(_) => break 'outer,
+                ActiveStageOutput::Terminate(reason) => {
+                    warn!(?reason, got_graphics, "Server sent Terminate PDU");
+                    break 'outer;
+                }
                 _ => {}
             }
         }
