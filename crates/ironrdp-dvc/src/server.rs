@@ -96,8 +96,6 @@ impl DrdynvcServer {
             .is_some_and(|c| c.state == ChannelState::Opened)
     }
 
-    // FIXME(#61): it's likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
-
     /// Registers a dynamic channel with the server.
     ///
     /// # Panics
@@ -120,6 +118,27 @@ impl DrdynvcServer {
         self.dynamic_channels
             .get_mut(id)
             .ok_or_else(|| invalid_field_err!("DRDYNVC", "", "invalid channel id"))
+    }
+
+    /// Creates a new DVC, returns CreateRequest PDU to send to client.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of registered dynamic channels exceeds `u32::MAX`.
+    pub fn create_channel<T>(&mut self, channel: T) -> PduResult<SvcMessage>
+    where
+        T: DvcServerProcessor + 'static,
+    {
+        let channel_name = channel.channel_name().into();
+        let mut dvc = DynamicChannel::new(channel);
+        dvc.state = ChannelState::Creation;
+
+        let id = self.dynamic_channels.insert(dvc);
+        // The slab index is used as the DVC channel ID (a u32).
+        let channel_id = u32::try_from(id).expect("DVC channel count should not exceed u32::MAX");
+
+        let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(channel_id, channel_name));
+        as_svc_msg_with_flag(req)
     }
 }
 
