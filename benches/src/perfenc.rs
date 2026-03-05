@@ -59,7 +59,7 @@ async fn main() -> Result<(), anyhow::Error> {
         OptCodec::QoiZ => update_codecs.set_qoiz(Some(0)),
     };
 
-    let mut encoder = UpdateEncoder::new(DesktopSize { width, height }, flags, update_codecs)
+    let mut encoder = UpdateEncoder::new(DesktopSize { width, height }, flags, update_codecs, 8 * 1024 * 1024)
         .context("failed to initialize update encoder")?;
 
     let mut total_raw = 0u64;
