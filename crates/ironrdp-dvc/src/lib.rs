@@ -4,6 +4,8 @@
 
 extern crate alloc;
 
+use core::any::TypeId;
+
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -114,6 +116,10 @@ impl DynamicVirtualChannel {
             complete_data: CompleteData::new(),
             channel_id: None,
         }
+    }
+
+    fn processor_type_id(&self) -> TypeId {
+        self.channel_processor.as_any().type_id()
     }
 
     pub fn is_open(&self) -> bool {

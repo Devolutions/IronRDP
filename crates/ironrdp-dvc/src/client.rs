@@ -308,7 +308,17 @@ impl DynamicChannelSet {
     }
 
     fn remove_by_channel_id(&mut self, id: DynamicChannelId) {
-        self.active_channels.remove(&id);
+        if let Some(dvc) = self.active_channels.remove(&id) {
+            let type_id = dvc.processor_type_id();
+
+            // Only matters for pre-registered channels
+            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id) {
+                // TODO: cleaner style in Rust edition 2024 `if let .. && `
+                if entry.get() == &id {
+                    entry.remove();
+                }
+            }
+        }
     }
 
     #[inline]
