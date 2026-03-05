@@ -13,6 +13,8 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct SoundFlags: u16 {
         const BEEPS = 1;
+
+        const _ = !0;
     }
 }
 
@@ -50,7 +52,7 @@ impl<'de> Decode<'de> for Sound {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = SoundFlags::from_bits_truncate(src.read_u16());
+        let flags = SoundFlags::from_bits_retain(src.read_u16());
         read_padding!(src, 2);
 
         Ok(Sound { flags })

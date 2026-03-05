@@ -65,6 +65,8 @@ bitflags! {
         const RESTRICTED_ADMIN_MODE_REQUIRED = 0x01;
         const REDIRECTED_AUTHENTICATION_MODE_REQUIRED = 0x02;
         const CORRELATION_INFO_PRESENT = 0x08;
+
+        const _ = !0;
     }
 }
 
@@ -81,6 +83,8 @@ bitflags! {
         const RDP_NEG_RSP_RESERVED = 0x04;
         const RESTRICTED_ADMIN_MODE_SUPPORTED = 0x08;
         const REDIRECTED_AUTHENTICATION_MODE_SUPPORTED = 0x10;
+
+        const _ = !0;
     }
 }
 
@@ -318,7 +322,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
                 return Err(unexpected_message_type_err!(Self::NAME, u8::from(msg_type)));
             }
 
-            let flags = RequestFlags::from_bits_truncate(src.read_u8());
+            let flags = RequestFlags::from_bits_retain(src.read_u8());
 
             if flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
                 // TODO(#111): support for RDP_NEG_CORRELATION_INFO
@@ -331,7 +335,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
 
             let _length = src.read_u16();
 
-            let protocol = SecurityProtocol::from_bits_truncate(src.read_u32());
+            let protocol = SecurityProtocol::from_bits_retain(src.read_u32());
 
             Ok(Self {
                 nego_data,
@@ -410,9 +414,9 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
 
             match NegoMsgType::from(src.read_u8()) {
                 NegoMsgType::RESPONSE => {
-                    let flags = ResponseFlags::from_bits_truncate(src.read_u8());
+                    let flags = ResponseFlags::from_bits_retain(src.read_u8());
                     let _length = src.read_u16();
-                    let protocol = SecurityProtocol::from_bits_truncate(src.read_u32());
+                    let protocol = SecurityProtocol::from_bits_retain(src.read_u32());
 
                     Ok(Self::Response { flags, protocol })
                 }

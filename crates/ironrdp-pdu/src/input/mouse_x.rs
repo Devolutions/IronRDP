@@ -38,7 +38,7 @@ impl<'de> Decode<'de> for MouseXPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = PointerXFlags::from_bits_truncate(src.read_u16());
+        let flags = PointerXFlags::from_bits_retain(src.read_u16());
         let x_position = src.read_u16();
         let y_position = src.read_u16();
 
@@ -56,5 +56,7 @@ bitflags! {
         const DOWN = 0x8000;
         const BUTTON1 = 0x0001;
         const BUTTON2 = 0x0002;
+
+        const _ = !0;
     }
 }

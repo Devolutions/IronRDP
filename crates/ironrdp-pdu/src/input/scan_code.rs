@@ -40,7 +40,7 @@ impl<'de> Decode<'de> for ScanCodePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = KeyboardFlags::from_bits_truncate(src.read_u16());
+        let flags = KeyboardFlags::from_bits_retain(src.read_u16());
         let key_code = src.read_u16();
         read_padding!(src, 2);
 
@@ -55,5 +55,7 @@ bitflags! {
         const EXTENDED_1 = 0x0200;
         const DOWN = 0x4000;
         const RELEASE = 0x8000;
+
+        const _ = !0;
     }
 }

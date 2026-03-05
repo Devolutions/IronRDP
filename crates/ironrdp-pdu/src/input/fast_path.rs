@@ -60,7 +60,7 @@ impl<'de> Decode<'de> for FastPathInputHeader {
         ensure_fixed_part_size!(in: src);
 
         let header = src.read_u8();
-        let flags = EncryptionFlags::from_bits_truncate(header.get_bits(6..8));
+        let flags = EncryptionFlags::from_bits_retain(header.get_bits(6..8));
         let mut num_events = header.get_bits(2..6);
         let (length, sizeof_length) = per::read_length(src).map_err(|e| other_err!("perLen", source: e))?;
 

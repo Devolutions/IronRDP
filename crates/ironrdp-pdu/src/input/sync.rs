@@ -39,7 +39,7 @@ impl<'de> Decode<'de> for SyncPdu {
         ensure_fixed_part_size!(in: src);
 
         read_padding!(src, 2);
-        let flags = SyncToggleFlags::from_bits_truncate(src.read_u32());
+        let flags = SyncToggleFlags::from_bits_retain(src.read_u32());
 
         Ok(Self { flags })
     }
@@ -52,5 +52,7 @@ bitflags! {
         const NUM_LOCK = 0x2;
         const CAPS_LOCK = 0x4;
         const KANA_LOCK = 0x8;
+
+        const _ = !0;
     }
 }

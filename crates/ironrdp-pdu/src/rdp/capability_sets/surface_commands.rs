@@ -12,6 +12,8 @@ bitflags! {
         const SET_SURFACE_BITS = 0x02;
         const FRAME_MARKER = 0x10;
         const STREAM_SURFACE_BITS = 0x40;
+
+        const _ = !0;
     }
 }
 
@@ -49,7 +51,7 @@ impl<'de> Decode<'de> for SurfaceCommands {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = CmdFlags::from_bits_truncate(src.read_u32());
+        let flags = CmdFlags::from_bits_retain(src.read_u32());
         let _reserved = src.read_u32();
 
         Ok(SurfaceCommands { flags })

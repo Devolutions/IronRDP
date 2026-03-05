@@ -40,7 +40,7 @@ impl<'de> Decode<'de> for UnicodePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = KeyboardFlags::from_bits_truncate(src.read_u16());
+        let flags = KeyboardFlags::from_bits_retain(src.read_u16());
         let unicode_code = src.read_u16();
         read_padding!(src, 2);
 
@@ -52,5 +52,7 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct KeyboardFlags: u16 {
         const RELEASE = 0x8000;
+
+        const _ = !0;
     }
 }

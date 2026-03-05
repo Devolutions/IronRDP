@@ -136,6 +136,8 @@ bitflags! {
         const LUMA_AND_CHROMA = 0x00;
         const LUMA = 0x01;
         const CHROMA = 0x02;
+
+        const _ = !0;
     }
 }
 
@@ -189,7 +191,7 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
         let stream_info = src.read_u32();
         let stream_len = stream_info.get_bits(0..30);
         let encoding =
-            Encoding::from_bits_truncate(u8::try_from(stream_info.get_bits(30..32)).expect("value fits into u8"));
+            Encoding::from_bits_retain(u8::try_from(stream_info.get_bits(30..32)).expect("value fits into u8"));
 
         if stream_len == 0 {
             if encoding == Encoding::LUMA_AND_CHROMA {

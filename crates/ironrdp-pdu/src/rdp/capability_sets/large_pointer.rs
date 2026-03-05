@@ -34,7 +34,7 @@ impl<'de> Decode<'de> for LargePointer {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = LargePointerSupportFlags::from_bits_truncate(src.read_u16());
+        let flags = LargePointerSupportFlags::from_bits_retain(src.read_u16());
 
         Ok(Self { flags })
     }
@@ -45,6 +45,8 @@ bitflags! {
     pub struct LargePointerSupportFlags: u16 {
         const UP_TO_96X96_PIXELS = 1;
         const UP_TO_384X384_PIXELS = 2;
+
+        const _ = !0;
     }
 }
 

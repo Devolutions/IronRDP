@@ -140,6 +140,8 @@ bitflags! {
         const LUMA_AND_CHROMA = 0x00;
         const LUMA = 0x01;
         const CHROMA = 0x02;
+
+        const _ = !0;
     }
 }
 
@@ -198,7 +200,7 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
         if encoding_raw > 2 {
             return Err(invalid_field_err!("encoding", "reserved encoding value"));
         }
-        let encoding = Encoding::from_bits_truncate(encoding_raw);
+        let encoding = Encoding::from_bits_retain(encoding_raw);
 
         if stream_len == 0 {
             if encoding == Encoding::LUMA_AND_CHROMA {

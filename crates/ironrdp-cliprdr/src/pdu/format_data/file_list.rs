@@ -17,6 +17,8 @@ bitflags! {
         const FILE_SIZE = 0x0000_0040;
         /// The lastWriteTime field contains valid data.
         const LAST_WRITE_TIME = 0x0000_0020;
+
+        const _ = !0;
     }
 }
 
@@ -41,6 +43,8 @@ bitflags! {
         /// A file that does not have other attributes set. This attribute is valid only
         /// when used alone.
         const NORMAL = 0x0000_0080;
+
+        const _ = !0;
     }
 }
 
@@ -119,10 +123,10 @@ impl<'de> Decode<'de> for FileDescriptor {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = ClipboardFileFlags::from_bits_truncate(src.read_u32());
+        let flags = ClipboardFileFlags::from_bits_retain(src.read_u32());
         src.read_array::<32>();
         let attributes = if flags.contains(ClipboardFileFlags::ATTRIBUTES) {
-            Some(ClipboardFileAttributes::from_bits_truncate(src.read_u32()))
+            Some(ClipboardFileAttributes::from_bits_retain(src.read_u32()))
         } else {
             let _ = src.read_u32();
             None

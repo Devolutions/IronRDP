@@ -905,6 +905,8 @@ bitflags! {
         const SCARD_STATE_INUSE = 0x0000_0100;
         const SCARD_STATE_MUTE = 0x0000_0200;
         const SCARD_STATE_UNPOWERED = 0x0000_0400;
+
+        const _ = !0;
     }
 }
 
@@ -1026,6 +1028,8 @@ bitflags! {
         const SCARD_PROTOCOL_RAW = 0x0001_0000;
         const SCARD_PROTOCOL_DEFAULT = 0x8000_0000;
         const SCARD_PROTOCOL_OPTIMAL = 0x0000_0000;
+
+        const _ = !0;
     }
 }
 

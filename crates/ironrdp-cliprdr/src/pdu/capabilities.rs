@@ -214,7 +214,7 @@ impl<'de> Decode<'de> for GeneralCapabilitySet {
         ensure_fixed_part_size!(in: src);
 
         let version: ClipboardProtocolVersion = src.read_u32().try_into()?;
-        let general_flags = ClipboardGeneralCapabilityFlags::from_bits_truncate(src.read_u32());
+        let general_flags = ClipboardGeneralCapabilityFlags::from_bits_retain(src.read_u32());
 
         Ok(Self { version, general_flags })
     }
@@ -289,5 +289,7 @@ bitflags! {
         /// using the File Contents Request PDU and File Contents
         /// Response PDU.
         const HUGE_FILE_SUPPORT_ENABLED = 0x0000_0020;
+
+        const _ = !0;
     }
 }

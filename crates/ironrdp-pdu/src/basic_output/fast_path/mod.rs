@@ -90,7 +90,7 @@ impl<'de> Decode<'de> for FastPathHeader {
         ensure_fixed_part_size!(in: src);
 
         let header = src.read_u8();
-        let flags = EncryptionFlags::from_bits_truncate(header.get_bits(6..8));
+        let flags = EncryptionFlags::from_bits_retain(header.get_bits(6..8));
 
         let (length, sizeof_length) = per::read_length(src).map_err(|e| {
             DecodeError::invalid_field("", "length", "Invalid encoded fast path PDU length").with_source(e)
@@ -180,7 +180,7 @@ impl<'de> Decode<'de> for FastPathUpdatePdu<'de> {
         let fragmentation = Fragmentation::from_u8(fragmentation)
             .ok_or_else(|| invalid_field_err!("updateHeader", "Invalid fragmentation"))?;
 
-        let compression = Compression::from_bits_truncate(header.get_bits(6..8));
+        let compression = Compression::from_bits_retain(header.get_bits(6..8));
 
         let (compression_flags, compression_type) = if compression.contains(Compression::COMPRESSION_USED) {
             let expected_size = 1 /* flags_with_type */ + 2 /* len */;
@@ -188,7 +188,7 @@ impl<'de> Decode<'de> for FastPathUpdatePdu<'de> {
 
             let compression_flags_with_type = src.read_u8();
             let compression_flags =
-                CompressionFlags::from_bits_truncate(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
+                CompressionFlags::from_bits_retain(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
             let compression_type =
                 CompressionType::from_u8(compression_flags_with_type & SHARE_DATA_HEADER_COMPRESSION_MASK)
                     .ok_or_else(|| invalid_field_err!("compressionFlags", "invalid compression type"))?;
@@ -382,6 +382,8 @@ bitflags! {
     pub struct EncryptionFlags: u8 {
         const SECURE_CHECKSUM = 0x1;
         const ENCRYPTED = 0x2;
+
+        const _ = !0;
     }
 }
 
@@ -389,5 +391,7 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Compression: u8 {
         const COMPRESSION_USED = 0x2;
+
+        const _ = !0;
     }
 }

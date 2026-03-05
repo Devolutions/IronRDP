@@ -57,7 +57,7 @@ impl<'a> BulkEncodedData<'a> {
         let compression_type_and_flags = buffer.read_u8()?;
         let _compression_type = CompressionType::from_u8(compression_type_and_flags.get_bits(..4))
             .ok_or(ZgfxError::InvalidCompressionType)?;
-        let compression_flags = CompressionFlags::from_bits_truncate(compression_type_and_flags.get_bits(4..));
+        let compression_flags = CompressionFlags::from_bits_retain(compression_type_and_flags.get_bits(4..));
 
         Ok(Self {
             compression_flags,
@@ -81,6 +81,8 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CompressionFlags: u8 {
         const COMPRESSED = 0x2;
+
+        const _ = !0;
     }
 }
 

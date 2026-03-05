@@ -143,13 +143,13 @@ impl<'de> Decode<'de> for CapabilitySet {
         ensure_size!(in: cur, size: size);
         match version {
             CapabilityVersion::V8 => Ok(CapabilitySet::V8 {
-                flags: CapabilitiesV8Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV8Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V8_1 => Ok(CapabilitySet::V8_1 {
-                flags: CapabilitiesV81Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV81Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10 => Ok(CapabilitySet::V10 {
-                flags: CapabilitiesV10Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV10Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_1 => {
                 cur.read_u128();
@@ -157,25 +157,25 @@ impl<'de> Decode<'de> for CapabilitySet {
                 Ok(CapabilitySet::V10_1)
             }
             CapabilityVersion::V10_2 => Ok(CapabilitySet::V10_2 {
-                flags: CapabilitiesV10Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV10Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_3 => Ok(CapabilitySet::V10_3 {
-                flags: CapabilitiesV103Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV103Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_4 => Ok(CapabilitySet::V10_4 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_5 => Ok(CapabilitySet::V10_5 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_6 => Ok(CapabilitySet::V10_6 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_6Err => Ok(CapabilitySet::V10_6Err {
-                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::V10_7 => Ok(CapabilitySet::V10_7 {
-                flags: CapabilitiesV107Flags::from_bits_truncate(cur.read_u32()),
+                flags: CapabilitiesV107Flags::from_bits_retain(cur.read_u32()),
             }),
             CapabilityVersion::Unknown => Ok(CapabilitySet::Unknown(data.to_vec())),
         }
@@ -304,6 +304,8 @@ bitflags! {
     pub struct CapabilitiesV8Flags: u32  {
         const THIN_CLIENT = 0x1;
         const SMALL_CACHE = 0x2;
+
+        const _ = !0;
     }
 }
 
@@ -313,6 +315,8 @@ bitflags! {
         const THIN_CLIENT = 0x01;
         const SMALL_CACHE = 0x02;
         const AVC420_ENABLED = 0x10;
+
+        const _ = !0;
     }
 }
 
@@ -321,6 +325,8 @@ bitflags! {
     pub struct CapabilitiesV10Flags: u32 {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;
+
+        const _ = !0;
     }
 }
 
@@ -329,6 +335,8 @@ bitflags! {
     pub struct CapabilitiesV103Flags: u32  {
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
+
+        const _ = !0;
     }
 }
 
@@ -338,6 +346,8 @@ bitflags! {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
+
+        const _ = !0;
     }
 }
 
@@ -348,5 +358,7 @@ bitflags! {
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
         const SCALEDMAP_DISABLE = 0x80;
+
+        const _ = !0;
     }
 }

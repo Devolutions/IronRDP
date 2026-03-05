@@ -30,6 +30,8 @@ bitflags! {
         const ISOTROPIC = 0x0000_0007;
         /// Logical units are mapped to arbitrary units with arbitrarily scaled axes.
         const ANISOTROPIC = 0x0000_0008;
+
+        const _ = !0;
     }
 }
 
@@ -89,7 +91,7 @@ impl<'de> Decode<'de> for PackedMetafile<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let mapping_mode = PackedMetafileMappingMode::from_bits_truncate(src.read_u32());
+        let mapping_mode = PackedMetafileMappingMode::from_bits_retain(src.read_u32());
         let x_ext = src.read_u32();
         let y_ext = src.read_u32();
 

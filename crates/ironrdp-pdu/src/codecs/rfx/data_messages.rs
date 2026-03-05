@@ -82,7 +82,7 @@ impl<'de> Decode<'de> for ContextPdu {
         }
 
         let properties = src.read_u16();
-        let flags = OperatingMode::from_bits_truncate(properties.get_bits(0..3));
+        let flags = OperatingMode::from_bits_retain(properties.get_bits(0..3));
         let color_conversion_transform = properties.get_bits(3..5);
         if color_conversion_transform != COLOR_CONVERSION_ICT {
             return Err(invalid_field_err!("cct", "Invalid color conversion transform"));
@@ -697,5 +697,7 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct OperatingMode: u16 {
         const IMAGE_MODE = 0x02; // if not set, the codec is operating in video mode
+
+        const _ = !0;
     }
 }

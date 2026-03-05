@@ -142,7 +142,7 @@ impl From<SyncToggleFlags> for KeyboardEvent {
         reason = "we are truncating the value on purpose"
     )]
     fn from(value: SyncToggleFlags) -> Self {
-        KeyboardEvent::Synchronize(SynchronizeFlags::from_bits_truncate(value.bits() as u8))
+        KeyboardEvent::Synchronize(SynchronizeFlags::from_bits_retain(value.bits() as u8))
     }
 }
 

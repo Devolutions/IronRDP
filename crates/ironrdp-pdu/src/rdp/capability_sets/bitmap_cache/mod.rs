@@ -111,6 +111,8 @@ bitflags! {
     pub struct CacheFlags: u16 {
         const PERSISTENT_KEYS_EXPECTED_FLAG = 1;
         const ALLOW_CACHE_WAITING_LIST_FLAG = 2;
+
+        const _ = !0;
     }
 }
 
@@ -157,7 +159,7 @@ impl<'de> Decode<'de> for BitmapCacheRev2 {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let cache_flags = CacheFlags::from_bits_truncate(src.read_u16());
+        let cache_flags = CacheFlags::from_bits_retain(src.read_u16());
         let _padding = src.read_u8();
         let num_cell_caches = src.read_u8();
 

@@ -53,6 +53,8 @@ bitflags! {
         const COLOR_INDEX_SUPPORT = 0x0020;
         const SOLID_PATTERN_BRUSH_ONLY = 0x0040;
         const ORDER_FLAGS_EXTRA_FLAGS = 0x0080;
+
+        const _ = !0;
     }
 }
 
@@ -61,6 +63,8 @@ bitflags! {
     pub struct OrderSupportExFlags: u16 {
         const CACHE_BITMAP_REV3_SUPPORT = 2;
         const ALTSEC_FRAME_MARKER_SUPPORT = 4;
+
+        const _ = !0;
     }
 }
 
@@ -149,12 +153,12 @@ impl<'de> Decode<'de> for Order {
         let _max_order_level = src.read_u16();
         let _num_fonts = src.read_u16();
 
-        let order_flags = OrderFlags::from_bits_truncate(src.read_u16());
+        let order_flags = OrderFlags::from_bits_retain(src.read_u16());
         let order_support = src.read_array();
 
         let _text_flags = src.read_u16();
 
-        let order_support_ex_flags = OrderSupportExFlags::from_bits_truncate(src.read_u16());
+        let order_support_ex_flags = OrderSupportExFlags::from_bits_retain(src.read_u16());
 
         let _padding = src.read_u32();
         let desktop_save_size = src.read_u32();
