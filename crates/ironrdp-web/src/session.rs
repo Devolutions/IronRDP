@@ -756,6 +756,7 @@ impl iron_remote_desktop::Session for Session {
                                     }
                                     .build(),
                                 );
+                                active_stage.set_share_id(share_id);
                                 active_stage.set_enable_server_pointer(enable_server_pointer);
                                 break 'activation_seq;
                             }

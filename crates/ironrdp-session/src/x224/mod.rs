@@ -72,6 +72,10 @@ impl Processor {
         }
     }
 
+    pub fn set_share_id(&mut self, share_id: u32) {
+        self.share_id = share_id;
+    }
+
     pub fn get_svc_processor<T: SvcProcessor + 'static>(&self) -> Option<&T> {
         self.static_channels
             .get_by_type::<T>()

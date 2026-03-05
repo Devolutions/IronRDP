@@ -109,6 +109,7 @@ async fn test_deactivation_reactivation() {
                                 }
                                 .build(),
                             );
+                            stage.set_share_id(share_id);
                             stage.set_enable_server_pointer(enable_server_pointer);
                             break 'activation_seq;
                         }

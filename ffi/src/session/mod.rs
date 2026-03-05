@@ -179,6 +179,7 @@ pub mod ffi {
                 }
                 .build(),
             );
+            self.0.set_share_id(share_id);
         }
 
         pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
