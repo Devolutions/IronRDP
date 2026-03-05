@@ -47,7 +47,7 @@ pub const MONITOR_LAYOUT_HEADERS_BUFFER: [u8; 18] = [
     0xea, 0x03, 0x01, 0x00, // share id
     0x00, // padding
     0x01, // stream id
-    0x30, 0x00, // uncompressed length
+    0x2c, 0x00, // uncompressed length
     0x37, // pdu type
     0x00, // compression type
     0x00, 0x00, // compressed length
@@ -60,7 +60,7 @@ pub const CLIENT_SYNCHRONIZE_BUFFER: [u8; 22] = [
     0xea, 0x03, 0x01, 0x00, // share id
     0x00, // padding
     0x01, // stream id
-    0x08, 0x00, // uncompressed length
+    0x04, 0x00, // uncompressed length
     0x1f, // pdu type
     0x00, // compression type
     0x00, 0x00, // compressed length
@@ -75,7 +75,7 @@ pub const CONTROL_COOPERATE_BUFFER: [u8; 26] = [
     0xea, 0x03, 0x01, 0x00, // share id
     0x00, // padding
     0x01, // stream id
-    0x0c, 0x00, // uncompressed length
+    0x08, 0x00, // uncompressed length
     0x14, // pdu type
     0x00, // compression type
     0x00, 0x00, // compressed length
@@ -91,7 +91,7 @@ pub const CONTROL_REQUEST_CONTROL_BUFFER: [u8; 26] = [
     0xea, 0x03, 0x01, 0x00, // share id
     0x00, // padding
     0x01, // stream id
-    0x0c, 0x00, // uncompressed length
+    0x08, 0x00, // uncompressed length
     0x14, // pdu type
     0x00, // compression type
     0x00, 0x00, // compressed length
@@ -107,7 +107,7 @@ pub const SERVER_GRANTED_CONTROL_BUFFER: [u8; 26] = [
     0xea, 0x03, 0x01, 0x00, // share id
     0x00, // padding
     0x02, // stream id
-    0x0c, 0x00, // uncompressed length
+    0x08, 0x00, // uncompressed length
     0x14, // pdu type
     0x00, // compression type
     0x00, 0x00, // compressed length
@@ -123,7 +123,7 @@ pub const CLIENT_FONT_LIST_BUFFER: [u8; 26] = [
     0xea, 0x03, 0x01, 0x00, // share id
     0x00, // padding
     0x01, // stream id
-    0x0c, 0x00, // uncompressed length
+    0x08, 0x00, // uncompressed length
     0x27, // pdu type
     0x00, // compression type
     0x00, 0x00, // compressed length
@@ -140,7 +140,7 @@ pub const SERVER_FONT_MAP_BUFFER: [u8; 26] = [
     0xea, 0x03, 0x01, 0x00, // share id
     0x00, // padding
     0x02, // stream id
-    0x0c, 0x00, // uncompressed length
+    0x08, 0x00, // uncompressed length
     0x28, // pdu type
     0x00, // compression type
     0x00, 0x00, // compressed length
