@@ -1602,7 +1602,7 @@ impl DeviceCreateRequest {
         let allocation_size = src.read_u64();
         let file_attributes = FileAttributes::from_bits_retain(src.read_u32());
         let shared_access = SharedAccess::from_bits_retain(src.read_u32());
-        let create_disposition = CreateDisposition::from_bits_retain(src.read_u32());
+        let create_disposition = CreateDisposition::from(src.read_u32());
         let create_options = CreateOptions::from_bits_retain(src.read_u32());
         let path_length: usize = cast_length!("DeviceCreateRequest", "path_length", src.read_u32())?;
 
@@ -1729,21 +1729,36 @@ bitflags! {
     }
 }
 
-bitflags! {
-    /// Defined in [2.2.13] SMB2 CREATE Request
-    ///
-    /// See FreeRDP's [drive_file.c] for context about how these should be interpreted.
-    ///
-    /// [2.2.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
-    /// [drive_file.c]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L207
-    #[derive(PartialEq, Eq, Debug, Clone)]
-    pub struct CreateDisposition: u32 {
-        const FILE_SUPERSEDE = 0x00000000;
-        const FILE_OPEN = 0x00000001;
-        const FILE_CREATE = 0x00000002;
-        const FILE_OPEN_IF = 0x00000003;
-        const FILE_OVERWRITE = 0x00000004;
-        const FILE_OVERWRITE_IF = 0x00000005;
+/// Defined in [2.2.13] SMB2 CREATE Request
+///
+/// Mutually exclusive disposition values (0 through 5), not combinable bit flags.
+/// Modeled as a newtype for infallible parsing and round-trip correctness.
+///
+/// See FreeRDP's [drive_file.c] for context about how these should be interpreted.
+///
+/// [2.2.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
+/// [drive_file.c]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L207
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct CreateDisposition(u32);
+
+impl CreateDisposition {
+    pub const FILE_SUPERSEDE: Self = Self(0x00000000);
+    pub const FILE_OPEN: Self = Self(0x00000001);
+    pub const FILE_CREATE: Self = Self(0x00000002);
+    pub const FILE_OPEN_IF: Self = Self(0x00000003);
+    pub const FILE_OVERWRITE: Self = Self(0x00000004);
+    pub const FILE_OVERWRITE_IF: Self = Self(0x00000005);
+}
+
+impl From<u32> for CreateDisposition {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<CreateDisposition> for u32 {
+    fn from(value: CreateDisposition) -> Self {
+        value.0
     }
 }
 
