@@ -23,6 +23,7 @@ type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, A
 pub struct App {
     input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
     context: softbuffer::Context<DisplayHandle<'static>>,
+    initial_window_size: PhysicalSize<u32>,
     window: Option<WindowSurface>,
     buffer: Vec<u32>,
     buffer_size: (u16, u16),
@@ -35,6 +36,7 @@ impl App {
     pub fn new(
         event_loop: &EventLoop<RdpOutputEvent>,
         input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
+        initial_window_size: PhysicalSize<u32>,
     ) -> anyhow::Result<Self> {
         // SAFETY: We drop the softbuffer context right before the event loop is stopped, thus making this safe.
         // FIXME: This is not a sufficient proof and the API is actually unsound as-is.
@@ -50,6 +52,7 @@ impl App {
         Ok(Self {
             input_event_sender: input_event_sender.clone(),
             context,
+            initial_window_size,
             window: None,
             buffer: Vec::new(),
             buffer_size: (0, 0),
@@ -111,7 +114,9 @@ impl ApplicationHandler<RdpOutputEvent> for App {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window_attributes = WindowAttributes::default().with_title("IronRDP");
+        let window_attributes = WindowAttributes::default()
+            .with_title("IronRDP")
+            .with_inner_size(self.initial_window_size);
         match event_loop.create_window(window_attributes) {
             Ok(window) => {
                 let window = Arc::new(window);

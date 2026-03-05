@@ -12,15 +12,108 @@ use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatfo
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_mstsgu::GwConnectTarget;
 use tap::prelude::*;
+use tracing::debug;
 use url::Url;
 
 const DEFAULT_WIDTH: u16 = 1920;
 const DEFAULT_HEIGHT: u16 = 1080;
+const REDACTED_RDP_VALUE: &str = "*omitted*";
+const SUPPORTED_RDP_PROPERTIES: &[&str] = &[
+    "full address",
+    "alternate full address",
+    "server port",
+    "username",
+    "domain",
+    "enablecredsspsupport",
+    "gatewayhostname",
+    "gatewayusagemethod",
+    "gatewaycredentialssource",
+    "gatewayusername",
+    "gatewaypassword",
+    "kdcproxyname",
+    "kdcproxyurl",
+    "alternate shell",
+    "shell working directory",
+    "redirectclipboard",
+    "audiomode",
+    "desktopwidth",
+    "desktopheight",
+    "desktopscalefactor",
+    "compression",
+    "ClearTextPassword",
+];
+
+const SENSITIVE_RDP_PROPERTIES: &[&str] = &["ClearTextPassword", "GatewayPassword", "gatewaypassword"];
+
+fn is_supported_rdp_property(key: &str) -> bool {
+    SUPPORTED_RDP_PROPERTIES
+        .iter()
+        .any(|supported| supported.eq_ignore_ascii_case(key))
+}
+
+fn is_sensitive_rdp_property(key: &str) -> bool {
+    SENSITIVE_RDP_PROPERTIES
+        .iter()
+        .any(|sensitive| sensitive.eq_ignore_ascii_case(key))
+}
+
+fn redacted_rdp_line(line: &str) -> String {
+    let mut parts = line.splitn(3, ':');
+    let property = parts.next().unwrap_or("<unknown>");
+
+    if is_sensitive_rdp_property(property) {
+        format!("{property}:*:{REDACTED_RDP_VALUE}")
+    } else {
+        line.to_owned()
+    }
+}
+
+fn rdp_u16_property(value: Option<i64>, property: &'static str) -> Option<u16> {
+    value.and_then(|value| {
+        u16::try_from(value).ok().or_else(|| {
+            debug!(%property, value, "Ignored .RDP property with out-of-range value");
+            None
+        })
+    })
+}
+
+fn rdp_u32_property(value: Option<i64>, property: &'static str) -> Option<u32> {
+    value.and_then(|value| {
+        u32::try_from(value).ok().or_else(|| {
+            debug!(%property, value, "Ignored .RDP property with out-of-range value");
+            None
+        })
+    })
+}
+
+fn normalize_kdc_proxy_url_from_name(name: &str) -> String {
+    if name.starts_with("http://") || name.starts_with("https://") {
+        name.to_owned()
+    } else {
+        format!("https://{name}/KdcProxy")
+    }
+}
+
+fn should_use_gateway_from_rdp(gateway_usage_method: Option<i64>, has_gateway_host: bool) -> bool {
+    match gateway_usage_method {
+        Some(0 | 4) => false,
+        Some(1..=3) => true,
+        Some(value) => {
+            debug!(
+                property = "gatewayusagemethod",
+                value, "Ignored .RDP property with unsupported value"
+            );
+            has_gateway_host
+        }
+        None => has_gateway_host,
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub log_file: Option<String>,
     pub gw: Option<GwConnectTarget>,
+    pub kerberos_config: Option<connector::credssp::KerberosConfig>,
     pub destination: Destination,
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
@@ -343,9 +436,17 @@ struct Args {
 
 impl Config {
     pub fn parse_args() -> anyhow::Result<Self> {
+        Self::parse_from(std::env::args_os())
+    }
+
+    pub fn parse_from<I, T>(args: I) -> anyhow::Result<Self>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
         use ironrdp_cfg::PropertySetExt as _;
 
-        let args = Args::parse();
+        let args = Args::parse_from(args);
 
         let mut properties = ironrdp_propertyset::PropertySet::new();
 
@@ -354,27 +455,92 @@ impl Config {
                 std::fs::read_to_string(&rdp_file).with_context(|| format!("failed to read {}", rdp_file.display()))?;
 
             if let Err(errors) = ironrdp_rdpfile::load(&mut properties, &input) {
-                for e in errors {
-                    #[expect(clippy::print_stderr)]
-                    {
-                        eprintln!("Error when reading {}: {e}", rdp_file.display())
+                for error in errors {
+                    match &error.kind {
+                        ironrdp_rdpfile::ErrorKind::UnknownType { ty } => {
+                            debug!(
+                                rdp_file = %rdp_file.display(),
+                                line = error.line,
+                                %ty,
+                                "Skipped .RDP property with unsupported type"
+                            );
+                        }
+                        ironrdp_rdpfile::ErrorKind::InvalidValue { ty, value } => {
+                            debug!(
+                                rdp_file = %rdp_file.display(),
+                                line = error.line,
+                                %ty,
+                                value = %value,
+                                "Skipped .RDP property with invalid value"
+                            );
+                        }
+                        ironrdp_rdpfile::ErrorKind::MalformedLine { line } => {
+                            let redacted_line = redacted_rdp_line(line);
+                            debug!(
+                                rdp_file = %rdp_file.display(),
+                                line = error.line,
+                                malformed_line = %redacted_line,
+                                "Skipped malformed .RDP property line"
+                            );
+                        }
                     }
+                }
+            }
+
+            for (key, _) in properties.iter() {
+                let property = key.as_ref();
+
+                if !is_supported_rdp_property(property) {
+                    debug!(rdp_file = %rdp_file.display(), %property, "Ignored unsupported .RDP property");
                 }
             }
         }
 
+        let has_gateway_host = properties.gateway_hostname().is_some();
+        let use_gateway_from_rdp = should_use_gateway_from_rdp(properties.gateway_usage_method(), has_gateway_host);
+
         let mut gw: Option<GwConnectTarget> = None;
-        if let Some(gw_addr) = args.gw_endpoint {
+        if let Some(gw_addr) = args.gw_endpoint.or_else(|| {
+            if use_gateway_from_rdp {
+                properties.gateway_hostname().map(str::to_owned)
+            } else {
+                None
+            }
+        }) {
             gw = Some(GwConnectTarget {
                 gw_endpoint: gw_addr,
                 gw_user: String::new(),
                 gw_pass: String::new(),
                 server: String::new(), // TODO: non-standard port? also dont use here?
             });
+        } else if has_gateway_host && !use_gateway_from_rdp {
+            debug!("Ignored gatewayhostname due to gatewayusagemethod policy");
         }
 
         if let Some(ref mut gw) = gw {
-            gw.gw_user = if let Some(gw_user) = args.gw_user {
+            if let Some(gateway_credentials_source) = properties.gateway_credentials_source() {
+                match gateway_credentials_source {
+                    0 | 3 | 4 => {}
+                    1 | 2 | 5 => {
+                        debug!(
+                            property = "gatewaycredentialssource",
+                            value = gateway_credentials_source,
+                            "Unsupported gateway credential source; falling back to username/password"
+                        );
+                    }
+                    value => {
+                        debug!(
+                            property = "gatewaycredentialssource",
+                            value, "Ignored .RDP property with unsupported value"
+                        );
+                    }
+                }
+            }
+
+            gw.gw_user = if let Some(gw_user) = args
+                .gw_user
+                .or_else(|| properties.gateway_username().map(str::to_owned))
+            {
                 gw_user
             } else {
                 inquire::Text::new("Gateway username:")
@@ -382,7 +548,10 @@ impl Config {
                     .context("Username prompt")?
             };
 
-            gw.gw_pass = if let Some(gw_pass) = args.gw_pass {
+            gw.gw_pass = if let Some(gw_pass) = args
+                .gw_pass
+                .or_else(|| properties.gateway_password().map(str::to_owned))
+            {
                 gw_pass
             } else {
                 inquire::Password::new("Gateway password:")
@@ -394,7 +563,10 @@ impl Config {
 
         let destination = if let Some(destination) = args.destination {
             destination
-        } else if let Some(destination) = properties.full_address() {
+        } else if let Some(destination) = properties
+            .full_address()
+            .or_else(|| properties.alternate_full_address())
+        {
             if let Some(port) = properties.server_port() {
                 format!("{destination}:{port}").parse()
             } else {
@@ -431,6 +603,12 @@ impl Config {
                 .context("Password prompt")?
         };
 
+        let enable_credssp = if args.no_credssp {
+            false
+        } else {
+            properties.enable_credssp_support().unwrap_or(true)
+        };
+
         let codecs: Vec<_> = args.codecs.iter().map(|s| s.as_str()).collect();
         let codecs = match client_codecs_capabilities(&codecs) {
             Ok(codecs) => codecs,
@@ -453,29 +631,77 @@ impl Config {
         };
 
         let clipboard_type = if args.clipboard_type == ClipboardType::Default {
-            #[cfg(windows)]
-            {
-                ClipboardType::Windows
-            }
-            #[cfg(not(windows))]
-            {
+            let redirect_clipboard = properties.redirect_clipboard().unwrap_or(true);
+
+            if !redirect_clipboard {
                 ClipboardType::None
+            } else {
+                #[cfg(windows)]
+                {
+                    ClipboardType::Windows
+                }
+                #[cfg(not(windows))]
+                {
+                    ClipboardType::None
+                }
             }
         } else {
             args.clipboard_type
         };
 
-        let compression_type = if args.compression_enabled {
+        let enable_audio_playback = match properties.audio_mode() {
+            Some(0) => true,
+            Some(1 | 2) => false,
+            Some(value) => {
+                debug!(
+                    property = "audiomode",
+                    value, "Ignored .RDP property with unsupported value"
+                );
+                true
+            }
+            None => true,
+        };
+
+        let compression_enabled = if !args.compression_enabled {
+            false
+        } else {
+            properties.compression().unwrap_or(args.compression_enabled)
+        };
+
+        let compression_type = if compression_enabled {
             Some(compression_type_from_level(args.compression_level)?)
         } else {
             None
         };
 
+        let desktop_width = rdp_u16_property(properties.desktop_width(), "desktopwidth").unwrap_or(DEFAULT_WIDTH);
+        let desktop_height = rdp_u16_property(properties.desktop_height(), "desktopheight").unwrap_or(DEFAULT_HEIGHT);
+        let desktop_scale_factor =
+            rdp_u32_property(properties.desktop_scale_factor(), "desktopscalefactor").unwrap_or(0);
+
+        let kdc_proxy_url = properties
+            .kdc_proxy_url()
+            .map(str::to_owned)
+            .or_else(|| properties.kdc_proxy_name().map(normalize_kdc_proxy_url_from_name));
+
+        let kerberos_config = kdc_proxy_url.and_then(|kdc_proxy_url| {
+            Url::parse(&kdc_proxy_url)
+                .ok()
+                .map(|url| connector::credssp::KerberosConfig {
+                    kdc_proxy_url: Some(url),
+                    hostname: None,
+                })
+                .or_else(|| {
+                    debug!(%kdc_proxy_url, "Ignored invalid KDC proxy URL from .RDP property");
+                    None
+                })
+        });
+
         let connector = connector::Config {
             credentials: Credentials::UsernamePassword { username, password },
-            domain: args.domain,
+            domain: args.domain.or_else(|| properties.domain().map(str::to_owned)),
             enable_tls: !args.no_tls,
-            enable_credssp: !args.no_credssp,
+            enable_credssp,
             keyboard_type: KeyboardType::parse(args.keyboard_type),
             keyboard_subtype: args.keyboard_subtype,
             keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
@@ -483,10 +709,10 @@ impl Config {
             ime_file_name: args.ime_file_name,
             dig_product_id: args.dig_product_id,
             desktop_size: connector::DesktopSize {
-                width: DEFAULT_WIDTH,
-                height: DEFAULT_HEIGHT,
+                width: desktop_width,
+                height: desktop_height,
             },
-            desktop_scale_factor: 0, // Default to 0 per FreeRDP
+            desktop_scale_factor,
             bitmap: Some(bitmap),
             client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .map_or(0, |version| version.major * 100 + version.minor * 10 + version.patch)
@@ -508,15 +734,15 @@ impl Config {
             license_cache: None,
             enable_server_pointer: !args.no_server_pointer,
             autologon: args.autologon,
-            enable_audio_playback: true,
+            enable_audio_playback,
             request_data: None,
             pointer_software_rendering: false,
             multitransport_flags: None,
             compression_type,
             performance_flags: PerformanceFlags::default(),
             timezone_info: TimezoneInfo::default(),
-            alternate_shell: String::new(),
-            work_dir: String::new(),
+            alternate_shell: properties.alternate_shell().unwrap_or_default().to_owned(),
+            work_dir: properties.shell_working_directory().unwrap_or_default().to_owned(),
         };
 
         let rdcleanpath = args
@@ -527,6 +753,7 @@ impl Config {
         Ok(Self {
             log_file: args.log_file,
             gw,
+            kerberos_config,
             destination,
             connector,
             clipboard_type,
