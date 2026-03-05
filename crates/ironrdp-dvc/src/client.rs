@@ -88,8 +88,8 @@ impl DrdynvcClient {
         }
     }
 
-    #[must_use]
     /// with a pre-registered dynamic virtual channel
+    #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
         T: DvcProcessor + 'static,
@@ -107,6 +107,12 @@ impl DrdynvcClient {
         self
     }
 
+    pub fn attach_listener<T>(&mut self, listener: T)
+    where
+        T: DvcChannelListener + 'static,
+    {
+        self.dynamic_channels.insert_listener(listener);
+    }
     pub fn attach_dynamic_channel<T>(&mut self, channel: T)
     where
         T: DvcProcessor + 'static,
