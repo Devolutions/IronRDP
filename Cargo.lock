@@ -2860,6 +2860,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpeusb"
+version = "0.1.0"
+
+[[package]]
 name = "ironrdp-rdpfile"
 version = "0.1.0"
 dependencies = [

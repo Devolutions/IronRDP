@@ -1,0 +1,18 @@
+[package]
+name = "ironrdp-rdpeusb"
+version = "0.1.0"
+description = "Remote Desktop Protocol: USB Devices Virtual Channel Extension implementation"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true
