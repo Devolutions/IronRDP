@@ -65,6 +65,8 @@ bitflags! {
         const RESTRICTED_ADMIN_MODE_REQUIRED = 0x01;
         const REDIRECTED_AUTHENTICATION_MODE_REQUIRED = 0x02;
         const CORRELATION_INFO_PRESENT = 0x08;
+
+        const _ = !0;
     }
 }
 
@@ -81,6 +83,8 @@ bitflags! {
         const RDP_NEG_RSP_RESERVED = 0x04;
         const RESTRICTED_ADMIN_MODE_SUPPORTED = 0x08;
         const REDIRECTED_AUTHENTICATION_MODE_SUPPORTED = 0x10;
+
+        const _ = !0;
     }
 }
 

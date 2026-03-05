@@ -382,6 +382,8 @@ bitflags! {
     pub struct EncryptionFlags: u8 {
         const SECURE_CHECKSUM = 0x1;
         const ENCRYPTED = 0x2;
+
+        const _ = !0;
     }
 }
 
@@ -389,5 +391,7 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Compression: u8 {
         const COMPRESSION_USED = 0x2;
+
+        const _ = !0;
     }
 }

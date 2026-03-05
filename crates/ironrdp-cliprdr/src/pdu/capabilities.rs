@@ -289,5 +289,7 @@ bitflags! {
         /// using the File Contents Request PDU and File Contents
         /// Response PDU.
         const HUGE_FILE_SUPPORT_ENABLED = 0x0000_0020;
+
+        const _ = !0;
     }
 }

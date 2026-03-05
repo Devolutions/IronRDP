@@ -25,6 +25,8 @@ bitflags! {
         const MOUSE_RELATIVE = 0x0080;
         const TS_MOUSE_HWHEEL = 0x0100;
         const TS_QOE_TIMESTAMPS = 0x0200;
+
+        const _ = !0;
     }
 }
 

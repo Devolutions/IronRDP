@@ -52,5 +52,7 @@ bitflags! {
         const NUM_LOCK = 0x2;
         const CAPS_LOCK = 0x4;
         const KANA_LOCK = 0x8;
+
+        const _ = !0;
     }
 }

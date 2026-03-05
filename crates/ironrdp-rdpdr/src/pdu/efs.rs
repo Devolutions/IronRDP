@@ -713,6 +713,8 @@ bitflags! {
             | Self::RDPDR_IRP_MJ_DIRECTORY_CONTROL.bits()
             | Self::RDPDR_IRP_MJ_LOCK_CONTROL.bits();
 
+
+        const _ = !0;
     }
 }
 
@@ -727,6 +729,8 @@ bitflags! {
         const RDPDR_CLIENT_DISPLAY_NAME_PDU = 0x0000_0002;
         /// Allow the server to send a Server User Logged On packet.
         const RDPDR_USER_LOGGEDON_PDU = 0x0000_0004;
+
+        const _ = !0;
     }
 }
 
@@ -739,6 +743,8 @@ bitflags! {
         /// Allows the server to send multiple simultaneous read or write requests
         /// on the same file from a redirected file system.
         const ENABLE_ASYNCIO = 0x0000_0001;
+
+        const _ = !0;
     }
 }
 
@@ -1684,6 +1690,8 @@ bitflags! {
         const GENERIC_WRITE = 0x40000000;
         /// This value indicates a request for the following combination of access flags listed above: FILE_READ_DATA| FILE_READ_ATTRIBUTES| FILE_READ_EA| SYNCHRONIZE| READ_CONTROL.
         const GENERIC_READ = 0x80000000;
+
+        const _ = !0;
     }
 }
 
@@ -1726,6 +1734,8 @@ bitflags! {
         const FILE_SHARE_READ = 0x00000001;
         const FILE_SHARE_WRITE = 0x00000002;
         const FILE_SHARE_DELETE = 0x00000004;
+
+        const _ = !0;
     }
 }
 
@@ -1744,6 +1754,8 @@ bitflags! {
         const FILE_OPEN_IF = 0x00000003;
         const FILE_OVERWRITE = 0x00000004;
         const FILE_OVERWRITE_IF = 0x00000005;
+
+        const _ = !0;
     }
 }
 
@@ -1774,6 +1786,8 @@ bitflags! {
         const FILE_OPEN_REPARSE_POINT = 0x00200000;
         const FILE_OPEN_NO_RECALL = 0x00400000;
         const FILE_OPEN_FOR_FREE_SPACE_QUERY = 0x00800000;
+
+        const _ = !0;
     }
 }
 
@@ -1821,6 +1835,8 @@ bitflags! {
         const FILE_OPENED = 0x00000001;
         /// An existing file was overwritten.
         const FILE_OVERWRITTEN = 0x00000003;
+
+        const _ = !0;
     }
 }
 
@@ -3069,6 +3085,8 @@ bitflags! {
         const FILE_SUPPORT_INTEGRITY_STREAMS = 0x04000000;
         const FILE_SUPPORTS_BLOCK_REFCOUNTING = 0x08000000;
         const FILE_SUPPORTS_SPARSE_VDL = 0x10000000;
+
+        const _ = !0;
     }
 }
 
@@ -3090,6 +3108,8 @@ bitflags! {
         const FILE_CHARACTERISTIC_WEBDAV_DEVICE = 0x00002000;
         const FILE_DEVICE_ALLOW_APPCONTAINER_TRAVERSAL = 0x00020000;
         const FILE_PORTABLE_DEVICE = 0x0004000;
+
+        const _ = !0;
     }
 }
 

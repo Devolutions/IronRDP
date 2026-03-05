@@ -56,5 +56,7 @@ bitflags! {
         const DOWN = 0x8000;
         const BUTTON1 = 0x0001;
         const BUTTON2 = 0x0002;
+
+        const _ = !0;
     }
 }

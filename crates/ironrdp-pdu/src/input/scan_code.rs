@@ -55,5 +55,7 @@ bitflags! {
         const EXTENDED_1 = 0x0200;
         const DOWN = 0x4000;
         const RELEASE = 0x8000;
+
+        const _ = !0;
     }
 }

@@ -650,6 +650,8 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CaptureFlags: u32 {
         const CARDP_CAPS_CAPTURE_NON_CAC = 1;
+
+        const _ = !0;
     }
 }
 
@@ -657,6 +659,8 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct RfxICapFlags: u8 {
         const CODEC_MODE = 2;
+
+        const _ = !0;
     }
 }
 

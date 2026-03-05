@@ -12,6 +12,8 @@ bitflags! {
         const SET_SURFACE_BITS = 0x02;
         const FRAME_MARKER = 0x10;
         const STREAM_SURFACE_BITS = 0x40;
+
+        const _ = !0;
     }
 }
 

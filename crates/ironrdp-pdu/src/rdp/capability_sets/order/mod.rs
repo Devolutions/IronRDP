@@ -53,6 +53,8 @@ bitflags! {
         const COLOR_INDEX_SUPPORT = 0x0020;
         const SOLID_PATTERN_BRUSH_ONLY = 0x0040;
         const ORDER_FLAGS_EXTRA_FLAGS = 0x0080;
+
+        const _ = !0;
     }
 }
 
@@ -61,6 +63,8 @@ bitflags! {
     pub struct OrderSupportExFlags: u16 {
         const CACHE_BITMAP_REV3_SUPPORT = 2;
         const ALTSEC_FRAME_MARKER_SUPPORT = 4;
+
+        const _ = !0;
     }
 }
 

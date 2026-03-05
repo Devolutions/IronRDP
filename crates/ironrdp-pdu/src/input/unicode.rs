@@ -52,5 +52,7 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct KeyboardFlags: u16 {
         const RELEASE = 0x8000;
+
+        const _ = !0;
     }
 }

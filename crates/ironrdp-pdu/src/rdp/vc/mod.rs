@@ -74,6 +74,8 @@ bitflags! {
         const PACKET_AT_FRONT = 0x0040_0000;
         const PACKET_FLUSHED = 0x0080_0000;
         const COMPRESSION_TYPE_MASK = 0x000F_0000;
+
+        const _ = !0;
     }
 }
 

@@ -15,6 +15,8 @@ bitflags! {
         const NO_COMPRESSION = 0;
         const COMPRESSION_SERVER_TO_CLIENT = 1;
         const COMPRESSION_CLIENT_TO_SERVER_8K = 2;
+
+        const _ = !0;
     }
 }
 

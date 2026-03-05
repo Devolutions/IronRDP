@@ -89,6 +89,8 @@ bitflags! {
         const LONG_CREDENTIALS_SUPPORTED = 0x0004;
         const AUTORECONNECT_SUPPORTED = 0x0008;
         const ENC_SALTED_CHECKSUM = 0x0010;
+
+        const _ = !0;
     }
 }
 

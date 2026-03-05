@@ -1704,6 +1704,8 @@ bitflags! {
     pub struct CapabilitiesV8Flags: u32  {
         const THIN_CLIENT = 0x1;
         const SMALL_CACHE = 0x2;
+
+        const _ = !0;
     }
 }
 
@@ -1716,6 +1718,8 @@ bitflags! {
         const THIN_CLIENT = 0x01;
         const SMALL_CACHE = 0x02;
         const AVC420_ENABLED = 0x10;
+
+        const _ = !0;
     }
 }
 
@@ -1727,6 +1731,8 @@ bitflags! {
     pub struct CapabilitiesV10Flags: u32 {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;
+
+        const _ = !0;
     }
 }
 
@@ -1748,6 +1754,8 @@ bitflags! {
     pub struct CapabilitiesV103Flags: u32  {
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
+
+        const _ = !0;
     }
 }
 
@@ -1760,6 +1768,8 @@ bitflags! {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
+
+        const _ = !0;
     }
 }
 
@@ -1783,6 +1793,8 @@ bitflags! {
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
         const SCALEDMAP_DISABLE = 0x80;
+
+        const _ = !0;
     }
 }
 

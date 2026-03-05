@@ -136,6 +136,8 @@ bitflags! {
         const LUMA_AND_CHROMA = 0x00;
         const LUMA = 0x01;
         const CHROMA = 0x02;
+
+        const _ = !0;
     }
 }
 

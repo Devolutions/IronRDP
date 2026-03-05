@@ -111,6 +111,8 @@ bitflags! {
     pub struct CacheFlags: u16 {
         const PERSISTENT_KEYS_EXPECTED_FLAG = 1;
         const ALLOW_CACHE_WAITING_LIST_FLAG = 2;
+
+        const _ = !0;
     }
 }
 

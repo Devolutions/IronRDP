@@ -81,6 +81,8 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CompressionFlags: u8 {
         const COMPRESSED = 0x2;
+
+        const _ = !0;
     }
 }
 

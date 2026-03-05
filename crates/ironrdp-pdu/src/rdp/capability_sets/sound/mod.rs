@@ -13,6 +13,8 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct SoundFlags: u16 {
         const BEEPS = 1;
+
+        const _ = !0;
     }
 }
 

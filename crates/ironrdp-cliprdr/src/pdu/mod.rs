@@ -266,5 +266,7 @@ bitflags! {
         /// Used by the Short Format Name variant of the Format List Response PDU to indicate
         /// that the format names are in ASCII 8
         const ASCII_NAMES = 0x0004;
+
+        const _ = !0;
     }
 }

@@ -45,6 +45,8 @@ bitflags! {
     pub struct LargePointerSupportFlags: u16 {
         const UP_TO_96X96_PIXELS = 1;
         const UP_TO_384X384_PIXELS = 2;
+
+        const _ = !0;
     }
 }
 

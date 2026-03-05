@@ -16,6 +16,8 @@ bitflags! {
         const ALLOW_COLOR_SUBSAMPLING = 0x04;
         const ALLOW_SKIP_ALPHA = 0x08;
         const UNUSED_FLAG = 0x10;
+
+        const _ = !0;
     }
 }
 

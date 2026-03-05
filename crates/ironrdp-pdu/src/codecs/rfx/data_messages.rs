@@ -697,5 +697,7 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct OperatingMode: u16 {
         const IMAGE_MODE = 0x02; // if not set, the codec is operating in video mode
+
+        const _ = !0;
     }
 }

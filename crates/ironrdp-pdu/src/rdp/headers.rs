@@ -600,6 +600,8 @@ bitflags! {
         const COMPRESSED = 0x20;
         const AT_FRONT = 0x40;
         const FLUSHED = 0x80;
+
+        const _ = !0;
     }
 }
 

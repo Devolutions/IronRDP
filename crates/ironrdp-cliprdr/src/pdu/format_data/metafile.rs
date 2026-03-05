@@ -30,6 +30,8 @@ bitflags! {
         const ISOTROPIC = 0x0000_0007;
         /// Logical units are mapped to arbitrary units with arbitrarily scaled axes.
         const ANISOTROPIC = 0x0000_0008;
+
+        const _ = !0;
     }
 }
 

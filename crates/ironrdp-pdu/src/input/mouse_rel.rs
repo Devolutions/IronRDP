@@ -60,5 +60,7 @@ bitflags! {
         const BUTTON3 = 0x4000;
         const XBUTTON1 = 0x0001;
         const XBUTTON2 = 0x0002;
+
+        const _ = !0;
     }
 }

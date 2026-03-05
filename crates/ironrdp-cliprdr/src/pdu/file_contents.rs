@@ -24,6 +24,8 @@ bitflags! {
         /// and nPositionHigh fields. The maximum number of bytes to extract is specified
         /// by the cbRequested field.
         const DATA = 0x0000_0002;
+
+        const _ = !0;
     }
 }
 
