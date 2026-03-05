@@ -51,6 +51,7 @@ const KEY_EXCHANGE_ALGORITHM_RSA: u32 = 1;
 const MAC_SIZE: usize = 16;
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseEncryptionData {
     pub premaster_secret: Vec<u8>,
     pub mac_salt_key: Vec<u8>,

@@ -21,6 +21,7 @@ use crate::{
 /// [`ClientConnector`]: crate::ClientConnector
 /// [Server Deactivate All PDU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/8a29971a-df3c-48da-add2-8ed9a05edc89
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectionActivationSequence {
     state: ConnectionActivationState,
     config: Config,
@@ -221,6 +222,7 @@ impl Sequence for ConnectionActivationSequence {
 }
 
 #[derive(Default, Debug, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ConnectionActivationState {
     #[default]
     Consumed,

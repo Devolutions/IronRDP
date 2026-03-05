@@ -4,6 +4,7 @@ use ironrdp_core::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MultiTransportChannelData {
     pub flags: MultiTransportFlags,
 }
@@ -45,6 +46,7 @@ impl<'de> Decode<'de> for MultiTransportChannelData {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct MultiTransportFlags: u32 {
         const TRANSPORT_TYPE_UDP_FECR = 0x01;
         const TRANSPORT_TYPE_UDP_FECL = 0x04;

@@ -836,6 +836,7 @@ impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectInitial {
     pub conference_create_request: ConferenceCreateRequest,
     pub calling_domain_selector: Vec<u8>,
@@ -882,6 +883,7 @@ impl ConnectResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct DomainParameters {
     pub max_channel_ids: u32,
     pub max_user_ids: u32,

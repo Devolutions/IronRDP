@@ -408,6 +408,7 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
 ///
 /// [2.2.1.11.1.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/526ed635-d7a9-4d3c-bbe1-4e3fb17585f4
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TimezoneInfo {
     pub bias: i32,
     pub standard_name: String,
@@ -502,6 +503,7 @@ impl Default for TimezoneInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SystemTime {
     pub month: Month,
     pub day_of_week: DayOfWeek,
@@ -519,6 +521,7 @@ impl SystemTime {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct OptionalSystemTime(pub Option<SystemTime>);
 
 impl Encode for OptionalSystemTime {
@@ -584,6 +587,7 @@ impl<'de> Decode<'de> for OptionalSystemTime {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Month {
     January = 1,
     February = 2,
@@ -611,6 +615,7 @@ impl Month {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum DayOfWeek {
     Sunday = 0,
     Monday = 1,
@@ -633,6 +638,7 @@ impl DayOfWeek {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum DayOfWeekOccurrence {
     First = 1,
     Second = 2,
@@ -653,6 +659,7 @@ impl DayOfWeekOccurrence {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct PerformanceFlags: u32 {
         const DISABLE_WALLPAPER = 0x0000_0001;
         const DISABLE_FULLWINDOWDRAG = 0x0000_0002;
@@ -740,6 +747,7 @@ bitflags! {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CompressionType {
     K8 = 0,
     K64 = 1,

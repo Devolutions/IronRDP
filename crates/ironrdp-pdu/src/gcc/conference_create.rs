@@ -25,6 +25,7 @@ const H221_NON_STANDARD_MIN_LENGTH: usize = 4;
 const CONFERENCE_NAME: &[u8] = b"1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConferenceCreateRequest {
     /// INVARIANT: `gcc_blocks.size() <= u16::MAX - CONFERENCE_REQUEST_CONNECT_PDU_SIZE`
     gcc_blocks: ClientGccBlocks,

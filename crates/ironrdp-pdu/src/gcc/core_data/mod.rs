@@ -11,6 +11,7 @@ const VERSION_SIZE: usize = 4;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RdpVersion(pub u32);
 
 impl From<u32> for RdpVersion {

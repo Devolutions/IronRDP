@@ -22,6 +22,13 @@ use crate::{
 pub struct ConnectionResult {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
+
+    // MIGHT NEED CHANGE
+    #[cfg_attr(feature = "arbitrary",arbitrary(with = |u: &mut arbitrary::Unstructured<'_>| {
+        let _ = u;
+        // creates new StaticChannelSet 
+    Ok(StaticChannelSet::new())
+    }))]
     pub static_channels: StaticChannelSet,
     pub desktop_size: DesktopSize,
     pub enable_server_pointer: bool,
@@ -127,6 +134,7 @@ pub struct ClientConnector {
     pub state: ClientConnectorState,
     /// The client address to be used in the Client Info PDU.
     pub client_addr: SocketAddr,
+    #[cfg_attr(feature = "arbitrary",arbitrary(with = |_| Ok(StaticChannelSet::new())))]
     pub static_channels: StaticChannelSet,
 }
 

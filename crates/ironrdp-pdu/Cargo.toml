@@ -21,12 +21,14 @@ std = ["alloc", "ironrdp-error/std", "ironrdp-core/std"]
 alloc = ["ironrdp-core/alloc", "ironrdp-error/alloc"]
 qoi = []
 qoiz = ["qoi"]
+arbitrary = ["dep:arbitrary","arbitrary/derive"]
 
 [dependencies]
-bitflags = "2.9"
+bitflags = { version = "2.9", features = ["arbitrary"] }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
 tap = "1"
+arbitrary = { version = "1", optional = true, features = ["derive"] }
 
 # TODO: get rid of these dependencies (related code should probably go into another crate)
 bit_field = "0.10"

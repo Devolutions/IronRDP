@@ -11,6 +11,7 @@ const SOUND_LENGTH: usize = 4;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct SoundFlags: u16 {
         const BEEPS = 1;
 
@@ -19,6 +20,7 @@ bitflags! {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Sound {
     pub flags: SoundFlags,
 }

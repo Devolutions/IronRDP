@@ -4,6 +4,7 @@ const CLIENT_FLAGS_SIZE: usize = 4;
 const SERVER_MCS_MESSAGE_CHANNEL_ID_SIZE: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientMessageChannelData;
 
 impl ClientMessageChannelData {
