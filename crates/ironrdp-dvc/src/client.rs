@@ -98,6 +98,7 @@ impl DrdynvcClient {
         self
     }
 
+    /// Bind a listener. Doesn't support type id look up
     #[must_use]
     pub fn with_listener<T>(mut self, listener: T) -> Self
     where
@@ -107,12 +108,14 @@ impl DrdynvcClient {
         self
     }
 
+    /// Doesn't support type id look up
     pub fn attach_listener<T>(&mut self, listener: T)
     where
         T: DvcChannelListener + 'static,
     {
         self.dynamic_channels.insert_listener(listener);
     }
+
     pub fn attach_dynamic_channel<T>(&mut self, channel: T)
     where
         T: DvcProcessor + 'static,
