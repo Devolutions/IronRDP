@@ -164,6 +164,7 @@ pub mod ffi {
             &mut self,
             io_channel_id: u16,
             user_channel_id: u16,
+            share_id: u32,
             enable_server_pointer: bool,
             pointer_software_rendering: bool,
         ) {
@@ -171,12 +172,14 @@ pub mod ffi {
                 ironrdp::session::fast_path::ProcessorBuilder {
                     io_channel_id,
                     user_channel_id,
+                    share_id,
                     enable_server_pointer,
                     pointer_software_rendering,
                     bulk_decompressor: None,
                 }
                 .build(),
             );
+            self.0.set_share_id(share_id);
         }
 
         pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {

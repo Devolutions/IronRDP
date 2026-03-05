@@ -736,6 +736,7 @@ impl iron_remote_desktop::Session for Session {
                                 io_channel_id,
                                 user_channel_id,
                                 desktop_size,
+                                share_id,
                                 enable_server_pointer,
                                 pointer_software_rendering,
                             } = box_connection_activation.connection_activation_state()
@@ -748,12 +749,14 @@ impl iron_remote_desktop::Session for Session {
                                     fast_path::ProcessorBuilder {
                                         io_channel_id,
                                         user_channel_id,
+                                        share_id,
                                         enable_server_pointer,
                                         pointer_software_rendering,
                                         bulk_decompressor: None,
                                     }
                                     .build(),
                                 );
+                                active_stage.set_share_id(share_id);
                                 active_stage.set_enable_server_pointer(enable_server_pointer);
                                 break 'activation_seq;
                             }

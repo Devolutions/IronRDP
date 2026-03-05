@@ -89,6 +89,7 @@ async fn test_deactivation_reactivation() {
                             io_channel_id,
                             user_channel_id,
                             desktop_size,
+                            share_id,
                             enable_server_pointer,
                             pointer_software_rendering,
                         } = connection_activation.connection_activation_state()
@@ -101,12 +102,14 @@ async fn test_deactivation_reactivation() {
                                 session::fast_path::ProcessorBuilder {
                                     io_channel_id,
                                     user_channel_id,
+                                    share_id,
                                     enable_server_pointer,
                                     pointer_software_rendering,
                                     bulk_decompressor: None,
                                 }
                                 .build(),
                             );
+                            stage.set_share_id(share_id);
                             stage.set_enable_server_pointer(enable_server_pointer);
                             break 'activation_seq;
                         }

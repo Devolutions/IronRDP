@@ -42,6 +42,7 @@ impl ActiveStage {
             connection_result.static_channels,
             connection_result.user_channel_id,
             connection_result.io_channel_id,
+            connection_result.share_id,
             connection_result.connection_activation,
         );
 
@@ -63,6 +64,7 @@ impl ActiveStage {
         let fast_path_processor = fast_path::ProcessorBuilder {
             io_channel_id: connection_result.io_channel_id,
             user_channel_id: connection_result.user_channel_id,
+            share_id: connection_result.share_id,
             enable_server_pointer: connection_result.enable_server_pointer,
             pointer_software_rendering: connection_result.pointer_software_rendering,
             bulk_decompressor,
@@ -180,6 +182,12 @@ impl ActiveStage {
 
     pub fn set_fastpath_processor(&mut self, processor: fast_path::Processor) {
         self.fast_path_processor = processor;
+    }
+
+    /// Updates the share_id used by the x224 processor for encoding ShareDataPdu.
+    /// Must be called during Deactivation-Reactivation if the server assigns a new share_id.
+    pub fn set_share_id(&mut self, share_id: u32) {
+        self.x224_processor.set_share_id(share_id);
     }
 
     pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
