@@ -98,6 +98,7 @@ impl DrdynvcClient {
         self
     }
 
+    /// Bind a listener. Doesn't support type id look up
     #[must_use]
     pub fn with_listener<T>(mut self, listener: T) -> Self
     where
@@ -107,12 +108,14 @@ impl DrdynvcClient {
         self
     }
 
+    /// Doesn't support type id look up
     pub fn attach_listener<T>(&mut self, listener: T)
     where
         T: DvcChannelListener + 'static,
     {
         self.dynamic_channels.insert_listener(listener);
     }
+
     pub fn attach_dynamic_channel<T>(&mut self, channel: T)
     where
         T: DvcProcessor + 'static,
@@ -308,7 +311,16 @@ impl DynamicChannelSet {
     }
 
     fn remove_by_channel_id(&mut self, id: DynamicChannelId) {
-        self.active_channels.remove(&id);
+        if let Some(dvc) = self.active_channels.remove(&id) {
+            let type_id = dvc.processor_type_id();
+
+            // Only matters for pre-registered channels
+            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
+                && entry.get() == &id
+            {
+                entry.remove();
+            }
+        }
     }
 
     #[inline]
