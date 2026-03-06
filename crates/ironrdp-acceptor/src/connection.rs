@@ -324,7 +324,31 @@ impl Sequence for Acceptor {
                 } else if self.security.is_empty() {
                     SecurityProtocol::empty()
                 } else {
-                    return Err(ConnectorError::general("failed to negotiate security protocol"));
+                    // No common security protocol. Send RDP_NEG_FAILURE so the client
+                    // gets a well-formed response instead of a TCP reset (MS-RDPBCGR 2.2.1.2.2).
+                    let failure_code = if self.security.intersects(SecurityProtocol::SSL) {
+                        nego::FailureCode::SSL_REQUIRED_BY_SERVER
+                    } else if self
+                        .security
+                        .intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX)
+                    {
+                        nego::FailureCode::HYBRID_REQUIRED_BY_SERVER
+                    } else {
+                        nego::FailureCode::SSL_REQUIRED_BY_SERVER
+                    };
+
+                    let failure = nego::ConnectionConfirm::Failure { code: failure_code };
+
+                    debug!(message = ?failure, "Send");
+
+                    ironrdp_core::encode_buf(&X224(failure), output).map_err(ConnectorError::encode)?;
+
+                    return Err(reason_err!(
+                        "security protocol mismatch",
+                        "server requires {:?} but client only offered {:?}",
+                        self.security,
+                        requested_protocol,
+                    ));
                 };
                 let connection_confirm = nego::ConnectionConfirm::Response {
                     flags: nego::ResponseFlags::empty(),
