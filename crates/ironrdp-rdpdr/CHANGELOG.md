@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.5.0...ironrdp-rdpdr-v0.6.0)] - 2026-03-06
+
+### <!-- 4 -->Bug Fixes
+
+- Model CreateDisposition as enum instead of bitflags ([#1145](https://github.com/Devolutions/IronRDP/issues/1145)) ([c4f87aa417](https://github.com/Devolutions/IronRDP/commit/c4f87aa417e83c9cf6d1550c877ea3facb2f9a59)) 
+
+  CreateDisposition values (FILE_SUPERSEDE through FILE_OVERWRITE_IF) are
+  mutually exclusive integers 0 through 5, not combinable bit flags.
+  Modeling them with the bitflags macro causes subtle correctness issues.
+
+- Replace all from_bits_truncate with from_bits_retain ([#1144](https://github.com/Devolutions/IronRDP/issues/1144)) ([353e30ddfd](https://github.com/Devolutions/IronRDP/commit/353e30ddfdaafc897db10b8663e364ef7775a7fd)) 
+
+  from_bits_truncate silently discards unknown bits, which breaks the
+  encode/decode round-trip property. This matters for fuzzing because a
+  PDU that decodes and re-encodes should produce identical bytes.
+  from_bits_retain preserves all bits, including those not yet defined in
+  our bitflags types, so the round-trip property holds.
+
+
+
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.4.1...ironrdp-rdpdr-v0.5.0)] - 2025-12-18
 
 ### <!-- 4 -->Bug Fixes

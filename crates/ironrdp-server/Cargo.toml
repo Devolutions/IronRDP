@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-server"
-version = "0.10.0"
+version = "0.11.0"
 readme = "README.md"
 description = "Extendable skeleton for implementing custom RDP servers"
 edition.workspace = true
@@ -37,7 +37,7 @@ ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.5" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
-ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.5" } # public
+ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.6" } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.5" } # public
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.1" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.5" } # public
