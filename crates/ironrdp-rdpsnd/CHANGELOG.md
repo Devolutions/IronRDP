@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.7.0...ironrdp-rdpsnd-v0.7.1)] - 2026-03-06
+
+### <!-- 4 -->Bug Fixes
+
+- Replace all from_bits_truncate with from_bits_retain ([#1144](https://github.com/Devolutions/IronRDP/issues/1144)) ([353e30ddfd](https://github.com/Devolutions/IronRDP/commit/353e30ddfdaafc897db10b8663e364ef7775a7fd)) 
+
+  from_bits_truncate silently discards unknown bits, which breaks the
+  encode/decode round-trip property. This matters for fuzzing because a
+  PDU that decodes and re-encodes should produce identical bytes.
+  from_bits_retain preserves all bits, including those not yet defined in
+  our bitflags types, so the round-trip property holds.
+
+
+
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.4.0...ironrdp-rdpsnd-v0.5.0)] - 2025-05-27
 
 ### <!-- 1 -->Features
