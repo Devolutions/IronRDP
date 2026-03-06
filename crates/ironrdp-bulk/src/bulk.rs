@@ -7,11 +7,11 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
 
+use crate::CompressionType;
 use crate::error::BulkError;
 use crate::mppc::MppcContext;
 use crate::ncrush::NCrushContext;
 use crate::xcrush::XCrushContext;
-use crate::CompressionType;
 
 /// Size of the internal output buffer used for compression.
 const OUTPUT_BUFFER_SIZE: usize = 65536;

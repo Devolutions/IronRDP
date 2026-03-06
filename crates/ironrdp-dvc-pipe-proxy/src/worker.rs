@@ -1,4 +1,4 @@
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_pdu::PduResult;

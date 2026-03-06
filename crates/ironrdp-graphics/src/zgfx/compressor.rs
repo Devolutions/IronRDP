@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use bitvec::prelude::*;
 
-use super::{ZgfxError, HISTORY_SIZE, TOKEN_TABLE};
+use super::{HISTORY_SIZE, TOKEN_TABLE, ZgfxError};
 const MIN_MATCH_LENGTH: usize = 3;
 const MAX_MATCH_LENGTH: usize = 65535;
 /// Maximum back-reference distance (last token in MS-RDPEGFX table)

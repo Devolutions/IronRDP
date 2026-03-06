@@ -1,7 +1,6 @@
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
 #![allow(clippy::unwrap_used, reason = "unwrap is fine in tests")]
 
-use core::future::Future;
 use core::time::Duration;
 use std::path::Path;
 use std::sync::Arc;
@@ -25,7 +24,7 @@ use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use tracing::debug;
 
 const DESKTOP_WIDTH: u16 = 1024;

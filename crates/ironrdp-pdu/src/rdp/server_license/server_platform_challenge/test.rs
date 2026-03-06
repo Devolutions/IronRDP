@@ -4,8 +4,8 @@ use ironrdp_core::{decode, encode_vec};
 
 use super::*;
 use crate::rdp::server_license::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, LicensePdu, PreambleFlags, PreambleVersion,
-    BASIC_SECURITY_HEADER_SIZE,
+    BASIC_SECURITY_HEADER_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags, LicensePdu, PreambleFlags,
+    PreambleVersion,
 };
 
 const PLATFORM_CHALLENGE_BUFFER: [u8; 42] = [

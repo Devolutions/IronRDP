@@ -3,13 +3,13 @@
 use core::fmt;
 
 use bitflags::bitflags;
-use ironrdp_core::{ensure_size, invalid_field_err, unexpected_message_type_err, ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor, ensure_size, invalid_field_err, unexpected_message_type_err};
 use tap::prelude::*;
 
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::X224Pdu;
-use crate::{impl_x224_pdu_pod, DecodeResult, EncodeResult, Pdu as _};
+use crate::{DecodeResult, EncodeResult, Pdu as _, impl_x224_pdu_pod};
 
 bitflags! {
     /// A 32-bit, unsigned integer that contains flags indicating the supported security protocols.

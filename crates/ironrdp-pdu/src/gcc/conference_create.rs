@@ -1,6 +1,6 @@
 use ironrdp_core::{
-    cast_length, ensure_size, invalid_field_err, other_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
-    WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_size, invalid_field_err,
+    other_err,
 };
 
 use super::{ClientGccBlocks, ServerGccBlocks};

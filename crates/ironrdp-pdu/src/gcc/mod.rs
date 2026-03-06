@@ -1,8 +1,8 @@
 use std::io;
 
 use ironrdp_core::{
-    cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeErrorKind, DecodeResult,
-    Encode, EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeErrorKind, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode,
+    ensure_fixed_part_size, ensure_size, invalid_field_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -25,13 +25,13 @@ pub use self::cluster_data::{ClientClusterData, ClusterDataError, RedirectionFla
 pub use self::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
 pub use self::core_data::client::{
     ClientColorDepth, ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ColorDepth, ConnectionType,
-    HighColorDepth, KeyboardType, SecureAccessSequence, SupportedColorDepths, IME_FILE_NAME_SIZE,
+    HighColorDepth, IME_FILE_NAME_SIZE, KeyboardType, SecureAccessSequence, SupportedColorDepths,
 };
 pub use self::core_data::server::{ServerCoreData, ServerCoreOptionalData, ServerEarlyCapabilityFlags};
 pub use self::core_data::{CoreDataError, RdpVersion};
 pub use self::message_channel_data::{ClientMessageChannelData, ServerMessageChannelData};
 pub use self::monitor_data::{
-    ClientMonitorData, Monitor, MonitorFlags, MONITOR_COUNT_SIZE, MONITOR_FLAGS_SIZE, MONITOR_SIZE,
+    ClientMonitorData, MONITOR_COUNT_SIZE, MONITOR_FLAGS_SIZE, MONITOR_SIZE, Monitor, MonitorFlags,
 };
 pub use self::monitor_extended_data::{ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorOrientation};
 pub use self::multi_transport_channel_data::{MultiTransportChannelData, MultiTransportFlags};

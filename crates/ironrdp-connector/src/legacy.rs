@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 
-use ironrdp_core::{decode, encode_vec, Decode, Encode, WriteBuf};
+use ironrdp_core::{Decode, Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::rdp;
-use ironrdp_pdu::rdp::headers::{BasicSecurityHeaderFlags, ServerDeactivateAll, BASIC_SECURITY_HEADER_SIZE};
+use ironrdp_pdu::rdp::headers::{BASIC_SECURITY_HEADER_SIZE, BasicSecurityHeaderFlags, ServerDeactivateAll};
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::x224::X224;
 
-use crate::{general_err, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult};
+use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult, general_err, reason_err};
 
 pub fn encode_send_data_request<T>(
     initiator_id: u16,

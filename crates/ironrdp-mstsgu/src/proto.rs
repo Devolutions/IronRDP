@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_int, cast_length, ensure_fixed_part_size, ensure_size, unsupported_value_err, Decode, Encode, ReadCursor,
-    WriteCursor,
+    Decode, Encode, ReadCursor, WriteCursor, cast_int, cast_length, ensure_fixed_part_size, ensure_size,
+    unsupported_value_err,
 };
 
 bitflags! {
@@ -325,6 +325,7 @@ impl Decode<'_> for TunnelRespPkt {
 }
 
 /// 2.2.10.7 HTTP_EXTENDED_AUTH_PACKET Structure
+#[expect(dead_code, reason = "defined for completeness per spec; not yet used")]
 pub(crate) struct ExtendedAuthPkt {
     error_code: u32,
     blob: Vec<u8>,

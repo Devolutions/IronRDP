@@ -5,8 +5,8 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardFormatNameW, OpenClipboard, SetClipboardData,
 };
 
-use crate::windows::utils::get_last_winapi_error;
 use crate::windows::WinCliprdrError;
+use crate::windows::utils::get_last_winapi_error;
 
 /// Safe wrapper around windows. Clipboard is automatically closed on drop.
 pub(crate) struct OwnedOsClipboard;

@@ -1,10 +1,10 @@
 use core::mem;
 
 use ironrdp_connector::{
-    encode_x224_packet, general_err, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize,
-    Sequence, State, Written,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written, encode_x224_packet,
+    general_err, reason_err,
 };
-use ironrdp_core::{decode, WriteBuf};
+use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu as pdu;
 use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::x224::X224;
@@ -715,7 +715,7 @@ impl Sequence for Acceptor {
                     }
 
                     mcs::McsMessage::DisconnectProviderUltimatum(ultimatum) => {
-                        return Err(reason_err!("received disconnect ultimatum", "{:?}", ultimatum.reason))
+                        return Err(reason_err!("received disconnect ultimatum", "{:?}", ultimatum.reason));
                     }
 
                     _ => {

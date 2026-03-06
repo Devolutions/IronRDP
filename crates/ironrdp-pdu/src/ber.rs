@@ -1,4 +1,4 @@
-use ironrdp_core::{cast_length, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor, cast_length, ensure_size, invalid_field_err};
 
 use crate::{DecodeResult, EncodeResult};
 

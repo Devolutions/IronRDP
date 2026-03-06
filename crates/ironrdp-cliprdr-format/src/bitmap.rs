@@ -1,8 +1,8 @@
 use std::io::Cursor;
 
 use ironrdp_core::{
-    cast_int, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
-    WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_int, ensure_fixed_part_size,
+    invalid_field_err,
 };
 
 /// Maximum size of PNG image that could be placed on the clipboard.
@@ -681,7 +681,6 @@ fn top_down_rgba_to_bottom_up_bgra(
     let width = u16::try_from(info.width).map_err(|_| BitmapError::WidthTooBig)?;
     let height = u16::try_from(info.height).map_err(|_| BitmapError::HeightTooBig)?;
 
-    #[expect(clippy::arithmetic_side_effects)] // width * 4 <= 10_000 * 4 < u32::MAX
     let stride = usize::from(width) * 4;
 
     let src_rows = src_bitmap.chunks_exact(stride);

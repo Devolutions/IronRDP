@@ -5,8 +5,8 @@ pub mod ffi {
     use anyhow::Context as _;
     use diplomat_runtime::DiplomatWriteable;
 
-    use crate::error::ffi::IronRdpError;
     use crate::error::GenericError;
+    use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::VecU8;
 
     #[diplomat::opaque]

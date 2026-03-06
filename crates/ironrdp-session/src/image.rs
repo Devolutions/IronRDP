@@ -8,7 +8,7 @@ use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use tracing::{debug, trace};
 
-use crate::{custom_err, SessionResult};
+use crate::{SessionResult, custom_err};
 
 const TILE_SIZE: u16 = 64;
 

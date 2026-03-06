@@ -1,7 +1,7 @@
 use core::net::SocketAddr;
 
 use anyhow::Result;
-use ironrdp_pdu::rdp::capability_sets::{server_codecs_capabilities, BitmapCodecs};
+use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, server_codecs_capabilities};
 use tokio_rustls::TlsAcceptor;
 
 use super::clipboard::CliprdrServerFactory;

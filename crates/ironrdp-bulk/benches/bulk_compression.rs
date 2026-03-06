@@ -3,9 +3,8 @@
 //! Measures compress + decompress throughput for MPPC (RDP4, RDP5),
 //! NCRUSH (RDP6), and XCRUSH (RDP6.1) with realistic input patterns.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-
-use ironrdp_bulk::{flags, BulkCompressor, CompressionType};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
 
 /// Text-like data (highly compressible, typical of protocol messages).
 fn generate_text_data(size: usize) -> Vec<u8> {
@@ -44,7 +43,7 @@ fn generate_structured_bitmap(size: usize) -> Vec<u8> {
         let color_idx = pos_in_scanline / 64;
         let channel = i % 4;
         // Add slight variation every 4 scanlines to simulate content
-        let variation = if scanline % 4 == 0 {
+        let variation = if scanline.is_multiple_of(4) {
             u8::try_from(pos_in_scanline & 0x03).unwrap_or(0)
         } else {
             0

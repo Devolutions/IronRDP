@@ -21,7 +21,7 @@
 //!
 //! [smartcard_pack.c]: https://github.com/FreeRDP/FreeRDP/blob/ff303a9bda911c54ffc1b9f2471acd79c897b075/libfreerdp/utils/smartcard_pack.c
 
-use ironrdp_core::{ensure_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err};
 use ironrdp_pdu::utils::{self, CharacterSet};
 
 pub trait Decode {

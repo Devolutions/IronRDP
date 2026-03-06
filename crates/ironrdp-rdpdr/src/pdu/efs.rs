@@ -7,11 +7,11 @@ use core::fmt::{Debug, Display};
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, invalid_field_err_with_source,
-    unsupported_value_err, DecodeError, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
+    DecodeError, DecodeResult, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size, ensure_size,
+    invalid_field_err, invalid_field_err_with_source, unsupported_value_err,
 };
-use ironrdp_pdu::utils::{decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{read_padding, write_padding, PduError};
+use ironrdp_pdu::utils::{CharacterSet, decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor};
+use ironrdp_pdu::{PduError, read_padding, write_padding};
 use tracing::error;
 
 use super::esc::rpce;
@@ -92,7 +92,7 @@ impl VersionAndIdPdu {
                     "VersionAndIdPdu::decode",
                     "PacketId",
                     "invalid value"
-                ))
+                ));
             }
         };
 
@@ -248,7 +248,7 @@ impl CoreCapability {
                     "CoreCapability::decode",
                     "PacketId",
                     "invalid value"
-                ))
+                ));
             }
         };
 
@@ -2671,7 +2671,7 @@ impl ServerDriveQueryDirectoryRequest {
                     "ServerDriveQueryDirectoryRequest::decode",
                     "file_info_class_lvl",
                     "received invalid level"
-                ))
+                ));
             }
         }
 
@@ -2795,7 +2795,7 @@ impl ServerDriveQueryVolumeInformationRequest {
                     "ServerDriveQueryVolumeInformationRequest::decode",
                     "fs_info_class_lvl",
                     "received invalid level"
-                ))
+                ));
             }
         }
 
@@ -3346,7 +3346,7 @@ impl ServerDriveSetInformationRequest {
                     "ServerDriveSetInformationRequest::decode",
                     "file_information_class_level",
                     "received invalid level"
-                ))
+                ));
             }
         };
 

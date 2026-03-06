@@ -3,8 +3,8 @@ use std::fmt;
 
 use bit_field::BitField as _;
 use ironrdp_core::{
-    cast_length, decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding,
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode_cursor,
+    ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;

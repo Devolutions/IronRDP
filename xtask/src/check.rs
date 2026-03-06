@@ -3,9 +3,7 @@ use crate::prelude::*;
 pub fn fmt(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("FORMATTING");
 
-    let output = cmd!(sh, "{CARGO} fmt --all -- --check").ignore_status().output()?;
-
-    if !output.status.success() {
+    if cmd!(sh, "{CARGO} fmt --all -- --check").run().is_err() {
         anyhow::bail!("Bad formatting, please run 'cargo +stable fmt --all'");
     }
 

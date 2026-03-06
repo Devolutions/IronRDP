@@ -2,7 +2,7 @@
 //!
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeeco/5f4f5b76-14f2-4807-bf8c-10fcb7f7f41c
 
-use ironrdp_core::{ensure_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size};
 use ironrdp_dvc::DvcEncode;
 
 /// 2.2.1 ECHO_REQUEST_PDU

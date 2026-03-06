@@ -1,4 +1,4 @@
-use ironrdp_core::{ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size};
 
 const CLIENT_FLAGS_SIZE: usize = 4;
 const SERVER_MCS_MESSAGE_CHANNEL_ID_SIZE: usize = 2;

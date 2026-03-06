@@ -13,7 +13,7 @@
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use crate::windows::{WinClipboard, WinCliprdrError, WinCliprdrResult, HWND};
+pub use crate::windows::{HWND, WinClipboard, WinCliprdrError, WinCliprdrResult};
 
 mod stub;
 pub use crate::stub::{StubClipboard, StubCliprdrBackend};

@@ -1,5 +1,5 @@
 use ironrdp_core::{
-    cast_int, ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_int, ensure_fixed_part_size,
 };
 use ironrdp_pdu::impl_pdu_pod;
 

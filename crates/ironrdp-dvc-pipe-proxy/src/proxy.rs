@@ -1,12 +1,12 @@
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
-use ironrdp_pdu::{pdu_other_err, PduResult};
+use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
 use tracing::{debug, info};
 
-use crate::worker::{run_worker, OnWriteDvcMessage, WorkerCtx};
+use crate::worker::{OnWriteDvcMessage, WorkerCtx, run_worker};
 
 const IO_MPSC_CHANNEL_SIZE: usize = 100;
 

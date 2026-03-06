@@ -3,8 +3,8 @@ mod tests;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_fixed_part_size, invalid_field_err, read_padding, write_padding, Decode, DecodeResult, Encode, EncodeResult,
-    ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, invalid_field_err,
+    read_padding, write_padding,
 };
 
 const BITMAP_LENGTH: usize = 24;

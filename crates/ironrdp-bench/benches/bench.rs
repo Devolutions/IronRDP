@@ -2,11 +2,11 @@
 
 use core::num::{NonZeroU16, NonZeroUsize};
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_pdu::codecs::rfx;
-use ironrdp_server::bench::encoder::rfx::{rfx_enc, rfx_enc_tile};
 use ironrdp_server::BitmapUpdate;
+use ironrdp_server::bench::encoder::rfx::{rfx_enc, rfx_enc_tile};
 
 pub fn rfx_enc_tile_bench(c: &mut Criterion) {
     const WIDTH: NonZeroU16 = NonZeroU16::new(64).expect("value is guaranteed to be non-zero");

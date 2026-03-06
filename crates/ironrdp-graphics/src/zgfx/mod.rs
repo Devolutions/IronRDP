@@ -6,18 +6,17 @@ mod compressor;
 mod control_messages;
 mod wrapper;
 
-pub use wrapper::{wrap_compressed, wrap_uncompressed};
-
 use std::io::{self, Write as _};
 use std::sync::LazyLock;
 
-pub use api::{compress_and_wrap_egfx, CompressionMode};
+pub use api::{CompressionMode, compress_and_wrap_egfx};
 use bitvec::bits;
 use bitvec::field::BitField as _;
 use bitvec::order::Msb0;
 use bitvec::slice::BitSlice;
 use byteorder::WriteBytesExt as _;
 pub use compressor::Compressor;
+pub use wrapper::{wrap_compressed, wrap_uncompressed};
 
 use self::circular_buffer::FixedCircularBuffer;
 use self::control_messages::{BulkEncodedData, CompressionFlags, SegmentedDataPdu};
@@ -470,7 +469,9 @@ impl core::fmt::Display for ZgfxError {
                 "decompressed size of segments ({decompressed_size}) does not equal to uncompressed size ({uncompressed_size})",
             ),
             Self::TokenBitsNotFound => write!(f, "token bits not found"),
-            Self::InvalidIntegralConversion(type_name) => write!(f, "invalid `{type_name}`: out of range integral type conversion"),
+            Self::InvalidIntegralConversion(type_name) => {
+                write!(f, "invalid `{type_name}`: out of range integral type conversion")
+            }
         }
     }
 }

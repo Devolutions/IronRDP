@@ -2726,7 +2726,6 @@ version = "0.1.3"
 name = "ironrdp-futures"
 version = "0.6.0"
 dependencies = [
- "bytes",
  "futures-util",
  "ironrdp-async",
 ]
@@ -3021,7 +3020,6 @@ dependencies = [
 name = "ironrdp-tokio"
 version = "0.8.0"
 dependencies = [
- "bytes",
  "ironrdp-async",
  "ironrdp-connector",
  "reqwest",

@@ -2,18 +2,18 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
 
-use ironrdp_core::{impl_as_any, Decode as _, DecodeResult, ReadCursor};
+use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
-use pdu::gcc::ChannelName;
 use pdu::PduResult;
+use pdu::gcc::ChannelName;
 use tracing::debug;
 
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
     DrdynvcServerPdu,
 };
-use crate::{encode_dvc_messages, DvcProcessor, DynamicChannelSet, DynamicVirtualChannel};
+use crate::{DvcProcessor, DynamicChannelSet, DynamicVirtualChannel, encode_dvc_messages};
 
 pub trait DvcClientProcessor: DvcProcessor {}
 

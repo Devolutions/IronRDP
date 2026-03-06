@@ -64,7 +64,7 @@ where
     S: Send + Sync + Unpin + AsyncRead,
 {
     type ReadFut<'read>
-        = Pin<Box<dyn core::future::Future<Output = io::Result<usize>> + Send + Sync + 'read>>
+        = Pin<Box<dyn Future<Output = io::Result<usize>> + Send + Sync + 'read>>
     where
         Self: 'read;
 
@@ -80,7 +80,7 @@ where
     S: Send + Sync + Unpin + AsyncWrite,
 {
     type WriteAllFut<'write>
-        = Pin<Box<dyn core::future::Future<Output = io::Result<()>> + Send + Sync + 'write>>
+        = Pin<Box<dyn Future<Output = io::Result<()>> + Send + Sync + 'write>>
     where
         Self: 'write;
 
@@ -127,7 +127,7 @@ where
     S: Unpin + AsyncRead,
 {
     type ReadFut<'read>
-        = Pin<Box<dyn core::future::Future<Output = io::Result<usize>> + 'read>>
+        = Pin<Box<dyn Future<Output = io::Result<usize>> + 'read>>
     where
         Self: 'read;
 
@@ -143,7 +143,7 @@ where
     S: Unpin + AsyncWrite,
 {
     type WriteAllFut<'write>
-        = Pin<Box<dyn core::future::Future<Output = io::Result<()>> + 'write>>
+        = Pin<Box<dyn Future<Output = io::Result<()>> + 'write>>
     where
         Self: 'write;
 
@@ -190,7 +190,7 @@ where
     S: Send + Unpin + AsyncRead,
 {
     type ReadFut<'read>
-        = Pin<Box<dyn core::future::Future<Output = io::Result<usize>> + Send + 'read>>
+        = Pin<Box<dyn Future<Output = io::Result<usize>> + Send + 'read>>
     where
         Self: 'read;
 
@@ -206,7 +206,7 @@ where
     S: Send + Unpin + AsyncWrite,
 {
     type WriteAllFut<'write>
-        = Pin<Box<dyn core::future::Future<Output = io::Result<()>> + Send + 'write>>
+        = Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'write>>
     where
         Self: 'write;
 

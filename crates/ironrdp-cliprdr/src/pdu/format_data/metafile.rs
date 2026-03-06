@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
 };
 
 bitflags! {

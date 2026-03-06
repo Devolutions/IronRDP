@@ -5,8 +5,8 @@ use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::sspi::network_client::NetworkClient;
 use ironrdp_connector::{
-    general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
-    Sequence as _, ServerName, State as _,
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, Sequence as _,
+    ServerName, State as _, general_err,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
@@ -110,7 +110,7 @@ fn resolve_generator(
             }
             GeneratorState::Completed(client_state) => {
                 break client_state
-                    .map_err(|e| ConnectorError::new("CredSSP", ironrdp_connector::ConnectorErrorKind::Credssp(e)))
+                    .map_err(|e| ConnectorError::new("CredSSP", ironrdp_connector::ConnectorErrorKind::Credssp(e)));
             }
         }
     }

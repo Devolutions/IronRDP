@@ -1277,7 +1277,7 @@ mod tests {
         // - Literals: "Hello" (placed at output offset 0-4)
         let mut packet = Vec::new();
         packet.extend_from_slice(&1u16.to_le_bytes()); // 1 match
-                                                       // Match detail: MatchLength=4, MatchOutputOffset=5, MatchHistoryOffset=2
+        // Match detail: MatchLength=4, MatchOutputOffset=5, MatchHistoryOffset=2
         packet.extend_from_slice(&4u16.to_le_bytes());
         packet.extend_from_slice(&5u16.to_le_bytes());
         packet.extend_from_slice(&2u32.to_le_bytes());
@@ -1365,7 +1365,7 @@ mod tests {
         let data = [0xAA; 64];
         let h_small = XCrushContext::update_hash(&data, 32);
         let h_large = XCrushContext::update_hash(&data, 33); // > 32: seed 5413, only hashes first 32
-                                                             // Different seeds should (very likely) produce different results
+        // Different seeds should (very likely) produce different results
         assert_ne!(h_small, h_large);
     }
 

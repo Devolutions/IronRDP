@@ -3,8 +3,8 @@
 
 use std::collections::BTreeSet;
 
-use bitvec::array::BitArray;
 use bitvec::BitArr;
+use bitvec::array::BitArray;
 use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
 use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::input::mouse_x::PointerXFlags;
