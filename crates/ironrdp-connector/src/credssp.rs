@@ -35,7 +35,7 @@ impl From<KerberosConfig> for sspi::KerberosConfig {
     fn from(val: KerberosConfig) -> Self {
         sspi::KerberosConfig {
             kdc_url: val.kdc_proxy_url,
-            client_computer_name: val.hostname,
+            client_computer_name: val.hostname.unwrap_or_default(),
         }
     }
 }
