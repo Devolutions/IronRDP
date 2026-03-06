@@ -81,8 +81,8 @@ fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {
     use std::fs::OpenOptions;
 
     use tracing::metadata::LevelFilter;
-    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
 
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())

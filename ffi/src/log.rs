@@ -8,7 +8,7 @@ const IRONRDP_LOG: &str = "IRONRDP_LOG";
 
 #[diplomat::bridge]
 pub mod ffi {
-    use super::{setup_logging, INIT_LOG, IRONRDP_LOG_PATH};
+    use super::{INIT_LOG, IRONRDP_LOG_PATH, setup_logging};
 
     #[diplomat::opaque]
     pub struct Log;
@@ -30,12 +30,12 @@ pub mod ffi {
 }
 
 fn setup_logging(log_file_path: Option<&str>) -> Result<(), Box<dyn Error>> {
-    use std::fs::{create_dir_all, OpenOptions};
+    use std::fs::{OpenOptions, create_dir_all};
     use std::path::PathBuf;
 
     use tracing::metadata::LevelFilter;
-    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
 
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())

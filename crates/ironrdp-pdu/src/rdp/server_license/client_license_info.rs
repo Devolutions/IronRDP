@@ -2,7 +2,7 @@ use std::io;
 
 use byteorder::{LittleEndian, WriteBytesExt as _};
 use ironrdp_core::{
-    ensure_size, invalid_field_err, Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor,
+    Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
 use md5::Digest as _;
 
@@ -12,9 +12,9 @@ use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 use crate::rdp::server_license::client_new_license_request::{compute_master_secret, compute_session_key_blob};
 use crate::rdp::server_license::client_platform_challenge_response::CLIENT_HARDWARE_IDENTIFICATION_SIZE;
 use crate::rdp::server_license::{
-    compute_mac_data, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, PreambleFlags, PreambleType,
-    PreambleVersion, ServerLicenseError, ServerLicenseRequest, KEY_EXCHANGE_ALGORITHM_RSA, MAC_SIZE, PLATFORM_ID,
-    PREAMBLE_SIZE, RANDOM_NUMBER_SIZE,
+    BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA, LicenseEncryptionData, LicenseHeader, MAC_SIZE, PLATFORM_ID,
+    PREAMBLE_SIZE, PreambleFlags, PreambleType, PreambleVersion, RANDOM_NUMBER_SIZE, ServerLicenseError,
+    ServerLicenseRequest, compute_mac_data,
 };
 
 const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;

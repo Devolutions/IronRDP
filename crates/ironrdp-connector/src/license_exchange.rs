@@ -5,13 +5,13 @@ use std::str;
 use std::sync::Arc;
 
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
 use ironrdp_pdu::PduHint;
+use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
 use rand::RngCore as _;
 use tracing::{debug, error, info, trace};
 
-use super::{custom_err, general_err, legacy, ConnectorError, ConnectorErrorExt as _};
-use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
+use super::{ConnectorError, ConnectorErrorExt as _, custom_err, general_err, legacy};
+use crate::{ConnectorResult, ConnectorResultExt as _, Sequence, State, Written, encode_send_data_request};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -124,7 +124,7 @@ impl Sequence for LicenseExchangeSequence {
             LicenseExchangeState::Consumed => {
                 return Err(general_err!(
                     "license exchange sequence state is consumed (this is a bug)",
-                ))
+                ));
             }
 
             LicenseExchangeState::NewLicenseRequest => {

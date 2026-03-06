@@ -115,11 +115,7 @@ pub(crate) fn write_long_length(dst: &mut WriteCursor<'_>, length: u16) {
 }
 
 pub(crate) fn sizeof_length(length: usize) -> usize {
-    if length > 0x7f {
-        2
-    } else {
-        1
-    }
+    if length > 0x7f { 2 } else { 1 }
 }
 
 pub(crate) fn sizeof_long_length() -> usize {

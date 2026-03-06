@@ -3,11 +3,11 @@ use std::collections::HashSet;
 
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::x224::X224;
-use ironrdp_pdu::{mcs, PduHint};
+use ironrdp_pdu::{PduHint, mcs};
 use tracing::{debug, warn};
 
 use crate::{
-    general_err, reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written, general_err, reason_err,
 };
 
 #[derive(Default, Debug)]
@@ -101,7 +101,7 @@ impl Sequence for ChannelConnectionSequence {
             ChannelConnectionState::Consumed => {
                 return Err(general_err!(
                     "channel connection sequence state is consumed (this is a bug)",
-                ))
+                ));
             }
 
             ChannelConnectionState::SendErectDomainRequest => {

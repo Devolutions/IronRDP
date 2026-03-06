@@ -1,6 +1,6 @@
 use ironrdp_core::{
-    cast_int, cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode,
-    EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_int, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err,
 };
 
 // Represents `TS_POINT16` described in [MS-RDPBCGR] 2.2.9.1.1.4.1

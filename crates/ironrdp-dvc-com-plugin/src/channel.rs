@@ -9,21 +9,21 @@ use core::ffi::c_void;
 use std::collections::HashMap;
 use std::os::windows::ffi::OsStrExt as _;
 use std::path::Path;
-use std::sync::{mpsc as std_mpsc, Arc};
+use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread;
 
 use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
-use ironrdp_pdu::{pdu_other_err, PduResult};
+use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
 use tracing::{debug, error, info, warn};
-use windows::core::{HRESULT, PCSTR, PCWSTR};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::RemoteDesktop::{IWTSListenerCallback, IWTSPlugin, IWTSVirtualChannelManager};
-use windows_core::{Interface as _, GUID};
+use windows::core::{HRESULT, PCSTR, PCWSTR};
+use windows_core::{GUID, Interface as _};
 
 use crate::com::{ChannelManager, OnWriteDvc};
-use crate::worker::{run_com_worker, ComCommand};
+use crate::worker::{ComCommand, run_com_worker};
 
 /// Type signature for the `VirtualChannelGetInstance` export in a DVC plugin DLL.
 ///

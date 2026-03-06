@@ -17,13 +17,13 @@ use std::rc::Rc;
 use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, trace};
-use windows::core::{Error, IUnknown, Ref, Result, PCSTR};
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_NOTIMPL};
 use windows::Win32::System::Com::StructuredStorage::IPropertyBag;
 use windows::Win32::System::RemoteDesktop::{
-    IWTSListener, IWTSListenerCallback, IWTSListener_Impl, IWTSVirtualChannel, IWTSVirtualChannelCallback,
-    IWTSVirtualChannelManager, IWTSVirtualChannelManager_Impl, IWTSVirtualChannel_Impl,
+    IWTSListener, IWTSListener_Impl, IWTSListenerCallback, IWTSVirtualChannel, IWTSVirtualChannel_Impl,
+    IWTSVirtualChannelCallback, IWTSVirtualChannelManager, IWTSVirtualChannelManager_Impl,
 };
+use windows::core::{Error, IUnknown, PCSTR, Ref, Result};
 use windows_core::implement;
 
 /// Callback type for sending DVC messages from the COM plugin back into IronRDP's session loop.

@@ -18,7 +18,7 @@ use crate::windows::clipboard_data_ref::ClipboardDataRef;
 use crate::windows::os_clipboard::OwnedOsClipboard;
 use crate::windows::remote_format_registry::RemoteClipboardFormatRegistry;
 use crate::windows::utils::render_format;
-use crate::windows::{BackendEvent, WinCliprdrError, WinCliprdrResult, WM_CLIPRDR_BACKEND_EVENT};
+use crate::windows::{BackendEvent, WM_CLIPRDR_BACKEND_EVENT, WinCliprdrError, WinCliprdrResult};
 
 const RENDER_FORMAT_TIMEOUT_SECS: u64 = 10;
 const IDT_CLIPBOARD_RETRY: usize = 1;

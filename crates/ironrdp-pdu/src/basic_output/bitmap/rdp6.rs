@@ -1,6 +1,6 @@
 use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
-    WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
+    invalid_field_err,
 };
 
 const NON_RLE_PADDING_SIZE: usize = 1;
@@ -171,7 +171,7 @@ impl Encode for BitmapStream<'_> {
     reason = "the lint is disable to not interfere with expect! macro"
 )]
 mod tests {
-    use expect_test::{expect, Expect};
+    use expect_test::{Expect, expect};
 
     use super::*;
 

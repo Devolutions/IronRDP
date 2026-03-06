@@ -252,9 +252,7 @@ macro_rules! custom_err {
         )
         .with_source($source)
     }};
-    ( $source:expr $(,)? ) => {{
-        $crate::custom_err!($crate::function!(), $source)
-    }};
+    ( $source:expr $(,)? ) => {{ $crate::custom_err!($crate::function!(), $source) }};
 }
 
 #[doc(hidden)]

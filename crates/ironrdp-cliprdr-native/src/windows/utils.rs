@@ -2,7 +2,7 @@ use ironrdp_cliprdr::pdu::ClipboardFormatId;
 use tracing::error;
 use windows::Win32::Foundation::{GetLastError, GlobalFree, HANDLE, HGLOBAL, WIN32_ERROR};
 use windows::Win32::System::DataExchange::SetClipboardData;
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 
 use crate::windows::WinCliprdrResult;
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ironrdp_bulk::BulkCompressor;
-use ironrdp_core::{decode_cursor, DecodeErrorKind, ReadCursor, WriteBuf};
+use ironrdp_core::{DecodeErrorKind, ReadCursor, WriteBuf, decode_cursor};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
@@ -10,14 +10,14 @@ use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
-use ironrdp_pdu::rdp::capability_sets::{CodecId, CODEC_ID_NONE, CODEC_ID_REMOTEFX};
+use ironrdp_pdu::rdp::capability_sets::{CODEC_ID_NONE, CODEC_ID_REMOTEFX, CodecId};
 use ironrdp_pdu::rdp::headers::{CompressionFlags, ShareDataPdu};
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
 use tracing::{debug, trace, warn};
 
 use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
-use crate::{custom_err, reason_err, rfx, SessionError, SessionErrorExt as _, SessionResult};
+use crate::{SessionError, SessionErrorExt as _, SessionResult, custom_err, reason_err, rfx};
 
 #[derive(Debug)]
 pub enum UpdateKind {

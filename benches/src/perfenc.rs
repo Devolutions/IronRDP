@@ -157,8 +157,8 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
 
 fn setup_logging() -> anyhow::Result<()> {
     use tracing::metadata::LevelFilter;
-    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
 
     let fmt_layer = tracing_subscriber::fmt::layer().compact();
 
@@ -176,7 +176,9 @@ fn setup_logging() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
 enum OptCodec {
+    #[default]
     RemoteFX,
     Bitmap,
     None,
@@ -184,12 +186,6 @@ enum OptCodec {
     Qoi,
     #[cfg(feature = "qoiz")]
     QoiZ,
-}
-
-impl Default for OptCodec {
-    fn default() -> Self {
-        Self::RemoteFX
-    }
 }
 
 impl core::str::FromStr for OptCodec {

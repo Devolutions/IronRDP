@@ -1,6 +1,6 @@
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
-    WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    invalid_field_err,
 };
 
 const SYNC_MAGIC: u32 = 0xCACC_ACCA;

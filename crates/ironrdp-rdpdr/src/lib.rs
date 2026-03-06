@@ -2,24 +2,24 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // FIXME: remove
 
-use ironrdp_core::{decode_cursor, impl_as_any, ReadCursor};
+use ironrdp_core::{ReadCursor, decode_cursor, impl_as_any};
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{decode_err, pdu_other_err, PduResult};
+use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
+use pdu::RdpdrPdu;
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest, ClientNameRequestUnicodeFlag,
     CoreCapability, CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices,
     ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
-use pdu::RdpdrPdu;
 use tracing::{debug, trace, warn};
 
 pub mod backend;
 pub mod pdu;
 
-pub use self::backend::noop::NoopRdpdrBackend;
 pub use self::backend::RdpdrBackend;
+pub use self::backend::noop::NoopRdpdrBackend;
 use crate::pdu::efs::ServerDriveIoRequest;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].

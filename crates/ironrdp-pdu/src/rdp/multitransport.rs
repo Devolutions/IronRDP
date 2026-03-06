@@ -6,8 +6,8 @@
 //! [\[MS-RDPBCGR\] 2.2.15.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/44044233-e498-46f8-8e16-1ffa595a8e8b
 
 use ironrdp_core::{
-    ensure_fixed_part_size, invalid_field_err, read_padding, write_padding, Decode, DecodeResult, Encode, EncodeResult,
-    ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, invalid_field_err,
+    read_padding, write_padding,
 };
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};

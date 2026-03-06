@@ -2,14 +2,14 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, ServerName,
-    State as _,
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, ServerName, State as _,
+    general_err,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
 
 use crate::framed::{Framed, FramedRead, FramedWrite};
-use crate::{single_sequence_step, NetworkClient};
+use crate::{NetworkClient, single_sequence_step};
 
 #[non_exhaustive]
 pub struct ShouldUpgrade;
@@ -104,7 +104,7 @@ async fn resolve_generator(
             }
             GeneratorState::Completed(client_state) => {
                 break client_state
-                    .map_err(|e| ConnectorError::new("CredSSP", ironrdp_connector::ConnectorErrorKind::Credssp(e)))
+                    .map_err(|e| ConnectorError::new("CredSSP", ironrdp_connector::ConnectorErrorKind::Credssp(e)));
             }
         }
     }

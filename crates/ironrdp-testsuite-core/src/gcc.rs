@@ -26,6 +26,7 @@ const fn gcc_block_size<const N: usize>(_: [u8; N]) -> usize {
     N + USER_HEADER_LEN
 }
 
+#[expect(clippy::panic, reason = "compile-time array size validation in test helper")]
 const fn make_gcc_block_buffer<const N: usize>(data_type: u16, buffer: &[u8]) -> [u8; N] {
     const fn copy_slice<const N: usize>(src: &[u8], mut dst: [u8; N], offset: usize) -> [u8; N] {
         let mut i = src.len();

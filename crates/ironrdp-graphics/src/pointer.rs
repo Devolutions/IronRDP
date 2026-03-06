@@ -236,7 +236,7 @@ impl DecodedPointer {
             let compute_inverted_pixel = if target.should_invert_pixels_using_check_pattern() {
                 |row_idx: u16, col_idx: u16| -> [u8; 4] {
                     // Checkered pattern is used to represent inverted pixels.
-                    if (row_idx + col_idx) % 2 == 0 {
+                    if (row_idx + col_idx).is_multiple_of(2) {
                         [0xff, 0xff, 0xff, 0xff]
                     } else {
                         [0x00, 0x00, 0x00, 0xff]

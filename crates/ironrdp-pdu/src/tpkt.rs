@@ -1,5 +1,5 @@
 use ironrdp_core::{
-    ensure_fixed_part_size, read_padding, unsupported_version_err, write_padding, ReadCursor, WriteCursor,
+    ReadCursor, WriteCursor, ensure_fixed_part_size, read_padding, unsupported_version_err, write_padding,
 };
 
 use crate::{DecodeResult, EncodeResult};

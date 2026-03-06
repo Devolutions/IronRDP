@@ -25,7 +25,7 @@ use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use tracing::debug;
 
 const DESKTOP_WIDTH: u16 = 1024;

@@ -6,9 +6,7 @@
 /// ```
 #[macro_export]
 macro_rules! general_err {
-    ( $context:expr $(,)? ) => {{
-        <$crate::SessionError as $crate::SessionErrorExt>::general($context)
-    }};
+    ( $context:expr $(,)? ) => {{ <$crate::SessionError as $crate::SessionErrorExt>::general($context) }};
 }
 
 /// Creates a `SessionError` with `Reason` kind
@@ -32,9 +30,7 @@ macro_rules! reason_err {
 /// ```
 #[macro_export]
 macro_rules! custom_err {
-    ( $context:expr, $source:expr $(,)? ) => {{
-        <$crate::SessionError as $crate::SessionErrorExt>::custom($context, $source)
-    }};
+    ( $context:expr, $source:expr $(,)? ) => {{ <$crate::SessionError as $crate::SessionErrorExt>::custom($context, $source) }};
 }
 
 #[macro_export]

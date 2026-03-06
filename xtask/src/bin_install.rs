@@ -1,7 +1,7 @@
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 use crate::macros::trace;
-use crate::{local_bin, CARGO, LOCAL_CARGO_ROOT};
+use crate::{CARGO, LOCAL_CARGO_ROOT, local_bin};
 
 pub struct CargoPackage {
     pub name: &'static str,

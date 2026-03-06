@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, Decode, DecodeResult,
-    Encode, EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode, ensure_fixed_part_size,
+    ensure_size, invalid_field_err, other_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;

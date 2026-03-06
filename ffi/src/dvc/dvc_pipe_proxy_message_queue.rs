@@ -14,7 +14,7 @@ pub mod ffi {
 
     impl DvcPipeProxyMessage {
         pub fn get_channel_id(&self) -> u32 {
-            self.0 .0
+            self.0.0
         }
     }
 

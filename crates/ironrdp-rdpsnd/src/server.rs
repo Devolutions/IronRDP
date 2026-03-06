@@ -1,6 +1,6 @@
-use ironrdp_core::{impl_as_any, Decode as _, ReadCursor};
+use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{decode_err, pdu_other_err, PduResult};
+use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{CompressionCondition, SvcMessage, SvcProcessor, SvcProcessorMessages, SvcServerProcessor};
 use tracing::{debug, error};
 
@@ -94,7 +94,7 @@ impl RdpsndServer {
             data: vec![],
         };
         Ok(RdpsndSvcMessages::new(vec![
-            pdu::ServerAudioOutputPdu::Training(pdu).into()
+            pdu::ServerAudioOutputPdu::Training(pdu).into(),
         ]))
     }
 
@@ -138,7 +138,7 @@ impl RdpsndServer {
             volume_right,
         };
         Ok(RdpsndSvcMessages::new(vec![
-            pdu::ServerAudioOutputPdu::Volume(pdu).into()
+            pdu::ServerAudioOutputPdu::Volume(pdu).into(),
         ]))
     }
 

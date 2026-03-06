@@ -7,13 +7,12 @@ pub(crate) mod tables;
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 
-use crate::bitstream::{BitStreamReader, BitStreamWriter};
-use crate::error::BulkError;
-use crate::flags;
-
 use self::tables::{
     HISTORY_BUFFER_SIZE_RDP4, HISTORY_BUFFER_SIZE_RDP5, HISTORY_MASK_RDP4, HISTORY_MASK_RDP5, MATCH_BUFFER_SIZE,
 };
+use crate::bitstream::{BitStreamReader, BitStreamWriter};
+use crate::error::BulkError;
+use crate::flags;
 
 /// MPPC compression/decompression context.
 ///

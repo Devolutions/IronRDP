@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::cmp;
 
-use ironrdp_core::{cast_length, invalid_field_err, DecodeResult};
+use ironrdp_core::{DecodeResult, cast_length, invalid_field_err};
 use tracing::error;
 
 use crate::pdu::{DataFirstPdu, DataPdu, DrdynvcDataPdu};

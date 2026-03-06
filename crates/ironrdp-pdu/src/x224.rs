@@ -1,13 +1,13 @@
 use std::borrow::Cow;
 
 use ironrdp_core::{
-    cast_length, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor,
-    WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor, WriteCursor, cast_length, ensure_size,
+    invalid_field_err,
 };
 
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
-use crate::{impl_x224_pdu_borrowing, Pdu};
+use crate::{Pdu, impl_x224_pdu_borrowing};
 
 pub trait X224Pdu<'de>: Sized {
     const X224_NAME: &'static str;

@@ -3,8 +3,8 @@ use std::{io, str};
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding, Decode,
-    DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err, read_padding, write_padding,
 };
 use num_integer::Integer as _;
 use thiserror::Error;
@@ -65,6 +65,7 @@ impl ChannelName {
     /// # Panics
     ///
     /// Panics if input is not null-terminated.
+    #[expect(clippy::panic, reason = "const fn invariant enforcement; documented in # Panics")]
     pub const fn from_static(value: &'static [u8; 8]) -> Self {
         // ensure the last byte is always the null terminator
         if value[Self::SIZE - 1] != 0 {
