@@ -1,6 +1,6 @@
-use expect_test::{expect, Expect};
+use expect_test::{Expect, expect};
 use ironrdp_rdcleanpath::{
-    DetectionResult, RDCleanPathErr, RDCleanPathPdu, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE, VERSION_1,
+    DetectionResult, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE, RDCleanPathErr, RDCleanPathPdu, VERSION_1,
 };
 use rstest::rstest;
 

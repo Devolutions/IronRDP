@@ -1,4 +1,4 @@
-use ironrdp_core::{decode, encode_vec, Encode as _};
+use ironrdp_core::{Encode as _, decode, encode_vec};
 use ironrdp_testsuite_core::capsets::*;
 use ironrdp_testsuite_core::client_info::*;
 use ironrdp_testsuite_core::rdp::*;
