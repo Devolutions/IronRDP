@@ -43,7 +43,7 @@ fn generate_structured_bitmap(size: usize) -> Vec<u8> {
         let color_idx = pos_in_scanline / 64;
         let channel = i % 4;
         // Add slight variation every 4 scanlines to simulate content
-        let variation = if scanline % 4 == 0 {
+        let variation = if scanline.is_multiple_of(4) {
             u8::try_from(pos_in_scanline & 0x03).unwrap_or(0)
         } else {
             0

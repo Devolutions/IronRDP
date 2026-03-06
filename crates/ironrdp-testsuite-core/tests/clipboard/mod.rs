@@ -320,13 +320,11 @@ fn fake_format_list(use_ascii: bool, use_long_format: bool) -> FormatList<'stati
         ClipboardFormat::new(ClipboardFormatId::new(11)).with_name(ClipboardFormatName::new("World")),
     ];
 
-    let list = if use_ascii {
+    if use_ascii {
         FormatList::new_ascii(&formats, use_long_format).unwrap()
     } else {
         FormatList::new_unicode(&formats, use_long_format).unwrap()
-    };
-
-    list
+    }
 }
 
 #[test]
