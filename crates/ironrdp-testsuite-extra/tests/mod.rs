@@ -1,7 +1,6 @@
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
 #![allow(clippy::unwrap_used, reason = "unwrap is fine in tests")]
 
-use core::future::Future;
 use core::time::Duration;
 use std::path::Path;
 use std::sync::Arc;
