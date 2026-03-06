@@ -12,8 +12,8 @@ use tracing::debug;
 
 fn setup_logging() -> anyhow::Result<()> {
     use tracing::metadata::LevelFilter;
-    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
 
     let fmt_layer = tracing_subscriber::fmt::layer().compact();
 

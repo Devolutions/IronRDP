@@ -1,15 +1,14 @@
-use ironrdp_core::{other_err, WriteBuf};
-use ironrdp_pdu::{nego, PduHint};
+use ironrdp_core::{WriteBuf, other_err};
+use ironrdp_pdu::{PduHint, nego};
 use picky::key::PrivateKey;
-use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
+use picky_asn1_x509::{Certificate, ExtensionView, GeneralName, oids};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
-use sspi::Secret;
-use sspi::Username;
+use sspi::{Secret, Username};
 use tracing::debug;
 
 use crate::{
-    custom_err, general_err, ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written,
+    ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written, custom_err, general_err,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -259,7 +258,7 @@ fn extract_user_principal_name(cert: &Certificate) -> Option<String> {
             GeneralName::OtherName(name) if name.type_id.0 == oids::user_principal_name() => Some(name.value),
             _ => None,
         })
-        .and_then(|asn1| picky_asn1_der::from_bytes(&asn1.0 .0).ok())
+        .and_then(|asn1| picky_asn1_der::from_bytes(&asn1.0.0).ok())
 }
 
 fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) -> ConnectorResult<usize> {

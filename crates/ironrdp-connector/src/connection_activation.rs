@@ -5,7 +5,7 @@ use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use tracing::{debug, warn};
 
 use crate::{
-    general_err, legacy, Config, ConnectionFinalizationSequence, ConnectorResult, DesktopSize, Sequence, State, Written,
+    Config, ConnectionFinalizationSequence, ConnectorResult, DesktopSize, Sequence, State, Written, general_err, legacy,
 };
 
 /// Represents the Capability Exchange and Connection Finalization phases
@@ -282,12 +282,11 @@ fn create_client_confirm_active(
     desktop_size: DesktopSize,
 ) -> rdp::capability_sets::ClientConfirmActive {
     use ironrdp_pdu::rdp::capability_sets::{
-        client_codecs_capabilities, Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry,
-        ClientConfirmActive, CmdFlags, DemandActive, FrameAcknowledge, General, GeneralExtraFlags, GlyphCache,
-        GlyphSupportLevel, Input, InputFlags, LargePointer, LargePointerSupportFlags, MultifragmentUpdate,
-        OffscreenBitmapCache, Order, OrderFlags, OrderSupportExFlags, Pointer, Sound, SoundFlags, SupportLevel,
-        SurfaceCommands, VirtualChannel, VirtualChannelFlags, BITMAP_CACHE_ENTRIES_NUM, GLYPH_CACHE_NUM,
-        SERVER_CHANNEL_ID,
+        BITMAP_CACHE_ENTRIES_NUM, Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry,
+        ClientConfirmActive, CmdFlags, DemandActive, FrameAcknowledge, GLYPH_CACHE_NUM, General, GeneralExtraFlags,
+        GlyphCache, GlyphSupportLevel, Input, InputFlags, LargePointer, LargePointerSupportFlags, MultifragmentUpdate,
+        OffscreenBitmapCache, Order, OrderFlags, OrderSupportExFlags, Pointer, SERVER_CHANNEL_ID, Sound, SoundFlags,
+        SupportLevel, SurfaceCommands, VirtualChannel, VirtualChannelFlags, client_codecs_capabilities,
     };
 
     server_capability_sets.retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));

@@ -1,13 +1,11 @@
-use ironrdp_core::{impl_as_any, ReadCursor};
+use ironrdp_core::{ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_graphics::zgfx;
-use ironrdp_pdu::{decode_cursor, decode_err, PduResult};
+use ironrdp_pdu::{PduResult, decode_cursor, decode_err};
 use tracing::trace;
 
-use crate::{
-    pdu::{CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitySet, GfxPdu},
-    CHANNEL_NAME,
-};
+use crate::CHANNEL_NAME;
+use crate::pdu::{CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitySet, GfxPdu};
 
 /// Max capacity to keep for decompressed buffer when cleared.
 const MAX_DECOMPRESSED_BUFFER_CAPACITY: usize = 16384; // 16 KiB

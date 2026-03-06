@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use ironrdp_core::{decode, encode_vec, DecodeErrorKind};
+use ironrdp_core::{DecodeErrorKind, decode, encode_vec};
 
 use super::*;
 

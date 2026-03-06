@@ -6,9 +6,9 @@ use ironrdp_connector::sspi::generator::{Generator, GeneratorState};
 use ironrdp_connector::sspi::negotiate::ProtocolConfig;
 use ironrdp_connector::sspi::{self, AuthIdentity, KerberosServerConfig, NegotiateConfig, NetworkRequest, Username};
 use ironrdp_connector::{
-    custom_err, general_err, ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written,
+    ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written, custom_err, general_err,
 };
-use ironrdp_core::{other_err, WriteBuf};
+use ironrdp_core::{WriteBuf, other_err};
 use ironrdp_pdu::PduHint;
 use tracing::debug;
 

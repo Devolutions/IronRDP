@@ -2,29 +2,28 @@ use core::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::echo::{build_echo_request, EchoDvcBridge, EchoServerHandle, EchoServerMessage};
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::Framed;
-use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
+use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
-use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
+use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, GeneralExtraFlags};
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::x224::X224;
-use ironrdp_pdu::{decode_err, mcs, nego, rdp, Action, PduResult};
-use ironrdp_svc::{server_encode_svc_messages, ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor};
-use ironrdp_tokio::{split_tokio_framed, unsplit_tokio_framed, FramedRead, FramedWrite, TokioFramed};
+use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
+use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
+use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, trace, warn};
@@ -32,11 +31,12 @@ use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
+use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
-use crate::{builder, capabilities, SoundServerFactory};
+use crate::{SoundServerFactory, builder, capabilities};
 
 #[derive(Clone)]
 pub struct RdpServerOptions {
@@ -877,14 +877,14 @@ impl RdpServer {
                             CodecProperty::RemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(c))
                                 if self.opts.has_remote_fx() =>
                             {
-                                for caps in c.caps_data.0 .0 {
+                                for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
                             CodecProperty::ImageRemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(
                                 c,
                             )) if self.opts.has_image_remote_fx() => {
-                                for caps in c.caps_data.0 .0 {
+                                for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
@@ -1157,7 +1157,7 @@ where
     W: FramedWrite,
 {
     type WriteAllFut<'write>
-        = core::pin::Pin<Box<dyn core::future::Future<Output = std::io::Result<()>> + 'write>>
+        = core::pin::Pin<Box<dyn Future<Output = std::io::Result<()>> + 'write>>
     where
         Self: 'write;
 

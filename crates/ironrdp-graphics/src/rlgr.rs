@@ -280,11 +280,7 @@ fn fill(buffer: &mut [i16], value: i16) {
 }
 
 fn load_be_u32(s: &BitSlice<u8, Msb0>) -> u32 {
-    if s.is_empty() {
-        0
-    } else {
-        s.load_be::<u32>()
-    }
+    if s.is_empty() { 0 } else { s.load_be::<u32>() }
 }
 
 // Returns number of truncated bits
@@ -331,7 +327,7 @@ fn compute_rlgr1_magnitude(code_remainder: u32, k: &mut u32, kp: &mut u32) -> Re
         *kp = kp.saturating_sub(DQ_GR);
         *k = *kp >> LS_GR;
 
-        if code_remainder % 2 != 0 {
+        if !code_remainder.is_multiple_of(2) {
             Ok(-i16::try_from((code_remainder + 1) >> 1)
                 .map_err(|_| RlgrError::InvalidIntegralConversion("(code remainder + 1) >> 1"))?)
         } else {
@@ -341,7 +337,7 @@ fn compute_rlgr1_magnitude(code_remainder: u32, k: &mut u32, kp: &mut u32) -> Re
 }
 
 fn compute_rlgr3_magnitude(val: u32) -> Result<i16, RlgrError> {
-    if val % 2 != 0 {
+    if !val.is_multiple_of(2) {
         Ok(-i16::try_from((val + 1) >> 1).map_err(|_| RlgrError::InvalidIntegralConversion("(val + 1) >> 1"))?)
     } else {
         i16::try_from(val >> 1).map_err(|_| RlgrError::InvalidIntegralConversion("val >> 1"))
@@ -384,11 +380,7 @@ enum CompressionMode {
 
 impl From<u32> for CompressionMode {
     fn from(m: u32) -> Self {
-        if m != 0 {
-            Self::RunLength
-        } else {
-            Self::GolombRice
-        }
+        if m != 0 { Self::RunLength } else { Self::GolombRice }
     }
 }
 

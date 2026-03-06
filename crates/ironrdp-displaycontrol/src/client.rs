@@ -1,11 +1,11 @@
-use ironrdp_core::{impl_as_any, Decode as _, EncodeResult, ReadCursor};
-use ironrdp_dvc::{encode_dvc_messages, DvcClientProcessor, DvcMessage, DvcProcessor};
-use ironrdp_pdu::{decode_err, PduResult};
+use ironrdp_core::{Decode as _, EncodeResult, ReadCursor, impl_as_any};
+use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
+use ironrdp_pdu::{PduResult, decode_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::debug;
 
-use crate::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu};
 use crate::CHANNEL_NAME;
+use crate::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu};
 
 /// A client for the Display Control Virtual Channel.
 pub struct DisplayControlClient {

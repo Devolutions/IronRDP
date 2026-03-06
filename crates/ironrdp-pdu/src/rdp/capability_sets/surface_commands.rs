@@ -2,7 +2,7 @@
 mod tests;
 
 use bitflags::bitflags;
-use ironrdp_core::{ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size};
 
 const SURFACE_COMMANDS_LENGTH: usize = 8;
 

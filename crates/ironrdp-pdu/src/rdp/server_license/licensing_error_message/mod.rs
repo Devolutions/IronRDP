@@ -2,14 +2,14 @@
 mod test;
 
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode as _, DecodeResult, Encode as _,
-    EncodeResult, ReadCursor, WriteCursor,
+    Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
-use super::{BlobHeader, BlobType, LicenseHeader, PreambleFlags, PreambleVersion, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE};
-use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
+use super::{BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, LicenseHeader, PreambleFlags, PreambleVersion};
+use crate::rdp::headers::{BASIC_SECURITY_HEADER_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags};
 use crate::rdp::server_license::PreambleType;
 
 const ERROR_CODE_SIZE: usize = 4;

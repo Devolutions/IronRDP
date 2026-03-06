@@ -3,15 +3,15 @@ use std::io;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, write_padding, Decode, DecodeResult, Encode,
-    EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
 use crate::utils::CharacterSet;
-use crate::{utils, PduError};
+use crate::{PduError, utils};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
@@ -287,8 +287,8 @@ impl ExtendedClientOptionalInfo {
     const NAME: &'static str = "ExtendedClientOptionalInfo";
 
     /// Creates a new builder for [`ExtendedClientOptionalInfo`].
-    pub fn builder(
-    ) -> builder::ExtendedClientOptionalInfoBuilder<builder::ExtendedClientOptionalInfoBuilderStateSetTimeZone> {
+    pub fn builder()
+    -> builder::ExtendedClientOptionalInfoBuilder<builder::ExtendedClientOptionalInfoBuilderStateSetTimeZone> {
         builder::ExtendedClientOptionalInfoBuilder::<builder::ExtendedClientOptionalInfoBuilderStateSetTimeZone>::default()
     }
 
@@ -792,7 +792,7 @@ fn string_len(value: &str, character_set: CharacterSet) -> usize {
 pub mod builder {
     use core::marker::PhantomData;
 
-    use super::{ExtendedClientOptionalInfo, PerformanceFlags, TimezoneInfo, RECONNECT_COOKIE_LEN};
+    use super::{ExtendedClientOptionalInfo, PerformanceFlags, RECONNECT_COOKIE_LEN, TimezoneInfo};
 
     pub struct ExtendedClientOptionalInfoBuilderStateSetTimeZone;
     pub struct ExtendedClientOptionalInfoBuilderStateSetSessionId;

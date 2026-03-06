@@ -3,12 +3,12 @@ mod tests;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_fixed_part_size, read_padding, write_padding, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
-    WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, read_padding,
+    write_padding,
 };
 use num_traits::FromPrimitive as _;
 
-use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};
+use crate::gcc::{IME_FILE_NAME_SIZE, KeyboardType};
 use crate::utils;
 
 const INPUT_LENGTH: usize = 84;

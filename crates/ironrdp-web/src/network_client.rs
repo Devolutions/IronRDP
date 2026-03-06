@@ -1,6 +1,6 @@
 use ironrdp::connector::sspi::generator::NetworkRequest;
 use ironrdp::connector::sspi::network_client::NetworkProtocol;
-use ironrdp::connector::{custom_err, reason_err, ConnectorResult};
+use ironrdp::connector::{ConnectorResult, custom_err, reason_err};
 use ironrdp_futures::NetworkClient;
 use tracing::debug;
 

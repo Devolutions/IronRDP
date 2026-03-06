@@ -1,6 +1,6 @@
 use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
-    WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
+    invalid_field_err,
 };
 
 const NON_RLE_PADDING_SIZE: usize = 1;
@@ -171,7 +171,7 @@ impl Encode for BitmapStream<'_> {
     reason = "the lint is disable to not interfere with expect! macro"
 )]
 mod tests {
-    use expect_test::{expect, Expect};
+    use expect_test::{Expect, expect};
 
     use super::*;
 
@@ -290,7 +290,7 @@ mod tests {
             &[],
             expect![[r#"
                 Error {
-                    context: "<ironrdp_pdu::basic_output::bitmap::rdp6::BitmapStream as ironrdp_core::decode::Decode>::decode",
+                    context: "<ironrdp_pdu::basic_output::bitmap::rdp6::BitmapStream<'_> as ironrdp_core::decode::Decode<'_>>::decode",
                     kind: NotEnoughBytes {
                         received: 0,
                         expected: 1,
@@ -305,7 +305,7 @@ mod tests {
             &[0x20],
             expect![[r#"
                 Error {
-                    context: "<ironrdp_pdu::basic_output::bitmap::rdp6::BitmapStream as ironrdp_core::decode::Decode>::decode",
+                    context: "<ironrdp_pdu::basic_output::bitmap::rdp6::BitmapStream<'_> as ironrdp_core::decode::Decode<'_>>::decode",
                     kind: InvalidField {
                         field: "padding",
                         reason: "missing padding byte from zero-sized non-RLE bitmap data",

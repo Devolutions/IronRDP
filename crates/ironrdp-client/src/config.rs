@@ -5,10 +5,10 @@ use core::str::FromStr;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use clap::clap_derive::ValueEnum;
 use clap::Parser;
+use clap::clap_derive::ValueEnum;
 use ironrdp::connector::{self, Credentials};
-use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatformType};
+use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_mstsgu::GwConnectTarget;
 use tap::prelude::*;
@@ -363,15 +363,12 @@ impl Config {
             }
         }
 
-        let mut gw: Option<GwConnectTarget> = None;
-        if let Some(gw_addr) = args.gw_endpoint {
-            gw = Some(GwConnectTarget {
-                gw_endpoint: gw_addr,
-                gw_user: String::new(),
-                gw_pass: String::new(),
-                server: String::new(), // TODO: non-standard port? also dont use here?
-            });
-        }
+        let mut gw = args.gw_endpoint.map(|gw_addr| GwConnectTarget {
+            gw_endpoint: gw_addr,
+            gw_user: String::new(),
+            gw_pass: String::new(),
+            server: String::new(), // TODO: non-standard port? also dont use here?
+        });
 
         if let Some(ref mut gw) = gw {
             gw.gw_user = if let Some(gw_user) = args.gw_user {

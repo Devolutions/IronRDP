@@ -2,8 +2,8 @@ mod data_messages;
 mod header_messages;
 
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
-    ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
@@ -62,7 +62,7 @@ impl Encode for Block<'_> {
         let data_length = self.size();
         BlockHeader { ty, data_length }.encode(dst)?;
 
-        if let Block::CodecChannel(ref c) = self {
+        if let Block::CodecChannel(c) = self {
             let channel_id = c.channel_id();
             CodecChannelHeader { channel_id }.encode(dst)?;
         }

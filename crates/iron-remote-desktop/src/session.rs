@@ -1,5 +1,5 @@
 use wasm_bindgen::JsValue;
-use web_sys::{js_sys, HtmlCanvasElement};
+use web_sys::{HtmlCanvasElement, js_sys};
 
 use crate::clipboard::ClipboardData;
 use crate::error::IronError;
@@ -64,7 +64,7 @@ pub trait Session {
     type ClipboardData: ClipboardData;
     type Error: IronError;
 
-    fn run(&self) -> impl core::future::Future<Output = Result<Self::SessionTerminationInfo, Self::Error>>;
+    fn run(&self) -> impl Future<Output = Result<Self::SessionTerminationInfo, Self::Error>>;
 
     fn desktop_size(&self) -> DesktopSize;
 
@@ -82,10 +82,7 @@ pub trait Session {
 
     fn shutdown(&self) -> Result<(), Self::Error>;
 
-    fn on_clipboard_paste(
-        &self,
-        content: &Self::ClipboardData,
-    ) -> impl core::future::Future<Output = Result<(), Self::Error>>;
+    fn on_clipboard_paste(&self, content: &Self::ClipboardData) -> impl Future<Output = Result<(), Self::Error>>;
 
     fn resize(
         &self,

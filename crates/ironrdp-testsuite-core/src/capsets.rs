@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use ironrdp_core::decode;
 use ironrdp_pdu::rdp::capability_sets::{
-    CapabilitySet, ClientConfirmActive, DemandActive, ServerDemandActive, SERVER_CHANNEL_ID,
+    CapabilitySet, ClientConfirmActive, DemandActive, SERVER_CHANNEL_ID, ServerDemandActive,
 };
 
 pub const SERVER_DEMAND_ACTIVE_BUFFER: [u8; 357] = [

@@ -2,10 +2,10 @@
 mod test;
 
 use ironrdp_core::{
-    ensure_size, invalid_field_err, Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor,
+    Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
 
-use super::{BlobHeader, BlobType, LicenseHeader, PreambleType, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE};
+use super::{BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, LicenseHeader, MAC_SIZE, PreambleType};
 
 const CONNECT_FLAGS_FIELD_SIZE: usize = 4;
 

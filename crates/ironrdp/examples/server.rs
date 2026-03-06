@@ -14,11 +14,11 @@ use ironrdp::connector::DesktopSize;
 use ironrdp::rdpsnd::pdu::{AudioFormat, ClientAudioFormatPdu, WaveFormat};
 use ironrdp::rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
 use ironrdp::server::tokio::sync::mpsc::UnboundedSender;
-use ironrdp::server::tokio::time::{self, sleep, Duration};
+use ironrdp::server::tokio::time::{self, Duration, sleep};
 use ironrdp::server::{
-    tokio, BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat,
-    RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
-    SoundServerFactory, TlsIdentityCtx,
+    BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer,
+    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
+    SoundServerFactory, TlsIdentityCtx, tokio,
 };
 use ironrdp_cliprdr_native::StubCliprdrBackend;
 use rand::prelude::*;
@@ -108,8 +108,8 @@ fn parse_args() -> anyhow::Result<Action> {
 
 fn setup_logging() -> anyhow::Result<()> {
     use tracing::metadata::LevelFilter;
-    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
 
     let fmt_layer = tracing_subscriber::fmt::layer().compact();
 

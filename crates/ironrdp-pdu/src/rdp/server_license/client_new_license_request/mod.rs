@@ -5,14 +5,14 @@ use std::io;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_size, invalid_field_err, Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor,
+    Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
 use md5::Digest as _;
 
 use super::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader,
-    PreambleFlags, PreambleType, PreambleVersion, ServerLicenseError, ServerLicenseRequest, KEY_EXCHANGE_ALGORITHM_RSA,
-    PREAMBLE_SIZE, RANDOM_NUMBER_SIZE, UTF8_NULL_TERMINATOR_SIZE,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA,
+    LicenseEncryptionData, LicenseHeader, PREAMBLE_SIZE, PreambleFlags, PreambleType, PreambleVersion,
+    RANDOM_NUMBER_SIZE, ServerLicenseError, ServerLicenseRequest, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::crypto::rsa::encrypt_with_public_key;
 use crate::utils::{self, CharacterSet};

@@ -1,14 +1,14 @@
 use std::io;
 
 use ironrdp_core::{
-    cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, unsupported_value_err, write_padding,
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode, ensure_fixed_part_size,
+    ensure_size, invalid_field_err, unsupported_value_err, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
-use crate::{utils, PduError};
+use crate::{PduError, utils};
 
 mod bitmap;
 mod bitmap_cache;
@@ -29,17 +29,17 @@ mod virtual_channel;
 
 pub use self::bitmap::{Bitmap, BitmapDrawingFlags};
 pub use self::bitmap_cache::{
-    BitmapCache, BitmapCacheRev2, CacheEntry, CacheFlags, CellInfo, BITMAP_CACHE_ENTRIES_NUM,
+    BITMAP_CACHE_ENTRIES_NUM, BitmapCache, BitmapCacheRev2, CacheEntry, CacheFlags, CellInfo,
 };
 pub use self::bitmap_codecs::{
-    client_codecs_capabilities, server_codecs_capabilities, BitmapCodecs, CaptureFlags, Codec, CodecId, CodecProperty,
-    EntropyBits, Guid, NsCodec, RemoteFxContainer, RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
-    CODEC_ID_NONE, CODEC_ID_QOI, CODEC_ID_QOIZ, CODEC_ID_REMOTEFX,
+    BitmapCodecs, CODEC_ID_NONE, CODEC_ID_QOI, CODEC_ID_QOIZ, CODEC_ID_REMOTEFX, CaptureFlags, Codec, CodecId,
+    CodecProperty, EntropyBits, Guid, NsCodec, RemoteFxContainer, RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap,
+    RfxICapFlags, client_codecs_capabilities, server_codecs_capabilities,
 };
 pub use self::brush::{Brush, SupportLevel};
 pub use self::frame_acknowledge::FrameAcknowledge;
 pub use self::general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType, PROTOCOL_VER};
-pub use self::glyph_cache::{CacheDefinition, GlyphCache, GlyphSupportLevel, GLYPH_CACHE_NUM};
+pub use self::glyph_cache::{CacheDefinition, GLYPH_CACHE_NUM, GlyphCache, GlyphSupportLevel};
 pub use self::input::{Input, InputFlags};
 pub use self::large_pointer::{LargePointer, LargePointerSupportFlags};
 pub use self::multifragment_update::MultifragmentUpdate;

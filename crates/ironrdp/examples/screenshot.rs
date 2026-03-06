@@ -158,8 +158,8 @@ fn parse_args() -> anyhow::Result<Action> {
 
 fn setup_logging() -> anyhow::Result<()> {
     use tracing::metadata::LevelFilter;
-    use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
 
     let fmt_layer = tracing_subscriber::fmt::layer().compact();
 
@@ -440,7 +440,7 @@ fn extract_tls_server_public_key(cert: &[u8]) -> anyhow::Result<Vec<u8>> {
 
 mod danger {
     use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use tokio_rustls::rustls::{pki_types, DigitallySignedStruct, Error, SignatureScheme};
+    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme, pki_types};
 
     #[derive(Debug)]
     pub(super) struct NoCertificateVerification;

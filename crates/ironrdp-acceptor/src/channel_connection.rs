@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use ironrdp_connector::{
-    reason_err, ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written, reason_err,
 };
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::mcs;

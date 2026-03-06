@@ -1,6 +1,6 @@
 use ironrdp_graphics::image_processing::PixelFormat;
-use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::ReadCursor;
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::rfx::DecodingContext;
 

@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use ironrdp_core::{cast_length, impl_as_any, Decode as _, EncodeResult, ReadCursor};
+use ironrdp_core::{Decode as _, EncodeResult, ReadCursor, cast_length, impl_as_any};
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{decode_err, encode_err, pdu_other_err, PduResult};
+use ironrdp_pdu::{PduResult, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use tracing::{debug, error};
 
@@ -115,20 +115,18 @@ impl Rdpsnd {
             pitch: 0x00010000,
             dgram_port: 0,
         };
-        Ok(RdpsndSvcMessages::new(vec![pdu::ClientAudioOutputPdu::AudioFormat(
-            pdu,
-        )
-        .into()]))
+        Ok(RdpsndSvcMessages::new(vec![
+            pdu::ClientAudioOutputPdu::AudioFormat(pdu).into(),
+        ]))
     }
 
     pub fn quality_mode(&mut self) -> PduResult<RdpsndSvcMessages> {
         let pdu = pdu::QualityModePdu {
             quality_mode: pdu::QualityMode::High,
         };
-        Ok(RdpsndSvcMessages::new(vec![pdu::ClientAudioOutputPdu::QualityMode(
-            pdu,
-        )
-        .into()]))
+        Ok(RdpsndSvcMessages::new(vec![
+            pdu::ClientAudioOutputPdu::QualityMode(pdu).into(),
+        ]))
     }
 
     pub fn training_confirm(&mut self, pdu: &TrainingPdu) -> PduResult<RdpsndSvcMessages> {
@@ -145,10 +143,9 @@ impl Rdpsnd {
 
     pub fn wave_confirm(&mut self, timestamp: u16, block_no: u8) -> PduResult<RdpsndSvcMessages> {
         let pdu = pdu::WaveConfirmPdu { timestamp, block_no };
-        Ok(RdpsndSvcMessages::new(vec![pdu::ClientAudioOutputPdu::WaveConfirm(
-            pdu,
-        )
-        .into()]))
+        Ok(RdpsndSvcMessages::new(vec![
+            pdu::ClientAudioOutputPdu::WaveConfirm(pdu).into(),
+        ]))
     }
 }
 

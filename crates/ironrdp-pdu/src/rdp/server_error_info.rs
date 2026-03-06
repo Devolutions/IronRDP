@@ -1,5 +1,5 @@
 use ironrdp_core::{
-    ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, invalid_field_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -130,21 +130,41 @@ impl ProtocolIndependentCode {
     pub fn description(&self) -> &str {
         match self {
             Self::None => "No error has occurred",
-            Self::RpcInitiatedDisconnect => "The disconnection was initiated by an administrative tool on the server in another session",
-            Self::RpcInitiatedLogoff => "The disconnection was due to a forced logoff initiated by an administrative tool on the server in another session",
+            Self::RpcInitiatedDisconnect => {
+                "The disconnection was initiated by an administrative tool on the server in another session"
+            }
+            Self::RpcInitiatedLogoff => {
+                "The disconnection was due to a forced logoff initiated by an administrative tool on the server in another session"
+            }
             Self::IdleTimeout => "The idle session limit timer on the server has elapsed",
             Self::LogonTimeout => "The active session limit timer on the server has elapsed",
-            Self::DisconnectedByOtherconnection => "Another user connected to the server, forcing the disconnection of the current connection",
+            Self::DisconnectedByOtherconnection => {
+                "Another user connected to the server, forcing the disconnection of the current connection"
+            }
             Self::OutOfMemory => "The server ran out of available memory resources",
             Self::ServerDeniedConnection => "The server denied the connection",
-            Self::ServerInsufficientPrivileges => "The user cannot connect to the server due to insufficient access privileges",
-            Self::ServerFreshCredentialsRequired => "The server does not accept saved user credentials and requires that the user enter their credentials for each connection",
-            Self::RpcInitiatedDisconnectByuser => "The disconnection was initiated by an administrative tool on the server running in the user's session",
-            Self::LogoffByUser => "The disconnection was initiated by the user logging off his or her session on the server",
-            Self::CloseStackOnDriverNotReady => "The display driver in the remote session did not report any status within the time allotted for startup",
+            Self::ServerInsufficientPrivileges => {
+                "The user cannot connect to the server due to insufficient access privileges"
+            }
+            Self::ServerFreshCredentialsRequired => {
+                "The server does not accept saved user credentials and requires that the user enter their credentials for each connection"
+            }
+            Self::RpcInitiatedDisconnectByuser => {
+                "The disconnection was initiated by an administrative tool on the server running in the user's session"
+            }
+            Self::LogoffByUser => {
+                "The disconnection was initiated by the user logging off his or her session on the server"
+            }
+            Self::CloseStackOnDriverNotReady => {
+                "The display driver in the remote session did not report any status within the time allotted for startup"
+            }
             Self::ServerDwmCrash => "The DWM process running in the remote session terminated unexpectedly",
-            Self::CloseStackOnDriverFailure => "The display driver in the remote session was unable to complete all the tasks required for startup",
-            Self::CloseStackOnDriverIfaceFailure => "The display driver in the remote session started up successfully, but due to internal failures was not usable by the remoting stack",
+            Self::CloseStackOnDriverFailure => {
+                "The display driver in the remote session was unable to complete all the tasks required for startup"
+            }
+            Self::CloseStackOnDriverIfaceFailure => {
+                "The display driver in the remote session started up successfully, but due to internal failures was not usable by the remoting stack"
+            }
             Self::ServerWinlogonCrash => "The Winlogon process running in the remote session terminated unexpectedly",
             Self::ServerCsrssCrash => "The CSRSS process running in the remote session terminated unexpectedly",
         }
@@ -223,16 +243,34 @@ impl ProtocolIndependentConnectionBrokerCode {
     pub fn description(&self) -> &str {
         match self {
             Self::DestinationNotFound => "The target endpoint could not be found",
-            Self::LoadingDestination => "The target endpoint to which the client is being redirected is disconnecting from the Connection Broker",
-            Self::RedirectingToDestination => "An error occurred while the connection was being redirected to the target endpoint",
-            Self::SessionOnlineVmWake => "An error occurred while the target endpoint (a virtual machine) was being awakened",
-            Self::SessionOnlineVmBoot => "An error occurred while the target endpoint (a virtual machine) was being started",
-            Self::SessionOnlineVmNoDns => "The IP address of the target endpoint (a virtual machine) cannot be determined",
-            Self::DestinationPoolNotFree => "There are no available endpoints in the pool managed by the Connection Broker",
+            Self::LoadingDestination => {
+                "The target endpoint to which the client is being redirected is disconnecting from the Connection Broker"
+            }
+            Self::RedirectingToDestination => {
+                "An error occurred while the connection was being redirected to the target endpoint"
+            }
+            Self::SessionOnlineVmWake => {
+                "An error occurred while the target endpoint (a virtual machine) was being awakened"
+            }
+            Self::SessionOnlineVmBoot => {
+                "An error occurred while the target endpoint (a virtual machine) was being started"
+            }
+            Self::SessionOnlineVmNoDns => {
+                "The IP address of the target endpoint (a virtual machine) cannot be determined"
+            }
+            Self::DestinationPoolNotFree => {
+                "There are no available endpoints in the pool managed by the Connection Broker"
+            }
             Self::ConnectionCancelled => "Processing of the connection has been canceled",
-            Self::ConnectionErrorInvalidSettings => "The settings contained in the routingToken field of the X.224 Connection Request PDU cannot be validated",
-            Self::SessionOnlineVmBootTimeout => "A time-out occurred while the target endpoint (a virtual machine) was being started",
-            Self::SessionOnlineVmSessmonFailed => "A session monitoring error occurred while the target endpoint (a virtual machine) was being started",
+            Self::ConnectionErrorInvalidSettings => {
+                "The settings contained in the routingToken field of the X.224 Connection Request PDU cannot be validated"
+            }
+            Self::SessionOnlineVmBootTimeout => {
+                "A time-out occurred while the target endpoint (a virtual machine) was being started"
+            }
+            Self::SessionOnlineVmSessmonFailed => {
+                "A session monitoring error occurred while the target endpoint (a virtual machine) was being started"
+            }
         }
     }
 
@@ -336,79 +374,201 @@ impl RdpSpecificCode {
             Self::DataPdusEquence => "An out-of-sequence Slow-Path Data PDU has been received",
             Self::ControlPduSequence => "An out-of-sequence Slow-Path Non-Data PDU has been received",
             Self::InvalidControlPduAction => "A Control PDU has been received with an invalid action field",
-            Self::InvalidInputPduType => "One of two possible errors: A Slow-Path Input Event has been received with an invalid messageType field; or A Fast-Path Input Event has been received with an invalid eventCode field",
-            Self::InvalidInputPduMouse => "One of two possible errors: A Slow-Path Mouse Event or Extended Mouse Event has been received with an invalid pointerFlags field; or A Fast-Path Mouse Event or Fast-Path Extended Mouse Event has been received with an invalid pointerFlags field",
+            Self::InvalidInputPduType => {
+                "One of two possible errors: A Slow-Path Input Event has been received with an invalid messageType field; or A Fast-Path Input Event has been received with an invalid eventCode field"
+            }
+            Self::InvalidInputPduMouse => {
+                "One of two possible errors: A Slow-Path Mouse Event or Extended Mouse Event has been received with an invalid pointerFlags field; or A Fast-Path Mouse Event or Fast-Path Extended Mouse Event has been received with an invalid pointerFlags field"
+            }
             Self::InvalidRefreshRectPdu => "An invalid Refresh Rect PDU has been received",
             Self::CreateUserDataFailed => "The server failed to construct the GCC Conference Create Response user data",
-            Self::ConnectFailed => "Processing during the Channel Connection phase of the RDP Connection Sequence has failed",
-            Self::ConfirmActiveWrongShareId => "A Confirm Active PDU was received from the client with an invalid shareID field",
-            Self::ConfirmActiveWrongOriginator => "A Confirm Active PDU was received from the client with an invalid originatorID field",
+            Self::ConnectFailed => {
+                "Processing during the Channel Connection phase of the RDP Connection Sequence has failed"
+            }
+            Self::ConfirmActiveWrongShareId => {
+                "A Confirm Active PDU was received from the client with an invalid shareID field"
+            }
+            Self::ConfirmActiveWrongOriginator => {
+                "A Confirm Active PDU was received from the client with an invalid originatorID field"
+            }
             Self::PersistentKeyPduBadLength => "There is not enough data to process a Persistent Key List PDU",
-            Self::PersistentKeyPduIllegalFirst => "A Persistent Key List PDU marked as PERSIST_PDU_FIRST (0x01) was received after the reception of a prior Persistent Key List PDU also marked as PERSIST_PDU_FIRST",
-            Self::PersistentKeyPduTooManyTotalKeys => "A Persistent Key List PDU was received which specified a total number of bitmap cache entries larger than 262144",
-            Self::PersistentKeyPduTooManyCacheKeys => "A Persistent Key List PDU was received which specified an invalid total number of keys for a bitmap cache (the number of entries that can be stored within each bitmap cache is specified in the Revision 1 or 2 Bitmap Cache Capability Set that is sent from client to server)",
-            Self::InputPduBadLength => "There is not enough data to process Input Event PDU Data or a Fast-Path Input Event PDU",
-            Self::BitmapCacheErrorPduBadLength => "There is not enough data to process the shareDataHeader, NumInfoBlocks, Pad1, and Pad2 fields of the Bitmap Cache Error PDU Data",
-            Self::SecurityDataTooShort => "One of two possible errors: The dataSignature field of the Fast-Path Input Event PDU does not contain enough data; or The fipsInformation and dataSignature fields of the Fast-Path Input Event PDU do not contain enough data",
-            Self::VcHannelDataTooShort => "One of two possible errors: There is not enough data in the Client Network Data to read the virtual channel configuration data; or There is not enough data to read a complete Channel PDU Header",
-            Self::ShareDataTooShort => "One of four possible errors: There is not enough data to process Control PDU Data; or There is not enough data to read a complete Share Control Header; or There is not enough data to read a complete Share Data Header of a Slow-Path Data PDU; or There is not enough data to process Font List PDU Data",
-            Self::BadSuppressOutputPdu => "One of two possible errors: There is not enough data to process Suppress Output PDU Data; or The allowDisplayUpdates field of the Suppress Output PDU Data is invalid",
-            Self::ConfirmActivePduTooShort => "One of two possible errors: There is not enough data to read the shareControlHeader, shareID, originatorID, lengthSourceDescriptor, and lengthCombinedCapabilities fields of the Confirm Active PDU Data; or There is not enough data to read the sourceDescriptor, numberCapabilities, pad2Octets, and capabilitySets fields of the Confirm Active PDU Data",
-            Self::CapabilitySetTooSmall => "There is not enough data to read the capabilitySetType and the lengthCapability fields in a received Capability Set",
-            Self::CapabilitySetTooLarge => "A Capability Set has been received with a lengthCapability field that contains a value greater than the total length of the data received",
-            Self::NoCursorCache => "One of two possible errors: Both the colorPointerCacheSize and pointerCacheSize fields in the Pointer Capability Set are set to zero; or The pointerCacheSize field in the Pointer Capability Set is not present, and the colorPointerCacheSize field is set to zero",
-            Self::BadCapabilities => "The capabilities received from the client in the Confirm Active PDU were not accepted by the server",
-            Self::VirtualChannelDecompressionError => "An error occurred while using the bulk compressor to decompress a Virtual Channel PDU",
-            Self::InvalidVcCompressionType => "An invalid bulk compression package was specified in the flags field of the Channel PDU Header",
-            Self::InvalidChannelId => "An invalid MCS channel ID was specified in the mcsPdu field of the Virtual Channel PDU)",
-            Self::VirtualChannelsTooMany => "The client requested more than the maximum allowed 31 static virtual channels in the Client Network Data",
-            Self::RemoteAppsNotEnabled => "The INFO_RAIL flag (0x0000_8000) MUST be set in the flags field of the Info Packet as the session on the remote server can only host remote applications",
-            Self::CacheCapabilityNotSet => "The client sent a Persistent Key List PDU without including the prerequisite Revision 2 Bitmap Cache Capability Set in the Confirm Active PDU",
-            Self::BitmapCacheErrorPduBadLength2 => "The NumInfoBlocks field in the Bitmap Cache Error PDU Data is inconsistent with the amount of data in the Info field",
-            Self::OffscrCacheErrorPduBadLength => "There is not enough data to process an Offscreen Bitmap Cache Error PDU",
+            Self::PersistentKeyPduIllegalFirst => {
+                "A Persistent Key List PDU marked as PERSIST_PDU_FIRST (0x01) was received after the reception of a prior Persistent Key List PDU also marked as PERSIST_PDU_FIRST"
+            }
+            Self::PersistentKeyPduTooManyTotalKeys => {
+                "A Persistent Key List PDU was received which specified a total number of bitmap cache entries larger than 262144"
+            }
+            Self::PersistentKeyPduTooManyCacheKeys => {
+                "A Persistent Key List PDU was received which specified an invalid total number of keys for a bitmap cache (the number of entries that can be stored within each bitmap cache is specified in the Revision 1 or 2 Bitmap Cache Capability Set that is sent from client to server)"
+            }
+            Self::InputPduBadLength => {
+                "There is not enough data to process Input Event PDU Data or a Fast-Path Input Event PDU"
+            }
+            Self::BitmapCacheErrorPduBadLength => {
+                "There is not enough data to process the shareDataHeader, NumInfoBlocks, Pad1, and Pad2 fields of the Bitmap Cache Error PDU Data"
+            }
+            Self::SecurityDataTooShort => {
+                "One of two possible errors: The dataSignature field of the Fast-Path Input Event PDU does not contain enough data; or The fipsInformation and dataSignature fields of the Fast-Path Input Event PDU do not contain enough data"
+            }
+            Self::VcHannelDataTooShort => {
+                "One of two possible errors: There is not enough data in the Client Network Data to read the virtual channel configuration data; or There is not enough data to read a complete Channel PDU Header"
+            }
+            Self::ShareDataTooShort => {
+                "One of four possible errors: There is not enough data to process Control PDU Data; or There is not enough data to read a complete Share Control Header; or There is not enough data to read a complete Share Data Header of a Slow-Path Data PDU; or There is not enough data to process Font List PDU Data"
+            }
+            Self::BadSuppressOutputPdu => {
+                "One of two possible errors: There is not enough data to process Suppress Output PDU Data; or The allowDisplayUpdates field of the Suppress Output PDU Data is invalid"
+            }
+            Self::ConfirmActivePduTooShort => {
+                "One of two possible errors: There is not enough data to read the shareControlHeader, shareID, originatorID, lengthSourceDescriptor, and lengthCombinedCapabilities fields of the Confirm Active PDU Data; or There is not enough data to read the sourceDescriptor, numberCapabilities, pad2Octets, and capabilitySets fields of the Confirm Active PDU Data"
+            }
+            Self::CapabilitySetTooSmall => {
+                "There is not enough data to read the capabilitySetType and the lengthCapability fields in a received Capability Set"
+            }
+            Self::CapabilitySetTooLarge => {
+                "A Capability Set has been received with a lengthCapability field that contains a value greater than the total length of the data received"
+            }
+            Self::NoCursorCache => {
+                "One of two possible errors: Both the colorPointerCacheSize and pointerCacheSize fields in the Pointer Capability Set are set to zero; or The pointerCacheSize field in the Pointer Capability Set is not present, and the colorPointerCacheSize field is set to zero"
+            }
+            Self::BadCapabilities => {
+                "The capabilities received from the client in the Confirm Active PDU were not accepted by the server"
+            }
+            Self::VirtualChannelDecompressionError => {
+                "An error occurred while using the bulk compressor to decompress a Virtual Channel PDU"
+            }
+            Self::InvalidVcCompressionType => {
+                "An invalid bulk compression package was specified in the flags field of the Channel PDU Header"
+            }
+            Self::InvalidChannelId => {
+                "An invalid MCS channel ID was specified in the mcsPdu field of the Virtual Channel PDU)"
+            }
+            Self::VirtualChannelsTooMany => {
+                "The client requested more than the maximum allowed 31 static virtual channels in the Client Network Data"
+            }
+            Self::RemoteAppsNotEnabled => {
+                "The INFO_RAIL flag (0x0000_8000) MUST be set in the flags field of the Info Packet as the session on the remote server can only host remote applications"
+            }
+            Self::CacheCapabilityNotSet => {
+                "The client sent a Persistent Key List PDU without including the prerequisite Revision 2 Bitmap Cache Capability Set in the Confirm Active PDU"
+            }
+            Self::BitmapCacheErrorPduBadLength2 => {
+                "The NumInfoBlocks field in the Bitmap Cache Error PDU Data is inconsistent with the amount of data in the Info field"
+            }
+            Self::OffscrCacheErrorPduBadLength => {
+                "There is not enough data to process an Offscreen Bitmap Cache Error PDU"
+            }
             Self::DngCacheErrorPduBadLength => "There is not enough data to process a DrawNineGrid Cache Error PDU",
             Self::GdiPlusPduBadLength => "There is not enough data to process a GDI+ Error PDU",
             Self::SecurityDataTooShort2 => "There is not enough data to read a Basic Security Header",
-            Self::SecurityDataTooShort3 => "There is not enough data to read a Non-FIPS Security Header or FIPS Security Header",
-            Self::SecurityDataTooShort4 => "There is not enough data to read the basicSecurityHeader and length fields of the Security Exchange PDU Data",
-            Self::SecurityDataTooShort5 => "There is not enough data to read the CodePage, flags, cbDomain, cbUserName, cbPassword, cbAlternateShell, cbWorkingDir, Domain, UserName, Password, AlternateShell, and WorkingDir fields in the Info Packet",
-            Self::SecurityDataTooShort6 => "There is not enough data to read the CodePage, flags, cbDomain, cbUserName, cbPassword, cbAlternateShell, and cbWorkingDir fields in the Info Packet",
-            Self::SecurityDataTooShort7 => "There is not enough data to read the clientAddressFamily and cbClientAddress fields in the Extended Info Packet",
-            Self::SecurityDataTooShort8 => "There is not enough data to read the clientAddress field in the Extended Info Packet",
-            Self::SecurityDataTooShort9 => "There is not enough data to read the cbClientDir field in the Extended Info Packet",
-            Self::SecurityDataTooShort10 => "There is not enough data to read the clientDir field in the Extended Info Packet",
-            Self::SecurityDataTooShort11 => "There is not enough data to read the clientTimeZone field in the Extended Info Packet",
-            Self::SecurityDataTooShort12 => "There is not enough data to read the clientSessionId field in the Extended Info Packet",
-            Self::SecurityDataTooShort13 => "There is not enough data to read the performanceFlags field in the Extended Info Packet",
-            Self::SecurityDataTooShort14 => "There is not enough data to read the cbAutoReconnectCookie field in the Extended Info Packet",
-            Self::SecurityDataTooShort15 => "There is not enough data to read the autoReconnectCookie field in the Extended Info Packet",
-            Self::SecurityDataTooShort16 => "The cbAutoReconnectCookie field in the Extended Info Packet contains a value which is larger than the maximum allowed length of 128 bytes",
-            Self::SecurityDataTooShort17 => "There is not enough data to read the clientAddressFamily and cbClientAddress fields in the Extended Info Packet",
-            Self::SecurityDataTooShort18 => "There is not enough data to read the clientAddress field in the Extended Info Packet",
-            Self::SecurityDataTooShort19 => "There is not enough data to read the cbClientDir field in the Extended Info Packet",
-            Self::SecurityDataTooShort20 => "There is not enough data to read the clientDir field in the Extended Info Packet",
-            Self::SecurityDataTooShort21 => "There is not enough data to read the clientTimeZone field in the Extended Info Packet",
-            Self::SecurityDataTooShort22 => "There is not enough data to read the clientSessionId field in the Extended Info Packet",
+            Self::SecurityDataTooShort3 => {
+                "There is not enough data to read a Non-FIPS Security Header or FIPS Security Header"
+            }
+            Self::SecurityDataTooShort4 => {
+                "There is not enough data to read the basicSecurityHeader and length fields of the Security Exchange PDU Data"
+            }
+            Self::SecurityDataTooShort5 => {
+                "There is not enough data to read the CodePage, flags, cbDomain, cbUserName, cbPassword, cbAlternateShell, cbWorkingDir, Domain, UserName, Password, AlternateShell, and WorkingDir fields in the Info Packet"
+            }
+            Self::SecurityDataTooShort6 => {
+                "There is not enough data to read the CodePage, flags, cbDomain, cbUserName, cbPassword, cbAlternateShell, and cbWorkingDir fields in the Info Packet"
+            }
+            Self::SecurityDataTooShort7 => {
+                "There is not enough data to read the clientAddressFamily and cbClientAddress fields in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort8 => {
+                "There is not enough data to read the clientAddress field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort9 => {
+                "There is not enough data to read the cbClientDir field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort10 => {
+                "There is not enough data to read the clientDir field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort11 => {
+                "There is not enough data to read the clientTimeZone field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort12 => {
+                "There is not enough data to read the clientSessionId field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort13 => {
+                "There is not enough data to read the performanceFlags field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort14 => {
+                "There is not enough data to read the cbAutoReconnectCookie field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort15 => {
+                "There is not enough data to read the autoReconnectCookie field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort16 => {
+                "The cbAutoReconnectCookie field in the Extended Info Packet contains a value which is larger than the maximum allowed length of 128 bytes"
+            }
+            Self::SecurityDataTooShort17 => {
+                "There is not enough data to read the clientAddressFamily and cbClientAddress fields in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort18 => {
+                "There is not enough data to read the clientAddress field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort19 => {
+                "There is not enough data to read the cbClientDir field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort20 => {
+                "There is not enough data to read the clientDir field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort21 => {
+                "There is not enough data to read the clientTimeZone field in the Extended Info Packet"
+            }
+            Self::SecurityDataTooShort22 => {
+                "There is not enough data to read the clientSessionId field in the Extended Info Packet"
+            }
             Self::SecurityDataTooShort23 => "There is not enough data to read the Client Info PDU Data",
-            Self::BadMonitorData => "The number of TS_MONITOR_DEF structures present in the monitorDefArray field of the Client Monitor Data is less than the value specified in monitorCount field",
-            Self::VcDecompressedReassembleFailed => "The server-side decompression buffer is invalid, or the size of the decompressed VC data exceeds the chunking size specified in the Virtual Channel Capability Set",
-            Self::VcDataTooLong => "The size of a received Virtual Channel PDU exceeds the chunking size specified in the Virtual Channel Capability Set",
+            Self::BadMonitorData => {
+                "The number of TS_MONITOR_DEF structures present in the monitorDefArray field of the Client Monitor Data is less than the value specified in monitorCount field"
+            }
+            Self::VcDecompressedReassembleFailed => {
+                "The server-side decompression buffer is invalid, or the size of the decompressed VC data exceeds the chunking size specified in the Virtual Channel Capability Set"
+            }
+            Self::VcDataTooLong => {
+                "The size of a received Virtual Channel PDU exceeds the chunking size specified in the Virtual Channel Capability Set"
+            }
             Self::BadFrameAckData => "There is not enough data to read a TS_FRAME_ACKNOWLEDGE_PDU",
-            Self::GraphicsModeNotSupported => "The graphics mode requested by the client is not supported by the server",
+            Self::GraphicsModeNotSupported => {
+                "The graphics mode requested by the client is not supported by the server"
+            }
             Self::GraphicsSubsystemResetFailed => "The server-side graphics subsystem failed to reset",
-            Self::GraphicsSubsystemFailed => "The server-side graphics subsystem is in an error state and unable to continue graphics encoding",
-            Self::TimezoneKeyNameLengthTooShort => "There is not enough data to read the cbDynamicDSTTimeZoneKeyName field in the Extended Info Packet",
-            Self::TimezoneKeyNameLengthTooLong => "The length reported in the cbDynamicDSTTimeZoneKeyName field of the Extended Info Packet is too long",
-            Self::DynamicDstDisabledFieldMissing => "The dynamicDaylightTimeDisabled field is not present in the Extended Info Packet",
+            Self::GraphicsSubsystemFailed => {
+                "The server-side graphics subsystem is in an error state and unable to continue graphics encoding"
+            }
+            Self::TimezoneKeyNameLengthTooShort => {
+                "There is not enough data to read the cbDynamicDSTTimeZoneKeyName field in the Extended Info Packet"
+            }
+            Self::TimezoneKeyNameLengthTooLong => {
+                "The length reported in the cbDynamicDSTTimeZoneKeyName field of the Extended Info Packet is too long"
+            }
+            Self::DynamicDstDisabledFieldMissing => {
+                "The dynamicDaylightTimeDisabled field is not present in the Extended Info Packet"
+            }
             Self::VcDecodingError => "An error occurred when processing dynamic virtual channel data",
-            Self::VirtualDesktopTooLarge => "The width or height of the virtual desktop defined by the monitor layout in the Client Monitor Data is larger than the maximum allowed value of 32,766",
-            Self::MonitorGeometryValidationFailed => "The monitor geometry defined by the Client Monitor Data is invalid",
+            Self::VirtualDesktopTooLarge => {
+                "The width or height of the virtual desktop defined by the monitor layout in the Client Monitor Data is larger than the maximum allowed value of 32,766"
+            }
+            Self::MonitorGeometryValidationFailed => {
+                "The monitor geometry defined by the Client Monitor Data is invalid"
+            }
             Self::InvalidMonitorCount => "The monitorCount field in the Client Monitor Data is too large",
-            Self::UpdateSessionKeyFailed => "An attempt to update the session keys while using Standard RDP Security mechanisms failed",
-            Self::DecryptFailed => "One of two possible error conditions: Decryption using Standard RDP Security mechanisms failed; or Session key creation using Standard RDP Security mechanisms failed",
+            Self::UpdateSessionKeyFailed => {
+                "An attempt to update the session keys while using Standard RDP Security mechanisms failed"
+            }
+            Self::DecryptFailed => {
+                "One of two possible error conditions: Decryption using Standard RDP Security mechanisms failed; or Session key creation using Standard RDP Security mechanisms failed"
+            }
             Self::EncryptFailed => "Encryption using Standard RDP Security mechanisms failed",
-            Self::EncPkgMismatch => "Failed to find a usable Encryption Method in the encryptionMethods field of the Client Security Data",
-            Self::DecryptFailed2 => "Unencrypted data was encountered in a protocol stream which is meant to be encrypted with Standard RDP Security mechanisms",
+            Self::EncPkgMismatch => {
+                "Failed to find a usable Encryption Method in the encryptionMethods field of the Client Security Data"
+            }
+            Self::DecryptFailed2 => {
+                "Unencrypted data was encountered in a protocol stream which is meant to be encrypted with Standard RDP Security mechanisms"
+            }
         }
     }
 

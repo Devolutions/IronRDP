@@ -109,7 +109,7 @@ impl UpdateFragmenter {
 
 #[cfg(test)]
 mod tests {
-    use ironrdp_core::{decode_cursor, ReadCursor};
+    use ironrdp_core::{ReadCursor, decode_cursor};
 
     use super::*;
 

@@ -3,7 +3,7 @@
 //! [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c15
 
 use ironrdp_core::{
-    cast_length, ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
+    DecodeError, DecodeResult, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_size, invalid_field_err,
 };
 use ironrdp_pdu::utils::CharacterSet;
 
@@ -297,9 +297,5 @@ impl TypeHeader {
 /// to be 8-byte aligned.
 fn padding_size(pdu: &impl HeaderlessEncode) -> usize {
     let tail = pdu.size() % 8;
-    if tail > 0 {
-        8 - tail
-    } else {
-        0
-    }
+    if tail > 0 { 8 - tail } else { 0 }
 }

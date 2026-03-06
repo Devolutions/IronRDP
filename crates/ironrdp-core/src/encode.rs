@@ -220,7 +220,7 @@ pub fn size<T: Encode>(pdu: &T) -> usize {
 #[cfg(feature = "alloc")]
 mod legacy {
     use super::{Encode, EncodeResult};
-    use crate::{ensure_size, WriteCursor};
+    use crate::{WriteCursor, ensure_size};
 
     impl Encode for alloc::vec::Vec<u8> {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {

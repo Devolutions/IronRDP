@@ -2,7 +2,7 @@ use core::fmt::Debug;
 use core::ops::Add;
 
 use byteorder::{LittleEndian, ReadBytesExt as _};
-use ironrdp_core::{ensure_size, invalid_field_err, other_err, ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor, ensure_size, invalid_field_err, other_err};
 use num_derive::FromPrimitive;
 
 use crate::{DecodeResult, EncodeResult};

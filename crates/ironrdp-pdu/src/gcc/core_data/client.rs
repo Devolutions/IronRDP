@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, invalid_field_err, write_padding, Decode, DecodeResult, Encode, EncodeResult,
-    ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
+    invalid_field_err, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;

@@ -1,10 +1,10 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-use ironrdp_async::{single_sequence_step, Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
+use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
-use ironrdp_connector::{custom_err, general_err, ConnectorResult, ServerName};
+use ironrdp_connector::{ConnectorResult, ServerName, custom_err, general_err};
 use ironrdp_core::WriteBuf;
 use tracing::{debug, instrument, trace};
 

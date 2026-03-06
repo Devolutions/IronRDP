@@ -1,10 +1,10 @@
 use ironrdp_core::{decode, impl_as_any};
 use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
-use ironrdp_pdu::{decode_err, pdu_other_err, PduResult};
+use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use tracing::debug;
 
-use crate::pdu::{EchoRequestPdu, EchoResponsePdu};
 use crate::CHANNEL_NAME;
+use crate::pdu::{EchoRequestPdu, EchoResponsePdu};
 
 /// A server for the ECHO virtual channel.
 #[derive(Debug, Default)]

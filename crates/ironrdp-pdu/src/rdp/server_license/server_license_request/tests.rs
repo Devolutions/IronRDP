@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use ironrdp_core::{decode, encode_vec};
 
-use super::cert::{RsaPublicKey, PROP_CERT_BLOBS_HEADERS_SIZE, PROP_CERT_NO_BLOBS_SIZE, RSA_KEY_SIZE_WITHOUT_MODULUS};
+use super::cert::{PROP_CERT_BLOBS_HEADERS_SIZE, PROP_CERT_NO_BLOBS_SIZE, RSA_KEY_SIZE_WITHOUT_MODULUS, RsaPublicKey};
 use super::*;
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 use crate::rdp::server_license::{LicensePdu, PreambleFlags, PreambleVersion};

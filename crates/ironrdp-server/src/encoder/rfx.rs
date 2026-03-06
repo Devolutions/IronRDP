@@ -1,16 +1,16 @@
 use std::io;
 
 use ironrdp_acceptor::DesktopSize;
-use ironrdp_core::{cast_int, cast_length, other_err, Encode as _, EncodeResult};
+use ironrdp_core::{Encode as _, EncodeResult, cast_int, cast_length, other_err};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_graphics::rfx_encode_component;
 use ironrdp_graphics::rlgr::RlgrError;
+use ironrdp_pdu::WriteCursor;
 use ironrdp_pdu::codecs::rfx::{
     self, Block, ChannelsPdu, CodecChannel, CodecVersionsPdu, FrameBeginPdu, FrameEndPdu, OperatingMode, Quant,
     RegionPdu, RfxChannel, SyncPdu, TileSetPdu,
 };
 use ironrdp_pdu::rdp::capability_sets::EntropyBits;
-use ironrdp_pdu::WriteCursor;
 
 use crate::BitmapUpdate;
 

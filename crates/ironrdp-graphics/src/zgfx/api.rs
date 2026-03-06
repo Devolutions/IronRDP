@@ -1,8 +1,8 @@
 //! High-level ZGFX compression API for EGFX PDU preparation.
 
-use super::compressor::Compressor;
-use super::wrapper::{wrap_compressed, wrap_uncompressed, ZGFX_SEGMENTED_MAXSIZE};
 use super::ZgfxError;
+use super::compressor::Compressor;
+use super::wrapper::{ZGFX_SEGMENTED_MAXSIZE, wrap_compressed, wrap_uncompressed};
 
 /// Controls whether ZGFX compression is applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
