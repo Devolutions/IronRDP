@@ -35,6 +35,7 @@ expect-test.workspace = true
 hex = "0.4"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-cliprdr.path = "../ironrdp-cliprdr"
+ironrdp-acceptor.path = "../ironrdp-acceptor"
 ironrdp-connector.path = "../ironrdp-connector"
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
 ironrdp-dvc.path = "../ironrdp-dvc"

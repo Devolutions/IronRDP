@@ -2965,6 +2965,7 @@ dependencies = [
  "array-concat",
  "expect-test",
  "hex",
+ "ironrdp-acceptor",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
  "ironrdp-connector",
