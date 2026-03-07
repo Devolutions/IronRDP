@@ -34,6 +34,7 @@ pub struct Acceptor {
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
+    received_credentials: Option<Credentials>,
     reactivation: bool,
 }
 
@@ -45,6 +46,15 @@ pub struct AcceptorResult {
     pub user_channel_id: u16,
     pub io_channel_id: u16,
     pub reactivation: bool,
+    /// Credentials received from the client during SecureSettingsExchange.
+    ///
+    /// Present for TLS-mode connections where the client sends credentials
+    /// in the ClientInfoPdu. `None` for CredSSP/Hybrid connections (where
+    /// authentication happens during the CredSSP exchange instead).
+    ///
+    /// Servers that need to validate credentials (e.g., via PAM or LDAP)
+    /// can use this field for post-handshake validation.
+    pub credentials: Option<Credentials>,
 }
 
 impl Acceptor {
@@ -64,6 +74,7 @@ impl Acceptor {
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
             creds,
+            received_credentials: None,
             reactivation: false,
         }
     }
@@ -105,6 +116,7 @@ impl Acceptor {
             static_channels,
             saved_for_reactivation,
             creds: consumed.creds,
+            received_credentials: consumed.received_credentials,
             reactivation: true,
         })
     }
@@ -159,6 +171,7 @@ impl Acceptor {
                 user_channel_id: self.user_channel_id,
                 io_channel_id: self.io_channel_id,
                 reactivation: self.reactivation,
+                credentials: self.received_credentials.take(),
             }),
             previous_state => {
                 self.state = previous_state;
@@ -553,6 +566,9 @@ impl Sequence for Acceptor {
 
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
+
+                    // Store credentials for later retrieval via AcceptorResult
+                    self.received_credentials = Some(creds.clone());
 
                     if self.creds.as_ref() != Some(&creds) {
                         // FIXME: How authorization should be denied with standard RDP security?
