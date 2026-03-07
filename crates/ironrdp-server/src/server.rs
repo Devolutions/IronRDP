@@ -42,6 +42,20 @@ use crate::{SoundServerFactory, builder, capabilities};
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
 
+/// Server-side credential validator for TLS-mode connections.
+///
+/// Called during connection setup when the server receives client credentials
+/// via `ClientInfoPdu`. Not used for CredSSP/Hybrid connections (those use
+/// pre-loaded credentials for NTLM challenge-response).
+///
+/// Implement this trait to validate credentials against external systems
+/// (PAM, LDAP, database, etc.).
+pub trait CredentialValidator: Send + Sync {
+    /// Validate credentials received from the client.
+    /// Return `Ok(true)` to accept, `Ok(false)` to reject.
+    fn validate(&self, credentials: &Credentials) -> Result<bool>;
+}
+
 #[derive(Clone)]
 pub struct RdpServerOptions {
     pub addr: SocketAddr,
@@ -243,6 +257,7 @@ pub struct RdpServer {
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
+    credential_validator: Option<Arc<dyn CredentialValidator>>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
 }
@@ -313,6 +328,7 @@ impl RdpServer {
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
+            credential_validator: None,
             local_addr: None,
             autodetect: None,
         }
@@ -320,6 +336,17 @@ impl RdpServer {
 
     pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
         builder::RdpServerBuilder::new()
+    }
+
+    /// Set a credential validator for TLS-mode connections.
+    ///
+    /// When set, credentials received from the client during `SecureSettingsExchange`
+    /// are validated through this callback before the session is established.
+    /// If validation fails, the connection is rejected.
+    ///
+    /// Not used for CredSSP/Hybrid connections (those use pre-loaded credentials).
+    pub fn set_credential_validator(&mut self, validator: Arc<dyn CredentialValidator>) {
+        self.credential_validator = Some(validator);
     }
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
@@ -872,6 +899,28 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Client accepted");
+
+        // Validate credentials if a validator is configured
+        if let Some(validator) = &self.credential_validator {
+            if let Some(creds) = &result.credentials {
+                match validator.validate(creds) {
+                    Ok(true) => {
+                        debug!("Credential validation succeeded for user: {}", creds.username);
+                    }
+                    Ok(false) => {
+                        warn!("Credential validation failed for user: {}", creds.username);
+                        bail!("credential validation failed");
+                    }
+                    Err(e) => {
+                        error!("Credential validator error: {e:#}");
+                        bail!("credential validation error: {e}");
+                    }
+                }
+            } else {
+                warn!("Credential validator configured but no credentials received from client");
+                bail!("no credentials received for validation");
+            }
+        }
 
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
