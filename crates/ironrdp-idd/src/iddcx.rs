@@ -2,7 +2,8 @@ use crate::wdf::{WDFDEVICE, WDFDEVICE_INIT, WDF_OBJECT_ATTRIBUTES};
 use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, IDDCX_SWAPCHAIN, NTSTATUS};
 use core::ffi::c_void;
 use core::mem::size_of;
-use windows::Win32::Foundation::LUID;
+use windows::Win32::Devices::Display::{DISPLAYCONFIG_2DREGION, DISPLAYCONFIG_RATIONAL, DISPLAYCONFIG_ROTATION};
+use windows::Win32::Foundation::{LUID, POINT};
 use windows_core::HRESULT;
 
 #[repr(C)]
@@ -12,8 +13,8 @@ pub(crate) struct IDD_DRIVER_GLOBALS {
 
 type PFN_IDD_CX = unsafe extern "system" fn();
 
-// Matches IddCx 1.2 (`IddCx0102`) headers.
-const IDD_FUNCTION_TABLE_NUM_ENTRIES: usize = 23;
+// Matches IddCx 1.4 (`IddCx0104`) headers.
+const IDD_FUNCTION_TABLE_NUM_ENTRIES: usize = 25;
 
 unsafe extern "C" {
     static mut IddDriverGlobals: *mut IDD_DRIVER_GLOBALS;
@@ -28,6 +29,7 @@ const IDDCX_MONITOR_CREATE_TABLE_INDEX: usize = 3;
 const IDDCX_MONITOR_ARRIVAL_TABLE_INDEX: usize = 4;
 const IDDCX_MONITOR_DEPARTURE_TABLE_INDEX: usize = 5;
 const IDDCX_GET_VERSION_TABLE_INDEX: usize = 19;
+const IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE_TABLE_INDEX: usize = 24;
 
 #[repr(C)]
 pub(crate) struct IDDCX_MONITOR_DESCRIPTION {
@@ -92,6 +94,13 @@ pub(crate) struct IDARG_OUT_MONITORARRIVAL {
     pub(crate) OsTargetId: u32,
 }
 
+const _: () = {
+    assert!(
+        size_of::<IDARG_OUT_MONITORARRIVAL>() == 12,
+        "IDARG_OUT_MONITORARRIVAL size mismatch"
+    );
+};
+
 #[repr(C)]
 pub(crate) struct IDARG_IN_SWAPCHAINSETDEVICE {
     pub(crate) pDevice: *mut c_void,
@@ -108,10 +117,21 @@ pub(crate) struct IDDCX_METADATA {
     pub(crate) pSurface: *mut c_void,
 }
 
+const _: () = {
+    assert!(size_of::<IDDCX_METADATA>() == 40, "IDDCX_METADATA size mismatch");
+};
+
 #[repr(C)]
 pub(crate) struct IDARG_OUT_RELEASEANDACQUIREBUFFER {
     pub(crate) MetaData: IDDCX_METADATA,
 }
+
+const _: () = {
+    assert!(
+        size_of::<IDARG_OUT_RELEASEANDACQUIREBUFFER>() == 40,
+        "IDARG_OUT_RELEASEANDACQUIREBUFFER size mismatch"
+    );
+};
 
 type PFN_IDDCX_SWAPCHAIN_SET_DEVICE =
     unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, IDDCX_SWAPCHAIN, *const IDARG_IN_SWAPCHAINSETDEVICE) -> HRESULT;
@@ -139,6 +159,11 @@ type PFN_IDDCX_MONITOR_DEPARTURE = unsafe extern "system" fn(*mut IDD_DRIVER_GLO
 
 type PFN_IDDCX_GET_VERSION =
     unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, *mut IDARG_OUT_GETVERSION) -> NTSTATUS;
+type PFN_IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE = unsafe extern "system" fn(
+    *mut IDD_DRIVER_GLOBALS,
+    IDDCX_ADAPTER,
+    *const IDARG_IN_ADAPTERDISPLAYCONFIGUPDATE,
+) -> NTSTATUS;
 
 #[repr(C)]
 pub(crate) struct IDARG_OUT_GETVERSION {
@@ -241,6 +266,17 @@ pub(crate) unsafe fn get_version(out_args: &mut IDARG_OUT_GETVERSION) -> NTSTATU
     unsafe { func(globals, out_args) }
 }
 
+pub(crate) unsafe fn adapter_display_config_update(
+    adapter: IDDCX_ADAPTER,
+    in_args: *const IDARG_IN_ADAPTERDISPLAYCONFIGUPDATE,
+) -> NTSTATUS {
+    let raw = unsafe { IddFunctions[IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE_TABLE_INDEX] };
+    let func: PFN_IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE =
+        unsafe { core::mem::transmute::<PFN_IDD_CX, PFN_IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE>(raw) };
+    let globals = unsafe { IddDriverGlobals };
+    unsafe { func(globals, adapter, in_args) }
+}
+
 // ────────────────────── Device init / adapter init dispatch ──────────────────────────────────
 
 /// `IddCxDeviceInitConfigTableIndex` from `IddCxFuncEnum.h` (IddCx 1.2 / `IddCx0102`).
@@ -265,14 +301,15 @@ type PFN_IDDCX_ADAPTER_INIT_ASYNC = unsafe extern "system" fn(
 
 /// `IDD_CX_CLIENT_CONFIG` — passed to `IddCxDeviceInitConfig`.
 ///
-/// Layout (x64, 160 bytes):
+/// Layout (x64, 168 bytes):
 /// ```text
 /// offset   0 | Size: ULONG             (4 bytes)
 /// offset   4 | [4-byte padding]
 /// offset   8 | EvtIddCxDeviceIoControl (8 bytes)
 /// ...
 /// offset 152 | EvtIddCxMonitorOPMDestroyProtectedOutput (8 bytes)
-/// total: 160 bytes
+/// offset 160 | EvtIddCxMonitorGetPhysicalSize (8 bytes)
+/// total: 168 bytes
 /// ```
 #[repr(C)]
 pub(crate) struct IDD_CX_CLIENT_CONFIG {
@@ -298,11 +335,12 @@ pub(crate) struct IDD_CX_CLIENT_CONFIG {
     pub EvtIddCxMonitorOPMGetInformation: Option<unsafe extern "system" fn()>,
     pub EvtIddCxMonitorOPMConfigureProtectedOutput: Option<unsafe extern "system" fn()>,
     pub EvtIddCxMonitorOPMDestroyProtectedOutput: Option<unsafe extern "system" fn()>,
+    pub EvtIddCxMonitorGetPhysicalSize: Option<unsafe extern "system" fn()>,
 }
 
 const _: () = {
     assert!(
-        size_of::<IDD_CX_CLIENT_CONFIG>() == 160,
+        size_of::<IDD_CX_CLIENT_CONFIG>() == 168,
         "IDD_CX_CLIENT_CONFIG size mismatch"
     );
 };
@@ -436,16 +474,61 @@ const _: () = {
     );
 };
 
+#[repr(C)]
+pub(crate) struct IDDCX_DISPLAYCONFIGPATH {
+    pub Size: u32,
+    pub MonitorObject: IDDCX_MONITOR,
+    pub Position: POINT,
+    pub Resolution: DISPLAYCONFIG_2DREGION,
+    pub Rotation: DISPLAYCONFIG_ROTATION,
+    pub RefreshRate: DISPLAYCONFIG_RATIONAL,
+    pub VSyncFreqDivider: u32,
+    pub MonitorScaleFactor: u32,
+    pub PhysicalWidthOverride: u32,
+    pub PhysicalHeightOverride: u32,
+}
+
+const _: () = {
+    assert!(
+        size_of::<IDDCX_DISPLAYCONFIGPATH>() == 64,
+        "IDDCX_DISPLAYCONFIGPATH size mismatch"
+    );
+};
+
+#[repr(C)]
+pub(crate) struct IDARG_IN_ADAPTERDISPLAYCONFIGUPDATE {
+    pub PathCount: u32,
+    pub pPaths: *mut IDDCX_DISPLAYCONFIGPATH,
+}
+
+const _: () = {
+    assert!(
+        size_of::<IDARG_IN_ADAPTERDISPLAYCONFIGUPDATE>() == 16,
+        "IDARG_IN_ADAPTERDISPLAYCONFIGUPDATE size mismatch"
+    );
+};
+
+#[repr(C)]
+pub(crate) struct IDARG_OUT_MONITORGETPHYSICALSIZE {
+    pub PhysicalWidth: u32,
+    pub PhysicalHeight: u32,
+}
+
 // UTF-16 null-terminated string constants for endpoint diagnostics.
 // "IronRDP IDD" (11 chars + null = 12 elements)
 pub(crate) static ENDPOINT_MODEL_NAME_UTF16: [u16; 12] = [73, 114, 111, 110, 82, 68, 80, 32, 73, 68, 68, 0];
+// "IronRDP Indirect Display" (25 chars + null = 26 elements)
+pub(crate) static ENDPOINT_FRIENDLY_NAME_UTF16: [u16; 26] = [73, 114, 111, 110, 82, 68, 80, 32, 73, 110, 100, 105, 114, 101, 99, 116, 32, 68, 105, 115, 112, 108, 97, 121, 0, 0];
 // "Devolutions" (11 chars + null = 12 elements)
 pub(crate) static ENDPOINT_MANUFACTURER_UTF16: [u16; 12] = [68, 101, 118, 111, 108, 117, 116, 105, 111, 110, 115, 0];
 
-/// IddCx version binding: the driver exports this symbol so `iddcxstub.lib` can verify version
-/// compatibility. Value is `IDDCX_VERSION_MINOR` = 2 for IddCx 1.2 (`IddCx0102`).
+/// IddCx version binding exported for `iddcxstub.lib` compatibility checks.
+///
+/// For an IddCx 1.4-capable remote IDD, Microsoft documents exporting
+/// `IDDCX_MINIMUM_VERSION_REQUIRED = 3` and runtime-checking the actual class-extension version
+/// before using 1.4-only DDIs.
 #[unsafe(no_mangle)]
-pub static IddMinimumVersionRequired: u32 = 2;
+pub static IddMinimumVersionRequired: u32 = 3;
 
 /// Calls `IddCxDeviceInitConfig` through the IddCx 1.2 dispatch table.
 ///
