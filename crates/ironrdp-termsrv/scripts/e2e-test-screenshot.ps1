@@ -1620,13 +1620,22 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                         }
 
                         $state = $sessionProcessState[$sid]
-                        if ($state['Winlogon'] -and (-not $state['Explorer']) -and (-not $state['LogonUI'])) {
+                        $reason = ''
+                        if ($state['Winlogon'] -and (-not $state['Explorer']) -and $state['LogonUI']) {
+                            # Hidden pre-logon sessions can linger without appearing in qwinsta and then
+                            # absorb later provider connections without ever producing a user shell.
+                            $reason = 'winlogon_with_logonui_without_shell'
+                        } elseif ($state['Winlogon'] -and (-not $state['Explorer']) -and (-not $state['LogonUI'])) {
+                            $reason = 'winlogon_without_logonui_or_shell'
+                        }
+
+                        if (-not [string]::IsNullOrWhiteSpace($reason)) {
                             $suspiciousSessionRows.Add([pscustomobject]@{
                                 SessionId = $sessionId
                                 Winlogon  = $state['Winlogon']
                                 LogonUI   = $state['LogonUI']
                                 Explorer  = $state['Explorer']
-                                Reason    = 'winlogon_without_logonui_or_shell'
+                                Reason    = $reason
                             })
 
                             if (-not $resetSessionIds.Contains($sessionId)) {
