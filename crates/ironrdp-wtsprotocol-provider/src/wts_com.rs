@@ -2892,11 +2892,11 @@ fn provider_fast_reconnect_mode() -> u32 {
         let configured = std::env::var("IRONRDP_WTS_PROVIDER_FAST_RECONNECT_MODE")
             .ok()
             .and_then(|value| value.trim().parse::<u32>().ok())
-            .unwrap_or(FAST_RECONNECT_DISABLED);
+            .unwrap_or(FAST_RECONNECT_ENHANCED);
 
         match configured {
             FAST_RECONNECT_DISABLED | FAST_RECONNECT_BASIC | FAST_RECONNECT_ENHANCED => configured,
-            _ => FAST_RECONNECT_DISABLED,
+            _ => FAST_RECONNECT_ENHANCED,
         }
     })
 }
