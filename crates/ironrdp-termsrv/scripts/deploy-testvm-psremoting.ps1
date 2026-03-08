@@ -121,6 +121,45 @@ function New-TestVmSession {
     }
 }
 
+function Resolve-RdpIdentityParts {
+    param(
+        [Parameter()]
+        [string]$Username,
+
+        [Parameter()]
+        [string]$Domain
+    )
+
+    $resolvedUsername = [string]$Username
+    $resolvedDomain = [string]$Domain
+
+    if ($null -eq $resolvedUsername) { $resolvedUsername = '' }
+    if ($null -eq $resolvedDomain) { $resolvedDomain = '' }
+
+    $resolvedUsername = $resolvedUsername.Trim()
+    $resolvedDomain = $resolvedDomain.Trim()
+
+    $downLevelMatch = [regex]::Match($resolvedUsername, '^(?<domain>[^\\]+)\\(?<user>.+)$')
+    if ($downLevelMatch.Success) {
+        return @{
+            Username = $downLevelMatch.Groups['user'].Value.Trim()
+            Domain   = $downLevelMatch.Groups['domain'].Value.Trim()
+        }
+    }
+
+    if ($resolvedUsername.Contains('@')) {
+        return @{
+            Username = $resolvedUsername
+            Domain   = ''
+        }
+    }
+
+    return @{
+        Username = $resolvedUsername
+        Domain   = $resolvedDomain
+    }
+}
+
 $workspaceRoot = Resolve-WorkspaceRoot
 $profileDir = if ($Configuration -eq 'Release') { 'release' } else { 'debug' }
 $exeLocal = Join-Path $workspaceRoot "target\$profileDir\ironrdp-termsrv.exe"
@@ -161,6 +200,10 @@ else {
 }
 
 $cred = [pscredential]::new($Username, $resolvedPassword)
+
+$resolvedRdpIdentity = Resolve-RdpIdentityParts -Username $RdpUsername -Domain $RdpDomain
+$RdpUsername = [string]$resolvedRdpIdentity.Username
+$RdpDomain = [string]$resolvedRdpIdentity.Domain
 
 $wtsLogonUsername = ''
 $wtsLogonDomain = ''

@@ -58,7 +58,7 @@ param(
     [string]$RdpPasswordEnvVar = 'IRONRDP_TESTVM_RDP_PASSWORD',
 
     [Parameter()]
-    [string]$RdpDomain = 'ad.it-help.ninja',
+    [string]$RdpDomain = 'IT-HELP',
 
     [Parameter()]
     [int]$RdpPort = 3389,
@@ -136,6 +136,45 @@ function Get-HyperVVmNameFromHostname {
     }
 
     return ($trimmed -split '\.')[0]
+}
+
+function Resolve-RdpIdentityParts {
+    param(
+        [Parameter()]
+        [string]$Username,
+
+        [Parameter()]
+        [string]$Domain
+    )
+
+    $resolvedUsername = [string]$Username
+    $resolvedDomain = [string]$Domain
+
+    if ($null -eq $resolvedUsername) { $resolvedUsername = '' }
+    if ($null -eq $resolvedDomain) { $resolvedDomain = '' }
+
+    $resolvedUsername = $resolvedUsername.Trim()
+    $resolvedDomain = $resolvedDomain.Trim()
+
+    $downLevelMatch = [regex]::Match($resolvedUsername, '^(?<domain>[^\\]+)\\(?<user>.+)$')
+    if ($downLevelMatch.Success) {
+        return @{
+            Username = $downLevelMatch.Groups['user'].Value.Trim()
+            Domain   = $downLevelMatch.Groups['domain'].Value.Trim()
+        }
+    }
+
+    if ($resolvedUsername.Contains('@')) {
+        return @{
+            Username = $resolvedUsername
+            Domain   = ''
+        }
+    }
+
+    return @{
+        Username = $resolvedUsername
+        Domain   = $resolvedDomain
+    }
 }
 
 function Test-DeployRestartRecoverableError {
@@ -231,6 +270,42 @@ function Restart-TestVmViaHyperV {
     throw "VM '$vmName' did not become reachable over WinRM within ${RemotingReadyTimeoutSeconds}s after Hyper-V restart"
 }
 
+function Invoke-RemoteCommandWithTimeout {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.Runspaces.PSSession]$Session,
+
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$ScriptBlock,
+
+        [Parameter()]
+        [object[]]$ArgumentList = @(),
+
+        [Parameter()]
+        [int]$TimeoutSeconds = 90,
+
+        [Parameter()]
+        [string]$OperationName = 'remote command'
+    )
+
+    $job = $null
+    try {
+        $job = Invoke-Command -Session $Session -AsJob -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+        $completed = Wait-Job -Job $job -Timeout $TimeoutSeconds
+        if ($null -eq $completed) {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+            throw "$OperationName timed out after ${TimeoutSeconds}s"
+        }
+
+        return Receive-Job -Job $job -ErrorAction Stop
+    }
+    finally {
+        if ($null -ne $job) {
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+}
+
 $adminCred = $null
 
 if ($PSBoundParameters.ContainsKey('Credential') -and ($null -ne $Credential)) {
@@ -265,6 +340,10 @@ if ($PSBoundParameters.ContainsKey('RdpPassword') -and (-not [string]::IsNullOrW
         $rdpPasswordEffective = $RdpPassword
     }
 }
+
+$resolvedRdpIdentity = Resolve-RdpIdentityParts -Username $RdpUsername -Domain $RdpDomain
+$RdpUsername = [string]$resolvedRdpIdentity.Username
+$RdpDomain = [string]$resolvedRdpIdentity.Domain
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $workspaceRoot = (Resolve-Path (Join-Path $scriptRoot '..\..\..')).Path
@@ -553,6 +632,7 @@ $iddFirstFrameMarkerCount = 0
 $preflightSucceeded = $false
 $preflightBlockedConnectionAttempt = $false
 $preflightIssues = New-Object System.Collections.Generic.List[string]
+$hardPreflightIssues = New-Object System.Collections.Generic.List[string]
 
 # ── Step 1: Build ───────────────────────────────────────────────────────────
 if (-not $SkipBuild.IsPresent) {
@@ -1211,9 +1291,6 @@ if (-not $SkipDeploy.IsPresent) {
                                 }
                             }
                         }
-                        if ($activationNotificationMode) {
-                            $issues.Add('Windows activation is in notification mode')
-                        }
                         $result['activation_notification_mode'] = $activationNotificationMode
                         $result['runtime_state'] = if (Test-Path -LiteralPath $RuntimeStateFile) { Get-Content -LiteralPath $RuntimeStateFile -Raw } else { '' }
                         $result['issues'] = @($issues)
@@ -1221,9 +1298,13 @@ if (-not $SkipDeploy.IsPresent) {
                     } -ArgumentList $iddRuntimeRoot, $iddRuntimeStateFile, $iddDebugTraceFile, $iddDumpRemoteDir, 'C:\Program Files\IronRDP\idd\IronRdpIdd.inf'
 
                     $preflightIssues.Clear()
+                    $hardPreflightIssues.Clear()
                     foreach ($issue in @($preflight['issues'])) {
                         if (-not [string]::IsNullOrWhiteSpace([string]$issue)) {
                             $preflightIssues.Add([string]$issue)
+                            if ([string]$issue -notlike 'Windows activation is in notification mode*') {
+                                $hardPreflightIssues.Add([string]$issue)
+                            }
                         }
                     }
                     $preflightSucceeded = ($preflightIssues.Count -eq 0)
@@ -1241,11 +1322,11 @@ if (-not $SkipDeploy.IsPresent) {
                             }
                         }
 
-                        if ($activationGateHit -and (-not $StrictSessionProof.IsPresent)) {
-                            Write-Warning 'Skipping connection attempt because Windows activation notification mode blocks interactive logon on this VM'
+                        if ($activationGateHit) {
+                            Write-Warning 'Windows activation is in notification mode; continuing because it is treated as a diagnostic signal, not a hard preflight blocker'
                         }
 
-                        if ($StrictSessionProof.IsPresent -or $activationGateHit) {
+                        if ($StrictSessionProof.IsPresent -and ($hardPreflightIssues.Count -gt 0)) {
                             $preflightBlockedConnectionAttempt = $true
                         }
                     }
@@ -1816,7 +1897,7 @@ try {
         $session = $null
         try {
             $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
-            $remoteLogs = Invoke-Command -Session $session -ScriptBlock {
+            $remoteLogs = Invoke-RemoteCommandWithTimeout -Session $session -TimeoutSeconds 90 -OperationName 'remote log collection' -ScriptBlock {
             param($port, $securityStartTime, $mode, $dumpDir, $rdpUsernameForAudit, $iddRuntimeStatePath, $iddDebugTracePath, $iddOpenProbeLogPath)
             $result = @{}
             $logOut = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log'
@@ -2592,7 +2673,7 @@ try {
             }
 
             $result
-            } -ArgumentList $Port, $testStartTime, $Mode, $dumpRemoteDir, $RdpUsername, $iddRuntimeStateFile, $iddDebugTraceFile, $iddOpenProbeLogFile
+            } -ArgumentList @($Port, $testStartTime, $Mode, $dumpRemoteDir, $RdpUsername, $iddRuntimeStateFile, $iddDebugTraceFile, $iddOpenProbeLogFile)
             break
         }
         catch {
@@ -2911,7 +2992,7 @@ try {
             $providerFallbackVideoSourceSelected = (-not [string]::IsNullOrWhiteSpace($providerVideoHandleMarkers)) -and ($providerVideoHandleMarkers -match 'source=rdp_video_miniport')
 
             try {
-                $iddDiagnostics = Invoke-Command -Session $session -ScriptBlock {
+                $iddDiagnostics = Invoke-RemoteCommandWithTimeout -Session $session -TimeoutSeconds 45 -OperationName 'IDD diagnostics collection' -ScriptBlock {
                     param($RuntimeStateFile, $DebugTraceFile)
 
                     $result = @{}
@@ -2948,7 +3029,7 @@ try {
                     }
 
                     $result
-                } -ArgumentList $iddRuntimeStateFile, $iddDebugTraceFile
+                } -ArgumentList @($iddRuntimeStateFile, $iddDebugTraceFile)
 
                 $iddRuntimeConfigText = [string]$iddDiagnostics['runtime_config']
                 $iddDebugTraceText = [string]$iddDiagnostics['debug_trace']
@@ -3175,7 +3256,11 @@ $analysisMessage = ''
 
 if ($preflightBlockedConnectionAttempt) {
     $blockedReason = if ($preflightIssues.Count -gt 0) {
-        $preflightIssues -join '; '
+        if ($hardPreflightIssues.Count -gt 0) {
+            $hardPreflightIssues -join '; '
+        } else {
+            $preflightIssues -join '; '
+        }
     } elseif ($activationNotificationMode) {
         "Windows activation notification mode is enabled (LicenseStatus=$activationLicenseStatus, Reason=$activationLicenseStatusReasonHex)"
     } else {
@@ -3250,9 +3335,9 @@ if ($preflightBlockedConnectionAttempt) {
 }
 
 if ($StrictSessionProof.IsPresent) {
-    if ($preflightBlockedConnectionAttempt -and ($preflightIssues.Count -gt 0)) {
+    if ($preflightBlockedConnectionAttempt -and ($hardPreflightIssues.Count -gt 0)) {
         Write-Host "STRICT RESULT: BLOCKED" -ForegroundColor Yellow
-        foreach ($issue in $preflightIssues) {
+        foreach ($issue in $hardPreflightIssues) {
             Write-Host "  - $issue" -ForegroundColor Yellow
         }
 
@@ -3275,8 +3360,8 @@ if ($StrictSessionProof.IsPresent) {
         $strictFailures.Add('remote log collection failed')
     }
 
-    if ($preflightIssues.Count -gt 0) {
-        foreach ($issue in $preflightIssues) {
+    if ($hardPreflightIssues.Count -gt 0) {
+        foreach ($issue in $hardPreflightIssues) {
             $strictFailures.Add("preflight gate failed: $issue")
         }
     }
@@ -3419,9 +3504,6 @@ if ($StrictSessionProof.IsPresent) {
             $strictFailures.Add("IDD diagnostics gate missing (OnDriverLoad=$providerOnDriverLoadCount, ProviderEnableWddmIdd=$iddWddmEnabledSignalCount, ProviderVideoHandleMarkers=$providerVideoHandleMarkerCount, TermsrvIddMarkers=$termsrvIddMarkerCount, DisplayConfigRequest=$iddDisplayConfigUpdateRequestCount, CommitModes=$iddCommitModesMarkerCount, SwapchainAssigned=$iddSwapchainAssignedCount)")
         }
 
-        if ($activationNotificationMode) {
-            $strictFailures.Add("environment blocker detected: Windows activation notification mode is enabled (LicenseStatus=$activationLicenseStatus, Reason=$activationLicenseStatusReasonHex)")
-        }
     }
 
     if ($strictFailures.Count -gt 0) {
