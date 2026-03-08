@@ -88,10 +88,10 @@ mod windows_main {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SetCursorPos, SM_CXSCREEN, SM_CYSCREEN};
 
     use windows::Win32::Security::{
-        AdjustTokenPrivileges, DuplicateTokenEx, LookupPrivilegeValueW, RevertToSelf, SecurityImpersonation,
-        SetTokenInformation, TokenPrimary, TokenSessionId, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
-        TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_PRIVILEGES,
-        TOKEN_QUERY,
+        AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, LookupPrivilegeValueW, RevertToSelf,
+        SecurityImpersonation, SetTokenInformation, TokenPrimary, TokenSessionId, LUID_AND_ATTRIBUTES,
+        SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY,
+        TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY,
     };
 
     use windows::Win32::Security::Authorization::{
@@ -114,8 +114,10 @@ mod windows_main {
     const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:4489";
     const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
     const LOGON_READINESS_PROBE_INTERVAL: Duration = Duration::from_secs(2);
+    const WAITING_FOR_USER_LOGON_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(5);
     const SHELL_BOOTSTRAP_GRACE: Duration = Duration::from_secs(0);
     const SHELL_BOOTSTRAP_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+    const AUTO_SEND_SAS_RETRY_INTERVAL: Duration = Duration::from_secs(3);
     const FIRST_FRAME_BLANK_GRACE: Duration = Duration::from_secs(1);
     const FIRST_FRAME_BLANK_MAX_FRAMES: u32 = 8;
     const PERSISTENT_BLANK_RESTART_GRACE: Duration = Duration::from_secs(3);
@@ -491,6 +493,10 @@ mod windows_main {
         /// succeeded.  We delay spawning the capture helper until the user is logged in (or until
         /// we decide to fall back to a non-user token).
         waiting_for_user_login_since: Option<Instant>,
+        /// Next time we may emit an automatic SAS while waiting for a real interactive token.
+        next_auto_send_sas_at: Instant,
+        /// Next time we may emit a detailed session-state snapshot while waiting for logon.
+        next_waiting_for_user_login_diagnostic_at: Instant,
         /// Set to `true` after we have restarted the capture helper once the user has logged in.
         /// Prevents repeated restarts if `WTSQueryUserToken` briefly flaps.
         capture_restarted_for_logon: bool,
@@ -553,6 +559,8 @@ mod windows_main {
                 logon_readiness_ready: false,
                 next_logon_readiness_probe_at: Instant::now(),
                 waiting_for_user_login_since: None,
+                next_auto_send_sas_at: Instant::now(),
+                next_waiting_for_user_login_diagnostic_at: Instant::now(),
                 capture_restarted_for_logon: false,
                 waiting_for_shell_ready_since: None,
                 next_shell_bootstrap_attempt_at: Instant::now(),
@@ -686,7 +694,7 @@ mod windows_main {
                 if should_probe_logon_readiness {
                     let user_token_available = session_id_override.is_some_and(session_has_user_token);
                     let explorer_ready = session_id_override.is_some_and(session_has_explorer_token);
-                    let interactive_shell_ready = user_token_available && explorer_ready;
+                    let interactive_shell_ready = user_token_available || explorer_ready;
 
                     self.logon_readiness_ready = interactive_shell_ready;
                     self.logon_readiness_session_id = session_id_override;
@@ -694,7 +702,7 @@ mod windows_main {
 
                     if self.provider_mode {
                         match session_id_override {
-                            Some(_session_id) if explorer_ready => {
+                            Some(_session_id) if explorer_ready || !user_token_available => {
                                 self.waiting_for_shell_ready_since = None;
                             }
                             Some(session_id) => {
@@ -714,7 +722,7 @@ mod windows_main {
                                     );
 
                                     let bootstrap_task = tokio::task::spawn_blocking(move || {
-                                        try_start_explorer_process(session_id, true)
+                                        try_start_explorer_process(session_id, false)
                                     });
 
                                     match timeout(Duration::from_secs(3), bootstrap_task).await {
@@ -822,32 +830,79 @@ mod windows_main {
                     self.next_logon_readiness_probe_at = Instant::now();
                     self.waiting_for_shell_ready_since = None;
                     self.next_shell_bootstrap_attempt_at = Instant::now();
+                    self.next_auto_send_sas_at = Instant::now();
                     self.capture_started_with_session_override = None;
                     self.waiting_for_user_login_since = None;
                 }
 
                 if self.capture.is_none() && Instant::now() >= self.next_helper_attempt_at {
-                    // Start the capture helper immediately once the session ID is known.
-                    // `acquire_session_token` handles the privilege-less case: it falls back to
-                    // `explorer.exe` (user's desktop) then `winlogon.exe` (pre-login screen) then
-                    // the service token, so the capture helper can always start regardless of whether
-                    // `WTSQueryUserToken` (which requires SE_TCB_PRIVILEGE) succeeds.
+                    // In provider mode, wait for a real interactive user token before starting the
+                    // helper. Launching the first helper on a prelogon token pins capture to the
+                    // wrong desktop and can fail process startup during session bring-up.
                     if let Some(session_id) = session_id_override {
-                        if session_has_user_token(session_id) {
-                            // User is logged in — clear the wait state.
+                        let launch_user_token_available = session_has_user_token(session_id);
+                        let launch_explorer_ready = session_has_explorer_token(session_id);
+                        if launch_user_token_available || launch_explorer_ready {
                             self.waiting_for_user_login_since = None;
+                            self.next_auto_send_sas_at = Instant::now();
+                            self.next_waiting_for_user_login_diagnostic_at = Instant::now();
+                        } else if self.provider_mode {
+                            let now = Instant::now();
+                            let waiting_since = self.waiting_for_user_login_since.get_or_insert(now);
+
+                            if *waiting_since == now {
+                                info!(
+                                    connection_id = self.connection_id,
+                                    session_id,
+                                    "Waiting for interactive user token before starting capture helper"
+                                );
+                                info!(
+                                    connection_id = self.connection_id,
+                                    session_id,
+                                    "SESSION_PROOF_TERMSRV_WAITING_FOR_USER_LOGON"
+                                );
+                            }
+
+                            if now >= self.next_waiting_for_user_login_diagnostic_at {
+                                self.next_waiting_for_user_login_diagnostic_at =
+                                    now + WAITING_FOR_USER_LOGON_DIAGNOSTIC_INTERVAL;
+
+                                info!(
+                                    connection_id = self.connection_id,
+                                    session_id,
+                                    snapshot = %session_selection_snapshot(),
+                                    "SESSION_PROOF_TERMSRV_WAITING_FOR_USER_LOGON_STATE"
+                                );
+                            }
+
+                            if auto_send_sas_enabled() && now >= self.next_auto_send_sas_at {
+                                self.next_auto_send_sas_at = now + AUTO_SEND_SAS_RETRY_INTERVAL;
+
+                                if try_send_sas("provider_wait_for_user_logon") {
+                                    info!(
+                                        connection_id = self.connection_id,
+                                        session_id,
+                                        "SESSION_PROOF_TERMSRV_SAS_SENT"
+                                    );
+                                }
+                            }
+
+                            sleep(CAPTURE_INTERVAL).await;
+                            continue;
                         }
                     }
 
                     let captured_credentials = { self.credentials_slot.lock().await.clone() };
-                    let allow_prelogon_fallback = !self.helper_started_once;
+                    let allow_prelogon_fallback = !self.provider_mode && !self.helper_started_once;
 
                     let launch_user_token_available = session_id_override.is_some_and(session_has_user_token);
+                    let launch_explorer_ready = session_id_override.is_some_and(session_has_explorer_token);
                     info!(
                         connection_id = self.connection_id,
                         session_id = session_id_override.unwrap_or(0),
                         has_session_override = session_id_override.is_some(),
                         launch_user_token_available,
+                        launch_explorer_ready,
                         allow_prelogon_fallback,
                         "Capture helper launch attempt"
                     );
@@ -2094,11 +2149,7 @@ mod windows_main {
         let args = format!("\"{exe_path_str}\" --capture-helper {extra_args}");
 
         let app_name: Vec<u16> = exe_path_str.encode_utf16().chain(Some(0)).collect();
-        // Always place the capture helper on the Default desktop. The capture
-        // helper needs to GDI-capture the user-visible desktop, not the Winlogon
-        // desktop. The SYSTEM token from winlogon.exe has access to both desktops
-        // in the session's window station.
-        let desktop = "winsta0\\default";
+        let desktop = acquired.desktop.as_lpdesktop();
         let mut cmd_line: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
         let mut desktop_w: Vec<u16> = desktop.encode_utf16().chain(Some(0)).collect();
 
@@ -2140,6 +2191,30 @@ mod windows_main {
         }
 
         create_ok.ok().context("CreateProcessAsUserW failed")?;
+
+        let helper_session_id = process_id_to_session_id(process_info.dwProcessId)
+            .ok_or_else(|| anyhow!("failed to resolve capture helper session id for pid {}", process_info.dwProcessId))?;
+
+        info!(
+            helper_pid = process_info.dwProcessId,
+            requested_session_id = session_id,
+            helper_session_id,
+            desktop,
+            "Capture helper process created"
+        );
+
+        if helper_session_id != session_id {
+            // SAFETY: handles were returned by CreateProcessAsUserW and are still owned here.
+            unsafe {
+                let _ = TerminateProcess(process_info.hProcess, 1);
+                let _ = windows::Win32::Foundation::CloseHandle(process_info.hThread);
+                let _ = windows::Win32::Foundation::CloseHandle(process_info.hProcess);
+            }
+
+            return Err(anyhow!(
+                "capture helper launched in unexpected session {helper_session_id} (expected {session_id})"
+            ));
+        }
 
         // SAFETY: close thread handle we don't need.
         unsafe {
@@ -2209,6 +2284,14 @@ mod windows_main {
     }
 
     fn session_has_user_token(session_id: u32) -> bool {
+        if let Err(error) = enable_privilege(w!("SeTcbPrivilege")) {
+            debug!(
+                session_id,
+                error = %format!("{error:#}"),
+                "Failed to enable SeTcbPrivilege before WTSQueryUserToken"
+            );
+        }
+
         let mut token = HANDLE::default();
         // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
         let res = unsafe { WTSQueryUserToken(session_id, &mut token) };
@@ -2219,7 +2302,125 @@ mod windows_main {
             }
             true
         } else {
+            if let Err(error) = &res {
+                info!(
+                    session_id,
+                    error = %error,
+                    error_code = %error.code(),
+                    "WTSQueryUserToken indicates no interactive user token for session"
+                );
+            }
             false
+        }
+    }
+
+    fn session_has_process(session_id: u32, process_name: &str) -> bool {
+        let mut process_info_ptr: *mut WTS_PROCESS_INFOW = null_mut();
+        let mut process_count = 0u32;
+
+        // SAFETY: WTSEnumerateProcessesW writes a buffer pointer/count pair on success.
+        let enumerate_result = unsafe { WTSEnumerateProcessesW(None, 0, 1, &mut process_info_ptr, &mut process_count) };
+        if enumerate_result.is_err() || process_info_ptr.is_null() || process_count == 0 {
+            return false;
+        }
+
+        let mut found = false;
+
+        if let Ok(process_count_usize) = usize::try_from(process_count) {
+            // SAFETY: `process_info_ptr` references `process_count_usize` entries on success.
+            let processes = unsafe { core::slice::from_raw_parts(process_info_ptr, process_count_usize) };
+
+            for entry in processes {
+                if entry.SessionId != session_id {
+                    continue;
+                }
+
+                // SAFETY: pProcessName is a NUL-terminated string owned by the WTS buffer.
+                let name = unsafe { PCWSTR(entry.pProcessName.0).to_string() }.unwrap_or_default();
+                if name.eq_ignore_ascii_case(process_name) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        // SAFETY: free memory allocated by WTSEnumerateProcessesW.
+        unsafe {
+            WTSFreeMemory(process_info_ptr.cast());
+        }
+
+        found
+    }
+
+    fn canonicalize_enumerated_session_id(session_id: u32) -> u32 {
+        if session_id > u32::from(u16::MAX) {
+            let low_word = session_id & u32::from(u16::MAX);
+            if low_word != 0 && low_word != u32::from(u16::MAX) {
+                return low_word;
+            }
+
+            return u32::MAX;
+        }
+
+        session_id
+    }
+
+    fn session_selection_snapshot() -> String {
+        // SAFETY: safe to call and returns a process-global session id value.
+        let console_session = unsafe { WTSGetActiveConsoleSessionId() };
+        let console = if console_session == u32::MAX {
+            "none".to_owned()
+        } else {
+            console_session.to_string()
+        };
+
+        let mut sessions_ptr: *mut WTS_SESSION_INFOW = null_mut();
+        let mut session_count = 0u32;
+
+        // SAFETY: WTSEnumerateSessionsW writes a pointer/count pair on success.
+        let enumerate_result = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
+        if enumerate_result.is_err() || sessions_ptr.is_null() || session_count == 0 {
+            return format!("console={console} sessions=none");
+        }
+
+        let mut rows = Vec::new();
+
+        if let Ok(session_count_usize) = usize::try_from(session_count) {
+            // SAFETY: `sessions_ptr` references `session_count_usize` entries on success.
+            let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
+            let mut seen = HashSet::new();
+
+            for entry in sessions {
+                let raw = entry.SessionId;
+                if raw == u32::MAX {
+                    continue;
+                }
+
+                let canonical = canonicalize_enumerated_session_id(raw);
+                if !seen.insert((raw, canonical)) {
+                    continue;
+                }
+
+                let has_token = canonical != u32::MAX && session_has_user_token(canonical);
+                let has_explorer = canonical != u32::MAX && session_has_process(canonical, "explorer.exe");
+                let has_winlogon = canonical != u32::MAX && session_has_process(canonical, "winlogon.exe");
+                let has_logonui = canonical != u32::MAX && session_has_process(canonical, "LogonUI.exe");
+
+                rows.push(format!(
+                    "{raw}->{canonical}:token={has_token},explorer={has_explorer},winlogon={has_winlogon},logonui={has_logonui}",
+                ));
+            }
+        }
+
+        // SAFETY: free memory allocated by WTSEnumerateSessionsW.
+        unsafe {
+            WTSFreeMemory(sessions_ptr.cast());
+        }
+
+        if rows.is_empty() {
+            format!("console={console} sessions=empty")
+        } else {
+            format!("console={console} sessions=[{}]", rows.join("; "))
         }
     }
 
@@ -2304,15 +2505,19 @@ mod windows_main {
             1
         };
 
-        if allow_service_token_fallback && allow_prelogon_fallback {
-            // Prefer a token from explorer first when present (interactive desktop).
+        if allow_service_token_fallback {
+            // Prefer a token from explorer first when present (interactive desktop), even when
+            // prelogon fallback is disabled. This is the strongest signal that the remote user
+            // shell exists, and it remains usable on hosts where WTSQueryUserToken keeps failing.
             match token_from_session_process_with_retries(session_id, "explorer.exe", process_lookup_retries) {
                 Ok(token) => {
                     debug!(session_id, "Using explorer.exe token (default desktop)");
-                    return Ok(AcquiredSessionToken {
+                    return finalize_acquired_session_token(
+                        session_id,
                         token,
-                        desktop: HelperDesktop::Default,
-                    });
+                        HelperDesktop::Default,
+                        "explorer.exe",
+                    );
                 }
                 Err(error) => {
                     info!(
@@ -2328,6 +2533,14 @@ mod windows_main {
         let mut wts_result = Err(windows::core::Error::empty());
 
         if allow_service_token_fallback {
+            if let Err(error) = enable_privilege(w!("SeTcbPrivilege")) {
+                info!(
+                    session_id,
+                    error = %format!("{error:#}"),
+                    "Failed to enable SeTcbPrivilege before WTSQueryUserToken"
+                );
+            }
+
             // SAFETY: `WTSQueryUserToken` writes a token handle into `token` on success.
             wts_result = unsafe { WTSQueryUserToken(session_id, &mut token) };
 
@@ -2344,10 +2557,12 @@ mod windows_main {
                     }
                 }
 
-                return Ok(AcquiredSessionToken {
+                return finalize_acquired_session_token(
+                    session_id,
                     token,
-                    desktop: HelperDesktop::Default,
-                });
+                    HelperDesktop::Default,
+                    "wts_query_user_token",
+                );
             }
         }
 
@@ -2368,10 +2583,12 @@ mod windows_main {
                     session_id,
                     "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
                 );
-                return Ok(AcquiredSessionToken {
+                return finalize_acquired_session_token(
+                    session_id,
                     token,
-                    desktop: HelperDesktop::Winlogon,
-                });
+                    HelperDesktop::Winlogon,
+                    "winlogon.exe",
+                );
             }
             Err(error) => {
                 info!(
@@ -2389,10 +2606,12 @@ mod windows_main {
                         session_id,
                         "Using csrss.exe token (fallback for session-bound helper startup)"
                     );
-                    return Ok(AcquiredSessionToken {
+                    return finalize_acquired_session_token(
+                        session_id,
                         token,
-                        desktop: HelperDesktop::Default,
-                    });
+                        HelperDesktop::Default,
+                        "csrss.exe",
+                    );
                 }
                 Err(error) => {
                     info!(
@@ -2442,10 +2661,12 @@ mod windows_main {
             }
         };
 
-        Ok(AcquiredSessionToken {
+        finalize_acquired_session_token(
+            session_id,
             token,
-            desktop: HelperDesktop::Default,
-        })
+            HelperDesktop::Default,
+            "service_token_fallback",
+        )
     }
 
     fn duplicate_primary_token(token: HANDLE) -> anyhow::Result<HANDLE> {
@@ -2466,6 +2687,90 @@ mod windows_main {
         .context("DuplicateTokenEx(session token) failed")?;
 
         Ok(primary_token)
+    }
+
+    fn query_token_session_id(token: HANDLE) -> anyhow::Result<u32> {
+        let mut session_id = 0u32;
+        let mut return_length = 0u32;
+
+        // SAFETY: `token` is expected to be a valid token handle and `session_id` is a writable output buffer.
+        unsafe {
+            GetTokenInformation(
+                token,
+                TokenSessionId,
+                Some(core::ptr::addr_of_mut!(session_id).cast()),
+                u32::try_from(size_of::<u32>()).map_err(|_| anyhow!("TokenSessionId size overflow"))?,
+                &mut return_length,
+            )
+        }
+        .map_err(|error| anyhow!("GetTokenInformation(TokenSessionId) failed: {error}"))
+        .context("GetTokenInformation(TokenSessionId) failed")?;
+
+        Ok(session_id)
+    }
+
+    fn ensure_token_session_id(token: HANDLE, session_id: u32, source: &str) -> anyhow::Result<u32> {
+        let actual_session_id = query_token_session_id(token)?;
+        if actual_session_id == session_id {
+            debug!(
+                requested_session_id = session_id,
+                token_session_id = actual_session_id,
+                source,
+                "Token already targets requested session"
+            );
+            return Ok(actual_session_id);
+        }
+
+        warn!(
+            requested_session_id = session_id,
+            token_session_id = actual_session_id,
+            source,
+            "Retargeting token to requested session"
+        );
+
+        enable_privilege(w!("SeTcbPrivilege"))
+            .context("failed to enable SeTcbPrivilege before token session retarget")?;
+
+        let session_id_ptr = core::ptr::addr_of!(session_id).cast::<c_void>();
+
+        // SAFETY: `token` is a valid primary token handle with TOKEN_ADJUST_SESSIONID and `session_id_ptr` is valid.
+        unsafe {
+            SetTokenInformation(
+                token,
+                TokenSessionId,
+                session_id_ptr,
+                u32::try_from(size_of::<u32>()).map_err(|_| anyhow!("TokenSessionId size overflow"))?,
+            )
+        }
+        .map_err(|error| anyhow!("SetTokenInformation(TokenSessionId) failed: {error}"))
+        .context("SetTokenInformation(TokenSessionId) failed")?;
+
+        let updated_session_id = query_token_session_id(token)?;
+        if updated_session_id != session_id {
+            return Err(anyhow!(
+                "token session id mismatch after retarget (expected {session_id}, got {updated_session_id})"
+            ));
+        }
+
+        Ok(updated_session_id)
+    }
+
+    fn finalize_acquired_session_token(
+        session_id: u32,
+        token: HANDLE,
+        desktop: HelperDesktop,
+        source: &'static str,
+    ) -> anyhow::Result<AcquiredSessionToken> {
+        let token_session_id = ensure_token_session_id(token, session_id, source)?;
+        info!(
+            requested_session_id = session_id,
+            token_session_id,
+            source,
+            desktop = desktop.as_lpdesktop(),
+            "Acquired capture-session token"
+        );
+
+        Ok(AcquiredSessionToken { token, desktop })
     }
 
     fn token_from_session_process_with_retries(

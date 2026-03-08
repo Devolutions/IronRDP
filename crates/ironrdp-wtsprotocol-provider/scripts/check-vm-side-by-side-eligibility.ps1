@@ -52,6 +52,10 @@ foreach ($vmName in $VmNames) {
         CredentialAccess = $false
         ComputerName = $null
         UserName = $null
+        ProductName = $null
+        InstallationType = $null
+        IsWindowsServer = $false
+        RdsSessionHostInstalled = $true
         TermDDPresent = $false
         RdpTransportPresent = $false
         TermServiceRunning = $false
@@ -94,6 +98,15 @@ foreach ($vmName in $VmNames) {
             $rdpTcp = Get-ItemProperty -LiteralPath $rdpTcpPath -ErrorAction SilentlyContinue
             $sideBySide = Get-ItemProperty -LiteralPath $sideBySidePath -ErrorAction SilentlyContinue
             $termService = Get-Service -Name 'TermService' -ErrorAction SilentlyContinue
+            $currentVersion = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
+            $productName = if ($null -ne $currentVersion) { [string]$currentVersion.ProductName } else { '' }
+            $installationType = if ($null -ne $currentVersion) { [string]$currentVersion.InstallationType } else { '' }
+            $isWindowsServer = ($installationType -eq 'Server') -or ($productName -like 'Windows Server*')
+            $rdsSessionHostInstalled = $true
+            if ($isWindowsServer) {
+                $rdsSessionHost = Get-WindowsFeature -Name 'RDS-RD-Server' -ErrorAction SilentlyContinue
+                $rdsSessionHostInstalled = ($null -ne $rdsSessionHost) -and [bool]$rdsSessionHost.Installed
+            }
 
             $listen3389 = @(Get-NetTCPConnection -State Listen -LocalPort 3389 -ErrorAction SilentlyContinue).Count
             $listenCustom = @(Get-NetTCPConnection -State Listen -LocalPort $using:PortNumber -ErrorAction SilentlyContinue).Count
@@ -101,6 +114,10 @@ foreach ($vmName in $VmNames) {
             [pscustomobject]@{
                 ComputerName = $env:COMPUTERNAME
                 UserName = (whoami)
+                ProductName = $productName
+                InstallationType = $installationType
+                IsWindowsServer = $isWindowsServer
+                RdsSessionHostInstalled = $rdsSessionHostInstalled
                 TermDDPresent = (Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\TermDD')
                 RdpTransportPresent = (
                     (Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\TermDD') -or
@@ -122,6 +139,10 @@ foreach ($vmName in $VmNames) {
         $result.CredentialAccess = $true
         $result.ComputerName = $remote.ComputerName
         $result.UserName = $remote.UserName
+        $result.ProductName = $remote.ProductName
+        $result.InstallationType = $remote.InstallationType
+        $result.IsWindowsServer = [bool]$remote.IsWindowsServer
+        $result.RdsSessionHostInstalled = [bool]$remote.RdsSessionHostInstalled
         $result.TermDDPresent = [bool]$remote.TermDDPresent
         $result.RdpTransportPresent = [bool]$remote.RdpTransportPresent
         $result.TermServiceRunning = [bool]$remote.TermServiceRunning
@@ -134,6 +155,10 @@ foreach ($vmName in $VmNames) {
         $result.ActiveSideBySideSocket = [bool]$remote.ActiveSideBySideSocket
 
         $problems = New-Object System.Collections.Generic.List[string]
+
+        if ($result.IsWindowsServer -and -not $result.RdsSessionHostInstalled) {
+            $problems.Add('RDS-RD-Server is not installed')
+        }
 
         if (-not $result.RdpTransportPresent) {
             $problems.Add('RDP transport missing')
@@ -177,7 +202,7 @@ foreach ($vmName in $VmNames) {
     $results.Add([PSCustomObject]$result)
 }
 
-$results | Sort-Object VmName | Format-Table VmName,VmState,CredentialAccess,RdpTransportPresent,TermDDPresent,TermServiceRunning,RemoteDesktopEnabled,RdpTcpEnabled,RdpTcpPort,SideBySideListenerExists,SideBySidePort,ActiveRdpTcpSocket,ActiveSideBySideSocket,Eligible,Reason -AutoSize | Out-String | Write-Host
+$results | Sort-Object VmName | Format-Table VmName,VmState,CredentialAccess,IsWindowsServer,RdsSessionHostInstalled,RdpTransportPresent,TermDDPresent,TermServiceRunning,RemoteDesktopEnabled,RdpTcpEnabled,RdpTcpPort,SideBySideListenerExists,SideBySidePort,ActiveRdpTcpSocket,ActiveSideBySideSocket,Eligible,Reason -AutoSize | Out-String | Write-Host
 
 $results
 

@@ -9,6 +9,7 @@
 
 use crate::{DRIVER_OBJECT, NTSTATUS, UNICODE_STRING};
 use core::ffi::c_void;
+use windows_core::GUID;
 
 // ────────────────────────────── Opaque WDF handles ───────────────────────────────────────────
 
@@ -20,6 +21,10 @@ pub type WDFDEVICE = *mut c_void;
 
 /// Opaque WDFDEVICE_INIT structure — only ever used as `*mut WDFDEVICE_INIT`.
 pub type WDFDEVICE_INIT = c_void;
+pub type WDFREQUEST = *mut c_void;
+
+pub type WDFFILEOBJECT = *mut c_void;
+
 
 // ─────────────────────────── Opaque WDF globals ──────────────────────────────────────────────
 
@@ -31,9 +36,6 @@ pub struct WDF_DRIVER_GLOBALS {
 
 /// Generic untyped WDF function table entry.
 pub(crate) type PFN_WDF_FUNCTION = unsafe extern "system" fn();
-
-#[unsafe(no_mangle)]
-pub static WdfMinimumVersionRequired: u32 = 33;
 
 // ───────────────────────────── Callback function types ───────────────────────────────────────
 
@@ -47,6 +49,9 @@ pub type WDF_POWER_DEVICE_STATE = u32;
 /// `EVT_WDF_DEVICE_D0_ENTRY` callback type.
 pub type PFN_WDF_DEVICE_D0_ENTRY =
     unsafe extern "system" fn(device: WDFDEVICE, previous_state: WDF_POWER_DEVICE_STATE) -> NTSTATUS;
+pub type PFN_WDF_DEVICE_FILE_CREATE =
+    unsafe extern "system" fn(device: WDFDEVICE, request: WDFREQUEST, file_object: WDFFILEOBJECT);
+
 
 // ───────────────────────────── WDF structures ────────────────────────────────────────────────
 
@@ -136,6 +141,32 @@ impl WDF_OBJECT_ATTRIBUTES {
     }
 }
 
+pub type WDF_TRI_STATE = u32;
+pub type WDF_FILEOBJECT_CLASS = u32;
+
+#[repr(C)]
+pub struct WDF_FILEOBJECT_CONFIG {
+    pub Size: u32,
+    pub EvtDeviceFileCreate: Option<PFN_WDF_DEVICE_FILE_CREATE>,
+    pub EvtFileClose: Option<unsafe extern "system" fn(WDFFILEOBJECT)>,
+    pub EvtFileCleanup: Option<unsafe extern "system" fn(WDFFILEOBJECT)>,
+    pub AutoForwardCleanupClose: WDF_TRI_STATE,
+    pub FileObjectClass: WDF_FILEOBJECT_CLASS,
+}
+
+impl WDF_FILEOBJECT_CONFIG {
+    pub const fn init(evt_device_file_create: Option<PFN_WDF_DEVICE_FILE_CREATE>) -> Self {
+        WDF_FILEOBJECT_CONFIG {
+            Size: core::mem::size_of::<WDF_FILEOBJECT_CONFIG>() as u32,
+            EvtDeviceFileCreate: evt_device_file_create,
+            EvtFileClose: None,
+            EvtFileCleanup: None,
+            AutoForwardCleanupClose: 0,
+            FileObjectClass: 4,
+        }
+    }
+}
+
 /// `WDF_PNPPOWER_EVENT_CALLBACKS` — device PnP/power callback table.
 ///
 /// Layout (x64 UMDF 2.33, 144 bytes): `Size` + implicit padding + 17 callback pointers.
@@ -219,6 +250,32 @@ type PFN_WDF_DEVICE_CREATE_SYMBOLIC_LINK = unsafe extern "system" fn(
     symbolic_link_name: *const UNICODE_STRING,
 ) -> NTSTATUS;
 
+type PFN_WDF_DEVICE_CREATE_DEVICE_INTERFACE = unsafe extern "system" fn(
+    globals: *mut WDF_DRIVER_GLOBALS,
+    device: WDFDEVICE,
+    interface_class_guid: *const GUID,
+    reference_string: *const UNICODE_STRING,
+) -> NTSTATUS;
+type PFN_WDF_DEVICE_SET_DEVICE_INTERFACE_STATE = unsafe extern "system" fn(
+    globals: *mut WDF_DRIVER_GLOBALS,
+    device: WDFDEVICE,
+    interface_class_guid: *const GUID,
+    reference_string: *const UNICODE_STRING,
+    is_interface_enabled: u8,
+);
+type PFN_WDF_DEVICE_INIT_SET_FILE_OBJECT_CONFIG = unsafe extern "system" fn(
+    globals: *mut WDF_DRIVER_GLOBALS,
+    device_init: *mut WDFDEVICE_INIT,
+    file_object_config: *const WDF_FILEOBJECT_CONFIG,
+    file_object_attributes: *const WDF_OBJECT_ATTRIBUTES,
+);
+
+type PFN_WDF_REQUEST_COMPLETE = unsafe extern "system" fn(
+    globals: *mut WDF_DRIVER_GLOBALS,
+    request: WDFREQUEST,
+    status: NTSTATUS,
+);
+
 /// `PFN_WDFDEVICEINITSETPNPPOWEREVENTCALLBACKS` dispatch signature.
 type PFN_WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS = unsafe extern "system" fn(
     globals: *mut WDF_DRIVER_GLOBALS,
@@ -226,11 +283,23 @@ type PFN_WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS = unsafe extern "system" f
     pnp_power_callbacks: *const WDF_PNPPOWER_EVENT_CALLBACKS,
 );
 
+/// `WdfRequestCompleteTableIndex` from `wdffuncenum.h` (UMDF 2.33).
+const WDF_REQUEST_COMPLETE_TABLE_INDEX: usize = 163;
+
 /// `WdfDriverCreateTableIndex` from `wdffuncenum.h` (UMDF 2.33).
 const WDF_DRIVER_CREATE_TABLE_INDEX: usize = 57;
 
+/// `WdfDeviceInitSetFileObjectConfigTableIndex` from `wdffuncenum.h` (UMDF 2.33).
+const WDF_DEVICE_INIT_SET_FILE_OBJECT_CONFIG_TABLE_INDEX: usize = 23;
+
 /// `WdfDeviceCreateTableIndex` from `wdffuncenum.h` (UMDF 2.33).
 const WDF_DEVICE_CREATE_TABLE_INDEX: usize = 25;
+
+/// `WdfDeviceCreateDeviceInterfaceTableIndex` from `wdffuncenum.h` (UMDF 2.33).
+const WDF_DEVICE_CREATE_DEVICE_INTERFACE_TABLE_INDEX: usize = 27;
+
+/// `WdfDeviceSetDeviceInterfaceStateTableIndex` from `wdffuncenum.h` (UMDF 2.33).
+const WDF_DEVICE_SET_DEVICE_INTERFACE_STATE_TABLE_INDEX: usize = 28;
 
 /// `WdfDeviceCreateSymbolicLinkTableIndex` from `wdffuncenum.h` (UMDF 2.33).
 const WDF_DEVICE_CREATE_SYMBOLIC_LINK_TABLE_INDEX: usize = 30;
@@ -306,16 +375,66 @@ pub unsafe fn device_create(
     (status, device)
 }
 
+pub unsafe fn device_create_device_interface(
+    device: WDFDEVICE,
+    interface_class_guid: *const GUID,
+    reference_string: *const UNICODE_STRING,
+) -> NTSTATUS {
+    // SAFETY: WDF_FUNCTION_TABLE populated by framework.
+    let entry = unsafe { WDF_FUNCTION_TABLE.add(WDF_DEVICE_CREATE_DEVICE_INTERFACE_TABLE_INDEX).read() };
+    let func: PFN_WDF_DEVICE_CREATE_DEVICE_INTERFACE =
+        // SAFETY: all WDF function table entries share the same pointer representation.
+        unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_CREATE_DEVICE_INTERFACE>(entry) };
+    // SAFETY: populated by the WDF framework on load.
+    let globals = unsafe { WdfDriverGlobals };
+    // SAFETY: caller guarantees device and GUID pointer validity.
+    unsafe { func(globals, device, interface_class_guid, reference_string) }
+}
+
+pub unsafe fn device_set_device_interface_state(
+    device: WDFDEVICE,
+    interface_class_guid: *const GUID,
+    reference_string: *const UNICODE_STRING,
+    is_interface_enabled: bool,
+) {
+    let entry = unsafe { WDF_FUNCTION_TABLE.add(WDF_DEVICE_SET_DEVICE_INTERFACE_STATE_TABLE_INDEX).read() };
+    let func: PFN_WDF_DEVICE_SET_DEVICE_INTERFACE_STATE = unsafe {
+        core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_SET_DEVICE_INTERFACE_STATE>(entry)
+    };
+    let globals = unsafe { WdfDriverGlobals };
+    unsafe { func(globals, device, interface_class_guid, reference_string, u8::from(is_interface_enabled)) };
+}
+
+
 pub unsafe fn device_create_symbolic_link(device: WDFDEVICE, symbolic_link_name: *const UNICODE_STRING) -> NTSTATUS {
     // SAFETY: WDF_FUNCTION_TABLE populated by framework.
     let entry = unsafe { WDF_FUNCTION_TABLE.add(WDF_DEVICE_CREATE_SYMBOLIC_LINK_TABLE_INDEX).read() };
     let func: PFN_WDF_DEVICE_CREATE_SYMBOLIC_LINK =
-        // SAFETY: all WDF function table entries share the same pointer representation.
         unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_CREATE_SYMBOLIC_LINK>(entry) };
     // SAFETY: populated by the WDF framework on load.
     let globals = unsafe { WdfDriverGlobals };
     // SAFETY: caller guarantees device and symbolic link pointer validity.
     unsafe { func(globals, device, symbolic_link_name) }
+}
+
+pub unsafe fn device_init_set_file_object_config(
+    device_init: *mut WDFDEVICE_INIT,
+    file_object_config: *const WDF_FILEOBJECT_CONFIG,
+    file_object_attributes: *const WDF_OBJECT_ATTRIBUTES,
+) {
+    let entry = unsafe { WDF_FUNCTION_TABLE.add(WDF_DEVICE_INIT_SET_FILE_OBJECT_CONFIG_TABLE_INDEX).read() };
+    let func: PFN_WDF_DEVICE_INIT_SET_FILE_OBJECT_CONFIG =
+        unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_INIT_SET_FILE_OBJECT_CONFIG>(entry) };
+    let globals = unsafe { WdfDriverGlobals };
+    unsafe { func(globals, device_init, file_object_config, file_object_attributes) };
+}
+
+pub unsafe fn request_complete(request: WDFREQUEST, status: NTSTATUS) {
+    let entry = unsafe { WDF_FUNCTION_TABLE.add(WDF_REQUEST_COMPLETE_TABLE_INDEX).read() };
+    let func: PFN_WDF_REQUEST_COMPLETE =
+        unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_REQUEST_COMPLETE>(entry) };
+    let globals = unsafe { WdfDriverGlobals };
+    unsafe { func(globals, request, status) };
 }
 
 /// Calls `WdfDeviceInitSetPnpPowerEventCallbacks` through the WDF 2.33 dispatch table.

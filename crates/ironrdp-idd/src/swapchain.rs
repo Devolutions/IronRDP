@@ -1,12 +1,12 @@
 use crate::{IDDCX_SWAPCHAIN, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::io::Write as _;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::sync::OnceLock;
 use std::thread::{self, JoinHandle};
 use windows::core::w;
-use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HMODULE, LUID, WAIT_FAILED, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, HANDLE, HMODULE, LUID, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
@@ -17,7 +17,7 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11Resource, ID3D11Texture2D,
 };
 #[cfg(ironrdp_idd_link)]
-use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+use windows::Win32::Graphics::Dxgi::{IDXGIDevice, IDXGIResource};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory2, IDXGIAdapter1, IDXGIFactory5, DXGI_CREATE_FACTORY_FLAGS};
 #[cfg(ironrdp_idd_link)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB};
@@ -137,35 +137,20 @@ impl Drop for MmcssGuard {
     }
 }
 
-const IDD_DUMP_BITMAP_UPDATES_DIR_ENV: &str = "IRONRDP_IDD_DUMP_BITMAP_UPDATES_DIR";
 const IDD_DUMP_INTERVAL_MS: u64 = 2_000;
 const IDD_DUMP_MAX_COUNT: u64 = 60;
 
-static IDD_DUMP_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 static IDD_DUMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static IDD_DUMP_LAST_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static IDD_DUMP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static IDD_DUMP_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
 static IDD_DUMP_ERROR_LOGGED: AtomicBool = AtomicBool::new(false);
+static IDD_FIRST_FRAME_SESSION: AtomicU32 = AtomicU32::new(0);
 
 fn now_unix_ms_best_effort() -> Option<u64> {
     let now = std::time::SystemTime::now();
     let dur = now.duration_since(std::time::UNIX_EPOCH).ok()?;
     Some(dur.as_millis().min(u128::from(u64::MAX)) as u64)
-}
-
-fn idd_dump_dir() -> Option<&'static PathBuf> {
-    IDD_DUMP_DIR
-        .get_or_init(|| {
-            let configured = std::env::var(IDD_DUMP_BITMAP_UPDATES_DIR_ENV).ok()?;
-            let configured = configured.trim();
-            if configured.is_empty() {
-                return None;
-            }
-
-            Some(PathBuf::from(configured))
-        })
-        .as_ref()
 }
 
 fn write_bmp_bgra32(path: &std::path::Path, width: usize, height: usize, pixels: &[u8]) -> Result<(), String> {
@@ -229,9 +214,14 @@ fn maybe_dump_swapchain_surface_bmp(
     surface_ptr: *mut core::ffi::c_void,
     presentation_frame_number: u32,
 ) -> Result<(), String> {
-    let Some(dir) = idd_dump_dir() else {
-        return Ok(());
-    };
+    let config = crate::remote::swapchain_dump_runtime()?;
+    let dir = config
+        .dump_dir
+        .as_ref()
+        .ok_or_else(|| "dump_dir missing from runtime config".to_owned())?;
+    let session_id = config
+        .session_id
+        .ok_or_else(|| "session_id missing from runtime config".to_owned())?;
 
     if surface_ptr.is_null() {
         return Err("swapchain metadata surface pointer is null".to_owned());
@@ -240,7 +230,7 @@ fn maybe_dump_swapchain_surface_bmp(
     if !IDD_DUMP_ENABLED_LOGGED.swap(true, Ordering::Relaxed) {
         tracing::info!(
             dir = %dir.display(),
-            env_var = IDD_DUMP_BITMAP_UPDATES_DIR_ENV,
+            session_id,
             "IDD swapchain bitmap dumping enabled"
         );
     }
@@ -260,7 +250,19 @@ fn maybe_dump_swapchain_surface_bmp(
         IDD_DUMP_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 
-    let source_texture = unsafe { core::mem::ManuallyDrop::new(ID3D11Texture2D::from_raw(surface_ptr.cast())) };
+    // IddCx hands the current surface back as a borrowed `IDXGIResource*` that remains valid
+    // until the next `ReleaseAndAcquireBuffer` call. Do not take ownership of that raw COM
+    // pointer here or we'll under-release the OS-owned surface and eventually corrupt the
+    // swapchain lifetime.
+    let surface_raw = surface_ptr.cast::<core::ffi::c_void>();
+    let acquired_surface = unsafe { IDXGIResource::from_raw_borrowed(&surface_raw) }
+        .ok_or_else(|| "swapchain metadata surface pointer is null".to_owned())?;
+    let source_resource: ID3D11Resource = acquired_surface
+        .cast()
+        .map_err(|error| format!("cast acquired IDXGIResource to ID3D11Resource failed: {error}"))?;
+    let source_texture: ID3D11Texture2D = source_resource
+        .cast()
+        .map_err(|error| format!("cast acquired surface to ID3D11Texture2D failed: {error}"))?;
 
     let mut source_desc = D3D11_TEXTURE2D_DESC::default();
     unsafe {
@@ -289,9 +291,6 @@ fn maybe_dump_swapchain_surface_bmp(
 
     let staging_texture = staging_texture.ok_or_else(|| "CreateTexture2D returned no texture".to_owned())?;
 
-    let source_resource: ID3D11Resource = source_texture
-        .cast()
-        .map_err(|error| format!("cast source texture to ID3D11Resource failed: {error}"))?;
     let staging_resource: ID3D11Resource = staging_texture
         .cast()
         .map_err(|error| format!("cast staging texture to ID3D11Resource failed: {error}"))?;
@@ -346,10 +345,21 @@ fn maybe_dump_swapchain_surface_bmp(
 
     let seq = IDD_DUMP_SEQ.fetch_add(1, Ordering::Relaxed).saturating_add(1);
     let path = dir.join(format!(
-        "idd-swapchain-f{presentation_frame_number:010}-{seq:06}.bmp"
+        "idd-swapchain-s{session_id:04}-f{presentation_frame_number:010}-{seq:06}.bmp"
     ));
 
-    write_bmp_bgra32(&path, width, height, &packed)
+    write_bmp_bgra32(&path, width, height, &packed)?;
+    crate::debug_trace(&format!(
+        "SESSION_PROOF_IDD_SWAPCHAIN_DUMP session_id={session_id} presentation_frame_number={presentation_frame_number} width={width} height={height} path={}",
+        path.display()
+    ));
+
+    if IDD_FIRST_FRAME_SESSION.load(Ordering::Relaxed) != session_id {
+        IDD_FIRST_FRAME_SESSION.store(session_id, Ordering::Relaxed);
+        crate::remote::note_first_frame(session_id, presentation_frame_number, width, height, &path);
+    }
+
+    Ok(())
 }
 
 fn try_enable_mmcss() -> Option<MmcssGuard> {
@@ -440,9 +450,18 @@ impl SwapChainProcessor {
 
             #[cfg(ironrdp_idd_link)]
             {
+                crate::debug_trace(&format!(
+                    "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_START swapchain=0x{:X} adapter_luid=0x{:08X}{:08X}",
+                    swapchain.raw() as usize,
+                    render_adapter_luid.HighPart as u32,
+                    render_adapter_luid.LowPart,
+                ));
                 let dxgi_device: IDXGIDevice = match d3d_device.device().cast() {
                     Ok(device) => device,
                     Err(error) => {
+                        crate::debug_trace(&format!(
+                            "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_ERROR stage=cast_dxgi_device error={error}"
+                        ));
                         tracing::warn!(?error, "failed to cast D3D11 device to IDXGIDevice");
                         return;
                     }
@@ -452,9 +471,13 @@ impl SwapChainProcessor {
                 // SAFETY: called from the dedicated swapchain thread, using a live swapchain handle + COM device.
                 let hr = unsafe { iddcx::swapchain_set_device(swapchain.raw(), dxgi_device_ptr) };
                 if hr.is_err() {
+                    crate::debug_trace(&format!(
+                        "SESSION_PROOF_IDD_SWAPCHAIN_SET_DEVICE_RESULT status={hr:?}"
+                    ));
                     tracing::warn!(?hr, "IddCxSwapChainSetDevice failed");
                     return;
                 }
+                crate::debug_trace("SESSION_PROOF_IDD_SWAPCHAIN_SET_DEVICE_RESULT status=ok");
 
                 let mut out_args = iddcx::IDARG_OUT_RELEASEANDACQUIREBUFFER {
                     MetaData: iddcx::IDDCX_METADATA {
@@ -467,22 +490,30 @@ impl SwapChainProcessor {
                         pSurface: core::ptr::null_mut(),
                     },
                 };
+                let mut acquire_pending_logged = false;
+                let mut acquire_success_logged = false;
+                let mut finished_frame_logged = false;
 
                 while !stop_for_thread.load(Ordering::SeqCst) {
                     // SAFETY: IddCx expects out args to be a valid writable pointer.
                     let acquire_hr =
                         unsafe { iddcx::swapchain_release_and_acquire_buffer(swapchain.raw(), &mut out_args) };
                     if acquire_hr == E_PENDING {
+                        if !acquire_pending_logged {
+                            acquire_pending_logged = true;
+                            crate::debug_trace("SESSION_PROOF_IDD_SWAPCHAIN_ACQUIRE_PENDING");
+                        }
                         let handles = [new_frame_event.raw(), terminate_event.raw()];
 
                         // SAFETY: `handles` contains valid event handles.
-                        let wait = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
+                        let wait = unsafe { WaitForMultipleObjects(&handles, false, 16) };
 
-                        if wait == WAIT_OBJECT_0 {
+                        if wait == WAIT_OBJECT_0 || wait == WAIT_TIMEOUT {
                             continue;
                         }
 
                         if wait.0 == WAIT_OBJECT_0.0 + 1 {
+                            crate::debug_trace("SESSION_PROOF_IDD_SWAPCHAIN_THREAD_STOP reason=terminate_event");
                             tracing::info!("IddCxSwapChain terminate event signaled");
                             break;
                         }
@@ -490,20 +521,42 @@ impl SwapChainProcessor {
                         if wait == WAIT_FAILED {
                             // SAFETY: `GetLastError` has no preconditions.
                             let error = unsafe { GetLastError() };
+                            crate::debug_trace(&format!(
+                                "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_ERROR stage=wait error=0x{:08X}",
+                                error.0
+                            ));
                             tracing::warn!(?error, "WaitForMultipleObjects failed in swapchain thread");
                             break;
                         }
 
+                        crate::debug_trace(&format!(
+                            "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_ERROR stage=wait unexpected_result=0x{:08X}",
+                            wait.0
+                        ));
                         tracing::warn!(?wait, "unexpected WaitForMultipleObjects result in swapchain thread");
                         break;
                     }
 
                     if acquire_hr.is_err() {
+                        crate::debug_trace(&format!(
+                            "SESSION_PROOF_IDD_SWAPCHAIN_ACQUIRE_RESULT status={acquire_hr:?}"
+                        ));
                         tracing::warn!(?acquire_hr, "IddCxSwapChainReleaseAndAcquireBuffer failed");
                         break;
                     }
 
                     let meta = &out_args.MetaData;
+                    if !acquire_success_logged {
+                        acquire_success_logged = true;
+                        crate::debug_trace(&format!(
+                            "SESSION_PROOF_IDD_SWAPCHAIN_ACQUIRE_RESULT status=ok presentation_frame_number={} dirty_rects={} move_regions={} hw_protected={} surface_nonnull={}",
+                            meta.PresentationFrameNumber,
+                            meta.DirtyRectCount,
+                            meta.MoveRegionCount,
+                            meta.HwProtectedSurface,
+                            !meta.pSurface.is_null(),
+                        ));
+                    }
                     tracing::debug!(
                         presentation_frame_number = meta.PresentationFrameNumber,
                         dirty_rects = meta.DirtyRectCount,
@@ -514,30 +567,48 @@ impl SwapChainProcessor {
                         "IddCxSwapChain acquired buffer"
                     );
 
-                    if let Err(error) = maybe_dump_swapchain_surface_bmp(
-                        d3d_device.device(),
-                        d3d_context.context(),
-                        meta.pSurface,
-                        meta.PresentationFrameNumber,
-                    ) {
-                        if !IDD_DUMP_ERROR_LOGGED.swap(true, Ordering::Relaxed) {
-                            tracing::warn!(error, "Failed to dump IDD swapchain bitmap frame");
+                    {
+                        if let Err(error) = maybe_dump_swapchain_surface_bmp(
+                            d3d_device.device(),
+                            d3d_context.context(),
+                            meta.pSurface,
+                            meta.PresentationFrameNumber,
+                        ) {
+                            if !IDD_DUMP_ERROR_LOGGED.swap(true, Ordering::Relaxed) {
+                                crate::debug_trace(&format!(
+                                    "SESSION_PROOF_IDD_SWAPCHAIN_DUMP_ERROR error={error}"
+                                ));
+                                tracing::warn!(error, "Failed to dump IDD swapchain bitmap frame");
+                            }
                         }
                     }
 
                     // SAFETY: IddCx requires FinishedProcessingFrame be called after the driver is done with the acquired surface.
                     let finished_hr = unsafe { iddcx::swapchain_finished_processing_frame(swapchain.raw()) };
                     if finished_hr.is_err() {
+                        crate::debug_trace(&format!(
+                            "SESSION_PROOF_IDD_SWAPCHAIN_FINISH_RESULT status={finished_hr:?}"
+                        ));
                         tracing::warn!(?finished_hr, "IddCxSwapChainFinishedProcessingFrame failed");
                         break;
                     }
+                    if !finished_frame_logged {
+                        finished_frame_logged = true;
+                        crate::debug_trace("SESSION_PROOF_IDD_SWAPCHAIN_FINISH_RESULT status=ok");
+                    }
                 }
 
+                crate::debug_trace("SESSION_PROOF_IDD_SWAPCHAIN_THREAD_STOP reason=loop_exit");
                 tracing::info!("IddCxSwapChain processing thread exiting");
             }
 
             #[cfg(not(ironrdp_idd_link))]
             {
+                crate::debug_trace(&format!(
+                    "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_START swapchain=stub adapter_luid=0x{:08X}{:08X}",
+                    render_adapter_luid.HighPart as u32,
+                    render_adapter_luid.LowPart,
+                ));
                 while !stop_for_thread.load(Ordering::SeqCst) {
                     let handles = [new_frame_event.raw(), terminate_event.raw()];
 
@@ -676,3 +747,5 @@ fn create_d3d_device(render_adapter_luid: LUID) -> windows_core::Result<(ID3D11D
 
     Ok((device, context))
 }
+
+

@@ -97,6 +97,7 @@ if (-not (Test-Path -LiteralPath $targetListener)) {
 Set-ItemProperty -Path $targetListener -Name "LoadableProtocol_Object" -Type String -Value $ProtocolManagerClsid
 Set-ItemProperty -Path $targetListener -Name "PortNumber" -Type DWord -Value $PortNumber
 
+Set-ItemProperty -Path $targetListener -Name "fEnableWinStation" -Type DWord -Value 1
 # Remove the kernel-mode transport (TDTCP / tdtcp.sys) from our listener.
 # When LoadableProtocol_Object is set, the COM-based protocol manager owns the network connection
 # entirely (including TCP accept).  Leaving PdDLL=tdtcp causes the kernel transport to bind our
@@ -126,18 +127,24 @@ $termServiceRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\TermService"
 $debugLogPath = "C:\IronRDPDeploy\logs\wts-provider-debug.log"
 $debugEnvEntry = "IRONRDP_WTS_PROVIDER_DEBUG_LOG=$debugLogPath"
 try {
-    $existing = (Get-ItemProperty -Path $termServiceRegPath -Name "Environment" -ErrorAction SilentlyContinue).Environment
-    if ($null -eq $existing) {
-        $newEnv = @($debugEnvEntry)
-    } else {
-        # Keep other vars, replace or add our entry
-        $newEnv = @($existing | Where-Object { $_ -notlike "IRONRDP_WTS_PROVIDER_DEBUG_LOG=*" })
-        $newEnv += $debugEnvEntry
+    $existingValue = $null
+    try {
+        $existingValue = Get-ItemPropertyValue -Path $termServiceRegPath -Name "Environment" -ErrorAction Stop
     }
-    Set-ItemProperty -Path $termServiceRegPath -Name "Environment" -Type MultiString -Value $newEnv
+    catch [System.Management.Automation.ItemNotFoundException], [System.Management.Automation.PSArgumentException] {
+        $existingValue = $null
+    }
+
+    $existing = if ($null -eq $existingValue) { @() } else { @($existingValue) }
+
+    # Keep other vars, replace or add our entry.
+    $newEnv = @($existing | Where-Object { $_ -notlike "IRONRDP_WTS_PROVIDER_DEBUG_LOG=*" })
+    $newEnv += $debugEnvEntry
+
+    New-ItemProperty -Path $termServiceRegPath -Name "Environment" -PropertyType MultiString -Value $newEnv -Force | Out-Null
     Write-Host "  dll debug log: $debugLogPath (via TermService env)"
 } catch {
-    Write-Warning "Could not set TermService environment for DLL debug log: $_"
+    Write-Warning "Could not set TermService environment for DLL debug log: $($_.Exception.Message)"
 }
 
 Write-Host "Installed side-by-side protocol provider"
@@ -182,9 +189,24 @@ if ($RestartTermService.IsPresent) {
         if ($termServicePid -gt 0) {
             Write-Warning "TermService still running; force-stopping host process PID $termServicePid"
             Stop-Process -Id $termServicePid -Force -ErrorAction SilentlyContinue
-            & taskkill.exe /PID $termServicePid /F /T 2>$null | Out-Null
-        }
 
+            $processStillRunning = $false
+            try {
+                $null = Get-Process -Id $termServicePid -ErrorAction Stop
+                $processStillRunning = $true
+            }
+            catch {
+                $processStillRunning = $false
+            }
+
+            if ($processStillRunning) {
+                $taskkillOutput = & taskkill.exe /PID $termServicePid /F /T 2>&1
+                if (($LASTEXITCODE -ne 0) -and ($LASTEXITCODE -ne 128)) {
+                    $taskkillMessage = ($taskkillOutput | Out-String).Trim()
+                    throw "taskkill failed for TermService host PID $termServicePid (exit_code=$LASTEXITCODE): $taskkillMessage"
+                }
+            }
+        }
         Start-Sleep -Seconds 1
     }
 

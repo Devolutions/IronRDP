@@ -222,6 +222,7 @@ try {
     } -ArgumentList $RemoteRoot
 
     $exeRemote = Join-Path $RemoteRoot 'bin\ironrdp-termsrv.exe'
+    $exeRemoteNext = Join-Path $RemoteRoot 'bin\ironrdp-termsrv.next.exe'
     $runnerRemote = Join-Path $RemoteRoot 'bin\run-ironrdp-termsrv.ps1'
     $rdpPasswordRemote = Join-Path $RemoteRoot 'secrets\rdp_password.txt'
     $logOut = Join-Path $RemoteRoot 'logs\ironrdp-termsrv.log'
@@ -264,7 +265,23 @@ try {
             if ($termServicePid -gt 0) {
                 Write-Warning "TermService still running; force-stopping host process PID $termServicePid"
                 Stop-Process -Id $termServicePid -Force -ErrorAction SilentlyContinue
-                & taskkill.exe /PID $termServicePid /F /T 2>$null | Out-Null
+
+                $processStillRunning = $false
+                try {
+                    $null = Get-Process -Id $termServicePid -ErrorAction Stop
+                    $processStillRunning = $true
+                }
+                catch {
+                    $processStillRunning = $false
+                }
+
+                if ($processStillRunning) {
+                    $taskkillOutput = & taskkill.exe /PID $termServicePid /F /T 2>&1
+                    if (($LASTEXITCODE -ne 0) -and ($LASTEXITCODE -ne 128)) {
+                        $taskkillMessage = ($taskkillOutput | Out-String).Trim()
+                        throw "taskkill failed for TermService host PID $termServicePid (exit_code=$LASTEXITCODE): $taskkillMessage"
+                    }
+                }
             }
 
             Start-Sleep -Seconds 1
@@ -283,18 +300,24 @@ try {
         try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
         try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
 
-        # Kill ALL ironrdp-termsrv processes and wait for them to exit
-        $procs = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
+        # Kill any staged or primary ironrdp-termsrv process before restaging the binary.
+        $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -in @('ironrdp-termsrv.exe', 'ironrdp-termsrv.next.exe')
+        }
         if ($procs) {
-            Write-Host "Killing $($procs.Count) ironrdp-termsrv process(es): $($procs.Id -join ', ')"
-            $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+            Write-Host "Killing $($procs.Count) ironrdp-termsrv process(es): $(@($procs | ForEach-Object { $_.ProcessId }) -join ', ')"
+            $procs | ForEach-Object {
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
             $deadline = (Get-Date).AddSeconds(10)
             do {
                 Start-Sleep -Milliseconds 500
-                $remaining = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
+                $remaining = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Name -in @('ironrdp-termsrv.exe', 'ironrdp-termsrv.next.exe')
+                }
             } while ($remaining -and ((Get-Date) -lt $deadline))
             if ($remaining) {
-                Write-Warning "Failed to kill all ironrdp-termsrv processes: $($remaining.Id -join ', ')"
+                Write-Warning "Failed to kill all ironrdp-termsrv processes: $(@($remaining | ForEach-Object { $_.ProcessId }) -join ', ')"
             }
         }
 
@@ -305,8 +328,9 @@ try {
         Remove-Item -LiteralPath $RdpPasswordPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $LogOut -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $LogErr -Force -ErrorAction SilentlyContinue
-        # Clear the DLL debug log so each run has a fresh log
+        # Clear all known DLL debug log paths so each run has a fresh provider log.
         Remove-Item -LiteralPath 'C:\IronRDPDeploy\logs\wts-provider-debug.log' -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath 'C:\Windows\Temp\wts-provider-debug.log' -Force -ErrorAction SilentlyContinue
     } -ArgumentList $TaskName, $rdpPasswordRemote, $logOut, $logErr, $TermServiceStopTimeoutSeconds
 
     $copyAttempts = 0
@@ -314,7 +338,7 @@ try {
     while ($true) {
         $copyAttempts++
         try {
-            Copy-Item -ToSession $session -Path $exeLocal -Destination $exeRemote -Force
+            Copy-Item -ToSession $session -Path $exeLocal -Destination $exeRemoteNext -Force
             break
         }
         catch {
@@ -463,9 +487,22 @@ if (-not [string]::IsNullOrWhiteSpace($logDir)) {
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 }
 
+$exeDir = Split-Path -Parent $ExePath
+$exeName = [System.IO.Path]::GetFileNameWithoutExtension($ExePath)
+$exeExt = [System.IO.Path]::GetExtension($ExePath)
+$nextExePath = if (-not [string]::IsNullOrWhiteSpace($exeDir) -and -not [string]::IsNullOrWhiteSpace($exeName)) {
+    Join-Path $exeDir ($exeName + '.next' + $exeExt)
+} else {
+    ''
+}
+$resolvedExePath = $ExePath
+if (-not [string]::IsNullOrWhiteSpace($nextExePath) -and (Test-Path -LiteralPath $nextExePath -PathType Leaf)) {
+    $resolvedExePath = $nextExePath
+}
+
 try {
     # Start the server and exit; the child process inherits env vars.
-    Start-Process -FilePath $ExePath -NoNewWindow -RedirectStandardOutput $LogOut -RedirectStandardError $LogErr | Out-Null
+    Start-Process -FilePath $resolvedExePath -NoNewWindow -RedirectStandardOutput $LogOut -RedirectStandardError $LogErr | Out-Null
 }
 finally {
     # Best-effort cleanup: remove the password file after startup.
@@ -565,19 +602,44 @@ finally {
             if ($_ -match '[\s"'']') { '"' + ($_ -replace '"', '\\"') + '"' } else { $_ }
         }) -join ' '
 
-        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argumentString
-        $trigger = New-ScheduledTaskTrigger -AtStartup
-        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
+        $scheduleService = Get-Service -Name 'Schedule' -ErrorAction SilentlyContinue
+        if ($null -eq $scheduleService) {
+            throw 'Task Scheduler service is missing'
+        }
+        if ($scheduleService.Status -ne 'Running') {
+            Start-Service -Name 'Schedule'
+            $scheduleService.WaitForStatus('Running', [TimeSpan]::FromSeconds(15))
+        }
 
-        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-        Start-ScheduledTask -TaskName $TaskName
+        try {
+            $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argumentString
+            $trigger = New-ScheduledTaskTrigger -AtStartup
+            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
+
+            Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+            Start-ScheduledTask -TaskName $TaskName
+        }
+        catch {
+            Write-Warning "ScheduledTasks cmdlets failed for ${TaskName}: $($_.Exception.Message). Falling back to schtasks.exe"
+            $taskCommand = "powershell.exe $argumentString"
+            & schtasks.exe /Create /TN $TaskName /SC ONSTART /RU SYSTEM /RL HIGHEST /TR $taskCommand /F | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "schtasks.exe /Create failed for $TaskName (exit $LASTEXITCODE)"
+            }
+            & schtasks.exe /Run /TN $TaskName | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "schtasks.exe /Run failed for $TaskName (exit $LASTEXITCODE)"
+            }
+        }
 
         $proc = $null
         $deadline = (Get-Date).AddSeconds(10)
         do {
             Start-Sleep -Milliseconds 250
-            $proc = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
+            $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -in @('ironrdp-termsrv.exe', 'ironrdp-termsrv.next.exe')
+            } | Select-Object -First 1
         } while (($null -eq $proc) -and ((Get-Date) -lt $deadline))
 
         if ($null -eq $proc) {
@@ -596,7 +658,7 @@ finally {
             ExePath = $ExePath
             LogOut = $LogOut
             LogErr = $LogErr
-            Pid = $proc.Id
+            Pid = $proc.ProcessId
         }
     } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $AutoSendSas.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain, $wtsLogonUsername, $wtsLogonDomain | Format-List
 

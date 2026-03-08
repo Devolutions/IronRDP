@@ -86,6 +86,9 @@ param(
     [int]$ScreenshotTimeoutSeconds = 30,
 
     [Parameter()]
+    [int]$NoGraphicsTimeoutSeconds = 20,
+
+    [Parameter()]
     [int]$AfterFirstGraphicsSeconds = 20,
 
     [Parameter()]
@@ -265,6 +268,8 @@ if ($PSBoundParameters.ContainsKey('RdpPassword') -and (-not [string]::IsNullOrW
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $workspaceRoot = (Resolve-Path (Join-Path $scriptRoot '..\..\..')).Path
+$iddSignScript = Join-Path $workspaceRoot 'crates\ironrdp-idd\scripts\sign-driver.ps1'
+$iddInstallScript = Join-Path $workspaceRoot 'crates\ironrdp-idd\scripts\install-idd-remote.ps1'
 $artifactsDir = Join-Path $workspaceRoot 'artifacts'
 New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null
 
@@ -276,12 +281,187 @@ if ([string]::IsNullOrWhiteSpace($OutputPng)) {
 
 $dumpRemoteDir = "C:\IronRDPDeploy\bitmap-dumps-$timestamp"
 $dumpLocalDir = Join-Path $artifactsDir "bitmap-dumps-$timestamp"
+$iddRuntimeRoot = 'C:\ProgramData\IronRDP\Idd'
+$iddRuntimeStateFile = Join-Path $iddRuntimeRoot 'runtime-config.txt'
+$iddDebugTraceFile = Join-Path $iddRuntimeRoot 'ironrdp-idd-debug.log'
+$iddOpenProbeScriptFile = Join-Path $iddRuntimeRoot 'probe-open-paths.ps1'
+$iddOpenProbeLogFile = Join-Path $iddRuntimeRoot 'probe-admin.log'
+$iddOpenProbeInterfaceGuid = '{1ea642e3-6a78-4f4b-9a19-2eb4f0f33b82}'
+$iddDumpRemoteDir = Join-Path $iddRuntimeRoot "bitmap-dumps-$timestamp"
+$iddDumpLocalDir = Join-Path $artifactsDir "idd-bitmap-dumps-$timestamp"
+$iddOpenProbeScript = @'
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$LogPath,
+
+    [Parameter()]
+    [string]$RuntimeConfigPath = 'C:\ProgramData\IronRDP\Idd\runtime-config.txt',
+
+    [Parameter()]
+    [int]$RunSeconds = 90,
+
+    [Parameter()]
+    [string]$InterfaceGuid = '{1ea642e3-6a78-4f4b-9a19-2eb4f0f33b82}'
+)
+
+$ErrorActionPreference = 'Continue'
+
+New-Item -ItemType Directory -Path (Split-Path -Parent $LogPath) -Force | Out-Null
+
+$nativeSource = @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public static class IronRdpProbeNative
+{
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern SafeFileHandle CreateFileW(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        IntPtr lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        IntPtr hTemplateFile
+    );
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint QueryDosDeviceW(string lpDeviceName, StringBuilder lpTargetPath, int ucchMax);
+}
+"@
+
+Add-Type -TypeDefinition $nativeSource -ErrorAction Stop
+
+function Write-ProbeLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    Add-Content -LiteralPath $LogPath -Value ("{0} {1}" -f (Get-Date -Format o), $Message)
+}
+
+function Read-RuntimeConfigMap {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $map = @{}
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $map
+    }
+
+    foreach ($line in Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue) {
+        if ($line -match '^(?<key>[^=]+)=(?<value>.*)$') {
+            $map[$Matches['key']] = $Matches['value']
+        }
+    }
+
+    $map
+}
+
+function Query-DosTarget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DeviceName
+    )
+
+    $buffer = New-Object System.Text.StringBuilder 4096
+    $result = [IronRdpProbeNative]::QueryDosDeviceW($DeviceName, $buffer, $buffer.Capacity)
+    $lastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    $target = $buffer.ToString().Trim([char]0)
+    Write-ProbeLine ("query name={0} result={1} last_error=0x{2:X8} target={3}" -f $DeviceName, $result, $lastError, $target)
+
+    if ($result -eq 0 -or [string]::IsNullOrWhiteSpace($target)) {
+        return $null
+    }
+
+    return $target
+}
+
+function Test-OpenPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$AccessName,
+
+        [Parameter(Mandatory = $true)]
+        [uint32]$Access
+    )
+
+    $handle = [IronRdpProbeNative]::CreateFileW($Path, $Access, 3, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero)
+    $lastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    $ok = ($null -ne $handle) -and (-not $handle.IsInvalid)
+    Write-ProbeLine ("open path={0} access={1} ok={2} last_error=0x{3:X8}" -f $Path, $AccessName, $ok, $lastError)
+
+    if ($ok) {
+        $handle.Dispose()
+    }
+}
+
+$identityName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+Write-ProbeLine ("start identity={0} run_seconds={1} interface_guid={2}" -f $identityName, $RunSeconds, $InterfaceGuid)
+
+$deadline = (Get-Date).AddSeconds($RunSeconds)
+$lastRuntimeMarker = ''
+$interfaceGuidNormalized = $InterfaceGuid.ToLowerInvariant()
+
+while ((Get-Date) -lt $deadline) {
+    $runtimeConfig = Read-RuntimeConfigMap -Path $RuntimeConfigPath
+    $sessionId = 0
+    if ($runtimeConfig.ContainsKey('session_id')) {
+        [void][int]::TryParse([string]$runtimeConfig['session_id'], [ref]$sessionId)
+    }
+
+    $runtimeMarker = "runtime session_id=$sessionId driver_loaded=$($runtimeConfig['driver_loaded']) updated_source=$($runtimeConfig['updated_source']) active_video_source=$($runtimeConfig['active_video_source'])"
+    if ($runtimeMarker -ne $lastRuntimeMarker) {
+        Write-ProbeLine $runtimeMarker
+        $lastRuntimeMarker = $runtimeMarker
+    }
+
+    $candidatePaths = [System.Collections.Generic.List[string]]::new()
+    $candidatePaths.Add('\\.\Global\IronRdpIddVideo')
+    $candidatePaths.Add('\\.\IronRdpIddVideo')
+
+    foreach ($deviceName in @('IronRdpIddVideo', 'Global\IronRdpIddVideo')) {
+        $target = Query-DosTarget -DeviceName $deviceName
+        if (-not [string]::IsNullOrWhiteSpace($target)) {
+            $candidatePaths.Add("\\?\GLOBALROOT$target")
+        }
+    }
+
+    if ($sessionId -gt 0) {
+        $candidatePaths.Add(('\\?\swd#remotedisplayenum#ironrdpidd&sessionid_{0:d4}#{1}' -f $sessionId, $interfaceGuidNormalized))
+    }
+
+    foreach ($path in ($candidatePaths | Select-Object -Unique)) {
+        foreach ($access in @(
+            @{ Name = 'rw'; Value = [uint32]3221225472 },
+            @{ Name = 'r'; Value = [uint32]2147483648 },
+            @{ Name = 'none'; Value = [uint32]0x00000000 }
+        )) {
+            Test-OpenPath -Path $path -AccessName $access.Name -Access $access.Value
+        }
+    }
+
+    Start-Sleep -Milliseconds 500
+}
+
+Write-ProbeLine 'complete'
+'@
 
 $profileDir = if ($Configuration -eq 'Release') { 'release' } else { 'debug' }
 
 $remoteLogCollectionSucceeded = $false
 $remoteServiceRunning = $false
 $remotePortListening = $false
+$iddOpenProbeSession = $null
+$iddOpenProbeJob = $null
 $securityLogonType10Count = $null
 $termsrvFallbackMarkerCount = $null
 $termsrvFallbackMarkers = ''
@@ -336,11 +516,43 @@ $freshSessionCleanupSucceeded = $false
 $freshSessionCleanupTargetUser = ''
 $freshSessionCleanupDiscoveredSessionIds = ''
 $freshSessionCleanupLoggedOffSessionIds = ''
+$freshSessionCleanupResetSessionIds = ''
 $freshSessionCleanupExplorerMatches = ''
 $freshSessionCleanupQuserMatches = ''
+$freshSessionCleanupWinstaMatches = ''
+$freshSessionCleanupSuspiciousSessionMatches = ''
 $freshSessionCleanupLogoffErrors = ''
+$freshSessionCleanupResetErrors = ''
 $freshSessionCleanupError = ''
 $freshSessionCleanupAggressiveMode = $false
+$iddRuntimeConfigText = ''
+$iddDebugTraceText = ''
+$iddDeviceInventory = ''
+$iddDriverInventory = ''
+$iddDumpCount = 0
+$iddObservedSessionIds = @()
+$iddTargetSessionMatchCount = 0
+$iddTargetSessionHasGraphics = $false
+$type10IddGraphicsSessionConfirmed = $false
+$providerCustomVideoSourceSelected = $false
+$providerManualVideoSourceSelected = $false
+$providerFallbackVideoSourceSelected = $false
+$providerHardwareIdCustom = $false
+$providerGetHardwareIdCount = 0
+$providerOnDriverLoadCount = 0
+$providerAssumePresentCount = 0
+$providerVideoHandleDriverLoadCount = 0
+$iddMonitorArrivalMarkerCount = 0
+$iddDisplayConfigUpdateRequestCount = 0
+$iddDisplayConfigUpdateSuccessCount = 0
+$iddCommitModesMarkerCount = 0
+$iddCommitModesActivePathCount = 0
+$iddSwapchainAssignedCount = 0
+$iddSessionReadyMarkerCount = 0
+$iddFirstFrameMarkerCount = 0
+$preflightSucceeded = $false
+$preflightBlockedConnectionAttempt = $false
+$preflightIssues = New-Object System.Collections.Generic.List[string]
 
 # ── Step 1: Build ───────────────────────────────────────────────────────────
 if (-not $SkipBuild.IsPresent) {
@@ -362,6 +574,32 @@ if (-not $SkipBuild.IsPresent) {
                 cargo build -p ironrdp-wtsprotocol-provider
             }
             if ($LASTEXITCODE -ne 0) { throw "cargo build ironrdp-wtsprotocol-provider failed (exit $LASTEXITCODE)" }
+        }
+
+        if ($Mode -eq 'Provider') {
+            Write-Host "Building ironrdp-idd ($Configuration, IRONRDP_IDD_LINK=1)..." -ForegroundColor Cyan
+            $previousIronRdpIddLink = $env:IRONRDP_IDD_LINK
+            try {
+                $env:IRONRDP_IDD_LINK = '1'
+                if ($Configuration -eq 'Release') {
+                    cargo build -p ironrdp-idd --release
+                } else {
+                    cargo build -p ironrdp-idd
+                }
+                if ($LASTEXITCODE -ne 0) { throw "cargo build ironrdp-idd failed (exit $LASTEXITCODE)" }
+            }
+            finally {
+                if ([string]::IsNullOrWhiteSpace($previousIronRdpIddLink)) {
+                    Remove-Item Env:IRONRDP_IDD_LINK -ErrorAction SilentlyContinue
+                } else {
+                    $env:IRONRDP_IDD_LINK = $previousIronRdpIddLink
+                }
+            }
+
+            Write-Host "Signing IronRdpIdd driver package..." -ForegroundColor Cyan
+            $iddDriverPath = Join-Path "target\$profileDir" 'ironrdp_idd.dll'
+            & $iddSignScript -DriverPath $iddDriverPath
+            if ($LASTEXITCODE -ne 0) { throw "sign-driver.ps1 failed (exit $LASTEXITCODE)" }
         }
 
         Write-Host "Building screenshot example..." -ForegroundColor Cyan
@@ -579,6 +817,23 @@ if (-not $SkipDeploy.IsPresent) {
                             -TermServiceStopTimeoutSeconds 60 `
                             -TermServiceStartTimeoutSeconds 60
 
+
+                        $providerProbe = $null
+                        try {
+                            $providerClsid = [guid]'{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}'
+                            $providerType = [type]::GetTypeFromCLSID($providerClsid, $true)
+                            $providerProbe = [System.Activator]::CreateInstance($providerType)
+                            Write-Host 'Provider COM activation probe: success'
+                        }
+                        catch {
+                            $hresult = if ($null -ne $_.Exception) { '0x{0:X8}' -f ($_.Exception.HResult -band 0xffffffff) } else { 'n/a' }
+                            Write-Warning "Provider COM activation probe failed: $($_.Exception.Message) (hresult=$hresult)"
+                        }
+                        finally {
+                            if ($null -ne $providerProbe -and [System.Runtime.InteropServices.Marshal]::IsComObject($providerProbe)) {
+                                [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($providerProbe)
+                            }
+                        }
                         # Ensure WUDFRd is running AFTER TermService restart.
                         # install-side-by-side restarts TermService which can stop WUDFRd.
                         # Without WUDFRd, the IDD UMDF driver cannot load when TermService
@@ -596,8 +851,404 @@ if (-not $SkipDeploy.IsPresent) {
 
                         & $firewallScript -Mode Add -PortNumber $Port
 
-                        & $waitScript -PortNumber $Port -TimeoutSeconds 90
+                        try {
+                            & $waitScript -PortNumber $Port -TimeoutSeconds 90
+                        }
+                        catch {
+                            Write-Warning "wait-termservice-ready.ps1 failed: $($_.Exception.Message)"
+                            Write-Host '---- TermService / WUDFRd ----' -ForegroundColor Yellow
+                            Get-Service -Name 'TermService', 'WUDFRd' -ErrorAction SilentlyContinue | Format-Table -AutoSize
+                            Write-Host "---- listener check ($Port) ----" -ForegroundColor Yellow
+                            Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+                                Select-Object LocalAddress, LocalPort, OwningProcess | Format-Table -AutoSize
+                            Write-Host '---- qwinsta ----' -ForegroundColor Yellow
+                            try {
+                                qwinsta
+                            }
+                            catch {
+                            }
+                            Write-Host '---- ironrdp-termsrv.log (tail) ----' -ForegroundColor Yellow
+                            if (Test-Path -LiteralPath 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log' -PathType Leaf) {
+                                Get-Content -LiteralPath 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log' -Tail 120 -ErrorAction SilentlyContinue
+                            }
+                            Write-Host '---- ironrdp-termsrv.err.log (tail) ----' -ForegroundColor Yellow
+                            if (Test-Path -LiteralPath 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log' -PathType Leaf) {
+                                Get-Content -LiteralPath 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log' -Tail 120 -ErrorAction SilentlyContinue
+                            }
+                            Write-Host '---- wts-provider-debug.log (tail) ----' -ForegroundColor Yellow
+                            if (Test-Path -LiteralPath 'C:\IronRDPDeploy\logs\wts-provider-debug.log' -PathType Leaf) {
+                                Get-Content -LiteralPath 'C:\IronRDPDeploy\logs\wts-provider-debug.log' -Tail 120 -ErrorAction SilentlyContinue
+                            }
+                            else {
+                                Write-Host '<missing>'
+                            }
+                            Write-Host '---- idd runtime-config.txt ----' -ForegroundColor Yellow
+                            Write-Host '---- wts-provider-debug fallback log (tail) ----' -ForegroundColor Yellow
+                            if (Test-Path -LiteralPath 'C:\Windows\Temp\wts-provider-debug.log' -PathType Leaf) {
+                                Get-Content -LiteralPath 'C:\Windows\Temp\wts-provider-debug.log' -Tail 120 -ErrorAction SilentlyContinue
+                            }
+                            else {
+                                Write-Host '<missing>'
+                            }
+                            Write-Host '---- TermService Environment ----' -ForegroundColor Yellow
+                            try {
+                                Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\TermService' -Name 'Environment' -ErrorAction Stop |
+                                    Select-Object -ExpandProperty Environment
+                            }
+                            catch {
+                                Write-Host '<missing>'
+                            }
+                            Write-Host '---- WinStations registry ----' -ForegroundColor Yellow
+                            Get-ChildItem -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations' -ErrorAction SilentlyContinue |
+                                ForEach-Object {
+                                    $props = Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
+                                    $portNumber = $null
+                                    $loadableProtocolObject = $null
+                                    $pdDll = $null
+                                    if ($null -ne $props) {
+                                        $portProperty = $props.PSObject.Properties['PortNumber']
+                                        if ($null -ne $portProperty) { $portNumber = $portProperty.Value }
+                                        $loadableProtocolProperty = $props.PSObject.Properties['LoadableProtocol_Object']
+                                        if ($null -ne $loadableProtocolProperty) { $loadableProtocolObject = $loadableProtocolProperty.Value }
+                                        $pdDllProperty = $props.PSObject.Properties['PdDLL']
+                                        if ($null -ne $pdDllProperty) { $pdDll = $pdDllProperty.Value }
+                                    }
+                                    [pscustomobject]@{
+                                        Name = $_.PSChildName
+                                        PortNumber = $portNumber
+                                        LoadableProtocolObject = $loadableProtocolObject
+                                        PdDll = $pdDll
+                                    }
+                                } | Format-Table -AutoSize
+                            Write-Host '---- IRDP-Tcp registry ----' -ForegroundColor Yellow
+                            if (Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\IRDP-Tcp') {
+                                Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\IRDP-Tcp' -ErrorAction SilentlyContinue |
+                                    Select-Object PortNumber, LoadableProtocol_Object, PdDLL, PdName, PdClass, fEnableWinStation | Format-List
+                            }
+                            else {
+                                Write-Host '<missing>'
+                            }
+                            Write-Host '---- Terminal Services events ----' -ForegroundColor Yellow
+                            foreach ($logName in @(
+                                'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational',
+                                'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational'
+                            )) {
+                                Write-Host "[$logName]" -ForegroundColor DarkYellow
+                                try {
+                                    Get-WinEvent -LogName $logName -MaxEvents 8 -ErrorAction Stop |
+                                        Select-Object TimeCreated, Id, LevelDisplayName, Message | Format-List
+                                }
+                                catch {
+                                    Write-Host '<unavailable>'
+                                }
+                            Write-Host '---- COM/Application/System events ----' -ForegroundColor Yellow
+                            foreach ($logName in @(
+                                'Microsoft-Windows-COMRuntime/Operational',
+                                'Application',
+                                'System'
+                            )) {
+                                Write-Host "[$logName]" -ForegroundColor DarkYellow
+                                try {
+                                    $events = Get-WinEvent -LogName $logName -MaxEvents 40 -ErrorAction Stop |
+                                        Where-Object {
+                                            $message = $_.Message
+                                            if ([string]::IsNullOrWhiteSpace($message)) { return $false }
+                                            $message -match 'ironrdp|wtsprotocol|IRDP-Tcp|89C7ED1E|TermService|svchost|LoadableProtocol_Object|CLSID'
+                                        } |
+                                        Select-Object -First 8 TimeCreated, Id, ProviderName, LevelDisplayName, Message
+                                    if ($null -eq $events -or @($events).Count -eq 0) {
+                                        Write-Host '<no matching events>'
+                                    }
+                                    else {
+                                        $events | Format-List
+                                    }
+                                }
+                                catch {
+                                    Write-Host '<unavailable>'
+                                }
+                            }
+                            }
+                            if (Test-Path -LiteralPath 'C:\ProgramData\IronRDP\Idd\runtime-config.txt' -PathType Leaf) {
+                                Get-Content -LiteralPath 'C:\ProgramData\IronRDP\Idd\runtime-config.txt' -ErrorAction SilentlyContinue
+                            }
+                            else {
+                                Write-Host '<missing>'
+                            }
+                            Write-Host '---- idd debug trace (tail) ----' -ForegroundColor Yellow
+                            if (Test-Path -LiteralPath 'C:\ProgramData\IronRDP\Idd\ironrdp-idd-debug.log' -PathType Leaf) {
+                                Get-Content -LiteralPath 'C:\ProgramData\IronRDP\Idd\ironrdp-idd-debug.log' -Tail 120 -ErrorAction SilentlyContinue
+                            }
+                            else {
+                                Write-Host '<missing>'
+                            }
+                            Write-Host '---- IronRDP PnP devices ----' -ForegroundColor Yellow
+                            Get-PnpDevice -FriendlyName 'IronRDP*' -ErrorAction SilentlyContinue |
+                                Select-Object Status, Class, FriendlyName, InstanceId | Format-Table -AutoSize
+                            throw
+                        }
                     } -ArgumentList $remoteProviderDir, $Port
+                }
+                finally {
+                    if ($null -ne $session) {
+                        Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+
+            if ($Mode -eq 'Provider') {
+                Write-Host "Installing custom IronRdpIdd package on $Hostname..." -ForegroundColor Cyan
+                & $iddInstallScript `
+                    -VmHostname $Hostname `
+                    -Credential $adminCred `
+                    -DriverDll 'crates\ironrdp-idd\IronRdpIdd.dll' `
+                    -InfPath 'crates\ironrdp-idd\IronRdpIdd.inf' `
+                    -CatPath 'crates\ironrdp-idd\IronRdpIdd.cat'
+
+                $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+                try {
+                    $preflight = Invoke-Command -Session $session -ScriptBlock {
+                        param($RuntimeRoot, $RuntimeStateFile, $DebugTraceFile, $DumpDir, $DriverInfPath)
+
+                        Set-StrictMode -Version Latest
+                        $ErrorActionPreference = 'Stop'
+
+                        $result = @{}
+                        $issues = New-Object System.Collections.Generic.List[string]
+                        $result['issues'] = @()
+                        if (Test-Path -LiteralPath $DumpDir) {
+                            Remove-Item -LiteralPath $DumpDir -Recurse -Force -ErrorAction SilentlyContinue
+                        }
+
+                        function Grant-RuntimePathAccess {
+                            param(
+                                [Parameter(Mandatory = $true)]
+                                [string]$Path,
+                                [switch]$Container
+                            )
+
+                            if (-not (Test-Path -LiteralPath $Path)) {
+                                return
+                            }
+
+                            $inheritanceFlags = if ($Container) {
+                                [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+                            } else {
+                                [System.Security.AccessControl.InheritanceFlags]::None
+                            }
+                            $propagationFlags = [System.Security.AccessControl.PropagationFlags]::None
+                            $rights = [System.Security.AccessControl.FileSystemRights]::Modify
+                            $accessControlType = [System.Security.AccessControl.AccessControlType]::Allow
+                            $acl = Get-Acl -LiteralPath $Path
+
+                            foreach ($identity in @(
+                                (New-Object System.Security.Principal.NTAccount 'NT AUTHORITY', 'NETWORK SERVICE'),
+                                (New-Object System.Security.Principal.NTAccount 'NT SERVICE', 'TermService')
+                            )) {
+                                try {
+                                    $null = $identity.Translate([System.Security.Principal.SecurityIdentifier])
+                                    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                                        $identity,
+                                        $rights,
+                                        $inheritanceFlags,
+                                        $propagationFlags,
+                                        $accessControlType
+                                    )
+                                    $acl.SetAccessRule($rule)
+                                }
+                                catch {
+                                }
+                            }
+
+                            Set-Acl -LiteralPath $Path -AclObject $acl
+                        }
+
+                        New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
+                        New-Item -ItemType Directory -Path $DumpDir -Force | Out-Null
+                        Grant-RuntimePathAccess -Path $RuntimeRoot -Container
+                        Grant-RuntimePathAccess -Path $DumpDir -Container
+                        Remove-Item -LiteralPath $DebugTraceFile -Force -ErrorAction SilentlyContinue
+
+                        @(
+                            '# managed by e2e-test-screenshot.ps1',
+                            "dump_dir=$DumpDir",
+                            'session_id=0',
+                            'wddm_idd_enabled=false',
+                            'driver_loaded=false',
+                            'hardware_id=IronRdpIdd',
+                            'active_video_source=unknown'
+                        ) | Set-Content -Path $RuntimeStateFile
+                        Grant-RuntimePathAccess -Path $RuntimeStateFile
+
+                        $currentVersion = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
+                        $productName = if ($null -ne $currentVersion) { [string]$currentVersion.ProductName } else { '' }
+                        $installationType = if ($null -ne $currentVersion) { [string]$currentVersion.InstallationType } else { '' }
+                        $isWindowsServer = ($installationType -eq 'Server') -or ($productName -like 'Windows Server*')
+                        $rdsSessionHostInstalled = $true
+                        if ($isWindowsServer) {
+                            $rdsSessionHost = Get-WindowsFeature -Name 'RDS-RD-Server' -ErrorAction SilentlyContinue
+                            $rdsSessionHostInstalled = ($null -ne $rdsSessionHost) -and [bool]$rdsSessionHost.Installed
+                            if (-not $rdsSessionHostInstalled) {
+                                $issues.Add('RDS-RD-Server (Remote Desktop Session Host) is not installed on this Windows Server host')
+                            }
+                        }
+                        $result['product_name'] = $productName
+                        $result['installation_type'] = $installationType
+                        $result['is_windows_server'] = $isWindowsServer
+                        $result['rds_session_host_installed'] = $rdsSessionHostInstalled
+
+                        $testSigningEnabled = ((bcdedit /enum | Out-String) -match '(?im)testsigning\s+Yes')
+                        if (-not $testSigningEnabled) {
+                            $issues.Add('test-signing is disabled')
+                        }
+                        $result['testsigning_enabled'] = $testSigningEnabled
+
+                        $trustedPublisher = Get-ChildItem cert:\LocalMachine\TrustedPublisher -ErrorAction SilentlyContinue |
+                            Where-Object {
+                                $_.Subject -eq 'CN=Test Code Signing Certificate' -and
+                                @($_.EnhancedKeyUsageList | Where-Object { $_.ObjectId -eq '1.3.6.1.5.5.7.3.3' }).Count -ge 1
+                            } |
+                            Select-Object -First 1
+                        $trustedPublisherPresent = ($null -ne $trustedPublisher)
+                        if (-not $trustedPublisherPresent) {
+                            $issues.Add('LocalMachine\\TrustedPublisher is missing the test code-signing certificate')
+                        }
+                        $result['trusted_publisher_present'] = $trustedPublisherPresent
+
+                        $wudfrd = Get-Service -Name 'WUDFRd' -ErrorAction SilentlyContinue
+                        $wudfrdPresent = ($null -ne $wudfrd)
+                        $wudfrdRunning = $wudfrdPresent -and ($wudfrd.Status -eq 'Running')
+                        if (-not $wudfrdPresent) {
+                            $issues.Add('WUDFRd service is missing')
+                        } elseif (-not $wudfrdRunning) {
+                            $issues.Add("WUDFRd is not running (status=$($wudfrd.Status))")
+                        }
+                        $result['wudfrd_present'] = $wudfrdPresent
+                        $result['wudfrd_running'] = $wudfrdRunning
+
+                        $driverEnumText = (& pnputil /enum-drivers 2>$null | Out-String)
+                        $iddDriverPackagePresent = ($driverEnumText -match '(?i)IronRdpIdd\.inf') -or ($driverEnumText -match '(?i)IronRDP Project')
+                        if (-not $iddDriverPackagePresent) {
+                            $issues.Add('IronRdpIdd driver package is not installed')
+                        }
+                        $result['idd_driver_package_present'] = $iddDriverPackagePresent
+
+                        $iddInfPresent = Test-Path -LiteralPath $DriverInfPath -PathType Leaf
+                        $iddInfText = if ($iddInfPresent) { Get-Content -LiteralPath $DriverInfPath -Raw -ErrorAction SilentlyContinue } else { '' }
+                        $iddInfUsesIddCx0104 = (-not [string]::IsNullOrWhiteSpace($iddInfText)) -and ($iddInfText -match '(?im)^\s*UmdfExtensions\s*=\s*IddCx0104\s*$')
+                        $iddInfDisablesHostSharing = (-not [string]::IsNullOrWhiteSpace($iddInfText)) -and ($iddInfText -match '(?im)^\s*UmdfHostProcessSharing\s*=\s*ProcessSharingDisabled\s*$')
+                        if (-not $iddInfPresent) {
+                            $issues.Add("IronRdpIdd INF not found at expected deploy path '$DriverInfPath'")
+                        } else {
+                            if (-not $iddInfUsesIddCx0104) {
+                                $issues.Add('IronRdpIdd INF is not configured for UmdfExtensions=IddCx0104')
+                            }
+                            if ($isWindowsServer -and (-not $iddInfDisablesHostSharing)) {
+                                $issues.Add('IronRdpIdd INF does not set UmdfHostProcessSharing=ProcessSharingDisabled on this Windows Server host')
+                            }
+                        }
+                        $result['idd_inf_present'] = $iddInfPresent
+                        $result['idd_inf_uses_iddcx0104'] = $iddInfUsesIddCx0104
+                        $result['idd_inf_disables_host_sharing'] = $iddInfDisablesHostSharing
+
+                        $iddDevices = @(Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
+                            Where-Object { $_.FriendlyName -like 'IronRDP Indirect Display*' -or $_.InstanceId -like '*IronRdpIdd*' })
+                        $iddDevicePresent = ($iddDevices.Count -ge 1)
+                        $iddDeviceOk = @($iddDevices | Where-Object { $_.Status -eq 'OK' }).Count -ge 1
+                        $staleIddDeviceCount = @($iddDevices | Where-Object { $_.Status -in @('Unknown', 'Error') }).Count
+                        if ($iddDevicePresent -and -not $iddDeviceOk) {
+                            $issues.Add('no healthy IronRdpIdd display device is present')
+                        }
+                        if ($staleIddDeviceCount -gt 0) {
+                            $issues.Add("stale/conflicting IronRDP display devices remain (count=$staleIddDeviceCount)")
+                        }
+                        $result['idd_device_present'] = $iddDevicePresent
+                        $result['idd_device_ok'] = $iddDeviceOk
+                        $result['stale_idd_device_count'] = $staleIddDeviceCount
+                        $result['idd_device_ok'] = $iddDeviceOk
+                        $result['stale_idd_device_count'] = $staleIddDeviceCount
+
+                        $activationNotificationMode = $false
+                        $windowsAppId = '{55c92734-d682-4d71-983e-d6ec3f16059f}'
+                        $activationSortOrder = @(
+                            @{ Expression = { if ($_.PartialProductKey) { 0 } else { 1 } } }
+                            @{ Expression = { if ([string]$_.Description -like 'Windows(R) Operating System*') { 0 } else { 1 } } }
+                            @{ Expression = { if ([string]$_.Name -like 'Windows(R), *edition') { 0 } else { 1 } } }
+                            @{ Expression = { if ([int]$_.LicenseStatus -eq 5) { 0 } else { 1 } } }
+                        )
+                        $licenseRows = @(Get-CimInstance -ClassName SoftwareLicensingProduct -ErrorAction SilentlyContinue |
+                            Where-Object { $_.ApplicationID -eq $windowsAppId })
+                        $license = if ($licenseRows.Count -gt 0) {
+                            @($licenseRows | Sort-Object -Property $activationSortOrder | Select-Object -First 1)[0]
+                        } else {
+                            $null
+                        }
+                        if ($null -ne $license) {
+                            $activationNotificationMode = ([int]$license.LicenseStatus -eq 5)
+                            $result['activation_license_status'] = [int]$license.LicenseStatus
+                            $result['activation_license_name'] = [string]$license.Name
+                            $result['activation_license_description'] = [string]$license.Description
+                            $result['activation_source'] = 'cim'
+                            if ($null -ne $license.LicenseStatusReason) {
+                                $reasonInt = [int64]$license.LicenseStatusReason
+                                if ($reasonInt -lt 0) {
+                                    $reasonInt = $reasonInt -band 0xFFFFFFFF
+                                }
+                                $result['activation_license_status_reason_hex'] = ('0x{0:X8}' -f $reasonInt)
+                            }
+                        } elseif (Get-Command cscript.exe -ErrorAction SilentlyContinue) {
+                            $slmgrText = (& cscript.exe //NoLogo "$env:SystemRoot\System32\slmgr.vbs" /dlv 2>$null | Out-String)
+                            if (-not [string]::IsNullOrWhiteSpace($slmgrText)) {
+                                $result['activation_source'] = 'slmgr'
+                                if ($slmgrText -match '(?im)^License Status:\s*Notification\b') {
+                                    $activationNotificationMode = $true
+                                    $result['activation_license_status'] = 5
+                                } elseif ($slmgrText -match '(?im)^License Status:\s*Licensed\b') {
+                                    $result['activation_license_status'] = 1
+                                }
+
+                                if ($slmgrText -match '(?im)^Notification Reason:\s*(0x[0-9A-F]+)') {
+                                    $result['activation_license_status_reason_hex'] = $Matches[1].ToUpperInvariant()
+                                }
+                            }
+                        }
+                        if ($activationNotificationMode) {
+                            $issues.Add('Windows activation is in notification mode')
+                        }
+                        $result['activation_notification_mode'] = $activationNotificationMode
+                        $result['runtime_state'] = if (Test-Path -LiteralPath $RuntimeStateFile) { Get-Content -LiteralPath $RuntimeStateFile -Raw } else { '' }
+                        $result['issues'] = @($issues)
+                        $result
+                    } -ArgumentList $iddRuntimeRoot, $iddRuntimeStateFile, $iddDebugTraceFile, $iddDumpRemoteDir, 'C:\Program Files\IronRDP\idd\IronRdpIdd.inf'
+
+                    $preflightIssues.Clear()
+                    foreach ($issue in @($preflight['issues'])) {
+                        if (-not [string]::IsNullOrWhiteSpace([string]$issue)) {
+                            $preflightIssues.Add([string]$issue)
+                        }
+                    }
+                    $preflightSucceeded = ($preflightIssues.Count -eq 0)
+                    $iddRuntimeConfigText = [string]$preflight['runtime_state']
+
+                    if ($preflightSucceeded) {
+                        Write-Host "Custom IDD preflight passed" -ForegroundColor Green
+                    } else {
+                        Write-Warning ("Custom IDD preflight failed: " + ($preflightIssues -join '; '))
+                        $activationGateHit = $false
+                        foreach ($issue in $preflightIssues) {
+                            if ([string]$issue -like 'Windows activation is in notification mode*') {
+                                $activationGateHit = $true
+                                break
+                            }
+                        }
+
+                        if ($activationGateHit -and (-not $StrictSessionProof.IsPresent)) {
+                            Write-Warning 'Skipping connection attempt because Windows activation notification mode blocks interactive logon on this VM'
+                        }
+
+                        if ($StrictSessionProof.IsPresent -or $activationGateHit) {
+                            $preflightBlockedConnectionAttempt = $true
+                        }
+                    }
                 }
                 finally {
                     if ($null -ne $session) {
@@ -629,7 +1280,7 @@ if (-not $SkipDeploy.IsPresent) {
 if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -and (-not $SkipScreenshot.IsPresent)) {
     Write-Host "`n=== Step 2.5: Fresh-session cleanup for target user ===" -ForegroundColor Cyan
     $freshSessionCleanupAttempted = $true
-    $freshSessionCleanupAggressiveMode = $AggressiveFreshSessionCleanup.IsPresent
+    $freshSessionCleanupAggressiveMode = $AggressiveFreshSessionCleanup.IsPresent -or $StrictSessionProof.IsPresent
 
     try {
         $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
@@ -642,9 +1293,13 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                 $result['aggressive_mode'] = $false
                 $result['discovered_session_ids'] = ''
                 $result['logged_off_session_ids'] = ''
+                $result['reset_session_ids'] = ''
                 $result['explorer_matches'] = ''
                 $result['quser_matches'] = ''
+                $result['winsta_matches'] = ''
+                $result['suspicious_session_matches'] = ''
                 $result['logoff_errors'] = ''
+                $result['reset_errors'] = ''
 
                 $aggressiveMode = [bool]$AggressiveModeRaw
                 $result['aggressive_mode'] = $aggressiveMode
@@ -671,6 +1326,7 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                 }
 
                 $sessionIds = New-Object System.Collections.Generic.List[int]
+                $resetSessionIds = New-Object System.Collections.Generic.List[int]
                 $explorerRows = New-Object System.Collections.Generic.List[object]
 
                 $explorerProcs = @(Get-Process -Name 'explorer' -IncludeUserName -ErrorAction SilentlyContinue)
@@ -816,13 +1472,101 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                     if ($quserRows.Count -gt 0) {
                         $result['quser_matches'] = ($quserRows | Sort-Object SessionId | Format-Table -AutoSize | Out-String)
                     }
+
+                    $winstaRows = New-Object System.Collections.Generic.List[object]
+                    $suspiciousSessionRows = New-Object System.Collections.Generic.List[object]
+                    $sessionProcessState = @{}
+
+                    $sessionProcesses = @(Get-Process -Name 'winlogon', 'LogonUI', 'explorer' -ErrorAction SilentlyContinue)
+                    foreach ($proc in $sessionProcesses) {
+                        $sid = [int]$proc.SessionId
+                        if (-not $sessionProcessState.ContainsKey($sid)) {
+                            $sessionProcessState[$sid] = @{
+                                Winlogon = $false
+                                LogonUI  = $false
+                                Explorer = $false
+                            }
+                        }
+
+                        switch -Regex ([string]$proc.ProcessName) {
+                            '^winlogon$' { $sessionProcessState[$sid]['Winlogon'] = $true; break }
+                            '^LogonUI$' { $sessionProcessState[$sid]['LogonUI'] = $true; break }
+                            '^explorer$' { $sessionProcessState[$sid]['Explorer'] = $true; break }
+                        }
+                    }
+
+                    $winstaLines = @(& qwinsta 2>$null)
+                    if ($winstaLines.Count -gt 1) {
+                        foreach ($line in ($winstaLines | Select-Object -Skip 1)) {
+                            if ([string]::IsNullOrWhiteSpace([string]$line)) {
+                                continue
+                            }
+
+                            $m = [regex]::Match([string]$line, '^\s*>?\s*(?<session>\S+)?(?:\s+(?<user>\S+))?\s+(?<id>\d+)\s+(?<state>\S+)')
+                            if (-not $m.Success) {
+                                continue
+                            }
+
+                            $sessionName = [string]$m.Groups['session'].Value
+                            $userName = [string]$m.Groups['user'].Value
+                            $sessionId = [int]$m.Groups['id'].Value
+                            $state = [string]$m.Groups['state'].Value
+
+                            $winstaRows.Add([pscustomobject]@{
+                                SessionName = $sessionName
+                                UserName    = $userName
+                                SessionId   = $sessionId
+                                State       = $state
+                                Raw         = [string]$line
+                            })
+
+                            if (($sessionId -le 1) -or ($sessionId -ge 65535)) {
+                                continue
+                            }
+
+                            $isRemoteTcpSession = $sessionName -match '^(?i:(?:irdp|rdp)-tcp#)'
+                            $isBrokenState = $state -match '^(?i:disc|disconnected|down|init|conn)$'
+                            if (($isRemoteTcpSession -or $isBrokenState) -and (-not $resetSessionIds.Contains($sessionId))) {
+                                $resetSessionIds.Add($sessionId)
+                            }
+                        }
+                    }
+
+                    foreach ($sid in @($sessionProcessState.Keys | Sort-Object)) {
+                        $sessionId = [int]$sid
+                        if (($sessionId -le 1) -or ($sessionId -ge 65535)) {
+                            continue
+                        }
+
+                        $state = $sessionProcessState[$sid]
+                        if ($state['Winlogon'] -and (-not $state['Explorer']) -and (-not $state['LogonUI'])) {
+                            $suspiciousSessionRows.Add([pscustomobject]@{
+                                SessionId = $sessionId
+                                Winlogon  = $state['Winlogon']
+                                LogonUI   = $state['LogonUI']
+                                Explorer  = $state['Explorer']
+                                Reason    = 'winlogon_without_logonui_or_shell'
+                            })
+
+                            if (-not $resetSessionIds.Contains($sessionId)) {
+                                $resetSessionIds.Add($sessionId)
+                            }
+                        }
+                    }
+
+                    if ($winstaRows.Count -gt 0) {
+                        $result['winsta_matches'] = ($winstaRows | Sort-Object SessionId | Format-Table -AutoSize | Out-String)
+                    }
+
+                    if ($suspiciousSessionRows.Count -gt 0) {
+                        $result['suspicious_session_matches'] = ($suspiciousSessionRows | Sort-Object SessionId | Format-Table -AutoSize | Out-String)
+                    }
                 }
 
+                $loggedOff = New-Object System.Collections.Generic.List[int]
                 $sortedSessionIds = @($sessionIds | Sort-Object -Unique)
                 if ($sortedSessionIds.Count -gt 0) {
                     $result['discovered_session_ids'] = ($sortedSessionIds -join ',')
-
-                    $loggedOff = New-Object System.Collections.Generic.List[int]
                     $logoffErrors = New-Object System.Collections.Generic.List[string]
 
                     foreach ($sid in $sortedSessionIds) {
@@ -843,8 +1587,33 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                     }
                 }
 
+                $sortedResetSessionIds = @($resetSessionIds | Sort-Object -Unique | Where-Object { $loggedOff -notcontains $_ })
+                if ($sortedResetSessionIds.Count -gt 0) {
+                    $result['reset_session_ids'] = ($sortedResetSessionIds -join ',')
+
+                    $resetCompleted = New-Object System.Collections.Generic.List[int]
+                    $resetErrors = New-Object System.Collections.Generic.List[string]
+
+                    foreach ($sid in $sortedResetSessionIds) {
+                        try {
+                            & rwinsta $sid 2>$null | Out-Null
+                            $resetCompleted.Add($sid)
+                        } catch {
+                            $resetErrors.Add("session_id=$sid error=$($_.Exception.Message)")
+                        }
+                    }
+
+                    if ($resetCompleted.Count -gt 0) {
+                        $result['reset_session_ids'] = (($resetCompleted | Sort-Object -Unique) -join ',')
+                    }
+
+                    if ($resetErrors.Count -gt 0) {
+                        $result['reset_errors'] = ($resetErrors | Out-String)
+                    }
+                }
+
                 $result
-            } -ArgumentList $RdpUsername, $RdpDomain, $AggressiveFreshSessionCleanup.IsPresent
+            } -ArgumentList $RdpUsername, $RdpDomain, $freshSessionCleanupAggressiveMode
 
             if ($cleanup.ContainsKey('target_user')) {
                 $freshSessionCleanupTargetUser = [string]$cleanup['target_user']
@@ -858,14 +1627,26 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
             if ($cleanup.ContainsKey('logged_off_session_ids')) {
                 $freshSessionCleanupLoggedOffSessionIds = [string]$cleanup['logged_off_session_ids']
             }
+            if ($cleanup.ContainsKey('reset_session_ids')) {
+                $freshSessionCleanupResetSessionIds = [string]$cleanup['reset_session_ids']
+            }
             if ($cleanup.ContainsKey('explorer_matches')) {
                 $freshSessionCleanupExplorerMatches = [string]$cleanup['explorer_matches']
             }
             if ($cleanup.ContainsKey('quser_matches')) {
                 $freshSessionCleanupQuserMatches = [string]$cleanup['quser_matches']
             }
+            if ($cleanup.ContainsKey('winsta_matches')) {
+                $freshSessionCleanupWinstaMatches = [string]$cleanup['winsta_matches']
+            }
+            if ($cleanup.ContainsKey('suspicious_session_matches')) {
+                $freshSessionCleanupSuspiciousSessionMatches = [string]$cleanup['suspicious_session_matches']
+            }
             if ($cleanup.ContainsKey('logoff_errors')) {
                 $freshSessionCleanupLogoffErrors = [string]$cleanup['logoff_errors']
+            }
+            if ($cleanup.ContainsKey('reset_errors')) {
+                $freshSessionCleanupResetErrors = [string]$cleanup['reset_errors']
             }
 
             $freshSessionCleanupSucceeded = $true
@@ -883,8 +1664,19 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                 Write-Host "`n---- Fresh-session cleanup quser matches ----" -ForegroundColor Yellow
                 Write-Host $freshSessionCleanupQuserMatches
             }
+            if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupWinstaMatches)) {
+                Write-Host "`n---- Fresh-session cleanup qwinsta matches ----" -ForegroundColor Yellow
+                Write-Host $freshSessionCleanupWinstaMatches
+            }
+            if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupSuspiciousSessionMatches)) {
+                Write-Host "`n---- Fresh-session cleanup suspicious sessions ----" -ForegroundColor Yellow
+                Write-Host $freshSessionCleanupSuspiciousSessionMatches
+            }
             if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupLogoffErrors)) {
                 Write-Warning "Fresh-session cleanup logoff errors:`n$freshSessionCleanupLogoffErrors"
+            }
+            if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupResetErrors)) {
+                Write-Warning "Fresh-session cleanup reset errors:`n$freshSessionCleanupResetErrors"
             }
         }
         finally {
@@ -899,21 +1691,26 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
 } elseif (($Mode -eq 'Provider') -and $DisableFreshSessionCleanup.IsPresent) {
     Write-Host "`n=== Step 2.5: Fresh-session cleanup disabled ===" -ForegroundColor Yellow
 } elseif (($Mode -eq 'Provider') -and (-not $SkipScreenshot.IsPresent)) {
-    $freshSessionCleanupAggressiveMode = $AggressiveFreshSessionCleanup.IsPresent
+    $freshSessionCleanupAggressiveMode = $AggressiveFreshSessionCleanup.IsPresent -or $StrictSessionProof.IsPresent
 }
 
 # ── Step 3: Run screenshot client ───────────────────────────────────────────
-if (-not $SkipScreenshot.IsPresent) {
+if ((-not $SkipScreenshot.IsPresent) -and (-not $preflightBlockedConnectionAttempt)) {
     Write-Host "`n=== Step 3: Running screenshot client against ${Hostname}:${Port} ===" -ForegroundColor Cyan
 
     # Ensure WUDFRd is running on the VM right before the RDP connection.
+    $effectiveScreenshotTimeoutSeconds = [Math]::Max(
+        $ScreenshotTimeoutSeconds,
+        ($NoGraphicsTimeoutSeconds + $AfterFirstGraphicsSeconds + 10)
+    )
+
     # WUDFRd (UMDF kernel reflector) tends to stop when no UMDF devices are active.
     # If it's not running when TermService creates the IDD SWD device, the UMDF
     # driver fails with CM_PROB_FAILED_START and the session disconnects quickly.
     if ($Mode -eq 'Provider') {
         try {
-            $wudfSession = New-TestVmSession -Hostname $Hostname -Credential $adminCred
-            Invoke-Command -Session $wudfSession -ScriptBlock {
+            $iddOpenProbeSession = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+            Invoke-Command -Session $iddOpenProbeSession -ScriptBlock {
                 $svc = Get-Service -Name WUDFRd -ErrorAction SilentlyContinue
                 if ($null -ne $svc) {
                     if ($svc.StartType -ne 'Automatic') {
@@ -934,7 +1731,19 @@ if (-not $SkipScreenshot.IsPresent) {
                     foreach ($d in $stale) { pnputil /remove-device $d.InstanceId 2>$null | Out-Null }
                 }
             }
-            Remove-PSSession $wudfSession -ErrorAction SilentlyContinue
+
+            $iddOpenProbeJob = Invoke-Command -Session $iddOpenProbeSession -AsJob -ScriptBlock {
+                param($ProbeScriptPath, $ProbeLogPath, $ProbeScriptText, $ProbeRunSeconds, $ProbeInterfaceGuid)
+
+                New-Item -ItemType Directory -Path (Split-Path -Parent $ProbeScriptPath) -Force | Out-Null
+                Set-Content -LiteralPath $ProbeScriptPath -Value $ProbeScriptText -Encoding UTF8
+                Remove-Item -LiteralPath $ProbeLogPath -Force -ErrorAction SilentlyContinue
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ProbeScriptPath -LogPath $ProbeLogPath -RunSeconds $ProbeRunSeconds -InterfaceGuid $ProbeInterfaceGuid
+                if (Test-Path -LiteralPath $ProbeLogPath) {
+                    Get-Content -LiteralPath $ProbeLogPath -Raw -ErrorAction SilentlyContinue
+                }
+            } -ArgumentList $iddOpenProbeScriptFile, $iddOpenProbeLogFile, $iddOpenProbeScript, ([Math]::Max(90, [Math]::Max($ScreenshotTimeoutSeconds, ($NoGraphicsTimeoutSeconds + $AfterFirstGraphicsSeconds + 25)))), $iddOpenProbeInterfaceGuid
+            Write-Host "IDD open-path probe job started: $iddOpenProbeLogFile"
         } catch {
             Write-Warning "WUDFRd pre-connection check failed: $_"
         }
@@ -953,6 +1762,7 @@ if (-not $SkipScreenshot.IsPresent) {
         '-p', $rdpPasswordEffective,
         '--autologon', 'true',
         '-o', $OutputPng,
+        '--no-graphics-timeout-seconds', $NoGraphicsTimeoutSeconds,
         '--after-first-graphics-seconds', $AfterFirstGraphicsSeconds
     )
 
@@ -967,9 +1777,9 @@ if (-not $SkipScreenshot.IsPresent) {
     $proc = Start-Process -FilePath $screenshotExe -ArgumentList $screenshotArgs `
         -NoNewWindow -PassThru -RedirectStandardError $screenshotLog
 
-    $exited = $proc.WaitForExit($ScreenshotTimeoutSeconds * 1000)
+    $exited = $proc.WaitForExit($effectiveScreenshotTimeoutSeconds * 1000)
     if (-not $exited) {
-        Write-Warning "Screenshot client timed out after ${ScreenshotTimeoutSeconds}s -- killing"
+        Write-Warning "Screenshot client timed out after ${effectiveScreenshotTimeoutSeconds}s -- killing"
         $proc.Kill()
         $proc.WaitForExit(5000) | Out-Null
     }
@@ -999,15 +1809,28 @@ if (-not $SkipScreenshot.IsPresent) {
 Write-Host "`n=== Step 4: Collecting remote logs ===" -ForegroundColor Cyan
 
 try {
-    $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
-    try {
-        $remoteLogs = Invoke-Command -Session $session -ScriptBlock {
-            param($port, $securityStartTime, $mode, $dumpDir, $rdpUsernameForAudit)
+    $remoteLogs = $null
+    $logCollectionAttempts = 5
+
+    for ($logCollectionAttempt = 1; $logCollectionAttempt -le $logCollectionAttempts; $logCollectionAttempt++) {
+        $session = $null
+        try {
+            $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+            $remoteLogs = Invoke-Command -Session $session -ScriptBlock {
+            param($port, $securityStartTime, $mode, $dumpDir, $rdpUsernameForAudit, $iddRuntimeStatePath, $iddDebugTracePath, $iddOpenProbeLogPath)
             $result = @{}
             $logOut = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log'
             $logErr = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log'
-            $dllDebugLog = 'C:\IronRDPDeploy\logs\wts-provider-debug.log'
+            $dllDebugLogCandidates = @(
+                'C:\IronRDPDeploy\logs\wts-provider-debug.log',
+                'C:\Windows\Temp\wts-provider-debug.log'
+            )
+            $dllDebugLog = $null
+            $dllDebugLogLastWriteUtc = [datetime]::MinValue
+            $dllDebugLogLength = -1
+            $stdoutLines = @()
             $stdoutTail = $null
+            $dllLines = @()
 
             $result['security_4624_type10_user_count'] = 0
             $result['termsrv_fallback_marker_count'] = 0
@@ -1024,6 +1847,10 @@ try {
             $result['termsrv_idd_markers'] = ''
             $result['provider_logon_policy_marker_count'] = 0
             $result['provider_logon_policy_markers'] = ''
+            $result['provider_get_hardware_id_count'] = 0
+            $result['provider_on_driver_load_count'] = 0
+            $result['provider_assume_present_count'] = 0
+            $result['provider_video_handle_driver_load_count'] = 0
             $result['remote_connection_signal_count'] = 0
             $result['remote_graphics_signal_count'] = 0
             $result['remote_connection_signals'] = ''
@@ -1049,9 +1876,41 @@ try {
             $result['explorer_hang_event_count'] = 0
             $result['explorer_wer_event_count'] = 0
             $result['explorer_lifecycle_events'] = ''
+            $result['dll_debug_path'] = ''
+            $result['idd_open_probe'] = ''
 
             $termsrvSessionProofLines = @()
             $providerSessionProofLines = @()
+
+            foreach ($candidate in $dllDebugLogCandidates) {
+                if (-not (Test-Path $candidate)) {
+                    continue
+                }
+
+                $candidateLength = 0
+                $candidateLastWriteUtc = [datetime]::MinValue
+                try {
+                    $candidateInfo = Get-Item -LiteralPath $candidate -ErrorAction Stop
+                    $candidateLength = [int64]$candidateInfo.Length
+                    $candidateLastWriteUtc = $candidateInfo.LastWriteTimeUtc
+                }
+                catch {
+                    $candidateLength = 0
+                    $candidateLastWriteUtc = [datetime]::MinValue
+                }
+
+                if (($null -eq $dllDebugLog) -or
+                    ($candidateLastWriteUtc -gt $dllDebugLogLastWriteUtc) -or
+                    (($candidateLastWriteUtc -eq $dllDebugLogLastWriteUtc) -and ($candidateLength -gt $dllDebugLogLength))) {
+                    $dllDebugLog = $candidate
+                    $dllDebugLogLastWriteUtc = $candidateLastWriteUtc
+                    $dllDebugLogLength = $candidateLength
+                }
+            }
+
+            if ($null -ne $dllDebugLog) {
+                $result['dll_debug_path'] = [string]$dllDebugLog
+            }
 
             $targetUserName = $rdpUsernameForAudit
             if (-not [string]::IsNullOrWhiteSpace($targetUserName)) {
@@ -1064,33 +1923,37 @@ try {
             }
 
             if (Test-Path $logOut) {
-                $stdoutTail = Get-Content $logOut -Tail 5000 -ErrorAction SilentlyContinue
-                $result['stdout'] = ($stdoutTail | Select-Object -Last 150 | Out-String)
+                $stdoutLines = @(Get-Content $logOut -ErrorAction SilentlyContinue)
+                $stdoutTail = $stdoutLines | Select-Object -Last 200
+                $result['stdout'] = ($stdoutTail | Out-String)
+                $result['stdout_raw'] = ($stdoutLines | Out-String)
             }
             if (Test-Path $logErr) {
-                $result['stderr'] = Get-Content $logErr -Tail 50 -ErrorAction SilentlyContinue | Out-String
+                $stderrLines = @(Get-Content $logErr -ErrorAction SilentlyContinue)
+                $result['stderr'] = ($stderrLines | Select-Object -Last 80 | Out-String)
+                $result['stderr_raw'] = ($stderrLines | Out-String)
             }
-            if ($mode -eq 'Provider' -and $stdoutTail) {
+            if ($mode -eq 'Provider' -and $stdoutLines) {
                 $fallbackPatterns = @(
                     'falling back to guessed session',
                     'sending synthetic test pattern',
                     'falling back to in-process GDI',
                     'prelogon token fallback disabled after initial helper start'
                 )
-                $fallbackHits = $stdoutTail | Select-String -SimpleMatch -Pattern $fallbackPatterns -ErrorAction SilentlyContinue
+                $fallbackHits = $stdoutLines | Select-String -SimpleMatch -Pattern $fallbackPatterns -ErrorAction SilentlyContinue
                 if ($fallbackHits) {
                     $result['termsrv_fallback_marker_count'] = ($fallbackHits | Measure-Object).Count
                     $result['termsrv_fallback_markers'] = ($fallbackHits | Select-Object -Last 20 | ForEach-Object { $_.Line } | Out-String)
                 }
 
-                $termsrvSessionProofHits = $stdoutTail | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_TERMSRV_' -ErrorAction SilentlyContinue
+                $termsrvSessionProofHits = $stdoutLines | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_TERMSRV_' -ErrorAction SilentlyContinue
                 if ($termsrvSessionProofHits) {
                     $termsrvSessionProofLines = $termsrvSessionProofHits | ForEach-Object { $_.Line }
                     $result['termsrv_session_proof_marker_count'] = ($termsrvSessionProofHits | Measure-Object).Count
                     $result['termsrv_session_proof_markers'] = ($termsrvSessionProofLines | Select-Object -Last 40 | Out-String)
                 }
 
-                $termsrvShellBootstrapHits = $stdoutTail | Select-String -SimpleMatch -Pattern @(
+                $termsrvShellBootstrapHits = $stdoutLines | Select-String -SimpleMatch -Pattern @(
                     'SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ATTEMPT',
                     'SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_SUCCESS',
                     'SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ERROR'
@@ -1102,25 +1965,24 @@ try {
                     $result['termsrv_session_proof_markers'] = ($existing + $bootstrap)
                 }
 
-                $termsrvIddHits = $stdoutTail | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_TERMSRV_IDD_' -ErrorAction SilentlyContinue
+                $termsrvIddHits = $stdoutLines | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_TERMSRV_IDD_' -ErrorAction SilentlyContinue
                 if ($termsrvIddHits) {
                     $termsrvIddLines = $termsrvIddHits | ForEach-Object { $_.Line }
                     $result['termsrv_idd_marker_count'] = ($termsrvIddHits | Measure-Object).Count
                     $result['termsrv_idd_markers'] = ($termsrvIddLines | Select-Object -Last 40 | Out-String)
                 }
             }
-            if ($mode -eq 'Provider' -and (Test-Path $dllDebugLog)) {
+            if ($mode -eq 'Provider' -and $null -ne $dllDebugLog -and (Test-Path $dllDebugLog)) {
                 # The provider debug log can be extremely noisy due to polling. Capture a signal-focused view.
-                $dllTail = Get-Content $dllDebugLog -Tail 5000 -ErrorAction SilentlyContinue
+                $dllLines = @(Get-Content $dllDebugLog -ErrorAction SilentlyContinue)
                 $patterns = @(
                     'IWRdsProtocolManager::',
                     'IWRdsProtocolListener::',
                     'IWRdsProtocolListenerCallback::',
                     'IWRdsProtocolConnection::',
                     'SESSION_PROOF_PROVIDER_',
-                    'SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK',
+                    'SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_LOAD',
                     'IWRdsWddmIddProps::',
-                    'NotifyIddDriverLoaded',
                     'GetUserCredentials ok',
                     'NotifyCommandProcessCreated',
                     'IsUserAllowedToLogon',
@@ -1131,27 +1993,28 @@ try {
                     'PreDisconnect'
                 )
 
-                $result['dll_debug'] = ($dllTail | Select-Object -Last 200 | Out-String)
-                $matchLines = $dllTail | Select-String -SimpleMatch -Pattern $patterns -ErrorAction SilentlyContinue
+                $result['dll_debug'] = ($dllLines | Select-Object -Last 200 | Out-String)
+                $result['dll_debug_raw'] = ($dllLines | Out-String)
+                $matchLines = $dllLines | Select-String -SimpleMatch -Pattern $patterns -ErrorAction SilentlyContinue
                 if ($matchLines) {
                     $result['dll_debug_key'] = ($matchLines | Select-Object -Last 400 | ForEach-Object { $_.Line } | Out-String)
                 }
 
-                $providerSessionProofHits = $dllTail | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_PROVIDER_' -ErrorAction SilentlyContinue
+                $providerSessionProofHits = $dllLines | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_PROVIDER_' -ErrorAction SilentlyContinue
                 if ($providerSessionProofHits) {
                     $providerSessionProofLines = $providerSessionProofHits | ForEach-Object { $_.Line }
                     $result['provider_session_proof_marker_count'] = ($providerSessionProofHits | Measure-Object).Count
                     $result['provider_session_proof_markers'] = ($providerSessionProofLines | Select-Object -Last 40 | Out-String)
                 }
 
-                $providerVideoHandleHits = $dllTail | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_PROVIDER_VIDEO_HANDLE_' -ErrorAction SilentlyContinue
+                $providerVideoHandleHits = $dllLines | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_PROVIDER_VIDEO_HANDLE_' -ErrorAction SilentlyContinue
                 if ($providerVideoHandleHits) {
                     $providerVideoHandleLines = $providerVideoHandleHits | ForEach-Object { $_.Line }
                     $result['provider_video_handle_marker_count'] = ($providerVideoHandleHits | Measure-Object).Count
                     $result['provider_video_handle_markers'] = ($providerVideoHandleLines | Select-Object -Last 40 | Out-String)
                 }
 
-                $providerLogonPolicyHits = $dllTail | Select-String -SimpleMatch -Pattern @(
+                $providerLogonPolicyHits = $dllLines | Select-String -SimpleMatch -Pattern @(
                     'SESSION_PROOF_PROVIDER_SUPPRESS_LOGON_UI',
                     'SESSION_PROOF_PROVIDER_UNIVERSAL_APPS',
                     'SESSION_PROOF_PROVIDER_LOGON_GATE'
@@ -1162,24 +2025,42 @@ try {
                     $result['provider_logon_policy_markers'] = ($providerLogonPolicyLines | Select-Object -Last 40 | Out-String)
                 }
 
-                $iddLoadHit = $dllTail | Select-String -SimpleMatch -Pattern @(
-                    'SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_ACK',
-                    'NotifyIddDriverLoaded'
-                ) -ErrorAction SilentlyContinue | Select-Object -First 1
+                $iddLoadHit = $dllLines | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_LOAD' -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($iddLoadHit) {
                     $result['idd_driver_loaded_notified'] = $true
                 }
 
-                $iddWddmEnableHits = $dllTail | Select-String -SimpleMatch -Pattern 'IWRdsWddmIddProps::EnableWddmIdd enabled=true' -ErrorAction SilentlyContinue
+                $iddWddmEnableHits = $dllLines | Select-String -SimpleMatch -Pattern 'IWRdsWddmIddProps::EnableWddmIdd enabled=true' -ErrorAction SilentlyContinue
                 if ($iddWddmEnableHits) {
                     $result['idd_wddm_enabled_signal_count'] = ($iddWddmEnableHits | Measure-Object).Count
                 }
 
-                $notifyCommandProcessCreatedHits = $dllTail | Select-String -SimpleMatch -Pattern 'IWRdsProtocolConnection::NotifyCommandProcessCreated called' -ErrorAction SilentlyContinue
+                $notifyCommandProcessCreatedHits = $dllLines | Select-String -SimpleMatch -Pattern 'IWRdsProtocolConnection::NotifyCommandProcessCreated called' -ErrorAction SilentlyContinue
                 if ($notifyCommandProcessCreatedHits) {
                     $result['notify_command_process_created_count'] = ($notifyCommandProcessCreatedHits | Measure-Object).Count
                 } else {
                     $result['notify_command_process_created_count'] = 0
+                }
+
+                $providerGetHardwareIdHits = $dllLines | Select-String -Pattern "IWRdsWddmIddProps::GetHardwareId wrote 'IronRdpIdd'" -ErrorAction SilentlyContinue
+                if ($providerGetHardwareIdHits) {
+                    $result['provider_get_hardware_id_count'] = ($providerGetHardwareIdHits | Measure-Object).Count
+                }
+
+                $providerOnDriverLoadHits = $dllLines | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_LOAD' -ErrorAction SilentlyContinue
+                if ($providerOnDriverLoadHits) {
+                    $result['provider_on_driver_load_count'] = @($providerOnDriverLoadHits | Where-Object { $_.Line -match 'handle_nonzero=true' }).Count
+                }
+
+                $providerAssumePresentHits = $dllLines | Select-String -SimpleMatch -Pattern 'ASSUME_PRESENT' -ErrorAction SilentlyContinue
+                if ($providerAssumePresentHits) {
+                    $result['provider_assume_present_count'] = ($providerAssumePresentHits | Measure-Object).Count
+                }
+
+                $providerVideoHandleDriverLoadHits = $dllLines | Select-String -SimpleMatch -Pattern 'SESSION_PROOF_PROVIDER_VIDEO_HANDLE_SELECTED' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Line -match 'source=driver_load_callback' }
+                if ($providerVideoHandleDriverLoadHits) {
+                    $result['provider_video_handle_driver_load_count'] = ($providerVideoHandleDriverLoadHits | Measure-Object).Count
                 }
             }
 
@@ -1608,13 +2489,25 @@ try {
                 # Collect activation state because notification mode can block shell readiness.
                 try {
                     $windowsAppId = '{55c92734-d682-4d71-983e-d6ec3f16059f}'
-                    $license = Get-CimInstance -ClassName SoftwareLicensingProduct -ErrorAction SilentlyContinue |
-                        Where-Object { $_.ApplicationID -eq $windowsAppId -and $_.PartialProductKey } |
-                        Select-Object -First 1 LicenseStatus, LicenseStatusReason
-
+                    $activationSortOrder = @(
+                        @{ Expression = { if ($_.PartialProductKey) { 0 } else { 1 } } }
+                        @{ Expression = { if ([string]$_.Description -like 'Windows(R) Operating System*') { 0 } else { 1 } } }
+                        @{ Expression = { if ([string]$_.Name -like 'Windows(R), *edition') { 0 } else { 1 } } }
+                        @{ Expression = { if ([int]$_.LicenseStatus -eq 5) { 0 } else { 1 } } }
+                    )
+                    $licenseRows = @(Get-CimInstance -ClassName SoftwareLicensingProduct -ErrorAction SilentlyContinue |
+                        Where-Object { $_.ApplicationID -eq $windowsAppId })
+                    $license = if ($licenseRows.Count -gt 0) {
+                        @($licenseRows | Sort-Object -Property $activationSortOrder | Select-Object -First 1)[0]
+                    } else {
+                        $null
+                    }
                     if ($null -ne $license) {
                         $status = [int]$license.LicenseStatus
                         $result['activation_license_status'] = $status
+                        $result['activation_license_name'] = [string]$license.Name
+                        $result['activation_license_description'] = [string]$license.Description
+                        $result['activation_source'] = 'cim'
 
                         $reasonRaw = $license.LicenseStatusReason
                         if ($null -ne $reasonRaw) {
@@ -1627,12 +2520,58 @@ try {
 
                         # LicenseStatus=5 is notification mode.
                         $result['activation_notification_mode'] = ($status -eq 5)
+                    } elseif (Get-Command cscript.exe -ErrorAction SilentlyContinue) {
+                        $slmgrText = (& cscript.exe //NoLogo "$env:SystemRoot\System32\slmgr.vbs" /dlv 2>$null | Out-String)
+                        if (-not [string]::IsNullOrWhiteSpace($slmgrText)) {
+                            $result['activation_source'] = 'slmgr'
+
+                            if ($slmgrText -match '(?im)^License Status:\s*Notification\b') {
+                                $result['activation_license_status'] = 5
+                                $result['activation_notification_mode'] = $true
+                            } elseif ($slmgrText -match '(?im)^License Status:\s*Licensed\b') {
+                                $result['activation_license_status'] = 1
+                                $result['activation_notification_mode'] = $false
+                            }
+
+                            if ($slmgrText -match '(?im)^Notification Reason:\s*(0x[0-9A-F]+)') {
+                                $result['activation_license_status_reason_hex'] = $Matches[1].ToUpperInvariant()
+                            }
+                        }
                     }
                 } catch {
                     $result['activation_license_status'] = -1
                     $result['activation_license_status_reason_hex'] = ''
                     $result['activation_notification_mode'] = $false
                 }
+            }
+
+            $maxResultTextLength = 12000
+            $preserveFullTextKeys = @(
+                'stdout_raw',
+                'stderr_raw',
+                'dll_debug_raw'
+            )
+            foreach ($key in @($result.Keys)) {
+                $value = $result[$key]
+                if ($value -isnot [string]) {
+                    continue
+                }
+
+                if ($key -in $preserveFullTextKeys) {
+                    continue
+                }
+
+                if ($value.Length -le $maxResultTextLength) {
+                    continue
+                }
+
+                $headLength = [Math]::Min(4000, [Math]::Floor($maxResultTextLength / 2))
+                $tailLength = [Math]::Min(4000, $maxResultTextLength - $headLength)
+                $omittedLength = $value.Length - $headLength - $tailLength
+
+                $result[$key] = $value.Substring(0, $headLength) +
+                    "`n... [truncated $omittedLength characters] ...`n" +
+                    $value.Substring($value.Length - $tailLength, $tailLength)
             }
 
             $proc = Get-Process -Name 'ironrdp-termsrv' -ErrorAction SilentlyContinue
@@ -1648,15 +2587,39 @@ try {
                 $result['listening'] = $false
             }
 
+            if (Test-Path -LiteralPath $iddOpenProbeLogPath) {
+                $result['idd_open_probe'] = Get-Content -LiteralPath $iddOpenProbeLogPath -Tail 1000 -ErrorAction SilentlyContinue | Out-String
+            }
+
             $result
-        } -ArgumentList $Port, $testStartTime, $Mode, $dumpRemoteDir, $RdpUsername
+            } -ArgumentList $Port, $testStartTime, $Mode, $dumpRemoteDir, $RdpUsername, $iddRuntimeStateFile, $iddDebugTraceFile, $iddOpenProbeLogFile
+            break
+        }
+        catch {
+            if ($logCollectionAttempt -ge $logCollectionAttempts) {
+                throw
+            }
 
-        $remoteLogCollectionSucceeded = $true
+            Write-Warning "Remote log collection attempt $logCollectionAttempt/$logCollectionAttempts failed: $($_.Exception.Message)"
+            Start-Sleep -Seconds 3
+        }
+        finally {
+            if ($session) {
+                Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+            }
+        }
+    }
 
-        $isRunning = $remoteLogs['running']
-        $isListening = $remoteLogs['listening']
-        $remoteServiceRunning = [bool]$isRunning
-        $remotePortListening = [bool]$isListening
+    if ($null -eq $remoteLogs) {
+        throw "failed to collect remote logs after $logCollectionAttempts attempts"
+    }
+
+    $remoteLogCollectionSucceeded = $true
+
+    $isRunning = $remoteLogs['running']
+    $isListening = $remoteLogs['listening']
+    $remoteServiceRunning = [bool]$isRunning
+    $remotePortListening = [bool]$isListening
 
         if ($remoteLogs.ContainsKey('security_4624_type10_user_count')) {
             $securityLogonType10Count = [int]$remoteLogs['security_4624_type10_user_count']
@@ -1702,6 +2665,18 @@ try {
         }
         if ($remoteLogs.ContainsKey('provider_logon_policy_markers')) {
             $providerLogonPolicyMarkers = [string]$remoteLogs['provider_logon_policy_markers']
+        }
+        if ($remoteLogs.ContainsKey('provider_get_hardware_id_count')) {
+            $providerGetHardwareIdCount = [int]$remoteLogs['provider_get_hardware_id_count']
+        }
+        if ($remoteLogs.ContainsKey('provider_on_driver_load_count')) {
+            $providerOnDriverLoadCount = [int]$remoteLogs['provider_on_driver_load_count']
+        }
+        if ($remoteLogs.ContainsKey('provider_assume_present_count')) {
+            $providerAssumePresentCount = [int]$remoteLogs['provider_assume_present_count']
+        }
+        if ($remoteLogs.ContainsKey('provider_video_handle_driver_load_count')) {
+            $providerVideoHandleDriverLoadCount = [int]$remoteLogs['provider_video_handle_driver_load_count']
         }
         if ($remoteLogs.ContainsKey('notify_command_process_created_count')) {
             $notifyCommandProcessCreatedCount = [int]$remoteLogs['notify_command_process_created_count']
@@ -1796,6 +2771,9 @@ try {
         if ($remoteLogs.ContainsKey('explorer_lifecycle_events')) {
             $explorerLifecycleEvents = [string]$remoteLogs['explorer_lifecycle_events']
         }
+        if ($remoteLogs.ContainsKey('idd_open_probe')) {
+            $iddOpenProbeText = [string]$remoteLogs['idd_open_probe']
+        }
 
         Write-Host "Service running: $isRunning$(if ($isRunning) { " (PID $($remoteLogs['pid']))" })"
         Write-Host "Port $Port listening: $isListening"
@@ -1803,18 +2781,39 @@ try {
         $remoteLogDir = Join-Path $artifactsDir "remote-logs-$timestamp"
         New-Item -ItemType Directory -Path $remoteLogDir -Force | Out-Null
 
+        if ($Mode -eq 'Provider') {
+            $helperLogSession = $null
+            try {
+                $helperLogSession = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+                foreach ($pattern in @('C:\IronRDPDeploy\logs\capture-helper-*.log', 'C:\IronRDPDeploy\logs\capture-helper-early-*.txt')) {
+                    Copy-Item -FromSession $helperLogSession -Path $pattern -Destination $remoteLogDir -Force -ErrorAction SilentlyContinue
+                }
+            }
+            catch {
+                Write-Warning "Failed to collect capture-helper logs: $_"
+            }
+            finally {
+                if ($null -ne $helperLogSession) {
+                    Remove-PSSession -Session $helperLogSession -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
         if ($remoteLogs['stdout']) {
-            $remoteLogs['stdout'] | Set-Content (Join-Path $remoteLogDir 'ironrdp-termsrv.log')
+            $termsrvLogArtifact = if ($remoteLogs['stdout_raw']) { $remoteLogs['stdout_raw'] } else { $remoteLogs['stdout'] }
+            $termsrvLogArtifact | Set-Content (Join-Path $remoteLogDir 'ironrdp-termsrv.log')
             Write-Host "`n---- ironrdp-termsrv.log (tail) ----" -ForegroundColor Yellow
             Write-Host $remoteLogs['stdout']
         }
         if ($remoteLogs['stderr']) {
-            $remoteLogs['stderr'] | Set-Content (Join-Path $remoteLogDir 'ironrdp-termsrv.err.log')
+            $termsrvErrLogArtifact = if ($remoteLogs['stderr_raw']) { $remoteLogs['stderr_raw'] } else { $remoteLogs['stderr'] }
+            $termsrvErrLogArtifact | Set-Content (Join-Path $remoteLogDir 'ironrdp-termsrv.err.log')
             Write-Host "`n---- ironrdp-termsrv.err.log (tail) ----" -ForegroundColor Yellow
             Write-Host $remoteLogs['stderr']
         }
         if ($remoteLogs['dll_debug']) {
-            $remoteLogs['dll_debug'] | Set-Content (Join-Path $remoteLogDir 'wts-provider-debug.log')
+            $providerLogArtifact = if ($remoteLogs['dll_debug_raw']) { $remoteLogs['dll_debug_raw'] } else { $remoteLogs['dll_debug'] }
+            $providerLogArtifact | Set-Content (Join-Path $remoteLogDir 'wts-provider-debug.log')
             Write-Host "`n---- wts-provider-debug.log (tail) ----" -ForegroundColor Magenta
             Write-Host $remoteLogs['dll_debug']
 
@@ -1872,7 +2871,7 @@ try {
 
         if ($Mode -eq 'Provider') {
             Write-Host "Interactive proof signals: Security4624Type10=$securityLogonType10Count RemoteConnection261=$remoteConnectionSignalCount RemoteGraphics263=$remoteGraphicsSignalCount"
-            Write-Host "IDD diagnostics signals: NotifyIddDriverLoaded=$iddDriverLoadedNotified ProviderEnableWddmIdd=$iddWddmEnabledSignalCount ProviderVideoHandleMarkers=$providerVideoHandleMarkerCount TermsrvIddMarkers=$termsrvIddMarkerCount ProviderLogonPolicyMarkers=$providerLogonPolicyMarkerCount"
+            Write-Host "IDD diagnostics signals: OnDriverLoad=$providerOnDriverLoadCount GetHardwareId=$providerGetHardwareIdCount ProviderEnableWddmIdd=$iddWddmEnabledSignalCount DriverLoadVideoHandle=$providerVideoHandleDriverLoadCount AssumePresent=$providerAssumePresentCount ProviderVideoHandleMarkers=$providerVideoHandleMarkerCount TermsrvIddMarkers=$termsrvIddMarkerCount ProviderLogonPolicyMarkers=$providerLogonPolicyMarkerCount"
             Write-Host "Shell transition signals: NotifyCommandProcessCreated=$notifyCommandProcessCreatedCount"
             Write-Host "Environment signals: ActivationStatus=$activationLicenseStatus NotificationMode=$activationNotificationMode Reason=$activationLicenseStatusReasonHex"
             Write-Host "GUI session proof: TargetSessionId=$guiTargetSessionId Source=$guiTargetSessionSource Explorer=$guiTargetSessionExplorerCount GuiProcesses=$guiTargetSessionGuiProcessCount Winlogon=$guiTargetSessionWinlogonCount LogonUI=$guiTargetSessionLogonUiCount"
@@ -1898,6 +2897,92 @@ try {
                 $explorerLifecycleEvents | Set-Content (Join-Path $remoteLogDir 'explorer-lifecycle-events.log')
                 Write-Host "`n---- explorer lifecycle events (Application log) ----" -ForegroundColor Yellow
                 Write-Host $explorerLifecycleEvents
+            }
+            if (-not [string]::IsNullOrWhiteSpace($iddOpenProbeText)) {
+                $iddOpenProbeText | Set-Content (Join-Path $remoteLogDir 'idd-open-probe.log')
+                Write-Host "`n---- IDD open-path probe ----" -ForegroundColor Cyan
+                Write-Host $iddOpenProbeText
+            }
+        }
+
+        if ($Mode -eq 'Provider') {
+            $providerCustomVideoSourceSelected = (-not [string]::IsNullOrWhiteSpace($providerVideoHandleMarkers)) -and ($providerVideoHandleMarkers -match 'source=driver_load_callback')
+            $providerManualVideoSourceSelected = (-not [string]::IsNullOrWhiteSpace($providerVideoHandleMarkers)) -and ($providerVideoHandleMarkers -match 'source=ironrdp_idd')
+            $providerFallbackVideoSourceSelected = (-not [string]::IsNullOrWhiteSpace($providerVideoHandleMarkers)) -and ($providerVideoHandleMarkers -match 'source=rdp_video_miniport')
+
+            try {
+                $iddDiagnostics = Invoke-Command -Session $session -ScriptBlock {
+                    param($RuntimeStateFile, $DebugTraceFile)
+
+                    $result = @{}
+                    $result['runtime_config'] = if (Test-Path -LiteralPath $RuntimeStateFile) { Get-Content -LiteralPath $RuntimeStateFile -Raw } else { '' }
+                    $result['debug_trace'] = if (Test-Path -LiteralPath $DebugTraceFile) { Get-Content -LiteralPath $DebugTraceFile -Raw -ErrorAction SilentlyContinue } else { '' }
+
+                    try {
+                        $iddDevices = @(Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
+                            Where-Object { $_.FriendlyName -like 'IronRDP Indirect Display*' -or $_.InstanceId -like '*IronRdpIdd*' })
+                        $result['device_inventory'] = if ($iddDevices.Count -gt 0) {
+                            $iddDevices | Select-Object Status, Class, FriendlyName, InstanceId, Present | Format-Table -AutoSize | Out-String
+                        } else {
+                            ''
+                        }
+                    } catch {
+                        $result['device_inventory'] = "Could not collect IDD device inventory: $_"
+                    }
+
+                    try {
+                        $driverEnumLines = @(& pnputil /enum-drivers 2>$null)
+                        $result['driver_inventory'] = if ($driverEnumLines.Count -gt 0) {
+                            ($driverEnumLines | Select-String -Pattern 'IronRdpIdd|IronRDP Project|Published Name:|Original Name:|Provider Name:|Class Name:' -Context 0,2 | ForEach-Object {
+                                if ($_.Context.PostContext.Count -gt 0) {
+                                    @($_.Line) + $_.Context.PostContext
+                                } else {
+                                    $_.Line
+                                }
+                            }) | Out-String
+                        } else {
+                            ''
+                        }
+                    } catch {
+                        $result['driver_inventory'] = "Could not collect IDD driver inventory: $_"
+                    }
+
+                    $result
+                } -ArgumentList $iddRuntimeStateFile, $iddDebugTraceFile
+
+                $iddRuntimeConfigText = [string]$iddDiagnostics['runtime_config']
+                $iddDebugTraceText = [string]$iddDiagnostics['debug_trace']
+                $iddDeviceInventory = [string]$iddDiagnostics['device_inventory']
+                $iddDriverInventory = [string]$iddDiagnostics['driver_inventory']
+                $providerHardwareIdCustom = (-not [string]::IsNullOrWhiteSpace($iddRuntimeConfigText)) -and ($iddRuntimeConfigText -match '(?m)^hardware_id=IronRdpIdd$')
+                $providerHardwareIdCustom = $providerHardwareIdCustom -and ($providerGetHardwareIdCount -ge 1)
+                $iddMonitorArrivalMarkerCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_MONITOR_ARRIVED').Count
+                $iddDisplayConfigUpdateRequestCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_REQUEST').Count
+                $iddDisplayConfigUpdateSuccessCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_RESULT[^\r\n]*status=0x00000000').Count
+                $iddCommitModesMarkerCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_COMMIT_MODES').Count
+                $iddCommitModesActivePathCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_COMMIT_MODES[^\r\n]*active_paths=([1-9]\d*)').Count
+                $iddSwapchainAssignedCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_SWAPCHAIN_ASSIGNED').Count
+                $iddSessionReadyMarkerCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_SESSION_READY_FOR_CAPTURE').Count
+                $iddFirstFrameMarkerCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_FIRST_FRAME').Count
+
+                if (-not [string]::IsNullOrWhiteSpace($iddRuntimeConfigText)) {
+                    $iddRuntimeConfigText | Set-Content (Join-Path $remoteLogDir 'idd-runtime-config.txt')
+                }
+                if (-not [string]::IsNullOrWhiteSpace($iddDebugTraceText)) {
+                    $iddDebugTraceText | Set-Content (Join-Path $remoteLogDir 'idd-debug-trace.log')
+                    Write-Host "`n---- IDD debug trace ----" -ForegroundColor Cyan
+                    Write-Host $iddDebugTraceText
+                }
+                if (-not [string]::IsNullOrWhiteSpace($iddDeviceInventory)) {
+                    $iddDeviceInventory | Set-Content (Join-Path $remoteLogDir 'idd-device-inventory.log')
+                }
+                if (-not [string]::IsNullOrWhiteSpace($iddDriverInventory)) {
+                    $iddDriverInventory | Set-Content (Join-Path $remoteLogDir 'idd-driver-inventory.log')
+                }
+
+                Write-Host "IDD strict proof signals: HardwareIdCustom=$providerHardwareIdCustom GetHardwareId=$providerGetHardwareIdCount OnDriverLoad=$providerOnDriverLoadCount DriverLoadVideoHandle=$providerVideoHandleDriverLoadCount AssumePresent=$providerAssumePresentCount VideoSourceDriverLoad=$providerCustomVideoSourceSelected VideoSourceManual=$providerManualVideoSourceSelected VideoSourceFallback=$providerFallbackVideoSourceSelected MonitorArrived=$iddMonitorArrivalMarkerCount DisplayConfigRequest=$iddDisplayConfigUpdateRequestCount DisplayConfigSuccess=$iddDisplayConfigUpdateSuccessCount CommitModes=$iddCommitModesMarkerCount CommitModesActive=$iddCommitModesActivePathCount SwapchainAssigned=$iddSwapchainAssignedCount SessionReady=$iddSessionReadyMarkerCount FirstFrame=$iddFirstFrameMarkerCount"
+            } catch {
+                Write-Warning "Failed to collect IDD diagnostics: $_"
             }
         }
 
@@ -1959,14 +3044,76 @@ try {
         } catch {
             Write-Warning "Failed to download bitmap dumps: $_"
         }
-    }
-    finally {
-        Remove-PSSession -Session $session
-    }
+
+        if ($Mode -eq 'Provider') {
+            try {
+                New-Item -ItemType Directory -Path $iddDumpLocalDir -Force | Out-Null
+
+                $remoteHasIddDump = Invoke-Command -Session $session -ScriptBlock {
+                    param($DumpDir)
+                    Test-Path -LiteralPath $DumpDir
+                } -ArgumentList $iddDumpRemoteDir
+
+                if ($remoteHasIddDump) {
+                    Copy-Item -FromSession $session -Path (Join-Path $iddDumpRemoteDir '*') -Destination $iddDumpLocalDir -Recurse -Force -ErrorAction SilentlyContinue
+                    $iddBmps = @(Get-ChildItem -LiteralPath $iddDumpLocalDir -Filter '*.bmp' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+                    $iddDumpCount = ($iddBmps | Measure-Object).Count
+                    if ($iddDumpCount -gt 0) {
+                        $iddSessionIds = @()
+                        foreach ($bmp in $iddBmps) {
+                            if ($bmp.Name -match 'idd-swapchain-s(\d+)-f\d+-\d+\.bmp') {
+                                $iddSessionIds += [int]$Matches[1]
+                            }
+                        }
+
+                        if ($iddSessionIds.Count -gt 0) {
+                            $iddObservedSessionIds = @($iddSessionIds | Sort-Object -Unique)
+                            if ($null -ne $guiTargetSessionId) {
+                                $iddTargetSessionMatchCount = @($iddSessionIds | Where-Object { $_ -eq $guiTargetSessionId }).Count
+                                $iddTargetSessionHasGraphics = ($iddTargetSessionMatchCount -ge 1)
+                            }
+                        }
+
+                        if (($null -ne $securityLogonType10Count) -and ($securityLogonType10Count -ge 1) -and $guiTargetSessionResolved -and $iddTargetSessionHasGraphics) {
+                            $type10IddGraphicsSessionConfirmed = $true
+                            $type10GraphicsSessionConfirmed = $true
+                        }
+
+                        $bitmapDumpCount = $iddDumpCount
+                        $bitmapObservedSessionIds = $iddObservedSessionIds
+                        $bitmapTargetSessionMatchCount = $iddTargetSessionMatchCount
+                        $bitmapTargetSessionHasGraphics = $iddTargetSessionHasGraphics
+
+                        $latestIddDump = $iddBmps | Select-Object -First 1
+                        Copy-Item -LiteralPath $latestIddDump.FullName -Destination (Join-Path $artifactsDir 'latest-idd-bitmap-dump.bmp') -Force
+                        Write-Host "`nIDD bitmap dumps: $iddDumpCount file(s) downloaded to $iddDumpLocalDir" -ForegroundColor Green
+                        Write-Host "Latest IDD dump: $($latestIddDump.Name) ($([math]::Round($latestIddDump.Length / 1MB, 2)) MB)" -ForegroundColor Green
+                    } else {
+                        Write-Host "`nIDD bitmap dumps: directory exists but no .bmp files were found at $iddDumpLocalDir" -ForegroundColor Yellow
+                    }
+                } else {
+                    Write-Host "`nIDD bitmap dumps: remote dump directory not present: $iddDumpRemoteDir" -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Warning "Failed to download IDD bitmap dumps: $_"
+            }
+        }
 } catch {
     Write-Warning "Failed to collect remote logs: $_"
     if ($StrictSessionProof.IsPresent) {
         throw
+    }
+} finally {
+    if ($null -ne $iddOpenProbeJob) {
+        Wait-Job -Job $iddOpenProbeJob -Timeout 5 | Out-Null
+        Receive-Job -Job $iddOpenProbeJob -Keep -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Job $iddOpenProbeJob -Force -ErrorAction SilentlyContinue
+        $iddOpenProbeJob = $null
+    }
+
+    if ($null -ne $iddOpenProbeSession) {
+        Remove-PSSession -Session $iddOpenProbeSession -ErrorAction SilentlyContinue
+        $iddOpenProbeSession = $null
     }
 }
 
@@ -1989,7 +3136,7 @@ if ($Mode -eq 'Provider') {
         'failed'
     }
 
-    Write-Host "Fresh cleanup: status=$cleanupStatus aggressive=$freshSessionCleanupAggressiveMode target_user=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupTargetUser)) { 'n/a' } else { $freshSessionCleanupTargetUser }) discovered=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupDiscoveredSessionIds)) { 'none' } else { $freshSessionCleanupDiscoveredSessionIds }) logged_off=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupLoggedOffSessionIds)) { 'none' } else { $freshSessionCleanupLoggedOffSessionIds })"
+    Write-Host "Fresh cleanup: status=$cleanupStatus aggressive=$freshSessionCleanupAggressiveMode target_user=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupTargetUser)) { 'n/a' } else { $freshSessionCleanupTargetUser }) discovered=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupDiscoveredSessionIds)) { 'none' } else { $freshSessionCleanupDiscoveredSessionIds }) logged_off=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupLoggedOffSessionIds)) { 'none' } else { $freshSessionCleanupLoggedOffSessionIds }) reset=$(if ([string]::IsNullOrWhiteSpace($freshSessionCleanupResetSessionIds)) { 'none' } else { $freshSessionCleanupResetSessionIds })"
 
     if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupExplorerMatches)) {
         $freshSessionCleanupExplorerMatches | Set-Content (Join-Path $artifactsDir 'fresh-session-cleanup-explorer-matches.log')
@@ -1999,8 +3146,20 @@ if ($Mode -eq 'Provider') {
         $freshSessionCleanupQuserMatches | Set-Content (Join-Path $artifactsDir 'fresh-session-cleanup-quser-matches.log')
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupWinstaMatches)) {
+        $freshSessionCleanupWinstaMatches | Set-Content (Join-Path $artifactsDir 'fresh-session-cleanup-qwinsta-matches.log')
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupSuspiciousSessionMatches)) {
+        $freshSessionCleanupSuspiciousSessionMatches | Set-Content (Join-Path $artifactsDir 'fresh-session-cleanup-suspicious-sessions.log')
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupLogoffErrors)) {
         $freshSessionCleanupLogoffErrors | Set-Content (Join-Path $artifactsDir 'fresh-session-cleanup-logoff-errors.log')
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupResetErrors)) {
+        $freshSessionCleanupResetErrors | Set-Content (Join-Path $artifactsDir 'fresh-session-cleanup-reset-errors.log')
     }
 
     if (-not [string]::IsNullOrWhiteSpace($freshSessionCleanupError)) {
@@ -2014,7 +3173,16 @@ $hasMeaningfulContent = $false
 $analysisSucceeded = $false
 $analysisMessage = ''
 
-if ($screenshotExists) {
+if ($preflightBlockedConnectionAttempt) {
+    $blockedReason = if ($preflightIssues.Count -gt 0) {
+        $preflightIssues -join '; '
+    } elseif ($activationNotificationMode) {
+        "Windows activation notification mode is enabled (LicenseStatus=$activationLicenseStatus, Reason=$activationLicenseStatusReasonHex)"
+    } else {
+        'connection attempt skipped by preflight gate'
+    }
+    Write-Host "RESULT: BLOCKED ($blockedReason)" -ForegroundColor Yellow
+} elseif ($screenshotExists) {
     $screenshotFileInfo = Get-Item $OutputPng
 
     try {
@@ -2082,6 +3250,15 @@ if ($screenshotExists) {
 }
 
 if ($StrictSessionProof.IsPresent) {
+    if ($preflightBlockedConnectionAttempt -and ($preflightIssues.Count -gt 0)) {
+        Write-Host "STRICT RESULT: BLOCKED" -ForegroundColor Yellow
+        foreach ($issue in $preflightIssues) {
+            Write-Host "  - $issue" -ForegroundColor Yellow
+        }
+
+        throw "strict session proof blocked by preflight gate failure(s)"
+    }
+
     $strictFailures = New-Object System.Collections.Generic.List[string]
 
     if (-not $screenshotExists) {
@@ -2096,6 +3273,12 @@ if ($StrictSessionProof.IsPresent) {
 
     if (-not $remoteLogCollectionSucceeded) {
         $strictFailures.Add('remote log collection failed')
+    }
+
+    if ($preflightIssues.Count -gt 0) {
+        foreach ($issue in $preflightIssues) {
+            $strictFailures.Add("preflight gate failed: $issue")
+        }
     }
 
     if ($Mode -eq 'Provider') {
@@ -2138,15 +3321,79 @@ if ($StrictSessionProof.IsPresent) {
             $strictFailures.Add("GUI session gate failed: explorer.exe not observed in target session $guiTargetSessionId (source=$guiTargetSessionSource, explorer=$guiTargetSessionExplorerCount, gui_processes=$guiTargetSessionGuiProcessCount, winlogon=$guiTargetSessionWinlogonCount, logonui=$guiTargetSessionLogonUiCount)")
         }
 
-        if ($bitmapDumpCount -lt 1) {
-            $strictFailures.Add('no bitmap dumps were downloaded')
-        } elseif ($guiTargetSessionResolved -and (-not $bitmapTargetSessionHasGraphics)) {
-            $observedBitmapSessions = if ($bitmapObservedSessionIds.Count -gt 0) { $bitmapObservedSessionIds -join ',' } else { 'none' }
-            $strictFailures.Add("graphics-session proof missing: no bitmap dump matched target session id $guiTargetSessionId (observed_bitmap_sessions=$observedBitmapSessions)")
+        if (-not $providerHardwareIdCustom) {
+            $strictFailures.Add('custom IDD hardware id was not confirmed in runtime state')
         }
 
-        if (-not $type10GraphicsSessionConfirmed) {
-            $strictFailures.Add("mandatory type10+graphics proof missing: Security4624Type10=$securityLogonType10Count target_session=$guiTargetSessionId bitmap_matches=$bitmapTargetSessionMatchCount")
+        if ($providerGetHardwareIdCount -lt 1) {
+            $strictFailures.Add('custom IDD hardware id callback was not observed in provider logs')
+        }
+
+        if ($providerOnDriverLoadCount -lt 1) {
+            $strictFailures.Add('OnDriverLoad(session, nonzero_handle) was not observed in provider logs')
+        }
+
+        if (-not $providerCustomVideoSourceSelected) {
+            $strictFailures.Add('provider did not return the OnDriverLoad handle from GetVideoHandle')
+        }
+
+        if ($providerVideoHandleDriverLoadCount -lt 1) {
+            $strictFailures.Add('provider did not log a GetVideoHandle selection sourced from OnDriverLoad')
+        }
+
+        if ($providerManualVideoSourceSelected) {
+            $strictFailures.Add('provider selected a manual custom-device video source instead of the OnDriverLoad handle')
+        }
+
+        if ($providerFallbackVideoSourceSelected) {
+            $strictFailures.Add('provider fell back to rdp_video_miniport')
+        }
+
+        if ($providerAssumePresentCount -gt 0) {
+            $strictFailures.Add("provider emitted synthetic ASSUME_PRESENT markers (count=$providerAssumePresentCount)")
+        }
+
+        if ($iddMonitorArrivalMarkerCount -lt 1) {
+            $strictFailures.Add('IDD monitor-arrival marker was not observed in the custom IDD debug trace')
+        }
+
+        if ($iddDisplayConfigUpdateRequestCount -lt 1) {
+            $strictFailures.Add('IddCxDisplayConfigUpdate request marker was not observed in the custom IDD debug trace')
+        }
+
+        if ($iddDisplayConfigUpdateSuccessCount -lt 1) {
+            $strictFailures.Add('IddCxDisplayConfigUpdate success marker was not observed in the custom IDD debug trace')
+        }
+
+        if ($iddCommitModesMarkerCount -lt 1) {
+            $strictFailures.Add('CommitModes marker was not observed in the custom IDD debug trace')
+        }
+
+        if ($iddCommitModesActivePathCount -lt 1) {
+            $strictFailures.Add('CommitModes never reported an active display path in the custom IDD debug trace')
+        }
+
+        if ($iddSwapchainAssignedCount -lt 1) {
+            $strictFailures.Add('swapchain assignment marker was not observed in the custom IDD debug trace')
+        }
+
+        if ($iddSessionReadyMarkerCount -lt 1) {
+            $strictFailures.Add('IDD session-ready marker was not observed in the custom IDD debug trace')
+        }
+
+        if ($iddFirstFrameMarkerCount -lt 1) {
+            $strictFailures.Add('IDD first-frame marker was not observed in the custom IDD debug trace')
+        }
+
+        if ($iddDumpCount -lt 1) {
+            $strictFailures.Add('no custom IDD bitmap dumps were downloaded')
+        } elseif ($guiTargetSessionResolved -and (-not $iddTargetSessionHasGraphics)) {
+            $observedBitmapSessions = if ($iddObservedSessionIds.Count -gt 0) { $iddObservedSessionIds -join ',' } else { 'none' }
+            $strictFailures.Add("graphics-session proof missing: no custom IDD bitmap dump matched target session id $guiTargetSessionId (observed_idd_sessions=$observedBitmapSessions)")
+        }
+
+        if (-not $type10IddGraphicsSessionConfirmed) {
+            $strictFailures.Add("mandatory type10+custom-idd-graphics proof missing: Security4624Type10=$securityLogonType10Count target_session=$guiTargetSessionId idd_bitmap_matches=$iddTargetSessionMatchCount")
         }
 
         if ($null -eq $providerVideoHandleMarkerCount) {
@@ -2161,9 +3408,15 @@ if ($StrictSessionProof.IsPresent) {
             $strictFailures.Add('provider logon-policy marker count was not collected')
         }
 
-        $hasIddDiagnosticsSignal = $iddDriverLoadedNotified -or (($null -ne $iddWddmEnabledSignalCount) -and ($iddWddmEnabledSignalCount -ge 1)) -or (($null -ne $remoteGraphicsSignalCount) -and ($remoteGraphicsSignalCount -ge 1)) -or (($null -ne $providerVideoHandleMarkerCount) -and ($providerVideoHandleMarkerCount -ge 1)) -or (($null -ne $termsrvIddMarkerCount) -and ($termsrvIddMarkerCount -ge 1))
+        $hasIddDiagnosticsSignal = (($providerOnDriverLoadCount -ge 1) -or $iddDriverLoadedNotified) -or
+            (($null -ne $iddWddmEnabledSignalCount) -and ($iddWddmEnabledSignalCount -ge 1)) -or
+            (($null -ne $providerVideoHandleMarkerCount) -and ($providerVideoHandleMarkerCount -ge 1)) -or
+            (($null -ne $termsrvIddMarkerCount) -and ($termsrvIddMarkerCount -ge 1)) -or
+            ($iddDisplayConfigUpdateRequestCount -ge 1) -or
+            ($iddCommitModesMarkerCount -ge 1) -or
+            ($iddSwapchainAssignedCount -ge 1)
         if (-not $hasIddDiagnosticsSignal) {
-            $strictFailures.Add("IDD diagnostics gate missing (NotifyIddDriverLoaded=$iddDriverLoadedNotified, ProviderEnableWddmIdd=$iddWddmEnabledSignalCount, ProviderVideoHandleMarkers=$providerVideoHandleMarkerCount, TermsrvIddMarkers=$termsrvIddMarkerCount, RemoteGraphics263=$remoteGraphicsSignalCount)")
+            $strictFailures.Add("IDD diagnostics gate missing (OnDriverLoad=$providerOnDriverLoadCount, ProviderEnableWddmIdd=$iddWddmEnabledSignalCount, ProviderVideoHandleMarkers=$providerVideoHandleMarkerCount, TermsrvIddMarkers=$termsrvIddMarkerCount, DisplayConfigRequest=$iddDisplayConfigUpdateRequestCount, CommitModes=$iddCommitModesMarkerCount, SwapchainAssigned=$iddSwapchainAssignedCount)")
         }
 
         if ($activationNotificationMode) {
@@ -2182,3 +3435,15 @@ if ($StrictSessionProof.IsPresent) {
 
     Write-Host "STRICT RESULT: PASS" -ForegroundColor Green
 }
+
+
+
+
+
+
+
+
+
+
+
+
