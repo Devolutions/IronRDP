@@ -25,6 +25,8 @@ The full IronRDP transport/data-plane integration is still in progress.
   - Expected RDP credentials used for authentication.
   - When `IRONRDP_RDP_USERNAME` + `IRONRDP_RDP_PASSWORD` are set, the server advertises Hybrid security (CredSSP/NLA).
   - When unset, the server falls back to TLS-only.
+  - Use down-level names as `IRONRDP_RDP_USERNAME=Administrator` with `IRONRDP_RDP_DOMAIN=IT-HELP`.
+  - For UPNs, keep the full UPN in `IRONRDP_RDP_USERNAME` and leave `IRONRDP_RDP_DOMAIN` empty.
 
 ## Build
 
