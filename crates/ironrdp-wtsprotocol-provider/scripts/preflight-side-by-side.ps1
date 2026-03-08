@@ -45,6 +45,24 @@ $providerDllPathResolved = (Resolve-Path -LiteralPath $ProviderDllPath).Path
 $termService = Get-Service -Name "TermService" -ErrorAction Stop
 $terminalServerKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
 $terminalServerProps = Get-ItemProperty -LiteralPath $terminalServerKey -ErrorAction Stop
+
+$currentVersion = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
+$productName = if ($null -ne $currentVersion) { [string]$currentVersion.ProductName } else { '' }
+$installationType = if ($null -ne $currentVersion) { [string]$currentVersion.InstallationType } else { '' }
+$isWindowsServer = ($installationType -eq 'Server') -or ($productName -like 'Windows Server*')
+$rdsSessionHostInstalled = $true
+
+if ($isWindowsServer) {
+    if (-not (Get-Command -Name Get-WindowsFeature -ErrorAction SilentlyContinue)) {
+        throw 'Get-WindowsFeature is unavailable on this Windows Server host; cannot verify RDS-RD-Server'
+    }
+
+    $rdsSessionHost = Get-WindowsFeature -Name 'RDS-RD-Server' -ErrorAction Stop
+    $rdsSessionHostInstalled = [bool]$rdsSessionHost.Installed
+    if (-not $rdsSessionHostInstalled) {
+        throw 'Remote Desktop Session Host (RDS-RD-Server) is not installed on this Windows Server host'
+    }
+}
 $denyTsConnections = [int]$terminalServerProps.fDenyTSConnections
 
 if ($denyTsConnections -ne 0) {
@@ -99,6 +117,10 @@ Write-Host "Preflight checks passed"
 Write-Host "  elevated session: yes"
 Write-Host "  provider dll: $providerDllPathResolved"
 Write-Host "  termservice state: $($termService.Status)"
+Write-Host "  product name: $productName"
+Write-Host "  installation type: $installationType"
+Write-Host "  windows server host: $isWindowsServer"
+Write-Host "  RDS-RD-Server installed: $rdsSessionHostInstalled"
 Write-Host "  remote desktop enabled: yes"
 Write-Host "  rdp tcp transport keys: $rdpTransportDetails"
 Write-Host "  source listener key: $sourceListener"

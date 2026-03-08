@@ -21,9 +21,12 @@ PnpLockdown=1
 
 ; DDInstall section: copy DLL and include WDF base requirements.
 [IronRdpIdd_Device.NT]
-CopyFiles=UmdfCopyFiles
+CopyFiles=UMDriverCopy
 Include=wudfrd.inf
 Needs=WUDFRD.NT
+
+[IronRdpIdd_Device.NT.Interfaces]
+AddInterface={1EA642E3-6A78-4F4B-9A19-2EB4F0F33B82},,IronRdpIdd_Interface
 
 ; HW section: include WDF HW requirements.
 [IronRdpIdd_Device.NT.HW]
@@ -36,7 +39,13 @@ HKR,,FriendlyName,,%DeviceDesc%
 HKR,, "UpperFilters",  %REG_MULTI_SZ%, "IndirectKmd"
 HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;LS)(A;;GA;;;NS)(A;;GRGW;;;WD)"
 
-[UmdfCopyFiles]
+[IronRdpIdd_Interface]
+AddReg=IronRdpIdd_Interface_AddReg
+
+[IronRdpIdd_Interface_AddReg]
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;LS)(A;;GA;;;NS)(A;;GRGW;;;WD)"
+
+[UMDriverCopy]
 IronRdpIdd.dll
 
 [SourceDisksNames]
@@ -46,7 +55,7 @@ IronRdpIdd.dll
 IronRdpIdd.dll = 1,,
 
 [DestinationDirs]
-DefaultDestDir = 13
+UMDriverCopy = 12,UMDF
 
 ; Services section: use wudfrd.inf to install WUDFRd.sys as the function driver reflector.
 ; This is the correct UMDF v2 pattern - letting wudfrd.inf handle the AddService/ASSOCSERVICE.
@@ -71,8 +80,8 @@ UmdfImpersonationLevel=Identification
 
 [IronRdpIdd_Install]
 UmdfLibraryVersion=2.33.0
-ServiceBinary=%13%\IronRdpIdd.dll
-UmdfExtensions=IddCx0102
+ServiceBinary=%12%\UMDF\IronRdpIdd.dll
+UmdfExtensions=IddCx0104
 
 [Strings]
 ; non localizable
