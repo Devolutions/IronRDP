@@ -4252,6 +4252,25 @@ mod windows_main {
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
+        if provider_mode {
+            let fallback_credentials = match resolve_wts_logon_credentials_from_env()? {
+                Some(credentials) => Some(credentials),
+                None => resolve_rdp_credentials_from_env()?.map(stored_credentials_from_rdp_credentials),
+            };
+
+            if let Some(credentials) = fallback_credentials {
+                info!(
+                    connection_id,
+                    username = %credentials.username,
+                    domain = %credentials.domain,
+                    "Seeded provider-mode credentials for WTS provider"
+                );
+
+                let mut guard = credentials_slot.lock().await;
+                *guard = Some(credentials);
+            }
+        }
+
         let input_stream_slot: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
         let (input_tx, input_rx) = mpsc::unbounded_channel::<InputPacket>();
         let input_task = tokio::task::spawn_local(run_input_spooler(
@@ -4334,13 +4353,11 @@ mod windows_main {
                 let credentials_slot = Arc::clone(&credentials_slot);
                 tokio::task::spawn_local(async move {
                     let mut guard = credentials_slot.lock().await;
-                    if guard.is_none() {
-                        *guard = Some(StoredCredentials {
-                            username,
-                            domain,
-                            password,
-                        });
-                    }
+                    *guard = Some(StoredCredentials {
+                        username,
+                        domain,
+                        password,
+                    });
                 });
             });
         } else {
@@ -4380,13 +4397,11 @@ mod windows_main {
             );
 
             let mut guard = credentials_slot.lock().await;
-            if guard.is_none() {
-                *guard = Some(StoredCredentials {
-                    username,
-                    domain,
-                    password,
-                });
-            }
+            *guard = Some(StoredCredentials {
+                username,
+                domain,
+                password,
+            });
         }
 
         server
@@ -4456,6 +4471,14 @@ mod windows_main {
                 domain,
                 password,
             })),
+        }
+    }
+
+    fn stored_credentials_from_rdp_credentials(credentials: Credentials) -> StoredCredentials {
+        StoredCredentials {
+            username: credentials.username,
+            domain: credentials.domain.unwrap_or_default(),
+            password: credentials.password,
         }
     }
 
