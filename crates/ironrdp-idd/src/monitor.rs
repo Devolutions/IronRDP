@@ -6,6 +6,11 @@ use core::ffi::c_void;
 use core::mem::size_of;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+pub(crate) use windows::Win32::Devices::Display::DISPLAYCONFIG_VIDEO_SIGNAL_INFO;
+use windows::Win32::Devices::Display::{
+    DISPLAYCONFIG_2DREGION, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI, DISPLAYCONFIG_RATIONAL,
+    DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE, DISPLAYCONFIG_TARGET_MODE, DISPLAYCONFIG_VIDEO_SIGNAL_INFO_0,
+};
 use windows::Win32::Foundation::{HANDLE, LUID};
 
 #[cfg(ironrdp_idd_link)]
@@ -21,53 +26,116 @@ struct MonitorKey(IDDCX_MONITOR);
 unsafe impl Send for MonitorKey {}
 
 static ACTIVE_SWAPCHAINS: OnceLock<Mutex<HashMap<MonitorKey, SwapChainProcessor>>> = OnceLock::new();
+static ACTIVE_MONITOR: OnceLock<Mutex<Option<ActiveMonitor>>> = OnceLock::new();
 
 fn active_swapchains() -> &'static Mutex<HashMap<MonitorKey, SwapChainProcessor>> {
     ACTIVE_SWAPCHAINS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn active_monitor() -> &'static Mutex<Option<ActiveMonitor>> {
+    ACTIVE_MONITOR.get_or_init(|| Mutex::new(None))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveMonitor {
+    handle_raw: usize,
+    connector_index: u32,
+    os_target_id: u32,
+}
+
+pub(crate) fn current_monitor() -> Option<(IDDCX_MONITOR, u32, u32)> {
+    let state = match active_monitor().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    state
+        .as_ref()
+        .map(|value| (value.handle_raw as IDDCX_MONITOR, value.connector_index, value.os_target_id))
 }
 
 const NO_PREFERRED_MODE: u32 = 0xFFFF_FFFF;
 const IDDCX_MONITOR_MODE_ORIGIN_MONITORDESCRIPTOR: u32 = 1;
 const IDDCX_MONITOR_MODE_ORIGIN_DRIVER: u32 = 2;
 const IDDCX_MONITOR_DESCRIPTION_TYPE_EDID: u32 = 1;
-const DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INDIRECT_WIRED: u32 = 16;
-const DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE: u32 = 1;
 
-const DEFAULT_MODE_WIDTH: u32 = 1920;
-const DEFAULT_MODE_HEIGHT: u32 = 1080;
-const DEFAULT_MODE_REFRESH_HZ: u32 = 60;
-
-#[repr(C)]
 #[derive(Clone, Copy)]
-struct DISPLAYCONFIG_RATIONAL {
-    Numerator: u32,
-    Denominator: u32,
+struct SampleMode {
+    width: u32,
+    height: u32,
+    refresh_hz: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct DISPLAYCONFIG_2DREGION {
-    cx: u32,
-    cy: u32,
-}
+const DEFAULT_DESCRIPTION_MODES: [SampleMode; 3] = [
+    SampleMode {
+        width: 1920,
+        height: 1080,
+        refresh_hz: 60,
+    },
+    SampleMode {
+        width: 1600,
+        height: 900,
+        refresh_hz: 60,
+    },
+    SampleMode {
+        width: 1024,
+        height: 768,
+        refresh_hz: 75,
+    },
+];
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct DISPLAYCONFIG_VIDEO_SIGNAL_INFO {
-    pixelRate: u64,
-    hSyncFreq: DISPLAYCONFIG_RATIONAL,
-    vSyncFreq: DISPLAYCONFIG_RATIONAL,
-    activeSize: DISPLAYCONFIG_2DREGION,
-    totalSize: DISPLAYCONFIG_2DREGION,
-    AdditionalSignalInfo: u32,
-    scanLineOrdering: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct DISPLAYCONFIG_TARGET_MODE {
-    targetVideoSignalInfo: DISPLAYCONFIG_VIDEO_SIGNAL_INFO,
-}
+const TARGET_MODES: [SampleMode; 10] = [
+    SampleMode {
+        width: 3840,
+        height: 2160,
+        refresh_hz: 60,
+    },
+    SampleMode {
+        width: 2560,
+        height: 1440,
+        refresh_hz: 144,
+    },
+    SampleMode {
+        width: 2560,
+        height: 1440,
+        refresh_hz: 90,
+    },
+    SampleMode {
+        width: 2560,
+        height: 1440,
+        refresh_hz: 60,
+    },
+    SampleMode {
+        width: 1920,
+        height: 1080,
+        refresh_hz: 144,
+    },
+    SampleMode {
+        width: 1920,
+        height: 1080,
+        refresh_hz: 90,
+    },
+    SampleMode {
+        width: 1920,
+        height: 1080,
+        refresh_hz: 60,
+    },
+    SampleMode {
+        width: 1600,
+        height: 900,
+        refresh_hz: 60,
+    },
+    SampleMode {
+        width: 1024,
+        height: 768,
+        refresh_hz: 75,
+    },
+    SampleMode {
+        width: 1024,
+        height: 768,
+        refresh_hz: 60,
+    },
+];
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -138,73 +206,94 @@ pub(crate) struct IDARG_IN_SETSWAPCHAIN {
     pub(crate) RenderAdapterLuid: LUID,
 }
 
+#[cfg(ironrdp_idd_link)]
+pub(crate) use crate::iddcx::IDARG_OUT_MONITORGETPHYSICALSIZE;
+
+#[cfg(not(ironrdp_idd_link))]
+#[repr(C)]
+pub(crate) struct IDARG_OUT_MONITORGETPHYSICALSIZE {
+    pub(crate) PhysicalWidth: u32,
+    pub(crate) PhysicalHeight: u32,
+}
+
 fn additional_signal_info(video_standard: u16, v_sync_freq_divider: u8) -> u32 {
     u32::from(video_standard) | (u32::from(v_sync_freq_divider & 0x3F) << 16)
 }
 
+fn additional_signal_info_union(video_standard: u16, v_sync_freq_divider: u8) -> DISPLAYCONFIG_VIDEO_SIGNAL_INFO_0 {
+    DISPLAYCONFIG_VIDEO_SIGNAL_INFO_0 {
+        videoStandard: additional_signal_info(video_standard, v_sync_freq_divider),
+    }
+}
+
 fn default_video_signal_info(v_sync_freq_divider: u8) -> DISPLAYCONFIG_VIDEO_SIGNAL_INFO {
-    let total_width = DEFAULT_MODE_WIDTH.saturating_add(160);
-    let total_height = DEFAULT_MODE_HEIGHT.saturating_add(45);
-    let pixel_rate = u64::from(total_width)
-        .saturating_mul(u64::from(total_height))
-        .saturating_mul(u64::from(DEFAULT_MODE_REFRESH_HZ));
+    sample_mode_signal_info(DEFAULT_DESCRIPTION_MODES[0], v_sync_freq_divider)
+}
+
+fn sample_mode_signal_info(mode: SampleMode, v_sync_freq_divider: u8) -> DISPLAYCONFIG_VIDEO_SIGNAL_INFO {
+    let pixel_rate = u64::from(mode.width)
+        .saturating_mul(u64::from(mode.height))
+        .saturating_mul(u64::from(mode.refresh_hz));
 
     DISPLAYCONFIG_VIDEO_SIGNAL_INFO {
         pixelRate: pixel_rate,
         hSyncFreq: DISPLAYCONFIG_RATIONAL {
-            Numerator: total_height.saturating_mul(DEFAULT_MODE_REFRESH_HZ),
+            Numerator: mode.height.saturating_mul(mode.refresh_hz),
             Denominator: 1,
         },
         vSyncFreq: DISPLAYCONFIG_RATIONAL {
-            Numerator: DEFAULT_MODE_REFRESH_HZ,
+            Numerator: mode.refresh_hz,
             Denominator: 1,
         },
         activeSize: DISPLAYCONFIG_2DREGION {
-            cx: DEFAULT_MODE_WIDTH,
-            cy: DEFAULT_MODE_HEIGHT,
+            cx: mode.width,
+            cy: mode.height,
         },
         totalSize: DISPLAYCONFIG_2DREGION {
-            cx: total_width,
-            cy: total_height,
+            cx: mode.width,
+            cy: mode.height,
         },
-        AdditionalSignalInfo: additional_signal_info(0, v_sync_freq_divider),
+        Anonymous: additional_signal_info_union(255, v_sync_freq_divider),
         scanLineOrdering: DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE,
     }
 }
 
-fn default_monitor_mode(origin: u32) -> IDDCX_MONITOR_MODE {
+fn default_monitor_mode(origin: u32, mode: SampleMode) -> IDDCX_MONITOR_MODE {
     IDDCX_MONITOR_MODE {
         Size: size_of::<IDDCX_MONITOR_MODE>() as u32,
         Origin: origin,
         // For monitor modes, vSyncFreqDivider must be zero.
-        MonitorVideoSignalInfo: default_video_signal_info(0),
+        MonitorVideoSignalInfo: sample_mode_signal_info(mode, 0),
     }
 }
 
-fn default_target_mode() -> IDDCX_TARGET_MODE {
-    let signal_info = default_video_signal_info(1);
+fn default_target_mode(mode: SampleMode) -> IDDCX_TARGET_MODE {
+    let signal_info = sample_mode_signal_info(mode, 1);
     IDDCX_TARGET_MODE {
         Size: size_of::<IDDCX_TARGET_MODE>() as u32,
         TargetVideoSignalInfo: DISPLAYCONFIG_TARGET_MODE {
             targetVideoSignalInfo: signal_info,
         },
-        RequiredBandwidth: signal_info.pixelRate,
+        RequiredBandwidth: 0,
     }
 }
 
-fn write_mode_list<T: Copy>(buffer_input_count: u32, buffer_ptr: *mut T, modes: &[T]) -> u32 {
+fn write_mode_list<T: Copy>(buffer_input_count: u32, buffer_ptr: *mut T, modes: &[T]) -> (u32, bool) {
+    let total_count = u32::try_from(modes.len()).unwrap_or(u32::MAX);
+
     if buffer_ptr.is_null() || buffer_input_count == 0 {
-        return modes.len() as u32;
+        return (total_count, false);
     }
 
     let copy_count = min(modes.len(), buffer_input_count as usize);
+    let copied_all = copy_count == modes.len();
     // SAFETY: `buffer_ptr` points to a writable output array provided by IddCx; `copy_count`
     // is bounded by both the source and destination lengths.
     unsafe {
         core::ptr::copy_nonoverlapping(modes.as_ptr(), buffer_ptr, copy_count);
     }
 
-    copy_count as u32
+    (total_count, copied_all)
 }
 
 #[cfg(ironrdp_idd_link)]
@@ -245,7 +334,7 @@ impl IronRdpIddMonitor {
 
             let mut monitor_info = iddcx::IDDCX_MONITOR_INFO {
                 Size: size_of::<iddcx::IDDCX_MONITOR_INFO>() as u32,
-                MonitorType: DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INDIRECT_WIRED,
+                MonitorType: DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI.0 as u32,
                 ConnectorIndex: connector_idx,
                 _pad: 0,
                 MonitorDescription: iddcx::IDDCX_MONITOR_DESCRIPTION {
@@ -333,6 +422,18 @@ impl IronRdpIddMonitor {
                 os_target_id = out_arrival.OsTargetId,
                 "IddCxMonitorCreate/Arrival succeeded"
             );
+            {
+                let mut state = match active_monitor().lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *state = Some(ActiveMonitor {
+                    handle_raw: out_create.MonitorObject as usize,
+                    connector_index: connector_idx,
+                    os_target_id: out_arrival.OsTargetId,
+                });
+            }
+            crate::remote::note_monitor_arrival(adapter, out_create.MonitorObject, connector_idx, out_arrival.OsTargetId);
             STATUS_SUCCESS
         }
     }
@@ -346,6 +447,16 @@ impl IronRdpIddMonitor {
 
         #[cfg(ironrdp_idd_link)]
         {
+            {
+                let mut state = match active_monitor().lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if state.as_ref().is_some_and(|value| value.handle_raw == self.monitor as usize) {
+                    *state = None;
+                }
+            }
+
             // SAFETY: `self.monitor` is an IddCx monitor handle returned by `IddCxMonitorCreate`.
             let status = unsafe { iddcx::monitor_departure(self.monitor) };
             if status < 0 {
@@ -378,14 +489,30 @@ pub(crate) extern "system" fn parse_monitor_description(
             !in_args.MonitorDescription.pData.is_null() && in_args.MonitorDescription.DataSize != 0;
 
         if !has_monitor_description {
-            out_args.MonitorModeBufferOutputCount = 0;
-            out_args.PreferredMonitorModeIdx = NO_PREFERRED_MODE;
-            tracing::info!("EvtIddCxParseMonitorDescription: no descriptor provided; returning zero descriptor modes");
+            let modes = DEFAULT_DESCRIPTION_MODES.map(|mode| default_monitor_mode(IDDCX_MONITOR_MODE_ORIGIN_DRIVER, mode));
+            let (output_count, copied_all) =
+                write_mode_list(in_args.MonitorModeBufferInputCount, in_args.pMonitorModes, &modes);
+            out_args.MonitorModeBufferOutputCount = output_count;
+            out_args.PreferredMonitorModeIdx = if output_count > 0 { 0 } else { NO_PREFERRED_MODE };
+            crate::debug_trace(&format!(
+                "EvtIddCxParseMonitorDescription: no descriptor provided output_count={output_count} input_capacity={} copied_all={copied_all}",
+                in_args.MonitorModeBufferInputCount
+            ));
+            tracing::info!(
+                monitor_mode_output_count = output_count,
+                monitor_mode_input_capacity = in_args.MonitorModeBufferInputCount,
+                copied_all,
+                "EvtIddCxParseMonitorDescription: no descriptor provided; returning fallback driver mode"
+            );
             return STATUS_SUCCESS;
         }
 
-        let modes = [default_monitor_mode(IDDCX_MONITOR_MODE_ORIGIN_MONITORDESCRIPTOR)];
-        let output_count = write_mode_list(in_args.MonitorModeBufferInputCount, in_args.pMonitorModes, &modes);
+        let modes = [default_monitor_mode(
+            IDDCX_MONITOR_MODE_ORIGIN_MONITORDESCRIPTOR,
+            DEFAULT_DESCRIPTION_MODES[0],
+        )];
+        let (output_count, copied_all) =
+            write_mode_list(in_args.MonitorModeBufferInputCount, in_args.pMonitorModes, &modes);
 
         out_args.MonitorModeBufferOutputCount = output_count;
         out_args.PreferredMonitorModeIdx = if output_count > 0 { 0 } else { NO_PREFERRED_MODE };
@@ -393,8 +520,13 @@ pub(crate) extern "system" fn parse_monitor_description(
         tracing::info!(
             monitor_mode_output_count = output_count,
             monitor_mode_input_capacity = in_args.MonitorModeBufferInputCount,
+            copied_all,
             "EvtIddCxParseMonitorDescription succeeded"
         );
+        crate::debug_trace(&format!(
+            "EvtIddCxParseMonitorDescription: descriptor output_count={output_count} input_capacity={} copied_all={copied_all}",
+            in_args.MonitorModeBufferInputCount
+        ));
         STATUS_SUCCESS
     }
 }
@@ -416,8 +548,8 @@ pub(crate) extern "system" fn monitor_get_default_description_modes(
     // SAFETY: pointers are validated above and owned by IddCx for callback duration.
     let out_args = unsafe { &mut *out_args };
 
-    let modes = [default_monitor_mode(IDDCX_MONITOR_MODE_ORIGIN_DRIVER)];
-    let output_count = write_mode_list(
+    let modes = DEFAULT_DESCRIPTION_MODES.map(|mode| default_monitor_mode(IDDCX_MONITOR_MODE_ORIGIN_DRIVER, mode));
+    let (output_count, copied_all) = write_mode_list(
         in_args.DefaultMonitorModeBufferInputCount,
         in_args.pDefaultMonitorModes,
         &modes,
@@ -429,8 +561,14 @@ pub(crate) extern "system" fn monitor_get_default_description_modes(
     tracing::info!(
         default_mode_output_count = output_count,
         default_mode_input_capacity = in_args.DefaultMonitorModeBufferInputCount,
+        copied_all,
         "EvtIddCxMonitorGetDefaultDescriptionModes succeeded"
     );
+    crate::debug_trace(&format!(
+        "EvtIddCxMonitorGetDefaultDescriptionModes: output_count={output_count} input_capacity={} copied_all={copied_all} preferred_idx={}",
+        in_args.DefaultMonitorModeBufferInputCount,
+        out_args.PreferredMonitorModeIdx
+    ));
     STATUS_SUCCESS
 }
 
@@ -451,15 +589,29 @@ pub(crate) extern "system" fn monitor_query_target_modes(
     // SAFETY: pointers are validated above and owned by IddCx for callback duration.
     let out_args = unsafe { &mut *out_args };
 
-    let modes = [default_target_mode()];
-    let output_count = write_mode_list(in_args.TargetModeBufferInputCount, in_args.pTargetModes, &modes);
+    let modes = TARGET_MODES.map(default_target_mode);
+    let (output_count, copied_all) = write_mode_list(in_args.TargetModeBufferInputCount, in_args.pTargetModes, &modes);
 
     out_args.TargetModeBufferOutputCount = output_count;
     tracing::info!(
         target_mode_output_count = output_count,
         target_mode_input_capacity = in_args.TargetModeBufferInputCount,
+        copied_all,
         "EvtIddCxMonitorQueryTargetModes succeeded"
     );
+    let primary_mode = TARGET_MODES[0];
+    crate::debug_trace(&format!(
+        "EvtIddCxMonitorQueryTargetModes: output_count={output_count} input_capacity={} copied_all={copied_all} first_mode={}x{}@{} pixel_rate={} v_sync_num={} v_sync_den={} additional_signal=0x{:08X}",
+        in_args.TargetModeBufferInputCount,
+        primary_mode.width,
+        primary_mode.height,
+        primary_mode.refresh_hz,
+        modes[0].TargetVideoSignalInfo.targetVideoSignalInfo.pixelRate,
+        modes[0].TargetVideoSignalInfo.targetVideoSignalInfo.vSyncFreq.Numerator,
+        modes[0].TargetVideoSignalInfo.targetVideoSignalInfo.vSyncFreq.Denominator,
+        // SAFETY: we intentionally inspect the union using its raw `videoStandard` view.
+        unsafe { modes[0].TargetVideoSignalInfo.targetVideoSignalInfo.Anonymous.videoStandard }
+    ));
     STATUS_SUCCESS
 }
 
@@ -468,6 +620,7 @@ pub(crate) extern "system" fn monitor_assign_swapchain(
     in_args: *const IDARG_IN_SETSWAPCHAIN,
 ) -> NTSTATUS {
     tracing::info!("EvtIddCxMonitorAssignSwapChain");
+    crate::remote::note_swapchain_assignment(crate::remote::runtime_session_id());
 
     if in_args.is_null() {
         tracing::warn!("monitor_assign_swapchain called with null args");
@@ -504,8 +657,31 @@ pub(crate) extern "system" fn monitor_assign_swapchain(
     STATUS_SUCCESS
 }
 
+pub(crate) extern "system" fn monitor_get_physical_size(
+    monitor: IDDCX_MONITOR,
+    out_args: *mut IDARG_OUT_MONITORGETPHYSICALSIZE,
+) -> NTSTATUS {
+    let _ = monitor;
+
+    if out_args.is_null() {
+        tracing::warn!("EvtIddCxMonitorGetPhysicalSize called with null args");
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    // A reasonable 27-inch 16:9 physical size. Remote IDD 1.4 requires this when no EDID is provided.
+    unsafe {
+        (*out_args).PhysicalWidth = 598;
+        (*out_args).PhysicalHeight = 336;
+    }
+
+    crate::debug_trace("SESSION_PROOF_IDD_MONITOR_PHYSICAL_SIZE width_mm=598 height_mm=336");
+    tracing::info!(width_mm = 598, height_mm = 336, "SESSION_PROOF_IDD_MONITOR_PHYSICAL_SIZE");
+    STATUS_SUCCESS
+}
+
 pub(crate) extern "system" fn monitor_unassign_swapchain(monitor: IDDCX_MONITOR) -> NTSTATUS {
     tracing::info!("EvtIddCxMonitorUnassignSwapChain");
+    crate::remote::note_swapchain_unassignment(crate::remote::runtime_session_id());
 
     let _ = stop_swapchain_for_monitor(monitor);
 
@@ -525,3 +701,4 @@ pub(crate) fn stop_swapchain_for_monitor(monitor: IDDCX_MONITOR) -> bool {
 
     false
 }
+
