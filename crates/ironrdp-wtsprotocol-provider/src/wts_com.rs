@@ -525,24 +525,15 @@ fn normalize_winlogon_credentials(username: &str, domain: &str) -> (String, Stri
             }
         }
 
-        if let Some((user, upn_domain)) = username.split_once('@') {
-            let user = user.trim();
-            let upn_domain = upn_domain.trim();
-            if !user.is_empty() && !upn_domain.is_empty() {
-                return (user.to_owned(), upn_domain.to_owned());
-            }
+        if username.contains('@') {
+            // Preserve UPN formatting exactly as provided: the full UPN must stay
+            // in the username field with an empty domain field.
+            return (username.to_owned(), String::new());
         }
     }
 
-    if let Some((user, upn_domain)) = username.split_once('@') {
-        let user = user.trim();
-        let upn_domain = upn_domain.trim();
-        if !user.is_empty() {
-            let domain_to_use = if domain.is_empty() { upn_domain } else { domain };
-            if !domain_to_use.is_empty() {
-                return (user.to_owned(), domain_to_use.to_owned());
-            }
-        }
+    if username.contains('@') {
+        return (username.to_owned(), String::new());
     }
 
     (username.to_owned(), domain.to_owned())
