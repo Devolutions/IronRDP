@@ -29,7 +29,13 @@ param(
     [string]$CatPath = "crates\ironrdp-idd\IronRdpIdd.cat",
 
     [Parameter()]
-    [string]$RemotePath = "C:\Program Files\IronRDP\idd"
+    [string]$RemotePath = "C:\Program Files\IronRDP\idd",
+
+    [Parameter()]
+    [string]$TestCertsUrl = 'https://raw.githubusercontent.com/Devolutions/devolutions-authenticode/master/data/certs',
+
+    [Parameter()]
+    [string]$CodeSignCertPassword = 'CodeSign123!'
 )
 
 Set-StrictMode -Version Latest
@@ -79,6 +85,23 @@ $driverDllFull = (Resolve-Path (Join-Path $workspaceRoot $DriverDll)).Path
 $infFull = (Resolve-Path (Join-Path $workspaceRoot $InfPath)).Path
 $catFull = (Resolve-Path (Join-Path $workspaceRoot $CatPath)).Path
 
+$certDownloadRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'IronRdpIddCodeSign'
+New-Item -ItemType Directory -Path $certDownloadRoot -Force | Out-Null
+$rootCertFull = Join-Path $certDownloadRoot 'authenticode-test-ca.crt'
+$codeSignPfxFull = Join-Path $certDownloadRoot 'authenticode-test-cert.pfx'
+
+$certArtifacts = @(
+    [pscustomobject]@{ Url = "$TestCertsUrl/authenticode-test-ca.crt"; Path = $rootCertFull },
+    [pscustomobject]@{ Url = "$TestCertsUrl/authenticode-test-cert.pfx"; Path = $codeSignPfxFull }
+)
+
+foreach ($artifact in $certArtifacts) {
+    if (-not (Test-Path -LiteralPath $artifact.Path -PathType Leaf)) {
+        Write-Host "Downloading test certificate artifact: $($artifact.Url)"
+        Invoke-WebRequest -Uri $artifact.Url -OutFile $artifact.Path -ErrorAction Stop
+    }
+}
+
 $session = New-TestVmSession -Hostname $VmHostname -Credential $credential
 try {
     Invoke-Command -Session $session -ScriptBlock {
@@ -86,14 +109,36 @@ try {
         New-Item -ItemType Directory -Path $RemotePath -Force | Out-Null
     } -ArgumentList $RemotePath
 
-    Copy-Item -Path $driverDllFull -Destination (Join-Path $RemotePath "IronRdpIdd.dll") -ToSession $session -Force
-    Copy-Item -Path $infFull -Destination (Join-Path $RemotePath "IronRdpIdd.inf") -ToSession $session -Force
-    Copy-Item -Path $catFull -Destination (Join-Path $RemotePath "IronRdpIdd.cat") -ToSession $session -Force
+    Copy-Item -Path $driverDllFull -Destination (Join-Path $RemotePath 'IronRdpIdd.dll') -ToSession $session -Force
+    Copy-Item -Path $infFull -Destination (Join-Path $RemotePath 'IronRdpIdd.inf') -ToSession $session -Force
+    Copy-Item -Path $catFull -Destination (Join-Path $RemotePath 'IronRdpIdd.cat') -ToSession $session -Force
+    Copy-Item -Path $rootCertFull -Destination (Join-Path $RemotePath 'authenticode-test-ca.crt') -ToSession $session -Force
+    Copy-Item -Path $codeSignPfxFull -Destination (Join-Path $RemotePath 'authenticode-test-cert.pfx') -ToSession $session -Force
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($RemotePath)
+        param($RemotePath, $CodeSignCertPassword)
 
-        $infPath = Join-Path $RemotePath "IronRdpIdd.inf"
+        $infPath = Join-Path $RemotePath 'IronRdpIdd.inf'
+        $rootCertPath = Join-Path $RemotePath 'authenticode-test-ca.crt'
+        $codeSignPfxPath = Join-Path $RemotePath 'authenticode-test-cert.pfx'
+        $codeSignCertPath = Join-Path $RemotePath 'authenticode-test-cert.cer'
+
+        Import-Certificate -FilePath $rootCertPath -CertStoreLocation 'cert:\LocalMachine\Root' | Out-Null
+
+        $secureCodeSignPassword = ConvertTo-SecureString $CodeSignCertPassword -AsPlainText -Force
+        Import-PfxCertificate -FilePath $codeSignPfxPath -CertStoreLocation 'cert:\LocalMachine\My' -Password $secureCodeSignPassword | Out-Null
+
+        $codeSigningCert = Get-ChildItem cert:\LocalMachine\My -CodeSigning | Where-Object { $_.Subject -eq 'CN=Test Code Signing Certificate' } | Select-Object -First 1
+        if ($null -eq $codeSigningCert) {
+            throw 'Code signing cert not found in LocalMachine\\My after PFX import'
+        }
+
+        if (Test-Path -LiteralPath $codeSignCertPath) {
+            Remove-Item -LiteralPath $codeSignCertPath -Force -ErrorAction SilentlyContinue
+        }
+        Export-Certificate -Cert $codeSigningCert -FilePath $codeSignCertPath | Out-Null
+        Import-Certificate -FilePath $codeSignCertPath -CertStoreLocation 'cert:\LocalMachine\TrustedPublisher' | Out-Null
+        Write-Host 'Provisioned LocalMachine certificate trust for IronRdpIdd'
 
         # Ensure we don't leave multiple IronRDP driver packages in the DriverStore.
         # When multiple versions are present, PnP can keep some device instances bound
@@ -141,23 +186,23 @@ try {
             throw "Driver installation failed with exit code $LASTEXITCODE"
         }
 
-        Write-Host "Driver installed successfully"
+        Write-Host 'Driver installed successfully'
 
         # Ensure WUDFRd (UMDF kernel reflector) is running and set to auto-start.
         # Without WUDFRd, no UMDF driver (including our IDD) can load.
         $wudfrd = Get-Service -Name WUDFRd -ErrorAction SilentlyContinue
         if ($null -ne $wudfrd) {
             if ($wudfrd.StartType -ne 'Automatic') {
-                Write-Host "Setting WUDFRd to auto-start..."
+                Write-Host 'Setting WUDFRd to auto-start...'
                 sc.exe config WUDFRd start= auto | Out-Null
             }
             if ($wudfrd.Status -ne 'Running') {
-                Write-Host "Starting WUDFRd service..."
+                Write-Host 'Starting WUDFRd service...'
                 Start-Service -Name WUDFRd -ErrorAction Stop
             }
             Write-Host "WUDFRd: Status=$((Get-Service WUDFRd).Status), StartType=$((Get-Service WUDFRd).StartType)"
         } else {
-            Write-Warning "WUDFRd service not found - UMDF drivers will not load"
+            Write-Warning 'WUDFRd service not found - UMDF drivers will not load'
         }
 
         # Clean up stale IDD phantom devices from previous sessions.
@@ -171,9 +216,8 @@ try {
                 pnputil /remove-device $dev.InstanceId 2>$null | Out-Null
             }
         }
-    } -ArgumentList $RemotePath
+    } -ArgumentList $RemotePath, $CodeSignCertPassword
 }
 finally {
     Remove-PSSession -Session $session -ErrorAction SilentlyContinue
 }
-

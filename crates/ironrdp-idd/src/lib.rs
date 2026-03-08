@@ -34,18 +34,22 @@ pub const fn ntstatus_to_u32(value: NTSTATUS) -> u32 {
 
 pub const STATUS_NOT_SUPPORTED: NTSTATUS = ntstatus_from_u32(0xC000_00BB);
 
-#[cfg(ironrdp_idd_link)]
+pub(crate) const IDD_RUNTIME_ROOT: &str = r"C:\ProgramData\IronRDP\Idd";
+pub(crate) const IDD_RUNTIME_STATE_FILE: &str = r"C:\ProgramData\IronRDP\Idd\runtime-config.txt";
+pub(crate) const IDD_DEBUG_TRACE_FILE: &str = r"C:\ProgramData\IronRDP\Idd\ironrdp-idd-debug.log";
+
 pub(crate) fn debug_trace(message: &str) {
     use std::fs::{OpenOptions, create_dir_all};
     use std::io::Write;
     use std::path::PathBuf;
 
-    let mut candidates = Vec::with_capacity(3);
+    let mut candidates = Vec::with_capacity(4);
 
     if let Ok(path) = std::env::var("IRONRDP_IDD_DEBUG_TRACE_FILE") {
         candidates.push(PathBuf::from(path));
     }
 
+    candidates.push(PathBuf::from(IDD_DEBUG_TRACE_FILE));
     candidates.push(PathBuf::from(r"C:\Windows\Temp\ironrdp-idd-debug.log"));
 
     if let Ok(temp_dir) = std::env::var("TEMP") {
@@ -97,6 +101,8 @@ pub extern "system" fn DriverEntry(
     {
         use core::mem::size_of;
         debug_trace("DriverEntry: entered");
+        debug_trace("SESSION_PROOF_IDD_DRIVER_ENTRY");
+        tracing::info!("SESSION_PROOF_IDD_DRIVER_ENTRY");
         let config = wdf::WDF_DRIVER_CONFIG {
             Size: size_of::<wdf::WDF_DRIVER_CONFIG>() as u32,
             EvtDriverDeviceAdd: Some(adapter::device_add),
@@ -162,6 +168,8 @@ struct IddCxCallbackTable {
     ) -> NTSTATUS,
     monitor_assign_swapchain: extern "system" fn(IDDCX_MONITOR, *const monitor::IDARG_IN_SETSWAPCHAIN) -> NTSTATUS,
     monitor_unassign_swapchain: extern "system" fn(IDDCX_MONITOR) -> NTSTATUS,
+    monitor_get_physical_size:
+        extern "system" fn(IDDCX_MONITOR, *mut monitor::IDARG_OUT_MONITORGETPHYSICALSIZE) -> NTSTATUS,
 }
 
 fn iddcx_callback_table() -> IddCxCallbackTable {
@@ -173,5 +181,8 @@ fn iddcx_callback_table() -> IddCxCallbackTable {
         monitor_query_target_modes: monitor::monitor_query_target_modes,
         monitor_assign_swapchain: monitor::monitor_assign_swapchain,
         monitor_unassign_swapchain: monitor::monitor_unassign_swapchain,
+        monitor_get_physical_size: monitor::monitor_get_physical_size,
     }
 }
+
+
