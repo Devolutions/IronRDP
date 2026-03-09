@@ -299,6 +299,30 @@ The expectation is that, if `cargo xtask ci` passes locally, the CI will be gree
 **Architecture Invariant**: `cargo xtask ci` and CI workflow must be logically equivalents. It must
 be the case that a successful `cargo xtask ci` run implies a successful CI workflow run and vice versa.
 
+### MSRV policy
+
+IronRDP libraries follow a conservative MSRV (Minimum Supported Rust Version) policy.
+
+**Definition**: The MSRV is the oldest of:
+
+- the latest stable Rust release that is at least 6 months old;
+- the Rust version packaged by the [latest Fedora stable release](https://packages.fedoraproject.org/pkgs/rust/rust/); or
+- the Rust version available in [Debian stable-backports](https://packages.debian.org/search?suite=all&arch=any&searchon=names&keywords=rust).
+
+**Toolchain and CI**: The Rust toolchain pinned in `rust-toolchain.toml` is both the project toolchain and the MSRV validated by CI.
+The `rust-version` key in each published crate's `Cargo.toml` is kept in sync with this toolchain version.
+The workspace is compiled once using the pinned toolchain to keep CI efficient; there are no separate CI jobs dedicated to validating older Rust versions.
+
+**Architecture Invariant**: The MSRV is not validated by a separately configured toolchain or a dedicated CI job.
+The pinned toolchain in `rust-toolchain.toml` serves as the single source of truth.
+
+**Bumping the MSRV**: The MSRV may be bumped when:
+
+- a dependency requires a newer version of Rust; or
+- a newer Rust feature offers a clear maintenance, correctness, or performance benefit.
+
+MSRV bumps must be documented in the release notes and must not occur in patch releases.
+
 ### Testing
 
 #### Test at the boundaries (test features, not code)

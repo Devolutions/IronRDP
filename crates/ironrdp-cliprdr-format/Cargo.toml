@@ -4,6 +4,7 @@ version = "0.1.4"
 readme = "README.md"
 description = "CLIPRDR format conversion library"
 edition.workspace = true
+rust-version = "1.89"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true

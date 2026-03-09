@@ -64,6 +64,13 @@ Alternatively, you may change a few group policies using `gpedit.msc`:
 
 5. Reboot.
 
+## Rust version (MSRV)
+
+IronRDP libraries follow a conservative Minimum Supported Rust Version (MSRV) policy.
+The MSRV is the oldest stable Rust release that is at least 6 months old, bounded by the Rust version available in [Debian stable-backports](https://packages.debian.org/search?suite=all&arch=any&searchon=names&keywords=rust) and [Fedora stable](https://packages.fedoraproject.org/pkgs/rust/rust/).
+The pinned toolchain in `rust-toolchain.toml` is both the project toolchain and the MSRV validated by CI.
+See [ARCHITECTURE.md](./ARCHITECTURE.md#msrv-policy) for the full policy.
+
 ## Architecture
 
 See the [ARCHITECTURE.md](https://github.com/Devolutions/IronRDP/blob/master/ARCHITECTURE.md) document.

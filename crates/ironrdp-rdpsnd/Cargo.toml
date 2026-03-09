@@ -4,6 +4,7 @@ version = "0.7.0"
 readme = "README.md"
 description = "RDPSND static channel for audio output implemented as described in MS-RDPEA"
 edition.workspace = true
+rust-version = "1.89"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
