@@ -306,6 +306,94 @@ function Invoke-RemoteCommandWithTimeout {
     }
 }
 
+function Wait-TestVmRdsReadyAfterBoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Hostname,
+
+        [Parameter(Mandatory = $true)]
+        [pscredential]$Credential,
+
+        [Parameter()]
+        [ValidateRange(30, 900)]
+        [int]$MinimumUptimeSeconds = 180,
+
+        [Parameter()]
+        [ValidateRange(30, 900)]
+        [int]$TimeoutSeconds = 420,
+
+        [Parameter()]
+        [ValidateRange(5, 60)]
+        [int]$PollSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $session = $null
+        try {
+            $session = New-TestVmSession -Hostname $Hostname -Credential $Credential
+            $status = Invoke-RemoteCommandWithTimeout -Session $session -TimeoutSeconds 60 -OperationName 'post-boot RDS readiness probe' -ScriptBlock {
+                $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+                $bootTime = [datetime]$os.LastBootUpTime
+                $now = [datetime]$os.LocalDateTime
+                $uptimeSeconds = [int][Math]::Max(0, ($now - $bootTime).TotalSeconds)
+
+                $serviceNames = @('TermService', 'SessionEnv', 'UmRdpService', 'gpsvc', 'ProfSvc', 'Netlogon')
+                $services = @(Get-Service -Name $serviceNames -ErrorAction SilentlyContinue)
+                $notRunning = @($services | Where-Object { $_.Status -ne 'Running' } | ForEach-Object { $_.Name })
+
+                $recentStartFailures = @(Get-WinEvent -FilterHashtable @{
+                        LogName   = 'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational'
+                        Id        = 17
+                        StartTime = $now.AddSeconds(-60)
+                    } -ErrorAction SilentlyContinue)
+                $recentGpWarnings = @(Get-WinEvent -LogName 'Application' -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $_.TimeCreated -ge $now.AddSeconds(-60) -and
+                        $_.ProviderName -eq 'Microsoft-Windows-Winlogon' -and
+                        $_.Id -in 6005, 6006
+                    })
+
+                [pscustomobject]@{
+                    BootTimeUtc            = $bootTime.ToUniversalTime().ToString('o')
+                    NowUtc                 = $now.ToUniversalTime().ToString('o')
+                    UptimeSeconds          = $uptimeSeconds
+                    MissingOrStopped       = [string]::Join(',', @($notRunning))
+                    RecentLsm17Count       = @($recentStartFailures).Count
+                    RecentWinlogonGpCount  = @($recentGpWarnings).Count
+                    Ready                  = ($uptimeSeconds -ge $using:MinimumUptimeSeconds) -and (@($notRunning).Count -eq 0) -and (@($recentStartFailures).Count -eq 0) -and (@($recentGpWarnings).Count -eq 0)
+                }
+            }
+
+            $missingOrStopped = [string]$status.MissingOrStopped
+            if ([string]::IsNullOrWhiteSpace($missingOrStopped)) {
+                $missingOrStopped = 'none'
+            }
+
+            if ([bool]$status.Ready) {
+                Write-Host ("RDS host is settled after boot (uptime={0}s, missing_or_stopped={1}, recent_lsm17={2}, recent_winlogon_gp={3})" -f `
+                        [int]$status.UptimeSeconds, $missingOrStopped, [int]$status.RecentLsm17Count, [int]$status.RecentWinlogonGpCount) -ForegroundColor Green
+                return
+            }
+
+            Write-Host ("Waiting for RDS host to settle after boot (uptime={0}s/{1}s, missing_or_stopped={2}, recent_lsm17={3}, recent_winlogon_gp={4})" -f `
+                    [int]$status.UptimeSeconds, $MinimumUptimeSeconds, $missingOrStopped, [int]$status.RecentLsm17Count, [int]$status.RecentWinlogonGpCount) -ForegroundColor Yellow
+        }
+        catch {
+            Write-Warning "RDS readiness probe failed: $($_.Exception.Message)"
+        }
+        finally {
+            if ($null -ne $session) {
+                Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+            }
+        }
+
+        Start-Sleep -Seconds $PollSeconds
+    }
+
+    throw "VM '$Hostname' did not reach a settled RDS-ready state within ${TimeoutSeconds}s after boot"
+}
+
 $adminCred = $null
 
 if ($PSBoundParameters.ContainsKey('Credential') -and ($null -ne $Credential)) {
@@ -1338,6 +1426,11 @@ if (-not $SkipDeploy.IsPresent) {
                 }
             }
 
+            if ($Mode -eq 'Provider') {
+                Write-Host "Waiting for post-deploy RDS stabilization..." -ForegroundColor Cyan
+                Wait-TestVmRdsReadyAfterBoot -Hostname $Hostname -Credential $adminCred
+            }
+
             Write-Host "Deploy succeeded" -ForegroundColor Green
             break
         }
@@ -1478,6 +1571,61 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                     $result['explorer_matches'] = ($explorerRows | Sort-Object SessionId, Id | Format-Table -AutoSize | Out-String)
                 }
 
+                $suspiciousSessionRows = New-Object System.Collections.Generic.List[object]
+                $sessionProcessState = @{}
+                $sessionProcesses = @(Get-Process -Name 'winlogon', 'LogonUI', 'explorer' -ErrorAction SilentlyContinue)
+                foreach ($proc in $sessionProcesses) {
+                    $sid = [int]$proc.SessionId
+                    if (-not $sessionProcessState.ContainsKey($sid)) {
+                        $sessionProcessState[$sid] = @{
+                            Winlogon = $false
+                            LogonUI  = $false
+                            Explorer = $false
+                        }
+                    }
+
+                    switch -Regex ([string]$proc.ProcessName) {
+                        '^winlogon$' { $sessionProcessState[$sid]['Winlogon'] = $true; break }
+                        '^LogonUI$' { $sessionProcessState[$sid]['LogonUI'] = $true; break }
+                        '^explorer$' { $sessionProcessState[$sid]['Explorer'] = $true; break }
+                    }
+                }
+
+                foreach ($sid in @($sessionProcessState.Keys | Sort-Object)) {
+                    $sessionId = [int]$sid
+                    if (($sessionId -le 1) -or ($sessionId -ge 65535)) {
+                        continue
+                    }
+
+                    $state = $sessionProcessState[$sid]
+                    $reason = ''
+                    if ($state['Winlogon'] -and (-not $state['Explorer']) -and $state['LogonUI']) {
+                        # Hidden pre-logon sessions can linger without appearing in qwinsta and then
+                        # absorb later provider connections without ever producing a user shell.
+                        $reason = 'winlogon_with_logonui_without_shell'
+                    } elseif ($state['Winlogon'] -and (-not $state['Explorer']) -and (-not $state['LogonUI'])) {
+                        $reason = 'winlogon_without_logonui_or_shell'
+                    }
+
+                    if (-not [string]::IsNullOrWhiteSpace($reason)) {
+                        $suspiciousSessionRows.Add([pscustomobject]@{
+                            SessionId = $sessionId
+                            Winlogon  = $state['Winlogon']
+                            LogonUI   = $state['LogonUI']
+                            Explorer  = $state['Explorer']
+                            Reason    = $reason
+                        })
+
+                        if (-not $resetSessionIds.Contains($sessionId)) {
+                            $resetSessionIds.Add($sessionId)
+                        }
+                    }
+                }
+
+                if ($suspiciousSessionRows.Count -gt 0) {
+                    $result['suspicious_session_matches'] = ($suspiciousSessionRows | Sort-Object SessionId | Format-Table -AutoSize | Out-String)
+                }
+
                 if ($aggressiveMode) {
                     $quserRows = New-Object System.Collections.Generic.List[object]
                     $quserLines = @(& quser 2>$null)
@@ -1555,26 +1703,6 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                     }
 
                     $winstaRows = New-Object System.Collections.Generic.List[object]
-                    $suspiciousSessionRows = New-Object System.Collections.Generic.List[object]
-                    $sessionProcessState = @{}
-
-                    $sessionProcesses = @(Get-Process -Name 'winlogon', 'LogonUI', 'explorer' -ErrorAction SilentlyContinue)
-                    foreach ($proc in $sessionProcesses) {
-                        $sid = [int]$proc.SessionId
-                        if (-not $sessionProcessState.ContainsKey($sid)) {
-                            $sessionProcessState[$sid] = @{
-                                Winlogon = $false
-                                LogonUI  = $false
-                                Explorer = $false
-                            }
-                        }
-
-                        switch -Regex ([string]$proc.ProcessName) {
-                            '^winlogon$' { $sessionProcessState[$sid]['Winlogon'] = $true; break }
-                            '^LogonUI$' { $sessionProcessState[$sid]['LogonUI'] = $true; break }
-                            '^explorer$' { $sessionProcessState[$sid]['Explorer'] = $true; break }
-                        }
-                    }
 
                     $winstaLines = @(& qwinsta 2>$null)
                     if ($winstaLines.Count -gt 1) {
@@ -1613,43 +1741,8 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
                         }
                     }
 
-                    foreach ($sid in @($sessionProcessState.Keys | Sort-Object)) {
-                        $sessionId = [int]$sid
-                        if (($sessionId -le 1) -or ($sessionId -ge 65535)) {
-                            continue
-                        }
-
-                        $state = $sessionProcessState[$sid]
-                        $reason = ''
-                        if ($state['Winlogon'] -and (-not $state['Explorer']) -and $state['LogonUI']) {
-                            # Hidden pre-logon sessions can linger without appearing in qwinsta and then
-                            # absorb later provider connections without ever producing a user shell.
-                            $reason = 'winlogon_with_logonui_without_shell'
-                        } elseif ($state['Winlogon'] -and (-not $state['Explorer']) -and (-not $state['LogonUI'])) {
-                            $reason = 'winlogon_without_logonui_or_shell'
-                        }
-
-                        if (-not [string]::IsNullOrWhiteSpace($reason)) {
-                            $suspiciousSessionRows.Add([pscustomobject]@{
-                                SessionId = $sessionId
-                                Winlogon  = $state['Winlogon']
-                                LogonUI   = $state['LogonUI']
-                                Explorer  = $state['Explorer']
-                                Reason    = $reason
-                            })
-
-                            if (-not $resetSessionIds.Contains($sessionId)) {
-                                $resetSessionIds.Add($sessionId)
-                            }
-                        }
-                    }
-
                     if ($winstaRows.Count -gt 0) {
                         $result['winsta_matches'] = ($winstaRows | Sort-Object SessionId | Format-Table -AutoSize | Out-String)
-                    }
-
-                    if ($suspiciousSessionRows.Count -gt 0) {
-                        $result['suspicious_session_matches'] = ($suspiciousSessionRows | Sort-Object SessionId | Format-Table -AutoSize | Out-String)
                     }
                 }
 
@@ -1788,6 +1881,8 @@ if (($Mode -eq 'Provider') -and (-not $DisableFreshSessionCleanup.IsPresent) -an
 if ((-not $SkipScreenshot.IsPresent) -and (-not $preflightBlockedConnectionAttempt)) {
     Write-Host "`n=== Step 3: Running screenshot client against ${Hostname}:${Port} ===" -ForegroundColor Cyan
 
+    $preConnectSessionSnapshotArtifact = $null
+
     # Ensure WUDFRd is running on the VM right before the RDP connection.
     $effectiveScreenshotTimeoutSeconds = [Math]::Max(
         $ScreenshotTimeoutSeconds,
@@ -1798,6 +1893,78 @@ if ((-not $SkipScreenshot.IsPresent) -and (-not $preflightBlockedConnectionAttem
     # If it's not running when TermService creates the IDD SWD device, the UMDF
     # driver fails with CM_PROB_FAILED_START and the session disconnects quickly.
     if ($Mode -eq 'Provider') {
+        try {
+            $preConnectSnapshotSession = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+            $preConnectSnapshot = Invoke-RemoteCommandWithTimeout -Session $preConnectSnapshotSession -TimeoutSeconds 60 -OperationName 'pre-connect session snapshot' -ScriptBlock {
+                $nowUtc = (Get-Date).ToUniversalTime().ToString('o')
+                $result = [ordered]@{
+                    TimestampUtc = $nowUtc
+                    Qwinsta = ''
+                    SessionProcessState = ''
+                    ProcessGroups = ''
+                }
+
+                $qwinstaLines = @(& qwinsta 2>&1)
+                if ($qwinstaLines.Count -gt 0) {
+                    $result.Qwinsta = ($qwinstaLines -join [Environment]::NewLine)
+                }
+
+                $interestingNames = @('winlogon', 'LogonUI', 'explorer', 'dwm', 'csrss', 'fontdrvhost', 'ctfmon')
+                $interestingProcesses = @(Get-Process -Name $interestingNames -ErrorAction SilentlyContinue)
+                if ($interestingProcesses.Count -gt 0) {
+                    $rows = foreach ($proc in ($interestingProcesses | Sort-Object SessionId, ProcessName, Id)) {
+                        [pscustomobject]@{
+                            SessionId = [int]$proc.SessionId
+                            Process   = [string]$proc.ProcessName
+                            Id        = [int]$proc.Id
+                        }
+                    }
+
+                    $result.ProcessGroups = ($rows | Format-Table -AutoSize | Out-String)
+
+                    $sessionRows = New-Object System.Collections.Generic.List[object]
+                    foreach ($group in ($rows | Group-Object SessionId | Sort-Object Name)) {
+                        $names = @($group.Group | ForEach-Object { $_.Process })
+                        $sessionRows.Add([pscustomobject]@{
+                            SessionId   = [int]$group.Name
+                            Winlogon    = ($names -contains 'winlogon')
+                            LogonUI     = ($names -contains 'LogonUI')
+                            Explorer    = ($names -contains 'explorer')
+                            Dwm         = ($names -contains 'dwm')
+                            Csrss       = ($names -contains 'csrss')
+                            FontDrvHost = ($names -contains 'fontdrvhost')
+                            Ctfmon      = ($names -contains 'ctfmon')
+                        })
+                    }
+
+                    $result.SessionProcessState = ($sessionRows | Format-Table -AutoSize | Out-String)
+                }
+
+                @(
+                    "TimestampUtc: $($result.TimestampUtc)"
+                    ''
+                    'qwinsta:'
+                    $result.Qwinsta
+                    ''
+                    'session_process_state:'
+                    $result.SessionProcessState
+                    ''
+                    'process_groups:'
+                    $result.ProcessGroups
+                ) -join [Environment]::NewLine
+            }
+
+            $preConnectSessionSnapshotArtifact = Join-Path $artifactsDir "preconnect-session-snapshot-$timestamp.log"
+            $preConnectSnapshot | Set-Content -Path $preConnectSessionSnapshotArtifact
+            Write-Host "Pre-connect session snapshot saved: $preConnectSessionSnapshotArtifact"
+        } catch {
+            Write-Warning "Pre-connect session snapshot failed: $_"
+        } finally {
+            if ($null -ne $preConnectSnapshotSession) {
+                Remove-PSSession -Session $preConnectSnapshotSession -ErrorAction SilentlyContinue
+            }
+        }
+
         try {
             $iddOpenProbeSession = New-TestVmSession -Hostname $Hostname -Credential $adminCred
             Invoke-Command -Session $iddOpenProbeSession -ScriptBlock {
@@ -2870,6 +3037,9 @@ try {
 
         $remoteLogDir = Join-Path $artifactsDir "remote-logs-$timestamp"
         New-Item -ItemType Directory -Path $remoteLogDir -Force | Out-Null
+        if (($null -ne $preConnectSessionSnapshotArtifact) -and (Test-Path -LiteralPath $preConnectSessionSnapshotArtifact)) {
+            Copy-Item -LiteralPath $preConnectSessionSnapshotArtifact -Destination (Join-Path $remoteLogDir 'preconnect-session-snapshot.log') -Force
+        }
 
         if ($Mode -eq 'Provider') {
             $helperLogSession = $null
