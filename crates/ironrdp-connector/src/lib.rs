@@ -17,16 +17,16 @@ use core::any::Any;
 use core::fmt;
 use std::sync::Arc;
 
-use ironrdp_core::{encode_buf, encode_vec, Encode, WriteBuf};
+use ironrdp_core::{Encode, WriteBuf, encode_buf, encode_vec};
 use ironrdp_pdu::nego::NegoRequestData;
 use ironrdp_pdu::rdp::capability_sets::{self, BitmapCodecs};
 use ironrdp_pdu::rdp::client_info::{self, PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::x224::X224;
-use ironrdp_pdu::{gcc, x224, PduHint};
+use ironrdp_pdu::{PduHint, gcc, x224};
 pub use sspi;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-pub use self::connection::{encode_send_data_request, ClientConnector, ClientConnectorState, ConnectionResult};
+pub use self::connection::{ClientConnector, ClientConnectorState, ConnectionResult, encode_send_data_request};
 pub use self::connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 pub use self::license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use self::server_name::ServerName;

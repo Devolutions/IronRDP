@@ -4,8 +4,8 @@ use ironrdp_core::{decode, encode_vec};
 
 use super::*;
 use crate::rdp::server_license::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, LicensePdu, PreambleFlags, PreambleVersion,
-    BASIC_SECURITY_HEADER_SIZE, PREAMBLE_SIZE,
+    BASIC_SECURITY_HEADER_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags, LicensePdu, PREAMBLE_SIZE,
+    PreambleFlags, PreambleVersion,
 };
 
 const SERVER_UPGRADE_LICENSE_BUFFER: [u8; 2059] = [

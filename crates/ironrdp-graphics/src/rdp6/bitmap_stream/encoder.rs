@@ -1,7 +1,7 @@
-use ironrdp_core::{not_enough_bytes_err, EncodeError, WriteCursor};
+use ironrdp_core::{EncodeError, WriteCursor, not_enough_bytes_err};
 use ironrdp_pdu::bitmap::rdp6::{BitmapStreamHeader, ColorPlaneDefinition};
 
-use crate::rdp6::rle::{compress_8bpp_plane, RleEncodeError};
+use crate::rdp6::rle::{RleEncodeError, compress_8bpp_plane};
 
 #[derive(Debug)]
 pub enum BitmapEncodeError {

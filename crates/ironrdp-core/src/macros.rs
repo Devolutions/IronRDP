@@ -60,12 +60,8 @@ macro_rules! function {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! not_enough_bytes_err {
-    ( $context:expr, $received:expr , $expected:expr $(,)? ) => {{
-        $crate::not_enough_bytes_err($context, $received, $expected)
-    }};
-    ( $received:expr , $expected:expr $(,)? ) => {{
-        $crate::not_enough_bytes_err!($crate::function!(), $received, $expected)
-    }};
+    ( $context:expr, $received:expr , $expected:expr $(,)? ) => {{ $crate::not_enough_bytes_err($context, $received, $expected) }};
+    ( $received:expr , $expected:expr $(,)? ) => {{ $crate::not_enough_bytes_err!($crate::function!(), $received, $expected) }};
 }
 
 /// Creates an "invalid field" error with context information.
@@ -92,12 +88,8 @@ macro_rules! not_enough_bytes_err {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! invalid_field_err {
-    ( $context:expr, $field:expr , $reason:expr $(,)? ) => {{
-        $crate::invalid_field_err($context, $field, $reason)
-    }};
-    ( $field:expr , $reason:expr $(,)? ) => {{
-        $crate::invalid_field_err!($crate::function!(), $field, $reason)
-    }};
+    ( $context:expr, $field:expr , $reason:expr $(,)? ) => {{ $crate::invalid_field_err($context, $field, $reason) }};
+    ( $field:expr , $reason:expr $(,)? ) => {{ $crate::invalid_field_err!($crate::function!(), $field, $reason) }};
 }
 
 /// Creates an "unexpected message type" error with context information.
@@ -123,12 +115,8 @@ macro_rules! invalid_field_err {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! unexpected_message_type_err {
-    ( $context:expr, $got:expr $(,)? ) => {{
-        $crate::unexpected_message_type_err($context, $got)
-    }};
-    ( $got:expr $(,)? ) => {{
-        $crate::unexpected_message_type_err!($crate::function!(), $got)
-    }};
+    ( $context:expr, $got:expr $(,)? ) => {{ $crate::unexpected_message_type_err($context, $got) }};
+    ( $got:expr $(,)? ) => {{ $crate::unexpected_message_type_err!($crate::function!(), $got) }};
 }
 
 /// Creates an "unsupported version" error with context information.
@@ -154,12 +142,8 @@ macro_rules! unexpected_message_type_err {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! unsupported_version_err {
-    ( $context:expr, $got:expr $(,)? ) => {{
-        $crate::unsupported_version_err($context, $got)
-    }};
-    ( $got:expr $(,)? ) => {{
-        $crate::unsupported_version_err!($crate::function!(), $got)
-    }};
+    ( $context:expr, $got:expr $(,)? ) => {{ $crate::unsupported_version_err($context, $got) }};
+    ( $got:expr $(,)? ) => {{ $crate::unsupported_version_err!($crate::function!(), $got) }};
 }
 
 /// Creates an "unsupported value" error with context information.
@@ -186,12 +170,8 @@ macro_rules! unsupported_version_err {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! unsupported_value_err {
-    ( $context:expr, $name:expr, $value:expr $(,)? ) => {{
-        $crate::unsupported_value_err($context, $name, $value)
-    }};
-    ( $name:expr, $value:expr $(,)? ) => {{
-        $crate::unsupported_value_err!($crate::function!(), $name, $value)
-    }};
+    ( $context:expr, $name:expr, $value:expr $(,)? ) => {{ $crate::unsupported_value_err($context, $name, $value) }};
+    ( $name:expr, $value:expr $(,)? ) => {{ $crate::unsupported_value_err!($crate::function!(), $name, $value) }};
 }
 
 /// Creates a generic "other" error with optional context and source information.
@@ -350,9 +330,7 @@ macro_rules! cast_length {
         $len.try_into()
             .map_err(|e| $crate::invalid_field_err_with_source($ctx, $field, "too many elements", e))
     }};
-    ($field:expr, $len:expr) => {{
-        $crate::cast_length!($crate::function!(), $field, $len)
-    }};
+    ($field:expr, $len:expr) => {{ $crate::cast_length!($crate::function!(), $field, $len) }};
 }
 
 /// Safely casts an integer to a different integer type.
@@ -387,9 +365,7 @@ macro_rules! cast_int {
             $crate::invalid_field_err_with_source($ctx, $field, "out of range integral type conversion", e)
         })
     }};
-    ($field:expr, $len:expr) => {{
-        $crate::cast_int!($crate::function!(), $field, $len)
-    }};
+    ($field:expr, $len:expr) => {{ $crate::cast_int!($crate::function!(), $field, $len) }};
 }
 
 /// Writes zeroes using as few `write_u*` calls as possible.

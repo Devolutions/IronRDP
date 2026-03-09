@@ -53,7 +53,7 @@ where
 
 mod danger {
     use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use tokio_rustls::rustls::{pki_types, DigitallySignedStruct, Error, SignatureScheme};
+    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme, pki_types};
 
     #[derive(Debug)]
     pub(super) struct NoCertificateVerification;

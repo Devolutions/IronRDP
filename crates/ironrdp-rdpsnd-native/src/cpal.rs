@@ -1,11 +1,11 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
-use anyhow::{bail, Context as _};
+use anyhow::{Context as _, bail};
 use cpal::traits::{DeviceTrait as _, HostTrait as _};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use ironrdp_rdpsnd::client::RdpsndClientHandler;

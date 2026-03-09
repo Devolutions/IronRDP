@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use ironrdp_bulk::BulkCompressor;
-use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
+use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
@@ -12,13 +12,13 @@ use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
-use ironrdp_pdu::{mcs, Action};
+use ironrdp_pdu::{Action, mcs};
 use ironrdp_svc::{SvcMessage, SvcProcessor, SvcProcessorMessages};
 use tracing::{debug, info};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
-use crate::{fast_path, x224, SessionError, SessionErrorExt as _, SessionResult};
+use crate::{SessionError, SessionErrorExt as _, SessionResult, fast_path, x224};
 
 /// Converts the PDU-layer compression type to the bulk crate's compression type.
 fn to_bulk_compression_type(ct: PduCompressionType) -> ironrdp_bulk::CompressionType {

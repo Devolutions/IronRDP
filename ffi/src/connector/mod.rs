@@ -20,8 +20,8 @@ pub mod ffi {
     use crate::clipboard::ffi::Cliprdr;
     use crate::dvc::dvc_pipe_proxy_message_queue::DvcPipeProxyMessageInner;
     use crate::dvc::ffi::DvcPipeProxyConfig;
-    use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::error::ValueConsumedError;
+    use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::pdu::ffi::WriteBuf;
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it

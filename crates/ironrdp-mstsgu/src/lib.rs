@@ -13,8 +13,8 @@ use core::task::Poll;
 use core::time::Duration;
 use std::io;
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{FutureExt as _, SinkExt as _, StreamExt as _};
 use hyper::body::Bytes;
@@ -24,10 +24,10 @@ use log::{error, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tokio_tungstenite::tungstenite::{http, Message};
-use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::{Message, http};
 use tokio_util::sync::PollSender;
 
 use self::proto::{
@@ -415,11 +415,7 @@ impl AsyncRead for GwClient {
             !rx_buf.is_empty()
         });
 
-        if n > 0 {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
-        }
+        if n > 0 { Poll::Ready(Ok(())) } else { Poll::Pending }
     }
 }
 

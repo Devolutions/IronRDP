@@ -6,6 +6,8 @@ pub fn fmt(sh: &Shell) -> anyhow::Result<()> {
     let output = cmd!(sh, "{CARGO} fmt --all -- --check").ignore_status().output()?;
 
     if !output.status.success() {
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
         anyhow::bail!("Bad formatting, please run 'cargo +stable fmt --all'");
     }
 

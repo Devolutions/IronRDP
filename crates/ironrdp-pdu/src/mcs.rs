@@ -1,15 +1,15 @@
 use std::borrow::Cow;
 
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, read_padding,
-    unexpected_message_type_err, IntoOwned, ReadCursor, WriteCursor,
+    IntoOwned, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err,
+    read_padding, unexpected_message_type_err,
 };
 
 use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, ConferenceCreateResponse};
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
-use crate::x224::{user_data_size, X224Pdu};
-use crate::{impl_x224_pdu_borrowing, impl_x224_pdu_pod, per, DecodeResult, EncodeResult, PduError};
+use crate::x224::{X224Pdu, user_data_size};
+use crate::{DecodeResult, EncodeResult, PduError, impl_x224_pdu_borrowing, impl_x224_pdu_pod, per};
 
 // T.125 MCS is defined in:
 //
@@ -142,9 +142,7 @@ const SEND_DATA_PDU_DATA_PRIORITY_AND_SEGMENTATION: u8 = 0x70;
 /// |e| <crate::PduError as crate::PduErrorExt>::invalid_field(Self::MCS_NAME, field_name, "PER").with_source(e)
 /// ```
 macro_rules! per_field_err {
-    ($field_name:expr) => {{
-        |error| ironrdp_core::invalid_field_err_with_source(Self::MCS_NAME, $field_name, "PER", error)
-    }};
+    ($field_name:expr) => {{ |error| ironrdp_core::invalid_field_err_with_source(Self::MCS_NAME, $field_name, "PER", error) }};
 }
 
 #[doc(hidden)]
@@ -944,15 +942,15 @@ mod legacy {
 
     use std::io;
 
-    use ironrdp_core::{cast_int, Decode, DecodeResult, Encode};
+    use ironrdp_core::{Decode, DecodeResult, Encode, cast_int};
     use thiserror::Error;
 
     use super::{
-        cast_length, ensure_size, ConnectInitial, ConnectResponse, DomainParameters, PduError, ReadCursor, WriteCursor,
-        RESULT_ENUM_LENGTH,
+        ConnectInitial, ConnectResponse, DomainParameters, PduError, RESULT_ENUM_LENGTH, ReadCursor, WriteCursor,
+        cast_length, ensure_size,
     };
     use crate::gcc::{ConferenceCreateRequest, ConferenceCreateResponse, GccError};
-    use crate::{ber, EncodeResult};
+    use crate::{EncodeResult, ber};
 
     // impl<'de> McsPdu<'de> for ConnectInitial {
     //     const MCS_NAME: &'static str = "DisconnectProviderUltimatum";

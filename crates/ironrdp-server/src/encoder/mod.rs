@@ -1,9 +1,9 @@
 use core::fmt;
 use core::num::NonZeroU16;
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use ironrdp_acceptor::DesktopSize;
-use ironrdp_graphics::diff::{find_different_rects_sub, Rect};
+use ironrdp_graphics::diff::{Rect, find_different_rects_sub};
 use ironrdp_pdu::encode_vec;
 use ironrdp_pdu::fast_path::UpdateCode;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
@@ -117,22 +117,19 @@ impl UpdateEncoder {
         max_request_size: u32,
     ) -> Result<Self> {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
-            let mut bitmap = BitmapUpdater::None(NoneHandler);
-
-            if let Some((algo, id)) = codecs.remotefx {
-                bitmap = BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size));
+            match codecs {
+                #[cfg(feature = "qoiz")]
+                UpdateEncoderCodecs { qoiz: Some(id), .. } => {
+                    BitmapUpdater::Qoiz(QoizHandler::new(id).context("failed to initialize qoiz handler")?)
+                }
+                #[cfg(feature = "qoi")]
+                UpdateEncoderCodecs { qoi: Some(id), .. } => BitmapUpdater::Qoi(QoiHandler::new(id)),
+                UpdateEncoderCodecs {
+                    remotefx: Some((algo, id)),
+                    ..
+                } => BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size)),
+                _ => BitmapUpdater::None(NoneHandler),
             }
-
-            #[cfg(feature = "qoi")]
-            if let Some(id) = codecs.qoi {
-                bitmap = BitmapUpdater::Qoi(QoiHandler::new(id));
-            }
-            #[cfg(feature = "qoiz")]
-            if let Some(id) = codecs.qoiz {
-                bitmap = BitmapUpdater::Qoiz(QoizHandler::new(id).context("failed to initialize qoiz handler")?);
-            }
-
-            bitmap
         } else {
             BitmapUpdater::Bitmap(BitmapHandler::new())
         };

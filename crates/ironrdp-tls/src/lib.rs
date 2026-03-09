@@ -23,7 +23,7 @@ compile_error!("a TLS backend must be selected by enabling a single feature out 
 
 // The whole public API of this crate.
 #[cfg(any(feature = "stub", feature = "native-tls", feature = "rustls"))]
-pub use impl_::{upgrade, TlsStream};
+pub use impl_::{TlsStream, upgrade};
 
 pub fn extract_tls_server_public_key(cert: &x509_cert::Certificate) -> Option<&[u8]> {
     cert.tbs_certificate

@@ -15,7 +15,7 @@ exclude = [
 ]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/Devolutions/IronRDP"
 repository = "https://github.com/Devolutions/IronRDP"
@@ -53,7 +53,6 @@ unsafe_attr_outside_unsafe = "warn"
 
 # == Correctness == #
 ambiguous_negative_literals  = "warn"
-keyword_idents_2024 = "warn" # FIXME: remove when switched to 2024 edition
 
 # == Style, readability == #
 elided_lifetimes_in_paths = "warn" # https://quinedot.github.io/rust-learning/dont-hide.html
@@ -134,7 +133,6 @@ checked_conversions = "warn"
 get_unwrap = "warn"
 similar_names = "warn" # Reduce risk of confusing similar names together, and protects against typos when variable shadowing was intended.
 str_to_string = "warn"
-string_to_string = "warn"
 std_instead_of_core = "warn"
 separated_literal_suffix = "warn"
 unused_self = "warn"

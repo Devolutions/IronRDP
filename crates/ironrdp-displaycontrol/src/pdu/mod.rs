@@ -3,8 +3,8 @@
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
 
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
-    WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    invalid_field_err,
 };
 use ironrdp_dvc::DvcEncode;
 use tracing::warn;
@@ -401,7 +401,7 @@ impl MonitorLayoutEntry {
     ///
     /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     fn new_impl(mut width: u32, height: u32) -> EncodeResult<Self> {
-        if width % 2 != 0 {
+        if !width.is_multiple_of(2) {
             let prev_width = width;
             width = width.saturating_sub(1);
             warn!(
@@ -441,7 +441,7 @@ impl MonitorLayoutEntry {
         }
 
         let mut width = width;
-        if width % 2 != 0 {
+        if !width.is_multiple_of(2) {
             width = width.saturating_sub(1);
         }
 

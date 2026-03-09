@@ -1,7 +1,7 @@
 use ironrdp_core::{Encode, WriteCursor};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::pdu::{
-    Avc420Region, CapabilitiesAdvertisePdu, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV8Flags,
+    Avc420Region, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
     CapabilitySet, GfxPdu,
 };
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, QoeMetrics, Surface};

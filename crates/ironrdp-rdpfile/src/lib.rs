@@ -79,11 +79,7 @@ pub fn load(properties: &mut PropertySet, input: &str) -> Result<(), Vec<Error>>
         }
     }
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
+    if errors.is_empty() { Ok(()) } else { Err(errors) }
 }
 
 pub struct ParseResult {

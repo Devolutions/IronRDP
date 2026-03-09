@@ -4,15 +4,15 @@ mod tests;
 use bit_field::BitField as _;
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_length, decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeError,
-    DecodeResult, Encode, EncodeResult, InvalidFieldErr as _, ReadCursor, WriteCursor,
+    Decode, DecodeError, DecodeResult, Encode, EncodeResult, InvalidFieldErr as _, ReadCursor, WriteCursor,
+    cast_length, decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
 use super::bitmap::BitmapUpdateData;
 use super::pointer::PointerUpdateData;
-use super::surface_commands::{SurfaceCommand, SURFACE_COMMAND_HEADER_SIZE};
+use super::surface_commands::{SURFACE_COMMAND_HEADER_SIZE, SurfaceCommand};
 use crate::per;
 use crate::rdp::client_info::CompressionType;
 use crate::rdp::headers::{CompressionFlags, SHARE_DATA_HEADER_COMPRESSION_MASK};

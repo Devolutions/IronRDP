@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId};
 use tracing::error;
-use windows::core::PCWSTR;
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+use windows::core::PCWSTR;
 
 use crate::windows::utils::get_last_winapi_error;
 

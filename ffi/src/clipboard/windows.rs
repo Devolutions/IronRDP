@@ -4,9 +4,9 @@
 use ironrdp_cliprdr_native as _;
 
 use super::ffi::CliprdrBackendFactory;
-use crate::error::ffi::IronRdpError;
 #[cfg(not(windows))]
-use crate::error::WrongOSError; // avoid linter error, stub clipboard will be used in later commit
+use crate::error::WrongOSError;
+use crate::error::ffi::IronRdpError; // avoid linter error, stub clipboard will be used in later commit
 
 /*
     Why are we creating a WinCliprdrInner struct and implement differently?

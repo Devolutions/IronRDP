@@ -1,5 +1,5 @@
 use iron_remote_desktop::{IronErrorKind, RDCleanPathDetails};
-use ironrdp::connector::{self, sspi, ConnectorErrorKind};
+use ironrdp::connector::{self, ConnectorErrorKind, sspi};
 
 pub(crate) struct IronError {
     kind: IronErrorKind,

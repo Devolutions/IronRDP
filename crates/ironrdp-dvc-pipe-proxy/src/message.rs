@@ -1,4 +1,4 @@
-use ironrdp_core::{ensure_size, Encode, EncodeResult};
+use ironrdp_core::{Encode, EncodeResult, ensure_size};
 use ironrdp_dvc::DvcEncode;
 
 pub(crate) struct RawDataDvcMessage(pub Vec<u8>);

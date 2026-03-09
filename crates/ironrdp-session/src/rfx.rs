@@ -6,11 +6,11 @@ use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_graphics::{dwt, quantization, rlgr, subband_reconstruction};
 use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, Quant, RfxRectangle, Tile};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
-use ironrdp_pdu::{decode_cursor, Decode as _, ReadCursor};
+use ironrdp_pdu::{Decode as _, ReadCursor, decode_cursor};
 use tracing::{instrument, trace};
 
 use crate::image::DecodedImage;
-use crate::{custom_err, general_err, reason_err, SessionResult};
+use crate::{SessionResult, custom_err, general_err, reason_err};
 
 const TILE_SIZE: u16 = 64;
 

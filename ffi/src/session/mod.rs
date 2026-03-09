@@ -126,7 +126,7 @@ pub mod ffi {
             &mut self,
             message: &mut DvcPipeProxyMessage,
         ) -> Result<Box<VecU8>, Box<IronRdpError>> {
-            let messages = core::mem::take(&mut message.0 .1);
+            let messages = core::mem::take(&mut message.0.1);
 
             if messages.is_empty() {
                 return Err("no dvc messages to send (message sent twice?)".into());

@@ -7,8 +7,8 @@ use core::fmt::{self, Debug};
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
-    ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err,
 };
 
 use crate::geometry::InclusiveRectangle;
@@ -222,7 +222,7 @@ impl<'de> Decode<'de> for CompressedDataHeader {
         let main_body_size = src.read_u16();
         let scan_width = src.read_u16();
 
-        if scan_width % 4 != 0 {
+        if !scan_width.is_multiple_of(4) {
             return Err(invalid_field_err!(
                 "cbScanWidth",
                 "The width of the bitmap must be divisible by 4"
@@ -242,7 +242,7 @@ impl Encode for CompressedDataHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        if self.scan_width % 4 != 0 {
+        if !self.scan_width.is_multiple_of(4) {
             return Err(invalid_field_err!(
                 "cbScanWidth",
                 "The width of the bitmap must be divisible by 4"

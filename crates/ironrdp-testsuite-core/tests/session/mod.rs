@@ -2,7 +2,7 @@ mod rfx;
 
 #[cfg(test)]
 mod tests {
-    use ironrdp_pdu::rdp::capability_sets::{client_codecs_capabilities, CodecProperty};
+    use ironrdp_pdu::rdp::capability_sets::{CodecProperty, client_codecs_capabilities};
 
     #[test]
     fn test_codecs_capabilities() {
@@ -14,23 +14,29 @@ mod tests {
 
         let config = &["remotefx:on"];
         let capabilities = client_codecs_capabilities(config).unwrap();
-        assert!(capabilities
-            .0
-            .iter()
-            .any(|cap| matches!(cap.property, CodecProperty::RemoteFx(_))));
+        assert!(
+            capabilities
+                .0
+                .iter()
+                .any(|cap| matches!(cap.property, CodecProperty::RemoteFx(_)))
+        );
 
         let config = &["remotefx:off"];
         let capabilities = client_codecs_capabilities(config).unwrap();
-        assert!(!capabilities
-            .0
-            .iter()
-            .any(|cap| matches!(cap.property, CodecProperty::RemoteFx(_))));
+        assert!(
+            !capabilities
+                .0
+                .iter()
+                .any(|cap| matches!(cap.property, CodecProperty::RemoteFx(_)))
+        );
 
         let config = &["qoi:on"];
         let capabilities = client_codecs_capabilities(config).unwrap();
-        assert!(capabilities
-            .0
-            .iter()
-            .any(|cap| matches!(cap.property, CodecProperty::Qoi)));
+        assert!(
+            capabilities
+                .0
+                .iter()
+                .any(|cap| matches!(cap.property, CodecProperty::Qoi))
+        );
     }
 }

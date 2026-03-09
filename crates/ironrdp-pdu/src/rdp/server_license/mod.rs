@@ -2,17 +2,17 @@ use std::io;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, invalid_field_err, unsupported_value_err, Decode, DecodeResult, Encode,
-    EncodeResult, ReadCursor, WriteCursor,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    invalid_field_err, unsupported_value_err,
 };
 use md5::Digest as _;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
-use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
-pub use crate::rdp::server_license::client_license_info::ClientLicenseInfo;
 use crate::PduError;
+use crate::rdp::headers::{BASIC_SECURITY_HEADER_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags};
+pub use crate::rdp::server_license::client_license_info::ClientLicenseInfo;
 
 #[cfg(test)]
 mod tests;
@@ -30,7 +30,7 @@ pub use self::client_platform_challenge_response::{
     ClientHardwareIdentification, ClientPlatformChallengeResponse, PlatformChallengeResponseData,
 };
 pub use self::licensing_error_message::{LicenseErrorCode, LicensingErrorMessage, LicensingStateTransition};
-pub use self::server_license_request::{cert, ProductInfo, Scope, ServerCertificate, ServerLicenseRequest};
+pub use self::server_license_request::{ProductInfo, Scope, ServerCertificate, ServerLicenseRequest, cert};
 pub use self::server_platform_challenge::ServerPlatformChallenge;
 pub use self::server_upgrade_license::{LicenseInformation, ServerUpgradeLicense};
 
@@ -404,13 +404,13 @@ impl<'de> Decode<'de> for LicensePdu {
 impl Encode for LicensePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
-            Self::ClientNewLicenseRequest(ref pdu) => pdu.encode(dst),
-            Self::ClientLicenseInfo(ref pdu) => pdu.encode(dst),
-            Self::ClientPlatformChallengeResponse(ref pdu) => pdu.encode(dst),
-            Self::ServerLicenseRequest(ref pdu) => pdu.encode(dst),
-            Self::ServerPlatformChallenge(ref pdu) => pdu.encode(dst),
-            Self::ServerUpgradeLicense(ref pdu) => pdu.encode(dst),
-            Self::LicensingErrorMessage(ref pdu) => pdu.encode(dst),
+            Self::ClientNewLicenseRequest(pdu) => pdu.encode(dst),
+            Self::ClientLicenseInfo(pdu) => pdu.encode(dst),
+            Self::ClientPlatformChallengeResponse(pdu) => pdu.encode(dst),
+            Self::ServerLicenseRequest(pdu) => pdu.encode(dst),
+            Self::ServerPlatformChallenge(pdu) => pdu.encode(dst),
+            Self::ServerUpgradeLicense(pdu) => pdu.encode(dst),
+            Self::LicensingErrorMessage(pdu) => pdu.encode(dst),
         }
     }
 

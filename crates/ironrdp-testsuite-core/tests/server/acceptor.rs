@@ -1,6 +1,6 @@
 use ironrdp_acceptor::Acceptor;
 use ironrdp_connector::{DesktopSize, Sequence as _, Written};
-use ironrdp_core::{decode, WriteBuf};
+use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
 use ironrdp_pdu::x224::X224;
 

@@ -12,18 +12,18 @@ use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FormatDataRequest, FormatDataResponse,
 };
 use tracing::error;
-use windows::core::{s, Error};
 pub use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::{E_ACCESSDENIED, FALSE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExA, DefWindowProcA, GetClassInfoA, RegisterClassA, CW_USEDEFAULT, WINDOW_EX_STYLE, WM_USER, WNDCLASSA,
+    CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, GetClassInfoA, RegisterClassA, WINDOW_EX_STYLE, WM_USER, WNDCLASSA,
     WS_POPUP,
 };
+use windows::core::{Error, s};
 
-use self::clipboard_impl::{clipboard_subproc, WinClipboardImpl};
+use self::clipboard_impl::{WinClipboardImpl, clipboard_subproc};
 use self::cliprdr_backend::WinCliprdrBackend;
 
 const BACKEND_CHANNEL_SIZE: usize = 8;

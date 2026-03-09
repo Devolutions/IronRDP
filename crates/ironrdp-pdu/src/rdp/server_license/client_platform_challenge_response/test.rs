@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use ironrdp_core::{decode, encode_vec};
 
 use super::*;
-use crate::rdp::server_license::{LicensePdu, BASIC_SECURITY_HEADER_SIZE};
+use crate::rdp::server_license::{BASIC_SECURITY_HEADER_SIZE, LicensePdu};
 
 const PLATFORM_CHALLENGE_RESPONSE_DATA_BUFFER: [u8; 18] = [
     0x00, 0x01, // version

@@ -58,23 +58,22 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use ironrdp_core::{decode, impl_as_any, Encode, EncodeResult, WriteCursor};
+use ironrdp_core::{Encode, EncodeResult, WriteCursor, decode, impl_as_any};
 use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
-use ironrdp_graphics::zgfx::{compress_and_wrap_egfx, wrap_uncompressed, CompressionMode, Compressor};
+use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
 use ironrdp_pdu::gcc::Monitor;
 use ironrdp_pdu::geometry::InclusiveRectangle;
-use ironrdp_pdu::{decode_err, PduResult};
+use ironrdp_pdu::{PduResult, decode_err};
 use tracing::{debug, trace, warn};
 
-use crate::pdu::{
-    encode_avc420_bitmap_stream, Avc420BitmapStream, Avc420Region, Avc444BitmapStream, CacheImportOfferPdu,
-    CacheImportReplyPdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV103Flags,
-    CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV8Flags,
-    CapabilitySet, Codec1Type, CreateSurfacePdu, DeleteSurfacePdu, Encoding, EndFramePdu, FrameAcknowledgePdu, GfxPdu,
-    MapSurfaceToOutputPdu, PixelFormat, QoeFrameAcknowledgePdu, ResetGraphicsPdu, StartFramePdu, Timestamp,
-    WireToSurface1Pdu,
-};
 use crate::CHANNEL_NAME;
+use crate::pdu::{
+    Avc420BitmapStream, Avc420Region, Avc444BitmapStream, CacheImportOfferPdu, CacheImportReplyPdu,
+    CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
+    CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet, Codec1Type, CreateSurfacePdu,
+    DeleteSurfacePdu, Encoding, EndFramePdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToOutputPdu, PixelFormat,
+    QoeFrameAcknowledgePdu, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+};
 
 // ============================================================================
 // Constants

@@ -13,7 +13,7 @@ use ironrdp_pdu::rdp::server_license::{
     LicenseErrorCode, LicenseHeader, LicensePdu, LicensingErrorMessage, LicensingStateTransition, PreambleFlags,
     PreambleType, PreambleVersion,
 };
-use ironrdp_pdu::rdp::{client_info, ClientInfoPdu};
+use ironrdp_pdu::rdp::{ClientInfoPdu, client_info};
 
 use crate::capsets::{
     CLIENT_DEMAND_ACTIVE, CLIENT_DEMAND_ACTIVE_BUFFER, SERVER_DEMAND_ACTIVE, SERVER_DEMAND_ACTIVE_BUFFER,

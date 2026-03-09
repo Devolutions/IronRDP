@@ -22,7 +22,7 @@ use ironrdp::cliprdr::pdu::{
 };
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html};
-use ironrdp_core::{impl_as_any, IntoOwned as _};
+use ironrdp_core::{IntoOwned as _, impl_as_any};
 use tracing::{error, trace, warn};
 use wasm_bindgen::prelude::*;
 

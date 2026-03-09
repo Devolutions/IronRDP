@@ -1,12 +1,12 @@
 use core::fmt;
 
-use ironrdp_pdu::{
-    cast_length, ensure_fixed_part_size, ensure_size, geometry::InclusiveRectangle, invalid_field_err, Decode,
-    DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
-};
-
 use bit_field::BitField as _;
 use bitflags::bitflags;
+use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::{
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantQuality {
