@@ -4,6 +4,7 @@ version = "0.6.0"
 readme = "README.md"
 description = "`Framed*` traits implementation above futures’s traits"
 edition.workspace = true
+rust-version = "1.89"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true

@@ -4,6 +4,7 @@ version = "0.8.0"
 readme = "README.md"
 description = "State machines to drive an RDP connection acceptance sequence"
 edition.workspace = true
+rust-version = "1.89"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true

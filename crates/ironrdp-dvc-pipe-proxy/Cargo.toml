@@ -4,6 +4,7 @@ version = "0.3.0"
 readme = "README.md"
 description = "DVC named pipe proxy for IronRDP"
 edition.workspace = true
+rust-version = "1.89"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true

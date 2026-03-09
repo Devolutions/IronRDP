@@ -5,6 +5,7 @@ readme = "README.md"
 description = "Parser and writer for .RDP file format"
 publish = false # TODO: publish
 edition.workspace = true
+rust-version = "1.89"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true

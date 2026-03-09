@@ -4,6 +4,7 @@ version = "0.5.0"
 readme = "README.md"
 description = "Utilities to manage and build RDP input packets"
 edition.workspace = true
+rust-version = "1.89"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
