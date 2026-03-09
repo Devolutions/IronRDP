@@ -137,8 +137,12 @@ try {
 
     $existing = if ($null -eq $existingValue) { @() } else { @($existingValue) }
 
-    # Keep other vars, replace or add our entry.
-    $newEnv = @($existing | Where-Object { $_ -notlike "IRONRDP_WTS_PROVIDER_DEBUG_LOG=*" })
+    # Keep other vars, replace or add our entry, and scrub stale provider overrides that
+    # can survive across deploys via TermService's per-service environment.
+    $newEnv = @($existing | Where-Object {
+            $_ -notlike "IRONRDP_WTS_PROVIDER_DEBUG_LOG=*" -and
+            $_ -notlike "IRONRDP_WTS_PROVIDER_FAST_RECONNECT_MODE=*"
+        })
     $newEnv += $debugEnvEntry
 
     New-ItemProperty -Path $termServiceRegPath -Name "Environment" -PropertyType MultiString -Value $newEnv -Force | Out-Null
