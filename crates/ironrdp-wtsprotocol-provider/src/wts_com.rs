@@ -40,6 +40,7 @@ use windows::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
     HANDLE,
     HANDLE_PTR, HLOCAL,
+    WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{
@@ -55,6 +56,9 @@ use windows::Win32::System::Com::{
     COINIT_MULTITHREADED,
 };
 use windows::Win32::System::Pipes::PeekNamedPipe;
+use windows::Win32::System::Registry::{
+    RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE,
+};
 use windows::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, StartServiceW, SC_MANAGER_CONNECT,
     SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING, SERVICE_STATUS,
@@ -176,6 +180,77 @@ impl IWRdsProtocolConnection2_Vtbl {
         // SAFETY: `this` is the COM identity pointer for `Identity`.
         let this = unsafe { (this as *mut *mut c_void).offset(OFFSET) as *mut Identity };
         unsafe { (*this).GetSerializedUserCredential(usercredential) }.into()
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone)]
+#[allow(non_camel_case_types)]
+struct IWRdsEnhancedFastReconnectArbitrator(IUnknown);
+
+unsafe impl windows_core::Interface for IWRdsEnhancedFastReconnectArbitrator {
+    type Vtable = IWRdsEnhancedFastReconnectArbitrator_Vtbl;
+
+    const IID: GUID = GUID::from_u128(0x5718_ae9b_47f2_499f_b634_d817_5bd5_1131);
+}
+
+#[allow(non_camel_case_types)]
+impl core::ops::Deref for IWRdsEnhancedFastReconnectArbitrator {
+    type Target = IUnknown;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[repr(C)]
+#[allow(non_camel_case_types)]
+struct IWRdsEnhancedFastReconnectArbitrator_Vtbl {
+    base__: windows_core::IUnknown_Vtbl,
+    get_session_for_enhanced_fast_reconnect:
+        unsafe extern "system" fn(this: *mut c_void, psessionidarray: *const i32, dwsessioncount: u32, presultsessionid: *mut i32) -> HRESULT,
+}
+
+#[allow(non_camel_case_types)]
+trait IWRdsEnhancedFastReconnectArbitrator_Impl: IUnknownImpl {
+    fn GetSessionForEnhancedFastReconnect(
+        &self,
+        psessionidarray: *const i32,
+        dwsessioncount: u32,
+        presultsessionid: *mut i32,
+    ) -> windows_core::Result<()>;
+}
+
+impl IWRdsEnhancedFastReconnectArbitrator_Vtbl {
+    const fn new<Identity: IWRdsEnhancedFastReconnectArbitrator_Impl, const OFFSET: isize>() -> Self {
+        Self {
+            base__: windows_core::IUnknown_Vtbl::new::<Identity, OFFSET>(),
+            get_session_for_enhanced_fast_reconnect:
+                Self::get_session_for_enhanced_fast_reconnect::<Identity, OFFSET>,
+        }
+    }
+
+    fn matches(iid: &GUID) -> bool {
+        let is_match = iid == &<IWRdsEnhancedFastReconnectArbitrator as windows_core::Interface>::IID;
+
+        debug_log_line(&format!(
+            "IWRdsEnhancedFastReconnectArbitrator::QueryInterfaceMatch iid={iid:?} matched={is_match}",
+        ));
+
+        is_match
+    }
+
+    unsafe extern "system" fn get_session_for_enhanced_fast_reconnect<
+        Identity: IWRdsEnhancedFastReconnectArbitrator_Impl,
+        const OFFSET: isize,
+    >(
+        this: *mut c_void,
+        psessionidarray: *const i32,
+        dwsessioncount: u32,
+        presultsessionid: *mut i32,
+    ) -> HRESULT {
+        let this = unsafe { (this as *mut *mut c_void).offset(OFFSET) as *mut Identity };
+        unsafe { (*this).GetSessionForEnhancedFastReconnect(psessionidarray, dwsessioncount, presultsessionid) }.into()
     }
 }
 
@@ -1621,7 +1696,7 @@ fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS 
         // actually completed.
         s1.fInheritAutoLogon = false;
         s1.fUsingSavedCreds = false;
-        s1.fPromptForPassword = true;
+        s1.fPromptForPassword = false;
         s1.fEnableWindowsKey = true;
         s1.fDisableCtrlAltDel = true;
         s1.fMouse = true;
@@ -1636,6 +1711,24 @@ fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS 
     ));
 
     settings
+}
+
+fn apply_autologon_credentials_to_connection_settings(
+    settings: &mut WRDS_CONNECTION_SETTINGS,
+    username: &str,
+    domain: &str,
+    password: &str,
+) {
+    // SAFETY: `settings` is initialized for the level-1 view by `default_connection_settings`.
+    unsafe {
+        let s1 = &mut settings.WRdsConnectionSetting.WRdsConnectionSettings1;
+        s1.fInheritAutoLogon = true;
+        s1.fUsingSavedCreds = true;
+        s1.fPromptForPassword = false;
+        copy_wide(&mut s1.UserName, username);
+        copy_wide(&mut s1.Domain, domain);
+        copy_wide(&mut s1.Password, password);
+    }
 }
 
 pub fn create_protocol_manager_com() -> IWRdsProtocolManager {
@@ -2473,7 +2566,41 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                         );
                     }
 
+                    let connection_credentials = match control_bridge.get_connection_credentials(incoming.connection_id) {
+                        Ok(Some(credentials)) => {
+                            debug_log_line(&format!(
+                                "OnConnected credential gate satisfied connection_id={} user={} domain={}",
+                                incoming.connection_id,
+                                credentials.0,
+                                credentials.1,
+                            ));
+                            credentials
+                        }
+                        Ok(None) => {
+                            debug_log_line(&format!(
+                                "OnConnected credential gate timed out connection_id={}",
+                                incoming.connection_id
+                            ));
+                            let _ = control_bridge.close_connection(incoming.connection_id);
+                            continue;
+                        }
+                        Err(error) => {
+                            debug_log_line(&format!(
+                                "OnConnected credential gate failed connection_id={} error={error}",
+                                incoming.connection_id,
+                            ));
+                            let _ = control_bridge.close_connection(incoming.connection_id);
+                            continue;
+                        }
+                    };
+
                     let mut settings = default_connection_settings(&listener_name);
+                    apply_autologon_credentials_to_connection_settings(
+                        &mut settings,
+                        &connection_credentials.0,
+                        &connection_credentials.1,
+                        &connection_credentials.2,
+                    );
 
                     let sd_probe: Option<&'static mut [u8]> =
                         if std::env::var("IRONRDP_WTS_SD_PROBE").as_deref() == Ok("1") {
@@ -2591,6 +2718,13 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                             }
 
                             connection_callbacks.insert(incoming.connection_id, connection_callback.clone());
+
+                            debug_log_line(&format!(
+                                "OnReady credential gate already satisfied connection_id={} user={} domain={}",
+                                incoming.connection_id,
+                                connection_credentials.0,
+                                connection_credentials.1,
+                            ));
 
                             // SAFETY: connection_callback is a valid COM interface returned by TermService.
                             let ready_result = unsafe { connection_callback.OnReady() };
@@ -2901,6 +3035,7 @@ impl IWRdsProtocolLogonErrorRedirector_Impl for WrdsLogonErrorRedirector_Impl {
 #[implement(
     IWRdsProtocolConnection,
     IWRdsProtocolConnection2,
+    IWRdsEnhancedFastReconnectArbitrator,
     IWRdsWddmIddProps,
     IWRdsWddmIddProps1,
     IAgileObject
@@ -2965,12 +3100,135 @@ fn update_idd_runtime_video_source(connection_id: u32, source: VideoHandleSource
 }
 
 fn env_var_truthy(name: &str) -> bool {
-    match std::env::var(name) {
+    match provider_override_env_var(name) {
         Ok(value) => {
             let normalized = value.trim().to_ascii_lowercase();
             matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
         }
         Err(_) => false,
+    }
+}
+
+fn provider_override_env_var(name: &str) -> Result<String, std::env::VarError> {
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => Ok(value),
+        Err(std::env::VarError::NotPresent) => read_termservice_environment_var(name)
+            .or_else(|| read_machine_environment_var(name))
+            .ok_or(std::env::VarError::NotPresent),
+        Ok(_) => read_termservice_environment_var(name)
+            .or_else(|| read_machine_environment_var(name))
+            .ok_or(std::env::VarError::NotPresent),
+        Err(error) => Err(error),
+    }
+}
+
+fn read_termservice_environment_var(name: &str) -> Option<String> {
+    let mut bytes = 0u32;
+    let flags = RRF_RT_REG_MULTI_SZ | RRF_ZEROONFAILURE;
+
+    let query_status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            windows::core::w!("SYSTEM\\CurrentControlSet\\Services\\TermService"),
+            windows::core::w!("Environment"),
+            flags,
+            None,
+            None,
+            Some(&mut bytes),
+        )
+    };
+
+    if query_status != WIN32_ERROR(0) || bytes < 2 {
+        return None;
+    }
+
+    let mut wide = vec![0u16; usize::try_from(bytes).ok()?.div_ceil(size_of::<u16>())];
+    let read_status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            windows::core::w!("SYSTEM\\CurrentControlSet\\Services\\TermService"),
+            windows::core::w!("Environment"),
+            flags,
+            None,
+            Some(wide.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        )
+    };
+
+    if read_status != WIN32_ERROR(0) {
+        debug_log_line(&format!(
+            "read_termservice_environment_var name={name} RegGetValueW failed status={read_status:?}",
+        ));
+        return None;
+    }
+
+    let used_len = usize::try_from(bytes).ok()?.div_ceil(size_of::<u16>());
+    for entry in wide[..used_len].split(|ch| *ch == 0) {
+        if entry.is_empty() {
+            continue;
+        }
+
+        let item = String::from_utf16_lossy(entry);
+        let Some((entry_name, entry_value)) = item.split_once('=') else {
+            continue;
+        };
+
+        if entry_name.eq_ignore_ascii_case(name) {
+            return Some(entry_value.to_owned());
+        }
+    }
+
+    None
+}
+
+fn read_machine_environment_var(name: &str) -> Option<String> {
+    let value_name: Vec<u16> = name.encode_utf16().chain(core::iter::once(0)).collect();
+    let mut bytes = 0u32;
+    let flags = RRF_RT_REG_SZ | RRF_ZEROONFAILURE;
+
+    let query_status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            windows::core::w!("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"),
+            PCWSTR(value_name.as_ptr()),
+            flags,
+            None,
+            None,
+            Some(&mut bytes),
+        )
+    };
+
+    if query_status != WIN32_ERROR(0) || bytes < 2 {
+        return None;
+    }
+
+    let mut wide = vec![0u16; usize::try_from(bytes).ok()?.div_ceil(size_of::<u16>())];
+    let read_status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            windows::core::w!("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"),
+            PCWSTR(value_name.as_ptr()),
+            flags,
+            None,
+            Some(wide.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        )
+    };
+
+    if read_status != WIN32_ERROR(0) {
+        debug_log_line(&format!(
+            "read_machine_environment_var name={name} RegGetValueW failed status={read_status:?}",
+        ));
+        return None;
+    }
+
+    let used_len = usize::try_from(bytes).ok()?.div_ceil(size_of::<u16>());
+    let value = String::from_utf16_lossy(&wide[..used_len]);
+    let trimmed = value.trim_end_matches('\0').trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
     }
 }
 
@@ -2983,10 +3241,16 @@ fn provider_fast_reconnect_mode() -> u32 {
         // On current Server builds that tends to rebind the connection to the hidden pre-logon
         // temporary session instead of creating a fresh interactive session. Keep the override for
         // targeted experiments, but default to disabled until reconnect is implemented end-to-end.
-        let configured = std::env::var("IRONRDP_WTS_PROVIDER_FAST_RECONNECT_MODE")
-            .ok()
+        let configured_raw = provider_override_env_var("IRONRDP_WTS_PROVIDER_FAST_RECONNECT_MODE").ok();
+        let configured = configured_raw
+            .as_deref()
             .and_then(|value| value.trim().parse::<u32>().ok())
             .unwrap_or(FAST_RECONNECT_DISABLED);
+
+        debug_log_line(&format!(
+            "provider_fast_reconnect_mode resolved raw={:?} configured={configured}",
+            configured_raw,
+        ));
 
         match configured {
             FAST_RECONNECT_DISABLED | FAST_RECONNECT_BASIC | FAST_RECONNECT_ENHANCED => configured,
@@ -4892,6 +5156,103 @@ impl IWRdsProtocolConnection2_Impl for ComProtocolConnection_Impl {
         debug_log_line(&format!(
             "IWRdsProtocolConnection2::GetSerializedUserCredential ok connection_id={connection_id} packed_bytes={packed_size}",
         ));
+        Ok(())
+    }
+}
+
+impl IWRdsEnhancedFastReconnectArbitrator_Impl for ComProtocolConnection_Impl {
+    fn GetSessionForEnhancedFastReconnect(
+        &self,
+        psessionidarray: *const i32,
+        dwsessioncount: u32,
+        presultsessionid: *mut i32,
+    ) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
+        debug_log_line(&format!(
+            "IWRdsEnhancedFastReconnectArbitrator::GetSessionForEnhancedFastReconnect called connection_id={connection_id} count={dwsessioncount} snapshot={}",
+            session_selection_snapshot(),
+        ));
+
+        if presultsessionid.is_null() {
+            return Err(windows_core::Error::new(E_POINTER, "null enhanced fast reconnect result pointer"));
+        }
+
+        unsafe {
+            *presultsessionid = -1;
+        }
+
+        if dwsessioncount == 0 {
+            debug_log_line(&format!(
+                "IWRdsEnhancedFastReconnectArbitrator::GetSessionForEnhancedFastReconnect no_candidates connection_id={connection_id}",
+            ));
+            return Err(windows_core::Error::new(E_NOTIMPL, "no enhanced fast reconnect candidates"));
+        }
+
+        if psessionidarray.is_null() {
+            return Err(windows_core::Error::new(E_POINTER, "null enhanced fast reconnect session array"));
+        }
+
+        let count = usize::try_from(dwsessioncount).unwrap_or(0);
+        let candidates = unsafe { core::slice::from_raw_parts(psessionidarray, count) };
+
+        let mut selected: Option<u32> = None;
+        let mut selected_reason = "first_candidate";
+        let mut summary = Vec::with_capacity(candidates.len());
+
+        for candidate in candidates {
+            let raw_session_id = if *candidate < 0 { u32::MAX } else { *candidate as u32 };
+            let session_id = canonicalize_enumerated_session_id(raw_session_id);
+            let has_token = session_id != u32::MAX && session_has_user_token(session_id);
+            let has_explorer = session_id != u32::MAX && session_has_process(session_id, "explorer.exe");
+            let has_winlogon = session_id != u32::MAX && session_has_process(session_id, "winlogon.exe");
+            let has_logonui = session_id != u32::MAX && session_has_process(session_id, "LogonUI.exe");
+            let interactive = session_id != u32::MAX && session_is_interactive(session_id);
+
+            summary.push(format!(
+                "{raw_session_id}->{session_id}:interactive={interactive},token={has_token},explorer={has_explorer},winlogon={has_winlogon},logonui={has_logonui}"
+            ));
+
+            if session_id == u32::MAX {
+                continue;
+            }
+
+            if interactive {
+                selected = Some(session_id);
+                selected_reason = "interactive";
+                break;
+            }
+
+            if has_token && selected.is_none() {
+                selected = Some(session_id);
+                selected_reason = "token";
+                continue;
+            }
+
+            if selected.is_none() {
+                selected = Some(session_id);
+            }
+        }
+
+        debug_log_line(&format!(
+            "IWRdsEnhancedFastReconnectArbitrator::GetSessionForEnhancedFastReconnect candidates connection_id={connection_id} values=[{}]",
+            summary.join("; "),
+        ));
+
+        let Some(session_id) = selected else {
+            debug_log_line(&format!(
+                "IWRdsEnhancedFastReconnectArbitrator::GetSessionForEnhancedFastReconnect no_valid_candidate connection_id={connection_id}",
+            ));
+            return Err(windows_core::Error::new(E_NOTIMPL, "no valid enhanced fast reconnect candidate"));
+        };
+
+        unsafe {
+            *presultsessionid = i32::try_from(session_id).unwrap_or(-1);
+        }
+
+        debug_log_line(&format!(
+            "IWRdsEnhancedFastReconnectArbitrator::GetSessionForEnhancedFastReconnect selected connection_id={connection_id} session_id={session_id} reason={selected_reason}",
+        ));
+
         Ok(())
     }
 }
