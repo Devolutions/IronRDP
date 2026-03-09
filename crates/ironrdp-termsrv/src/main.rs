@@ -135,9 +135,6 @@ mod windows_main {
     const RDP_USERNAME_ENV: &str = "IRONRDP_RDP_USERNAME";
     const RDP_PASSWORD_ENV: &str = "IRONRDP_RDP_PASSWORD";
     const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
-    const WTS_LOGON_USERNAME_ENV: &str = "IRONRDP_WTS_LOGON_USERNAME";
-    const WTS_LOGON_PASSWORD_ENV: &str = "IRONRDP_WTS_LOGON_PASSWORD";
-    const WTS_LOGON_DOMAIN_ENV: &str = "IRONRDP_WTS_LOGON_DOMAIN";
 
     fn control_pipe_security_attributes() -> anyhow::Result<(SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR)> {
         // Allow TermService (NetworkService) to connect to the control pipe.
@@ -702,10 +699,11 @@ mod windows_main {
 
                     if self.provider_mode {
                         match session_id_override {
-                            Some(_session_id) if explorer_ready || !user_token_available => {
+                            Some(_session_id) if interactive_shell_ready => {
                                 self.waiting_for_shell_ready_since = None;
                             }
                             Some(session_id) => {
+                                let captured_credentials = { self.credentials_slot.lock().await.clone() };
                                 let now = Instant::now();
                                 let waiting_since = self.waiting_for_shell_ready_since.get_or_insert(now);
 
@@ -722,7 +720,7 @@ mod windows_main {
                                     );
 
                                     let bootstrap_task = tokio::task::spawn_blocking(move || {
-                                        try_start_explorer_process(session_id, false)
+                                        try_start_explorer_process(session_id, captured_credentials, false)
                                     });
 
                                     match timeout(Duration::from_secs(3), bootstrap_task).await {
@@ -2227,8 +2225,12 @@ mod windows_main {
         })
     }
 
-    fn try_start_explorer_process(session_id: u32, allow_prelogon_fallback: bool) -> anyhow::Result<u32> {
-        let acquired = acquire_session_token(session_id, None, allow_prelogon_fallback, false)
+    fn try_start_explorer_process(
+        session_id: u32,
+        credentials: Option<StoredCredentials>,
+        allow_prelogon_fallback: bool,
+    ) -> anyhow::Result<u32> {
+        let acquired = acquire_session_token(session_id, credentials.as_ref(), allow_prelogon_fallback, true)
             .context("failed to acquire a user token for explorer bootstrap")?;
         let user_token = acquired.token;
 
@@ -2566,7 +2568,7 @@ mod windows_main {
             }
         }
 
-        if !allow_prelogon_fallback {
+        if !allow_prelogon_fallback && !allow_service_token_fallback {
             let wts_error = wts_result.err().unwrap_or_else(windows::core::Error::empty);
             info!(
                 session_id,
@@ -2577,25 +2579,27 @@ mod windows_main {
             return Err(anyhow!("prelogon token fallback disabled after initial helper start"));
         }
 
-        match token_from_session_process_with_retries(session_id, "winlogon.exe", process_lookup_retries) {
-            Ok(token) => {
-                info!(
-                    session_id,
-                    "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
-                );
-                return finalize_acquired_session_token(
-                    session_id,
-                    token,
-                    HelperDesktop::Winlogon,
-                    "winlogon.exe",
-                );
-            }
-            Err(error) => {
-                info!(
-                    session_id,
-                    error = %format!("{error:#}"),
-                    "winlogon.exe token unavailable for capture session"
-                );
+        if allow_prelogon_fallback {
+            match token_from_session_process_with_retries(session_id, "winlogon.exe", process_lookup_retries) {
+                Ok(token) => {
+                    info!(
+                        session_id,
+                        "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
+                    );
+                    return finalize_acquired_session_token(
+                        session_id,
+                        token,
+                        HelperDesktop::Winlogon,
+                        "winlogon.exe",
+                    );
+                }
+                Err(error) => {
+                    info!(
+                        session_id,
+                        error = %format!("{error:#}"),
+                        "winlogon.exe token unavailable for capture session"
+                    );
+                }
             }
         }
 
@@ -3659,11 +3663,10 @@ mod windows_main {
     struct ConnectionEntry {
         listener_name: String,
         peer_addr: Option<String>,
-        stream: Option<TcpStream>,
         session_task: Option<JoinHandle<()>>,
         /// Credentials captured from the CredSSP handshake.
         ///
-        /// `None` until the NLA handshake completes; queried by `GetConnectionCredentials`.
+        /// `None` until client-supplied credentials are captured; queried by `GetConnectionCredentials`.
         credentials: Arc<Mutex<Option<StoredCredentials>>>,
     }
 
@@ -4075,48 +4078,9 @@ mod windows_main {
                 return ServiceEvent::ConnectionReady { connection_id };
             }
 
-            let Some(stream) = connection.stream.take() else {
-                return ServiceEvent::Error {
-                    message: format!("connection stream already consumed: {connection_id}"),
-                };
-            };
-
-            let peer_addr = connection.peer_addr.clone();
-            let credentials_slot = Arc::clone(&connection.credentials);
-            let connection_session_ids = Arc::clone(&self.connection_session_ids);
-            let listener_name_for_task = connection.listener_name.clone();
-            let broken_tx = self.broken_tx.clone();
-
-            let session_task = tokio::task::spawn_local(async move {
-                let result = run_ironrdp_connection(
-                    connection_id,
-                    peer_addr.as_deref(),
-                    stream,
-                    credentials_slot,
-                    connection_session_ids,
-                    true, // provider_mode: WTS provider DLL will send SetCaptureSessionId
-                )
-                .await;
-
-                let reason = match &result {
-                    Ok(()) => "connection closed".to_owned(),
-                    Err(error) => format!("{error:#}"),
-                };
-
-                let _ = broken_tx.send(BrokenNotification {
-                    listener_name: listener_name_for_task,
-                    connection_id,
-                    reason,
-                });
-
-                if let Err(error) = result {
-                    warn!(error = %format!("{error:#}"), connection_id, "IronRDP connection task failed");
-                }
-            });
-
-            connection.session_task = Some(session_task);
-
-            ServiceEvent::ConnectionReady { connection_id }
+            ServiceEvent::Error {
+                message: format!("connection session task not started for connection {connection_id}"),
+            }
         }
 
         fn close_connection(&mut self, connection_id: u32) -> ServiceEvent {
@@ -4228,7 +4192,6 @@ mod windows_main {
                 ConnectionEntry {
                     listener_name: listener_name.clone(),
                     peer_addr: peer_addr.clone(),
-                    stream: None,
                     session_task: Some(session_task),
                     credentials,
                 },
@@ -4251,25 +4214,6 @@ mod windows_main {
         provider_mode: bool,
     ) -> anyhow::Result<()> {
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
-
-        if provider_mode {
-            let fallback_credentials = match resolve_wts_logon_credentials_from_env()? {
-                Some(credentials) => Some(credentials),
-                None => resolve_rdp_credentials_from_env()?.map(stored_credentials_from_rdp_credentials),
-            };
-
-            if let Some(credentials) = fallback_credentials {
-                info!(
-                    connection_id,
-                    username = %credentials.username,
-                    domain = %credentials.domain,
-                    "Seeded provider-mode credentials for WTS provider"
-                );
-
-                let mut guard = credentials_slot.lock().await;
-                *guard = Some(credentials);
-            }
-        }
 
         let input_stream_slot: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
         let (input_tx, input_rx) = mpsc::unbounded_channel::<InputPacket>();
@@ -4326,40 +4270,6 @@ mod windows_main {
             }
 
             server.set_allow_unverified_credentials(true);
-
-            let credentials_slot = Arc::clone(&credentials_slot);
-            server.set_client_info_credentials_sink(move |creds| {
-                let username = creds.username;
-                let domain = creds.domain.unwrap_or_default();
-                let password = creds.password;
-
-                if username.is_empty() || password.is_empty() {
-                    info!(
-                        connection_id,
-                        username = %username,
-                        domain = %domain,
-                        "Received ClientInfo credentials without username/password; ignoring"
-                    );
-                    return;
-                }
-
-                info!(
-                    connection_id,
-                    username = %username,
-                    domain = %domain,
-                    "Captured ClientInfo credentials; storing for WTS provider"
-                );
-
-                let credentials_slot = Arc::clone(&credentials_slot);
-                tokio::task::spawn_local(async move {
-                    let mut guard = credentials_slot.lock().await;
-                    *guard = Some(StoredCredentials {
-                        username,
-                        domain,
-                        password,
-                    });
-                });
-            });
         } else {
             let expected_credentials = resolve_rdp_credentials_from_env()?;
 
@@ -4376,10 +4286,12 @@ mod windows_main {
             }
         }
 
-        let pending = server
-            .run_connection_handshake(stream)
-            .await
-            .with_context(|| format!("failed handshake for connection {connection_id}"))?;
+        let pending = match server.run_connection_handshake(stream).await {
+            Ok(pending) => pending,
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed handshake for connection {connection_id}"));
+            }
+        };
 
         // Store CredSSP credentials immediately so the WTS provider DLL can
         // retrieve them via `GetConnectionCredentials` before the display loop
@@ -4402,6 +4314,10 @@ mod windows_main {
                 domain,
                 password,
             });
+        } else if provider_mode {
+            return Err(anyhow!(
+                "provider-mode connection {connection_id} completed handshake without captured CredSSP credentials"
+            ));
         }
 
         server
@@ -4441,44 +4357,6 @@ mod windows_main {
                 password,
                 domain,
             })),
-        }
-    }
-
-    fn resolve_wts_logon_credentials_from_env() -> anyhow::Result<Option<StoredCredentials>> {
-        let username = std::env::var(WTS_LOGON_USERNAME_ENV)
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
-
-        let password = std::env::var(WTS_LOGON_PASSWORD_ENV)
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
-
-        let domain = std::env::var(WTS_LOGON_DOMAIN_ENV)
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_default();
-
-        match (username, password) {
-            (None, None) => Ok(None),
-            (Some(_), None) | (None, Some(_)) => Err(anyhow!(
-                "both {WTS_LOGON_USERNAME_ENV} and {WTS_LOGON_PASSWORD_ENV} must be set together"
-            )),
-            (Some(username), Some(password)) => Ok(Some(StoredCredentials {
-                username,
-                domain,
-                password,
-            })),
-        }
-    }
-
-    fn stored_credentials_from_rdp_credentials(credentials: Credentials) -> StoredCredentials {
-        StoredCredentials {
-            username: credentials.username,
-            domain: credentials.domain.unwrap_or_default(),
-            password: credentials.password,
         }
     }
 

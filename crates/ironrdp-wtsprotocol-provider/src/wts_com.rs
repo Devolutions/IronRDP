@@ -6,6 +6,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
+use core::ffi::c_void;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::OpenOptions;
@@ -35,7 +36,7 @@ use windows::Win32::Foundation::{
     ERROR_ACCESS_DENIED,
     ERROR_INSUFFICIENT_BUFFER, ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_NO_MORE_ITEMS, ERROR_NO_TOKEN,
     ERROR_SEM_TIMEOUT,
-    E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED,
+    E_NOINTERFACE, E_NOTIMPL, E_OUTOFMEMORY as E_OUTOFMEMORY_WIN32, E_POINTER, E_UNEXPECTED, GetLastError,
     ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
     HANDLE,
     HANDLE_PTR, HLOCAL,
@@ -64,7 +65,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolConnection, IWRdsProtocolConnectionCallback, IWRdsProtocolConnectionSettings_Impl,
-    IWRdsProtocolConnection_Impl, IWRdsProtocolLicenseConnection, IWRdsProtocolLicenseConnection_Impl,
+    IWRdsProtocolConnection_Impl, IWRdsProtocolConnection_Vtbl, IWRdsProtocolLicenseConnection,
+    IWRdsProtocolLicenseConnection_Impl,
     IWRdsProtocolListener, IWRdsProtocolListenerCallback, IWRdsProtocolListener_Impl,
     IWRdsProtocolLogonErrorRedirector, IWRdsProtocolLogonErrorRedirector_Impl, IWRdsProtocolManager,
     IWRdsProtocolManager_Impl, IWRdsProtocolSettings,
@@ -85,7 +87,7 @@ use windows::Win32::System::RemoteDesktop::{
     WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
 };
 use windows_core::{implement, Interface as _, BOOL, GUID, PCSTR, PCWSTR, PWSTR};
-use windows_core::{IUnknown, HRESULT};
+use windows_core::{IUnknown, HRESULT, IUnknownImpl};
 
 use crate::auth_bridge::{CredsspPolicy, CredsspServerBridge};
 use crate::connection::ProtocolConnection;
@@ -96,6 +98,86 @@ const S_OK: HRESULT = HRESULT(0);
 const S_FALSE: HRESULT = HRESULT(1);
 // HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY=14) == 0x8007000E
 const E_OUTOFMEMORY: HRESULT = HRESULT(-2147024882);
+const CRED_PACK_PROTECTED_CREDENTIALS: u32 = 0x1;
+
+#[link(name = "credui")]
+unsafe extern "system" {
+    fn CredPackAuthenticationBufferW(
+        dwflags: u32,
+        pszusername: PWSTR,
+        pszpassword: PWSTR,
+        ppackedcredentials: *mut u8,
+        pcbpackedcredentials: *mut u32,
+    ) -> BOOL;
+}
+
+#[repr(C)]
+struct WRDS_SERIALIZED_USER_CREDENTIAL {
+    serialization_length: u32,
+    serialization: *mut u8,
+}
+
+#[repr(transparent)]
+#[derive(Clone, PartialEq, Eq)]
+struct IWRdsProtocolConnection2(IUnknown);
+
+unsafe impl windows_core::Interface for IWRdsProtocolConnection2 {
+    type Vtable = IWRdsProtocolConnection2_Vtbl;
+    const IID: GUID = GUID::from_u128(0xc2bd9b66_4a76_4701_b6a3_bfafc1482169);
+}
+
+impl core::ops::Deref for IWRdsProtocolConnection2 {
+    type Target = IWRdsProtocolConnection;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: `IWRdsProtocolConnection2` extends `IWRdsProtocolConnection`.
+        unsafe { core::mem::transmute(self) }
+    }
+}
+
+#[repr(C)]
+struct IWRdsProtocolConnection2_Vtbl {
+    base__: IWRdsProtocolConnection_Vtbl,
+    get_serialized_user_credential:
+        unsafe extern "system" fn(this: *mut c_void, usercredential: *mut *mut WRDS_SERIALIZED_USER_CREDENTIAL) -> HRESULT,
+}
+
+#[allow(non_camel_case_types)]
+trait IWRdsProtocolConnection2_Impl: IWRdsProtocolConnection_Impl + IUnknownImpl {
+    fn GetSerializedUserCredential(
+        &self,
+        usercredential: *mut *mut WRDS_SERIALIZED_USER_CREDENTIAL,
+    ) -> windows_core::Result<()>;
+}
+
+impl IWRdsProtocolConnection2_Vtbl {
+    const fn new<Identity: IWRdsProtocolConnection2_Impl, const OFFSET: isize>() -> Self {
+        Self {
+            base__: IWRdsProtocolConnection_Vtbl::new::<Identity, OFFSET>(),
+            get_serialized_user_credential: Self::get_serialized_user_credential::<Identity, OFFSET>,
+        }
+    }
+
+    fn matches(iid: &GUID) -> bool {
+        let is_match =
+            iid == &<IWRdsProtocolConnection2 as windows_core::Interface>::IID || IWRdsProtocolConnection_Vtbl::matches(iid);
+
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection2::QueryInterfaceMatch iid={iid:?} matched={is_match}",
+        ));
+
+        is_match
+    }
+
+    unsafe extern "system" fn get_serialized_user_credential<Identity: IWRdsProtocolConnection2_Impl, const OFFSET: isize>(
+        this: *mut c_void,
+        usercredential: *mut *mut WRDS_SERIALIZED_USER_CREDENTIAL,
+    ) -> HRESULT {
+        // SAFETY: `this` is the COM identity pointer for `Identity`.
+        let this = unsafe { (this as *mut *mut c_void).offset(OFFSET) as *mut Identity };
+        unsafe { (*this).GetSerializedUserCredential(usercredential) }.into()
+    }
+}
 
 // The custom IronRDP IDD is the primary strict-mode path. Provider-side fallback
 // probing remains available for diagnostics, but strict e2e must prove that the
@@ -1283,16 +1365,16 @@ impl ProviderControlBridge {
         }
     }
 
-    /// Retrieve the CredSSP-derived plaintext credentials for a connection from the companion service.
+    /// Retrieve the client-derived CredSSP plaintext credentials for a connection from the companion service.
     ///
-    /// Polls up to ~5 seconds waiting for the CredSSP handshake to complete.
+    /// Polls up to ~15 seconds waiting for the NLA/CredSSP handshake to complete.
     /// Tolerates transient pipe I/O errors (the companion service may restart its pipe server).
     /// Returns `(username, domain, password)` on success, or `None` when no credentials are
     /// available after the timeout.
     fn get_connection_credentials(&self, connection_id: u32) -> windows_core::Result<Option<(String, String, String)>> {
         let mut last_pipe_error: Option<windows_core::Error> = None;
 
-        for poll in 0..20 {
+        for poll in 0..60 {
             if poll > 0 {
                 thread::sleep(Duration::from_millis(250));
             }
@@ -1534,11 +1616,12 @@ fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS 
         s1.ProtocolType = WTS_PROTOCOL_TYPE_NON_RDP;
         copy_wide(&mut s1.ProtocolName, "RDP");
 
-        // Match the provider's GetClientData/GetUserCredentials intent: automatic logon using
-        // protocol-supplied credentials, no prompt.
-        s1.fInheritAutoLogon = true;
-        s1.fUsingSavedCreds = true;
-        s1.fPromptForPassword = false;
+        // Do not advertise auto-logon at the listener level. For NLA/CredSSP, the per-connection
+        // callbacks are responsible for exposing user credentials only after the handshake has
+        // actually completed.
+        s1.fInheritAutoLogon = false;
+        s1.fUsingSavedCreds = false;
+        s1.fPromptForPassword = true;
         s1.fEnableWindowsKey = true;
         s1.fDisableCtrlAltDel = true;
         s1.fMouse = true;
@@ -2815,7 +2898,13 @@ impl IWRdsProtocolLogonErrorRedirector_Impl for WrdsLogonErrorRedirector_Impl {
     }
 }
 
-#[implement(IWRdsProtocolConnection, IWRdsWddmIddProps, IWRdsWddmIddProps1, IAgileObject)]
+#[implement(
+    IWRdsProtocolConnection,
+    IWRdsProtocolConnection2,
+    IWRdsWddmIddProps,
+    IWRdsWddmIddProps1,
+    IAgileObject
+)]
 struct ComProtocolConnection {
     inner: Arc<ProtocolConnection>,
     auth_bridge: CredsspServerBridge,
@@ -2889,14 +2978,19 @@ fn provider_fast_reconnect_mode() -> u32 {
     static MODE: OnceLock<u32> = OnceLock::new();
 
     *MODE.get_or_init(|| {
+        // We do not implement session reattachment in AuthenticateClientToSession, so advertising
+        // fast reconnect by default gives RCM misleading reconnect hints after CredSSP completes.
+        // On current Server builds that tends to rebind the connection to the hidden pre-logon
+        // temporary session instead of creating a fresh interactive session. Keep the override for
+        // targeted experiments, but default to disabled until reconnect is implemented end-to-end.
         let configured = std::env::var("IRONRDP_WTS_PROVIDER_FAST_RECONNECT_MODE")
             .ok()
             .and_then(|value| value.trim().parse::<u32>().ok())
-            .unwrap_or(FAST_RECONNECT_ENHANCED);
+            .unwrap_or(FAST_RECONNECT_DISABLED);
 
         match configured {
             FAST_RECONNECT_DISABLED | FAST_RECONNECT_BASIC | FAST_RECONNECT_ENHANCED => configured,
-            _ => FAST_RECONNECT_ENHANCED,
+            _ => FAST_RECONNECT_DISABLED,
         }
     })
 }
@@ -3049,6 +3143,121 @@ impl ComProtocolConnection {
                 let _ = CloseHandle(handle);
             }
         }
+    }
+
+    fn pack_cached_user_credentials(
+        &self,
+        connection_id: u32,
+        source: &'static str,
+    ) -> windows_core::Result<(*mut WRDS_SERIALIZED_USER_CREDENTIAL, u32)> {
+        let credentials = self
+            .cached_connection_credentials()
+            .or(self.fetch_and_cache_connection_credentials(connection_id, source)?);
+
+        let Some((winlogon_username, winlogon_domain, password)) = credentials else {
+            debug_log_line(&format!(
+                "GetSerializedUserCredential no_credentials connection_id={connection_id} source={source}",
+            ));
+            return Err(windows_core::Error::new(
+                E_NOTIMPL,
+                "no CredSSP credentials available yet",
+            ));
+        };
+
+        let packed_username = if winlogon_domain.is_empty() || winlogon_username.contains('@') {
+            winlogon_username
+        } else {
+            format!(r"{winlogon_domain}\{winlogon_username}")
+        };
+
+        let mut username_wide: Vec<u16> = packed_username.encode_utf16().chain(Some(0)).collect();
+        let mut password_wide: Vec<u16> = password.encode_utf16().chain(Some(0)).collect();
+        let mut packed_size = 0u32;
+
+        // SAFETY: probing required size with null output buffer follows `CredPackAuthenticationBufferW` contract.
+        let probe = unsafe {
+            CredPackAuthenticationBufferW(
+                CRED_PACK_PROTECTED_CREDENTIALS,
+                PWSTR(username_wide.as_mut_ptr()),
+                PWSTR(password_wide.as_mut_ptr()),
+                core::ptr::null_mut(),
+                &mut packed_size,
+            )
+        };
+
+        if probe.as_bool() {
+            debug_log_line(&format!(
+                "GetSerializedUserCredential unexpected zero-length probe success connection_id={connection_id}",
+            ));
+        }
+
+        if packed_size == 0 {
+            let error = unsafe { GetLastError() };
+            debug_log_line(&format!(
+                "GetSerializedUserCredential probe failed connection_id={connection_id} user={packed_username} last_error={}",
+                error.0
+            ));
+            return Err(windows_core::Error::from_hresult(HRESULT::from_win32(error.0)));
+        }
+
+        let packed_len = usize::try_from(packed_size).unwrap_or(0);
+        if packed_len == 0 {
+            return Err(windows_core::Error::new(E_OUTOFMEMORY, "invalid packed credential size"));
+        }
+
+        // SAFETY: COM allocates the returned blob so TermService can free it with COM task allocator rules.
+        let packed_ptr = unsafe { CoTaskMemAlloc(packed_len) }.cast::<u8>();
+        if packed_ptr.is_null() {
+            return Err(windows_core::Error::new(E_OUTOFMEMORY_WIN32.into(), "CoTaskMemAlloc failed for packed credentials"));
+        }
+
+        // SAFETY: `packed_ptr` references `packed_len` writable bytes from `CoTaskMemAlloc`.
+        let packed_ok = unsafe {
+            CredPackAuthenticationBufferW(
+                CRED_PACK_PROTECTED_CREDENTIALS,
+                PWSTR(username_wide.as_mut_ptr()),
+                PWSTR(password_wide.as_mut_ptr()),
+                packed_ptr,
+                &mut packed_size,
+            )
+        };
+
+        if !packed_ok.as_bool() {
+            let error = unsafe { GetLastError() };
+            debug_log_line(&format!(
+                "GetSerializedUserCredential pack failed connection_id={connection_id} user={packed_username} last_error={}",
+                error.0
+            ));
+            // SAFETY: `packed_ptr` came from `CoTaskMemAlloc`.
+            unsafe {
+                let _ = windows::Win32::System::Com::CoTaskMemFree(Some(packed_ptr.cast()));
+            }
+            return Err(windows_core::Error::from_hresult(HRESULT::from_win32(error.0)));
+        }
+
+        // SAFETY: COM allocates the returned struct so TermService can free it with COM task allocator rules.
+        let wrapper_ptr =
+            unsafe { CoTaskMemAlloc(size_of::<WRDS_SERIALIZED_USER_CREDENTIAL>()) }.cast::<WRDS_SERIALIZED_USER_CREDENTIAL>();
+        if wrapper_ptr.is_null() {
+            unsafe {
+                let _ = windows::Win32::System::Com::CoTaskMemFree(Some(packed_ptr.cast()));
+            }
+            return Err(windows_core::Error::new(E_OUTOFMEMORY_WIN32.into(), "CoTaskMemAlloc failed for serialized credential wrapper"));
+        }
+
+        // SAFETY: `wrapper_ptr` references writable storage allocated above.
+        unsafe {
+            wrapper_ptr.write(WRDS_SERIALIZED_USER_CREDENTIAL {
+                serialization_length: packed_size,
+                serialization: packed_ptr,
+            });
+        }
+
+        debug_log_line(&format!(
+            "GetSerializedUserCredential packed connection_id={connection_id} user={packed_username} packed_bytes={packed_size}",
+        ));
+
+        Ok((wrapper_ptr, packed_size))
     }
 
     fn commit_driver_load_state(
@@ -4298,38 +4507,6 @@ impl ComProtocolConnection {
         ])
     }
 
-    fn notify_ready(&self) -> windows_core::Result<()> {
-        let mut ready_notified = self.ready_notified.lock();
-        if *ready_notified {
-            return Ok(());
-        }
-
-        // Best-effort: notify the companion that this connection is being accepted.  If the IPC
-        // fails (e.g. the pipe is busy because the listener worker's early-accept already started
-        // the session and the pipe is occupied with wait_for_incoming polling), log and continue
-        // anyway.  The early accept from the listener worker has already started the IronRDP
-        // session, so the companion is ready.  Returning an error here would cause TermService to
-        // close the connection before ever calling GetClientData / IsUserAllowedToLogon.
-        match self.control_bridge.accept_connection(self.inner.connection_id()) {
-            Ok(()) => {
-                debug_log_line(&format!(
-                    "notify_ready: accept_connection ok connection_id={}",
-                    self.inner.connection_id()
-                ));
-            }
-            Err(error) => {
-                debug_log_line(&format!(
-                    "notify_ready: accept_connection IPC failed (early accept already active); continuing connection_id={} error={}",
-                    self.inner.connection_id(),
-                    error
-                ));
-            }
-        }
-
-        *ready_notified = true;
-        Ok(())
-    }
-
     fn fetch_and_cache_connection_credentials(
         &self,
         connection_id: u32,
@@ -4682,6 +4859,43 @@ impl IWRdsWddmIddProps1_Impl for ComProtocolConnection_Impl {
     }
 }
 
+impl IWRdsProtocolConnection2_Impl for ComProtocolConnection_Impl {
+    fn GetSerializedUserCredential(
+        &self,
+        usercredential: *mut *mut WRDS_SERIALIZED_USER_CREDENTIAL,
+    ) -> windows_core::Result<()> {
+        let connection_id = self.inner.connection_id();
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection2::GetSerializedUserCredential called connection_id={connection_id}",
+        ));
+
+        if usercredential.is_null() {
+            return Err(windows_core::Error::new(
+                E_POINTER,
+                "null serialized credential pointer",
+            ));
+        }
+
+        // SAFETY: caller provided a writable out-parameter buffer.
+        unsafe {
+            *usercredential = core::ptr::null_mut();
+        }
+
+        let (credential_ptr, packed_size) =
+            self.pack_cached_user_credentials(connection_id, "get_serialized_user_credential")?;
+
+        // SAFETY: caller provided a writable out-parameter buffer.
+        unsafe {
+            *usercredential = credential_ptr;
+        }
+
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection2::GetSerializedUserCredential ok connection_id={connection_id} packed_bytes={packed_size}",
+        ));
+        Ok(())
+    }
+}
+
 impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
     fn GetLogonErrorRedirector(&self) -> windows_core::Result<IWRdsProtocolLogonErrorRedirector> {
         Ok(WrdsLogonErrorRedirector.into())
@@ -4700,11 +4914,8 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         )?;
 
         self.inner.accept_connection().map_err(transition_error)?;
-        self.notify_ready()?;
 
-        if self.cached_connection_credentials().is_none() {
-            let _ = self.fetch_and_cache_connection_credentials(connection_id, "accept_connection_prefetch")?;
-        }
+        *self.ready_notified.lock() = true;
 
         debug_log_line(&format!(
             "IWRdsProtocolConnection::AcceptConnection ok connection_id={connection_id}",
@@ -4752,7 +4963,6 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         match credentials {
             Some((winlogon_username, winlogon_domain, password)) => {
-
                 client_data.fInheritAutoLogon = BOOL(1);
                 client_data.fUsingSavedCreds = true;
                 client_data.fPromptForPassword = false;
@@ -5545,8 +5755,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
             let connection_id = self.inner.connection_id();
             let sid = self
-                .control_bridge
-                .get_connection_credentials(connection_id)?
+                .cached_connection_credentials()
                 .and_then(|(username, domain, _password)| {
                     let (winlogon_username, winlogon_domain) = normalize_winlogon_credentials(&username, &domain);
                     lookup_account_sid_string(&winlogon_username, &winlogon_domain).ok()
@@ -5580,12 +5789,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         if *_querytype == PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL {
             // `wtsdefs.h`: 0 = don't enable, 1 = enable.
             let connection_id = self.inner.connection_id();
-            let has_credentials = self
-                .cached_connection_credentials()
-                .is_some()
-                || self
-                    .fetch_and_cache_connection_credentials(connection_id, "query_property_universal_apps")?
-                    .is_some();
+            let has_credentials = self.cached_connection_credentials().is_some();
             let enable_universal_apps = u32::from(has_credentials);
 
             first.Type = WTS_VALUE_TYPE_ULONG;
