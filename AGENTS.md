@@ -128,7 +128,7 @@ Do not modify them unless specifically working on fixing their compilation.
 ## Coding Standards (The "Gold Standard")
 
 - **Language:** Rust (Edition 2024; toolchain pinned via `rust-toolchain.toml`)
-- **Toolchain baseline:** Rust `1.93.0`
+- **Toolchain baseline:** Rust `1.89.0`
 - **Formatter:** `rustfmt` (workspace config in `rustfmt.toml`)
 - **Lints:** Strict workspace lint policy (`[workspace.lints.rust]` and `[workspace.lints.clippy]` in root `Cargo.toml`)
 - **Error handling:** Prefer explicit, composable error messages following `STYLE.md`
