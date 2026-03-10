@@ -120,10 +120,7 @@ fn from_utf16le_byte_strings_odd_length_returns_err() {
 #[test]
 fn from_utf16le_byte_strings_rejects_embedded_null() {
     // "a\0b" encoded as UTF-16LE: [0x61, 0x00, 0x00, 0x00, 0x62, 0x00]
-    let segment: Vec<u8> = [0x61u16, 0x0000, 0x62]
-        .iter()
-        .flat_map(|u| u.to_le_bytes())
-        .collect();
+    let segment: Vec<u8> = [0x61u16, 0x0000, 0x62].iter().flat_map(|u| u.to_le_bytes()).collect();
     let err = MultiSzString::from_utf16le_byte_strings([segment.as_slice()]).unwrap_err();
     expect![[r#"
         EmbeddedNul
