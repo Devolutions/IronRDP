@@ -10,10 +10,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use ironrdp_core::{ensure_size, DecodeOwned, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_core::{DecodeOwned, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size};
 
 use crate::repr::StringRepr;
-use crate::{check_invariant, utf16_code_units, InvalidUtf16};
+use crate::{InvalidUtf16, check_invariant, utf16_code_units};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
