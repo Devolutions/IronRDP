@@ -434,7 +434,7 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P,
         // Step 4: Read content code units (bulk copy, convert LE bytes to u16 values).
         let content_byte_count = content_cch
             .checked_mul(2)
-            .ok_or_else(|| invalid_field_err!("length prefix", "character count overflow"))?;
+            .ok_or_else(|| invalid_field_err!("length prefix", "byte length overflow"))?;
         ensure_size!(in: src, size: content_byte_count);
         let slice = src.read_slice(content_byte_count);
         let units = crate::repr::le_bytes_to_units(slice);

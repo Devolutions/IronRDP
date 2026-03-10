@@ -96,14 +96,14 @@ fn from_utf16le_bytes_too_long_returns_err() {
     // 4 code units for WCHAR_COUNT=4 means 4 content units, but max is 3.
     let bytes: Vec<u8> = "abcd".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
     let err = FixedString::<4>::from_utf16le_bytes(&bytes).unwrap_err();
-    expect![[r#"
+    expect![["
         StringTooLong(
             StringTooLong {
                 max_code_units: 3,
                 actual_code_units: 4,
             },
         )
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert!(matches!(err, FixedStringBytesError::StringTooLong(_)));
 }
@@ -111,9 +111,9 @@ fn from_utf16le_bytes_too_long_returns_err() {
 #[test]
 fn from_utf16le_bytes_odd_length_returns_err() {
     let err = FixedString::<4>::from_utf16le_bytes(&[0x41u8]).unwrap_err();
-    expect![[r#"
+    expect![["
         OddByteCount
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert_eq!(err, FixedStringBytesError::OddByteCount);
 }

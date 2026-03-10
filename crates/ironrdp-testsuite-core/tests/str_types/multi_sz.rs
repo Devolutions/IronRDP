@@ -110,9 +110,9 @@ fn from_utf16le_byte_strings_round_trip() {
 #[test]
 fn from_utf16le_byte_strings_odd_length_returns_err() {
     let err = MultiSzString::from_utf16le_byte_strings([&[0x41u8][..]]).unwrap_err();
-    expect![[r#"
+    expect![["
         OddByteCount
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert_eq!(err, MultiSzSegmentError::OddByteCount);
 }
@@ -122,9 +122,9 @@ fn from_utf16le_byte_strings_rejects_embedded_null() {
     // "a\0b" encoded as UTF-16LE: [0x61, 0x00, 0x00, 0x00, 0x62, 0x00]
     let segment: Vec<u8> = [0x61u16, 0x0000, 0x62].iter().flat_map(|u| u.to_le_bytes()).collect();
     let err = MultiSzString::from_utf16le_byte_strings([segment.as_slice()]).unwrap_err();
-    expect![[r#"
+    expect![["
         EmbeddedNul
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert_eq!(err, MultiSzSegmentError::EmbeddedNul);
 }
@@ -158,9 +158,9 @@ fn from_utf16le_flat_empty_list() {
 #[test]
 fn from_utf16le_flat_odd_length_returns_err() {
     let err = MultiSzString::from_utf16le_flat(&[0x00]).unwrap_err();
-    expect![[r#"
+    expect![["
         OddByteCount
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert_eq!(err, MultiSzFlatError::OddByteCount);
 }
@@ -169,9 +169,9 @@ fn from_utf16le_flat_odd_length_returns_err() {
 fn from_utf16le_flat_missing_sentinel_returns_err() {
     // 'A' in UTF-16LE with no trailing null — the buffer does not end with 0x0000.
     let err = MultiSzString::from_utf16le_flat(&[0x41, 0x00]).unwrap_err();
-    expect![[r#"
+    expect![["
         MissingSentinel
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert_eq!(err, MultiSzFlatError::MissingSentinel);
 }
@@ -186,9 +186,9 @@ fn from_utf16le_flat_unterminated_last_segment_returns_err() {
         .flat_map(|u| u.to_le_bytes())
         .collect();
     let err = MultiSzString::from_utf16le_flat(&unterminated).unwrap_err();
-    expect![[r#"
+    expect![["
         UnterminatedLastSegment
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert_eq!(err, MultiSzFlatError::UnterminatedLastSegment);
 }
@@ -219,9 +219,9 @@ fn from_wire_units_flat_empty_list() {
 fn from_wire_units_flat_missing_sentinel_returns_err() {
     // Just 'A' with no trailing null — the buffer does not end with 0x0000.
     let err = MultiSzString::from_wire_units_flat(vec![0x0041u16]).unwrap_err();
-    expect![[r#"
+    expect![["
         MissingSentinel
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert_eq!(err, MultiSzFlatError::MissingSentinel);
 }
@@ -232,9 +232,9 @@ fn from_wire_units_flat_unterminated_last_segment_returns_err() {
     // the remaining ['f','o','o'] ends with 'o', not a per-string null terminator.
     let unterminated: Vec<u16> = "foo".encode_utf16().chain([0u16]).collect();
     let err = MultiSzString::from_wire_units_flat(unterminated).unwrap_err();
-    expect![[r#"
+    expect![["
         UnterminatedLastSegment
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert_eq!(err, MultiSzFlatError::UnterminatedLastSegment);
 }
