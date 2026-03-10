@@ -83,7 +83,7 @@ impl LengthPrefix for CchU32 {
     const IS_BYTE_COUNT: bool = false;
 
     fn read_raw(src: &mut ReadCursor<'_>) -> DecodeResult<usize> {
-        Ok(src.read_u32() as usize)
+        cast_length!("length prefix", src.read_u32())
     }
 
     fn write_raw(value: usize, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -115,7 +115,7 @@ impl LengthPrefix for CbU32 {
     const IS_BYTE_COUNT: bool = true;
 
     fn read_raw(src: &mut ReadCursor<'_>) -> DecodeResult<usize> {
-        Ok(src.read_u32() as usize)
+        cast_length!("length prefix", src.read_u32())
     }
 
     fn write_raw(value: usize, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -307,7 +307,7 @@ impl<P, N> TryFrom<UnicodeStringField<P, N>> for String {
     type Error = InvalidUtf16;
 
     fn try_from(f: UnicodeStringField<P, N>) -> Result<Self, Self::Error> {
-        f.0.to_native().map(Cow::into_owned)
+        f.0.into_native()
     }
 }
 
@@ -351,7 +351,13 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> Encode for UnicodeStringField<P, 
         } else {
             content_cch
         };
-        let prefix_value = if P::IS_BYTE_COUNT { counted_cch * 2 } else { counted_cch };
+        let prefix_value = if P::IS_BYTE_COUNT {
+            counted_cch
+                .checked_mul(2)
+                .ok_or_else(|| invalid_field_err!("length prefix", "byte length overflow"))?
+        } else {
+            counted_cch
+        };
 
         P::write_raw(prefix_value, dst)?;
 
@@ -408,8 +414,11 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for UnicodeStringFiel
         };
 
         // Step 4: Read content code units (bulk copy, convert LE bytes to u16 values).
-        ensure_size!(in: src, size: content_cch * 2);
-        let slice = src.read_slice(content_cch * 2);
+        let content_byte_count = content_cch
+            .checked_mul(2)
+            .ok_or_else(|| invalid_field_err!("length prefix", "character count overflow"))?;
+        ensure_size!(in: src, size: content_byte_count);
+        let slice = src.read_slice(content_byte_count);
         let units = crate::repr::le_bytes_to_units(slice);
 
         // Step 5: Consume null terminator if present on wire.
