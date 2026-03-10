@@ -101,7 +101,7 @@ impl MultiSzString {
     ///
     /// [`utf16le_bytes_to_units`]: crate::utf16le_bytes_to_units
     /// [`from_unit_strings`]: MultiSzString::from_unit_strings
-    #[allow(
+    #[expect(
         single_use_lifetimes,
         reason = "`'a` is required here because anonymous lifetimes in `impl Trait` are unstable; rustc incorrectly suggests eliding it"
     )]
@@ -162,9 +162,8 @@ impl MultiSzString {
     /// [`from_unit_strings`]: MultiSzString::from_unit_strings
     pub fn from_wire_units_flat(units: Vec<u16>) -> Option<Self> {
         // Require and strip the sentinel null.
-        if let Some(&unit) = units.last()
-            && unit != 0
-        {
+        // If `units` is empty, `last()` returns `None` which != Some(&0), so we return None.
+        if units.last() != Some(&0) {
             return None;
         }
 
@@ -409,25 +408,27 @@ impl Encode for MultiSzString {
     }
 
     fn size(&self) -> usize {
-        4 // u32 cch prefix
-            + self.total_cch() * 2 // all code units (segments + per-string nulls + sentinel) * 2 bytes
+        4usize.saturating_add(self.total_cch().saturating_mul(2)) // u32 cch prefix + all code units * 2 bytes
     }
 }
 
 impl DecodeOwned for MultiSzString {
     fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4);
-        let total_cch = src.read_u32() as usize;
+        let total_cch: usize = cast_length!("cch", src.read_u32())?;
 
         // The minimum valid total_cch is 1 (just the final sentinel null).
         if total_cch == 0 {
             return Err(invalid_field_err!("cch", "zero cch for MULTI_SZ is invalid"));
         }
 
-        ensure_size!(in: src, size: total_cch * 2);
+        let byte_count = total_cch
+            .checked_mul(2)
+            .ok_or_else(|| invalid_field_err!("cch", "MULTI_SZ byte length overflow"))?;
+        ensure_size!(in: src, size: byte_count);
 
         // One allocation: read all bytes and reinterpret as u16 code units.
-        let all_bytes = src.read_slice(total_cch * 2);
+        let all_bytes = src.read_slice(byte_count);
         let mut all_units = crate::repr::le_bytes_to_units(all_bytes);
 
         // The last code unit must be the final sentinel null (0x0000).

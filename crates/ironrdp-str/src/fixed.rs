@@ -37,7 +37,7 @@ impl fmt::Display for StringTooLong {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for StringTooLong {}
+impl core::error::Error for StringTooLong {}
 
 // ── FixedSizeUnicodeString ────────────────────────────────────────────────────
 
@@ -66,7 +66,7 @@ impl std::error::Error for StringTooLong {}
 /// [`to_native_lossy`]: FixedSizeUnicodeString::to_native_lossy
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 pub struct FixedSizeUnicodeString<const WCHAR_COUNT: usize>(
-    /// INVARIANT: `utf16_code_units` of the stored string is `<= WCHAR_COUNT - 1`.
+    /// INVARIANT: `utf16_code_units` of the stored string is `< WCHAR_COUNT`.
     StringRepr,
 );
 
@@ -102,7 +102,7 @@ impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
 
         let actual = units.len();
 
-        check_invariant(actual <= WCHAR_COUNT - 1).ok_or_else(|| StringTooLong {
+        check_invariant(actual < WCHAR_COUNT).ok_or_else(|| StringTooLong {
             max_code_units: WCHAR_COUNT.saturating_sub(1),
             actual_code_units: actual,
         })?;
@@ -118,7 +118,7 @@ impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
         let s = s.into();
         let actual = utf16_code_units(&s);
 
-        check_invariant(actual <= WCHAR_COUNT - 1).ok_or_else(|| StringTooLong {
+        check_invariant(actual < WCHAR_COUNT).ok_or_else(|| StringTooLong {
             max_code_units: WCHAR_COUNT.saturating_sub(1),
             actual_code_units: actual,
         })?;
@@ -184,7 +184,7 @@ impl<const WCHAR_COUNT: usize> TryFrom<FixedSizeUnicodeString<WCHAR_COUNT>> for 
     type Error = InvalidUtf16;
 
     fn try_from(s: FixedSizeUnicodeString<WCHAR_COUNT>) -> Result<Self, Self::Error> {
-        s.0.to_native().map(Cow::into_owned)
+        s.0.into_native()
     }
 }
 

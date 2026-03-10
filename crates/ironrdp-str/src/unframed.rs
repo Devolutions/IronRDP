@@ -137,9 +137,12 @@ impl ExternallyLengthedString {
     /// Trailing null code units are stripped. Returns a `DecodeError` if the source
     /// contains fewer than `wchar_count * 2` bytes.
     pub fn decode(src: &mut ReadCursor<'_>, wchar_count: usize) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: wchar_count * 2);
+        let byte_count = wchar_count
+            .checked_mul(2)
+            .ok_or_else(|| invalid_field_err!("wchar_count", "character count overflow"))?;
+        ensure_size!(in: src, size: byte_count);
 
-        let slice = src.read_slice(wchar_count * 2);
+        let slice = src.read_slice(byte_count);
         let units = crate::repr::le_bytes_to_units_strip_nulls(slice);
         Ok(Self(StringRepr::from_wire_units(units)))
     }
@@ -183,7 +186,7 @@ impl TryFrom<ExternallyLengthedString> for String {
     type Error = InvalidUtf16;
 
     fn try_from(s: ExternallyLengthedString) -> Result<Self, Self::Error> {
-        s.0.to_native().map(Cow::into_owned)
+        s.0.into_native()
     }
 }
 

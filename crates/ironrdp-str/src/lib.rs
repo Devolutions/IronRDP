@@ -41,7 +41,7 @@ impl core::fmt::Display for InvalidUtf16 {
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for InvalidUtf16 {}
+impl core::error::Error for InvalidUtf16 {}
 
 /// Converts a slice of UTF-16LE wire bytes into a `Vec` of UTF-16 code unit values.
 ///
