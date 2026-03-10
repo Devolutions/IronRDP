@@ -46,7 +46,8 @@ fn rejects_overlong_string() {
             max_code_units: 3,
             actual_code_units: 4,
         }
-    "#]].assert_debug_eq(&err);
+    "#]]
+    .assert_debug_eq(&err);
 }
 
 #[test]
@@ -75,7 +76,8 @@ fn decode_accepts_lone_surrogate_to_str_fails() {
     let err = s.to_native().unwrap_err();
     expect![[r#"
         InvalidUtf16
-    "#]].assert_debug_eq(&err);
+    "#]]
+    .assert_debug_eq(&err);
     // to_str_lossy() succeeds and replaces lone surrogates with U+FFFD.
     assert!(s.to_native_lossy().contains('\u{FFFD}'));
 }
@@ -91,7 +93,8 @@ fn non_bmp_code_units_counted_correctly() {
             max_code_units: 2,
             actual_code_units: 4,
         }
-    "#]].assert_debug_eq(&err);
+    "#]]
+    .assert_debug_eq(&err);
 }
 
 // ── from_utf16le_bytes ────────────────────────────────────────────────────────
@@ -100,13 +103,16 @@ fn non_bmp_code_units_counted_correctly() {
 fn from_utf16le_bytes_too_long_returns_err() {
     // 4 code units for WCHAR_COUNT=4 means 4 content units, but max is 3.
     let wire: Vec<u8> = "abcd".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-    let err = FixedSizeUnicodeString::<4>::from_utf16le_bytes(&wire).unwrap().unwrap_err();
+    let err = FixedSizeUnicodeString::<4>::from_utf16le_bytes(&wire)
+        .unwrap()
+        .unwrap_err();
     expect![[r#"
         StringTooLong {
             max_code_units: 3,
             actual_code_units: 4,
         }
-    "#]].assert_debug_eq(&err);
+    "#]]
+    .assert_debug_eq(&err);
 }
 
 // ── from_wire_units / to_wire_units / into_wire_units ────────────────────────

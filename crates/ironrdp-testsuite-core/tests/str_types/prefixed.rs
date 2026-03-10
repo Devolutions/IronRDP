@@ -127,7 +127,8 @@ fn lone_surrogate_decode_succeeds_to_str_fails() {
     let err = decoded.to_native().unwrap_err();
     expect![[r#"
         InvalidUtf16
-    "#]].assert_debug_eq(&err);
+    "#]]
+    .assert_debug_eq(&err);
     assert!(decoded.to_native_lossy().contains('\u{FFFD}'));
 }
 

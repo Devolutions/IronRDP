@@ -57,7 +57,8 @@ fn rejects_zero_cch() {
             },
             source: None,
         }
-    "#]].assert_debug_eq(&err);
+    "#]]
+    .assert_debug_eq(&err);
 }
 
 // ── from_utf16le_byte_strings ─────────────────────────────────────────────────
@@ -218,7 +219,8 @@ fn strings_lossy_replaces_lone_surrogates() {
     let err = decoded.iter_native().find_map(|r| r.err()).unwrap();
     expect![[r#"
         InvalidUtf16
-    "#]].assert_debug_eq(&err);
+    "#]]
+    .assert_debug_eq(&err);
     // strings_lossy() replaces lone surrogate with U+FFFD
     let lossy: Vec<_> = decoded.iter_native_lossy().collect();
     assert_eq!(lossy.len(), 1);
