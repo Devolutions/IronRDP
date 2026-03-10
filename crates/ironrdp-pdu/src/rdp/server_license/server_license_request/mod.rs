@@ -5,25 +5,24 @@ mod tests;
 
 use cert::{CertificateType, ProprietaryCertificate, X509CertificateChain};
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
-    ensure_size, invalid_field_err,
+    Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
+    ensure_fixed_part_size, ensure_size, invalid_field_err,
 };
+use ironrdp_str::ansi;
+use ironrdp_str::prefixed::CbU32StringNullIncluded;
 
 use super::{
     BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA, LicenseHeader, PreambleType,
-    RANDOM_NUMBER_SIZE, ServerLicenseError, UTF8_NULL_TERMINATOR_SIZE, UTF16_NULL_TERMINATOR_SIZE,
+    RANDOM_NUMBER_SIZE, ServerLicenseError,
 };
-use crate::utils;
 
 const CERT_VERSION_FIELD_SIZE: usize = 4;
 const KEY_EXCHANGE_FIELD_SIZE: usize = 4;
 const SCOPE_ARRAY_SIZE_FIELD_SIZE: usize = 4;
-const PRODUCT_INFO_STATIC_FIELDS_SIZE: usize = 12;
+const PRODUCT_INFO_STATIC_FIELDS_SIZE: usize = 4; // version only; company_name and product_id use decode_owned
 const CERT_CHAIN_VERSION_MASK: u32 = 0x7FFF_FFFF;
 const CERT_CHAIN_ISSUED_MASK: u32 = 0x8000_0000;
 const MAX_SCOPE_COUNT: u32 = 256;
-const MAX_COMPANY_NAME_LEN: usize = 1024;
-const MAX_PRODUCT_ID_LEN: usize = 1024;
 
 const RSA_EXCHANGE_ALGORITHM: u32 = 1;
 
@@ -160,10 +159,8 @@ impl Encode for Scope {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let data_size = self.0.len() + UTF8_NULL_TERMINATOR_SIZE;
-        BlobHeader::new(BlobType::SCOPE, data_size).encode(dst)?;
-        dst.write_slice(self.0.as_bytes());
-        dst.write_u8(0); // null terminator
+        BlobHeader::new(BlobType::SCOPE, ansi::encoded_ansi_len_with_null(&self.0)).encode(dst)?;
+        ansi::write_ansi_with_null(dst, &self.0)?;
 
         Ok(())
     }
@@ -173,7 +170,7 @@ impl Encode for Scope {
     }
 
     fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE + self.0.len() + UTF8_NULL_TERMINATOR_SIZE
+        Self::FIXED_PART_SIZE + ansi::encoded_ansi_len_with_null(&self.0)
     }
 }
 
@@ -183,18 +180,14 @@ impl<'de> Decode<'de> for Scope {
         if blob_header.blob_type != BlobType::SCOPE {
             return Err(invalid_field_err!("blobType", "invalid blob type"));
         }
-        if blob_header.length < UTF8_NULL_TERMINATOR_SIZE {
+        if blob_header.length < 1 {
             return Err(invalid_field_err!("blobLen", "blob too small"));
         }
         ensure_size!(in: src, size: blob_header.length);
-        let mut blob_data = src.read_slice(blob_header.length).to_vec();
-        blob_data.resize(blob_data.len() - UTF8_NULL_TERMINATOR_SIZE, 0);
-
-        if let Ok(data) = core::str::from_utf8(&blob_data) {
-            Ok(Self(String::from(data)))
-        } else {
-            Err(invalid_field_err!("scope", "scope is not utf8"))
-        }
+        let blob_data = src.read_slice(blob_header.length);
+        ansi::decode_ansi(blob_data)
+            .map(Self)
+            .map_err(|_| invalid_field_err!("scope", "scope is not utf8"))
     }
 }
 
@@ -316,8 +309,10 @@ impl<'de> Decode<'de> for ServerCertificate {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProductInfo {
     pub version: u32,
-    pub company_name: String,
-    pub product_id: String,
+    /// Company name ([MS-RDPELE] §2.2.2.1.1 `pbCompanyName`, UTF-16LE, u32 cb prefix including null)
+    pub company_name: CbU32StringNullIncluded,
+    /// Product ID ([MS-RDPELE] §2.2.2.1.1 `pbProductId`, UTF-16LE, u32 cb prefix including null)
+    pub product_id: CbU32StringNullIncluded,
 }
 
 impl ProductInfo {
@@ -331,18 +326,8 @@ impl Encode for ProductInfo {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.version);
-
-        let mut company_name = utils::to_utf16_bytes(&self.company_name);
-        company_name.resize(company_name.len() + 2, 0);
-
-        dst.write_u32(cast_length!("companyLen", company_name.len())?);
-        dst.write_slice(&company_name);
-
-        let mut product_id = utils::to_utf16_bytes(&self.product_id);
-        product_id.resize(product_id.len() + 2, 0);
-
-        dst.write_u32(cast_length!("produceLen", product_id.len())?);
-        dst.write_slice(&product_id);
+        self.company_name.encode(dst)?;
+        self.product_id.encode(dst)?;
 
         Ok(())
     }
@@ -352,14 +337,9 @@ impl Encode for ProductInfo {
     }
 
     fn size(&self) -> usize {
-        let company_name_utf_16 = utils::to_utf16_bytes(&self.company_name);
-        let product_id_utf_16 = utils::to_utf16_bytes(&self.product_id);
-
-        Self::FIXED_PART_SIZE
-            + company_name_utf_16.len()
-            + UTF16_NULL_TERMINATOR_SIZE
-            + product_id_utf_16.len()
-            + UTF16_NULL_TERMINATOR_SIZE
+        4 // version
+            + self.company_name.size()
+            + self.product_id.size()
     }
 }
 
@@ -369,26 +349,8 @@ impl<'de> Decode<'de> for ProductInfo {
 
         let version = src.read_u32();
 
-        let company_name_len = cast_length!("companyLen", src.read_u32())?;
-        if !(2..=MAX_COMPANY_NAME_LEN).contains(&company_name_len) {
-            return Err(invalid_field_err!("companyLen", "invalid company name length"));
-        }
-
-        ensure_size!(in: src, size: company_name_len);
-        let mut company_name = src.read_slice(company_name_len).to_vec();
-        company_name.resize(company_name_len - 2, 0);
-        let company_name = utils::from_utf16_bytes(company_name.as_slice());
-
-        ensure_size!(in: src, size: 4);
-        let product_id_len = cast_length!("productIdLen", src.read_u32())?;
-        if !(2..=MAX_PRODUCT_ID_LEN).contains(&product_id_len) {
-            return Err(invalid_field_err!("productIdLen", "invalid produce ID length"));
-        }
-
-        ensure_size!(in: src, size: product_id_len);
-        let mut product_id = src.read_slice(product_id_len).to_vec();
-        product_id.resize(product_id_len - 2, 0);
-        let product_id = utils::from_utf16_bytes(product_id.as_slice());
+        let company_name = CbU32StringNullIncluded::decode_owned(src)?;
+        let product_id = CbU32StringNullIncluded::decode_owned(src)?;
 
         Ok(Self {
             version,

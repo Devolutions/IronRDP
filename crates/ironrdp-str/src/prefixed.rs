@@ -541,3 +541,13 @@ pub type CbStringNoNull = PrefixedString<CbU16, NoNull>;
 ///
 /// [MS-RDPELE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/
 pub type CbU32StringNullIncluded = PrefixedString<CbU32, NullCounted>;
+
+/// Non-null-terminated UTF-16 string with a `u32` byte count prefix.
+///
+/// Used for `FileNameLength`/`FileName` pairs in MS-FSCC file information structures
+/// where the length excludes any null terminator and none is written.
+///
+/// Wire layout: `[u32 cb][cb/2 WCHARs]`
+///
+/// [MS-FSCC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/
+pub type CbU32StringNoNull = PrefixedString<CbU32, NoNull>;

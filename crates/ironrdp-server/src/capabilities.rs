@@ -1,4 +1,5 @@
 use ironrdp_pdu::rdp::capability_sets::{self, GeneralExtraFlags};
+use ironrdp_str::fixed::FixedString;
 
 use crate::{DesktopSize, RdpServerOptions};
 
@@ -69,7 +70,7 @@ fn input_capabilities() -> capability_sets::Input {
         keyboard_type: None,
         keyboard_subtype: 0,
         keyboard_function_key: 128,
-        keyboard_ime_filename: "".into(),
+        keyboard_ime_filename: FixedString::default(),
     }
 }
 

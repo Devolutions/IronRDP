@@ -3,9 +3,10 @@ use std::io;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
-    ensure_size, invalid_field_err, write_padding,
+    Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
+    ensure_fixed_part_size, ensure_size, invalid_field_err, write_padding,
 };
+use ironrdp_str::fixed::FixedString;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 use thiserror::Error;
@@ -410,10 +411,10 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimezoneInfo {
     pub bias: i32,
-    pub standard_name: String,
+    pub standard_name: FixedString<32>,
     pub standard_date: OptionalSystemTime,
     pub standard_bias: i32,
-    pub daylight_name: String,
+    pub daylight_name: FixedString<32>,
     pub daylight_date: OptionalSystemTime,
     pub daylight_bias: i32,
 }
@@ -435,18 +436,10 @@ impl Encode for TimezoneInfo {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_i32(self.bias);
-
-        let mut standard_name = utils::to_utf16_bytes(self.standard_name.as_str());
-        standard_name.resize(TIMEZONE_INFO_NAME_LEN, 0);
-        dst.write_slice(&standard_name);
-
+        self.standard_name.encode(dst)?;
         self.standard_date.encode(dst)?;
         dst.write_i32(self.standard_bias);
-
-        let mut daylight_name = utils::to_utf16_bytes(self.daylight_name.as_str());
-        daylight_name.resize(TIMEZONE_INFO_NAME_LEN, 0);
-        dst.write_slice(&daylight_name);
-
+        self.daylight_name.encode(dst)?;
         self.daylight_date.encode(dst)?;
         dst.write_i32(self.daylight_bias);
 
@@ -467,11 +460,10 @@ impl<'de> Decode<'de> for TimezoneInfo {
         ensure_fixed_part_size!(in: src);
 
         let bias = src.read_i32();
-        let standard_name = utils::decode_string(src.read_slice(TIMEZONE_INFO_NAME_LEN), CharacterSet::Unicode, false)?;
+        let standard_name = FixedString::<32>::decode_owned(src)?;
         let standard_date = OptionalSystemTime::decode(src)?;
         let standard_bias = src.read_i32();
-
-        let daylight_name = utils::decode_string(src.read_slice(TIMEZONE_INFO_NAME_LEN), CharacterSet::Unicode, false)?;
+        let daylight_name = FixedString::<32>::decode_owned(src)?;
         let daylight_date = OptionalSystemTime::decode(src)?;
         let daylight_bias = src.read_i32();
 
@@ -491,10 +483,10 @@ impl Default for TimezoneInfo {
     fn default() -> Self {
         Self {
             bias: 0,
-            standard_name: String::new(),
+            standard_name: FixedString::default(),
             standard_date: OptionalSystemTime(None),
             standard_bias: 0,
-            daylight_name: String::new(),
+            daylight_name: FixedString::default(),
             daylight_date: OptionalSystemTime(None),
             daylight_bias: 0,
         }

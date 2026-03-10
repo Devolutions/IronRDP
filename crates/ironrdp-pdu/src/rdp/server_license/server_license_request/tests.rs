@@ -220,8 +220,8 @@ static PROPRIETARY_CERTIFICATE: LazyLock<ProprietaryCertificate> = LazyLock::new
 });
 static PRODUCT_INFO: LazyLock<ProductInfo> = LazyLock::new(|| ProductInfo {
     version: 0x60000,
-    company_name: "Microsoft Corporation".to_owned(),
-    product_id: "A02".to_owned(),
+    company_name: CbU32StringNullIncluded::new("Microsoft Corporation"),
+    product_id: CbU32StringNullIncluded::new("A02"),
 });
 static PUBLIC_KEY: LazyLock<RsaPublicKey> = LazyLock::new(|| RsaPublicKey {
     public_exponent: 0x0001_0001,
@@ -241,8 +241,8 @@ static SERVER_LICENSE_REQUEST: LazyLock<LicensePdu> = LazyLock::new(|| {
         server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
         product_info: ProductInfo {
             version: 0x60000,
-            company_name: "Microsoft Corporation".to_owned(),
-            product_id: "A02".to_owned(),
+            company_name: CbU32StringNullIncluded::new("Microsoft Corporation"),
+            product_id: CbU32StringNullIncluded::new("A02"),
         },
         server_certificate: Some(ServerCertificate {
             issued_permanently: true,
@@ -316,8 +316,8 @@ fn from_buffer_correctly_parses_server_license_request_no_certificate() {
         server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
         product_info: ProductInfo {
             version: 0x60000,
-            company_name: "Microsoft Corporation".to_owned(),
-            product_id: "A02".to_owned(),
+            company_name: CbU32StringNullIncluded::new("Microsoft Corporation"),
+            product_id: CbU32StringNullIncluded::new("A02"),
         },
         server_certificate: None,
         scope_list: vec![Scope(String::from("microsoft.com"))],
@@ -358,8 +358,8 @@ fn to_buffer_correctly_serializes_server_license_request() {
         server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
         product_info: ProductInfo {
             version: 0x60000,
-            company_name: "Microsoft Corporation".to_owned(),
-            product_id: "A02".to_owned(),
+            company_name: CbU32StringNullIncluded::new("Microsoft Corporation"),
+            product_id: CbU32StringNullIncluded::new("A02"),
         },
         server_certificate: Some(ServerCertificate {
             issued_permanently: true,

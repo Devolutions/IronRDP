@@ -2,6 +2,7 @@ use core::mem;
 
 use ironrdp_pdu::rdp;
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+use ironrdp_str::fixed::FixedString;
 use tracing::{debug, warn};
 
 use crate::{
@@ -337,7 +338,7 @@ fn create_client_confirm_active(
             keyboard_type: Some(config.keyboard_type),
             keyboard_subtype: config.keyboard_subtype,
             keyboard_function_key: config.keyboard_functional_keys_count,
-            keyboard_ime_filename: config.ime_file_name.clone(),
+            keyboard_ime_filename: FixedString::new_truncating(&config.ime_file_name),
         }),
         CapabilitySet::Pointer(Pointer {
             // Pointer cache should be set to non-zero value to enable client-side pointer rendering.

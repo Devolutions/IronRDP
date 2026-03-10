@@ -2,19 +2,19 @@
 mod tests;
 
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
-    ensure_size, invalid_field_err,
+    Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
+    ensure_fixed_part_size, ensure_size, invalid_field_err,
 };
+use ironrdp_str::ansi;
+use ironrdp_str::prefixed::CbU32StringNullIncluded;
 
 use super::{
     BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, MAC_SIZE,
-    PreambleType, ServerLicenseError, UTF8_NULL_TERMINATOR_SIZE, UTF16_NULL_TERMINATOR_SIZE,
+    PreambleType, ServerLicenseError,
 };
 use crate::crypto::rc4::Rc4;
-use crate::utils;
-use crate::utils::CharacterSet;
 
-const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
+const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 8; // version(4) + scope_len(4); the rest use decode_owned
 
 /// [2.2.2.6] Server Upgrade License (SERVER_UPGRADE_LICENSE)
 ///
@@ -100,9 +100,12 @@ impl ServerUpgradeLicense {
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct LicenseInformation {
     pub version: u32,
+    /// Scope identifier (ANSI/ASCII string)
     pub scope: String,
-    pub company_name: String,
-    pub product_id: String,
+    /// Company name ([MS-RDPELE] §2.2.2.6.1 `pbCompanyName`, UTF-16LE, u32 cb prefix including null)
+    pub company_name: CbU32StringNullIncluded,
+    /// Product ID ([MS-RDPELE] §2.2.2.6.1 `pbProductId`, UTF-16LE, u32 cb prefix including null)
+    pub product_id: CbU32StringNullIncluded,
     pub license_info: Vec<u8>,
 }
 
@@ -118,20 +121,11 @@ impl Encode for LicenseInformation {
 
         dst.write_u32(self.version);
 
-        dst.write_u32(cast_length!("scopeLen", self.scope.len() + UTF8_NULL_TERMINATOR_SIZE)?);
-        utils::write_string_to_cursor(dst, &self.scope, CharacterSet::Ansi, true)?;
+        dst.write_u32(cast_length!("scopeLen", ansi::encoded_ansi_len_with_null(&self.scope))?);
+        ansi::write_ansi_with_null(dst, &self.scope)?;
 
-        dst.write_u32(cast_length!(
-            "companyLen",
-            self.company_name.len() * 2 + UTF16_NULL_TERMINATOR_SIZE
-        )?);
-        utils::write_string_to_cursor(dst, &self.company_name, CharacterSet::Unicode, true)?;
-
-        dst.write_u32(cast_length!(
-            "produceIdLen",
-            self.product_id.len() * 2 + UTF16_NULL_TERMINATOR_SIZE
-        )?);
-        utils::write_string_to_cursor(dst, &self.product_id, CharacterSet::Unicode, true)?;
+        self.company_name.encode(dst)?;
+        self.product_id.encode(dst)?;
 
         dst.write_u32(cast_length!("licenseInfoLen", self.license_info.len())?);
         dst.write_slice(self.license_info.as_slice());
@@ -144,13 +138,11 @@ impl Encode for LicenseInformation {
     }
 
     fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE
-            + self.scope.len() + UTF8_NULL_TERMINATOR_SIZE
-            + self.company_name.len() * 2 // utf16
-            + UTF16_NULL_TERMINATOR_SIZE
-            + self.product_id.len() * 2 // utf16
-            + UTF16_NULL_TERMINATOR_SIZE
-            + self.license_info.len()
+        4 // version
+            + 4 + ansi::encoded_ansi_len_with_null(&self.scope) // scopeLen(u32) + scope + null
+            + self.company_name.size()
+            + self.product_id.size()
+            + 4 + self.license_info.len() // licenseInfoLen(u32) + data
     }
 }
 
@@ -162,15 +154,12 @@ impl<'de> Decode<'de> for LicenseInformation {
 
         let scope_len: usize = cast_length!("scopeLen", src.read_u32())?;
         ensure_size!(in: src, size: scope_len);
-        let scope = utils::decode_string(src.read_slice(scope_len), CharacterSet::Ansi, true)?;
+        let scope_bytes = src.read_slice(scope_len);
+        let scope =
+            ansi::decode_ansi(scope_bytes).map_err(|_| invalid_field_err!("scope", "invalid UTF-8 in scope"))?;
 
-        let company_name_len: usize = cast_length!("companyLen", src.read_u32())?;
-        ensure_size!(in: src, size: company_name_len);
-        let company_name = utils::decode_string(src.read_slice(company_name_len), CharacterSet::Unicode, true)?;
-
-        let product_id_len: usize = cast_length!("productIdLen", src.read_u32())?;
-        ensure_size!(in: src, size: product_id_len);
-        let product_id = utils::decode_string(src.read_slice(product_id_len), CharacterSet::Unicode, true)?;
+        let company_name = CbU32StringNullIncluded::decode_owned(src)?;
+        let product_id = CbU32StringNullIncluded::decode_owned(src)?;
 
         let license_info_len = cast_length!("licenseInfoLen", src.read_u32())?;
         ensure_size!(in: src, size: license_info_len);
