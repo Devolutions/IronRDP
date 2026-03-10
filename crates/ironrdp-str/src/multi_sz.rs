@@ -441,6 +441,17 @@ impl DecodeOwned for MultiSzString {
         // Strip the sentinel null; per-string null terminators are retained in storage.
         all_units.truncate(all_units.len() - 1);
 
+        // After stripping the sentinel, the remaining content must be empty (empty list)
+        // or end with a per-string null (the last segment is properly terminated).
+        // Without this check, a last segment without its own null would be silently dropped
+        // by the null-scanning iterators.
+        if !all_units.is_empty() && all_units.last() != Some(&0) {
+            return Err(invalid_field_err!(
+                "content",
+                "MULTI_SZ last segment is missing its null terminator"
+            ));
+        }
+
         Ok(Self(MultiSzStringRepr::Wire(all_units)))
     }
 }

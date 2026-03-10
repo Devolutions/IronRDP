@@ -410,12 +410,19 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for UnicodeStringFiel
         };
 
         // Step 3: Determine content length (code units of actual string content, excluding null).
-        let content_cch = if N::NULL_COUNTED_IN_PREFIX && cch_on_wire > 0 {
+        //
+        // NullCounted: prefix counts content + null, so cch_on_wire == 0 is invalid
+        //   (minimum is 1 for an empty string). Reject here before the subtraction.
+        // NullUncounted / NoNull: cch_on_wire is the content length directly.
+        let content_cch = if N::NULL_COUNTED_IN_PREFIX {
+            if cch_on_wire == 0 {
+                return Err(invalid_field_err!(
+                    "length prefix",
+                    "NullCounted prefix of 0 is invalid; minimum is 1 (empty string with null)"
+                ));
+            }
             cch_on_wire - 1
         } else {
-            // NullUncounted: cch_on_wire is the content length (null follows separately)
-            // NoNull: cch_on_wire is the content length
-            // NullCounted with cch_on_wire == 0: treat as empty (no null to read)
             cch_on_wire
         };
 
@@ -427,22 +434,16 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for UnicodeStringFiel
         let slice = src.read_slice(content_byte_count);
         let units = crate::repr::le_bytes_to_units(slice);
 
-        // Step 5: Consume null terminator if present on wire.
+        // Step 5: Read and validate the null terminator if the format requires one on the wire.
         //
-        // NullCounted: the null is the (cch_on_wire)th code unit, already counted in the prefix.
-        //   We read it only if cch_on_wire > 0.
-        // NullUncounted: the null always follows the content (even for empty content).
+        // NullCounted: we just read `content_cch` units; the next unit must be 0x0000.
+        // NullUncounted: the null follows the content (even for zero-length content).
+        // NoNull: skip entirely.
         if N::HAS_NULL_ON_WIRE {
-            let should_read_null = if N::NULL_COUNTED_IN_PREFIX {
-                // NullCounted: only read null if cch_on_wire > 0 (i.e. null was counted)
-                cch_on_wire > 0
-            } else {
-                // NullUncounted: always present on wire regardless of content length
-                true
-            };
-            if should_read_null {
-                ensure_size!(in: src, size: 2);
-                let _ = src.read_u16(); // null terminator — consume and discard
+            ensure_size!(in: src, size: 2);
+            let null = src.read_u16();
+            if null != 0 {
+                return Err(invalid_field_err!("null terminator", "expected 0x0000 null terminator"));
             }
         }
 
