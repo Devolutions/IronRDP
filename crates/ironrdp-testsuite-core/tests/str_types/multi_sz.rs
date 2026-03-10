@@ -1,0 +1,226 @@
+use expect_test::expect;
+use ironrdp_core::{DecodeOwned as _, ReadCursor, encode_vec};
+use ironrdp_str::multi_sz::MultiSzString;
+
+#[test]
+fn empty_multi_sz() {
+    // An empty MULTI_SZ: cch=1, one final null.
+    let m = MultiSzString::new(core::iter::empty::<String>());
+    let encoded = encode_vec(&m).unwrap();
+    // 4 bytes (u32 cch=1) + 2 bytes (final null) = 6 bytes
+    assert_eq!(encoded.len(), 6);
+    assert_eq!(u32::from_le_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]), 1);
+}
+
+// Property: new() → encode → decode gives back the original string list.
+// Strings with embedded nulls are excluded: U+0000 is a segment delimiter in MULTI_SZ.
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(50))]
+    #[test]
+    fn round_trip_prop(strings in proptest::collection::vec("[^\x00]{0,20}", 0..3usize)) {
+        let m = MultiSzString::new(strings.clone());
+        let encoded = encode_vec(&m).unwrap();
+        let decoded = MultiSzString::decode_owned(&mut ReadCursor::new(&encoded)).unwrap();
+        let result: Vec<String> = decoded.iter_native().map(|s| s.unwrap().into_owned()).collect();
+        proptest::prop_assert_eq!(result, strings);
+    }
+}
+
+#[test]
+fn total_cch_counts_all_nulls() {
+    // ["ab", "c"] -> total_cch = (2+1) + (1+1) + 1 = 6
+    let m = MultiSzString::new(["ab", "c"]);
+    assert_eq!(m.total_cch(), 6);
+}
+
+// Property: size() == encoded byte length for any list of strings.
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(50))]
+    #[test]
+    fn size_matches_encoded_length_prop(strings in proptest::collection::vec("[^\x00]{0,20}", 0..3usize)) {
+        use ironrdp_core::Encode as _;
+        let m = MultiSzString::new(strings);
+        proptest::prop_assert_eq!(m.size(), encode_vec(&m).unwrap().len());
+    }
+}
+
+#[test]
+fn rejects_zero_cch() {
+    let wire: &[u8] = &[0x00, 0x00, 0x00, 0x00]; // cch=0
+    let err = MultiSzString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
+    expect![[r#"
+        Error {
+            context: "<ironrdp_str::multi_sz::MultiSzString as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            kind: InvalidField {
+                field: "cch",
+                reason: "zero cch for MULTI_SZ is invalid",
+            },
+            source: None,
+        }
+    "#]].assert_debug_eq(&err);
+}
+
+// ── from_utf16le_byte_strings ─────────────────────────────────────────────────
+
+#[test]
+fn from_utf16le_byte_strings_round_trip() {
+    let byte_strings: Vec<Vec<u8>> = ["foo", "bar"]
+        .iter()
+        .map(|s| s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect())
+        .collect();
+    let m = MultiSzString::from_utf16le_byte_strings(byte_strings.iter().map(|v| v.as_slice())).unwrap();
+    let strings: Vec<String> = m.iter_native().map(|s| s.unwrap().into_owned()).collect();
+    assert_eq!(strings, ["foo", "bar"]);
+}
+
+#[test]
+fn from_utf16le_byte_strings_odd_length_returns_none() {
+    assert!(MultiSzString::from_utf16le_byte_strings([&[0x41u8][..]]).is_none());
+}
+
+// ── from_utf16le_flat ─────────────────────────────────────────────────────────
+
+#[test]
+fn from_utf16le_flat_round_trip() {
+    // Flat content for ["foo", "bar"]: "foo\0bar\0\0" in UTF-16LE.
+    let flat: Vec<u8> = "foo"
+        .encode_utf16()
+        .chain([0u16]) // per-string null
+        .chain("bar".encode_utf16())
+        .chain([0u16]) // per-string null
+        .chain([0u16]) // sentinel
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let m = MultiSzString::from_utf16le_flat(&flat).unwrap();
+    let strings: Vec<String> = m.iter_native().map(|s| s.unwrap().into_owned()).collect();
+    assert_eq!(strings, ["foo", "bar"]);
+}
+
+#[test]
+fn from_utf16le_flat_empty_list() {
+    // Minimal flat content: just the sentinel null.
+    let flat: &[u8] = &[0x00, 0x00];
+    let m = MultiSzString::from_utf16le_flat(flat).unwrap();
+    assert_eq!(m.iter_native().count(), 0);
+}
+
+#[test]
+fn from_utf16le_flat_encodes_same_as_new() {
+    let flat: Vec<u8> = "hello"
+        .encode_utf16()
+        .chain([0u16])
+        .chain("world".encode_utf16())
+        .chain([0u16])
+        .chain([0u16]) // sentinel
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let from_flat = MultiSzString::from_utf16le_flat(&flat).unwrap();
+    let from_native = MultiSzString::new(["hello", "world"]);
+    assert_eq!(encode_vec(&from_flat).unwrap(), encode_vec(&from_native).unwrap());
+}
+
+#[test]
+fn from_utf16le_flat_odd_length_returns_none() {
+    assert!(MultiSzString::from_utf16le_flat(&[0x00]).is_none());
+}
+
+#[test]
+fn from_utf16le_flat_missing_sentinel_returns_none() {
+    // "foo" with per-string null but no sentinel.
+    let no_sentinel: Vec<u8> = "foo"
+        .encode_utf16()
+        .chain([0u16])
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    assert!(MultiSzString::from_utf16le_flat(&no_sentinel).is_none());
+}
+
+// ── from_wire_units_flat ──────────────────────────────────────────────────────
+
+#[test]
+fn from_wire_units_flat_round_trip() {
+    let flat: Vec<u16> = "foo"
+        .encode_utf16()
+        .chain([0u16])
+        .chain("bar".encode_utf16())
+        .chain([0u16])
+        .chain([0u16]) // sentinel
+        .collect();
+    let m = MultiSzString::from_wire_units_flat(flat).unwrap();
+    let strings: Vec<String> = m.iter_native().map(|s| s.unwrap().into_owned()).collect();
+    assert_eq!(strings, ["foo", "bar"]);
+}
+
+#[test]
+fn from_wire_units_flat_empty_list() {
+    let m = MultiSzString::from_wire_units_flat(vec![0u16]).unwrap();
+    assert_eq!(m.iter_native().count(), 0);
+}
+
+#[test]
+fn from_wire_units_flat_missing_sentinel_returns_none() {
+    let no_sentinel: Vec<u16> = "foo".encode_utf16().chain([0u16]).collect();
+    assert!(MultiSzString::from_wire_units_flat(no_sentinel).is_none());
+}
+
+#[test]
+fn from_wire_units_flat_encodes_same_as_new() {
+    let flat: Vec<u16> = "hello"
+        .encode_utf16()
+        .chain([0u16])
+        .chain("world".encode_utf16())
+        .chain([0u16])
+        .chain([0u16]) // sentinel
+        .collect();
+    let from_flat = MultiSzString::from_wire_units_flat(flat).unwrap();
+    let from_native = MultiSzString::new(["hello", "world"]);
+    assert_eq!(encode_vec(&from_flat).unwrap(), encode_vec(&from_native).unwrap());
+}
+
+// ── from_unit_strings ─────────────────────────────────────────────────────────
+
+#[test]
+fn from_unit_strings_round_trip() {
+    let unit_strings: Vec<Vec<u16>> = ["foo", "bar"].iter().map(|s| s.encode_utf16().collect()).collect();
+    let m = MultiSzString::from_unit_strings(unit_strings);
+    let strings: Vec<String> = m.iter_native().map(|s| s.unwrap().into_owned()).collect();
+    assert_eq!(strings, ["foo", "bar"]);
+}
+
+#[test]
+fn from_unit_strings_encodes_same_as_new() {
+    let unit_strings: Vec<Vec<u16>> = ["hello", "world"].iter().map(|s| s.encode_utf16().collect()).collect();
+    let from_units = MultiSzString::from_unit_strings(unit_strings);
+    let from_native = MultiSzString::new(["hello", "world"]);
+    assert_eq!(encode_vec(&from_units).unwrap(), encode_vec(&from_native).unwrap());
+}
+
+#[test]
+fn from_unit_strings_non_bmp() {
+    let units: Vec<u16> = "\u{1F600}".encode_utf16().collect();
+    let m = MultiSzString::from_unit_strings([units]);
+    let strings: Vec<String> = m.iter_native().map(|s| s.unwrap().into_owned()).collect();
+    assert_eq!(strings, ["\u{1F600}"]);
+}
+
+#[test]
+fn strings_lossy_replaces_lone_surrogates() {
+    // Manually construct a MULTI_SZ with a lone high surrogate in one segment.
+    // cch=3: [D800 LE][0000][0000] = lone surrogate + null + sentinel
+    let wire: &[u8] = &[
+        0x03, 0x00, 0x00, 0x00, // u32 cch = 3
+        0x00, 0xD8, // lone high surrogate D800 (LE)
+        0x00, 0x00, // null terminator
+        0x00, 0x00, // final sentinel
+    ];
+    let decoded = MultiSzString::decode_owned(&mut ReadCursor::new(wire)).unwrap();
+    // iter_native() returns Err for the segment with lone surrogate
+    let err = decoded.iter_native().find_map(|r| r.err()).unwrap();
+    expect![[r#"
+        InvalidUtf16
+    "#]].assert_debug_eq(&err);
+    // strings_lossy() replaces lone surrogate with U+FFFD
+    let lossy: Vec<_> = decoded.iter_native_lossy().collect();
+    assert_eq!(lossy.len(), 1);
+    assert!(lossy[0].contains('\u{FFFD}'));
+}

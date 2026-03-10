@@ -1,0 +1,24 @@
+[package]
+name = "ironrdp-str"
+version = "0.1.0"
+description = "Typed wire-aware string primitives for RDP protocol fields"
+edition.workspace = true
+rust-version = "1.89"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["std"]
+std = ["alloc", "ironrdp-core/std"]
+alloc = ["ironrdp-core/alloc", "bytemuck/extern_crate_alloc"]
+
+[dependencies]
+bytemuck = { version = "1", default-features = false }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+
+[lints]
+workspace = true
