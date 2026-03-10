@@ -350,12 +350,12 @@ impl MultiSzString {
     /// terminators and the final sentinel null. This is the value written as the `u32 cch`
     /// prefix.
     ///
-    /// Returns `usize::MAX` on arithmetic overflow (requires a pathologically large input).
-    /// In that case [`Encode::encode`] will return an error rather than panic.
+    /// # Panics
     ///
-    /// [`Encode::encode`]: ironrdp_core::Encode::encode
+    /// Panics on arithmetic overflow (requires a pathologically large input that cannot
+    /// be represented on this platform).
     pub fn total_cch(&self) -> usize {
-        self.checked_total_cch().unwrap_or(usize::MAX)
+        self.checked_total_cch().expect("MULTI_SZ total length overflow")
     }
 
     /// Like [`total_cch`], but returns `None` on `usize` overflow.
@@ -520,7 +520,16 @@ impl Encode for MultiSzString {
     }
 
     fn size(&self) -> usize {
-        4usize.saturating_add(self.total_cch().saturating_mul(2)) // u32 cch prefix + all code units * 2 bytes
+        // Use checked arithmetic so overflow panics here rather than silently producing
+        // usize::MAX, which would cause encode_vec() to attempt a huge allocation.
+        let total_cch = self
+            .checked_total_cch()
+            .expect("MULTI_SZ total length overflow when computing size()");
+
+        total_cch
+            .checked_mul(2)
+            .and_then(|bytes_for_units| bytes_for_units.checked_add(4))
+            .expect("MULTI_SZ encoded size overflow")
     }
 }
 

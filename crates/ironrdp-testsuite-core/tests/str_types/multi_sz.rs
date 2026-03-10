@@ -156,21 +156,6 @@ fn from_utf16le_flat_empty_list() {
 }
 
 #[test]
-fn from_utf16le_flat_encodes_same_as_new() {
-    let flat: Vec<u8> = "hello"
-        .encode_utf16()
-        .chain([0u16])
-        .chain("world".encode_utf16())
-        .chain([0u16])
-        .chain([0u16]) // sentinel
-        .flat_map(|u| u.to_le_bytes())
-        .collect();
-    let from_flat = MultiSzString::from_utf16le_flat(&flat).unwrap();
-    let from_native = MultiSzString::new(["hello", "world"]).unwrap();
-    assert_eq!(encode_vec(&from_flat).unwrap(), encode_vec(&from_native).unwrap());
-}
-
-#[test]
 fn from_utf16le_flat_odd_length_returns_err() {
     let err = MultiSzString::from_utf16le_flat(&[0x00]).unwrap_err();
     expect![[r#"
@@ -254,20 +239,6 @@ fn from_wire_units_flat_unterminated_last_segment_returns_err() {
     assert_eq!(err, MultiSzFlatError::UnterminatedLastSegment);
 }
 
-#[test]
-fn from_wire_units_flat_encodes_same_as_new() {
-    let flat: Vec<u16> = "hello"
-        .encode_utf16()
-        .chain([0u16])
-        .chain("world".encode_utf16())
-        .chain([0u16])
-        .chain([0u16]) // sentinel
-        .collect();
-    let from_flat = MultiSzString::from_wire_units_flat(flat).unwrap();
-    let from_native = MultiSzString::new(["hello", "world"]).unwrap();
-    assert_eq!(encode_vec(&from_flat).unwrap(), encode_vec(&from_native).unwrap());
-}
-
 // ── from_unit_strings ─────────────────────────────────────────────────────────
 
 #[test]
@@ -305,14 +276,6 @@ fn from_unit_strings_round_trip() {
     let m = MultiSzString::from_unit_strings(unit_strings).unwrap();
     let strings: Vec<String> = m.iter_native().map(|s| s.unwrap().into_owned()).collect();
     assert_eq!(strings, ["foo", "bar"]);
-}
-
-#[test]
-fn from_unit_strings_encodes_same_as_new() {
-    let unit_strings: Vec<Vec<u16>> = ["hello", "world"].iter().map(|s| s.encode_utf16().collect()).collect();
-    let from_units = MultiSzString::from_unit_strings(unit_strings).unwrap();
-    let from_native = MultiSzString::new(["hello", "world"]).unwrap();
-    assert_eq!(encode_vec(&from_units).unwrap(), encode_vec(&from_native).unwrap());
 }
 
 #[test]

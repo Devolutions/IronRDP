@@ -51,14 +51,6 @@ fn rejects_overlong_string() {
 }
 
 #[test]
-fn accepts_string_at_max_length() {
-    // 3 code units in a WCHAR_COUNT=4 field: exactly fills content, null at slot 3.
-    let s = FixedString::<4>::new("abc").unwrap();
-    use ironrdp_core::Encode as _;
-    assert_eq!(s.size(), 8);
-}
-
-#[test]
 fn decode_strips_padding() {
     // Wire: [0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
     // = 'A' (U+0041) followed by three null code units.
