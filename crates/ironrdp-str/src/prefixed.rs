@@ -187,7 +187,7 @@ impl NullTerminatorPolicy for NoNull {
     const NULL_COUNTED_IN_PREFIX: bool = false;
 }
 
-// ── StringField ────────────────────────────────────────────────────────
+// ── PrefixedString ────────────────────────────────────────────────────────
 
 /// A variable-length UTF-16LE string with a self-describing length prefix.
 ///
@@ -197,26 +197,26 @@ impl NullTerminatorPolicy for NoNull {
 ///
 /// Use the provided type aliases ([`CchString`], [`CbStringNullExcluded`], etc.)
 /// rather than naming this type directly.
-pub struct StringField<Prefix, Null>(StringRepr, PhantomData<(Prefix, Null)>);
+pub struct PrefixedString<Prefix, Null>(StringRepr, PhantomData<(Prefix, Null)>);
 
-impl<P, N> StringField<P, N> {
-    /// Creates a `StringField` from a native Rust string.
+impl<P, N> PrefixedString<P, N> {
+    /// Creates a `PrefixedString` from a native Rust string.
     pub fn new(s: impl Into<String>) -> Self {
         Self(StringRepr::from_native(s.into()), PhantomData)
     }
 
-    /// Creates a `StringField` from raw UTF-16LE wire bytes.
+    /// Creates a `PrefixedString` from raw UTF-16LE wire bytes.
     ///
     /// Returns `None` if `bytes` has odd length. This is a convenience wrapper around
     /// [`utf16le_bytes_to_units`] + [`from_wire_units`].
     ///
     /// [`utf16le_bytes_to_units`]: crate::utf16le_bytes_to_units
-    /// [`from_wire_units`]: StringField::from_wire_units
+    /// [`from_wire_units`]: PrefixedString::from_wire_units
     pub fn from_utf16le_bytes(bytes: &[u8]) -> Option<Self> {
         crate::utf16le_bytes_to_units(bytes).map(Self::from_wire_units)
     }
 
-    /// Creates a `StringField` from pre-parsed UTF-16 code units.
+    /// Creates a `PrefixedString` from pre-parsed UTF-16 code units.
     ///
     /// The units must not include a null terminator (the null is a wire-level concern
     /// encoded by the `N` type parameter during [`Encode`]). This is the low-level
@@ -291,53 +291,53 @@ impl<P, N> StringField<P, N> {
     }
 }
 
-impl<P, N> From<String> for StringField<P, N> {
+impl<P, N> From<String> for PrefixedString<P, N> {
     fn from(s: String) -> Self {
         Self::new(s)
     }
 }
 
-impl<P, N> From<&str> for StringField<P, N> {
+impl<P, N> From<&str> for PrefixedString<P, N> {
     fn from(s: &str) -> Self {
         Self::new(s.to_owned())
     }
 }
 
-impl<P, N> TryFrom<StringField<P, N>> for String {
+impl<P, N> TryFrom<PrefixedString<P, N>> for String {
     type Error = InvalidUtf16;
 
-    fn try_from(f: StringField<P, N>) -> Result<Self, Self::Error> {
+    fn try_from(f: PrefixedString<P, N>) -> Result<Self, Self::Error> {
         f.0.into_native()
     }
 }
 
-impl<P, N> fmt::Display for StringField<P, N> {
+impl<P, N> fmt::Display for PrefixedString<P, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.to_native_lossy(), f)
     }
 }
 
-impl<P, N> fmt::Debug for StringField<P, N> {
+impl<P, N> fmt::Debug for PrefixedString<P, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "StringField({:?})", self.0)
+        write!(f, "PrefixedString({:?})", self.0)
     }
 }
 
-impl<P, N> Clone for StringField<P, N> {
+impl<P, N> Clone for PrefixedString<P, N> {
     fn clone(&self) -> Self {
         Self(self.0.clone(), PhantomData)
     }
 }
 
-impl<P, N> PartialEq for StringField<P, N> {
+impl<P, N> PartialEq for PrefixedString<P, N> {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-impl<P, N> Eq for StringField<P, N> {}
+impl<P, N> Eq for PrefixedString<P, N> {}
 
-impl<P, N> core::hash::Hash for StringField<P, N> {
+impl<P, N> core::hash::Hash for PrefixedString<P, N> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
@@ -345,7 +345,7 @@ impl<P, N> core::hash::Hash for StringField<P, N> {
 
 // ── Encode ────────────────────────────────────────────────────────────────────
 
-impl<P: LengthPrefix, N: NullTerminatorPolicy> Encode for StringField<P, N> {
+impl<P: LengthPrefix, N: NullTerminatorPolicy> Encode for PrefixedString<P, N> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -380,7 +380,7 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> Encode for StringField<P, N> {
     }
 
     fn name(&self) -> &'static str {
-        "StringField"
+        "PrefixedString"
     }
 
     fn size(&self) -> usize {
@@ -392,7 +392,7 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> Encode for StringField<P, N> {
 
 // ── DecodeOwned ───────────────────────────────────────────────────────────────
 
-impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for StringField<P, N> {
+impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P, N> {
     fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Step 1: Read the raw prefix value.
         ensure_size!(in: src, size: P::WIRE_SIZE);
@@ -464,7 +464,7 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for StringField<P, N>
 /// [MS-RDPEPS] §2.2.1.2
 ///
 /// [MS-RDPEPS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeps/
-pub type CchString = StringField<CchU16, NullCounted>;
+pub type CchString = PrefixedString<CchU16, NullCounted>;
 
 /// UTF-16 string with a `u32` WCHAR count prefix, null terminator counted in the prefix.
 ///
@@ -476,7 +476,7 @@ pub type CchString = StringField<CchU16, NullCounted>;
 /// [MS-RDPEUSB] §2.2.4.2
 ///
 /// [MS-RDPEUSB]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/
-pub type Cch32String = StringField<CchU32, NullCounted>;
+pub type Cch32String = PrefixedString<CchU32, NullCounted>;
 
 /// UTF-16 string with a `u16` byte count prefix, null terminator **not** counted in the prefix.
 ///
@@ -488,7 +488,7 @@ pub type Cch32String = StringField<CchU32, NullCounted>;
 /// [MS-RDPBCGR] §2.2.1.11.1.1
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
-pub type CbStringNullExcluded = StringField<CbU16, NullUncounted>;
+pub type CbStringNullExcluded = PrefixedString<CbU16, NullUncounted>;
 
 /// UTF-16 string with a `u16` byte count prefix, null terminator counted in the prefix.
 ///
@@ -500,7 +500,7 @@ pub type CbStringNullExcluded = StringField<CbU16, NullUncounted>;
 /// [MS-RDPBCGR] §2.2.1.11.1.1
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
-pub type CbStringNullIncluded = StringField<CbU16, NullCounted>;
+pub type CbStringNullIncluded = PrefixedString<CbU16, NullCounted>;
 
 /// Non-null-terminated UTF-16 string with a `u16` byte count prefix.
 ///
@@ -512,7 +512,7 @@ pub type CbStringNullIncluded = StringField<CbU16, NullCounted>;
 /// [MS-RDPERP] §2.2.1.2.1
 ///
 /// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
-pub type RailString = StringField<CbU16, NoNull>;
+pub type RailString = PrefixedString<CbU16, NoNull>;
 
 /// Non-null-terminated UTF-16 string with a `u16` byte count prefix.
 ///
@@ -524,7 +524,7 @@ pub type RailString = StringField<CbU16, NoNull>;
 /// [MS-RDPBCGR] §2.2.1.11.1.1
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
-pub type CbStringNoNull = StringField<CbU16, NoNull>;
+pub type CbStringNoNull = PrefixedString<CbU16, NoNull>;
 
 /// UTF-16 string with a `u32` byte count prefix, null terminator counted in the prefix.
 ///
@@ -537,4 +537,4 @@ pub type CbStringNoNull = StringField<CbU16, NoNull>;
 /// [MS-RDPELE] §2.2.2.1.1, §2.2.2.6.1
 ///
 /// [MS-RDPELE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/
-pub type CbU32StringNullIncluded = StringField<CbU32, NullCounted>;
+pub type CbU32StringNullIncluded = PrefixedString<CbU32, NullCounted>;

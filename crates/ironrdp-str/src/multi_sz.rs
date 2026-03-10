@@ -41,6 +41,30 @@ use ironrdp_core::{
 
 use crate::{EmbeddedNul, InvalidUtf16};
 
+// ── MultiSzSegmentError ───────────────────────────────────────────────────────
+
+/// Error returned by [`MultiSzString::from_utf16le_byte_strings`] when a byte-slice segment
+/// is malformed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiSzSegmentError {
+    /// The byte slice has odd length. UTF-16LE requires exactly 2 bytes per code unit.
+    OddByteCount,
+    /// The segment contains an embedded `0x0000` (U+0000) code unit, which would corrupt
+    /// `MULTI_SZ` segment boundaries and break round-trip semantics.
+    EmbeddedNul,
+}
+
+impl core::fmt::Display for MultiSzSegmentError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::OddByteCount => f.write_str("odd byte count: UTF-16LE requires 2 bytes per code unit"),
+            Self::EmbeddedNul => f.write_str("embedded nul: MULTI_SZ segment contains a U+0000 code unit"),
+        }
+    }
+}
+
+impl core::error::Error for MultiSzSegmentError {}
+
 // ── Internal representation ───────────────────────────────────────────────────
 
 /// Internal representation of a [`MultiSzString`].
@@ -105,21 +129,32 @@ impl MultiSzString {
     /// string segment.
     ///
     /// Each byte slice is converted to `u16` code units and null-terminated; the resulting
-    /// segments are stored as a flat `Wire` buffer. Returns `None` if any slice has odd length.
+    /// segments are stored as a flat `Wire` buffer.
+    ///
+    /// Returns [`MultiSzSegmentError::OddByteCount`] if any slice has odd length, or
+    /// [`MultiSzSegmentError::EmbeddedNul`] if any decoded segment contains a `0x0000`
+    /// code unit. An embedded null would split the segment into multiple segments on iteration,
+    /// breaking the API contract of one byte slice per string.
     #[expect(
         single_use_lifetimes,
         reason = "`'a` is required here because anonymous lifetimes in `impl Trait` are unstable; rustc incorrectly suggests eliding it"
     )]
-    pub fn from_utf16le_byte_strings<'a>(byte_strings: impl IntoIterator<Item = &'a [u8]>) -> Option<Self> {
+    pub fn from_utf16le_byte_strings<'a>(
+        byte_strings: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<Self, MultiSzSegmentError> {
         let mut units: Vec<u16> = Vec::new();
         for bytes in byte_strings {
             if !bytes.len().is_multiple_of(2) {
-                return None;
+                return Err(MultiSzSegmentError::OddByteCount);
             }
-            units.extend_from_slice(&crate::repr::le_bytes_to_units(bytes));
+            let segment = crate::repr::le_bytes_to_units(bytes);
+            if segment.contains(&0) {
+                return Err(MultiSzSegmentError::EmbeddedNul);
+            }
+            units.extend_from_slice(&segment);
             units.push(0);
         }
-        Some(Self(MultiSzStringRepr::Wire(units)))
+        Ok(Self(MultiSzStringRepr::Wire(units)))
     }
 
     /// Creates a `MultiSzString` from a flat UTF-16LE byte slice containing the complete

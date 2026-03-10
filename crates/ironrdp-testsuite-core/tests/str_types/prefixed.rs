@@ -2,16 +2,16 @@ use expect_test::expect;
 use ironrdp_core::{DecodeOwned as _, ReadCursor, encode_vec};
 use ironrdp_str::prefixed::{
     CbStringNoNull, CbStringNullExcluded, CbStringNullIncluded, Cch32String, CchString, LengthPrefix,
-    NullTerminatorPolicy, StringField,
+    NullTerminatorPolicy, PrefixedString,
 };
 
 fn encode_decode_roundtrip<P: LengthPrefix, N: NullTerminatorPolicy>(s: &str) -> String
 where
-    StringField<P, N>: ironrdp_core::Encode + ironrdp_core::DecodeOwned,
+    PrefixedString<P, N>: ironrdp_core::Encode + ironrdp_core::DecodeOwned,
 {
-    let field = StringField::<P, N>::new(s.to_owned());
+    let field = PrefixedString::<P, N>::new(s.to_owned());
     let encoded = encode_vec(&field).unwrap();
-    let decoded = StringField::<P, N>::decode_owned(&mut ReadCursor::new(&encoded)).unwrap();
+    let decoded = PrefixedString::<P, N>::decode_owned(&mut ReadCursor::new(&encoded)).unwrap();
     decoded.to_native().unwrap().into_owned()
 }
 
@@ -122,7 +122,7 @@ fn rejects_null_counted_zero_cch() {
     let err = CchString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
     expect![[r#"
         Error {
-            context: "<ironrdp_str::prefixed::StringField<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            context: "<ironrdp_str::prefixed::PrefixedString<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
             kind: InvalidField {
                 field: "length prefix",
                 reason: "NullCounted prefix of 0 is invalid; minimum is 1 (empty string with null)",
@@ -146,7 +146,7 @@ fn rejects_nonzero_null_terminator_null_counted() {
     let err = CchString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
     expect![[r#"
         Error {
-            context: "<ironrdp_str::prefixed::StringField<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            context: "<ironrdp_str::prefixed::PrefixedString<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
             kind: InvalidField {
                 field: "null terminator",
                 reason: "expected 0x0000 null terminator",
@@ -168,7 +168,7 @@ fn rejects_nonzero_null_terminator_null_uncounted() {
     let err = CbStringNullExcluded::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
     expect![[r#"
         Error {
-            context: "<ironrdp_str::prefixed::StringField<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            context: "<ironrdp_str::prefixed::PrefixedString<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
             kind: InvalidField {
                 field: "null terminator",
                 reason: "expected 0x0000 null terminator",
@@ -188,7 +188,7 @@ fn rejects_odd_byte_count() {
     let err = CbStringNullExcluded::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
     expect![[r#"
         Error {
-            context: "<ironrdp_str::prefixed::StringField<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            context: "<ironrdp_str::prefixed::PrefixedString<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
             kind: InvalidField {
                 field: "length prefix",
                 reason: "odd byte count for utf-16 string field",
@@ -220,7 +220,7 @@ fn lone_surrogate_decode_succeeds_to_native_fails() {
 fn from_wire_units_round_trip() {
     use ironrdp_str::prefixed::{CbU16, NullUncounted};
     let units: Vec<u16> = "hello".encode_utf16().collect();
-    let field = StringField::<CbU16, NullUncounted>::from_wire_units(units.clone());
+    let field = PrefixedString::<CbU16, NullUncounted>::from_wire_units(units.clone());
     assert_eq!(field.to_native().unwrap().as_ref(), "hello");
     assert_eq!(field.to_wire_units().as_ref(), units.as_slice());
 }

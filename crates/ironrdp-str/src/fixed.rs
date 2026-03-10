@@ -17,7 +17,7 @@ use crate::{InvalidUtf16, check_invariant, utf16_code_units};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
-/// Error returned when a string is too long for a [`FixedSizeUnicodeString`] field.
+/// Error returned when a string is too long for a [`FixedString`] field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StringTooLong {
     /// Maximum number of UTF-16 code units the field can hold (excluding the null terminator slot).
@@ -38,7 +38,40 @@ impl fmt::Display for StringTooLong {
 
 impl core::error::Error for StringTooLong {}
 
-// ── FixedSizeUnicodeString ────────────────────────────────────────────────────
+/// Error returned by [`FixedString::from_utf16le_bytes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixedStringBytesError {
+    /// The byte slice has odd length. UTF-16LE requires exactly 2 bytes per code unit.
+    OddByteCount,
+    /// The content is too long for the field after stripping trailing nulls.
+    StringTooLong(StringTooLong),
+}
+
+impl fmt::Display for FixedStringBytesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OddByteCount => f.write_str("odd byte count: UTF-16LE requires 2 bytes per code unit"),
+            Self::StringTooLong(e) => fmt::Display::fmt(e, f),
+        }
+    }
+}
+
+impl core::error::Error for FixedStringBytesError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::OddByteCount => None,
+            Self::StringTooLong(e) => Some(e),
+        }
+    }
+}
+
+impl From<StringTooLong> for FixedStringBytesError {
+    fn from(e: StringTooLong) -> Self {
+        Self::StringTooLong(e)
+    }
+}
+
+// ── FixedString ────────────────────────────────────────────────────
 
 /// A UTF-16LE string occupying exactly `WCHAR_COUNT` code units on the wire, zero-padded
 /// if shorter.
@@ -51,47 +84,52 @@ impl core::error::Error for StringTooLong {}
 /// to validate and convert to a Rust `str`, or [`to_native_lossy`] to accept any byte
 /// sequence with lone-surrogate replacement.
 ///
-/// The wire byte size is always [`WIRE_SIZE`](FixedSizeUnicodeString::WIRE_SIZE) = `WCHAR_COUNT * 2`.
+/// The wire byte size is always [`WIRE_SIZE`](FixedString::WIRE_SIZE) = `WCHAR_COUNT * 2`.
 ///
 /// # Common instantiations
 ///
 /// | Type alias                           | `WCHAR_COUNT` | Wire bytes | Spec field |
 /// |--------------------------------------|---------------|------------|------------|
-/// | `FixedSizeUnicodeString<16>`         | 16            | 32         | `clientName` ([MS-RDPBCGR] §2.2.1.3.2) |
-/// | `FixedSizeUnicodeString<32>`         | 32            | 64         | `StandardName`, `DaylightName` ([MS-RDPBCGR] §2.2.1.11.1.1.1) |
-/// | `FixedSizeUnicodeString<260>`        | 260           | 520        | `fileName`, `applicationId` |
+/// | `FixedString<16>`         | 16            | 32         | `clientName` ([MS-RDPBCGR] §2.2.1.3.2) |
+/// | `FixedString<32>`         | 32            | 64         | `StandardName`, `DaylightName` ([MS-RDPBCGR] §2.2.1.11.1.1.1) |
+/// | `FixedString<260>`        | 260           | 520        | `fileName`, `applicationId` |
 ///
-/// [`to_native`]: FixedSizeUnicodeString::to_native
-/// [`to_native_lossy`]: FixedSizeUnicodeString::to_native_lossy
+/// [`to_native`]: FixedString::to_native
+/// [`to_native_lossy`]: FixedString::to_native_lossy
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
-pub struct FixedSizeUnicodeString<const WCHAR_COUNT: usize>(
+pub struct FixedString<const WCHAR_COUNT: usize>(
     /// INVARIANT: `utf16_code_units` of the stored string is `< WCHAR_COUNT`.
     StringRepr,
 );
 
-impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
+impl<const WCHAR_COUNT: usize> FixedString<WCHAR_COUNT> {
     /// Wire byte size: always `WCHAR_COUNT * 2` bytes.
     pub const WIRE_SIZE: usize = {
         assert!(
             WCHAR_COUNT > 0,
-            "FixedSizeUnicodeString<WCHAR_COUNT>: WCHAR_COUNT must be > 0 (at least one slot is required for the null terminator)"
+            "FixedString<WCHAR_COUNT>: WCHAR_COUNT must be > 0 (at least one slot is required for the null terminator)"
         );
         WCHAR_COUNT * 2
     };
 
-    /// Creates a `FixedSizeUnicodeString` from raw UTF-16LE wire bytes.
+    /// Creates a `FixedString` from UTF-16LE content bytes.
     ///
-    /// Returns `None` if `bytes` has odd length, or `Err(`[`StringTooLong`]`)` if the
-    /// content exceeds `WCHAR_COUNT - 1` code units after stripping trailing nulls.
+    /// `bytes` is the string content — it does not need to be padded to `WIRE_SIZE`.
+    /// Trailing null code units are stripped before the length check. Returns
+    /// [`FixedStringBytesError::OddByteCount`] if `bytes` has odd length, or
+    /// [`FixedStringBytesError::StringTooLong`] if the content exceeds `WCHAR_COUNT - 1`
+    /// code units after stripping.
+    ///
     /// This is a convenience wrapper around [`utf16le_bytes_to_units`] + [`from_wire_units`].
     ///
     /// [`utf16le_bytes_to_units`]: crate::utf16le_bytes_to_units
-    /// [`from_wire_units`]: FixedSizeUnicodeString::from_wire_units
-    pub fn from_utf16le_bytes(bytes: &[u8]) -> Option<Result<Self, StringTooLong>> {
-        crate::utf16le_bytes_to_units(bytes).map(Self::from_wire_units)
+    /// [`from_wire_units`]: FixedString::from_wire_units
+    pub fn from_utf16le_bytes(bytes: &[u8]) -> Result<Self, FixedStringBytesError> {
+        let units = crate::utf16le_bytes_to_units(bytes).ok_or(FixedStringBytesError::OddByteCount)?;
+        Self::from_wire_units(units).map_err(FixedStringBytesError::StringTooLong)
     }
 
-    /// Creates a `FixedSizeUnicodeString` from pre-parsed UTF-16 code units.
+    /// Creates a `FixedString` from pre-parsed UTF-16 code units.
     ///
     /// Trailing null and zero-padding code units are stripped. Returns [`StringTooLong`]
     /// if the content exceeds `WCHAR_COUNT - 1` code units after stripping. This is
@@ -115,14 +153,14 @@ impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
         Ok(Self(StringRepr::from_wire_units(units)))
     }
 
-    /// Creates a `FixedSizeUnicodeString` from a native Rust string, truncating to
+    /// Creates a `FixedString` from a native Rust string, truncating to
     /// `WCHAR_COUNT - 1` UTF-16 code units if the string is too long.
     ///
     /// If the string fits within the field, this is equivalent to [`new`]. If it is too
     /// long, the string is truncated at code-unit boundaries; a dangling high surrogate
     /// at the cut point is also removed to preserve valid surrogate pairs.
     ///
-    /// [`new`]: FixedSizeUnicodeString::new
+    /// [`new`]: FixedString::new
     #[expect(
         clippy::missing_panics_doc,
         reason = "the expect() is unreachable: truncation to at most WCHAR_COUNT-1 units guarantees from_wire_units succeeds"
@@ -142,7 +180,7 @@ impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
         Self::from_wire_units(units).expect("truncated units cannot exceed WCHAR_COUNT - 1")
     }
 
-    /// Creates a `FixedSizeUnicodeString` from a native Rust string.
+    /// Creates a `FixedString` from a native Rust string.
     ///
     /// Returns [`StringTooLong`] if the string requires more than `WCHAR_COUNT - 1`
     /// UTF-16 code units (one slot is reserved for the null terminator).
@@ -212,41 +250,41 @@ impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
     }
 }
 
-impl<const WCHAR_COUNT: usize> TryFrom<FixedSizeUnicodeString<WCHAR_COUNT>> for String {
+impl<const WCHAR_COUNT: usize> TryFrom<FixedString<WCHAR_COUNT>> for String {
     type Error = InvalidUtf16;
 
-    fn try_from(s: FixedSizeUnicodeString<WCHAR_COUNT>) -> Result<Self, Self::Error> {
+    fn try_from(s: FixedString<WCHAR_COUNT>) -> Result<Self, Self::Error> {
         s.0.into_native()
     }
 }
 
-impl<const WCHAR_COUNT: usize> fmt::Display for FixedSizeUnicodeString<WCHAR_COUNT> {
+impl<const WCHAR_COUNT: usize> fmt::Display for FixedString<WCHAR_COUNT> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.to_native_lossy(), f)
     }
 }
 
-impl<const WCHAR_COUNT: usize> fmt::Debug for FixedSizeUnicodeString<WCHAR_COUNT> {
+impl<const WCHAR_COUNT: usize> fmt::Debug for FixedString<WCHAR_COUNT> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "FixedSizeUnicodeString<{WCHAR_COUNT}>({:?})", self.0)
+        write!(f, "FixedString<{WCHAR_COUNT}>({:?})", self.0)
     }
 }
 
-impl<const WCHAR_COUNT: usize> Clone for FixedSizeUnicodeString<WCHAR_COUNT> {
+impl<const WCHAR_COUNT: usize> Clone for FixedString<WCHAR_COUNT> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<const WCHAR_COUNT: usize> PartialEq for FixedSizeUnicodeString<WCHAR_COUNT> {
+impl<const WCHAR_COUNT: usize> PartialEq for FixedString<WCHAR_COUNT> {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-impl<const WCHAR_COUNT: usize> Eq for FixedSizeUnicodeString<WCHAR_COUNT> {}
+impl<const WCHAR_COUNT: usize> Eq for FixedString<WCHAR_COUNT> {}
 
-impl<const WCHAR_COUNT: usize> Default for FixedSizeUnicodeString<WCHAR_COUNT> {
+impl<const WCHAR_COUNT: usize> Default for FixedString<WCHAR_COUNT> {
     fn default() -> Self {
         Self(StringRepr::from_native(String::new()))
     }
@@ -254,7 +292,7 @@ impl<const WCHAR_COUNT: usize> Default for FixedSizeUnicodeString<WCHAR_COUNT> {
 
 // ── Encode / DecodeOwned ──────────────────────────────────────────────────────
 
-impl<const WCHAR_COUNT: usize> Encode for FixedSizeUnicodeString<WCHAR_COUNT> {
+impl<const WCHAR_COUNT: usize> Encode for FixedString<WCHAR_COUNT> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: Self::WIRE_SIZE);
 
@@ -271,7 +309,7 @@ impl<const WCHAR_COUNT: usize> Encode for FixedSizeUnicodeString<WCHAR_COUNT> {
     }
 
     fn name(&self) -> &'static str {
-        "FixedSizeUnicodeString"
+        "FixedString"
     }
 
     fn size(&self) -> usize {
@@ -279,7 +317,7 @@ impl<const WCHAR_COUNT: usize> Encode for FixedSizeUnicodeString<WCHAR_COUNT> {
     }
 }
 
-impl<const WCHAR_COUNT: usize> DecodeOwned for FixedSizeUnicodeString<WCHAR_COUNT> {
+impl<const WCHAR_COUNT: usize> DecodeOwned for FixedString<WCHAR_COUNT> {
     fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::WIRE_SIZE);
 

@@ -1,6 +1,6 @@
 use expect_test::expect;
 use ironrdp_core::{DecodeOwned as _, ReadCursor, encode_vec};
-use ironrdp_str::multi_sz::MultiSzString;
+use ironrdp_str::multi_sz::{MultiSzSegmentError, MultiSzString};
 
 #[test]
 fn empty_multi_sz() {
@@ -108,8 +108,28 @@ fn from_utf16le_byte_strings_round_trip() {
 }
 
 #[test]
-fn from_utf16le_byte_strings_odd_length_returns_none() {
-    assert!(MultiSzString::from_utf16le_byte_strings([&[0x41u8][..]]).is_none());
+fn from_utf16le_byte_strings_odd_length_returns_err() {
+    let err = MultiSzString::from_utf16le_byte_strings([&[0x41u8][..]]).unwrap_err();
+    expect![[r#"
+        OddByteCount
+    "#]]
+    .assert_debug_eq(&err);
+    assert_eq!(err, MultiSzSegmentError::OddByteCount);
+}
+
+#[test]
+fn from_utf16le_byte_strings_rejects_embedded_null() {
+    // "a\0b" encoded as UTF-16LE: [0x61, 0x00, 0x00, 0x00, 0x62, 0x00]
+    let segment: Vec<u8> = [0x61u16, 0x0000, 0x62]
+        .iter()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let err = MultiSzString::from_utf16le_byte_strings([segment.as_slice()]).unwrap_err();
+    expect![[r#"
+        EmbeddedNul
+    "#]]
+    .assert_debug_eq(&err);
+    assert_eq!(err, MultiSzSegmentError::EmbeddedNul);
 }
 
 // ── from_utf16le_flat ─────────────────────────────────────────────────────────

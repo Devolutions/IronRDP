@@ -60,8 +60,8 @@ fn non_bmp_round_trip() {
 }
 
 #[test]
-fn lone_surrogate_decode_succeeds_to_str_fails() {
-    // Lone high surrogate D800 LE. Decode no longer validates; to_str() reports error.
+fn lone_surrogate_decode_succeeds_to_native_fails() {
+    // Lone high surrogate D800 LE. Decode no longer validates; to_native() reports error.
     let wire: &[u8] = &[0x00, 0xD8];
     let decoded = UnframedString::decode(&mut ReadCursor::new(wire), 1).unwrap();
     let err = decoded.to_native().unwrap_err();
