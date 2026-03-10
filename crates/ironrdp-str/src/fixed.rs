@@ -281,10 +281,19 @@ impl<const WCHAR_COUNT: usize> Encode for FixedSizeUnicodeString<WCHAR_COUNT> {
 
 impl<const WCHAR_COUNT: usize> DecodeOwned for FixedSizeUnicodeString<WCHAR_COUNT> {
     fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: WCHAR_COUNT * 2);
+        ensure_size!(in: src, size: Self::WIRE_SIZE);
 
-        let slice = src.read_slice(WCHAR_COUNT * 2);
+        let slice = src.read_slice(Self::WIRE_SIZE);
         let units = crate::repr::le_bytes_to_units_strip_nulls(slice);
+
+        // After stripping trailing nulls from WCHAR_COUNT units, the result must be
+        // strictly shorter — if no null was present the field is malformed.
+        if units.len() >= WCHAR_COUNT {
+            return Err(ironrdp_core::invalid_field_err!(
+                "content",
+                "fixed-size string field is missing its null terminator"
+            ));
+        }
 
         Ok(Self(StringRepr::from_wire_units(units)))
     }

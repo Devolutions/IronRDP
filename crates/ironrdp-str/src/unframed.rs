@@ -2,8 +2,8 @@
 //!
 //! Used for strings whose wire length is given by a sibling field, not adjacent to
 //! the string itself. The length is provided externally at decode time, either as a
-//! WCHAR count (via [`UnframedUnicodeString::decode`]) or as a byte length
-//! (via [`UnframedUnicodeString::decode_from_byte_len`]).
+//! WCHAR count (via [`UnframedString::decode`]) or as a byte length
+//! (via [`UnframedString::decode_from_byte_len`]).
 
 use alloc::borrow::Cow;
 #[cfg(not(feature = "std"))]
@@ -26,41 +26,41 @@ use crate::repr::StringRepr;
 /// to validate and convert to a Rust `str`, or [`to_native_lossy`] to accept any byte
 /// sequence with lone-surrogate replacement.
 ///
-/// Use [`ExternallyLengthedString::decode`] or [`ExternallyLengthedString::decode_from_byte_len`]
-/// to decode, and [`ExternallyLengthedString::encode_into`] / [`ExternallyLengthedString::wire_size`]
+/// Use [`UnframedString::decode`] or [`UnframedString::decode_from_byte_len`]
+/// to decode, and [`UnframedString::encode_into`] / [`UnframedString::wire_size`]
 /// to encode.
 ///
 /// This type intentionally does not implement [`ironrdp_core::Encode`] or
 /// [`ironrdp_core::DecodeOwned`]: there is no self-describing length, so the standard
 /// encode/decode interface does not apply.
 ///
-/// [`to_native`]: ExternallyLengthedString::to_native
-/// [`to_native_lossy`]: ExternallyLengthedString::to_native_lossy
-pub struct ExternallyLengthedString(StringRepr);
+/// [`to_native`]: UnframedString::to_native
+/// [`to_native_lossy`]: UnframedString::to_native_lossy
+pub struct UnframedString(StringRepr);
 
-impl ExternallyLengthedString {
-    /// Creates an `ExternallyLengthedString` from a native Rust string.
+impl UnframedString {
+    /// Creates an `UnframedString` from a native Rust string.
     pub fn new(s: impl Into<String>) -> Self {
         Self(StringRepr::from_native(s.into()))
     }
 
-    /// Creates an `ExternallyLengthedString` from raw UTF-16LE wire bytes.
+    /// Creates an `UnframedString` from raw UTF-16LE wire bytes.
     ///
     /// Returns `None` if `bytes` has odd length. Trailing null code units are stripped.
     /// This is a convenience wrapper around [`utf16le_bytes_to_units`] + [`from_wire_units`].
     ///
     /// [`utf16le_bytes_to_units`]: crate::utf16le_bytes_to_units
-    /// [`from_wire_units`]: ExternallyLengthedString::from_wire_units
+    /// [`from_wire_units`]: UnframedString::from_wire_units
     pub fn from_utf16le_bytes(bytes: &[u8]) -> Option<Self> {
         crate::utf16le_bytes_to_units(bytes).map(Self::from_wire_units)
     }
 
-    /// Creates an `ExternallyLengthedString` from pre-parsed UTF-16 code units.
+    /// Creates an `UnframedString` from pre-parsed UTF-16 code units.
     ///
     /// Trailing null code units are stripped. This is the low-level counterpart to
     /// [`decode`] for callers that already have units from [`utf16le_bytes_to_units`].
     ///
-    /// [`decode`]: ExternallyLengthedString::decode
+    /// [`decode`]: UnframedString::decode
     /// [`utf16le_bytes_to_units`]: crate::utf16le_bytes_to_units
     pub fn from_wire_units(units: Vec<u16>) -> Self {
         let mut units = units;
@@ -172,48 +172,48 @@ impl ExternallyLengthedString {
     }
 }
 
-impl From<String> for ExternallyLengthedString {
+impl From<String> for UnframedString {
     fn from(s: String) -> Self {
         Self::new(s)
     }
 }
 
-impl From<&str> for ExternallyLengthedString {
+impl From<&str> for UnframedString {
     fn from(s: &str) -> Self {
         Self::new(s.to_owned())
     }
 }
 
-impl TryFrom<ExternallyLengthedString> for String {
+impl TryFrom<UnframedString> for String {
     type Error = InvalidUtf16;
 
-    fn try_from(s: ExternallyLengthedString) -> Result<Self, Self::Error> {
+    fn try_from(s: UnframedString) -> Result<Self, Self::Error> {
         s.0.into_native()
     }
 }
 
-impl fmt::Display for ExternallyLengthedString {
+impl fmt::Display for UnframedString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.to_native_lossy(), f)
     }
 }
 
-impl fmt::Debug for ExternallyLengthedString {
+impl fmt::Debug for UnframedString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ExternallyLengthedString({:?})", self.0)
+        write!(f, "UnframedString({:?})", self.0)
     }
 }
 
-impl Clone for ExternallyLengthedString {
+impl Clone for UnframedString {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl PartialEq for ExternallyLengthedString {
+impl PartialEq for UnframedString {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-impl Eq for ExternallyLengthedString {}
+impl Eq for UnframedString {}
