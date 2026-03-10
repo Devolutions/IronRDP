@@ -28,3 +28,4 @@ mod rdpsnd;
 mod server;
 mod server_name;
 mod session;
+mod str_types;

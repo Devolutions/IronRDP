@@ -2948,6 +2948,14 @@ name = "ironrdp-session-generators"
 version = "0.0.0"
 
 [[package]]
+name = "ironrdp-str"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "ironrdp-core",
+]
+
+[[package]]
 name = "ironrdp-svc"
 version = "0.6.0"
 dependencies = [
@@ -2982,6 +2990,7 @@ dependencies = [
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
  "ironrdp-session",
+ "ironrdp-str",
  "paste",
  "png",
  "pretty_assertions",
