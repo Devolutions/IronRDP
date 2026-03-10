@@ -66,7 +66,7 @@ impl core::error::Error for StringTooLong {}
 /// [`to_native_lossy`]: FixedSizeUnicodeString::to_native_lossy
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 pub struct FixedSizeUnicodeString<const WCHAR_COUNT: usize>(
-    /// INVARIANT: `utf16_code_units` of the stored string is `<= WCHAR_COUNT - 1`.
+    /// INVARIANT: `utf16_code_units` of the stored string is `< WCHAR_COUNT`.
     StringRepr,
 );
 
