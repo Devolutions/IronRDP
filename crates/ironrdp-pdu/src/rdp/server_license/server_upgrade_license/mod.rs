@@ -2,8 +2,8 @@
 mod tests;
 
 use ironrdp_core::{
-    Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
-    ensure_fixed_part_size, ensure_size, invalid_field_err,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
+    ensure_fixed_part_size, ensure_size, invalid_field_err, invalid_field_err_with_source,
 };
 use ironrdp_str::ansi;
 use ironrdp_str::prefixed::CbU32StringNullIncluded;
@@ -15,6 +15,10 @@ use super::{
 use crate::crypto::rc4::Rc4;
 
 const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 8; // version(4) + scope_len(4); the rest use decode_owned
+// Same conservative bounds as ServerLicenseRequest; [MS-RDPELE] §2.2.2.6.1 specifies the same
+// fields with the same format.
+const MAX_COMPANY_NAME_LEN: usize = 1024;
+const MAX_PRODUCT_ID_LEN: usize = 1024;
 
 /// [2.2.2.6] Server Upgrade License (SERVER_UPGRADE_LICENSE)
 ///
@@ -158,8 +162,10 @@ impl<'de> Decode<'de> for LicenseInformation {
         let scope =
             ansi::decode_ansi(scope_bytes).map_err(|_| invalid_field_err!("scope", "invalid UTF-8 in scope"))?;
 
-        let company_name = CbU32StringNullIncluded::decode_owned(src)?;
-        let product_id = CbU32StringNullIncluded::decode_owned(src)?;
+        let company_name = CbU32StringNullIncluded::decode_owned_max(src, MAX_COMPANY_NAME_LEN)
+            .map_err(|e| invalid_field_err_with_source(Self::NAME, "companyLen", "invalid company name", e))?;
+        let product_id = CbU32StringNullIncluded::decode_owned_max(src, MAX_PRODUCT_ID_LEN)
+            .map_err(|e| invalid_field_err_with_source(Self::NAME, "productIdLen", "invalid product ID", e))?;
 
         let license_info_len = cast_length!("licenseInfoLen", src.read_u32())?;
         ensure_size!(in: src, size: license_info_len);
