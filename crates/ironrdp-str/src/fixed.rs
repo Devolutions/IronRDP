@@ -118,6 +118,7 @@ impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
     /// at the cut point is also removed to preserve valid surrogate pairs.
     ///
     /// [`new`]: FixedSizeUnicodeString::new
+    #[expect(clippy::missing_panics_doc, reason = "the expect() is unreachable: truncation to at most WCHAR_COUNT-1 units guarantees from_wire_units succeeds")]
     pub fn new_truncating(s: impl Into<String>) -> Self {
         let s = s.into();
         Self::new(&s).unwrap_or_else(|_| {
