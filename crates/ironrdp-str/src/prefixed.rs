@@ -337,6 +337,12 @@ impl<P, N> PartialEq for UnicodeStringField<P, N> {
 
 impl<P, N> Eq for UnicodeStringField<P, N> {}
 
+impl<P, N> core::hash::Hash for UnicodeStringField<P, N> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
 // ── Encode ────────────────────────────────────────────────────────────────────
 
 impl<P: LengthPrefix, N: NullTerminatorPolicy> Encode for UnicodeStringField<P, N> {
@@ -516,3 +522,16 @@ pub type RailUnicodeString = UnicodeStringField<CbU16, NoNull>;
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 pub type CbPrefixedStringNoNull = UnicodeStringField<CbU16, NoNull>;
+
+/// UTF-16 string with a `u32` byte count prefix, null terminator counted in the prefix.
+///
+/// Used for `cbCompanyName`, `cbProductId` in the Product Info structure and
+/// `LicenseInformation`. Spec: "A 32-bit unsigned integer that contains the number of
+/// bytes in the pbCompanyName field, including the terminating null character."
+///
+/// Wire layout: `[u32 cb][cb/2 - 1 WCHARs][null WCHAR]`
+///
+/// [MS-RDPELE] §2.2.2.1.1, §2.2.2.6.1
+///
+/// [MS-RDPELE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/
+pub type CbU32PrefixedStringNullIncluded = UnicodeStringField<CbU32, NullCounted>;

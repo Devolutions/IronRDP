@@ -181,6 +181,13 @@ impl PartialEq for StringRepr {
 
 impl Eq for StringRepr {}
 
+impl core::hash::Hash for StringRepr {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        // Must be consistent with PartialEq: hash the UTF-16 code unit sequence.
+        self.utf16_units().for_each(|u| u.hash(state));
+    }
+}
+
 impl fmt::Debug for StringRepr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

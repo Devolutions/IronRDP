@@ -110,6 +110,27 @@ impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
         Ok(Self(StringRepr::from_wire_units(units)))
     }
 
+    /// Creates a `FixedSizeUnicodeString` from a native Rust string, truncating to
+    /// `WCHAR_COUNT - 1` UTF-16 code units if the string is too long.
+    ///
+    /// If the string fits within the field, this is equivalent to [`new`]. If it is too
+    /// long, the string is truncated at code-unit boundaries; a dangling high surrogate
+    /// at the cut point is also removed to preserve valid surrogate pairs.
+    ///
+    /// [`new`]: FixedSizeUnicodeString::new
+    pub fn new_truncating(s: impl Into<String>) -> Self {
+        let s = s.into();
+        Self::new(&s).unwrap_or_else(|_| {
+            let max = WCHAR_COUNT.saturating_sub(1);
+            let mut units: Vec<u16> = s.encode_utf16().take(max).collect();
+            // Drop a dangling high surrogate at the cut point to preserve valid surrogate pairs.
+            if units.last().is_some_and(|&u| (0xD800..=0xDBFF).contains(&u)) {
+                units.pop();
+            }
+            Self::from_wire_units(units).expect("truncated units cannot exceed WCHAR_COUNT - 1")
+        })
+    }
+
     /// Creates a `FixedSizeUnicodeString` from a native Rust string.
     ///
     /// Returns [`StringTooLong`] if the string requires more than `WCHAR_COUNT - 1`
@@ -213,6 +234,12 @@ impl<const WCHAR_COUNT: usize> PartialEq for FixedSizeUnicodeString<WCHAR_COUNT>
 }
 
 impl<const WCHAR_COUNT: usize> Eq for FixedSizeUnicodeString<WCHAR_COUNT> {}
+
+impl<const WCHAR_COUNT: usize> Default for FixedSizeUnicodeString<WCHAR_COUNT> {
+    fn default() -> Self {
+        Self(StringRepr::from_native(String::new()))
+    }
+}
 
 // ── Encode / DecodeOwned ──────────────────────────────────────────────────────
 
