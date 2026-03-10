@@ -45,6 +45,31 @@ proptest::proptest! {
 }
 
 #[test]
+fn rejects_missing_segment_null_terminator() {
+    // Wire: cch=3, content = [f][o][sentinel] — the segment "fo" has no per-string null before
+    // the sentinel. After stripping the sentinel the stored units are [f, o], which ends with a
+    // non-null unit. Without the new validation, iter_native / into_native would silently drop "fo".
+    let wire: &[u8] = &[
+        0x03, 0x00, 0x00, 0x00, // u32 cch = 3
+        0x66, 0x00, // U+0066 'f'
+        0x6F, 0x00, // U+006F 'o'  (no per-string null terminator before the sentinel)
+        0x00, 0x00, // final sentinel
+    ];
+    let err = MultiSzString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
+    expect![[r#"
+        Error {
+            context: "<ironrdp_str::multi_sz::MultiSzString as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            kind: InvalidField {
+                field: "content",
+                reason: "MULTI_SZ last segment is missing its null terminator",
+            },
+            source: None,
+        }
+    "#]]
+    .assert_debug_eq(&err);
+}
+
+#[test]
 fn rejects_zero_cch() {
     let wire: &[u8] = &[0x00, 0x00, 0x00, 0x00]; // cch=0
     let err = MultiSzString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
@@ -217,9 +242,9 @@ fn strings_lossy_replaces_lone_surrogates() {
     let decoded = MultiSzString::decode_owned(&mut ReadCursor::new(wire)).unwrap();
     // iter_native() returns Err for the segment with lone surrogate
     let err = decoded.iter_native().find_map(|r| r.err()).unwrap();
-    expect![[r#"
+    expect![["
         InvalidUtf16
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     // strings_lossy() replaces lone surrogate with U+FFFD
     let lossy: Vec<_> = decoded.iter_native_lossy().collect();

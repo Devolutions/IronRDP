@@ -41,12 +41,12 @@ fn wire_size_is_constant() {
 fn rejects_overlong_string() {
     // WCHAR_COUNT=4 allows max 3 code units (slot 4 is for null).
     let err = FixedSizeUnicodeString::<4>::new("abcd").unwrap_err();
-    expect![[r#"
+    expect![["
         StringTooLong {
             max_code_units: 3,
             actual_code_units: 4,
         }
-    "#]]
+    "]]
     .assert_debug_eq(&err);
 }
 
@@ -74,9 +74,9 @@ fn decode_accepts_lone_surrogate_to_str_fails() {
     let wire: &[u8] = &[0x00, 0xD8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
     let s = FixedSizeUnicodeString::<4>::decode_owned(&mut ReadCursor::new(wire)).unwrap();
     let err = s.to_native().unwrap_err();
-    expect![[r#"
+    expect![["
         InvalidUtf16
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     // to_str_lossy() succeeds and replaces lone surrogates with U+FFFD.
     assert!(s.to_native_lossy().contains('\u{FFFD}'));
@@ -88,12 +88,12 @@ fn non_bmp_code_units_counted_correctly() {
     assert!(FixedSizeUnicodeString::<3>::new("\u{1F600}").is_ok());
     // Two emoji = 4 code units, exceeds max of 2 for WCHAR_COUNT=3.
     let err = FixedSizeUnicodeString::<3>::new("\u{1F600}\u{1F600}").unwrap_err();
-    expect![[r#"
+    expect![["
         StringTooLong {
             max_code_units: 2,
             actual_code_units: 4,
         }
-    "#]]
+    "]]
     .assert_debug_eq(&err);
 }
 
@@ -106,12 +106,12 @@ fn from_utf16le_bytes_too_long_returns_err() {
     let err = FixedSizeUnicodeString::<4>::from_utf16le_bytes(&wire)
         .unwrap()
         .unwrap_err();
-    expect![[r#"
+    expect![["
         StringTooLong {
             max_code_units: 3,
             actual_code_units: 4,
         }
-    "#]]
+    "]]
     .assert_debug_eq(&err);
 }
 

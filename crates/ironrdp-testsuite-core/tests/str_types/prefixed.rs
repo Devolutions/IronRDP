@@ -98,6 +98,87 @@ fn empty_string_no_null() {
     assert_eq!(decoded.to_native().unwrap().as_ref(), "");
 }
 
+// ── Empty string NullCounted round-trip ──────────────────────────────────
+
+#[test]
+fn empty_string_null_counted() {
+    // An empty NullCounted string encodes as cch=1 (just the null).
+    let field = CchPrefixedString::new(String::new());
+    let encoded = encode_vec(&field).unwrap();
+    // 2-byte prefix (1) + 2-byte null = 4 bytes
+    assert_eq!(encoded.len(), 4);
+    assert_eq!(u16::from_le_bytes([encoded[0], encoded[1]]), 1);
+    let decoded = CchPrefixedString::decode_owned(&mut ReadCursor::new(&encoded)).unwrap();
+    assert_eq!(decoded.to_native().unwrap().as_ref(), "");
+}
+
+// ── NullCounted cch=0 is invalid ─────────────────────────────────────────
+
+#[test]
+fn rejects_null_counted_zero_cch() {
+    // cch=0 is invalid for NullCounted: the null is counted in the prefix,
+    // so the minimum valid prefix for any string (including empty) is 1.
+    let wire: &[u8] = &[0x00, 0x00]; // u16 cch=0
+    let err = CchPrefixedString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
+    expect![[r#"
+        Error {
+            context: "<ironrdp_str::prefixed::UnicodeStringField<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            kind: InvalidField {
+                field: "length prefix",
+                reason: "NullCounted prefix of 0 is invalid; minimum is 1 (empty string with null)",
+            },
+            source: None,
+        }
+    "#]]
+    .assert_debug_eq(&err);
+}
+
+// ── Non-zero null terminator is rejected ─────────────────────────────────
+
+#[test]
+fn rejects_nonzero_null_terminator_null_counted() {
+    // cch=2 → content_cch=1 → read 'A', then expect 0x0000 but find 'B'.
+    let wire: &[u8] = &[
+        0x02, 0x00, // u16 cch=2 (1 content unit + 1 null)
+        0x41, 0x00, // U+0041 'A'
+        0x42, 0x00, // U+0042 'B' — should be the null terminator
+    ];
+    let err = CchPrefixedString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
+    expect![[r#"
+        Error {
+            context: "<ironrdp_str::prefixed::UnicodeStringField<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            kind: InvalidField {
+                field: "null terminator",
+                reason: "expected 0x0000 null terminator",
+            },
+            source: None,
+        }
+    "#]]
+    .assert_debug_eq(&err);
+}
+
+#[test]
+fn rejects_nonzero_null_terminator_null_uncounted() {
+    // cb=2 (NullUncounted) → content_cch=1 → read 'A', then expect 0x0000 but find 'B'.
+    let wire: &[u8] = &[
+        0x02, 0x00, // u16 cb=2 (1 content unit, null not counted)
+        0x41, 0x00, // U+0041 'A'
+        0x42, 0x00, // U+0042 'B' — should be the null terminator
+    ];
+    let err = CbPrefixedStringNullExcluded::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
+    expect![[r#"
+        Error {
+            context: "<ironrdp_str::prefixed::UnicodeStringField<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            kind: InvalidField {
+                field: "null terminator",
+                reason: "expected 0x0000 null terminator",
+            },
+            source: None,
+        }
+    "#]]
+    .assert_debug_eq(&err);
+}
+
 // ── Rejection of odd byte counts ─────────────────────────────────────────
 
 #[test]
@@ -125,9 +206,9 @@ fn lone_surrogate_decode_succeeds_to_str_fails() {
     let wire: &[u8] = &[0x02, 0x00, 0x00, 0xD8]; // cb=2, code unit 0xD800
     let decoded = CbPrefixedStringNoNull::decode_owned(&mut ReadCursor::new(wire)).unwrap();
     let err = decoded.to_native().unwrap_err();
-    expect![[r#"
+    expect![["
         InvalidUtf16
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert!(decoded.to_native_lossy().contains('\u{FFFD}'));
 }
@@ -180,7 +261,7 @@ proptest::proptest! {
         let f4 = CbPrefixedStringNullIncluded::new(s.clone());
         proptest::prop_assert_eq!(f4.size(), encode_vec(&f4).unwrap().len());
 
-        let f5 = CbPrefixedStringNoNull::new(s.clone());
+        let f5 = CbPrefixedStringNoNull::new(s);
         proptest::prop_assert_eq!(f5.size(), encode_vec(&f5).unwrap().len());
     }
 }

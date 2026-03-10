@@ -65,9 +65,9 @@ fn lone_surrogate_decode_succeeds_to_str_fails() {
     let wire: &[u8] = &[0x00, 0xD8];
     let decoded = ExternallyLengthedString::decode(&mut ReadCursor::new(wire), 1).unwrap();
     let err = decoded.to_native().unwrap_err();
-    expect![[r#"
+    expect![["
         InvalidUtf16
-    "#]]
+    "]]
     .assert_debug_eq(&err);
     assert!(decoded.to_native_lossy().contains('\u{FFFD}'));
 }
