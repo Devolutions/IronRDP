@@ -395,13 +395,27 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> Encode for PrefixedString<P, N> {
 
 // ── DecodeOwned ───────────────────────────────────────────────────────────────
 
-impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P, N> {
-    fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+impl<P: LengthPrefix, N: NullTerminatorPolicy> PrefixedString<P, N> {
+    /// Decodes a prefixed string from `src`, rejecting any prefix value that exceeds `max_prefix`.
+    ///
+    /// `max_prefix` is compared against the raw wire prefix value **before** any allocation is
+    /// performed:
+    /// - For `Cb`-prefixed types ([`CbU16`], [`CbU32`]) the raw value is a **byte count**.
+    /// - For `Cch`-prefixed types ([`CchU16`], [`CchU32`]) the raw value is a **code-unit count**.
+    ///
+    /// Use this in security-sensitive decode paths to guard against pathological inputs causing
+    /// unexpectedly large allocations.  For unconstrained decoding use [`DecodeOwned::decode_owned`].
+    pub fn decode_owned_max(src: &mut ReadCursor<'_>, max_prefix: usize) -> DecodeResult<Self> {
         // Step 1: Read the raw prefix value.
         ensure_size!(in: src, size: P::WIRE_SIZE);
         let raw = P::read_raw(src)?;
 
-        // Step 2: Convert the raw prefix to a code-unit count on the wire.
+        // Step 2: Enforce the caller-supplied upper bound.
+        if raw > max_prefix {
+            return Err(invalid_field_err!("length prefix", "prefix value exceeds maximum"));
+        }
+
+        // Step 3: Convert the raw prefix to a code-unit count on the wire.
         let cch_on_wire = if P::IS_BYTE_COUNT {
             if raw % 2 != 0 {
                 return Err(invalid_field_err!(
@@ -414,7 +428,7 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P,
             raw
         };
 
-        // Step 3: Determine content length (code units of actual string content, excluding null).
+        // Step 4: Determine content length (code units of actual string content, excluding null).
         //
         // NullCounted: prefix counts content + null, so cch_on_wire == 0 is invalid
         //   (minimum is 1 for an empty string). Reject here before the subtraction.
@@ -431,7 +445,7 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P,
             cch_on_wire
         };
 
-        // Step 4: Read content code units (bulk copy, convert LE bytes to u16 values).
+        // Step 5: Read content code units (bulk copy, convert LE bytes to u16 values).
         let content_byte_count = content_cch
             .checked_mul(2)
             .ok_or_else(|| invalid_field_err!("length prefix", "byte length overflow"))?;
@@ -439,7 +453,7 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P,
         let slice = src.read_slice(content_byte_count);
         let units = crate::repr::le_bytes_to_units(slice);
 
-        // Step 5: Read and validate the null terminator if the format requires one on the wire.
+        // Step 6: Read and validate the null terminator if the format requires one on the wire.
         //
         // NullCounted: we just read `content_cch` units; the next unit must be 0x0000.
         // NullUncounted: the null follows the content (even for zero-length content).
@@ -453,6 +467,12 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P,
         }
 
         Ok(Self(StringRepr::from_wire_units(units), PhantomData))
+    }
+}
+
+impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P, N> {
+    fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        Self::decode_owned_max(src, usize::MAX)
     }
 }
 

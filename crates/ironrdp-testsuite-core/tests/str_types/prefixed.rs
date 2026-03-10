@@ -122,7 +122,7 @@ fn rejects_null_counted_zero_cch() {
     let err = CchString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
     expect![[r#"
         Error {
-            context: "<ironrdp_str::prefixed::PrefixedString<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            context: "ironrdp_str::prefixed::PrefixedString<_, _>::decode_owned_max",
             kind: InvalidField {
                 field: "length prefix",
                 reason: "NullCounted prefix of 0 is invalid; minimum is 1 (empty string with null)",
@@ -146,7 +146,7 @@ fn rejects_nonzero_null_terminator_null_counted() {
     let err = CchString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
     expect![[r#"
         Error {
-            context: "<ironrdp_str::prefixed::PrefixedString<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            context: "ironrdp_str::prefixed::PrefixedString<_, _>::decode_owned_max",
             kind: InvalidField {
                 field: "null terminator",
                 reason: "expected 0x0000 null terminator",
@@ -168,7 +168,7 @@ fn rejects_nonzero_null_terminator_null_uncounted() {
     let err = CbStringNullExcluded::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
     expect![[r#"
         Error {
-            context: "<ironrdp_str::prefixed::PrefixedString<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            context: "ironrdp_str::prefixed::PrefixedString<_, _>::decode_owned_max",
             kind: InvalidField {
                 field: "null terminator",
                 reason: "expected 0x0000 null terminator",
@@ -188,7 +188,7 @@ fn rejects_odd_byte_count() {
     let err = CbStringNullExcluded::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();
     expect![[r#"
         Error {
-            context: "<ironrdp_str::prefixed::PrefixedString<_, _> as ironrdp_core::decode::DecodeOwned>::decode_owned",
+            context: "ironrdp_str::prefixed::PrefixedString<_, _>::decode_owned_max",
             kind: InvalidField {
                 field: "length prefix",
                 reason: "odd byte count for utf-16 string field",

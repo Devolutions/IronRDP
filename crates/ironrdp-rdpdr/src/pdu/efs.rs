@@ -12,7 +12,7 @@ use ironrdp_core::{
 };
 use ironrdp_pdu::utils::{CharacterSet, decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor};
 use ironrdp_pdu::{PduError, read_padding, write_padding};
-use ironrdp_str::prefixed::CbU32StringNullIncluded;
+use ironrdp_str::prefixed::CbU32StringNoNull;
 use tracing::error;
 
 use super::esc::rpce;
@@ -3420,8 +3420,8 @@ impl FileDispositionInformation {
 pub struct FileRenameInformation {
     pub replace_if_exists: Boolean,
     /// `file_name` is the relative path to the new location of the file
-    /// (UTF-16LE, u32 byte-count prefix including null terminator).
-    pub file_name: CbU32StringNullIncluded,
+    /// (UTF-16LE, u32 byte-count prefix, **no** null terminator; §2.4.42 MS-FSCC).
+    pub file_name: CbU32StringNoNull,
 }
 
 impl FileRenameInformation {
@@ -3431,7 +3431,7 @@ impl FileRenameInformation {
         ensure_fixed_part_size!(in: src);
         let replace_if_exists = Boolean::from(src.read_u8());
         let _ = src.read_u8(); // RootDirectory
-        let file_name = CbU32StringNullIncluded::decode_owned(src)?;
+        let file_name = CbU32StringNoNull::decode_owned(src)?;
 
         Ok(Self {
             replace_if_exists,

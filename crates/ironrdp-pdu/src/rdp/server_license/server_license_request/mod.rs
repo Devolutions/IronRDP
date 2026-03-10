@@ -5,8 +5,8 @@ mod tests;
 
 use cert::{CertificateType, ProprietaryCertificate, X509CertificateChain};
 use ironrdp_core::{
-    Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
-    ensure_fixed_part_size, ensure_size, invalid_field_err,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err,
 };
 use ironrdp_str::ansi;
 use ironrdp_str::prefixed::CbU32StringNullIncluded;
@@ -20,6 +20,10 @@ const CERT_VERSION_FIELD_SIZE: usize = 4;
 const KEY_EXCHANGE_FIELD_SIZE: usize = 4;
 const SCOPE_ARRAY_SIZE_FIELD_SIZE: usize = 4;
 const PRODUCT_INFO_STATIC_FIELDS_SIZE: usize = 4; // version only; company_name and product_id use decode_owned
+// [MS-RDPELE] §2.2.2.1.1 does not specify an explicit cap; 1024 bytes is a conservative bound
+// matching the pre-migration validation, protecting against pathological allocations.
+const MAX_COMPANY_NAME_LEN: usize = 1024;
+const MAX_PRODUCT_ID_LEN: usize = 1024;
 const CERT_CHAIN_VERSION_MASK: u32 = 0x7FFF_FFFF;
 const CERT_CHAIN_ISSUED_MASK: u32 = 0x8000_0000;
 const MAX_SCOPE_COUNT: u32 = 256;
@@ -349,8 +353,8 @@ impl<'de> Decode<'de> for ProductInfo {
 
         let version = src.read_u32();
 
-        let company_name = CbU32StringNullIncluded::decode_owned(src)?;
-        let product_id = CbU32StringNullIncluded::decode_owned(src)?;
+        let company_name = CbU32StringNullIncluded::decode_owned_max(src, MAX_COMPANY_NAME_LEN)?;
+        let product_id = CbU32StringNullIncluded::decode_owned_max(src, MAX_PRODUCT_ID_LEN)?;
 
         Ok(Self {
             version,
