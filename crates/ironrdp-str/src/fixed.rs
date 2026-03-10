@@ -167,11 +167,14 @@ impl<const WCHAR_COUNT: usize> FixedString<WCHAR_COUNT> {
     )]
     pub fn new_truncating(s: impl Into<String>) -> Self {
         let s = s.into();
+
         let max = WCHAR_COUNT.saturating_sub(1);
+
         // Fast path: string fits — keep the owned String directly, no Vec<u16> needed.
         if utf16_code_units(&s) <= max {
             return Self(StringRepr::from_native(s));
         }
+
         // Slow path: truncate at a code-unit boundary, then drop a dangling high surrogate.
         let mut units: Vec<u16> = s.encode_utf16().take(max).collect();
         if units.last().is_some_and(|&u| (0xD800..=0xDBFF).contains(&u)) {

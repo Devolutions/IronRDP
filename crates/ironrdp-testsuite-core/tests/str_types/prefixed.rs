@@ -226,6 +226,19 @@ fn from_wire_units_round_trip() {
 }
 
 #[test]
+fn from_wire_units_strips_trailing_nulls() {
+    // Callers may pass units that include a trailing null from a wire buffer;
+    // from_wire_units must strip it so encoding does not emit an extra null.
+    use ironrdp_str::prefixed::{CbU16, NullUncounted};
+    let mut units: Vec<u16> = "hi".encode_utf16().collect();
+    units.push(0); // trailing null — should be stripped
+    let field = PrefixedString::<CbU16, NullUncounted>::from_wire_units(units);
+    assert_eq!(field.to_native().unwrap().as_ref(), "hi");
+    // to_wire_units must not include the null
+    assert_eq!(field.to_wire_units().as_ref(), "hi".encode_utf16().collect::<Vec<_>>().as_slice());
+}
+
+#[test]
 fn into_wire_units_from_decode() {
     let field = CbStringNoNull::new("abc".to_owned());
     let encoded = encode_vec(&field).unwrap();

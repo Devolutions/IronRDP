@@ -218,8 +218,8 @@ impl<P, N> PrefixedString<P, N> {
 
     /// Creates a `PrefixedString` from pre-parsed UTF-16 code units.
     ///
-    /// The units must not include a null terminator (the null is a wire-level concern
-    /// encoded by the `N` type parameter during [`Encode`]). This is the low-level
+    /// Trailing null code units are stripped; the null terminator is a wire-level concern
+    /// handled by the `N` type parameter during [`Encode`]. This is the low-level
     /// counterpart to [`decode_owned`] for callers that already have units from
     /// [`utf16le_bytes_to_units`].
     ///
@@ -227,6 +227,9 @@ impl<P, N> PrefixedString<P, N> {
     /// [`decode_owned`]: ironrdp_core::DecodeOwned::decode_owned
     /// [`utf16le_bytes_to_units`]: crate::utf16le_bytes_to_units
     pub fn from_wire_units(units: Vec<u16>) -> Self {
+        let mut units = units;
+        let end = units.iter().rposition(|&u| u != 0).map_or(0, |i| i + 1);
+        units.truncate(end);
         Self(StringRepr::from_wire_units(units), PhantomData)
     }
 

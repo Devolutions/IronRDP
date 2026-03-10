@@ -54,8 +54,8 @@ pub enum MultiSzSegmentError {
     EmbeddedNul,
 }
 
-impl core::fmt::Display for MultiSzSegmentError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for MultiSzSegmentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OddByteCount => f.write_str("odd byte count: UTF-16LE requires 2 bytes per code unit"),
             Self::EmbeddedNul => f.write_str("embedded nul: MULTI_SZ segment contains a U+0000 code unit"),
@@ -64,6 +64,36 @@ impl core::fmt::Display for MultiSzSegmentError {
 }
 
 impl core::error::Error for MultiSzSegmentError {}
+
+// ── MultiSzFlatError ──────────────────────────────────────────────────────────
+
+/// Error returned by [`MultiSzString::from_utf16le_flat`] and
+/// [`MultiSzString::from_wire_units_flat`] when the flat buffer is malformed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiSzFlatError {
+    /// The byte slice has odd length. UTF-16LE requires exactly 2 bytes per code unit.
+    ///
+    /// Only returned by [`MultiSzString::from_utf16le_flat`].
+    OddByteCount,
+    /// The buffer does not end with the required sentinel null (`0x0000`).
+    MissingSentinel,
+    /// After stripping the sentinel, the remaining content is non-empty but does not end
+    /// with a per-string null terminator. The last segment would be silently dropped by
+    /// iteration.
+    UnterminatedLastSegment,
+}
+
+impl fmt::Display for MultiSzFlatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OddByteCount => f.write_str("odd byte count: UTF-16LE requires 2 bytes per code unit"),
+            Self::MissingSentinel => f.write_str("MULTI_SZ flat buffer is missing the sentinel null"),
+            Self::UnterminatedLastSegment => f.write_str("MULTI_SZ last segment is missing its null terminator"),
+        }
+    }
+}
+
+impl core::error::Error for MultiSzFlatError {}
 
 // ── Internal representation ───────────────────────────────────────────────────
 
@@ -166,27 +196,35 @@ impl MultiSzString {
     /// (e.g. straight from a registry value). The sentinel null is required and stripped
     /// before storage; per-string nulls are retained.
     ///
-    /// Returns `None` if:
-    /// - `bytes` has odd length (not a valid UTF-16LE sequence), or
-    /// - the content does not end with the sentinel null (`0x0000`).
+    /// # Errors
+    ///
+    /// - [`MultiSzFlatError::OddByteCount`] — `bytes` has odd length.
+    /// - [`MultiSzFlatError::MissingSentinel`] — `bytes` does not end with `0x0000`.
+    /// - [`MultiSzFlatError::UnterminatedLastSegment`] — after stripping the sentinel, the
+    ///   remaining content is non-empty but does not end with a per-string null terminator.
     ///
     /// [`from_utf16le_byte_strings`]: MultiSzString::from_utf16le_byte_strings
-    pub fn from_utf16le_flat(bytes: &[u8]) -> Option<Self> {
+    pub fn from_utf16le_flat(bytes: &[u8]) -> Result<Self, MultiSzFlatError> {
         if !bytes.len().is_multiple_of(2) {
-            return None;
+            return Err(MultiSzFlatError::OddByteCount);
         }
+
         let mut units = crate::repr::le_bytes_to_units(bytes);
+
         // Require and strip the sentinel null.
         if units.last() != Some(&0) {
-            return None;
+            return Err(MultiSzFlatError::MissingSentinel);
         }
+
         units.truncate(units.len() - 1);
+
         // After stripping the sentinel, the remaining content must either be empty
         // (empty list) or end with a per-string null (last segment is properly terminated).
         if !units.is_empty() && units.last() != Some(&0) {
-            return None;
+            return Err(MultiSzFlatError::UnterminatedLastSegment);
         }
-        Some(Self(MultiSzStringRepr::Wire(units)))
+
+        Ok(Self(MultiSzStringRepr::Wire(units)))
     }
 
     /// Creates a `MultiSzString` from a flat `Vec<u16>` of UTF-16 code units containing
@@ -197,14 +235,19 @@ impl MultiSzString {
     /// `Vec<u16>` per segment, all segments arrive in a single pre-parsed vector. The
     /// sentinel null is required and stripped before storage; per-string nulls are retained.
     ///
-    /// Returns `None` if `units` does not end with the sentinel null (`0x0000`).
+    /// # Errors
+    ///
+    /// - [`MultiSzFlatError::MissingSentinel`] — `units` does not end with `0x0000`
+    ///   (including the empty-vector case).
+    /// - [`MultiSzFlatError::UnterminatedLastSegment`] — after stripping the sentinel, the
+    ///   remaining content is non-empty but does not end with a per-string null terminator.
     ///
     /// [`from_unit_strings`]: MultiSzString::from_unit_strings
-    pub fn from_wire_units_flat(units: Vec<u16>) -> Option<Self> {
+    pub fn from_wire_units_flat(units: Vec<u16>) -> Result<Self, MultiSzFlatError> {
         // Require and strip the sentinel null.
-        // If `units` is empty, `last()` returns `None` which != Some(&0), so we return None.
+        // If `units` is empty, `last()` returns `None` which != Some(&0), so we error.
         if units.last() != Some(&0) {
-            return None;
+            return Err(MultiSzFlatError::MissingSentinel);
         }
 
         let mut units = units;
@@ -213,23 +256,23 @@ impl MultiSzString {
         // After stripping the sentinel, the remaining content must either be empty
         // (empty list) or end with a per-string null (last segment is properly terminated).
         if !units.is_empty() && units.last() != Some(&0) {
-            return None;
+            return Err(MultiSzFlatError::UnterminatedLastSegment);
         }
 
-        Some(Self(MultiSzStringRepr::Wire(units)))
+        Ok(Self(MultiSzStringRepr::Wire(units)))
     }
 
     /// Creates a `MultiSzString` from an iterator of pre-parsed UTF-16 code unit vectors,
     /// one `Vec<u16>` per string segment.
     ///
-    /// Each vector must not include a null terminator (per-segment nulls and the final
-    /// sentinel are written by [`Encode`] and consumed by [`DecodeOwned`]). This is the
-    /// low-level counterpart to [`DecodeOwned`] for callers that already have units from
-    /// [`utf16le_bytes_to_units`].
+    /// A single trailing `0x0000` in each segment is stripped. The per-segment null
+    /// terminator and the final sentinel are always written by [`Encode`] and consumed by
+    /// [`DecodeOwned`]. This is the low-level counterpart to [`DecodeOwned`] for callers
+    /// that already have units from [`utf16le_bytes_to_units`].
     ///
-    /// Returns [`EmbeddedNul`] if any segment contains an embedded `0x0000` unit. MULTI_SZ
-    /// uses null as a segment delimiter, so an embedded null would corrupt segment boundaries
-    /// and break round-trip semantics.
+    /// Returns [`EmbeddedNul`] if any segment contains an **interior** `0x0000` unit (i.e.,
+    /// a null that is not the trailing terminator). MULTI_SZ uses null as a segment delimiter,
+    /// so an interior null would corrupt segment boundaries and break round-trip semantics.
     ///
     /// [`Encode`]: ironrdp_core::Encode
     /// [`DecodeOwned`]: ironrdp_core::DecodeOwned
@@ -237,10 +280,17 @@ impl MultiSzString {
     pub fn from_unit_strings(unit_strings: impl IntoIterator<Item = Vec<u16>>) -> Result<Self, EmbeddedNul> {
         let mut units: Vec<u16> = Vec::new();
 
-        for segment in unit_strings {
+        for mut segment in unit_strings {
+            // Strip a single trailing null.
+            if segment.last() == Some(&0) {
+                segment.pop();
+            }
+
+            // Reject interior nulls — they would silently split this segment into multiple ones.
             if segment.contains(&0) {
                 return Err(EmbeddedNul);
             }
+
             units.extend_from_slice(&segment);
             units.push(0); // per-segment null terminator
         }
