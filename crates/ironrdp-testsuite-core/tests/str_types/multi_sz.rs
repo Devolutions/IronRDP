@@ -16,7 +16,7 @@ fn empty_multi_sz() {
 
 #[test]
 fn new_rejects_embedded_null() {
-    assert!(MultiSzString::new(["fo\0o"]).is_err());
+    assert!(MultiSzString::new(["ab\0c"]).is_err());
     assert!(MultiSzString::new(["ok", "bad\0"]).is_err());
 }
 
