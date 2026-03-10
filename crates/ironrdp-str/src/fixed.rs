@@ -10,10 +10,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use ironrdp_core::{DecodeOwned, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size};
+use ironrdp_core::{ensure_size, DecodeOwned, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 
 use crate::repr::StringRepr;
-use crate::{InvalidUtf16, check_invariant, utf16_code_units};
+use crate::{check_invariant, utf16_code_units, InvalidUtf16};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -36,7 +36,6 @@ impl fmt::Display for StringTooLong {
     }
 }
 
-#[cfg(feature = "std")]
 impl core::error::Error for StringTooLong {}
 
 // ── FixedSizeUnicodeString ────────────────────────────────────────────────────
@@ -130,15 +129,17 @@ impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
     )]
     pub fn new_truncating(s: impl Into<String>) -> Self {
         let s = s.into();
-        Self::new(&s).unwrap_or_else(|_| {
-            let max = WCHAR_COUNT.saturating_sub(1);
-            let mut units: Vec<u16> = s.encode_utf16().take(max).collect();
-            // Drop a dangling high surrogate at the cut point to preserve valid surrogate pairs.
-            if units.last().is_some_and(|&u| (0xD800..=0xDBFF).contains(&u)) {
-                units.pop();
-            }
-            Self::from_wire_units(units).expect("truncated units cannot exceed WCHAR_COUNT - 1")
-        })
+        let max = WCHAR_COUNT.saturating_sub(1);
+        // Fast path: string fits — keep the owned String directly, no Vec<u16> needed.
+        if utf16_code_units(&s) <= max {
+            return Self(StringRepr::from_native(s));
+        }
+        // Slow path: truncate at a code-unit boundary, then drop a dangling high surrogate.
+        let mut units: Vec<u16> = s.encode_utf16().take(max).collect();
+        if units.last().is_some_and(|&u| (0xD800..=0xDBFF).contains(&u)) {
+            units.pop();
+        }
+        Self::from_wire_units(units).expect("truncated units cannot exceed WCHAR_COUNT - 1")
     }
 
     /// Creates a `FixedSizeUnicodeString` from a native Rust string.

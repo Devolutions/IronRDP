@@ -70,7 +70,7 @@ fn decode_strips_padding() {
 #[test]
 fn decode_accepts_lone_surrogate_to_str_fails() {
     // Wire: lone high surrogate D800 followed by padding.
-    // Decode succeeds (no eager validation); to_str() reports the error.
+    // Decode succeeds (no eager validation); to_native() reports the error.
     let wire: &[u8] = &[0x00, 0xD8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
     let s = FixedSizeUnicodeString::<4>::decode_owned(&mut ReadCursor::new(wire)).unwrap();
     let err = s.to_native().unwrap_err();

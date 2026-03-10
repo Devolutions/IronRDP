@@ -5,11 +5,19 @@ use ironrdp_str::multi_sz::MultiSzString;
 #[test]
 fn empty_multi_sz() {
     // An empty MULTI_SZ: cch=1, one final null.
-    let m = MultiSzString::new(core::iter::empty::<String>());
+    let m = MultiSzString::new(core::iter::empty::<String>()).unwrap();
     let encoded = encode_vec(&m).unwrap();
     // 4 bytes (u32 cch=1) + 2 bytes (final null) = 6 bytes
     assert_eq!(encoded.len(), 6);
     assert_eq!(u32::from_le_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]), 1);
+}
+
+// ── new rejects embedded nulls ────────────────────────────────────────────────
+
+#[test]
+fn new_rejects_embedded_null() {
+    assert!(MultiSzString::new(["fo\0o"]).is_err());
+    assert!(MultiSzString::new(["ok", "bad\0"]).is_err());
 }
 
 // Property: new() → encode → decode gives back the original string list.
@@ -18,7 +26,7 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(50))]
     #[test]
     fn round_trip_prop(strings in proptest::collection::vec("[^\x00]{0,20}", 0..3usize)) {
-        let m = MultiSzString::new(strings.clone());
+        let m = MultiSzString::new(strings.clone()).unwrap();
         let encoded = encode_vec(&m).unwrap();
         let decoded = MultiSzString::decode_owned(&mut ReadCursor::new(&encoded)).unwrap();
         let result: Vec<String> = decoded.iter_native().map(|s| s.unwrap().into_owned()).collect();
@@ -29,7 +37,7 @@ proptest::proptest! {
 #[test]
 fn total_cch_counts_all_nulls() {
     // ["ab", "c"] -> total_cch = (2+1) + (1+1) + 1 = 6
-    let m = MultiSzString::new(["ab", "c"]);
+    let m = MultiSzString::new(["ab", "c"]).unwrap();
     assert_eq!(m.total_cch(), 6);
 }
 
@@ -39,7 +47,7 @@ proptest::proptest! {
     #[test]
     fn size_matches_encoded_length_prop(strings in proptest::collection::vec("[^\x00]{0,20}", 0..3usize)) {
         use ironrdp_core::Encode as _;
-        let m = MultiSzString::new(strings);
+        let m = MultiSzString::new(strings).unwrap();
         proptest::prop_assert_eq!(m.size(), encode_vec(&m).unwrap().len());
     }
 }
@@ -141,7 +149,7 @@ fn from_utf16le_flat_encodes_same_as_new() {
         .flat_map(|u| u.to_le_bytes())
         .collect();
     let from_flat = MultiSzString::from_utf16le_flat(&flat).unwrap();
-    let from_native = MultiSzString::new(["hello", "world"]);
+    let from_native = MultiSzString::new(["hello", "world"]).unwrap();
     assert_eq!(encode_vec(&from_flat).unwrap(), encode_vec(&from_native).unwrap());
 }
 
@@ -199,16 +207,22 @@ fn from_wire_units_flat_encodes_same_as_new() {
         .chain([0u16]) // sentinel
         .collect();
     let from_flat = MultiSzString::from_wire_units_flat(flat).unwrap();
-    let from_native = MultiSzString::new(["hello", "world"]);
+    let from_native = MultiSzString::new(["hello", "world"]).unwrap();
     assert_eq!(encode_vec(&from_flat).unwrap(), encode_vec(&from_native).unwrap());
 }
 
 // ── from_unit_strings ─────────────────────────────────────────────────────────
 
 #[test]
+fn from_unit_strings_rejects_embedded_null() {
+    let bad: Vec<Vec<u16>> = vec![vec![0x0066, 0x0000, 0x006F]]; // "f\0o"
+    assert!(MultiSzString::from_unit_strings(bad).is_err());
+}
+
+#[test]
 fn from_unit_strings_round_trip() {
     let unit_strings: Vec<Vec<u16>> = ["foo", "bar"].iter().map(|s| s.encode_utf16().collect()).collect();
-    let m = MultiSzString::from_unit_strings(unit_strings);
+    let m = MultiSzString::from_unit_strings(unit_strings).unwrap();
     let strings: Vec<String> = m.iter_native().map(|s| s.unwrap().into_owned()).collect();
     assert_eq!(strings, ["foo", "bar"]);
 }
@@ -216,15 +230,15 @@ fn from_unit_strings_round_trip() {
 #[test]
 fn from_unit_strings_encodes_same_as_new() {
     let unit_strings: Vec<Vec<u16>> = ["hello", "world"].iter().map(|s| s.encode_utf16().collect()).collect();
-    let from_units = MultiSzString::from_unit_strings(unit_strings);
-    let from_native = MultiSzString::new(["hello", "world"]);
+    let from_units = MultiSzString::from_unit_strings(unit_strings).unwrap();
+    let from_native = MultiSzString::new(["hello", "world"]).unwrap();
     assert_eq!(encode_vec(&from_units).unwrap(), encode_vec(&from_native).unwrap());
 }
 
 #[test]
 fn from_unit_strings_non_bmp() {
     let units: Vec<u16> = "\u{1F600}".encode_utf16().collect();
-    let m = MultiSzString::from_unit_strings([units]);
+    let m = MultiSzString::from_unit_strings([units]).unwrap();
     let strings: Vec<String> = m.iter_native().map(|s| s.unwrap().into_owned()).collect();
     assert_eq!(strings, ["\u{1F600}"]);
 }

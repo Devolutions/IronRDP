@@ -33,15 +33,29 @@ pub mod unframed;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidUtf16;
 
-#[cfg(feature = "alloc")]
+/// Error returned when a string passed to a `MULTI_SZ` constructor contains an embedded
+/// `NUL` (`\0` / U+0000 / `0x0000`).
+///
+/// `MULTI_SZ` uses null as a segment delimiter, so an embedded null would corrupt segment
+/// boundaries and break round-trip semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddedNul;
+
 impl core::fmt::Display for InvalidUtf16 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("invalid utf-16: lone surrogate in wire data")
     }
 }
 
-#[cfg(feature = "std")]
 impl core::error::Error for InvalidUtf16 {}
+
+impl core::fmt::Display for EmbeddedNul {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("embedded nul: MULTI_SZ segment contains a U+0000 code unit")
+    }
+}
+
+impl core::error::Error for EmbeddedNul {}
 
 /// Converts a slice of UTF-16LE wire bytes into a `Vec` of UTF-16 code unit values.
 ///

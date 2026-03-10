@@ -1,7 +1,9 @@
 //! Externally-lengthed Unicode string fields.
 //!
 //! Used for strings whose wire length is given by a sibling field, not adjacent to
-//! the string itself. The caller must provide the byte length at decode time.
+//! the string itself. The length is provided externally at decode time, either as a
+//! WCHAR count (via [`UnframedUnicodeString::decode`]) or as a byte length
+//! (via [`UnframedUnicodeString::decode_from_byte_len`]).
 
 use alloc::borrow::Cow;
 #[cfg(not(feature = "std"))]

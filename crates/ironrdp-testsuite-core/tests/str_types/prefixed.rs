@@ -198,11 +198,11 @@ fn rejects_odd_byte_count() {
     "#]].assert_debug_eq(&err);
 }
 
-// ── Lone surrogates: decode succeeds, to_str() fails ─────────────────────
+// ── Lone surrogates: decode succeeds, to_native() fails ──────────────────
 
 #[test]
-fn lone_surrogate_decode_succeeds_to_str_fails() {
-    // cb=2, lone high surrogate D800. Decode no longer validates; to_str() reports error.
+fn lone_surrogate_decode_succeeds_to_native_fails() {
+    // cb=2, lone high surrogate D800. Decode no longer validates; to_native() reports error.
     let wire: &[u8] = &[0x02, 0x00, 0x00, 0xD8]; // cb=2, code unit 0xD800
     let decoded = CbPrefixedStringNoNull::decode_owned(&mut ReadCursor::new(wire)).unwrap();
     let err = decoded.to_native().unwrap_err();

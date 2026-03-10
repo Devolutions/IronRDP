@@ -39,7 +39,7 @@ use ironrdp_core::{
     invalid_field_err,
 };
 
-use crate::InvalidUtf16;
+use crate::{EmbeddedNul, InvalidUtf16};
 
 // ── Internal representation ───────────────────────────────────────────────────
 
@@ -89,8 +89,16 @@ pub struct MultiSzString(MultiSzStringRepr);
 
 impl MultiSzString {
     /// Creates a `MultiSzString` from an iterator of native Rust strings.
-    pub fn new(strings: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self(MultiSzStringRepr::Native(strings.into_iter().map(Into::into).collect()))
+    ///
+    /// Returns [`EmbeddedNul`] if any string contains an embedded `\0` (U+0000). MULTI_SZ
+    /// uses null as a segment delimiter, so an embedded null would corrupt segment boundaries
+    /// and break round-trip semantics.
+    pub fn new(strings: impl IntoIterator<Item = impl Into<String>>) -> Result<Self, EmbeddedNul> {
+        let strings: Vec<String> = strings.into_iter().map(Into::into).collect();
+        if strings.iter().any(|s| s.contains('\0')) {
+            return Err(EmbeddedNul);
+        }
+        Ok(Self(MultiSzStringRepr::Native(strings)))
     }
 
     /// Creates a `MultiSzString` from an iterator of raw UTF-16LE byte slices, one per
@@ -184,18 +192,25 @@ impl MultiSzString {
     /// low-level counterpart to [`DecodeOwned`] for callers that already have units from
     /// [`utf16le_bytes_to_units`].
     ///
+    /// Returns [`EmbeddedNul`] if any segment contains an embedded `0x0000` unit. MULTI_SZ
+    /// uses null as a segment delimiter, so an embedded null would corrupt segment boundaries
+    /// and break round-trip semantics.
+    ///
     /// [`Encode`]: ironrdp_core::Encode
     /// [`DecodeOwned`]: ironrdp_core::DecodeOwned
     /// [`utf16le_bytes_to_units`]: crate::utf16le_bytes_to_units
-    pub fn from_unit_strings(unit_strings: impl IntoIterator<Item = Vec<u16>>) -> Self {
+    pub fn from_unit_strings(unit_strings: impl IntoIterator<Item = Vec<u16>>) -> Result<Self, EmbeddedNul> {
         let mut units: Vec<u16> = Vec::new();
 
         for segment in unit_strings {
+            if segment.contains(&0) {
+                return Err(EmbeddedNul);
+            }
             units.extend_from_slice(&segment);
             units.push(0); // per-segment null terminator
         }
 
-        Self(MultiSzStringRepr::Wire(units))
+        Ok(Self(MultiSzStringRepr::Wire(units)))
     }
 
     /// Returns an iterator over the string values.
