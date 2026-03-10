@@ -232,9 +232,13 @@ impl Iterator for Utf16Units<'_> {
 
 /// Converts a slice of UTF-16LE bytes into a `Vec<u16>` of code unit values.
 ///
-/// On little-endian targets, attempts a zero-copy cast via `bytemuck::try_cast_slice`;
-/// if the input is misaligned the bytes are copied per element as a fallback.
-/// On big-endian targets the bytes are always swapped per element.
+/// On little-endian targets, uses `bytemuck::try_cast_slice` to reinterpret the bytes as
+/// `u16` values without per-element endian conversion, then bulk-copies into a `Vec<u16>`.
+/// If the input is misaligned the bytes are copied per element as a fallback.
+/// On big-endian targets the bytes are always byte-swapped per element.
+///
+/// In all cases an allocation is performed; the optimization on little-endian targets is
+/// avoiding per-element byte-swapping rather than eliminating the allocation.
 ///
 /// # Panics
 ///
@@ -255,10 +259,14 @@ pub(crate) fn le_bytes_to_units(bytes: &[u8]) -> Vec<u16> {
 
 /// Converts a slice of UTF-16LE bytes into a `Vec<u16>`, stripping trailing null code units.
 ///
-/// On little-endian targets, attempts a zero-copy cast via `bytemuck::try_cast_slice`;
-/// if the input is misaligned the bytes are copied per element as a fallback.
-/// On big-endian targets the bytes are always swapped per element.
+/// On little-endian targets, uses `bytemuck::try_cast_slice` to reinterpret the bytes as
+/// `u16` values without per-element endian conversion, then bulk-copies into a `Vec<u16>`.
+/// If the input is misaligned the bytes are copied per element as a fallback.
+/// On big-endian targets the bytes are always byte-swapped per element.
 /// In all cases, trailing `0x0000` code units are stripped before returning.
+///
+/// In all cases an allocation is performed; the optimization on little-endian targets is
+/// avoiding per-element byte-swapping rather than eliminating the allocation.
 ///
 /// # Panics
 ///

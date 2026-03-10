@@ -96,11 +96,8 @@ impl MultiSzString {
     /// Creates a `MultiSzString` from an iterator of raw UTF-16LE byte slices, one per
     /// string segment.
     ///
-    /// Returns `None` if any slice has odd length. This is a convenience wrapper around
-    /// [`utf16le_bytes_to_units`] + [`from_unit_strings`].
-    ///
-    /// [`utf16le_bytes_to_units`]: crate::utf16le_bytes_to_units
-    /// [`from_unit_strings`]: MultiSzString::from_unit_strings
+    /// Each byte slice is converted to `u16` code units and null-terminated; the resulting
+    /// segments are stored as a flat `Wire` buffer. Returns `None` if any slice has odd length.
     #[expect(
         single_use_lifetimes,
         reason = "`'a` is required here because anonymous lifetimes in `impl Trait` are unstable; rustc incorrectly suggests eliding it"
@@ -252,14 +249,27 @@ impl MultiSzString {
     /// Returns the total number of UTF-16 code units on the wire, including all null
     /// terminators and the final sentinel null. This is the value written as the `u32 cch`
     /// prefix.
+    ///
+    /// Returns `usize::MAX` on arithmetic overflow (requires a pathologically large input).
+    /// In that case [`Encode::encode`] will return an error rather than panic.
+    ///
+    /// [`Encode::encode`]: ironrdp_core::Encode::encode
     pub fn total_cch(&self) -> usize {
+        self.checked_total_cch().unwrap_or(usize::MAX)
+    }
+
+    /// Like [`total_cch`], but returns `None` on `usize` overflow.
+    ///
+    /// [`total_cch`]: MultiSzString::total_cch
+    fn checked_total_cch(&self) -> Option<usize> {
         match &self.0 {
             // Stored units already include per-segment nulls; add 1 for the sentinel.
-            MultiSzStringRepr::Wire(units) => units.len() + 1,
-            // Each string contributes its code units + 1 null; add 1 for the sentinel.
-            MultiSzStringRepr::Native(strings) => {
-                strings.iter().map(|s| crate::utf16_code_units(s) + 1).sum::<usize>() + 1
-            }
+            MultiSzStringRepr::Wire(units) => units.len().checked_add(1),
+            // Each string contributes its code units + 1 null; start from 1 for the sentinel.
+            MultiSzStringRepr::Native(strings) => strings.iter().try_fold(1usize, |acc, s| {
+                acc.checked_add(crate::utf16_code_units(s))
+                    .and_then(|n| n.checked_add(1))
+            }),
         }
     }
 }
@@ -366,13 +376,18 @@ impl Eq for MultiSzString {}
 
 impl Encode for MultiSzString {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        // Checked arithmetic first: overflow → error, not a silent wrap.
+        let total_cch: u32 = cast_length!(
+            "cch",
+            self.checked_total_cch()
+                .ok_or_else(|| invalid_field_err!("cch", "MULTI_SZ total length overflow"))?
+        )?;
+
         ensure_size!(in: dst, size: self.size());
+        dst.write_u32(total_cch);
 
         match &self.0 {
             MultiSzStringRepr::Wire(units) => {
-                let total_cch: u32 = cast_length!("cch", units.len() + 1)?;
-                dst.write_u32(total_cch);
-
                 // Write flat unit buffer as UTF-16LE bytes.
                 #[cfg(target_endian = "little")]
                 {
@@ -386,9 +401,6 @@ impl Encode for MultiSzString {
                 }
             }
             MultiSzStringRepr::Native(strings) => {
-                let total_cch: u32 = cast_length!("cch", self.total_cch())?;
-                dst.write_u32(total_cch);
-
                 for s in strings {
                     for unit in s.encode_utf16() {
                         dst.write_u16(unit);

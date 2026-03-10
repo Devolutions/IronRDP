@@ -46,13 +46,13 @@ proptest::proptest! {
 
 #[test]
 fn rejects_missing_segment_null_terminator() {
-    // Wire: cch=3, content = [f][o][sentinel] — the segment "fo" has no per-string null before
-    // the sentinel. After stripping the sentinel the stored units are [f, o], which ends with a
-    // non-null unit. Without the new validation, iter_native / into_native would silently drop "fo".
+    // Wire: cch=3, content = [o][f][sentinel] — the segment "of" has no per-string null before
+    // the sentinel. After stripping the sentinel the stored units are [o, f], which ends with a
+    // non-null unit. Without the new validation, iter_native / into_native would silently drop "of".
     let wire: &[u8] = &[
         0x03, 0x00, 0x00, 0x00, // u32 cch = 3
-        0x66, 0x00, // U+0066 'f'
-        0x6F, 0x00, // U+006F 'o'  (no per-string null terminator before the sentinel)
+        0x6F, 0x00, // U+006F 'o'
+        0x66, 0x00, // U+0066 'f'  (no per-string null terminator before the sentinel)
         0x00, 0x00, // final sentinel
     ];
     let err = MultiSzString::decode_owned(&mut ReadCursor::new(wire)).unwrap_err();

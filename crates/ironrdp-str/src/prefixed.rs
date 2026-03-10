@@ -353,7 +353,9 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> Encode for UnicodeStringField<P, 
 
         // The prefix value counts either code units or bytes, with or without the null.
         let counted_cch = if N::NULL_COUNTED_IN_PREFIX {
-            content_cch + 1 // null is counted
+            content_cch
+                .checked_add(1)
+                .ok_or_else(|| invalid_field_err!("length prefix", "content length overflow"))?
         } else {
             content_cch
         };

@@ -72,7 +72,13 @@ pub struct FixedSizeUnicodeString<const WCHAR_COUNT: usize>(
 
 impl<const WCHAR_COUNT: usize> FixedSizeUnicodeString<WCHAR_COUNT> {
     /// Wire byte size: always `WCHAR_COUNT * 2` bytes.
-    pub const WIRE_SIZE: usize = WCHAR_COUNT * 2;
+    pub const WIRE_SIZE: usize = {
+        assert!(
+            WCHAR_COUNT > 0,
+            "FixedSizeUnicodeString<WCHAR_COUNT>: WCHAR_COUNT must be > 0 (at least one slot is required for the null terminator)"
+        );
+        WCHAR_COUNT * 2
+    };
 
     /// Creates a `FixedSizeUnicodeString` from raw UTF-16LE wire bytes.
     ///
