@@ -2,8 +2,8 @@
 mod tests;
 
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
-    ensure_fixed_part_size, ensure_size, invalid_field_err, invalid_field_err_with_source,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err, invalid_field_err_with_source,
 };
 use ironrdp_str::ansi;
 use ironrdp_str::prefixed::CbU32StringNullIncluded;

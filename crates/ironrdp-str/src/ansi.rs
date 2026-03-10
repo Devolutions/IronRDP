@@ -24,14 +24,16 @@ use alloc::string::String;
 
 use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err};
 
-/// Decodes a byte slice as a UTF-8 (ANSI) string, stripping any trailing null bytes.
+/// Decodes a byte slice as a UTF-8 (ANSI) string, stopping at the first `\0` byte.
 ///
+/// Bytes after the first NUL are ignored, matching null-terminated field semantics.
 /// Returns the decoded `String` on success, or the raw [`core::str::Utf8Error`] on
 /// failure so that the call site can attach appropriate field context via
 /// [`invalid_field_err!`].
 #[inline]
 pub fn decode_ansi(bytes: &[u8]) -> Result<String, core::str::Utf8Error> {
-    core::str::from_utf8(bytes).map(|s| s.trim_end_matches('\0').to_owned())
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    core::str::from_utf8(&bytes[..end]).map(|s| s.to_owned())
 }
 
 /// Reads a null-terminated ANSI (UTF-8) string from a cursor.
