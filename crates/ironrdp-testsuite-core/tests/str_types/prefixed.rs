@@ -235,7 +235,10 @@ fn from_wire_units_strips_trailing_nulls() {
     let field = PrefixedString::<CbU16, NullUncounted>::from_wire_units(units);
     assert_eq!(field.to_native().unwrap().as_ref(), "hi");
     // to_wire_units must not include the null
-    assert_eq!(field.to_wire_units().as_ref(), "hi".encode_utf16().collect::<Vec<_>>().as_slice());
+    assert_eq!(
+        field.to_wire_units().as_ref(),
+        "hi".encode_utf16().collect::<Vec<_>>().as_slice()
+    );
 }
 
 #[test]
