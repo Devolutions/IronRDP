@@ -1,8 +1,8 @@
 use expect_test::expect;
 use ironrdp_core::{DecodeOwned as _, ReadCursor, encode_vec};
 use ironrdp_str::prefixed::{
-    CbStringNoNull, CbStringNullExcluded, CbStringNullIncluded, Cch32String,
-    CchString, LengthPrefix, NullTerminatorPolicy, StringField,
+    CbStringNoNull, CbStringNullExcluded, CbStringNullIncluded, Cch32String, CchString, LengthPrefix,
+    NullTerminatorPolicy, StringField,
 };
 
 fn encode_decode_roundtrip<P: LengthPrefix, N: NullTerminatorPolicy>(s: &str) -> String
@@ -195,7 +195,8 @@ fn rejects_odd_byte_count() {
             },
             source: None,
         }
-    "#]].assert_debug_eq(&err);
+    "#]]
+    .assert_debug_eq(&err);
 }
 
 // ── Lone surrogates: decode succeeds, to_native() fails ──────────────────
