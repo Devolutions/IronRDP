@@ -332,7 +332,7 @@
         loggingService.verbose = verbose === 'true';
         loggingService.info('Dom ready');
         await initcanvas();
-        clipboardService.initClipboard();
+        await clipboardService.initClipboard();
     });
 
     onDestroy(() => {

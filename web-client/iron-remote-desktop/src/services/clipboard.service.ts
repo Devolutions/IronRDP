@@ -34,7 +34,7 @@ export class ClipboardService {
         this.module = module;
     }
 
-    initClipboard() {
+    async initClipboard() {
         // Clipboard API is available only in secure contexts (HTTPS).
         if (!window.isSecureContext) {
             this.remoteDesktopService.emitWarningEvent('Clipboard is available only in secure contexts (HTTPS).');
@@ -55,6 +55,48 @@ export class ClipboardService {
                 this.remoteDesktopService.emitWarningEvent(
                     'Clipboard reading is not supported and writing is limited to text-only data types due to an outdated browser version!',
                 );
+            }
+        }
+
+        // Gate the polling-based auto-clipboard loop behind a Permissions API
+        // check. Two cases are handled:
+        //
+        // 1. Chromium: The query succeeds and returns a PermissionStatus.
+        //    - 'granted': Keep Full mode; auto-clipboard polling works.
+        //    - 'prompt': Keep Full mode; Chromium will show a one-time
+        //      permission prompt on the first clipboard.read() call. If
+        //      the user denies it, the safety net in onMonitorClipboard
+        //      catches the NotAllowedError and stops the loop.
+        //    - 'denied': Downgrade to TextOnly; the polling loop would
+        //      fail on every iteration.
+        //
+        // 2. Firefox v127+: Exposes clipboard.read()/write() but does not
+        //    include "clipboard-read" in its PermissionName WebIDL enum, so
+        //    the query throws. Without persistent permission, Firefox requires
+        //    transient user activation for every clipboard.read() call, making
+        //    the polling loop unusable. Downgrade to TextOnly so Firefox
+        //    routes through the text-only fallback paths.
+        //
+        //    When the permission query fails, a trial clipboard.read() checks
+        //    whether Firefox's `dom.events.testing.asyncClipboard` about:config
+        //    pref is active. If so, keep Full mode as clipboard works fully in
+        //    this scenario, without any user-activation restrictions.
+        if (this.ClipboardApiSupported === ClipboardApiSupported.Full) {
+            try {
+                const permissionStatus = await navigator.permissions.query({
+                    name: 'clipboard-read' as PermissionName,
+                });
+
+                if (permissionStatus.state === 'denied') {
+                    this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
+                }
+            } catch {
+                try {
+                    // Try to read clipboard to check if the asyncClipboard pref is enabled
+                    await navigator.clipboard.read();
+                } catch {
+                    this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
+                }
             }
         }
 
@@ -224,6 +266,7 @@ export class ClipboardService {
 
     // Called periodically to monitor clipboard changes
     private async onMonitorClipboard(): Promise<void> {
+        let stopped = false;
         try {
             if (!document.hasFocus()) {
                 return;
@@ -315,6 +358,17 @@ export class ClipboardService {
                 }
             }
         } catch (err) {
+            if (err instanceof DOMException && err.name === 'NotAllowedError') {
+                // The browser requires user activation for clipboard reads (e.g. Firefox v127+).
+                // The polling loop cannot work in this environment; fall back to manual mode.
+                console.warn('Clipboard monitoring disabled: browser requires user activation for clipboard read.');
+                this.remoteDesktopService.setOnRemoteClipboardChanged(
+                    this.onRemoteClipboardChangedManualMode.bind(this),
+                );
+                stopped = true;
+                return;
+            }
+
             if (err instanceof Error) {
                 const printError =
                     this.lastClipboardMonitorLoopError === null ||
@@ -326,7 +380,7 @@ export class ClipboardService {
                 this.lastClipboardMonitorLoopError = err;
             }
         } finally {
-            if (!get(isComponentDestroyed)) {
+            if (!stopped && !get(isComponentDestroyed)) {
                 this.scheduleOnMonitorClipboardUpdate();
             }
         }
