@@ -158,18 +158,47 @@ mod openh264_impl {
     /// (as required by OpenH264), decodes to YUV420p, then converts
     /// to RGBA for the client pipeline.
     ///
-    /// # Feature Gate
+    /// # Feature Gates
     ///
-    /// Requires the `openh264` feature to be enabled.
+    /// Two construction paths are available depending on the feature flags:
+    ///
+    /// - `openh264-bundled`: compiles OpenH264 from source at build time.
+    ///   Use [`OpenH264Decoder::new()`] to construct.
+    ///
+    /// - `openh264-libloading`: loads a prebuilt Cisco OpenH264 binary at
+    ///   runtime. Use [`OpenH264Decoder::from_library_path()`] to construct.
+    ///   The library is verified against known Cisco release hashes.
     pub struct OpenH264Decoder {
         decoder: openh264::decoder::Decoder,
         annex_b_buffer: Vec<u8>,
     }
 
     impl OpenH264Decoder {
-        /// Create a new OpenH264 decoder
+        /// Create a decoder using the bundled (source-compiled) OpenH264 library
+        ///
+        /// This compiles OpenH264 C code at build time. The resulting binary
+        /// has no patent coverage from Cisco's license agreement.
+        #[cfg(feature = "openh264-bundled")]
         pub fn new() -> DecoderResult<Self> {
             let decoder = openh264::decoder::Decoder::new()
+                .map_err(|e| DecoderError::new("failed to create OpenH264 decoder", e))?;
+
+            Ok(Self {
+                decoder,
+                annex_b_buffer: Vec::new(),
+            })
+        }
+
+        /// Create a decoder using a dynamically loaded OpenH264 library
+        ///
+        /// `library_path` should point to a Cisco OpenH264 prebuilt binary,
+        /// which is verified against known Cisco release hashes before loading.
+        /// Cisco's prebuilt binaries carry patent coverage under their license.
+        #[cfg(feature = "openh264-libloading")]
+        pub fn from_library_path(library_path: &std::path::Path) -> DecoderResult<Self> {
+            let api = openh264::OpenH264API::from_blob_path(library_path)
+                .map_err(|e| DecoderError::new("failed to load OpenH264 library", e))?;
+            let decoder = openh264::decoder::Decoder::with_api_config(api, Default::default())
                 .map_err(|e| DecoderError::new("failed to create OpenH264 decoder", e))?;
 
             Ok(Self {
@@ -247,10 +276,15 @@ mod openh264_impl {
         }
 
         fn reset(&mut self) {
+            // Recreate decoder from source when available
+            #[cfg(feature = "openh264-bundled")]
             match openh264::decoder::Decoder::new() {
                 Ok(new_decoder) => self.decoder = new_decoder,
                 Err(e) => warn!("Failed to reset OpenH264 decoder, reusing existing state: {e}"),
             }
+            // In libloading-only mode, we don't have the library path stored,
+            // so we can't recreate. The existing decoder handles new SPS/PPS
+            // transparently when the next I-frame arrives.
         }
     }
 }
@@ -262,7 +296,7 @@ pub use openh264_impl::OpenH264Decoder;
 // OpenH264 Tests
 // ============================================================================
 
-#[cfg(all(test, feature = "openh264"))]
+#[cfg(all(test, feature = "openh264-bundled"))]
 mod openh264_tests {
     use super::{H264Decoder, OpenH264Decoder};
 
