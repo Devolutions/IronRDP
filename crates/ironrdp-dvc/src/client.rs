@@ -29,13 +29,13 @@ pub trait DvcChannelListener: Send {
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
 
-/// For pre-registered Dvc
+/// For pre-registered DVC
 struct OnceListener {
     inner: Option<Box<dyn DvcProcessor + Send>>,
 }
 
 impl OnceListener {
-    fn new(dvc_processor: impl DvcProcessor) -> Self {
+    fn new(dvc_processor: impl DvcProcessor + 'static) -> Self {
         Self {
             inner: Some(Box::new(dvc_processor)),
         }
@@ -49,6 +49,7 @@ impl DvcChannelListener for OnceListener {
             .expect("channel name called after created")
             .channel_name()
     }
+
     fn create(&mut self) -> Option<Box<dyn DvcProcessor + Send>> {
         self.inner.take()
     }
@@ -88,7 +89,8 @@ impl DrdynvcClient {
         }
     }
 
-    /// with a pre-registered dynamic virtual channel
+    /// Registers a pre-initialized dynamic virtual channel with the DrdynvcClient,
+    /// making it available for immediate use when the session starts.
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
