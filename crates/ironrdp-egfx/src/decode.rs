@@ -3,7 +3,8 @@
 //! This module provides pluggable decoder traits that allow consumers
 //! to bring their own codec implementations (e.g., openh264, ffmpeg,
 //! hardware decoders). The traits are designed for core tier: no I/O,
-//! no `std` dependency, `Send` only.
+//! `Send` only. They are intended for use in `std` environments;
+//! `no_std` + `alloc` support is not currently guaranteed.
 //!
 //! # Protocol Context
 //!

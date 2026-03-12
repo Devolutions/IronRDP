@@ -596,6 +596,14 @@ impl GraphicsPipelineClient {
         // Per spec, ResetGraphics implicitly destroys all surfaces
         self.surfaces.clear();
 
+        // Reset frame tracking state so subsequent FrameAcknowledge PDUs
+        // don't report stale queue depth from a previous stream.
+        // Capability state (negotiated_caps, codec_caps) is NOT reset here:
+        // per spec, capabilities are negotiated via CapabilitiesConfirm before
+        // ResetGraphics, and a ResetGraphics does not re-negotiate capabilities.
+        self.current_frame_id = None;
+        self.frames_queued = 0;
+
         // Reset decoder state for new stream
         if let Some(ref mut decoder) = self.h264_decoder {
             decoder.reset();
@@ -648,12 +656,25 @@ impl GraphicsPipelineClient {
             .get(&pdu.surface_id)
             .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface1"))?;
 
+        // Validate rectangle ordering (left <= right, top <= bottom)
+        let rect = &pdu.destination_rectangle;
+        if rect.left > rect.right || rect.top > rect.bottom {
+            warn!(
+                left = rect.left,
+                top = rect.top,
+                right = rect.right,
+                bottom = rect.bottom,
+                "invalid destination rectangle ordering"
+            );
+            return Err(pdu_other_err!("invalid destination rectangle ordering"));
+        }
+
         // Validate destination rectangle against surface bounds
-        if pdu.destination_rectangle.right >= surface.width || pdu.destination_rectangle.bottom >= surface.height {
+        if rect.right >= surface.width || rect.bottom >= surface.height {
             warn!(
                 surface_id = pdu.surface_id,
-                rect_right = pdu.destination_rectangle.right,
-                rect_bottom = pdu.destination_rectangle.bottom,
+                rect_right = rect.right,
+                rect_bottom = rect.bottom,
                 surface_width = surface.width,
                 surface_height = surface.height,
                 "WireToSurface1 destination rectangle exceeds surface bounds"
@@ -696,6 +717,20 @@ impl GraphicsPipelineClient {
         let dest_width = dest_rect.width();
         let dest_height = dest_rect.height();
 
+        // Decoded frame must be at least as large as the destination rectangle.
+        // Larger is expected (macroblock alignment) and handled by cropping.
+        // Smaller means the server sent mismatched dimensions.
+        if frame.width < u32::from(dest_width) || frame.height < u32::from(dest_height) {
+            warn!(
+                frame_width = frame.width,
+                frame_height = frame.height,
+                dest_width,
+                dest_height,
+                "decoded frame smaller than destination rectangle"
+            );
+            return Err(pdu_other_err!("decoded frame smaller than destination rectangle"));
+        }
+
         let cropped_data = crop_decoded_frame(&frame.data, frame.width, frame.height, dest_width, dest_height);
 
         let update = BitmapUpdate {
@@ -715,11 +750,17 @@ impl GraphicsPipelineClient {
         let dest_width = pdu.destination_rectangle.width();
         let dest_height = pdu.destination_rectangle.height();
 
+        // Convert wire-format pixels to RGBA.
+        // BitmapUpdate.data is always RGBA8888 regardless of codec -- this is
+        // the convention so that handlers get a uniform pixel format.
+        // Uncompressed wire format is 32-bit LE (0xAARRGGBB → bytes [B, G, R, A]).
+        let rgba_data = convert_uncompressed_to_rgba(&pdu.bitmap_data);
+
         let update = BitmapUpdate {
             surface_id: pdu.surface_id,
             destination_rectangle: pdu.destination_rectangle,
             codec_id: Codec1Type::Uncompressed,
-            data: pdu.bitmap_data,
+            data: rgba_data,
             width: dest_width,
             height: dest_height,
         };
@@ -823,6 +864,22 @@ impl DvcClientProcessor for GraphicsPipelineClient {}
 // ============================================================================
 // Frame Cropping
 // ============================================================================
+
+/// Convert uncompressed 32bpp little-endian pixels to RGBA8888
+///
+/// The wire format for uncompressed graphics is 0xAARRGGBB in a 32-bit
+/// little-endian word, which corresponds to bytes [B, G, R, A]. This
+/// reorders to [R, G, B, 0xFF], treating all pixels as fully opaque.
+fn convert_uncompressed_to_rgba(src: &[u8]) -> Vec<u8> {
+    let mut dst = Vec::with_capacity(src.len());
+    for pixel in src.chunks_exact(4) {
+        let b = pixel[0];
+        let g = pixel[1];
+        let r = pixel[2];
+        dst.extend_from_slice(&[r, g, b, 0xFF]);
+    }
+    dst
+}
 
 /// Crop a decoded RGBA frame to target dimensions
 ///
@@ -967,6 +1024,17 @@ mod tests {
         assert_eq!(messages.len(), 1);
     }
 
+    /// Decode the CapabilitiesAdvertisePdu from a DvcMessage produced by start()
+    fn decode_caps_from_message(msg: &DvcMessage) -> CapabilitiesAdvertisePdu {
+        let encoded = ironrdp_core::encode_vec(msg.as_ref()).expect("encode should succeed");
+        let mut cursor = ReadCursor::new(&encoded);
+        let pdu = GfxPdu::decode(&mut cursor).expect("decode should succeed");
+        match pdu {
+            GfxPdu::CapabilitiesAdvertise(caps) => caps,
+            other => panic!("expected CapabilitiesAdvertise, got {other:?}"),
+        }
+    }
+
     #[test]
     fn test_client_filters_avc_caps_without_decoder() {
         let handler = TestHandler::new();
@@ -974,17 +1042,46 @@ mod tests {
         let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
         let messages = client.start(0).expect("start should succeed");
         assert_eq!(messages.len(), 1);
-        // The default capabilities() returns V10.7, V8.1, V8 — without
-        // a decoder, only V8 should survive the filter.
+
+        let caps_pdu = decode_caps_from_message(&messages[0]);
+        assert_eq!(
+            caps_pdu.0.len(),
+            1,
+            "expected exactly one capability set when no decoder is present"
+        );
+        assert!(
+            matches!(caps_pdu.0[0], CapabilitySet::V8 { .. }),
+            "expected only V8 capability set without decoder, got {:?}",
+            caps_pdu.0[0]
+        );
     }
 
     #[test]
     fn test_client_keeps_avc_caps_with_decoder() {
         let handler = TestHandler::new();
-        // With decoder: all caps should be kept
+        // With decoder: all caps should be kept (V10.7, V8.1, V8)
         let mut client = GraphicsPipelineClient::new(Box::new(handler), Some(Box::new(MockH264Decoder)));
         let messages = client.start(0).expect("start should succeed");
         assert_eq!(messages.len(), 1);
+
+        let caps_pdu = decode_caps_from_message(&messages[0]);
+        assert_eq!(
+            caps_pdu.0.len(),
+            3,
+            "expected all three capability sets with decoder present"
+        );
+        assert!(
+            matches!(caps_pdu.0[0], CapabilitySet::V10_7 { .. }),
+            "first cap should be V10.7"
+        );
+        assert!(
+            matches!(caps_pdu.0[1], CapabilitySet::V8_1 { .. }),
+            "second cap should be V8.1"
+        );
+        assert!(
+            matches!(caps_pdu.0[2], CapabilitySet::V8 { .. }),
+            "third cap should be V8"
+        );
     }
 
     #[test]
@@ -1278,5 +1375,80 @@ mod tests {
 
         assert_eq!(responses.len(), 1);
         assert_eq!(client.total_frames_decoded(), 1);
+    }
+
+    #[test]
+    fn test_convert_uncompressed_to_rgba() {
+        // Wire format: [B, G, R, A] per pixel (0xAARRGGBB little-endian)
+        let wire_pixels = vec![
+            0x00, 0x80, 0xFF, 0xCC, // B=0, G=128, R=255, A=204
+            0x10, 0x20, 0x30, 0x40, // B=16, G=32, R=48, A=64
+        ];
+        let rgba = convert_uncompressed_to_rgba(&wire_pixels);
+        // Expected: [R, G, B, 0xFF] per pixel (alpha forced to opaque)
+        assert_eq!(rgba, vec![0xFF, 0x80, 0x00, 0xFF, 0x30, 0x20, 0x10, 0xFF]);
+    }
+
+    #[test]
+    fn test_reset_graphics_clears_frame_tracking() {
+        let handler = TestHandler::new();
+        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
+
+        // Simulate mid-stream state
+        let _ = client.handle_pdu(GfxPdu::StartFrame(crate::pdu::StartFramePdu {
+            timestamp: crate::pdu::Timestamp {
+                milliseconds: 0,
+                seconds: 0,
+                minutes: 0,
+                hours: 0,
+            },
+            frame_id: 42,
+        }));
+        assert!(client.current_frame_id.is_some());
+        assert_eq!(client.frames_queued, 1);
+
+        // ResetGraphics should clear frame tracking
+        let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+            width: 1920,
+            height: 1080,
+            monitors: vec![],
+        }));
+
+        assert!(client.current_frame_id.is_none());
+        assert_eq!(client.frames_queued, 0);
+        // Caps should NOT be reset
+        // (can't easily test since we haven't confirmed caps, but at least
+        // verify the field exists and wasn't touched)
+    }
+
+    #[test]
+    fn test_invalid_rectangle_ordering_rejected() {
+        let handler = TestHandler::new();
+        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
+
+        // Create a surface
+        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+            surface_id: 1,
+            width: 100,
+            height: 100,
+            pixel_format: PixelFormat::XRgb,
+        }));
+
+        // left > right: invalid ordering
+        let pdu = GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
+            surface_id: 1,
+            codec_id: Codec1Type::Uncompressed,
+            pixel_format: PixelFormat::XRgb,
+            destination_rectangle: InclusiveRectangle {
+                left: 50,
+                top: 0,
+                right: 10,
+                bottom: 10,
+            },
+            bitmap_data: vec![0u8; 4],
+        });
+
+        let result = client.handle_pdu(pdu);
+        assert!(result.is_err(), "invalid rectangle ordering should be rejected");
     }
 }
