@@ -22,6 +22,7 @@ pub trait DvcClientProcessor: DvcProcessor {}
 
 pub trait DvcChannelListener: Send {
     fn channel_name(&self) -> &str;
+
     /// Called for each incoming DYNVC_CREATE_REQ matching this name.
     /// Return `None` to reject (NO_LISTENER).
     fn create(&mut self) -> Option<Box<dyn DvcProcessor>>;
