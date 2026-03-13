@@ -567,18 +567,20 @@ impl Sequence for Acceptor {
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
 
-                    if self.creds.as_ref() != Some(&creds) {
-                        // FIXME: How authorization should be denied with standard RDP security?
-                        // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.
-                        let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
-                            ProtocolIndependentCode::ServerDeniedConnection,
-                        ));
+                    if let Some(expected) = &self.creds {
+                        if expected != &creds {
+                            // FIXME: How authorization should be denied with standard RDP security?
+                            // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.
+                            let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+                                ProtocolIndependentCode::ServerDeniedConnection,
+                            ));
 
-                        debug!(message = ?info, "Send");
+                            debug!(message = ?info, "Send");
 
-                        util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)?;
+                            util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)?;
 
-                        return Err(ConnectorError::general("invalid credentials"));
+                            return Err(ConnectorError::general("invalid credentials"));
+                        }
                     }
 
                     // Store credentials for later retrieval via AcceptorResult.
