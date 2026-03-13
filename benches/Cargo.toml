@@ -15,7 +15,7 @@ qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = "1"
 async-trait = "0.1.89"
 bytesize = "2.3"
 ironrdp = { path = "../crates/ironrdp", features = [
