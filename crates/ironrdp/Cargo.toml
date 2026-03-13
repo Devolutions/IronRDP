@@ -64,7 +64,7 @@ async-trait = "0.1"
 image = { version = "0.25.6", default-features = false, features = ["png"] }
 pico-args = "0.5"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
-sspi = { version = "0.18", features = ["network_client"] }
+sspi = { git = "https://github.com/Devolutions/sspi-rs", rev = "2ded76b76734110d45de2270d3c782c561fe54d1", version = "0.18", features = ["network_client"] } # FIXME: Replace with next sspi release
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-rustls = "0.26"
