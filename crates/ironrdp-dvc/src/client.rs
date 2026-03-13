@@ -96,7 +96,7 @@ impl DrdynvcClient {
     where
         T: DvcProcessor + 'static,
     {
-        self.dynamic_channels.insert_dvc(channel);
+        self.dynamic_channels.register_once(channel);
         self
     }
 
@@ -106,7 +106,7 @@ impl DrdynvcClient {
     where
         T: DvcChannelListener + 'static,
     {
-        self.dynamic_channels.insert_listener(listener);
+        self.dynamic_channels.register_listener(listener);
         self
     }
 
@@ -115,14 +115,14 @@ impl DrdynvcClient {
     where
         T: DvcChannelListener + 'static,
     {
-        self.dynamic_channels.insert_listener(listener);
+        self.dynamic_channels.register_listener(listener);
     }
 
     pub fn attach_dynamic_channel<T>(&mut self, channel: T)
     where
         T: DvcProcessor + 'static,
     {
-        self.dynamic_channels.insert_dvc(channel);
+        self.dynamic_channels.register_once(channel);
     }
 
     pub fn get_dvc_by_type_id<T>(&self) -> Option<&DynamicVirtualChannel>
@@ -252,7 +252,7 @@ impl DynamicChannelSet {
         }
     }
 
-    fn insert_listener<T: DvcChannelListener + 'static>(&mut self, listener: T) {
+    fn register_listener<T: DvcChannelListener + 'static>(&mut self, listener: T) {
         let name = listener.channel_name().to_owned();
         self.listeners.insert(
             name,
@@ -263,7 +263,7 @@ impl DynamicChannelSet {
         );
     }
 
-    fn insert_dvc<T: DvcProcessor + 'static>(&mut self, channel: T) {
+    fn register_once<T: DvcProcessor + 'static>(&mut self, channel: T) {
         let name = channel.channel_name().to_owned();
         self.listeners.insert(
             name,
