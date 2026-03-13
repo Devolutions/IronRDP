@@ -24,14 +24,14 @@ pub trait DvcChannelListener: Send {
     fn channel_name(&self) -> &str;
     /// Called for each incoming DYNVC_CREATE_REQ matching this name.
     /// Return `None` to reject (NO_LISTENER).
-    fn create(&mut self) -> Option<Box<dyn DvcProcessor + Send>>;
+    fn create(&mut self) -> Option<Box<dyn DvcProcessor>>;
 }
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
 
 /// For pre-registered DVC
 struct OnceListener {
-    inner: Option<Box<dyn DvcProcessor + Send>>,
+    inner: Option<Box<dyn DvcProcessor>>,
 }
 
 impl OnceListener {
@@ -50,7 +50,7 @@ impl DvcChannelListener for OnceListener {
             .channel_name()
     }
 
-    fn create(&mut self) -> Option<Box<dyn DvcProcessor + Send>> {
+    fn create(&mut self) -> Option<Box<dyn DvcProcessor>> {
         self.inner.take()
     }
 }
