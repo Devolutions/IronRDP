@@ -89,8 +89,13 @@ impl DrdynvcClient {
         }
     }
 
-    /// Registers a pre-initialized dynamic virtual channel with the DrdynvcClient,
+    /// Registers a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
+    ///
+    /// # Note
+    ///
+    /// If a listener or a pre-registered channel with the same name already exists,
+    /// it will be silently overwritten.
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
@@ -100,7 +105,27 @@ impl DrdynvcClient {
         self
     }
 
-    /// Bind a listener. Doesn't support type id look up
+    /// Attaches a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
+    /// making it available for immediate use when the session starts.
+    ///
+    /// # Note
+    ///
+    /// If a listener or a pre-registered channel with the same name already exists,
+    /// it will be silently overwritten.
+    pub fn attach_dynamic_channel<T>(&mut self, channel: T)
+    where
+        T: DvcProcessor + 'static,
+    {
+        self.dynamic_channels.register_once(channel);
+    }
+
+    /// Bind a listener.
+    ///
+    /// # Note
+    ///
+    /// * Doesn't support [TypeId] lookup via [DrdynvcClient::get_dvc_by_type_id].
+    /// * If a listener or a pre-registered channel with the same name already exists,
+    ///   it will be silently overwritten.
     #[must_use]
     pub fn with_listener<T>(mut self, listener: T) -> Self
     where
@@ -110,19 +135,18 @@ impl DrdynvcClient {
         self
     }
 
-    /// Doesn't support type id look up
+    /// Attaches a listener.
+    ///
+    /// # Note
+    ///
+    /// * Doesn't support [TypeId] lookup via [DrdynvcClient::get_dvc_by_type_id].
+    /// * If a listener or a pre-registered channel with the same name already exists,
+    ///   it will be silently overwritten.
     pub fn attach_listener<T>(&mut self, listener: T)
     where
         T: DvcChannelListener + 'static,
     {
         self.dynamic_channels.register_listener(listener);
-    }
-
-    pub fn attach_dynamic_channel<T>(&mut self, channel: T)
-    where
-        T: DvcProcessor + 'static,
-    {
-        self.dynamic_channels.register_once(channel);
     }
 
     pub fn get_dvc_by_type_id<T>(&self) -> Option<&DynamicVirtualChannel>
