@@ -1,9 +1,10 @@
 //! This module contains the RDP_PRECONNECTION_PDU_V1 and RDP_PRECONNECTION_PDU_V2 structures.
 
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
-    ensure_size, invalid_field_err, invalid_field_err_with_source, read_padding, write_padding,
+    Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
+    ensure_fixed_part_size, ensure_size, invalid_field_err, invalid_field_err_with_source, read_padding, write_padding,
 };
+pub use ironrdp_str::prefixed::CchString;
 
 use crate::Pdu;
 
@@ -33,8 +34,8 @@ pub struct PreconnectionBlob {
     /// as simple as a process ID, it is often client-specific or server-specific and
     /// can be obfuscated.
     pub id: u32,
-    /// V2 PCB string
-    pub v2_payload: Option<String>,
+    /// V2 PCB string ([MS-RDPEPS] §2.2.1.2 `cchPCB`/`wszPCB`)
+    pub v2_payload: Option<CchString>,
 }
 
 impl PreconnectionBlob {
@@ -73,7 +74,10 @@ impl<'de> Decode<'de> for PreconnectionBlob {
         ensure_size!(in: src, size: remaining_size);
 
         if remaining_size >= 2 {
-            let cch_pcb = usize::from(src.read_u16());
+            // Peek at cchPCB (without consuming) to validate against the outer PDU size before
+            // delegating to the typed decode. This produces a specific error distinct from the
+            // generic "not enough bytes" that decode_owned would otherwise return.
+            let cch_pcb = usize::from(src.peek_u16());
             let cb_pcb = cch_pcb * 2;
 
             if remaining_size - 2 < cb_pcb {
@@ -84,10 +88,9 @@ impl<'de> Decode<'de> for PreconnectionBlob {
                 ));
             }
 
-            let wsz_pcb_utf16 = src.read_slice(cb_pcb);
-
-            let payload = crate::utf16::read_utf16_string(wsz_pcb_utf16, Some(cch_pcb))
-                .map_err(|e| invalid_field_err_with_source(Self::NAME, "wszPCB", "bad UTF-16 string", e))?;
+            // decode_owned reads the cchPCB prefix, the string content, and the null terminator.
+            let v2_payload = CchString::decode_owned(src)
+                .map_err(|e| invalid_field_err_with_source(Self::NAME, "wszPCB", "malformed PCB string", e))?;
 
             let leftover_size = remaining_size - 2 - cb_pcb;
             src.advance(leftover_size); // Consume (unused) leftover data
@@ -95,7 +98,7 @@ impl<'de> Decode<'de> for PreconnectionBlob {
             Ok(Self {
                 version,
                 id,
-                v2_payload: Some(payload),
+                v2_payload: Some(v2_payload),
             })
         } else {
             Ok(Self {
@@ -127,13 +130,8 @@ impl Encode for PreconnectionBlob {
         dst.write_u32(self.id); // id
 
         if let Some(v2_payload) = &self.v2_payload {
-            // cchPCB
-            let utf16_character_count = v2_payload.chars().count() + 1; // +1 for null terminator
-            dst.write_u16(cast_length!("cchPCB", utf16_character_count)?);
-
-            // wszPCB
-            v2_payload.encode_utf16().for_each(|c| dst.write_u16(c));
-            dst.write_u16(0); // null terminator
+            // Writes cchPCB prefix (u16, including null), followed by wszPCB and null terminator.
+            v2_payload.encode(dst)?;
         }
 
         Ok(())
@@ -146,12 +144,7 @@ impl Encode for PreconnectionBlob {
     fn size(&self) -> usize {
         let fixed_part_size = Self::FIXED_PART_SIZE;
 
-        let variable_part = if let Some(v2_payload) = &self.v2_payload {
-            let utf16_encoded_len = crate::utf16::null_terminated_utf16_encoded_len(v2_payload);
-            2 + utf16_encoded_len
-        } else {
-            0
-        };
+        let variable_part = self.v2_payload.as_ref().map_or(0, |p| p.size());
 
         fixed_part_size + variable_part
     }

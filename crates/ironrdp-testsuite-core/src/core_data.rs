@@ -7,6 +7,7 @@ use ironrdp_pdu::gcc::{
     SupportedColorDepths,
 };
 use ironrdp_pdu::nego::SecurityProtocol;
+use ironrdp_str::fixed::FixedString;
 
 pub const CLIENT_CORE_DATA_BUFFER: [u8; 128] = [
     0x04, 0x00, 0x08, 0x00, // version
@@ -66,11 +67,11 @@ pub static CLIENT_CORE_DATA_WITHOUT_OPTIONAL_FIELDS: LazyLock<ClientCoreData> = 
     sec_access_sequence: SecureAccessSequence::Del,
     keyboard_layout: 1033,
     client_build: 3790,
-    client_name: String::from("ELTONS-DEV2"),
+    client_name: FixedString::new("ELTONS-DEV2").unwrap(),
     keyboard_type: KeyboardType::IbmEnhanced,
     keyboard_subtype: 0,
     keyboard_functional_keys_count: 12,
-    ime_file_name: String::new(),
+    ime_file_name: FixedString::default(),
     optional_data: ClientCoreOptionalData::default(),
 });
 
@@ -88,7 +89,7 @@ pub static CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL: LazyLock<Clien
     data.optional_data.supported_color_depths =
         Some(SupportedColorDepths::BPP24 | SupportedColorDepths::BPP16 | SupportedColorDepths::BPP15);
     data.optional_data.early_capability_flags = Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
-    data.optional_data.dig_product_id = Some(String::from("69712-783-0357974-42714"));
+    data.optional_data.dig_product_id = Some(FixedString::new("69712-783-0357974-42714").unwrap());
     data.optional_data.connection_type = Some(ConnectionType::NotUsed);
     data.optional_data.server_selected_protocol = Some(SecurityProtocol::empty());
     data

@@ -386,7 +386,18 @@ pub(crate) fn set_information(
             match &req_inner.set_buffer {
                 FileInformationClass::Rename(info) => {
                     let mut to = backend.file_base.clone();
-                    to.push_str(&info.file_name.replace('\\', "/"));
+                    let file_name = match info.file_name.to_native() {
+                        Ok(name) => name,
+                        Err(error) => {
+                            warn!(?error, "Rename file error: invalid UTF-16 in file name");
+                            let res = RdpdrPdu::ClientDriveSetInformationResponse(
+                                ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)
+                                    .map_err(|e| encode_err!(e))?,
+                            );
+                            return Ok(vec![SvcMessage::from(res)]);
+                        }
+                    };
+                    to.push_str(&file_name.replace('\\', "/"));
                     if let Err(error) = std::fs::rename(file, to) {
                         warn!(?error, "Rename file error");
                         let res = RdpdrPdu::ClientDriveSetInformationResponse(

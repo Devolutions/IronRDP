@@ -23,7 +23,7 @@ static INPUT: LazyLock<Input> = LazyLock::new(|| Input {
     keyboard_type: Some(KeyboardType::IbmEnhanced),
     keyboard_subtype: 0,
     keyboard_function_key: 12,
-    keyboard_ime_filename: String::new(),
+    keyboard_ime_filename: FixedString::default(),
 });
 
 #[test]
