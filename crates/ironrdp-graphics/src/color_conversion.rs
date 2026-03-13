@@ -80,7 +80,23 @@ pub fn to_64x64_ycbcr_tile(
     }
 }
 
-/// Convert a 16-bit RDP color to RGB representation. Input value should be represented in
+/// Convert a 15-bit RDP color (RGB555) to RGB. Input value should be represented in
+/// little-endian format.
+///
+/// Layout: `[0, R4:R0, G4:G0, B4:B0]` -- MSB unused, 5 bits per channel.
+pub fn rdp_15bit_to_rgb(color: u16) -> [u8; 3] {
+    #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked integer underflow)")]
+    let out = {
+        let r = u8::try_from(((((color >> 10) & 0x1f) * 527) + 23) >> 6).expect("max possible value is 255");
+        let g = u8::try_from(((((color >> 5) & 0x1f) * 527) + 23) >> 6).expect("max possible value is 255");
+        let b = u8::try_from((((color & 0x1f) * 527) + 23) >> 6).expect("max possible value is 255");
+        [r, g, b]
+    };
+
+    out
+}
+
+/// Convert a 16-bit RDP color (RGB565) to RGB. Input value should be represented in
 /// little-endian format.
 pub fn rdp_16bit_to_rgb(color: u16) -> [u8; 3] {
     #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked integer underflow)")]
@@ -133,4 +149,65 @@ pub struct Rgb {
     pub r: u8,
     pub g: u8,
     pub b: u8,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rdp_15bit_black() {
+        assert_eq!(rdp_15bit_to_rgb(0x0000), [0, 0, 0]);
+    }
+
+    #[test]
+    fn rdp_15bit_white() {
+        assert_eq!(rdp_15bit_to_rgb(0x7FFF), [255, 255, 255]);
+    }
+
+    #[test]
+    fn rdp_15bit_pure_red() {
+        // R=31, G=0, B=0: 0_11111_00000_00000 = 0x7C00
+        assert_eq!(rdp_15bit_to_rgb(0x7C00), [255, 0, 0]);
+    }
+
+    #[test]
+    fn rdp_15bit_pure_green() {
+        // R=0, G=31, B=0: 0_00000_11111_00000 = 0x03E0
+        assert_eq!(rdp_15bit_to_rgb(0x03E0), [0, 255, 0]);
+    }
+
+    #[test]
+    fn rdp_15bit_pure_blue() {
+        // R=0, G=0, B=31: 0_00000_00000_11111 = 0x001F
+        assert_eq!(rdp_15bit_to_rgb(0x001F), [0, 0, 255]);
+    }
+
+    #[test]
+    fn rdp_16bit_black() {
+        assert_eq!(rdp_16bit_to_rgb(0x0000), [0, 0, 0]);
+    }
+
+    #[test]
+    fn rdp_16bit_white() {
+        assert_eq!(rdp_16bit_to_rgb(0xFFFF), [255, 255, 255]);
+    }
+
+    #[test]
+    fn rdp_16bit_pure_red() {
+        // R=31, G=0, B=0: 11111_000000_00000 = 0xF800
+        assert_eq!(rdp_16bit_to_rgb(0xF800), [255, 0, 0]);
+    }
+
+    #[test]
+    fn rdp_16bit_pure_green() {
+        // R=0, G=63, B=0: 00000_111111_00000 = 0x07E0
+        assert_eq!(rdp_16bit_to_rgb(0x07E0), [0, 255, 0]);
+    }
+
+    #[test]
+    fn rdp_16bit_pure_blue() {
+        // R=0, G=0, B=31: 00000_000000_11111 = 0x001F
+        assert_eq!(rdp_16bit_to_rgb(0x001F), [0, 0, 255]);
+    }
 }
