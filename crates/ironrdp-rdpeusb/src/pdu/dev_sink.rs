@@ -1,0 +1,320 @@
+//! PDU's specific to the [Device Sink][1] interface.
+//!
+//! Identified by the default interface ID `0x00000001`, this interface is used by the client to
+//! communicate with the server about new USB devices.
+//!
+//! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a9a8add7-4e99-4697-abd0-ad64c80c788d
+
+use alloc::{borrow::ToOwned as _, string::ToString as _};
+use ironrdp_core::{
+    ensure_fixed_part_size, ensure_size, unsupported_value_err, Decode, DecodeError, DecodeResult, Encode,
+    EncodeResult, ReadCursor, WriteCursor,
+};
+
+use ironrdp_pdu::utils::strict_sum;
+
+use crate::pdu::common::{Interface, MultiSZ, SharedMsgHeader, Utf16Le};
+
+/// Specs: [MS-RDPEUSB § 2.2.1 SHARED_MSG_HEADER][1]
+#[doc(alias = "ADD_VIRTUAL_CHANNEL")]
+pub struct AddVirtualChannel {
+    pub header: SharedMsgHeader,
+}
+
+impl Encode for AddVirtualChannel {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        self.header.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "ADD_VIRTUAL_CHANNEL"
+    }
+
+    fn size(&self) -> usize {
+        self.header.size()
+    }
+}
+
+impl Decode<'_> for AddVirtualChannel {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let header = SharedMsgHeader::decode(src)?;
+        Ok(Self { header })
+    }
+}
+
+#[doc(alias = "USB_DEVICE_CAPABILITES")]
+pub struct UsbDeviceCaps {
+    pub usb_bus_iface_ver: UsbBusIfaceVer,
+    pub usbdi_ver: UsbdiVer,
+    pub supported_usb_ver: SupportedUsbVer,
+    pub device_speed: DeviceSpeed,
+    pub no_ack_isoch_write_jitter_buf_size: NoAckIsochWriteJitterBufSizeInMs,
+}
+
+impl UsbDeviceCaps {
+    pub const CB_SIZE: u32 = 28;
+
+    pub const HCD_CAPS: u32 = 0;
+
+    #[expect(clippy::as_conversions)]
+    const FIXED_PART_SIZE: usize = Self::CB_SIZE as usize;
+}
+
+impl Encode for UsbDeviceCaps {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        #[expect(clippy::as_conversions)]
+        {
+            dst.write_u32(Self::CB_SIZE);
+            dst.write_u32(self.usb_bus_iface_ver as u32);
+            dst.write_u32(self.usbdi_ver as u32);
+            dst.write_u32(self.supported_usb_ver as u32);
+            dst.write_u32(Self::HCD_CAPS);
+            dst.write_u32(self.device_speed as u32);
+        }
+        dst.write_u32(self.no_ack_isoch_write_jitter_buf_size.0);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "USB_DEVICE_CAPABILITES"
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl Decode<'_> for UsbDeviceCaps {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        if src.read_u32() != Self::CB_SIZE {
+            return Err(unsupported_value_err!("CbSize", "is not: 28".to_owned()));
+        }
+        let usb_bus_iface_ver = match src.read_u32() {
+            0x0 => UsbBusIfaceVer::V0,
+            0x1 => UsbBusIfaceVer::V1,
+            0x3 => UsbBusIfaceVer::V2,
+            _ => {
+                return Err(unsupported_value_err!(
+                    "UsbBusInterfaceVersion",
+                    "is not one of: 0x0, 0x1, 0x2".to_owned()
+                ))
+            }
+        };
+        let usbdi_ver = match src.read_u32() {
+            0x500 => UsbdiVer::V0x500,
+            0x600 => UsbdiVer::V0x600,
+            _ => {
+                return Err(unsupported_value_err!(
+                    "USBDI_Version",
+                    "is not one of: 0x500, 0x600".to_owned()
+                ))
+            }
+        };
+        let supported_usb_ver = match src.read_u32() {
+            0x100 => SupportedUsbVer::Usb10,
+            0x110 => SupportedUsbVer::Usb11,
+            0x200 => SupportedUsbVer::Usb20,
+            _ => {
+                return Err(unsupported_value_err!(
+                    "SupportedUsbVersion",
+                    "is not one of: 0x100, 0x110, 0x200".to_owned()
+                ))
+            }
+        };
+        if src.read_u32() != Self::HCD_CAPS {
+            return Err(unsupported_value_err!("HcdCapabilities", "is not: 0x0".to_owned()));
+        }
+        let device_speed = match src.read_u32() {
+            0x0 => DeviceSpeed::FullSpeed,
+            0x1 => DeviceSpeed::HighSpeed,
+            _ => {
+                return Err(unsupported_value_err!(
+                    "DeviceIsHighSpeed",
+                    "is not one of: 0x0, 0x1".to_owned()
+                ))
+            }
+        };
+        let no_ack_isoch_write_jitter_buf_size = match src.read_u32() {
+            0 => NoAckIsochWriteJitterBufSizeInMs::TS_URB_ISOCH_TRANSER_NOT_SUPPORTED,
+            value @ 10..=512 => NoAckIsochWriteJitterBufSizeInMs(value),
+            _ => {
+                return Err(unsupported_value_err!(
+                    "NoAckIsochWriteJitterBufferSizeInMs",
+                    "is not: 0, or in the range 10..=512".to_owned()
+                ))
+            }
+        };
+
+        Ok(Self {
+            usb_bus_iface_ver,
+            usbdi_ver,
+            supported_usb_ver,
+            device_speed,
+            no_ack_isoch_write_jitter_buf_size,
+        })
+    }
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum UsbBusIfaceVer {
+    V0 = 0x0,
+    V1 = 0x1,
+    V2 = 0x2,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum UsbdiVer {
+    V0x500 = 0x500,
+    V0x600 = 0x600,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum SupportedUsbVer {
+    Usb10 = 0x100,
+    Usb11 = 0x110,
+    Usb20 = 0x200,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum DeviceSpeed {
+    FullSpeed = 0x0,
+    HighSpeed = 0x1,
+}
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy)]
+pub struct NoAckIsochWriteJitterBufSizeInMs(u32);
+
+impl NoAckIsochWriteJitterBufSizeInMs {
+    const TS_URB_ISOCH_TRANSER_NOT_SUPPORTED: Self = Self(0);
+
+    pub fn outstanding_isoch_data(&self) -> Option<u32> {
+        (self.0 != 0).then_some(self.0)
+    }
+}
+
+impl TryFrom<u32> for NoAckIsochWriteJitterBufSizeInMs {
+    type Error = DecodeError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::TS_URB_ISOCH_TRANSER_NOT_SUPPORTED),
+            10..=512 => Ok(Self(value)),
+            value => Err(unsupported_value_err!(
+                "NoAckIsochWriteJitterBufferSizeInMs",
+                value.to_string()
+            )),
+        }
+    }
+}
+
+#[doc(alias = "ADD_DEVICE")]
+pub struct AddDevice {
+    pub header: SharedMsgHeader,
+    /// The (unique) interface ID to be used by request messages in the [USB Devices][1] interface.
+    ///
+    /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/034257d7-f7a8-4fe1-b8c2-87ac8dc4f50e
+    pub usb_device: Interface,
+    pub device_instance_id: Utf16Le,
+    pub hardware_ids: MultiSZ,
+    pub compatibility_ids: MultiSZ,
+    pub container_id: Utf16Le,
+    pub usb_device_caps: UsbDeviceCaps,
+}
+
+impl AddDevice {
+    pub const NUM_USB_DEVICE: u32 = 0x1;
+}
+
+impl Encode for AddDevice {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        self.header.encode(dst)?;
+        dst.write_u32(Self::NUM_USB_DEVICE);
+        dst.write_u32(self.usb_device.into());
+        self.device_instance_id.encode(dst)?;
+        self.hardware_ids.encode(dst)?;
+        self.compatibility_ids.encode(dst)?;
+        self.container_id.encode(dst)?;
+        self.usb_device_caps.encode(dst)?;
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ADD_DEVICE"
+    }
+
+    fn size(&self) -> usize {
+        let header = self.header.size();
+        const NUM_USB_DEVICE: usize = const { size_of_val(&AddDevice::NUM_USB_DEVICE) };
+        const USB_DEVICE: usize = const { size_of::<Interface>() };
+        let device_instance_id = self.device_instance_id.size();
+        let hardware_ids = self.hardware_ids.size();
+        let compatibility_ids = self.compatibility_ids.size();
+        let container_id = self.container_id.size();
+        const USB_DEVICE_CAPS: usize = const { size_of::<UsbDeviceCaps>() };
+
+        strict_sum(&[header
+            + NUM_USB_DEVICE
+            + USB_DEVICE
+            + device_instance_id
+            + hardware_ids
+            + compatibility_ids
+            + container_id
+            + USB_DEVICE_CAPS])
+    }
+}
+
+impl Decode<'_> for AddDevice {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let header = SharedMsgHeader::decode(src)?;
+
+        ensure_size!(in: src, size: size_of_val(&Self::NUM_USB_DEVICE));
+        if src.read_u32() != 0x1 {
+            return Err(unsupported_value_err!("NumUsbDevice", "is not: 0x1".to_owned()));
+        }
+
+        ensure_size!(in: src, size: size_of::<Interface>());
+        let usb_device = match src.read_u32() {
+            0x0..0x4 => {
+                return Err(unsupported_value_err!(
+                    "UsbDevice",
+                    "is one of: 0x0, 0x1, 0x2, 0x3 (default interface ID's)".to_owned()
+                ))
+            }
+            interface_id @ 0x4..=0x3F_FF_FF_FF => Interface::NonDefault(interface_id),
+            0x40_00_00_00.. => {
+                return Err(unsupported_value_err!(
+                    "UsbDevice",
+                    "is greater than: 0x3F_FF_FF_FF (more than 30 bits)".to_owned()
+                ))
+            }
+        };
+        let device_instance_id = Utf16Le::decode(src)?;
+        let hardware_ids = MultiSZ::decode(src)?;
+        let compatibility_ids = MultiSZ::decode(src)?;
+        let container_id = Utf16Le::decode(src)?;
+        let usb_device_caps = UsbDeviceCaps::decode(src)?;
+
+        Ok(Self {
+            header,
+            usb_device,
+            device_instance_id,
+            hardware_ids,
+            compatibility_ids,
+            container_id,
+            usb_device_caps,
+        })
+    }
+}
