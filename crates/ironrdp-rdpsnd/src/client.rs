@@ -218,7 +218,7 @@ impl SvcProcessor for Rdpsnd {
                             msgs.append(&mut m);
                         }
                         return Ok(msgs);
-                    },
+                    }
                     _ => {
                         error!("Invalid PDU");
                         self.state = RdpsndState::Stop;
