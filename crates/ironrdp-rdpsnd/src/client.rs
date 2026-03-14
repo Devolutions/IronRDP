@@ -208,6 +208,17 @@ impl SvcProcessor for Rdpsnd {
                         self.handler.close();
                     }
                     pdu::ServerAudioOutputPdu::Training(pdu) => return Ok(self.training_confirm(&pdu)?.into()),
+                    pdu::ServerAudioOutputPdu::AudioFormat(af) => {
+                        self.handler.close();
+                        self.server_format = Some(af);
+                        self.state = RdpsndState::WaitingForTraining;
+                        let mut msgs: Vec<SvcMessage> = self.client_formats()?.into();
+                        if self.version()? >= pdu::Version::V6 {
+                            let mut m = self.quality_mode()?.into();
+                            msgs.append(&mut m);
+                        }
+                        return Ok(msgs);
+                    }
                     _ => {
                         error!("Invalid PDU");
                         self.state = RdpsndState::Stop;
