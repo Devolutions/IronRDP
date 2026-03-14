@@ -243,7 +243,7 @@ impl<'de> Decode<'de> for ClipboardPdu<'de> {
             MSG_TYPE_FILE_CONTENTS_RESPONSE => ClipboardPdu::FileContentsResponse(FileContentsResponse::decode(src)?),
             MSG_TYPE_LOCK_CLIPDATA => ClipboardPdu::LockData(LockDataId::decode(src)?),
             MSG_TYPE_UNLOCK_CLIPDATA => ClipboardPdu::UnlockData(LockDataId::decode(src)?),
-            _ => return Err(invalid_field_err!("msgType", "Unknown clipboard PDU type")),
+            _ => return Err(invalid_field_err!("msgType", "unknown clipboard PDU type")),
         };
 
         Ok(pdu)

@@ -16,12 +16,18 @@ categories.workspace = true
 doctest = false
 test = false
 
+[features]
+# Internal (PRIVATE!) features used to aid testing.
+# Don't rely on these whatsoever. They may disappear at any time.
+__test = ["dep:visibility"]
+
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
 tracing = { version = "0.1", features = ["log"] }
 bitflags = "2.9"
+visibility = { version = "0.1", optional = true }
 
 [lints]
 workspace = true

@@ -24,15 +24,15 @@ pub mod ffi {
     pub struct Cliprdr(pub Option<ironrdp::cliprdr::Cliprdr<Client>>);
 
     #[diplomat::opaque]
-    pub struct ClipboardSvgMessage(pub Option<ironrdp::cliprdr::CliprdrSvcMessages<Client>>);
+    pub struct ClipboardSvcMessage(pub Option<ironrdp::cliprdr::CliprdrSvcMessages<Client>>);
 }
 
 #[derive(Debug)]
-pub struct FfiClipbarodMessageProxy {
+pub struct FfiClipboardMessageProxy {
     pub sender: std::sync::mpsc::Sender<ironrdp::cliprdr::backend::ClipboardMessage>,
 }
 
-impl ironrdp::cliprdr::backend::ClipboardMessageProxy for FfiClipbarodMessageProxy {
+impl ironrdp::cliprdr::backend::ClipboardMessageProxy for FfiClipboardMessageProxy {
     fn send_clipboard_message(&self, message: ironrdp::cliprdr::backend::ClipboardMessage) {
         if let Err(error) = self.sender.send(message) {
             error!(?error, "Failed to send clipboard message");

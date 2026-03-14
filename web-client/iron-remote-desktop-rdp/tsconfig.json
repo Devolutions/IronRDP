@@ -19,7 +19,9 @@
     "strictNullChecks": true,
     "noImplicitAny": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "types": ["ua-parser-js"],
+    "skipLibCheck": true
   },
   "include": ["src/**/*.ts", "src/**/*.js"],
   "references": [

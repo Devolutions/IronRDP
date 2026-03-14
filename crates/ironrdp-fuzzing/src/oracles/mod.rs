@@ -70,6 +70,9 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<bitmap::rdp6::BitmapStream<'_>>(data);
 
     let _ = decode::<ironrdp_cliprdr::pdu::ClipboardPdu<'_>>(data);
+    let _ = decode::<ironrdp_cliprdr::pdu::PackedFileList>(data);
+    let _ = decode::<ironrdp_cliprdr::pdu::FileContentsRequest>(data);
+    let _ = decode::<ironrdp_cliprdr::pdu::FileContentsResponse<'_>>(data);
 
     let _ = decode::<ironrdp_rdpdr::pdu::RdpdrPdu>(data);
 
@@ -144,4 +147,48 @@ pub fn channel_process(input: &[u8]) {
         .with_drives(None);
 
     let _ = rdpdr.process(input);
+}
+
+pub fn cliprdr_channel_process(input: &[u8]) {
+    use ironrdp_svc::SvcProcessor as _;
+
+    let mut cliprdr = ironrdp_cliprdr::Cliprdr::<ironrdp_cliprdr::Client>::new(Box::new(NoopCliprdrFuzzBackend));
+    let _ = cliprdr.process(input);
+}
+
+/// Minimal backend for fuzzing that enables file transfer capabilities
+/// so the fuzzer can exercise lock, file list, and file contents paths.
+#[derive(Debug)]
+struct NoopCliprdrFuzzBackend;
+
+ironrdp_core::impl_as_any!(NoopCliprdrFuzzBackend);
+
+impl ironrdp_cliprdr::backend::CliprdrBackend for NoopCliprdrFuzzBackend {
+    fn temporary_directory(&self) -> &str {
+        "/tmp"
+    }
+
+    fn client_capabilities(&self) -> ironrdp_cliprdr::pdu::ClipboardGeneralCapabilityFlags {
+        use ironrdp_cliprdr::pdu::ClipboardGeneralCapabilityFlags;
+        ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+            | ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
+            | ClipboardGeneralCapabilityFlags::FILECLIP_NO_FILE_PATHS
+            | ClipboardGeneralCapabilityFlags::HUGE_FILE_SUPPORT_ENABLED
+    }
+
+    fn on_ready(&mut self) {}
+    fn on_request_format_list(&mut self) {}
+    fn on_process_negotiated_capabilities(&mut self, _: ironrdp_cliprdr::pdu::ClipboardGeneralCapabilityFlags) {}
+    fn on_remote_copy(&mut self, _: &[ironrdp_cliprdr::pdu::ClipboardFormat]) {}
+    fn on_format_data_request(&mut self, _: ironrdp_cliprdr::pdu::FormatDataRequest) {}
+    fn on_format_data_response(&mut self, _: ironrdp_cliprdr::pdu::FormatDataResponse<'_>) {}
+    fn on_file_contents_request(&mut self, _: ironrdp_cliprdr::pdu::FileContentsRequest) {}
+    fn on_file_contents_response(&mut self, _: ironrdp_cliprdr::pdu::FileContentsResponse<'_>) {}
+    fn on_lock(&mut self, _: ironrdp_cliprdr::pdu::LockDataId) {}
+    fn on_unlock(&mut self, _: ironrdp_cliprdr::pdu::LockDataId) {}
+
+    // Fixed clock so fuzz runs are reproducible regardless of wall-clock timing
+    fn now_ms(&self) -> u64 {
+        0
+    }
 }

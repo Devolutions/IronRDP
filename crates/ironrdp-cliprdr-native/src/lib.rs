@@ -16,4 +16,22 @@ mod windows;
 pub use crate::windows::{HWND, WinClipboard, WinCliprdrError, WinCliprdrResult};
 
 mod stub;
+use std::sync::OnceLock;
+use std::time::Instant;
+
 pub use crate::stub::{StubClipboard, StubCliprdrBackend};
+
+/// Process-wide monotonic clock epoch for `CliprdrBackend::now_ms()` on native platforms.
+///
+/// Uses a lazily-initialized `Instant` so that all backends in the same process
+/// share the same zero-point, producing comparable timestamps.
+fn epoch() -> &'static Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now)
+}
+
+/// Returns monotonic milliseconds since process start, for use by native
+/// `CliprdrBackend` implementations.
+pub fn native_now_ms() -> u64 {
+    u64::try_from(epoch().elapsed().as_millis()).unwrap_or(u64::MAX)
+}

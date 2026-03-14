@@ -9,4 +9,19 @@ export type { DeviceEvent } from './interfaces/DeviceEvent';
 export type { InputTransaction } from './interfaces/InputTransaction';
 export type { Session } from './interfaces/Session';
 export type { SessionBuilder } from './interfaces/SessionBuilder';
+export type { DesktopSize } from './interfaces/DesktopSize';
 export type { UserInteraction } from './interfaces/UserInteraction';
+export { Config } from './services/Config';
+export { ConfigBuilder } from './services/ConfigBuilder';
+export type { FileInfo, FileContentsRequest, FileContentsResponse } from './interfaces/FileTransfer';
+export { FileContentsFlags } from './enums/FileContentsFlags';
+export { FileTransferManager } from './FileTransferManager';
+export type {
+    FileTransferManagerOptions,
+    TransferProgress,
+    FileTransferError,
+    TransferCancellation,
+    DownloadHandle,
+    UploadHandle,
+    DroppedFile,
+} from './FileTransferManager';

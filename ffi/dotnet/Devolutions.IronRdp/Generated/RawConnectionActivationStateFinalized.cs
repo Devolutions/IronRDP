@@ -22,6 +22,9 @@ public partial struct ConnectionActivationStateFinalized
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_user_channel_id", ExactSpelling = true)]
     public static unsafe extern ushort GetUserChannelId(ConnectionActivationStateFinalized* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_share_id", ExactSpelling = true)]
+    public static unsafe extern uint GetShareId(ConnectionActivationStateFinalized* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_desktop_size", ExactSpelling = true)]
     public static unsafe extern DesktopSize* GetDesktopSize(ConnectionActivationStateFinalized* self);
 

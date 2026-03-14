@@ -31,14 +31,10 @@ Call the `connect` method on this object.
 
 ## Limitations
 
-For now, we didn't make the enums used by some method directly available (I didn't find the good way to export them directly with the component.).
-You need to recreate them on your application for now (it will be improved in future version);
-
-Also, even if the connection to RDP work there is still a lot of improvement to do.
-As of now, you can expect, mouse movement and click (4 buttons) - no scroll, Keyboard for at least the standard.
-Windows and CTRL+ALT+DEL can be called by method on `UserInteraction`.
-Lock keys (like caps lock), have a partial support.
-Other advanced functionalities (sharing / copy past...) are not implemented yet.
+Mouse input supports movement and click (4 buttons) but not scroll.
+Keyboard support covers the standard layout.
+Windows key and CTRL+ALT+DEL can be sent via methods on `UserInteraction`.
+Lock keys (like Caps Lock) have partial support.
 
 ## Component parameters
 
@@ -123,3 +119,123 @@ connect(
 > `setEnableClipboard(enable: boolean)`
 >
 > Enables or disable the clipboard based on the `enable` value.
+
+## File Transfer
+
+The `FileTransferManager` provides a high-level API for bidirectional file transfer operations in RDP sessions.
+
+### Features
+
+- **Download files** from remote to browser with automatic chunking and reassembly
+- **Upload files** from browser to remote with progress tracking
+- **Browser integration helpers** for file picking and drag-and-drop
+- **Progress events** for building responsive UIs
+- **Cancellation support** via AbortController
+- **Configurable chunk size** (default: 64KB)
+
+### Basic Usage
+
+```typescript
+import { FileTransferManager } from '@devolutions/iron-remote-desktop';
+
+// Create and configure manager with SessionBuilder
+const builder = new IronRemoteDesktop.SessionBuilder();
+const manager = FileTransferManager.setup(builder, { chunkSize: 64 * 1024 });
+
+// Configure session as usual
+builder
+  .username('user')
+  .password('pass')
+  .destination('rdp.example.com')
+  .proxyAddress('gateway.example.com')
+  .authToken('token');
+
+// Connect - manager is automatically ready after this
+const session = await builder.connect();
+
+// Listen for files available for download
+manager.on('files-available', async (files) => {
+  for (let i = 0; i < files.length; i++) {
+    const blob = await manager.downloadFile(files[i], i);
+    // Trigger browser download (using your preferred method)
+    saveAs(blob, files[i].name);
+  }
+});
+
+// Track download progress
+manager.on('download-progress', (progress) => {
+  console.log(`${progress.fileName}: ${progress.percentage}%`);
+});
+```
+
+### Uploading Files
+
+```typescript
+// Using file picker (must be triggered by user gesture)
+button.onclick = async () => {
+  const files = await manager.showFilePicker({ multiple: true });
+  await manager.uploadFiles(files);
+};
+
+// Using drag-and-drop
+dropZone.addEventListener('dragover', (e) => manager.handleDragOver(e));
+dropZone.addEventListener('drop', async (e) => {
+  const files = manager.handleDrop(e);
+  await manager.uploadFiles(files);
+});
+
+// Or use your own file input
+const fileInput = document.querySelector('input[type=file]');
+const files = Array.from(fileInput.files);
+await manager.uploadFiles(files);
+```
+
+### Cancellation
+
+```typescript
+const controller = new AbortController();
+
+// Start download with cancellation support
+const blob = await manager.downloadFile(fileInfo, 0, controller.signal);
+
+// Cancel from another handler
+cancelButton.onclick = () => controller.abort();
+```
+
+### Events
+
+- `files-available` - Emitted when remote copies files (provides array of FileInfo)
+- `download-progress` - Emitted during downloads (provides TransferProgress)
+- `upload-progress` - Emitted during uploads (provides TransferProgress)
+- `download-complete` - Emitted when a download finishes (provides FileInfo and Blob)
+- `upload-complete` - Emitted when an upload finishes (provides File)
+- `transfer-cancelled` - Emitted when a transfer is cancelled (provides file index)
+- `error` - Emitted on transfer errors (provides FileTransferError)
+
+### Low-Level API
+
+For advanced use cases, you can use the low-level session methods directly:
+
+```typescript
+import { FileContentsFlags } from '@devolutions/iron-remote-desktop';
+
+// Lock clipboard for file transfer
+const clipDataId = await session.lockClipboard();
+
+// Request file size
+session.requestFileContents(streamId, fileIndex, FileContentsFlags.SIZE, 0, 8, clipDataId);
+
+// Request file data
+session.requestFileContents(streamId, fileIndex, FileContentsFlags.RANGE, offset, chunkSize, clipDataId);
+
+// Unlock clipboard when done
+session.unlockClipboard(clipDataId);
+
+// Submit file contents (for uploads)
+session.submitFileContents(streamId, isError, data);
+
+// Initiate file copy (broadcast file list)
+session.initiateFileCopy(files);
+```
+
+**Important:** When using `requestFileContents()`, the `fileIndex` parameter must be a non-negative integer (>= 0). The implementation validates this requirement per MS-RDPECLIP 2.2.5.3 and will reject negative indices. Ensure you validate file indices before calling this method.
