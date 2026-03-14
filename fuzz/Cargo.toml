@@ -48,3 +48,10 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "cliprdr_channel_processing"
+path = "fuzz_targets/cliprdr_channel_processing.rs"
+test = false
+doc = false
+bench = false
+

@@ -196,6 +196,61 @@ macro_rules! make_bridge {
                 <<$api as $crate::RemoteDesktopApi>::Session as $crate::Session>::invoke_extension(&self.0, ext)
                     .map_err(IronError)
             }
+
+            #[wasm_bindgen(js_name = requestFileContents)]
+            pub fn request_file_contents(
+                &self,
+                stream_id: u32,
+                file_index: i32,
+                flags: u32,
+                position: f64,
+                size: u32,
+                clip_data_id: Option<u32>,
+            ) -> Result<(), IronError> {
+                // Validate position parameter before casting to u64
+                // JavaScript Number.MAX_SAFE_INTEGER is 2^53 - 1 = 9007199254740991
+                // Beyond this, f64 loses integer precision
+                const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+                if !position.is_finite() || !(0.0..=MAX_SAFE_INTEGER).contains(&position) || position.fract() != 0.0 {
+                    return Err(IronError(
+                        anyhow::Error::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!(
+                                "invalid position parameter: must be a finite non-negative integer <= {} (Number.MAX_SAFE_INTEGER) (got: {})",
+                                MAX_SAFE_INTEGER,
+                                position
+                            ),
+                        )).into()
+                    ));
+                }
+
+                #[expect(
+                    clippy::as_conversions,
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss
+                )]
+                let position_u64 = position as u64;
+                $crate::Session::request_file_contents(
+                    &self.0,
+                    stream_id,
+                    file_index,
+                    flags,
+                    position_u64,
+                    size,
+                    clip_data_id,
+                )
+                .map_err(IronError)
+            }
+
+            #[wasm_bindgen(js_name = submitFileContents)]
+            pub fn submit_file_contents(&self, stream_id: u32, is_error: bool, data: Vec<u8>) -> Result<(), IronError> {
+                $crate::Session::submit_file_contents(&self.0, stream_id, is_error, data).map_err(IronError)
+            }
+
+            #[wasm_bindgen(js_name = initiateFileCopy)]
+            pub fn initiate_file_copy(&self, files: $crate::internal::wasm_bindgen::JsValue) -> Result<(), IronError> {
+                $crate::Session::initiate_file_copy(&self.0, files).map_err(IronError)
+            }
         }
 
         #[$crate::internal::wasm_bindgen::prelude::wasm_bindgen]
@@ -280,6 +335,48 @@ macro_rules! make_bridge {
             #[wasm_bindgen(js_name = canvasResizedCallback)]
             pub fn canvas_resized_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
                 Self($crate::SessionBuilder::canvas_resized_callback(&self.0, callback))
+            }
+
+            #[wasm_bindgen(js_name = filesAvailableCallback)]
+            pub fn files_available_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
+                Self($crate::SessionBuilder::files_available_callback(
+                    &self.0, callback,
+                ))
+            }
+
+            #[wasm_bindgen(js_name = fileContentsRequestCallback)]
+            pub fn file_contents_request_callback(
+                &self,
+                callback: $crate::internal::web_sys::js_sys::Function,
+            ) -> Self {
+                Self($crate::SessionBuilder::file_contents_request_callback(
+                    &self.0, callback,
+                ))
+            }
+
+            #[wasm_bindgen(js_name = fileContentsResponseCallback)]
+            pub fn file_contents_response_callback(
+                &self,
+                callback: $crate::internal::web_sys::js_sys::Function,
+            ) -> Self {
+                Self($crate::SessionBuilder::file_contents_response_callback(
+                    &self.0, callback,
+                ))
+            }
+
+            #[wasm_bindgen(js_name = lockCallback)]
+            pub fn lock_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
+                Self($crate::SessionBuilder::lock_callback(&self.0, callback))
+            }
+
+            #[wasm_bindgen(js_name = unlockCallback)]
+            pub fn unlock_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
+                Self($crate::SessionBuilder::unlock_callback(&self.0, callback))
+            }
+
+            #[wasm_bindgen(js_name = locksExpiredCallback)]
+            pub fn locks_expired_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
+                Self($crate::SessionBuilder::locks_expired_callback(&self.0, callback))
             }
 
             pub fn extension(&self, ext: $crate::Extension) -> Self {

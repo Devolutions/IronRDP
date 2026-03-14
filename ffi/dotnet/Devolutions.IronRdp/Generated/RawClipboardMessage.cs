@@ -28,6 +28,15 @@ public partial struct ClipboardMessage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_get_send_initiate_paste", ExactSpelling = true)]
     public static unsafe extern ClipboardFormatId* GetSendInitiatePaste(ClipboardMessage* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_get_send_file_contents_request", ExactSpelling = true)]
+    public static unsafe extern FfiFileContentsRequest* GetSendFileContentsRequest(ClipboardMessage* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_get_send_file_contents_response", ExactSpelling = true)]
+    public static unsafe extern FfiFileContentsResponse* GetSendFileContentsResponse(ClipboardMessage* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_get_error", ExactSpelling = true)]
+    public static unsafe extern IronRdpError* GetError(ClipboardMessage* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ClipboardMessage* self);
 }

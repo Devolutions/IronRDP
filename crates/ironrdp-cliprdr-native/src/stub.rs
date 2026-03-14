@@ -96,4 +96,12 @@ impl CliprdrBackend for StubCliprdrBackend {
     fn on_request_format_list(&mut self) {
         debug!("on_request_format_list");
     }
+
+    fn now_ms(&self) -> u64 {
+        crate::native_now_ms()
+    }
+
+    fn elapsed_ms(&self, since: u64) -> u64 {
+        self.now_ms().saturating_sub(since)
+    }
 }

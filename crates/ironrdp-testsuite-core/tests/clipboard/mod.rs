@@ -1,4 +1,16 @@
+mod delayed_rendering;
+mod delayed_rendering_integration;
+mod file_contents_state_machine;
+mod file_contents_validation;
+mod file_list_format;
+mod file_transfer_capabilities;
 mod format;
+mod lock_lifecycle;
+mod lock_strategy;
+mod lock_timeout;
+mod path_sanitization;
+mod test_helpers;
+mod upload_and_cleanup;
 
 use expect_test::expect;
 use ironrdp_cliprdr::pdu::{
@@ -94,11 +106,11 @@ encode_decode_test! {
             0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
         ];
 
-    file_contents_request_data:
+    file_contents_request_range:
         ClipboardPdu::FileContentsRequest(FileContentsRequest {
             stream_id: 2,
             index: 1,
-            flags: FileContentsFlags::DATA,
+            flags: FileContentsFlags::RANGE,
             position: 0,
             requested_size: 65536,
             data_id: None,
@@ -415,6 +427,7 @@ fn file_list_pdu_ms() {
                         44,
                     ),
                     name: "File1.txt",
+                    relative_path: None,
                 },
                 FileDescriptor {
                     attributes: Some(
@@ -429,6 +442,7 @@ fn file_list_pdu_ms() {
                         10,
                     ),
                     name: "File2.txt",
+                    relative_path: None,
                 },
             ]
         "#]]

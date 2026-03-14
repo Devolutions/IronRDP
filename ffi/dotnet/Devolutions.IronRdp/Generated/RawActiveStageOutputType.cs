@@ -21,4 +21,5 @@ public enum ActiveStageOutputType
     PointerBitmap = 5,
     Terminate = 6,
     DeactivateAll = 7,
+    MultitransportRequest = 8,
 }

@@ -47,6 +47,14 @@ public partial class ConnectionActivationStateFinalized: IDisposable
         }
     }
 
+    public uint ShareId
+    {
+        get
+        {
+            return GetShareId();
+        }
+    }
+
     public ushort UserChannelId
     {
         get
@@ -91,6 +99,19 @@ public partial class ConnectionActivationStateFinalized: IDisposable
                 throw new ObjectDisposedException("ConnectionActivationStateFinalized");
             }
             ushort retVal = Raw.ConnectionActivationStateFinalized.GetUserChannelId(_inner);
+            return retVal;
+        }
+    }
+
+    public uint GetShareId()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionActivationStateFinalized");
+            }
+            uint retVal = Raw.ConnectionActivationStateFinalized.GetShareId(_inner);
             return retVal;
         }
     }

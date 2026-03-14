@@ -15,6 +15,7 @@ use gloo_net::websocket::futures::WebSocket;
 use iron_remote_desktop::{CursorStyle, DesktopSize, Extension, IronErrorKind};
 use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::cliprdr::backend::ClipboardMessage;
+use ironrdp::cliprdr::pdu::{FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::credssp::KerberosConfig;
 use ironrdp::connector::{self, ClientConnector, Credentials};
@@ -37,7 +38,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::canvas::Canvas;
 use crate::clipboard;
-use crate::clipboard::{ClipboardData, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
+use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
 use crate::error::IronError;
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
@@ -66,6 +67,13 @@ struct SessionBuilderInner {
     set_cursor_style_callback_context: Option<JsValue>,
     remote_clipboard_changed_callback: Option<js_sys::Function>,
     force_clipboard_update_callback: Option<js_sys::Function>,
+    // File transfer callbacks
+    files_available_callback: Option<js_sys::Function>,
+    file_contents_request_callback: Option<js_sys::Function>,
+    file_contents_response_callback: Option<js_sys::Function>,
+    lock_callback: Option<js_sys::Function>,
+    unlock_callback: Option<js_sys::Function>,
+    locks_expired_callback: Option<js_sys::Function>,
 
     use_display_control: bool,
     enable_credssp: bool,
@@ -94,6 +102,12 @@ impl Default for SessionBuilderInner {
             set_cursor_style_callback_context: None,
             remote_clipboard_changed_callback: None,
             force_clipboard_update_callback: None,
+            files_available_callback: None,
+            file_contents_request_callback: None,
+            file_contents_response_callback: None,
+            lock_callback: None,
+            unlock_callback: None,
+            locks_expired_callback: None,
 
             use_display_control: false,
             enable_credssp: true,
@@ -207,6 +221,171 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
+    /// Optional
+    ///
+    /// Called when remote copies files. The array contains metadata for each file available
+    /// for download. The clipboard is automatically locked when files are detected;
+    /// the clipDataId is provided as a second parameter to the callback.
+    ///
+    /// # Callback signature:
+    /// ```typescript
+    /// function callback(files: Array<{name: string, path?: string, size: number, lastModified: number, isDirectory: boolean}>, clipDataId?: number): void
+    /// ```
+    ///
+    /// ## Parameters
+    /// - `files`: Array of file metadata objects, each containing:
+    ///   - `name`: File basename (including extension, without directory path). Max 259 characters per MS-RDPECLIP spec.
+    ///   - `path`: Optional relative directory path within the copied collection (e.g., `"temp\\subdir"`). Uses `\` as separator per the wire protocol. Absent for root-level files.
+    ///   - `size`: File size in bytes. 0 indicates unknown size or empty file.
+    ///   - `lastModified`: Last write time as milliseconds since the Unix epoch (matching JavaScript's `Date.getTime()`). 0 indicates unknown.
+    ///   - `isDirectory`: Whether this entry represents a directory rather than a file.
+    /// - `clipDataId`: The lock ID for downloading files. Undefined if
+    ///   CAN_LOCK_CLIPDATA was not negotiated.
+    ///
+    /// ## Protocol Flow
+    /// This callback is triggered when the remote user copies files. The file list follows
+    /// [MS-RDPECLIP] 2.2.5.2 (FormatDataResponse with FileGroupDescriptorW format).
+    /// To download files, the client must:
+    /// 1. Use the `clipDataId` from this callback
+    /// 2. Send FileContentsRequest PDUs for each file (via `requestFileContents()`)
+    ///
+    /// Lock lifecycle (expiry, cleanup, Unlock PDUs) is managed automatically.
+    fn files_available_callback(&self, callback: js_sys::Function) -> Self {
+        self.0.borrow_mut().files_available_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Optional
+    ///
+    /// Called when remote requests file contents from client (upload). The callback should
+    /// read the requested file chunk and respond via submit_file_contents().
+    ///
+    /// # Callback signature:
+    /// ```typescript
+    /// function callback(request: {
+    ///     streamId: number,
+    ///     index: number,
+    ///     flags: number,
+    ///     position: number,
+    ///     size: number,
+    ///     dataId?: number
+    /// }): void
+    /// ```
+    ///
+    /// ## Parameters
+    /// - `streamId`: Unique identifier for this file transfer stream
+    /// - `index`: File index in the file list (0-based)
+    /// - `flags`: FileContentsFlags bitmask:
+    ///   - `0x1` (SIZE): Request file size (return 8-byte u64)
+    ///   - `0x2` (RANGE): Request byte range
+    /// - `position`: Byte offset for RANGE requests
+    /// - `size`: Number of bytes requested for RANGE requests
+    /// - `dataId`: Optional clipboard lock ID from LockClipData PDU
+    ///
+    /// ## Protocol Flow
+    /// This callback is triggered when the remote pastes files that the client previously copied.
+    /// Follows [MS-RDPECLIP] 2.2.5.3.1 (FileContentsRequest PDU).
+    /// The client should read the requested file chunk and respond via `submitFileContents()`.
+    fn file_contents_request_callback(&self, callback: js_sys::Function) -> Self {
+        self.0.borrow_mut().file_contents_request_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Optional
+    ///
+    /// Called when remote sends file contents to client (download). This is the response
+    /// to a previous file contents request initiated by the client.
+    ///
+    /// # Callback signature:
+    /// ```typescript
+    /// function callback(response: {streamId: number, isError: boolean, data: Uint8Array}): void
+    /// ```
+    ///
+    /// ## Parameters
+    /// - `streamId`: Unique identifier for this file transfer stream
+    /// - `isError`: If true, the request failed (data unavailable/access denied)
+    /// - `data`: Response data:
+    ///   - For SIZE requests: 8-byte little-endian u64
+    ///   - For RANGE requests: requested byte range
+    ///
+    /// ## Protocol Flow
+    /// This callback is triggered in response to client's FileContentsRequest.
+    /// Follows [MS-RDPECLIP] 2.2.5.3.2 (FileContentsResponse PDU).
+    fn file_contents_response_callback(&self, callback: js_sys::Function) -> Self {
+        self.0.borrow_mut().file_contents_response_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Optional
+    ///
+    /// Called when remote locks their clipboard for file transfer. The dataId associates
+    /// subsequent FileContentsRequest/Response cycles.
+    ///
+    /// # Callback signature:
+    /// ```typescript
+    /// function callback(dataId: number): void
+    /// ```
+    ///
+    /// ## Parameters
+    /// - `dataId`: Clipboard data ID that identifies the locked clipboard snapshot
+    ///
+    /// ## Protocol Flow
+    /// This callback is triggered when the remote sends a LockClipData PDU.
+    /// Follows [MS-RDPECLIP] 2.2.4.1. The clipboard remains locked until
+    /// UnlockClipData PDU received.
+    fn lock_callback(&self, callback: js_sys::Function) -> Self {
+        self.0.borrow_mut().lock_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Optional
+    ///
+    /// Called when remote unlocks their clipboard after file transfer completes or
+    /// when new clipboard content is copied (auto-unlock per MS-RDPECLIP spec).
+    ///
+    /// # Callback signature:
+    /// ```typescript
+    /// function callback(dataId: number): void
+    /// ```
+    ///
+    /// ## Parameters
+    /// - `dataId`: Clipboard data ID from the corresponding lock operation
+    ///
+    /// ## Protocol Flow
+    /// This callback is triggered when the remote sends an UnlockClipData PDU.
+    /// Follows [MS-RDPECLIP] 2.2.4.2.
+    fn unlock_callback(&self, callback: js_sys::Function) -> Self {
+        self.0.borrow_mut().unlock_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Sets a callback that is invoked when client-side clipboard locks expire.
+    ///
+    /// This callback is triggered when automatic cleanup removes locks that have
+    /// been inactive for too long or exceeded maximum lifetime. The locks have
+    /// already been unlocked by the time this notification is sent.
+    ///
+    /// ## Parameters
+    /// - `clipDataIds: Uint32Array` - Array of expired lock IDs
+    ///
+    /// ## Usage
+    /// Use this callback to:
+    /// - Clear any references to expired lock IDs
+    /// - Abort associated file transfers
+    /// - Update UI to reflect lock expiration
+    ///
+    /// ## Example
+    /// ```js
+    /// .locksExpiredCallback((clipDataIds) => {
+    ///     console.log(`Locks expired: ${clipDataIds}`);
+    ///     fileTransferManager.handleLocksExpired(clipDataIds);
+    /// })
+    /// ```
+    fn locks_expired_callback(&self, callback: js_sys::Function) -> Self {
+        self.0.borrow_mut().locks_expired_callback = Some(callback);
+        self.clone()
+    }
+
     fn extension(&self, ext: Extension) -> Self {
         iron_remote_desktop::extension_match! {
             match ext;
@@ -246,6 +425,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             set_cursor_style_callback_context,
             remote_clipboard_changed_callback,
             force_clipboard_update_callback,
+            files_available_callback,
+            file_contents_request_callback,
+            file_contents_response_callback,
+            lock_callback,
+            unlock_callback,
+            locks_expired_callback,
             outbound_message_size_limit,
         );
 
@@ -275,6 +460,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 .context("set_cursor_style_callback_context missing")?;
             remote_clipboard_changed_callback = inner.remote_clipboard_changed_callback.clone();
             force_clipboard_update_callback = inner.force_clipboard_update_callback.clone();
+            files_available_callback = inner.files_available_callback.clone();
+            file_contents_request_callback = inner.file_contents_request_callback.clone();
+            file_contents_response_callback = inner.file_contents_response_callback.clone();
+            lock_callback = inner.lock_callback.clone();
+            unlock_callback = inner.unlock_callback.clone();
+            locks_expired_callback = inner.locks_expired_callback.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
         }
 
@@ -293,6 +484,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 clipboard::JsClipboardCallbacks {
                     on_remote_clipboard_changed: callback,
                     on_force_clipboard_update: force_clipboard_update_callback,
+                    on_files_available: files_available_callback,
+                    on_file_contents_request: file_contents_request_callback,
+                    on_file_contents_response: file_contents_response_callback,
+                    on_lock: lock_callback,
+                    on_unlock: unlock_callback,
+                    on_locks_expired: locks_expired_callback,
                 },
             )
         });
@@ -512,7 +709,7 @@ impl iron_remote_desktop::Session for Session {
 
                     match event {
                         RdpInputEvent::Cliprdr(message) => {
-                            if let Some(cliprdr) = active_stage.get_svc_processor::<CliprdrClient>() {
+                            if let Some(cliprdr) = active_stage.get_svc_processor_mut::<CliprdrClient>() {
                                 if let Some(svc_messages) = match message {
                                     ClipboardMessage::SendInitiateCopy(formats) => Some(
                                         cliprdr.initiate_copy(&formats)
@@ -526,14 +723,6 @@ impl iron_remote_desktop::Session for Session {
                                         cliprdr.initiate_paste(format)
                                             .context("CLIPRDR initiate paste")?
                                     ),
-                                    ClipboardMessage::SendLockClipboard { clip_data_id } => Some(
-                                        cliprdr.lock_clipboard(clip_data_id)
-                                            .context("CLIPRDR lock clipboard")?
-                                    ),
-                                    ClipboardMessage::SendUnlockClipboard { clip_data_id } => Some(
-                                        cliprdr.unlock_clipboard(clip_data_id)
-                                            .context("CLIPRDR unlock clipboard")?
-                                    ),
                                     ClipboardMessage::SendFileContentsRequest(request) => Some(
                                         cliprdr.request_file_contents(request)
                                             .context("CLIPRDR request file contents")?
@@ -543,7 +732,7 @@ impl iron_remote_desktop::Session for Session {
                                             .context("CLIPRDR submit file contents")?
                                     ),
                                     ClipboardMessage::Error(e) => {
-                                        error!("Clipboard backend error: {}", e);
+                                        error!(error = %e, "Clipboard backend error");
                                         None
                                     }
                                 } {
@@ -560,11 +749,96 @@ impl iron_remote_desktop::Session for Session {
                             }
                         }
                         RdpInputEvent::ClipboardBackend(event) => {
-                            if let Some(clipboard) = &mut clipboard {
-                                clipboard.process_event(event)?;
+                            use crate::clipboard::WasmClipboardBackendMessage;
+
+                            // Handle messages that need direct cliprdr access
+                            match event {
+                                WasmClipboardBackendMessage::FileContentsRequestSend { stream_id, index, flags, position, size, clip_data_id } => {
+                                    if let Some(cliprdr) = active_stage.get_svc_processor_mut::<CliprdrClient>() {
+                                        let request = FileContentsRequest {
+                                            stream_id,
+                                            index,
+                                            flags,
+                                            position,
+                                            requested_size: size,
+                                            data_id: clip_data_id,
+                                        };
+                                        match cliprdr.request_file_contents(request) {
+                                            Ok(svc_messages) => {
+                                                let frame = active_stage.process_svc_processor_messages(svc_messages)?;
+                                                vec![ActiveStageOutput::ResponseFrame(frame)]
+                                            }
+                                            Err(e) => {
+                                                error!(error = %e, "File contents request failed");
+                                                Vec::new()
+                                            }
+                                        }
+                                    } else {
+                                        warn!("Request file contents received, but Cliprdr is not available");
+                                        Vec::new()
+                                    }
+                                }
+                                WasmClipboardBackendMessage::FileContentsResponseSend { stream_id, is_error, data } => {
+                                    if let Some(cliprdr) = active_stage.get_svc_processor_mut::<CliprdrClient>() {
+                                        let response = if is_error {
+                                            FileContentsResponse::new_error(stream_id)
+                                        } else {
+                                            FileContentsResponse::new_data_response(stream_id, data)
+                                        };
+                                        match cliprdr.submit_file_contents(response) {
+                                            Ok(svc_messages) => {
+                                                let frame = active_stage.process_svc_processor_messages(svc_messages)?;
+                                                vec![ActiveStageOutput::ResponseFrame(frame)]
+                                            }
+                                            Err(e) => {
+                                                error!(error = %e, "File contents submit failed");
+                                                Vec::new()
+                                            }
+                                        }
+                                    } else {
+                                        warn!("Submit file contents received, but Cliprdr is not available");
+                                        Vec::new()
+                                    }
+                                }
+                                WasmClipboardBackendMessage::InitiateFileCopy { files } => {
+                                    if let Some(cliprdr) = active_stage.get_svc_processor_mut::<CliprdrClient>() {
+                                        // Convert FileMetadata to FileDescriptor using the
+                                        // validated conversion that checks name length/emptiness
+                                        // and sets proper file attributes.
+                                        let file_descriptors: Vec<FileDescriptor> = files
+                                            .into_iter()
+                                            .filter_map(|f| match f.to_file_descriptor() {
+                                                Ok(desc) => Some(desc),
+                                                Err(e) => {
+                                                    warn!(error = format!("{e:#}"), "Skipping file with invalid metadata");
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+
+                                        match cliprdr.initiate_file_copy(file_descriptors) {
+                                            Ok(svc_messages) => {
+                                                let frame = active_stage.process_svc_processor_messages(svc_messages)?;
+                                                vec![ActiveStageOutput::ResponseFrame(frame)]
+                                            }
+                                            Err(e) => {
+                                                error!(error = %e, "Initiate file copy failed");
+                                                Vec::new()
+                                            }
+                                        }
+                                    } else {
+                                        warn!("Initiate file copy received, but Cliprdr is not available");
+                                        Vec::new()
+                                    }
+                                }
+                                // All other messages are forwarded to clipboard backend
+                                other => {
+                                    if let Some(clipboard) = &mut clipboard {
+                                        clipboard.process_event(other)?;
+                                    }
+                                    Vec::new()
+                                }
                             }
-                            // No RDP output frames for backend event processing
-                            Vec::new()
                         }
                         RdpInputEvent::FastPath(events) => {
                             active_stage.process_fastpath_input(&mut image, &events)
@@ -692,7 +966,7 @@ impl iron_remote_desktop::Session for Session {
                             encoder.set_compression(png::Compression::Fast);
                             let mut writer = encoder.write_header().context("PNG encoder header write failed")?;
                             writer
-                                .write_image_data(rgba_buffer.as_ref())
+                                .write_image_data(&rgba_buffer)
                                 .context("failed to encode pointer PNG")?;
                         }
 
@@ -845,14 +1119,18 @@ impl iron_remote_desktop::Session for Session {
         physical_width: Option<u32>,
         physical_height: Option<u32>,
     ) {
-        self.input_events_tx
+        if self
+            .input_events_tx
             .unbounded_send(RdpInputEvent::Resize {
                 width,
                 height,
                 scale_factor,
                 physical_size: physical_width.and_then(|width| physical_height.map(|height| (width, height))),
             })
-            .expect("send resize event to writer task");
+            .is_err()
+        {
+            warn!("Failed to send resize event, receiver is closed");
+        }
     }
 
     fn supports_unicode_keyboard_shortcuts(&self) -> bool {
@@ -866,6 +1144,119 @@ impl iron_remote_desktop::Session for Session {
             IronError::from(anyhow::Error::msg(format!("unknown extension: {}", ext.ident())))
                 .with_kind(IronErrorKind::General),
         )
+    }
+
+    fn request_file_contents(
+        &self,
+        stream_id: u32,
+        file_index: i32,
+        flags: u32,
+        position: u64,
+        size: u32,
+        clip_data_id: Option<u32>,
+    ) -> Result<(), Self::Error> {
+        self.input_events_tx
+            .unbounded_send(RdpInputEvent::ClipboardBackend(
+                WasmClipboardBackendMessage::FileContentsRequestSend {
+                    stream_id,
+                    index: file_index,
+                    flags: FileContentsFlags::from_bits_truncate(flags),
+                    position,
+                    size,
+                    clip_data_id,
+                },
+            ))
+            .context("Send file contents request")
+            .map_err(Into::into)
+    }
+
+    fn submit_file_contents(&self, stream_id: u32, is_error: bool, data: Vec<u8>) -> Result<(), Self::Error> {
+        self.input_events_tx
+            .unbounded_send(RdpInputEvent::ClipboardBackend(
+                WasmClipboardBackendMessage::FileContentsResponseSend {
+                    stream_id,
+                    is_error,
+                    data,
+                },
+            ))
+            .context("Send file contents response")
+            .map_err(Into::into)
+    }
+
+    fn initiate_file_copy(&self, files: JsValue) -> Result<(), Self::Error> {
+        // Convert JsValue array to Vec<FileMetadata>
+        let js_array = js_sys::Array::from(&files);
+        #[expect(
+            clippy::as_conversions,
+            reason = "JavaScript array length is u32, safe to convert to usize"
+        )]
+        let mut file_list = Vec::with_capacity(js_array.length() as usize);
+
+        for i in 0..js_array.length() {
+            let file_obj = js_array.get(i);
+            let name = js_sys::Reflect::get(&file_obj, &JsValue::from_str("name"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .context("File name is required")?;
+            let size_f64 = js_sys::Reflect::get(&file_obj, &JsValue::from_str("size"))
+                .ok()
+                .and_then(|v| v.as_f64())
+                .context("file size is required")?;
+            // JS numbers are f64; reject fractional or out-of-safe-integer-range values
+            // to avoid silent truncation when casting to u64
+            const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+            if !size_f64.is_finite() || size_f64 < 0.0 || size_f64.fract() != 0.0 || size_f64 > MAX_SAFE_INTEGER {
+                return Err(anyhow::anyhow!(
+                    "file size must be a finite non-negative integer <= Number.MAX_SAFE_INTEGER (got: {size_f64})"
+                )
+                .into());
+            }
+            #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let size = size_f64 as u64;
+
+            let last_modified_f64 = js_sys::Reflect::get(&file_obj, &JsValue::from_str("lastModified"))
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            // Store as JS timestamp (ms since Unix epoch). FileMetadata::to_file_descriptor()
+            // handles the conversion to Windows FILETIME for the wire format.
+            // Reject fractional or out-of-range values to avoid silent truncation.
+            const MAX_SAFE_TS: f64 = 9_007_199_254_740_991.0;
+            #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let last_modified = if last_modified_f64.is_finite()
+                && (0.0..=MAX_SAFE_TS).contains(&last_modified_f64)
+                && last_modified_f64.fract() == 0.0
+            {
+                last_modified_f64 as u64
+            } else {
+                0
+            };
+
+            let path = js_sys::Reflect::get(&file_obj, &JsValue::from_str("path"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .filter(|s| !s.is_empty());
+
+            let is_directory = js_sys::Reflect::get(&file_obj, &JsValue::from_str("isDirectory"))
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            file_list.push(FileMetadata {
+                name,
+                path,
+                size,
+                last_modified,
+                is_directory,
+            });
+        }
+
+        self.input_events_tx
+            .unbounded_send(RdpInputEvent::ClipboardBackend(
+                WasmClipboardBackendMessage::InitiateFileCopy { files: file_list },
+            ))
+            .context("Send initiate file copy")
+            .map_err(Into::into)
     }
 }
 
@@ -1193,4 +1584,371 @@ where
 #[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Test helpers
+    fn create_test_input_channel() -> (
+        mpsc::UnboundedSender<RdpInputEvent>,
+        mpsc::UnboundedReceiver<RdpInputEvent>,
+    ) {
+        mpsc::unbounded()
+    }
+
+    #[test]
+    fn test_request_file_contents_parameter_marshalling() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        // Send request with various parameters
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::FileContentsRequestSend {
+                stream_id: 123,
+                index: 5,
+                flags: FileContentsFlags::RANGE,
+                position: 1024,
+                size: 4096,
+                clip_data_id: Some(42),
+            },
+        ))
+        .unwrap();
+
+        // Verify message parameters
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::FileContentsRequestSend {
+                stream_id,
+                index,
+                flags,
+                position,
+                size,
+                clip_data_id,
+            })) => {
+                assert_eq!(stream_id, 123);
+                assert_eq!(index, 5);
+                assert_eq!(flags, FileContentsFlags::RANGE);
+                assert_eq!(position, 1024);
+                assert_eq!(size, 4096);
+                assert_eq!(clip_data_id, Some(42));
+            }
+            _ => panic!("Expected FileContentsRequestSend with correct parameters"),
+        }
+    }
+
+    #[test]
+    fn test_request_file_contents_size_flag() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        // Send SIZE request
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::FileContentsRequestSend {
+                stream_id: 1,
+                index: 0,
+                flags: FileContentsFlags::SIZE,
+                position: 0,
+                size: 8,
+                clip_data_id: Some(1),
+            },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::FileContentsRequestSend {
+                flags, ..
+            })) => {
+                assert_eq!(flags, FileContentsFlags::SIZE);
+            }
+            _ => panic!("Expected SIZE request"),
+        }
+    }
+
+    #[test]
+    fn test_request_file_contents_without_clip_data_id() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        // Send request without clip_data_id
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::FileContentsRequestSend {
+                stream_id: 10,
+                index: 0,
+                flags: FileContentsFlags::RANGE,
+                position: 0,
+                size: 1024,
+                clip_data_id: None,
+            },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::FileContentsRequestSend {
+                clip_data_id,
+                ..
+            })) => {
+                assert_eq!(clip_data_id, None);
+            }
+            _ => panic!("Expected request without clip_data_id"),
+        }
+    }
+
+    #[test]
+    fn test_submit_file_contents_success_response() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        let data = vec![1, 2, 3, 4, 5];
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::FileContentsResponseSend {
+                stream_id: 42,
+                is_error: false,
+                data: data.clone(),
+            },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::FileContentsResponseSend {
+                stream_id,
+                is_error,
+                data: received_data,
+            })) => {
+                assert_eq!(stream_id, 42);
+                assert!(!is_error);
+                assert_eq!(received_data, data);
+            }
+            _ => panic!("Expected FileContentsResponseSend success"),
+        }
+    }
+
+    #[test]
+    fn test_submit_file_contents_error_response() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::FileContentsResponseSend {
+                stream_id: 99,
+                is_error: true,
+                data: vec![],
+            },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::FileContentsResponseSend {
+                is_error,
+                ..
+            })) => {
+                assert!(is_error);
+            }
+            _ => panic!("Expected error response"),
+        }
+    }
+
+    #[test]
+    fn test_submit_file_contents_size_response() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        // 8-byte size response (little-endian)
+        let size_data = vec![0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]; // 4096 bytes
+
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::FileContentsResponseSend {
+                stream_id: 1,
+                is_error: false,
+                data: size_data.clone(),
+            },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::FileContentsResponseSend {
+                data, ..
+            })) => {
+                assert_eq!(data.len(), 8);
+                assert_eq!(data, size_data);
+            }
+            _ => panic!("Expected size response"),
+        }
+    }
+
+    #[test]
+    fn test_initiate_file_copy_message() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        let files = vec![
+            FileMetadata {
+                name: "file1.txt".to_owned(),
+                path: None,
+                size: 1024,
+                last_modified: 1_700_000_000_000,
+                is_directory: false,
+            },
+            FileMetadata {
+                name: "file2.pdf".to_owned(),
+                path: Some("docs".to_owned()),
+                size: 2048,
+                last_modified: 1_700_000_001_000,
+                is_directory: false,
+            },
+        ];
+
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::InitiateFileCopy { files },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::InitiateFileCopy {
+                files: received_files,
+            })) => {
+                assert_eq!(received_files.len(), 2);
+                assert_eq!(received_files[0].name, "file1.txt");
+                assert_eq!(received_files[0].path, None);
+                assert_eq!(received_files[0].size, 1024);
+                assert_eq!(received_files[1].name, "file2.pdf");
+                assert_eq!(received_files[1].path, Some("docs".to_owned()));
+                assert_eq!(received_files[1].size, 2048);
+            }
+            _ => panic!("Expected InitiateFileCopy message"),
+        }
+    }
+
+    #[test]
+    fn test_large_position_value_marshalling() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        // Test with large position value (near u64 max)
+        let large_position = u64::MAX - 1000;
+
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::FileContentsRequestSend {
+                stream_id: 1,
+                index: 0,
+                flags: FileContentsFlags::RANGE,
+                position: large_position,
+                size: 1024,
+                clip_data_id: Some(1),
+            },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::FileContentsRequestSend {
+                position,
+                ..
+            })) => {
+                assert_eq!(position, large_position);
+            }
+            _ => panic!("Expected correct position marshalling"),
+        }
+    }
+
+    #[test]
+    fn test_zero_size_file() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        let files = vec![FileMetadata {
+            name: "empty.txt".to_owned(),
+            path: None,
+            size: 0,
+            last_modified: 0,
+            is_directory: false,
+        }];
+
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::InitiateFileCopy { files },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::InitiateFileCopy {
+                files: received_files,
+            })) => {
+                assert_eq!(received_files[0].size, 0);
+            }
+            _ => panic!("Expected zero-size file"),
+        }
+    }
+
+    #[test]
+    fn test_file_with_special_characters_in_name() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        let files = vec![FileMetadata {
+            name: "test file (1) [copy].txt".to_owned(),
+            path: None,
+            size: 100,
+            last_modified: 0,
+            is_directory: false,
+        }];
+
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::InitiateFileCopy { files },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::InitiateFileCopy {
+                files: received_files,
+            })) => {
+                assert_eq!(received_files[0].name, "test file (1) [copy].txt");
+            }
+            _ => panic!("Expected file with special characters"),
+        }
+    }
+
+    #[test]
+    fn test_empty_file_list() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        let files: Vec<FileMetadata> = vec![];
+
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::InitiateFileCopy { files },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::InitiateFileCopy {
+                files: received_files,
+            })) => {
+                assert!(received_files.is_empty());
+            }
+            _ => panic!("Expected empty file list"),
+        }
+    }
+
+    #[test]
+    fn test_flags_bits_conversion() {
+        let (tx, mut rx) = create_test_input_channel();
+
+        // Test SIZE flag (0x1)
+        let size_flags = FileContentsFlags::SIZE;
+        assert_eq!(size_flags.bits(), 0x1);
+
+        // Test DATA flag (0x2)
+        let data_flags = FileContentsFlags::RANGE;
+        assert_eq!(data_flags.bits(), 0x2);
+
+        // Test that flags convert correctly through the channel
+        tx.unbounded_send(RdpInputEvent::ClipboardBackend(
+            WasmClipboardBackendMessage::FileContentsRequestSend {
+                stream_id: 1,
+                index: 0,
+                flags: FileContentsFlags::from_bits_truncate(0x1),
+                position: 0,
+                size: 8,
+                clip_data_id: None,
+            },
+        ))
+        .unwrap();
+
+        match rx.try_recv() {
+            Ok(RdpInputEvent::ClipboardBackend(WasmClipboardBackendMessage::FileContentsRequestSend {
+                flags, ..
+            })) => {
+                assert_eq!(flags.bits(), 0x1);
+            }
+            _ => panic!("Expected correct flags conversion"),
+        }
+    }
 }

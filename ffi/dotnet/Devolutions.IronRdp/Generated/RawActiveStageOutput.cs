@@ -37,6 +37,16 @@ public partial struct ActiveStageOutput
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_deactivate_all", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxConnectionActivationSequenceBoxIronRdpError GetDeactivateAll(ActiveStageOutput* self);
 
+    /// <summary>
+    /// Returns the multitransport request ID and requested protocol.
+    /// </summary>
+    /// <remarks>
+    /// The security cookie is intentionally not exposed — it is sensitive
+    /// and only needed internally for transport binding.
+    /// </remarks>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_multitransport_request", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultMultitransportRequestBoxIronRdpError GetMultitransportRequest(ActiveStageOutput* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ActiveStageOutput* self);
 }

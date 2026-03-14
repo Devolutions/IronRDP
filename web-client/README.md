@@ -2,6 +2,12 @@
 
 IronRDP also supports the web browser as a first class target.
 
+## Prerequisites
+
+- Node.js >= 24 LTS (type definitions target `@types/node` ^24.0.0)
+
+## Overview
+
 See the [iron-remote-desktop](./iron-remote-desktop) for the reusable Web Component, and [iron-svelte-client](./iron-svelte-client) for a demonstration.
 
 Note that the demonstration client is not intended to be used in production as-is.

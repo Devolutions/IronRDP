@@ -17,13 +17,21 @@ import type { Config } from './Config';
 import type { Extension } from '../interfaces/Extension';
 import { Observable } from '../lib/Observable';
 import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
+import type { FileInfo, FileContentsRequest, FileContentsResponse } from '../interfaces/FileTransfer';
+import { FileTransferManager } from '../FileTransferManager';
+import type { FileTransferManagerOptions } from '../FileTransferManager';
 
 type OnRemoteClipboardChanged = (data: ClipboardData) => void;
-type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
 type OnCanvasResized = () => void;
 type OnWarning = (data: string) => void;
 type OnClipboardRemoteUpdate = () => void;
+type OnFilesAvailable = (files: FileInfo[]) => void;
+type OnFileContentsRequest = (request: FileContentsRequest) => void;
+type OnFileContentsResponse = (response: FileContentsResponse) => void;
+type OnLock = (dataId: number) => void;
+type OnUnlock = (dataId: number) => void;
+type OnLocksExpired = (clipDataIds: Uint32Array) => void;
 
 export class RemoteDesktopService {
     private module: RemoteDesktopModule;
@@ -31,11 +39,18 @@ export class RemoteDesktopService {
     private keyboardUnicodeMode: boolean = false;
     private backendSupportsUnicodeKeyboardShortcuts: boolean | undefined = undefined;
     private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
-    private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
     private onCanvasResized?: OnCanvasResized;
     private onWarningCallback?: OnWarning;
     private onClipboardRemoteUpdate?: OnClipboardRemoteUpdate;
+    // File transfer callbacks
+    private onFilesAvailable?: OnFilesAvailable;
+    private onFileContentsRequest?: OnFileContentsRequest;
+    private onFileContentsResponse?: OnFileContentsResponse;
+    private onLock?: OnLock;
+    private onUnlock?: OnUnlock;
+    private onLocksExpired?: OnLocksExpired;
+    private fileTransferManager?: FileTransferManager;
     private cursorHasOverride: boolean = false;
     private lastCursorStyle: string = 'default';
     private enableClipboard: boolean = true;
@@ -102,6 +117,56 @@ export class RemoteDesktopService {
         this.onClipboardRemoteUpdate = callback;
     }
 
+    /// Callback which is called when remote copies files (download available).
+    setOnFilesAvailable(callback: OnFilesAvailable) {
+        this.onFilesAvailable = callback;
+    }
+
+    /// Callback which is called when remote requests file contents from client (upload).
+    setOnFileContentsRequest(callback: OnFileContentsRequest) {
+        this.onFileContentsRequest = callback;
+    }
+
+    /// Callback which is called when remote sends file contents to client (download).
+    setOnFileContentsResponse(callback: OnFileContentsResponse) {
+        this.onFileContentsResponse = callback;
+    }
+
+    /// Callback which is called when remote locks their clipboard for file transfer.
+    setOnLock(callback: OnLock) {
+        this.onLock = callback;
+    }
+
+    /// Callback which is called when remote unlocks their clipboard after file transfer.
+    setOnUnlock(callback: OnUnlock) {
+        this.onUnlock = callback;
+    }
+
+    /// Callback which is called when client-side clipboard locks expire due to inactivity timeout.
+    setOnLocksExpired(callback: OnLocksExpired) {
+        this.onLocksExpired = callback;
+    }
+
+    /**
+     * Enable file transfer support. Must be called before connect().
+     * Returns a FileTransferManager that becomes active after connect() resolves.
+     * Implicitly enables clipboard (required for file transfer protocol).
+     *
+     * When a FileTransferManager is active, it takes ownership of all file transfer
+     * callbacks on the SessionBuilder. Individual file transfer callbacks set via
+     * setOnFilesAvailable, setOnFileContentsRequest, etc. will be ignored.
+     *
+     * @param options - Optional configuration for the FileTransferManager
+     * @returns FileTransferManager instance ready for event handler registration
+     */
+    enableFileTransfer(options?: FileTransferManagerOptions): FileTransferManager {
+        // Dispose previous manager to prevent resource leaks if called multiple times
+        this.fileTransferManager?.dispose();
+        this.fileTransferManager = new FileTransferManager(options);
+        this.enableClipboard = true;
+        return this.fileTransferManager;
+    }
+
     mouseIn(event: MouseEvent) {
         this.syncModifier(event);
     }
@@ -115,6 +180,7 @@ export class RemoteDesktopService {
     }
 
     shutdown() {
+        this.fileTransferManager?.dispose();
         this.session?.shutdown();
     }
 
@@ -157,11 +223,32 @@ export class RemoteDesktopService {
         if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
             sessionBuilder.remoteClipboardChangedCallback(this.onRemoteClipboardChanged);
         }
-        if (this.onRemoteReceivedFormatList != null && this.enableClipboard) {
-            sessionBuilder.remoteReceivedFormatListCallback(this.onRemoteReceivedFormatList);
-        }
         if (this.onForceClipboardUpdate != null && this.enableClipboard) {
             sessionBuilder.forceClipboardUpdateCallback(this.onForceClipboardUpdate);
+        }
+        if (this.fileTransferManager != null && this.enableClipboard) {
+            // FileTransferManager takes ownership of all file transfer callbacks
+            // and wraps connect() to automatically capture the Session.
+            FileTransferManager.registerCallbacks(sessionBuilder, this.fileTransferManager);
+        } else {
+            if (this.onFilesAvailable != null && this.enableClipboard) {
+                sessionBuilder.filesAvailableCallback(this.onFilesAvailable);
+            }
+            if (this.onFileContentsRequest != null && this.enableClipboard) {
+                sessionBuilder.fileContentsRequestCallback(this.onFileContentsRequest);
+            }
+            if (this.onFileContentsResponse != null && this.enableClipboard) {
+                sessionBuilder.fileContentsResponseCallback(this.onFileContentsResponse);
+            }
+            if (this.onLock != null && this.enableClipboard) {
+                sessionBuilder.lockCallback(this.onLock);
+            }
+            if (this.onUnlock != null && this.enableClipboard) {
+                sessionBuilder.unlockCallback(this.onUnlock);
+            }
+            if (this.onLocksExpired != null && this.enableClipboard) {
+                sessionBuilder.locksExpiredCallback(this.onLocksExpired);
+            }
         }
         if (this.onCanvasResized != null) {
             sessionBuilder.canvasResizedCallback(this.onCanvasResized);
@@ -208,6 +295,12 @@ export class RemoteDesktopService {
                 break;
             case SpecialCombination.META:
                 this.sendMeta();
+                break;
+            case SpecialCombination.CTRL_C:
+                this.sendCtrlC();
+                break;
+            case SpecialCombination.CTRL_V:
+                this.sendCtrlV();
                 break;
         }
     }
@@ -477,6 +570,30 @@ export class RemoteDesktopService {
         this.doTransactionFromDeviceEvents([
             this.module.DeviceEvent.keyPressed(meta),
             this.module.DeviceEvent.keyReleased(meta),
+        ]);
+    }
+
+    private sendCtrlC() {
+        const ctrl = parseInt('0x001D', 16);
+        const c = parseInt('0x002E', 16);
+
+        this.doTransactionFromDeviceEvents([
+            this.module.DeviceEvent.keyPressed(ctrl),
+            this.module.DeviceEvent.keyPressed(c),
+            this.module.DeviceEvent.keyReleased(c),
+            this.module.DeviceEvent.keyReleased(ctrl),
+        ]);
+    }
+
+    private sendCtrlV() {
+        const ctrl = parseInt('0x001D', 16);
+        const v = parseInt('0x002F', 16);
+
+        this.doTransactionFromDeviceEvents([
+            this.module.DeviceEvent.keyPressed(ctrl),
+            this.module.DeviceEvent.keyPressed(v),
+            this.module.DeviceEvent.keyReleased(v),
+            this.module.DeviceEvent.keyReleased(ctrl),
         ]);
     }
 }
