@@ -248,3 +248,125 @@ fn test_frame_flow_control() {
     let frame3 = server.send_avc420_frame(surface_id, &h264_data, &regions, 33);
     assert!(frame3.is_none());
 }
+
+// ============================================================================
+// QoE Statistics Tests
+// ============================================================================
+
+#[test]
+fn test_qoe_snapshot_none_before_data() {
+    let handler = Box::new(TestHandler::new());
+    let server = GraphicsPipelineServer::new(handler);
+
+    // No QoE reports yet.
+    assert!(server.qoe_snapshot().is_none());
+}
+
+#[test]
+fn test_qoe_snapshot_after_frame_ack() {
+    use ironrdp_egfx::pdu::{FrameAcknowledgePdu, QueueDepth};
+
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    // Negotiate capabilities.
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    // Create surface and send a frame.
+    let surface_id = server.create_surface(1920, 1080).unwrap();
+    server.drain_output();
+
+    let h264_data = vec![0x00, 0x00, 0x00, 0x01, 0x67];
+    let regions = vec![Avc420Region::full_frame(1920, 1080, 22)];
+    let frame_id = server.send_avc420_frame(surface_id, &h264_data, &regions, 0);
+    assert!(frame_id.is_some());
+
+    // Simulate client frame acknowledgment.
+    let ack_pdu = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        frame_id: frame_id.unwrap(),
+        queue_depth: QueueDepth::AvailableBytes(1),
+        total_frames_decoded: 1,
+    });
+    let ack_payload = encode_pdu(&ack_pdu);
+    let _output = server.process(0, &ack_payload).expect("process failed");
+
+    // QoE snapshot should now have RTT data (no QoE reports, but RTT from ack).
+    let snapshot = server.qoe_snapshot();
+    assert!(snapshot.is_some());
+
+    let snap = snapshot.unwrap();
+    assert_eq!(snap.total_rtt_samples, 1);
+    // RTT should be some small value (frame was just sent).
+    assert!(snap.avg_rtt_ms < 1000.0);
+    // No QoE reports yet.
+    assert_eq!(snap.total_qoe_reports, 0);
+}
+
+#[test]
+fn test_qoe_snapshot_after_qoe_report() {
+    use ironrdp_egfx::pdu::QoeFrameAcknowledgePdu;
+
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    // Negotiate capabilities (V10 for QoE support).
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    // Simulate QoE report.
+    let qoe_pdu = GfxPdu::QoeFrameAcknowledge(QoeFrameAcknowledgePdu {
+        frame_id: 0,
+        timestamp: 12345,
+        time_diff_se: 100,
+        time_diff_dr: 4500,
+    });
+    let qoe_payload = encode_pdu(&qoe_pdu);
+    let _output = server.process(0, &qoe_payload).expect("process failed");
+
+    let snapshot = server.qoe_snapshot();
+    assert!(snapshot.is_some());
+
+    let snap = snapshot.unwrap();
+    assert_eq!(snap.total_qoe_reports, 1);
+    assert_eq!(snap.latest_decode_render_us, 4500);
+    assert!((snap.avg_decode_render_us - 4500.0).abs() < 0.1);
+    assert_eq!(snap.min_decode_render_us, 4500);
+    assert_eq!(snap.max_decode_render_us, 4500);
+}
+
+#[test]
+fn test_qoe_reset() {
+    use ironrdp_egfx::pdu::QoeFrameAcknowledgePdu;
+
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    // Negotiate.
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    // Add a QoE report.
+    let qoe_pdu = GfxPdu::QoeFrameAcknowledge(QoeFrameAcknowledgePdu {
+        frame_id: 0,
+        timestamp: 1000,
+        time_diff_se: 50,
+        time_diff_dr: 3000,
+    });
+    let qoe_payload = encode_pdu(&qoe_pdu);
+    let _output = server.process(0, &qoe_payload).expect("process failed");
+    assert!(server.qoe_snapshot().is_some());
+
+    // Reset clears all statistics.
+    server.reset_qoe();
+    assert!(server.qoe_snapshot().is_none());
+}
