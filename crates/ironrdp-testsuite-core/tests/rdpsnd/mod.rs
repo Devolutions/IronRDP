@@ -1,3 +1,5 @@
+mod client;
+
 use std::borrow::Cow;
 
 use ironrdp_rdpsnd::pdu;

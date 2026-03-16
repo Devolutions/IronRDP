@@ -47,6 +47,7 @@ ironrdp-str.path = "../ironrdp-str"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
+ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-session = { path = "../ironrdp-session", features = ["qoi"] }
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
