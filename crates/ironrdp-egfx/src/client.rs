@@ -926,473 +926,56 @@ fn crop_decoded_frame(
     cropped
 }
 
+/// Unit tests that require access to private fields (state, surfaces, frame tracking).
+/// Integration tests exercising the public DVC API are in ironrdp-testsuite-core/tests/egfx/client.rs.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Test handler that records calls
-    struct TestHandler {
-        caps_confirmed: bool,
-        surfaces_created: Vec<u16>,
-        surfaces_deleted: Vec<u16>,
-        surfaces_mapped: Vec<(u16, u32, u32)>,
-        bitmaps_received: Vec<(u16, Codec1Type)>,
-        frames_completed: Vec<u32>,
-        reset_count: u32,
-        closed: bool,
-        unhandled: Vec<u16>, // codec_id values for unhandled WireToSurface1
-    }
-
-    impl TestHandler {
-        fn new() -> Self {
-            Self {
-                caps_confirmed: false,
-                surfaces_created: Vec::new(),
-                surfaces_deleted: Vec::new(),
-                surfaces_mapped: Vec::new(),
-                bitmaps_received: Vec::new(),
-                frames_completed: Vec::new(),
-                reset_count: 0,
-                closed: false,
-                unhandled: Vec::new(),
-            }
-        }
-    }
-
+    struct TestHandler;
     impl GraphicsPipelineHandler for TestHandler {
-        fn on_capabilities_confirmed(&mut self, _caps: &CapabilitySet) {
-            self.caps_confirmed = true;
-        }
-
-        fn on_reset_graphics(&mut self, _width: u32, _height: u32) {
-            self.reset_count += 1;
-        }
-
-        fn on_surface_created(&mut self, surface: &Surface) {
-            self.surfaces_created.push(surface.id);
-        }
-
-        fn on_surface_deleted(&mut self, surface_id: u16) {
-            self.surfaces_deleted.push(surface_id);
-        }
-
-        fn on_surface_mapped(&mut self, surface_id: u16, origin_x: u32, origin_y: u32) {
-            self.surfaces_mapped.push((surface_id, origin_x, origin_y));
-        }
-
-        fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
-            self.bitmaps_received.push((update.surface_id, update.codec_id));
-        }
-
-        fn on_frame_complete(&mut self, frame_id: u32) {
-            self.frames_completed.push(frame_id);
-        }
-
-        fn on_close(&mut self) {
-            self.closed = true;
-        }
-
-        fn on_unhandled_pdu(&mut self, pdu: &GfxPdu) {
-            if let GfxPdu::WireToSurface1(w) = pdu {
-                self.unhandled.push(w.codec_id.into());
-            }
-        }
-    }
-
-    /// Mock decoder that returns a solid-color frame
-    struct MockH264Decoder;
-
-    impl H264Decoder for MockH264Decoder {
-        fn decode(&mut self, _data: &[u8]) -> crate::decode::DecoderResult<crate::decode::DecodedFrame> {
-            // Return a 16x16 solid red frame (macroblock-aligned minimum)
-            let width = 16u32;
-            let height = 16u32;
-            let mut data = vec![0u8; 16 * 16 * 4];
-            for pixel in data.chunks_exact_mut(4) {
-                pixel[0] = 255; // R
-                pixel[3] = 255; // A
-            }
-            Ok(crate::decode::DecodedFrame { data, width, height })
-        }
+        fn on_capabilities_confirmed(&mut self, _caps: &CapabilitySet) {}
+        fn on_reset_graphics(&mut self, _width: u32, _height: u32) {}
+        fn on_surface_created(&mut self, _surface: &Surface) {}
+        fn on_surface_deleted(&mut self, _surface_id: u16) {}
+        fn on_surface_mapped(&mut self, _surface_id: u16, _x: u32, _y: u32) {}
+        fn on_bitmap_updated(&mut self, _update: &BitmapUpdate) {}
+        fn on_frame_complete(&mut self, _frame_id: u32) {}
+        fn on_close(&mut self) {}
+        fn on_unhandled_pdu(&mut self, _pdu: &GfxPdu) {}
     }
 
     #[test]
-    fn test_client_sends_capabilities_on_start() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
-        let messages = client.start(0).expect("start should succeed");
-        assert_eq!(messages.len(), 1);
-    }
-
-    /// Decode the CapabilitiesAdvertisePdu from a DvcMessage produced by start()
-    fn decode_caps_from_message(msg: &DvcMessage) -> CapabilitiesAdvertisePdu {
-        let encoded = ironrdp_core::encode_vec(msg.as_ref()).expect("encode should succeed");
-        let mut cursor = ReadCursor::new(&encoded);
-        let pdu = GfxPdu::decode(&mut cursor).expect("decode should succeed");
-        match pdu {
-            GfxPdu::CapabilitiesAdvertise(caps) => caps,
-            other => panic!("expected CapabilitiesAdvertise, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_client_filters_avc_caps_without_decoder() {
-        let handler = TestHandler::new();
-        // No decoder: AVC caps should be filtered out, leaving only V8
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
-        let messages = client.start(0).expect("start should succeed");
-        assert_eq!(messages.len(), 1);
-
-        let caps_pdu = decode_caps_from_message(&messages[0]);
-        assert_eq!(
-            caps_pdu.0.len(),
-            1,
-            "expected exactly one capability set when no decoder is present"
-        );
-        assert!(
-            matches!(caps_pdu.0[0], CapabilitySet::V8 { .. }),
-            "expected only V8 capability set without decoder, got {:?}",
-            caps_pdu.0[0]
-        );
-    }
-
-    #[test]
-    fn test_client_keeps_avc_caps_with_decoder() {
-        let handler = TestHandler::new();
-        // With decoder: all caps should be kept (V10.7, V8.1, V8)
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), Some(Box::new(MockH264Decoder)));
-        let messages = client.start(0).expect("start should succeed");
-        assert_eq!(messages.len(), 1);
-
-        let caps_pdu = decode_caps_from_message(&messages[0]);
-        assert_eq!(
-            caps_pdu.0.len(),
-            3,
-            "expected all three capability sets with decoder present"
-        );
-        assert!(
-            matches!(caps_pdu.0[0], CapabilitySet::V10_7 { .. }),
-            "first cap should be V10.7"
-        );
-        assert!(
-            matches!(caps_pdu.0[1], CapabilitySet::V8_1 { .. }),
-            "second cap should be V8.1"
-        );
-        assert!(
-            matches!(caps_pdu.0[2], CapabilitySet::V8 { .. }),
-            "third cap should be V8"
-        );
-    }
-
-    #[test]
-    fn test_client_handles_create_surface() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
-
-        let pdu = GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 1920,
-            height: 1080,
-            pixel_format: PixelFormat::XRgb,
-        });
-
-        let _ = client.handle_pdu(pdu).expect("should succeed");
-        assert!(client.get_surface(1).is_some());
-        assert_eq!(client.get_surface(1).expect("surface exists").width, 1920);
-    }
-
-    #[test]
-    fn test_client_handles_delete_surface() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
-
-        // Create then delete
-        let _ = client
-            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-                surface_id: 5,
-                width: 100,
-                height: 100,
-                pixel_format: PixelFormat::XRgb,
-            }))
-            .expect("create should succeed");
-
-        assert!(client.get_surface(5).is_some());
-
-        let _ = client
-            .handle_pdu(GfxPdu::DeleteSurface(crate::pdu::DeleteSurfacePdu { surface_id: 5 }))
-            .expect("delete should succeed");
-
-        assert!(client.get_surface(5).is_none());
-    }
-
-    #[test]
-    fn test_client_handles_reset_graphics() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
-
-        // Create two surfaces
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 100,
-            height: 100,
-            pixel_format: PixelFormat::XRgb,
-        }));
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 2,
-            width: 200,
-            height: 200,
-            pixel_format: PixelFormat::XRgb,
-        }));
-
-        assert_eq!(client.surfaces.len(), 2);
-
-        // ResetGraphics should clear all
-        let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
-            width: 1920,
-            height: 1080,
-            monitors: vec![],
-        }));
-
-        assert!(client.surfaces.is_empty());
-    }
-
-    #[test]
-    fn test_client_sends_frame_ack() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
-
-        let responses = client
-            .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 42 }))
-            .expect("end frame should succeed");
-
-        // Should produce exactly one FrameAcknowledge response
-        assert_eq!(responses.len(), 1);
-        assert_eq!(client.total_frames_decoded(), 1);
-    }
-
-    #[test]
-    fn test_client_dispatches_avc420() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), Some(Box::new(MockH264Decoder)));
-
-        // Create a surface first
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 16,
-            height: 16,
-            pixel_format: PixelFormat::XRgb,
-        }));
-
-        // Build a minimal AVC420 bitmap stream:
-        // nRect=1 (4 bytes) + rectangle (8 bytes) + quant_qual (2 bytes) + h264 data
-        let mut bitmap_data = Vec::new();
-        bitmap_data.extend_from_slice(&1u32.to_le_bytes()); // nRect = 1
-        // InclusiveRectangle: left=0, top=0, right=15, bottom=15
-        bitmap_data.extend_from_slice(&0u16.to_le_bytes()); // left
-        bitmap_data.extend_from_slice(&0u16.to_le_bytes()); // top
-        bitmap_data.extend_from_slice(&15u16.to_le_bytes()); // right
-        bitmap_data.extend_from_slice(&15u16.to_le_bytes()); // bottom
-        // QuantQuality: qp=22 (bits 0..6), progressive=false (bit 7), quality=100
-        bitmap_data.push(22); // qp=22, progressive=0
-        bitmap_data.push(100); // quality
-        // Fake H.264 data (decoder is mocked)
-        bitmap_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67]);
-
-        let pdu = GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
-            surface_id: 1,
-            codec_id: Codec1Type::Avc420,
-            pixel_format: PixelFormat::XRgb,
-            destination_rectangle: InclusiveRectangle {
-                left: 0,
-                top: 0,
-                right: 15,
-                bottom: 15,
-            },
-            bitmap_data,
-        });
-
-        let _ = client.handle_pdu(pdu).expect("AVC420 dispatch should succeed");
-    }
-
-    #[test]
-    fn test_client_handles_uncompressed() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
-
-        // Create a surface
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 4,
-            height: 4,
-            pixel_format: PixelFormat::XRgb,
-        }));
-
-        // 4x4 uncompressed XRGB data (4 bytes per pixel)
-        let raw_data = vec![0u8; 4 * 4 * 4];
-
-        let pdu = GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
-            surface_id: 1,
-            codec_id: Codec1Type::Uncompressed,
-            pixel_format: PixelFormat::XRgb,
-            destination_rectangle: InclusiveRectangle {
-                left: 0,
-                top: 0,
-                right: 3,
-                bottom: 3,
-            },
-            bitmap_data: raw_data,
-        });
-
-        let _ = client.handle_pdu(pdu).expect("uncompressed should succeed");
-    }
-
-    #[test]
-    fn test_client_skips_decode_without_decoder() {
-        let handler = TestHandler::new();
-        // No decoder provided
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
-
-        // Create surface
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 16,
-            height: 16,
-            pixel_format: PixelFormat::XRgb,
-        }));
-
-        // AVC420 data (minimal)
-        let mut bitmap_data = Vec::new();
-        bitmap_data.extend_from_slice(&1u32.to_le_bytes());
-        bitmap_data.extend_from_slice(&0u16.to_le_bytes());
-        bitmap_data.extend_from_slice(&0u16.to_le_bytes());
-        bitmap_data.extend_from_slice(&15u16.to_le_bytes());
-        bitmap_data.extend_from_slice(&15u16.to_le_bytes());
-        bitmap_data.push(22);
-        bitmap_data.push(100);
-        bitmap_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67]);
-
-        let pdu = GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
-            surface_id: 1,
-            codec_id: Codec1Type::Avc420,
-            pixel_format: PixelFormat::XRgb,
-            destination_rectangle: InclusiveRectangle {
-                left: 0,
-                top: 0,
-                right: 15,
-                bottom: 15,
-            },
-            bitmap_data,
-        });
-
-        // Should succeed without panicking
-        let _ = client.handle_pdu(pdu).expect("should succeed without decoder");
-    }
-
-    #[test]
-    fn test_crop_decoded_frame_identity() {
-        let data = vec![0xFFu8; 4 * 4 * 4]; // 4x4 RGBA
-        let cropped = crop_decoded_frame(&data, 4, 4, 4, 4);
-        assert_eq!(cropped.len(), data.len());
-    }
-
-    #[test]
-    fn test_crop_decoded_frame_macroblock() {
-        // H.264 encodes 1920x1080 as 1920x1088 (1080 rounded up to 16-pixel macroblock boundary)
-        let decoded_w = 1920u32;
-        let decoded_h = 1088u32;
-        let data = vec![0xAAu8; 1920 * 1088 * 4];
-
-        let cropped = crop_decoded_frame(&data, decoded_w, decoded_h, 1920, 1080);
-        assert_eq!(cropped.len(), 1920 * 1080 * 4);
-    }
-
-    #[test]
-    fn test_client_state_transitions() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
+    fn state_transitions() {
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
 
         assert_eq!(client.state, ClientState::WaitingForConfirm);
         assert!(!client.is_active());
 
-        // Confirm capabilities
         let _ = client.handle_pdu(GfxPdu::CapabilitiesConfirm(crate::pdu::CapabilitiesConfirmPdu(
             CapabilitySet::V8 {
                 flags: CapabilitiesV8Flags::empty(),
             },
         )));
-
         assert_eq!(client.state, ClientState::Active);
         assert!(client.is_active());
 
-        // Close
         client.close(0);
         assert_eq!(client.state, ClientState::Closed);
         assert!(!client.is_active());
     }
 
     #[test]
-    fn test_frame_ordering() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
+    fn reset_graphics_clears_surfaces_and_frame_tracking() {
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
 
-        // Create surface
         let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
             surface_id: 1,
-            width: 4,
-            height: 4,
+            width: 100,
+            height: 100,
             pixel_format: PixelFormat::XRgb,
         }));
-
-        // StartFrame
-        let _ = client.handle_pdu(GfxPdu::StartFrame(crate::pdu::StartFramePdu {
-            timestamp: crate::pdu::Timestamp {
-                milliseconds: 0,
-                seconds: 0,
-                minutes: 0,
-                hours: 0,
-            },
-            frame_id: 1,
-        }));
-
-        // WireToSurface1 (uncompressed)
-        let _ = client.handle_pdu(GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
-            surface_id: 1,
-            codec_id: Codec1Type::Uncompressed,
-            pixel_format: PixelFormat::XRgb,
-            destination_rectangle: InclusiveRectangle {
-                left: 0,
-                top: 0,
-                right: 3,
-                bottom: 3,
-            },
-            bitmap_data: vec![0u8; 4 * 4 * 4],
-        }));
-
-        // EndFrame should produce FrameAcknowledge
-        let responses = client
-            .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 1 }))
-            .expect("end frame");
-
-        assert_eq!(responses.len(), 1);
-        assert_eq!(client.total_frames_decoded(), 1);
-    }
-
-    #[test]
-    fn test_convert_uncompressed_to_rgba() {
-        // Wire format: [B, G, R, A] per pixel (0xAARRGGBB little-endian)
-        let wire_pixels = vec![
-            0x00, 0x80, 0xFF, 0xCC, // B=0, G=128, R=255, A=204
-            0x10, 0x20, 0x30, 0x40, // B=16, G=32, R=48, A=64
-        ];
-        let rgba = convert_uncompressed_to_rgba(&wire_pixels);
-        // Expected: [R, G, B, 0xFF] per pixel (alpha forced to opaque)
-        assert_eq!(rgba, vec![0xFF, 0x80, 0x00, 0xFF, 0x30, 0x20, 0x10, 0xFF]);
-    }
-
-    #[test]
-    fn test_reset_graphics_clears_frame_tracking() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
+        assert_eq!(client.surfaces.len(), 1);
 
         // Simulate mid-stream state
         let _ = client.handle_pdu(GfxPdu::StartFrame(crate::pdu::StartFramePdu {
@@ -1407,48 +990,41 @@ mod tests {
         assert!(client.current_frame_id.is_some());
         assert_eq!(client.frames_queued, 1);
 
-        // ResetGraphics should clear frame tracking
         let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
             width: 1920,
             height: 1080,
             monitors: vec![],
         }));
 
-        assert!(client.current_frame_id.is_none());
-        assert_eq!(client.frames_queued, 0);
-        // Caps should NOT be reset
-        // (can't easily test since we haven't confirmed caps, but at least
-        // verify the field exists and wasn't touched)
+        assert!(client.surfaces.is_empty(), "surfaces should be cleared");
+        assert!(client.current_frame_id.is_none(), "frame_id should be reset");
+        assert_eq!(client.frames_queued, 0, "frame queue should be reset");
     }
 
     #[test]
-    fn test_invalid_rectangle_ordering_rejected() {
-        let handler = TestHandler::new();
-        let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
+    fn crop_decoded_frame_identity() {
+        let data = vec![0xFFu8; 4 * 4 * 4];
+        let cropped = crop_decoded_frame(&data, 4, 4, 4, 4);
+        assert_eq!(cropped.len(), data.len());
+    }
 
-        // Create a surface
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 100,
-            height: 100,
-            pixel_format: PixelFormat::XRgb,
-        }));
+    #[test]
+    fn crop_decoded_frame_macroblock_alignment() {
+        // H.264 encodes 1920x1080 as 1920x1088 (rounded to 16-pixel macroblock boundary)
+        let data = vec![0xAAu8; 1920 * 1088 * 4];
+        let cropped = crop_decoded_frame(&data, 1920, 1088, 1920, 1080);
+        assert_eq!(cropped.len(), 1920 * 1080 * 4);
+    }
 
-        // left > right: invalid ordering
-        let pdu = GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
-            surface_id: 1,
-            codec_id: Codec1Type::Uncompressed,
-            pixel_format: PixelFormat::XRgb,
-            destination_rectangle: InclusiveRectangle {
-                left: 50,
-                top: 0,
-                right: 10,
-                bottom: 10,
-            },
-            bitmap_data: vec![0u8; 4],
-        });
-
-        let result = client.handle_pdu(pdu);
-        assert!(result.is_err(), "invalid rectangle ordering should be rejected");
+    #[test]
+    fn convert_uncompressed_bgrx_to_rgba() {
+        // Wire format: [B, G, R, A] per pixel (0xAARRGGBB little-endian)
+        let wire_pixels = vec![
+            0x00, 0x80, 0xFF, 0xCC, // B=0, G=128, R=255, A=204
+            0x10, 0x20, 0x30, 0x40, // B=16, G=32, R=48, A=64
+        ];
+        let rgba = convert_uncompressed_to_rgba(&wire_pixels);
+        // Expected: [R, G, B, 0xFF] per pixel (alpha forced to opaque)
+        assert_eq!(rgba, vec![0xFF, 0x80, 0x00, 0xFF, 0x30, 0x20, 0x10, 0xFF]);
     }
 }
