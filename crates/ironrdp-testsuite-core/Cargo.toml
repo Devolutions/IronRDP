@@ -15,6 +15,7 @@ test = false
 # Don't rely on these whatsoever. They may disappear at any time.
 # Added here because it includes/link to some files from other crates
 __bench = ["dep:visibility"]
+openh264-bundled = ["ironrdp-egfx/openh264-bundled", "dep:openh264"]
 
 [[test]]
 name = "integration_tests_core"
@@ -27,6 +28,7 @@ expect-test = "1"
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-pdu.path = "../ironrdp-pdu"
 paste = "1"
+openh264 = { version = "0.9", optional = true, default-features = false, features = ["source"] }
 visibility = { version = "0.1", optional = true }
 
 [dev-dependencies]
@@ -40,7 +42,7 @@ ironrdp-connector.path = "../ironrdp-connector"
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
 ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-echo.path = "../ironrdp-echo"
-ironrdp-egfx.path = "../ironrdp-egfx"
+ironrdp-egfx = { path = "../ironrdp-egfx" }
 ironrdp-fuzzing.path = "../ironrdp-fuzzing"
 ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-str.path = "../ironrdp-str"
