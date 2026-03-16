@@ -12,6 +12,7 @@ use crate::rdp::client_info::{ClientInfo, ClientInfoError};
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlPduType, ShareDataPduType};
 use crate::rdp::server_license::ServerLicenseError;
 
+pub mod autodetect;
 pub mod capability_sets;
 pub mod client_info;
 pub mod finalization_messages;
