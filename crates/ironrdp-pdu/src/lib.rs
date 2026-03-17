@@ -20,7 +20,6 @@ pub mod pcb;
 pub mod rdp;
 pub mod tpdu;
 pub mod tpkt;
-pub mod utf16;
 pub mod utils;
 pub mod x224;
 

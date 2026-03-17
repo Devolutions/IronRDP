@@ -3,13 +3,13 @@ mod tests;
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, read_padding,
-    write_padding,
+    Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size,
+    read_padding, write_padding,
 };
+use ironrdp_str::fixed::FixedString;
 use num_traits::FromPrimitive as _;
 
-use crate::gcc::{IME_FILE_NAME_SIZE, KeyboardType};
-use crate::utils;
+use crate::gcc::KeyboardType;
 
 const INPUT_LENGTH: usize = 84;
 
@@ -37,7 +37,8 @@ pub struct Input {
     pub keyboard_type: Option<KeyboardType>,
     pub keyboard_subtype: u32,
     pub keyboard_function_key: u32,
-    pub keyboard_ime_filename: String,
+    /// IME file name ([MS-RDPBCGR] §2.2.7.1.6 `imeFileName`, 64-byte zero-padded UTF-16LE field)
+    pub keyboard_ime_filename: FixedString<32>,
 }
 
 impl Input {
@@ -63,13 +64,7 @@ impl Encode for Input {
         dst.write_u32(self.keyboard_subtype);
         dst.write_u32(self.keyboard_function_key);
 
-        utils::encode_string(
-            dst.remaining_mut(),
-            &self.keyboard_ime_filename,
-            utils::CharacterSet::Unicode,
-            true,
-        )?;
-        dst.advance(IME_FILE_NAME_SIZE);
+        self.keyboard_ime_filename.encode(dst)?;
 
         Ok(())
     }
@@ -96,8 +91,7 @@ impl<'de> Decode<'de> for Input {
         let keyboard_subtype = src.read_u32();
         let keyboard_function_key = src.read_u32();
 
-        let keyboard_ime_filename =
-            utils::decode_string(src.read_slice(IME_FILE_NAME_SIZE), utils::CharacterSet::Unicode, false)?;
+        let keyboard_ime_filename = FixedString::<32>::decode_owned(src)?;
 
         Ok(Input {
             input_flags,

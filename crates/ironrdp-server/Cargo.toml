@@ -37,6 +37,7 @@ ironrdp-async = { path = "../ironrdp-async", version = "0.8" }
 ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.5" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
+ironrdp-str = { path = "../ironrdp-str", version = "0.1" }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.5" } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.5" } # public

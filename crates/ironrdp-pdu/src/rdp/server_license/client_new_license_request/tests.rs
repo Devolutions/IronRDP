@@ -2,6 +2,7 @@ use std::sync::LazyLock;
 
 use byteorder::{LittleEndian, WriteBytesExt as _};
 use ironrdp_core::{decode, encode_vec};
+use ironrdp_str::prefixed::CbU32StringNullIncluded;
 
 use super::*;
 use crate::rdp::server_license::LicensePdu;
@@ -74,10 +75,8 @@ static CLIENT_NEW_LICENSE_REQUEST: LazyLock<LicensePdu> = LazyLock::new(|| {
                     + RANDOM_NUMBER_SIZE
                     + LICENSE_REQUEST_STATIC_FIELDS_SIZE
                     + ENCRYPTED_PREMASTER_SECRET.len()
-                    + CLIENT_MACHINE_NAME.len()
-                    + UTF8_NULL_TERMINATOR_SIZE
-                    + CLIENT_USERNAME.len()
-                    + UTF8_NULL_TERMINATOR_SIZE,
+                    + ansi::encoded_ansi_len_with_null(CLIENT_MACHINE_NAME)
+                    + ansi::encoded_ansi_len_with_null(CLIENT_USERNAME),
             )
             .expect("can't panic"),
         },
@@ -90,13 +89,13 @@ static CLIENT_NEW_LICENSE_REQUEST: LazyLock<LicensePdu> = LazyLock::new(|| {
 });
 
 static REQUEST_BUFFER: LazyLock<Vec<u8>> = LazyLock::new(|| {
-    let username_len = CLIENT_USERNAME.len() + UTF8_NULL_TERMINATOR_SIZE;
+    let username_len = ansi::encoded_ansi_len_with_null(CLIENT_USERNAME);
     let mut username_len_buf = Vec::new();
     username_len_buf
         .write_u16::<LittleEndian>(u16::try_from(username_len).expect("can't panic"))
         .unwrap();
 
-    let machine_name_len = CLIENT_MACHINE_NAME.len() + UTF8_NULL_TERMINATOR_SIZE;
+    let machine_name_len = ansi::encoded_ansi_len_with_null(CLIENT_MACHINE_NAME);
     let mut machine_name_len_buf = Vec::new();
     machine_name_len_buf
         .write_u16::<LittleEndian>(u16::try_from(machine_name_len).unwrap())
@@ -150,8 +149,8 @@ pub(crate) static SERVER_LICENSE_REQUEST: LazyLock<LicensePdu> = LazyLock::new(|
         server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
         product_info: ProductInfo {
             version: 0x60000,
-            company_name: "Microsoft Corporation".to_owned(),
-            product_id: "A02".to_owned(),
+            company_name: CbU32StringNullIncluded::new("Microsoft Corporation"),
+            product_id: CbU32StringNullIncluded::new("A02"),
         },
         server_certificate: Some(ServerCertificate {
             issued_permanently: true,

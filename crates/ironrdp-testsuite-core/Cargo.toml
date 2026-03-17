@@ -27,6 +27,7 @@ array-concat = "0.5"
 expect-test = "1"
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-pdu.path = "../ironrdp-pdu"
+ironrdp-str.path = "../ironrdp-str"
 paste = "1"
 openh264 = { version = "0.9", optional = true, default-features = false, features = ["source"] }
 visibility = { version = "0.1", optional = true }
