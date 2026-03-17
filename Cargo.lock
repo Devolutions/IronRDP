@@ -2992,6 +2992,7 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-session",
  "ironrdp-str",
+ "ironrdp-svc",
  "openh264",
  "paste",
  "png",
