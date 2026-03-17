@@ -1,1 +1,2 @@
+mod client;
 mod server;
