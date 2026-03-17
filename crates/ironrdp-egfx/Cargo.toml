@@ -5,7 +5,6 @@ readme = "README.md"
 description = "Graphics pipeline dynamic channel extension implementation"
 publish = false # TODO: publish
 edition.workspace = true
-rust-version = "1.89"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -24,7 +23,13 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.5" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.7" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
+openh264 = { version = "0.9", optional = true, default-features = false }
 tracing = { version = "0.1", features = ["log"] }
+
+[features]
+openh264 = ["dep:openh264"]
+openh264-bundled = ["openh264", "openh264/source"]
+openh264-libloading = ["openh264", "openh264/libloading"]
 
 [lints]
 workspace = true
