@@ -44,16 +44,23 @@ impl ClearCodecDecoder {
         let mut src = ReadCursor::new(data);
         let stream = ClearCodecBitmapStream::decode(&mut src)?;
 
-        // Validate sequence number
-        if stream.seq_number != self.expected_seq {
-            // Per spec, sequence mismatch means we should reset state.
-            // In practice, some servers restart sequences so we tolerate it.
-        }
+        // Per spec (2.2.4.1 seqNumber): must increment by 1, wrapping 0xFF -> 0x00.
+        // Mismatches indicate packet loss or server restart. We tolerate them
+        // (FreeRDP does too) but re-sync to the received sequence number.
+        // ironrdp-graphics has no tracing dependency, so callers that need
+        // diagnostics should track sequence numbers externally.
         self.expected_seq = stream.seq_number.wrapping_add(1);
 
         // Handle cache reset
         if stream.is_cache_reset() {
             self.vbar_cache.reset();
+        }
+
+        // Validate glyph index range per spec: 0..3999 inclusive
+        if let Some(idx) = stream.glyph_index {
+            if idx >= GLYPH_CACHE_WRAP {
+                return Err(invalid_field_err!("glyphIndex", "glyph index out of range 0-3999"));
+            }
         }
 
         let w = usize::from(width);
@@ -72,6 +79,15 @@ impl ClearCodecDecoder {
                 .get(glyph_index)
                 .ok_or_else(|| invalid_field_err!("glyphIndex", "glyph cache miss on hit"))?;
             return Ok(entry.pixels.clone());
+        }
+
+        // Cap allocation to prevent OOM from adversarial dimensions.
+        // EGFX surfaces are capped at 32767x32767 by the spec, but a single
+        // ClearCodec tile should never approach that. 8192x8192 (256MB) is a
+        // generous upper bound for any reasonable tile size.
+        const MAX_DECODE_PIXELS: usize = 8192 * 8192;
+        if pixel_count > MAX_DECODE_PIXELS {
+            return Err(invalid_field_err!("dimensions", "pixel count exceeds decoder maximum"));
         }
 
         // Decode composite payload
@@ -109,19 +125,25 @@ impl ClearCodecDecoder {
     ) -> DecodeResult<()> {
         let w = usize::from(width);
 
-        // Layer 1: Residual (BGR RLE) - fills the entire output
+        // Layer 1: Residual (BGR RLE) - fills the entire output.
+        // Cap pixel writes to the output buffer size to prevent CPU-spin DoS
+        // from adversarial run_length values (FreeRDP CVE GHSA-32q9-m5qr-9j2v).
         if !composite.residual_data.is_empty() {
             let segments = decode_residual_layer(composite.residual_data)?;
+            let max_offset = output.len();
             let mut offset = 0;
             for seg in &segments {
-                for _ in 0..seg.run_length {
-                    if offset + 3 < output.len() {
-                        output[offset] = seg.blue;
-                        output[offset + 1] = seg.green;
-                        output[offset + 2] = seg.red;
-                        output[offset + 3] = 0xFF; // Alpha
-                        offset += 4;
-                    }
+                let pixels_remaining = (max_offset.saturating_sub(offset)) / 4;
+                let effective_run = u32::try_from(pixels_remaining).unwrap_or(u32::MAX).min(seg.run_length);
+                for _ in 0..effective_run {
+                    output[offset] = seg.blue;
+                    output[offset + 1] = seg.green;
+                    output[offset + 2] = seg.red;
+                    output[offset + 3] = 0xFF; // Alpha
+                    offset += 4;
+                }
+                if offset >= max_offset {
+                    break;
                 }
             }
         }
@@ -295,9 +317,11 @@ impl ClearCodecDecoder {
                 }
             }
             SubcodecId::NsCodec => {
-                // NSCodec: deferred to Phase A7. For now, treat as opaque.
-                // This is a valid conformance approach: the server can always
-                // choose to use Raw or RLEX subcodecs instead.
+                // NSCodec (MS-RDPNSC) decode not yet implemented.
+                // Encoder avoids generating NSCodec tiles, so this path only
+                // triggers when decoding streams from other implementations.
+                // The region is left at its current pixel values (transparent
+                // or whatever the residual layer filled in).
             }
         }
 
@@ -438,6 +462,10 @@ fn bgra_to_run_segments(bgra: &[u8], pixel_count: usize) -> Vec<RgbRunSegment> {
     if pixel_count == 0 {
         return Vec::new();
     }
+
+    // Cap to the number of complete pixels actually present in the input
+    let available_pixels = bgra.len() / 4;
+    let pixel_count = pixel_count.min(available_pixels);
 
     let mut segments = Vec::new();
     let mut i = 0;

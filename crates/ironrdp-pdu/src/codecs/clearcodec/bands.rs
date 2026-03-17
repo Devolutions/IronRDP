@@ -58,9 +58,9 @@ pub enum VBar<'a> {
 /// Inline short V-bar data from a cache miss.
 #[derive(Debug, Clone)]
 pub struct ShortVBarCacheMiss<'a> {
-    /// First pixel row within the band where color data starts.
+    /// First pixel row within the band where color data starts (shortVBarYOn).
     pub y_on: u8,
-    /// Number of pixel rows with color data (6 bits, max 52).
+    /// Number of pixel rows with color data (`shortVBarYOff - shortVBarYOn`).
     pub y_off_delta: u8,
     /// Raw BGR pixel data: `y_off_delta * 3` bytes.
     pub pixel_data: &'a [u8],
@@ -124,7 +124,7 @@ fn decode_single_band<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Band<'a>> {
     })
 }
 
-fn decode_vbar<'a>(src: &mut ReadCursor<'a>, _band_height: u16) -> DecodeResult<VBar<'a>> {
+fn decode_vbar<'a>(src: &mut ReadCursor<'a>, band_height: u16) -> DecodeResult<VBar<'a>> {
     ensure_size!(ctx: "VBar", in: src, size: 2);
     let first_word = src.read_u16();
 
@@ -143,19 +143,32 @@ fn decode_vbar<'a>(src: &mut ReadCursor<'a>, _band_height: u16) -> DecodeResult<
     }
 
     // Both top bits clear: short V-bar cache miss
-    // first_word encodes: yOn (high 8 bits of the 14-bit field) and yOff delta (low 6 bits)
-    // Per spec: top byte = yOn, low 6 bits = pixel count
-    // Top 2 bits are clear (checked above), so first_word <= 0x3FFF and (first_word >> 6) <= 0xFF
+    // Per MS-RDPEGFX 2.2.4.1.1.2.1.1.3 (SHORT_VBAR_CACHE_MISS):
+    //   bits 13:6 = shortVBarYOn (8 bits): row where Short V-Bar begins
+    //   bits 5:0  = shortVBarYOff (6 bits): row where Short V-Bar ends
+    // Pixel count = shortVBarYOff - shortVBarYOn
     let y_on = u8::try_from(first_word >> 6).expect("top 2 bits are clear, so shifted value fits in u8");
-    let y_off_delta = u8::try_from(first_word & 0x3F).expect("masked to 6 bits, always fits in u8");
+    let y_off = u8::try_from(first_word & 0x3F).expect("masked to 6 bits, always fits in u8");
 
-    let pixel_byte_count = usize::from(y_off_delta) * 3;
+    if y_off < y_on {
+        return Err(invalid_field_err!("shortVBarCacheMiss", "shortVBarYOff < shortVBarYOn"));
+    }
+
+    if u16::from(y_off) > band_height {
+        return Err(invalid_field_err!(
+            "shortVBarCacheMiss",
+            "shortVBarYOff exceeds band height"
+        ));
+    }
+
+    let pixel_count = y_off - y_on;
+    let pixel_byte_count = usize::from(pixel_count) * 3;
     ensure_size!(ctx: "ShortVBarCacheMiss", in: src, size: pixel_byte_count);
     let pixel_data = src.read_slice(pixel_byte_count);
 
     Ok(VBar::ShortCacheMiss(ShortVBarCacheMiss {
         y_on,
-        y_off_delta,
+        y_off_delta: pixel_count,
         pixel_data,
     }))
 }
@@ -195,10 +208,10 @@ mod tests {
 
     #[test]
     fn decode_vbar_short_cache_miss() {
-        // Both top bits clear: yOn=2 (shifted left 6), pixel_count=3
+        // Both top bits clear: y_on=2, y_off=5, pixel_count = y_off - y_on = 3
         let y_on: u16 = 2;
-        let pixel_count: u16 = 3;
-        let first_word = (y_on << 6) | pixel_count;
+        let y_off: u16 = 5;
+        let first_word = (y_on << 6) | y_off;
         let mut data = Vec::new();
         data.extend_from_slice(&first_word.to_le_bytes());
         // 3 pixels * 3 bytes = 9 bytes BGR data
@@ -208,7 +221,7 @@ mod tests {
         match vbar {
             VBar::ShortCacheMiss(miss) => {
                 assert_eq!(miss.y_on, 2);
-                assert_eq!(miss.y_off_delta, 3);
+                assert_eq!(miss.y_off_delta, 3); // pixel_count = y_off - y_on = 5 - 2 = 3
                 assert_eq!(miss.pixel_data.len(), 9);
             }
             _ => panic!("expected ShortCacheMiss"),
