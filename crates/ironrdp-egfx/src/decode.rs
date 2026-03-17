@@ -142,3 +142,152 @@ pub trait H264Decoder: Send {
         // Default: no-op
     }
 }
+
+// ============================================================================
+// OpenH264 Implementation
+// ============================================================================
+
+#[cfg(feature = "openh264")]
+mod openh264_impl {
+    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+    use tracing::warn;
+
+    /// H.264 decoder backed by Cisco's OpenH264 library
+    ///
+    /// This decoder converts AVC-format NAL units to Annex B format
+    /// (as required by OpenH264), decodes to YUV420p, then converts
+    /// to RGBA for the client pipeline.
+    ///
+    /// # Feature Gates
+    ///
+    /// Two construction paths are available depending on the feature flags:
+    ///
+    /// - `openh264-bundled`: compiles OpenH264 from source at build time.
+    ///   Use [`OpenH264Decoder::new()`] to construct.
+    ///
+    /// - `openh264-libloading`: loads a prebuilt Cisco OpenH264 binary at
+    ///   runtime. Use [`OpenH264Decoder::from_library_path()`] to construct.
+    ///   The library is verified against known Cisco release hashes.
+    pub struct OpenH264Decoder {
+        decoder: openh264::decoder::Decoder,
+        annex_b_buffer: Vec<u8>,
+    }
+
+    impl OpenH264Decoder {
+        /// Create a decoder using the bundled (source-compiled) OpenH264 library
+        ///
+        /// This compiles OpenH264 C code at build time. The resulting binary
+        /// has no patent coverage from Cisco's license agreement.
+        #[cfg(feature = "openh264-bundled")]
+        pub fn new() -> DecoderResult<Self> {
+            let decoder = openh264::decoder::Decoder::new()
+                .map_err(|e| DecoderError::new("failed to create OpenH264 decoder", e))?;
+
+            Ok(Self {
+                decoder,
+                annex_b_buffer: Vec::new(),
+            })
+        }
+
+        /// Create a decoder using a dynamically loaded OpenH264 library
+        ///
+        /// `library_path` should point to a Cisco OpenH264 prebuilt binary,
+        /// which is verified against known Cisco release hashes before loading.
+        /// Cisco's prebuilt binaries carry patent coverage under their license.
+        #[cfg(feature = "openh264-libloading")]
+        pub fn from_library_path(library_path: &std::path::Path) -> DecoderResult<Self> {
+            let api = openh264::OpenH264API::from_blob_path(library_path)
+                .map_err(|e| DecoderError::new("failed to load OpenH264 library", e))?;
+            let decoder = openh264::decoder::Decoder::with_api_config(api, Default::default())
+                .map_err(|e| DecoderError::new("failed to create OpenH264 decoder", e))?;
+
+            Ok(Self {
+                decoder,
+                annex_b_buffer: Vec::new(),
+            })
+        }
+
+        /// Convert AVC format (4-byte BE length prefix) to Annex B (start codes)
+        fn avc_to_annex_b(&mut self, data: &[u8]) {
+            self.annex_b_buffer.clear();
+            let mut offset = 0;
+
+            while offset + 4 <= data.len() {
+                let nal_len = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+
+                #[expect(clippy::as_conversions, reason = "NAL length from wire format")]
+                let nal_len = nal_len as usize;
+                offset += 4;
+
+                // Use checked addition to prevent overflow on malicious input
+                let Some(end) = offset.checked_add(nal_len) else {
+                    warn!(nal_len, offset, "AVC NAL length overflow, discarding remaining data");
+                    break;
+                };
+                if end > data.len() {
+                    warn!(
+                        nal_len,
+                        offset,
+                        data_len = data.len(),
+                        "AVC NAL extends beyond buffer, discarding remaining data"
+                    );
+                    break;
+                }
+
+                // Annex B start code
+                self.annex_b_buffer.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                self.annex_b_buffer.extend_from_slice(&data[offset..offset + nal_len]);
+                offset += nal_len;
+            }
+        }
+    }
+
+    impl H264Decoder for OpenH264Decoder {
+        fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+            self.avc_to_annex_b(data);
+
+            let yuv = self
+                .decoder
+                .decode(&self.annex_b_buffer)
+                .map_err(|e| DecoderError::new("OpenH264 decode failed", e))?
+                .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))?;
+
+            let (width, height) = openh264::formats::YUVSource::dimensions(&yuv);
+
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                reason = "H.264 frame dimensions are always within u32 range"
+            )]
+            let (w32, h32) = (width as u32, height as u32);
+
+            let rgba_size = width
+                .checked_mul(height)
+                .and_then(|s| s.checked_mul(4))
+                .ok_or_else(|| DecoderError::msg("frame dimensions too large for RGBA allocation"))?;
+            let mut rgba = vec![0u8; rgba_size];
+            yuv.write_rgba8(&mut rgba);
+
+            Ok(DecodedFrame {
+                data: rgba,
+                width: w32,
+                height: h32,
+            })
+        }
+
+        fn reset(&mut self) {
+            // Recreate decoder from source when available
+            #[cfg(feature = "openh264-bundled")]
+            match openh264::decoder::Decoder::new() {
+                Ok(new_decoder) => self.decoder = new_decoder,
+                Err(e) => warn!("Failed to reset OpenH264 decoder, reusing existing state: {e}"),
+            }
+            // In libloading-only mode, we don't have the library path stored,
+            // so we can't recreate. The existing decoder handles new SPS/PPS
+            // transparently when the next I-frame arrives.
+        }
+    }
+}
+
+#[cfg(feature = "openh264")]
+pub use openh264_impl::OpenH264Decoder;

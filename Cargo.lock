@@ -1484,7 +1484,7 @@ dependencies = [
  "curve25519-dalek",
  "ed25519",
  "rand_core 0.9.3",
- "sha2",
+ "sha2 0.11.0-rc.2",
  "subtle",
  "zeroize",
 ]
@@ -2715,6 +2715,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "openh264",
  "tracing",
 ]
 
@@ -2991,6 +2992,7 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-session",
  "ironrdp-str",
+ "openh264",
  "paste",
  "png",
  "pretty_assertions",
@@ -3419,6 +3421,15 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "nasm-rs"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -3920,6 +3931,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
+name = "openh264"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a12b82c14f702c2cece4e0fc28896c6a6bed5317dc13448c86ac41df91a6f82"
+dependencies = [
+ "openh264-sys2",
+ "wide",
+]
+
+[[package]]
+name = "openh264-sys2"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa9e072e9b270f3b291c80488dc160abc31ecc214ab3bfde937213cfd8c83b32"
+dependencies = [
+ "cc",
+ "libloading",
+ "nasm-rs",
+ "sha2 0.10.9",
+ "walkdir",
+]
+
+[[package]]
 name = "openssl"
 version = "0.10.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4000,7 +4034,7 @@ dependencies = [
  "elliptic-curve",
  "primefield",
  "primeorder",
- "sha2",
+ "sha2 0.11.0-rc.2",
 ]
 
 [[package]]
@@ -4014,7 +4048,7 @@ dependencies = [
  "fiat-crypto",
  "primefield",
  "primeorder",
- "sha2",
+ "sha2 0.11.0-rc.2",
 ]
 
 [[package]]
@@ -4029,7 +4063,7 @@ dependencies = [
  "primefield",
  "primeorder",
  "rand_core 0.9.3",
- "sha2",
+ "sha2 0.11.0-rc.2",
 ]
 
 [[package]]
@@ -4165,7 +4199,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1 0.11.0-rc.2",
- "sha2",
+ "sha2 0.11.0-rc.2",
  "sha3",
  "signature",
  "spki 0.8.0-rc.4",
@@ -5058,6 +5092,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
+name = "safe_arch"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5268,6 +5311,17 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest 0.11.0-rc.3",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -5533,7 +5587,7 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "sha1 0.11.0-rc.2",
- "sha2",
+ "sha2 0.11.0-rc.2",
  "signature",
  "spki 0.8.0-rc.4",
  "time",
@@ -6596,6 +6650,16 @@ dependencies = [
  "libredox",
  "wasite",
  "web-sys",
+]
+
+[[package]]
+name = "wide"
+version = "0.7.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]

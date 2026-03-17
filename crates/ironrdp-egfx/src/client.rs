@@ -614,6 +614,11 @@ impl GraphicsPipelineClient {
     }
 
     fn handle_create_surface(&mut self, surface_id: u16, width: u16, height: u16, pixel_format: PixelFormat) {
+        if width == 0 || height == 0 {
+            warn!(surface_id, width, height, "Ignoring CreateSurface with zero dimensions");
+            return;
+        }
+
         let surface = Surface {
             id: surface_id,
             width,
@@ -921,6 +926,16 @@ fn crop_decoded_frame(
         if src_end <= data.len() {
             cropped.extend_from_slice(&data[src_start..src_end]);
         }
+    }
+
+    #[expect(clippy::as_conversions, reason = "dst_stride * rows bounded by frame dimensions")]
+    let expected_len = (dst_stride as usize).saturating_mul(rows as usize);
+    if cropped.len() < expected_len {
+        tracing::warn!(
+            expected = expected_len,
+            actual = cropped.len(),
+            "Decoded frame data truncated during crop"
+        );
     }
 
     cropped
