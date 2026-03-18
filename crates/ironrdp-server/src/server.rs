@@ -713,6 +713,7 @@ impl RdpServer {
                 },
                 ServerEvent::AutoDetectRttRequest => {
                     if let Some(ref mut ad) = self.autodetect {
+                        ad.expire_stale_probes(crate::autodetect::RTT_PROBE_MAX_AGE);
                         let request = ad.send_rtt_request();
                         let data = encode_share_data_pdu(
                             rdp::headers::ShareDataPdu::AutoDetectReq(request),
@@ -1169,6 +1170,12 @@ impl RdpServer {
     }
 }
 
+/// Encode a server-initiated Share Data PDU for the IO channel.
+///
+/// `share_id` is hard-coded to 0, matching the existing convention in
+/// `deactivate_all()`. In practice, RDP clients do not validate `share_id`
+/// on server-initiated PDUs, but a future refactor could thread the
+/// negotiated value from the Demand Active exchange if needed.
 fn encode_share_data_pdu(
     share_data_pdu: rdp::headers::ShareDataPdu,
     io_channel_id: u16,
@@ -1182,7 +1189,7 @@ fn encode_share_data_pdu(
     };
     let pdu = rdp::headers::ShareControlHeader {
         share_id: 0,
-        pdu_source: io_channel_id,
+        pdu_source: user_channel_id,
         share_control_pdu: ShareControlPdu::Data(header),
     };
     let user_data = encode_vec(&pdu)?.into();
