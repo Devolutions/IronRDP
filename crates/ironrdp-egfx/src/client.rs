@@ -1,7 +1,7 @@
 //! Client-side EGFX implementation
 //!
 //! This module provides client-side support for the Graphics Pipeline Extension
-//! ([MS-RDPEGFX]), including H.264 AVC420 decode and surface management.
+//! ([MS-RDPEGFX]), including H.264 AVC420 decode, ClearCodec decode, and surface management.
 //!
 //! # Protocol Compliance
 //!
@@ -24,7 +24,7 @@
 //!    |                                       |
 //!    |  (For each frame:)                    |
 //!    |--- StartFrame ----------------------->|
-//!    |--- WireToSurface1 (H.264) ----------->|  -> H264Decoder::decode()
+//!    |--- WireToSurface1 (codec) ----------->|  -> H264/ClearCodec decode
 //!    |--- EndFrame ------------------------->|  -> FrameAcknowledge
 //!    |                                       |
 //!    |<---------- FrameAcknowledge ----------|
@@ -57,6 +57,7 @@ use std::collections::BTreeMap;
 
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
+use ironrdp_graphics::clearcodec::ClearCodecDecoder;
 use ironrdp_graphics::zgfx;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::{PduResult, decode_cursor, decode_err, pdu_other_err};
@@ -381,6 +382,7 @@ enum ClientState {
 pub struct GraphicsPipelineClient {
     handler: Box<dyn GraphicsPipelineHandler>,
     h264_decoder: Option<Box<dyn H264Decoder>>,
+    clearcodec_decoder: ClearCodecDecoder,
 
     decompressor: zgfx::Decompressor,
     decompressed_buffer: Vec<u8>,
@@ -399,10 +401,12 @@ impl GraphicsPipelineClient {
     /// Create a new `GraphicsPipelineClient`
     ///
     /// If `h264_decoder` is `None`, AVC420 frames are logged and skipped.
+    /// ClearCodec decoding is always available (no external decoder required).
     pub fn new(handler: Box<dyn GraphicsPipelineHandler>, h264_decoder: Option<Box<dyn H264Decoder>>) -> Self {
         Self {
             handler,
             h264_decoder,
+            clearcodec_decoder: ClearCodecDecoder::new(),
             decompressor: zgfx::Decompressor::new(),
             decompressed_buffer: Vec::new(),
             state: ClientState::WaitingForConfirm,
@@ -608,6 +612,9 @@ impl GraphicsPipelineClient {
         if let Some(ref mut decoder) = self.h264_decoder {
             decoder.reset();
         }
+        // ClearCodec maintains V-bar and glyph caches that must be rebuilt
+        // after a graphics reset (the server will re-send all needed state).
+        self.clearcodec_decoder = ClearCodecDecoder::new();
 
         debug!(width, height, "Graphics reset");
         self.handler.on_reset_graphics(width, height);
@@ -694,6 +701,9 @@ impl GraphicsPipelineClient {
                 debug!("AVC444 codec not yet implemented, forwarding to handler");
                 self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
             }
+            Codec1Type::ClearCodec => {
+                self.decode_clearcodec(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
+            }
             Codec1Type::Uncompressed => {
                 self.handle_uncompressed(pdu);
             }
@@ -743,6 +753,36 @@ impl GraphicsPipelineClient {
             destination_rectangle: dest_rect.clone(),
             codec_id: Codec1Type::Avc420,
             data: cropped_data,
+            width: dest_width,
+            height: dest_height,
+        };
+
+        self.handler.on_bitmap_updated(&update);
+        Ok(())
+    }
+
+    fn decode_clearcodec(
+        &mut self,
+        surface_id: u16,
+        dest_rect: &InclusiveRectangle,
+        bitmap_data: &[u8],
+    ) -> PduResult<()> {
+        let dest_width = dest_rect.width();
+        let dest_height = dest_rect.height();
+
+        let bgra = self
+            .clearcodec_decoder
+            .decode(bitmap_data, dest_width, dest_height)
+            .map_err(|e| pdu_other_err!("ClearCodec decode", source: e))?;
+
+        // ClearCodec outputs BGRA; convert to RGBA for the uniform BitmapUpdate format
+        let rgba = convert_bgra_to_rgba(&bgra);
+
+        let update = BitmapUpdate {
+            surface_id,
+            destination_rectangle: dest_rect.clone(),
+            codec_id: Codec1Type::ClearCodec,
+            data: rgba,
             width: dest_width,
             height: dest_height,
         };
@@ -869,6 +909,18 @@ impl DvcClientProcessor for GraphicsPipelineClient {}
 // ============================================================================
 // Frame Cropping
 // ============================================================================
+
+/// Convert BGRA pixel data to RGBA8888
+///
+/// ClearCodec produces BGRA output per [MS-RDPEGFX 2.2.4.1]. Reorder to
+/// [R, G, B, A] for the uniform `BitmapUpdate` pixel format.
+fn convert_bgra_to_rgba(src: &[u8]) -> Vec<u8> {
+    let mut dst = Vec::with_capacity(src.len());
+    for pixel in src.chunks_exact(4) {
+        dst.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+    }
+    dst
+}
 
 /// Convert uncompressed 32bpp little-endian pixels to RGBA8888
 ///
@@ -1029,6 +1081,24 @@ mod tests {
         let data = vec![0xAAu8; 1920 * 1088 * 4];
         let cropped = crop_decoded_frame(&data, 1920, 1088, 1920, 1080);
         assert_eq!(cropped.len(), 1920 * 1080 * 4);
+    }
+
+    #[test]
+    fn convert_bgra_to_rgba_reorders_channels() {
+        // BGRA input: [B, G, R, A] per pixel
+        let bgra = vec![
+            0xFF, 0x00, 0x00, 0xCC, // B=255, G=0, R=0, A=204 (blue)
+            0x00, 0xFF, 0x00, 0x80, // B=0, G=255, R=0, A=128 (green)
+        ];
+        let rgba = convert_bgra_to_rgba(&bgra);
+        // Expected: [R, G, B, A] per pixel
+        assert_eq!(
+            rgba,
+            vec![
+                0x00, 0x00, 0xFF, 0xCC, // R=0, G=0, B=255, A=204
+                0x00, 0xFF, 0x00, 0x80, // R=0, G=255, B=0, A=128
+            ]
+        );
     }
 
     #[test]
