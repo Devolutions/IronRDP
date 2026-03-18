@@ -29,6 +29,7 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, trace, warn};
 use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
+use crate::autodetect::{AutoDetectManager, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
@@ -240,6 +241,7 @@ pub struct RdpServer {
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
     local_addr: Option<SocketAddr>,
+    autodetect: Option<AutoDetectManager>,
 }
 
 #[derive(Debug)]
@@ -252,6 +254,8 @@ pub enum ServerEvent {
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
     #[cfg(feature = "egfx")]
     Egfx(EgfxServerMessage),
+    /// Trigger an RTT measurement probe (requires auto-detect enabled).
+    AutoDetectRttRequest,
 }
 
 pub trait ServerEventSender {
@@ -307,6 +311,7 @@ impl RdpServer {
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
             local_addr: None,
+            autodetect: None,
         }
     }
 
@@ -321,6 +326,26 @@ impl RdpServer {
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
     pub fn echo_handle(&self) -> &EchoServerHandle {
         &self.echo_handle
+    }
+
+    /// Enable protocol-level auto-detect ([MS-RDPBCGR 2.2.14]).
+    ///
+    /// Auto-detect uses lightweight Share Data PDUs on the IO channel,
+    /// separate from the ECHO DVC. It supports bandwidth measurement
+    /// in addition to RTT and works even when DVC is unavailable.
+    ///
+    /// Send probes via [`ServerEvent::AutoDetectRttRequest`] and
+    /// query results with [`rtt_snapshot()`](Self::rtt_snapshot).
+    pub fn enable_autodetect(&mut self) {
+        self.autodetect = Some(AutoDetectManager::new());
+    }
+
+    /// Get the latest auto-detect RTT snapshot.
+    ///
+    /// Returns `None` if auto-detect is not enabled or no measurements
+    /// have been received yet.
+    pub fn rtt_snapshot(&self) -> Option<RttSnapshot> {
+        self.autodetect.as_ref().and_then(|ad| ad.snapshot())
     }
 
     /// Returns the shared EGFX server handle for proactive frame submission.
@@ -566,6 +591,7 @@ impl RdpServer {
         &mut self,
         events: &mut Vec<ServerEvent>,
         writer: &mut impl FramedWrite,
+        io_channel_id: u16,
         user_channel_id: u16,
     ) -> Result<RunState> {
         // Avoid wave message queuing up and causing extra delays.
@@ -681,6 +707,17 @@ impl RdpServer {
                         writer.write_all(&data).await?;
                     }
                 },
+                ServerEvent::AutoDetectRttRequest => {
+                    if let Some(ref mut ad) = self.autodetect {
+                        let request = ad.send_rtt_request();
+                        let data = encode_share_data_pdu(
+                            rdp::headers::ShareDataPdu::AutoDetectReq(request),
+                            io_channel_id,
+                            user_channel_id,
+                        )?;
+                        writer.write_all(&data).await?;
+                    }
+                }
             }
         }
 
@@ -772,7 +809,7 @@ impl RdpServer {
                 }
                 let mut this = this.lock().await;
                 match this
-                    .dispatch_server_events(&mut events, &mut event_writer, user_channel_id)
+                    .dispatch_server_events(&mut events, &mut event_writer, io_channel_id, user_channel_id)
                     .await?
                 {
                     RunState::Continue => continue,
@@ -992,6 +1029,16 @@ impl RdpServer {
                     return Ok(true);
                 }
 
+                rdp::headers::ShareDataPdu::AutoDetectRsp(response) => {
+                    if let Some(ref mut ad) = self.autodetect {
+                        if let Some(rtt_ms) = ad.handle_response(&response) {
+                            debug!(rtt_ms, seq = response.sequence_number(), "RTT measured");
+                        } else {
+                            trace!(seq = response.sequence_number(), "Unmatched auto-detect response");
+                        }
+                    }
+                }
+
                 unexpected => {
                     warn!(?unexpected, "Unexpected share data pdu");
                 }
@@ -1116,6 +1163,31 @@ impl RdpServer {
         debug!(?creds, "Changing credentials");
         self.creds = creds
     }
+}
+
+fn encode_share_data_pdu(
+    share_data_pdu: rdp::headers::ShareDataPdu,
+    io_channel_id: u16,
+    user_channel_id: u16,
+) -> Result<Vec<u8>> {
+    let header = rdp::headers::ShareDataHeader {
+        share_data_pdu,
+        stream_priority: rdp::headers::StreamPriority::Medium,
+        compression_flags: rdp::headers::CompressionFlags::empty(),
+        compression_type: rdp::client_info::CompressionType::K8,
+    };
+    let pdu = rdp::headers::ShareControlHeader {
+        share_id: 0,
+        pdu_source: io_channel_id,
+        share_control_pdu: ShareControlPdu::Data(header),
+    };
+    let user_data = encode_vec(&pdu)?.into();
+    let mcs_pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: io_channel_id,
+        user_data,
+    };
+    Ok(encode_vec(&X224(mcs_pdu))?)
 }
 
 async fn deactivate_all(
