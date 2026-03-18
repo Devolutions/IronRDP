@@ -45,7 +45,8 @@ use crate::{SoundServerFactory, builder, capabilities};
 /// pre-loaded credentials for NTLM challenge-response).
 ///
 /// Implement this trait to validate credentials against external systems
-/// (PAM, LDAP, database, etc.).
+/// (PAM, LDAP, database, etc.). For blocking backends, wrap the call in
+/// `tokio::task::spawn_blocking` to avoid stalling the async runtime.
 pub trait CredentialValidator: Send + Sync {
     /// Validate credentials received from the client.
     /// Return `Ok(true)` to accept, `Ok(false)` to reject.
@@ -835,20 +836,19 @@ impl RdpServer {
             if let Some(creds) = &result.credentials {
                 match validator.validate(creds) {
                     Ok(true) => {
-                        debug!("Credential validation succeeded for user: {}", creds.username);
+                        debug!("Credential validation succeeded");
                     }
                     Ok(false) => {
-                        warn!("Credential validation failed for user: {}", creds.username);
+                        warn!("Credential validation failed");
                         bail!("credential validation failed");
                     }
                     Err(e) => {
-                        error!("Credential validator error: {e:#}");
-                        bail!("credential validation error: {e}");
+                        error!(error = %e, "Credential validator error");
+                        bail!("credential validation error");
                     }
                 }
             } else {
-                warn!("Credential validator configured but no credentials received from client");
-                bail!("no credentials received for validation");
+                debug!("Skipping credential validation (no credentials in AcceptorResult)");
             }
         }
 
