@@ -22,6 +22,9 @@ public partial struct ConnectionResult
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_user_channel_id", ExactSpelling = true)]
     public static unsafe extern ConnectorResultFfiResultU16BoxIronRdpError GetUserChannelId(ConnectionResult* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_share_id", ExactSpelling = true)]
+    public static unsafe extern ConnectorResultFfiResultU32BoxIronRdpError GetShareId(ConnectionResult* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_desktop_size", ExactSpelling = true)]
     public static unsafe extern ConnectorResultFfiResultBoxDesktopSizeBoxIronRdpError GetDesktopSize(ConnectionResult* self);
 

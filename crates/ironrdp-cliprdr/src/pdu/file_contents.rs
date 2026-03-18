@@ -19,13 +19,31 @@ bitflags! {
         /// 0x00000008 and both the nPositionLow and nPositionHigh fields MUST be
         /// set to 0x00000000.
         const SIZE = 0x0000_0001;
-        /// A request for the data present in the file identified by the lindex field. The data
+        /// A request for a byte range from the file identified by the lindex field. The data
         /// to be retrieved is extracted starting from the offset given by the nPositionLow
         /// and nPositionHigh fields. The maximum number of bytes to extract is specified
         /// by the cbRequested field.
-        const DATA = 0x0000_0002;
+        const RANGE = 0x0000_0002;
 
         const _ = !0;
+    }
+}
+
+impl FileContentsFlags {
+    /// [MS-RDPECLIP] 2.2.5.3 - Validates that flags are spec-compliant
+    ///
+    /// Per spec requirements:
+    /// - Exactly one of SIZE or RANGE must be set
+    /// - SIZE and RANGE flags MUST NOT be set simultaneously
+    pub fn validate(self) -> Result<(), &'static str> {
+        let size_set = self.contains(FileContentsFlags::SIZE);
+        let range_set = self.contains(FileContentsFlags::RANGE);
+
+        match (size_set, range_set) {
+            (true, true) => Err("SIZE and RANGE flags are mutually exclusive per MS-RDPECLIP 2.2.5.3"),
+            (false, false) => Err("exactly one of SIZE or RANGE must be set"),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -90,18 +108,39 @@ impl<'a> FileContentsResponse<'a> {
         self.stream_id
     }
 
+    pub fn is_error(&self) -> bool {
+        self.is_error
+    }
+
     pub fn data(&self) -> &[u8] {
         &self.data
     }
 
-    /// Read data as u64 size value
+    /// [MS-RDPECLIP] 2.2.5.4 - Read data as u64 size value
+    ///
+    /// Per spec, SIZE responses MUST contain exactly 8 bytes (64-bit unsigned integer).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data length is not exactly 8 bytes.
+    ///
+    /// # Panics
+    ///
+    /// Should not panic - the try_into conversion is guaranteed to succeed after length validation.
     pub fn data_as_size(&self) -> DecodeResult<u64> {
-        let chunk = self
+        if self.data.len() != 8 {
+            return Err(invalid_field_err!(
+                "requestedFileContentsData",
+                "SIZE response must be exactly 8 bytes per MS-RDPECLIP 2.2.5.4"
+            ));
+        }
+
+        // Per length check above, this conversion is infallible.
+        let chunk: [u8; 8] = self
             .data
             .as_ref()
             .try_into()
-            .map_err(|_| invalid_field_err!("requestedFileContentsData", "not enough bytes for u64 size"))?;
-
+            .map_err(|_| invalid_field_err!("requestedFileContentsData", "SIZE response data is not 8 bytes"))?;
         Ok(u64::from_le_bytes(chunk))
     }
 }
@@ -143,7 +182,7 @@ impl<'de> Decode<'de> for FileContentsResponse<'de> {
         ensure_size!(in: src, size: header.data_length());
 
         if header.data_length() < Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("requestedFileContentsData", "Invalid data size"));
+            return Err(invalid_field_err!("requestedFileContentsData", "invalid data size"));
         };
 
         let data_size = header.data_length() - Self::FIXED_PART_SIZE;
@@ -163,7 +202,9 @@ impl<'de> Decode<'de> for FileContentsResponse<'de> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileContentsRequest {
     pub stream_id: u32,
-    pub index: u32,
+    /// Per [MS-RDPECLIP] 2.2.5.3, lindex is a signed 32-bit integer.
+    /// Negative values are invalid and rejected during decode.
+    pub index: i32,
     pub flags: FileContentsFlags,
     pub position: u64,
     pub requested_size: u32,
@@ -172,7 +213,7 @@ pub struct FileContentsRequest {
 
 impl FileContentsRequest {
     const NAME: &'static str = "CLIPRDR_FILECONTENTS_REQUEST";
-    const FIXED_PART_SIZE: usize = 4 /* streamId */ + 4 /* idx */ + 4 /* flags */ + 8 /* position */ + 4 /* reqSize */;
+    const FIXED_PART_SIZE: usize = 4 /* streamId */ + 4 /* lindex */ + 4 /* dwFlags */ + 8 /* nPositionLow + nPositionHigh */ + 4 /* cbRequested */;
 
     fn inner_size(&self) -> usize {
         let data_id_size = match self.data_id {
@@ -185,6 +226,12 @@ impl FileContentsRequest {
 }
 
 impl Encode for FileContentsRequest {
+    /// Encodes the request into the wire format.
+    ///
+    /// Note: this does not enforce the spec constraints from [MS-RDPECLIP] 2.2.5.3
+    /// (e.g., that SIZE requests have `cbRequested = 8` and `position = 0`).
+    /// Callers that build these PDUs are responsible for setting fields correctly;
+    /// use [`FileContentsFlags::validate`] to check flag consistency.
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = PartialHeader::new(cast_int!("dataLen", self.inner_size())?);
         header.encode(dst)?;
@@ -192,7 +239,7 @@ impl Encode for FileContentsRequest {
         ensure_size!(in: dst, size: self.inner_size());
 
         dst.write_u32(self.stream_id);
-        dst.write_u32(self.index);
+        dst.write_i32(self.index);
         dst.write_u32(self.flags.bits());
 
         let (position_lo, position_hi) = split_u64(self.position);
@@ -230,13 +277,40 @@ impl<'de> Decode<'de> for FileContentsRequest {
         ensure_size!(in: src, size: expected_size);
 
         let stream_id = src.read_u32();
-        let index = src.read_u32();
+        let index = src.read_i32();
         let flags = FileContentsFlags::from_bits_retain(src.read_u32());
         let position_lo = src.read_u32();
         let position_hi = src.read_u32();
         let position = combine_u64(position_lo, position_hi);
         let requested_size = src.read_u32();
         let data_id = if read_data_id { Some(src.read_u32()) } else { None };
+
+        // [MS-RDPECLIP] 2.2.5.3 - Validate lindex is non-negative
+        if index < 0 {
+            return Err(invalid_field_err!(
+                "lindex",
+                "file index must be non-negative per MS-RDPECLIP 2.2.5.3"
+            ));
+        }
+
+        // [MS-RDPECLIP] 2.2.5.3 - Validate flags are spec-compliant
+        flags.validate().map_err(|e| invalid_field_err!("dwFlags", e))?;
+
+        // [MS-RDPECLIP] 2.2.5.3 - Validate SIZE request constraints
+        if flags.contains(FileContentsFlags::SIZE) {
+            if requested_size != 8 {
+                return Err(invalid_field_err!(
+                    "cbRequested",
+                    "SIZE request must have cbRequested=8 per MS-RDPECLIP 2.2.5.3"
+                ));
+            }
+            if position != 0 {
+                return Err(invalid_field_err!(
+                    "position",
+                    "SIZE request must have position=0 per MS-RDPECLIP 2.2.5.3"
+                ));
+            }
+        }
 
         Ok(Self {
             stream_id,

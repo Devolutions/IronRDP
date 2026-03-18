@@ -623,7 +623,7 @@ async fn active_session(
                         active_stage.graceful_shutdown()?
                     }
                     RdpInputEvent::Clipboard(event) => {
-                        if let Some(cliprdr) = active_stage.get_svc_processor::<cliprdr::CliprdrClient>() {
+                        if let Some(cliprdr) = active_stage.get_svc_processor_mut::<cliprdr::CliprdrClient>() {
                             if let Some(svc_messages) = match event {
                                 ClipboardMessage::SendInitiateCopy(formats) => {
                                     Some(cliprdr.initiate_copy(&formats)
@@ -635,14 +635,6 @@ async fn active_session(
                                 }
                                 ClipboardMessage::SendInitiatePaste(format) => {
                                     Some(cliprdr.initiate_paste(format)
-                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
-                                }
-                                ClipboardMessage::SendLockClipboard { clip_data_id } => {
-                                    Some(cliprdr.lock_clipboard(clip_data_id)
-                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
-                                }
-                                ClipboardMessage::SendUnlockClipboard { clip_data_id } => {
-                                    Some(cliprdr.unlock_clipboard(clip_data_id)
                                         .map_err(|e| session::custom_err!("CLIPRDR", e))?)
                                 }
                                 ClipboardMessage::SendFileContentsRequest(request) => {

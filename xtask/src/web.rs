@@ -32,6 +32,7 @@ pub fn check(sh: &Shell) -> anyhow::Result<()> {
 
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run lint")?;
+    run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run test")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_RDP_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_RDP_PATH, "{NPM} run lint")?;
     run_cmd_in!(sh, IRON_SVELTE_CLIENT_PATH, "{NPM} run check")?;

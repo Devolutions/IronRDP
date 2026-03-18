@@ -28,10 +28,31 @@ export class ClipboardService {
     private lastSentClipboardData: ClipboardData | null = null;
     private clipboardDataToSave: ClipboardData | null = null;
     private lastClipboardMonitorLoopError: Error | null = null;
+    // When true, the clipboard monitoring loop skips reading/sending clipboard updates.
+    // Used to prevent the monitoring loop from clobbering an active file upload's
+    // FormatList with a text/image clipboard update.
+    private monitoringSuppressed: boolean = false;
 
     constructor(remoteDesktopService: RemoteDesktopService, module: RemoteDesktopModule) {
         this.remoteDesktopService = remoteDesktopService;
         this.module = module;
+    }
+
+    /**
+     * Suppress clipboard monitoring. While suppressed, the 100ms monitoring
+     * loop will skip reading the local clipboard and sending updates to the
+     * remote. This prevents the monitor from clobbering a file upload's
+     * FormatList announcement with a text/image clipboard update.
+     */
+    suppressMonitoring(): void {
+        this.monitoringSuppressed = true;
+    }
+
+    /**
+     * Resume clipboard monitoring after a previous {@link suppressMonitoring} call.
+     */
+    resumeMonitoring(): void {
+        this.monitoringSuppressed = false;
     }
 
     async initClipboard() {
@@ -268,6 +289,10 @@ export class ClipboardService {
     private async onMonitorClipboard(): Promise<void> {
         let stopped = false;
         try {
+            if (this.monitoringSuppressed) {
+                return;
+            }
+
             if (!document.hasFocus()) {
                 return;
             }
