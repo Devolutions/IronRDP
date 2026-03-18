@@ -6,7 +6,7 @@
 //! (full V-bar storage + short V-bar storage) to exploit recurring vertical
 //! column patterns typical of text glyphs.
 
-use ironrdp_core::{ensure_size, invalid_field_err, DecodeResult, ReadCursor};
+use ironrdp_core::{DecodeResult, ReadCursor, ensure_size, invalid_field_err};
 
 /// Maximum band height per the spec.
 pub const MAX_BAND_HEIGHT: u16 = 52;

@@ -181,7 +181,7 @@ mod tests {
         let full = VBarCache::reconstruct_full_vbar(&short, 4, 0xAA, 0xBB, 0xCC);
         // Height=4: 1 bg row, 2 data rows, 1 bg row
         assert_eq!(full.pixels.len(), 12); // 4 * 3
-                                           // Row 0: background
+        // Row 0: background
         assert_eq!(&full.pixels[0..3], &[0xAA, 0xBB, 0xCC]);
         // Row 1-2: pixel data
         assert_eq!(&full.pixels[3..9], &[0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00]);

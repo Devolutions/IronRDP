@@ -7,16 +7,16 @@
 mod glyph_cache;
 mod vbar_cache;
 
-pub use self::glyph_cache::{GlyphCache, GlyphEntry, GLYPH_CACHE_SIZE};
+pub use self::glyph_cache::{GLYPH_CACHE_SIZE, GlyphCache, GlyphEntry};
 pub use self::vbar_cache::{FullVBar, ShortVBar, VBarCache};
 
 /// Glyph cache size as u16 for index arithmetic. GLYPH_CACHE_SIZE=4000 fits in u16.
 const GLYPH_CACHE_WRAP: u16 = 4_000;
 
-use ironrdp_core::{invalid_field_err, DecodeResult, ReadCursor};
+use ironrdp_core::{DecodeResult, ReadCursor, invalid_field_err};
 use ironrdp_pdu::codecs::clearcodec::{
-    decode_bands_layer, decode_residual_layer, decode_subcodec_layer, encode_residual_layer, ClearCodecBitmapStream,
-    CompositePayload, RgbRunSegment, SubcodecId, VBar, FLAG_GLYPH_INDEX,
+    ClearCodecBitmapStream, CompositePayload, FLAG_GLYPH_INDEX, RgbRunSegment, SubcodecId, VBar, decode_bands_layer,
+    decode_residual_layer, decode_subcodec_layer, encode_residual_layer,
 };
 
 /// ClearCodec decoder maintaining persistent cache state across frames.
@@ -510,9 +510,9 @@ fn bgra_to_run_segments(bgra: &[u8], pixel_count: usize) -> Vec<RgbRunSegment> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use ironrdp_pdu::codecs::clearcodec::{FLAG_CACHE_RESET, FLAG_GLYPH_HIT};
+
+    use super::*;
 
     fn make_residual_only_stream(width: u16, height: u16, blue: u8, green: u8, red: u8) -> Vec<u8> {
         let pixel_count = u32::from(width) * u32::from(height);
@@ -568,7 +568,7 @@ mod tests {
         stream.push(FLAG_GLYPH_INDEX); // flags
         stream.push(0x00); // seq
         stream.extend_from_slice(&42u16.to_le_bytes()); // glyph_index = 42
-                                                        // Composite with 1-pixel residual (white)
+        // Composite with 1-pixel residual (white)
         let residual = [0xFF, 0xFF, 0xFF, 0x01]; // BGR white, run=1
         stream.extend_from_slice(&4u32.to_le_bytes()); // residual bytes
         stream.extend_from_slice(&0u32.to_le_bytes()); // bands bytes
@@ -614,7 +614,7 @@ mod tests {
 
         let pixels = decoder.decode(&stream, 2, 1).unwrap();
         assert_eq!(pixels.len(), 2 * 4); // 2 pixels * BGRA
-                                         // Pixel 0: red (BGR: 0x00, 0x00, 0xFF)
+        // Pixel 0: red (BGR: 0x00, 0x00, 0xFF)
         assert_eq!(&pixels[0..4], &[0x00, 0x00, 0xFF, 0xFF]);
         // Pixel 1: blue (BGR: 0xFF, 0x00, 0x00)
         assert_eq!(&pixels[4..8], &[0xFF, 0x00, 0x00, 0xFF]);
