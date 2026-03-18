@@ -8,6 +8,7 @@ use num_traits::FromPrimitive as _;
 
 use crate::codecs::rfx::FrameAcknowledgePdu;
 use crate::input::InputEventPdu;
+use crate::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 use crate::rdp::capability_sets::{ClientConfirmActive, ServerDemandActive};
 use crate::rdp::client_info;
 use crate::rdp::finalization_messages::{ControlPdu, FontPdu, MonitorLayoutPdu, SynchronizePdu};
@@ -330,6 +331,10 @@ pub enum ShareDataPdu {
     DrawGdiPusErrorPdu(Vec<u8>),
     ArcStatusPdu(Vec<u8>),
     StatusInfoPdu(Vec<u8>),
+    /// Auto-Detect Request (server to client)
+    AutoDetectReq(AutoDetectRequest),
+    /// Auto-Detect Response (client to server)
+    AutoDetectRsp(AutoDetectResponse),
 }
 
 impl ShareDataPdu {
@@ -362,6 +367,8 @@ impl ShareDataPdu {
             ShareDataPdu::DrawGdiPusErrorPdu(_) => "Draw GDI PUS Error PDU",
             ShareDataPdu::ArcStatusPdu(_) => "Arc Status PDU",
             ShareDataPdu::StatusInfoPdu(_) => "Status Info PDU",
+            ShareDataPdu::AutoDetectReq(_) => "Auto-Detect Request PDU",
+            ShareDataPdu::AutoDetectRsp(_) => "Auto-Detect Response PDU",
         }
     }
 
@@ -392,6 +399,7 @@ impl ShareDataPdu {
             ShareDataPdu::DrawGdiPusErrorPdu(_) => ShareDataPduType::DrawGdiPusErrorPdu,
             ShareDataPdu::ArcStatusPdu(_) => ShareDataPduType::ArcStatusPdu,
             ShareDataPdu::StatusInfoPdu(_) => ShareDataPduType::StatusInfoPdu,
+            ShareDataPdu::AutoDetectReq(_) | ShareDataPdu::AutoDetectRsp(_) => ShareDataPduType::AutoDetect,
         }
     }
 
@@ -432,6 +440,15 @@ impl ShareDataPdu {
             ShareDataPduType::DrawGdiPusErrorPdu => Ok(ShareDataPdu::DrawGdiPusErrorPdu(src.remaining().to_vec())),
             ShareDataPduType::ArcStatusPdu => Ok(ShareDataPdu::ArcStatusPdu(src.remaining().to_vec())),
             ShareDataPduType::StatusInfoPdu => Ok(ShareDataPdu::StatusInfoPdu(src.remaining().to_vec())),
+            ShareDataPduType::AutoDetect => {
+                ensure_size!(in: src, size: 2);
+                let type_id = src.remaining()[1];
+                if type_id == crate::rdp::autodetect::TYPE_ID_AUTODETECT_REQUEST {
+                    Ok(ShareDataPdu::AutoDetectReq(AutoDetectRequest::decode(src)?))
+                } else {
+                    Ok(ShareDataPdu::AutoDetectRsp(AutoDetectResponse::decode(src)?))
+                }
+            }
         }
     }
 }
@@ -450,6 +467,8 @@ impl Encode for ShareDataPdu {
             ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => Ok(()),
             ShareDataPdu::SuppressOutput(pdu) => pdu.encode(dst),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.encode(dst),
+            ShareDataPdu::AutoDetectReq(pdu) => pdu.encode(dst),
+            ShareDataPdu::AutoDetectRsp(pdu) => pdu.encode(dst),
             _ => Err(other_err!("Encoding not implemented")),
         }
     }
@@ -483,6 +502,8 @@ impl Encode for ShareDataPdu {
             | ShareDataPdu::DrawGdiPusErrorPdu(buffer)
             | ShareDataPdu::ArcStatusPdu(buffer)
             | ShareDataPdu::StatusInfoPdu(buffer) => buffer.len(),
+            ShareDataPdu::AutoDetectReq(pdu) => pdu.size(),
+            ShareDataPdu::AutoDetectRsp(pdu) => pdu.size(),
         }
     }
 }
@@ -576,6 +597,13 @@ pub enum ShareDataPduType {
     StatusInfoPdu = 0x36,
     MonitorLayoutPdu = 0x37,
     FrameAcknowledgePdu = 0x38,
+    /// Auto-Detect Request or Response ([MS-RDPBCGR 2.2.14]).
+    ///
+    /// The headerTypeId field within the PDU body discriminates direction:
+    /// 0x00 for server-to-client requests, 0x01 for client-to-server responses.
+    ///
+    /// [MS-RDPBCGR 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
+    AutoDetect = 0x3b,
 }
 
 impl ShareDataPduType {
