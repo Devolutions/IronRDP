@@ -4,6 +4,7 @@ import { ConfigBuilder } from '../services/ConfigBuilder';
 import type { Config } from '../services/Config';
 import type { Extension } from './Extension';
 import type { Callback } from '../lib/Observable';
+import type { FileTransferManager, FileTransferManagerOptions } from '../FileTransferManager';
 
 export interface UserInteraction {
     setVisibility(state: boolean): void;
@@ -19,6 +20,10 @@ export interface UserInteraction {
     ctrlAltDel(): void;
 
     metaKey(): void;
+
+    ctrlC(): void;
+
+    ctrlV(): void;
 
     shutdown(): void;
 
@@ -39,4 +44,14 @@ export interface UserInteraction {
     sendClipboardData(): Promise<void>;
 
     invokeExtension(ext: Extension): void;
+
+    /**
+     * Enable file transfer support. Must be called before connect().
+     * Returns a FileTransferManager that becomes active after connect() resolves.
+     * Implicitly enables clipboard (required for file transfer protocol).
+     *
+     * @param options - Optional configuration for the FileTransferManager
+     * @returns FileTransferManager instance ready for event handler registration
+     */
+    enableFileTransfer(options?: FileTransferManagerOptions): FileTransferManager;
 }

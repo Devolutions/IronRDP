@@ -47,6 +47,14 @@ public partial class ConnectionResult: IDisposable
         }
     }
 
+    public uint ShareId
+    {
+        get
+        {
+            return GetShareId();
+        }
+    }
+
     public ushort UserChannelId
     {
         get
@@ -103,6 +111,25 @@ public partial class ConnectionResult: IDisposable
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
             ushort retVal = result.Ok;
+            return retVal;
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public uint GetShareId()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionResult");
+            }
+            Raw.ConnectorResultFfiResultU32BoxIronRdpError result = Raw.ConnectionResult.GetShareId(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            uint retVal = result.Ok;
             return retVal;
         }
     }

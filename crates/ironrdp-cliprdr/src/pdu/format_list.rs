@@ -449,7 +449,7 @@ impl<'de> Decode<'de> for FormatListResponse {
         match header.message_flags {
             ClipboardPduFlags::RESPONSE_OK => Ok(FormatListResponse::Ok),
             ClipboardPduFlags::RESPONSE_FAIL => Ok(FormatListResponse::Fail),
-            _ => Err(invalid_field_err!("msgFlags", "Invalid format list message flags")),
+            _ => Err(invalid_field_err!("msgFlags", "invalid format list message flags")),
         }
     }
 }

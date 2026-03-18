@@ -36,7 +36,7 @@ anyhow = "1"
 expect-test.workspace = true
 hex = "0.4"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
-ironrdp-cliprdr.path = "../ironrdp-cliprdr"
+ironrdp-cliprdr = { path = "../ironrdp-cliprdr", features = ["__test"] }
 ironrdp-acceptor.path = "../ironrdp-acceptor"
 ironrdp-connector.path = "../ironrdp-connector"
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
@@ -46,10 +46,10 @@ ironrdp-egfx = { path = "../ironrdp-egfx" }
 ironrdp-fuzzing.path = "../ironrdp-fuzzing"
 ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-str.path = "../ironrdp-str"
+ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
-ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-session = { path = "../ironrdp-session", features = ["qoi"] }
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
