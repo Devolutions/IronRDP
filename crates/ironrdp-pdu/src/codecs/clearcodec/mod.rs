@@ -11,14 +11,14 @@ mod residual;
 mod rlex;
 mod subcodec;
 
-use ironrdp_core::{cast_length, ensure_size, invalid_field_err, DecodeResult, ReadCursor};
+use ironrdp_core::{DecodeResult, ReadCursor, cast_length, ensure_size, invalid_field_err};
 
 pub use self::bands::{
-    decode_bands_layer, Band, ShortVBarCacheMiss, VBar, MAX_BAND_HEIGHT, SHORT_VBAR_CACHE_SIZE, VBAR_CACHE_SIZE,
+    Band, MAX_BAND_HEIGHT, SHORT_VBAR_CACHE_SIZE, ShortVBarCacheMiss, VBAR_CACHE_SIZE, VBar, decode_bands_layer,
 };
-pub use self::residual::{decode_residual_layer, encode_residual_layer, RgbRunSegment};
-pub use self::rlex::{decode_rlex, RlexData, RlexSegment, MAX_PALETTE_COUNT};
-pub use self::subcodec::{decode_subcodec_layer, Subcodec, SubcodecId};
+pub use self::residual::{RgbRunSegment, decode_residual_layer, encode_residual_layer};
+pub use self::rlex::{MAX_PALETTE_COUNT, RlexData, RlexSegment, decode_rlex};
+pub use self::subcodec::{Subcodec, SubcodecId, decode_subcodec_layer};
 
 // --- Flag constants ---
 

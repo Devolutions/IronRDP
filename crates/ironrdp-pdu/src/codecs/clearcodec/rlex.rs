@@ -4,7 +4,7 @@
 //! It encodes each pixel as a pair: a "run" of repeated color followed
 //! by a "suite" (sequential palette walk from startIndex to stopIndex).
 
-use ironrdp_core::{ensure_size, invalid_field_err, DecodeResult, ReadCursor};
+use ironrdp_core::{DecodeResult, ReadCursor, ensure_size, invalid_field_err};
 
 /// Maximum palette size per spec.
 pub const MAX_PALETTE_COUNT: u8 = 127;
@@ -184,10 +184,10 @@ mod tests {
         data.push(2); // palette_count
         data.extend_from_slice(&[0x00, 0x00, 0x00]); // black BGR
         data.extend_from_slice(&[0xFF, 0xFF, 0xFF]); // white BGR
-                                                     // Segment: packed byte, stop_index=0 (1 bit), suite_depth=0 (7 bits), run=5
+        // Segment: packed byte, stop_index=0 (1 bit), suite_depth=0 (7 bits), run=5
         data.push(0x00); // packed: stop=0, depth=0
         data.push(5); // run_length=5
-                      // Segment: stop_index=1, suite_depth=0, run=3
+        // Segment: stop_index=1, suite_depth=0, run=3
         data.push(0x01); // packed: stop=1, depth=0
         data.push(3); // run_length=3
 

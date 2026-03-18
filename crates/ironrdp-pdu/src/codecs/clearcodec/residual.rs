@@ -4,7 +4,7 @@
 //! run-length-encoded BGR pixel runs. This forms the base layer onto which
 //! bands and subcodec regions are composited.
 
-use ironrdp_core::{ensure_size, DecodeResult, ReadCursor};
+use ironrdp_core::{DecodeResult, ReadCursor, ensure_size};
 
 /// A single BGR run-length segment.
 ///
