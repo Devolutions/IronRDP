@@ -915,6 +915,7 @@ impl DvcClientProcessor for GraphicsPipelineClient {}
 /// ClearCodec produces BGRA output per [MS-RDPEGFX 2.2.4.1]. Reorder to
 /// [R, G, B, A] for the uniform `BitmapUpdate` pixel format.
 fn convert_bgra_to_rgba(src: &[u8]) -> Vec<u8> {
+    debug_assert!(src.len() % 4 == 0, "BGRA input length not aligned to 4 bytes");
     let mut dst = Vec::with_capacity(src.len());
     for pixel in src.chunks_exact(4) {
         dst.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
