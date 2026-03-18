@@ -94,7 +94,7 @@ impl WinCliprdrInner {
     fn new() -> Result<WinCliprdrInner, Box<IronRdpError>> {
         let (sender, receiver) = std::sync::mpsc::channel();
 
-        let proxy = crate::clipboard::FfiClipbarodMessageProxy { sender };
+        let proxy = crate::clipboard::FfiClipboardMessageProxy { sender };
 
         let clipboard = ironrdp_cliprdr_native::WinClipboard::new(proxy)?;
 
