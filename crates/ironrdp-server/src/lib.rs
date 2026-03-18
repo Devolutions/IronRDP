@@ -6,6 +6,7 @@ pub use {tokio, tokio_rustls};
 
 mod macros;
 
+pub mod autodetect;
 mod builder;
 mod capabilities;
 mod clipboard;
