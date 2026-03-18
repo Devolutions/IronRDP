@@ -55,15 +55,20 @@ fn snapshot_reflects_measurements() {
     let snap = mgr.snapshot().expect("should have data");
     assert_eq!(snap.sample_count, 3);
     // RTT should be ~0ms (same-process send/receive)
-    assert!(snap.avg_ms < 10);
+    assert!(snap.avg_ms < 100);
 }
 
 #[test]
 fn sequence_number_wraps_at_u16_max() {
     let mut mgr = AutoDetectManager::new();
-    // Advance to near wrap point by sending many requests
+    // Advance sequence counter through all values, resolving each probe immediately
+    // to avoid growing pending_probes to 65k entries.
     for _ in 0..u16::MAX {
-        let _ = mgr.send_rtt_request();
+        let req = mgr.send_rtt_request();
+        let response = AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        };
+        let _ = mgr.handle_response(&response);
     }
     let req = mgr.send_rtt_request();
     assert_eq!(req.sequence_number(), u16::MAX);

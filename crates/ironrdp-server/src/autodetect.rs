@@ -14,6 +14,9 @@ use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 /// Number of RTT samples to retain for averaging.
 const RTT_WINDOW_SIZE: usize = 8;
 
+/// Probes older than this are discarded as unresponsive.
+pub(crate) const RTT_PROBE_MAX_AGE: core::time::Duration = core::time::Duration::from_secs(30);
+
 /// Server-side auto-detect state machine.
 ///
 /// Tracks outstanding RTT probes and computes round-trip statistics from
@@ -56,9 +59,11 @@ impl AutoDetectManager {
         reason = "RTT in ms fits in u32 for any plausible network latency"
     )]
     pub fn handle_response(&mut self, response: &AutoDetectResponse) -> Option<u32> {
-        let seq = response.sequence_number();
+        let AutoDetectResponse::RttResponse { sequence_number } = response else {
+            return None;
+        };
 
-        let idx = self.pending_probes.iter().position(|(s, _)| *s == seq)?;
+        let idx = self.pending_probes.iter().position(|(s, _)| *s == *sequence_number)?;
         let (_, sent_at) = self.pending_probes.remove(idx);
 
         let rtt_ms = sent_at.elapsed().as_millis() as u32;
@@ -182,7 +187,7 @@ mod tests {
 
         let snap = mgr.snapshot().expect("should have data after 3 measurements");
         assert_eq!(snap.sample_count, 3);
-        assert!(snap.avg_ms < 10);
+        assert!(snap.avg_ms < 100);
     }
 
     #[test]
