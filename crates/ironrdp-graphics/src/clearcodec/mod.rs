@@ -23,7 +23,6 @@ use ironrdp_pdu::codecs::clearcodec::{
 pub struct ClearCodecDecoder {
     vbar_cache: VBarCache,
     glyph_cache: GlyphCache,
-    expected_seq: u8,
 }
 
 impl ClearCodecDecoder {
@@ -31,7 +30,6 @@ impl ClearCodecDecoder {
         Self {
             vbar_cache: VBarCache::new(),
             glyph_cache: GlyphCache::new(),
-            expected_seq: 0,
         }
     }
 
@@ -43,13 +41,6 @@ impl ClearCodecDecoder {
     pub fn decode(&mut self, data: &[u8], width: u16, height: u16) -> DecodeResult<Vec<u8>> {
         let mut src = ReadCursor::new(data);
         let stream = ClearCodecBitmapStream::decode(&mut src)?;
-
-        // Per spec (2.2.4.1 seqNumber): must increment by 1, wrapping 0xFF -> 0x00.
-        // Mismatches indicate packet loss or server restart. We tolerate them
-        // (FreeRDP does too) but re-sync to the received sequence number.
-        // ironrdp-graphics has no tracing dependency, so callers that need
-        // diagnostics should track sequence numbers externally.
-        self.expected_seq = stream.seq_number.wrapping_add(1);
 
         // Handle cache reset
         if stream.is_cache_reset() {
@@ -78,6 +69,9 @@ impl ClearCodecDecoder {
                 .glyph_cache
                 .get(glyph_index)
                 .ok_or_else(|| invalid_field_err!("glyphIndex", "glyph cache miss on hit"))?;
+            if entry.width != width || entry.height != height {
+                return Err(invalid_field_err!("glyphIndex", "cached glyph dimensions mismatch"));
+            }
             return Ok(entry.pixels.clone());
         }
 
@@ -211,6 +205,12 @@ impl ClearCodecDecoder {
                     .vbar_cache
                     .get_short_vbar(*index)
                     .ok_or_else(|| invalid_field_err!("shortVbarIndex", "short V-bar cache miss on hit"))?;
+                if usize::from(*y_on) + usize::from(cached_short.pixel_count) > usize::from(band_height) {
+                    return Err(invalid_field_err!(
+                        "shortVBarYOn",
+                        "y_on + pixel_count exceeds band height"
+                    ));
+                }
                 // Create a modified short vbar with the y_on from this reference
                 let modified = ShortVBar {
                     y_on: *y_on,
@@ -276,12 +276,17 @@ impl ClearCodecDecoder {
                 // RLEX: decode palette + run/suite segments
                 let rlex = ironrdp_pdu::codecs::clearcodec::decode_rlex(sub.bitmap_data)?;
                 let w = usize::from(sub.width);
+                let h = usize::from(sub.height);
+                let pixel_budget = w * h;
                 let mut px = 0usize;
 
                 for seg in &rlex.segments {
                     // Run: repeat start_index color for run_length pixels
                     if let Some(color) = rlex.palette.get(usize::from(seg.start_index)) {
                         for _ in 0..seg.run_length {
+                            if px >= pixel_budget {
+                                break;
+                            }
                             let col = px % w;
                             let row = px / w;
                             let x = usize::from(sub.x_start) + col;
@@ -299,6 +304,9 @@ impl ClearCodecDecoder {
 
                     // Suite: sequential palette walk from start_index to stop_index
                     for palette_idx in seg.start_index..=seg.stop_index {
+                        if px >= pixel_budget {
+                            break;
+                        }
                         if let Some(color) = rlex.palette.get(usize::from(palette_idx)) {
                             let col = px % w;
                             let row = px / w;
@@ -363,6 +371,7 @@ impl ClearCodecEncoder {
     pub fn encode(&mut self, bgra: &[u8], width: u16, height: u16) -> Vec<u8> {
         let w = usize::from(width);
         let h = usize::from(height);
+        // u16 * u16 cannot overflow usize on any supported target
         let pixel_count = w * h;
         let use_glyph = pixel_count <= 1024;
 
@@ -408,6 +417,8 @@ impl ClearCodecEncoder {
         }
 
         // Composite payload: residual only (bands=0, subcodec=0)
+        // ClearCodec tiles are bounded by EGFX surface limits, so residual
+        // data for a single tile is always well within u32 range.
         let residual_len = u32::try_from(residual_data.len()).unwrap_or(u32::MAX);
         out.extend_from_slice(&residual_len.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes()); // bandsByteCount

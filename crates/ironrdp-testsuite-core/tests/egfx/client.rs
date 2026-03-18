@@ -495,22 +495,29 @@ fn client_dispatches_clearcodec_via_process() {
 
 #[test]
 fn client_clearcodec_produces_rgba_output() {
-    // Use a handler that captures bitmap data for verification
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct CapturedBitmap {
+        data: Option<Vec<u8>>,
+        codec: Option<Codec1Type>,
+    }
+
     struct CapturingHandler {
-        last_bitmap: Option<Vec<u8>>,
-        last_codec: Option<Codec1Type>,
+        captured: Arc<Mutex<CapturedBitmap>>,
     }
 
     impl GraphicsPipelineHandler for CapturingHandler {
         fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
-            self.last_bitmap = Some(update.data.clone());
-            self.last_codec = Some(update.codec_id);
+            let mut cap = self.captured.lock().unwrap();
+            cap.data = Some(update.data.clone());
+            cap.codec = Some(update.codec_id);
         }
     }
 
+    let captured = Arc::new(Mutex::new(CapturedBitmap::default()));
     let handler = CapturingHandler {
-        last_bitmap: None,
-        last_codec: None,
+        captured: Arc::clone(&captured),
     };
     let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
 
@@ -549,9 +556,13 @@ fn client_clearcodec_produces_rgba_output() {
         .process(0, &encode_for_process(&pdu))
         .expect("ClearCodec should succeed");
 
-    // Access handler through the client's internal state isn't possible via public API,
-    // but we can verify the process succeeded without error. The BGRA-to-RGBA conversion
-    // is tested at the unit level in client.rs.
+    // Verify BGRA-to-RGBA conversion: blue (BGRA FF,00,00,FF) -> RGBA (00,00,FF,FF)
+    let cap = captured.lock().unwrap();
+    assert_eq!(cap.codec, Some(Codec1Type::ClearCodec));
+    let bitmap = cap.data.as_ref().expect("handler should have received bitmap");
+    assert_eq!(bitmap.len(), 8, "2 pixels * 4 bytes");
+    assert_eq!(&bitmap[0..4], &[0x00, 0x00, 0xFF, 0xFF], "pixel 0: blue in RGBA");
+    assert_eq!(&bitmap[4..8], &[0x00, 0xFF, 0x00, 0xFF], "pixel 1: green in RGBA");
 }
 
 #[test]

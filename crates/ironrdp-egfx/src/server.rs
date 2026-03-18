@@ -1377,6 +1377,7 @@ impl GraphicsPipelineServer {
             return None;
         }
         if self.should_backpressure() {
+            self.qoe.record_backpressure();
             return None;
         }
 
