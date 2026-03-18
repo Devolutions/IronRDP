@@ -9,8 +9,7 @@
 
 use ironrdp_pdu::codecs::clearcodec::{SHORT_VBAR_CACHE_SIZE, VBAR_CACHE_SIZE};
 
-// Cache sizes as u16 for cursor wrapping arithmetic.
-// Must match VBAR_CACHE_SIZE (32,768) and SHORT_VBAR_CACHE_SIZE (16,384).
+// VBAR_CACHE_SIZE (32,768) and SHORT_VBAR_CACHE_SIZE (16,384) as u16 for cursor wrapping.
 const VBAR_WRAP: u16 = 32_768;
 const SHORT_VBAR_WRAP: u16 = 16_384;
 
