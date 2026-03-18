@@ -709,6 +709,7 @@ impl RdpServer {
                 },
                 ServerEvent::AutoDetectRttRequest => {
                     if let Some(ref mut ad) = self.autodetect {
+                        ad.expire_stale_probes(crate::autodetect::RTT_PROBE_MAX_AGE);
                         let request = ad.send_rtt_request();
                         let data = encode_share_data_pdu(
                             rdp::headers::ShareDataPdu::AutoDetectReq(request),
@@ -1178,7 +1179,7 @@ fn encode_share_data_pdu(
     };
     let pdu = rdp::headers::ShareControlHeader {
         share_id: 0,
-        pdu_source: io_channel_id,
+        pdu_source: user_channel_id,
         share_control_pdu: ShareControlPdu::Data(header),
     };
     let user_data = encode_vec(&pdu)?.into();
