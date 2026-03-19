@@ -139,7 +139,7 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                     }
                     EntropyAlgorithm::Rlgr3 => {
                         let two_ms1 = get_2magsign(input_first);
-                        let two_ms2 = input.next().map(|&n| get_2magsign(n)).unwrap_or(1);
+                        let two_ms2 = input.next().map(|&n| get_2magsign(n)).unwrap_or(0);
                         let sum2ms = two_ms1 + two_ms2;
                         code_gr(&mut bits, &mut krp, sum2ms);
 
