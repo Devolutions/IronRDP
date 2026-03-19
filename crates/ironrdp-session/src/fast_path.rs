@@ -286,11 +286,7 @@ impl Processor {
                         15 => image.apply_rgb15_bitmap(update.bitmap_data, &update.rectangle)?,
                         16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
                         24 => image.apply_bgr24_bitmap(update.bitmap_data, &update.rectangle)?,
-                        32 => image.apply_rgb32_bitmap(
-                            update.bitmap_data,
-                            PixelFormat::BgrX32,
-                            &update.rectangle,
-                        )?,
+                        32 => image.apply_rgb32_bitmap(update.bitmap_data, PixelFormat::BgrX32, &update.rectangle)?,
                         _ => {
                             warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
                             update.rectangle.clone()

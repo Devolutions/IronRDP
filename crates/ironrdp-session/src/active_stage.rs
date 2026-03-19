@@ -362,9 +362,9 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),
             // GraphicsUpdate and PointerUpdate are consumed in ActiveStage::process()
             // before reaching this conversion.
-            x224::ProcessorOutput::GraphicsUpdate(_) | x224::ProcessorOutput::PointerUpdate(_) => {
-                unreachable!("slow-path updates are handled directly in ActiveStage::process()")
-            }
+            x224::ProcessorOutput::GraphicsUpdate(_) | x224::ProcessorOutput::PointerUpdate(_) => Err(
+                SessionError::general("slow-path graphics/pointer updates should be handled before this conversion"),
+            ),
         }
     }
 }

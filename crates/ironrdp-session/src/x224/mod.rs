@@ -217,6 +217,10 @@ impl Processor {
                         debug!(pdu = %ctx.pdu.as_short_name(), "Auto-detect request not yet implemented");
                         Ok(Vec::new())
                     }
+                    // TODO: slow-path payloads may be bulk-compressed when
+                    // ClientInfoFlags::COMPRESSION is negotiated. Decompression
+                    // should happen here before passing data downstream. Currently
+                    // IronRDP does not wire bulk decompression into this path.
                     ShareDataPdu::Update(data) => {
                         debug!("Got slow-path graphics update ({} bytes)", data.len());
                         Ok(vec![ProcessorOutput::GraphicsUpdate(data)])
