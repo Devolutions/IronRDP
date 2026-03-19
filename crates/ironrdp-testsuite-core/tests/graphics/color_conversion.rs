@@ -1595,3 +1595,59 @@ const XRGB_BUFFER: [u8; 4 * 64 * 64] = [
     0xf7, 0x00, 0x14, 0x9d, 0xf7, 0x00, 0x13, 0x9c, 0xf6, 0x00, 0x12, 0x9b, 0xf5, 0x00, 0x12, 0x9b, 0xf5, 0x00, 0x12,
     0x9b, 0xf5, 0x00, 0x12, 0x9b, 0xf5,
 ];
+
+#[test]
+fn rdp_15bit_black() {
+    assert_eq!(rdp_15bit_to_rgb(0x0000), [0, 0, 0]);
+}
+
+#[test]
+fn rdp_15bit_white() {
+    assert_eq!(rdp_15bit_to_rgb(0x7FFF), [255, 255, 255]);
+}
+
+#[test]
+fn rdp_15bit_pure_red() {
+    // R=31, G=0, B=0: 0_11111_00000_00000 = 0x7C00
+    assert_eq!(rdp_15bit_to_rgb(0x7C00), [255, 0, 0]);
+}
+
+#[test]
+fn rdp_15bit_pure_green() {
+    // R=0, G=31, B=0: 0_00000_11111_00000 = 0x03E0
+    assert_eq!(rdp_15bit_to_rgb(0x03E0), [0, 255, 0]);
+}
+
+#[test]
+fn rdp_15bit_pure_blue() {
+    // R=0, G=0, B=31: 0_00000_00000_11111 = 0x001F
+    assert_eq!(rdp_15bit_to_rgb(0x001F), [0, 0, 255]);
+}
+
+#[test]
+fn rdp_16bit_black() {
+    assert_eq!(rdp_16bit_to_rgb(0x0000), [0, 0, 0]);
+}
+
+#[test]
+fn rdp_16bit_white() {
+    assert_eq!(rdp_16bit_to_rgb(0xFFFF), [255, 255, 255]);
+}
+
+#[test]
+fn rdp_16bit_pure_red() {
+    // R=31, G=0, B=0: 11111_000000_00000 = 0xF800
+    assert_eq!(rdp_16bit_to_rgb(0xF800), [255, 0, 0]);
+}
+
+#[test]
+fn rdp_16bit_pure_green() {
+    // R=0, G=63, B=0: 00000_111111_00000 = 0x07E0
+    assert_eq!(rdp_16bit_to_rgb(0x07E0), [0, 255, 0]);
+}
+
+#[test]
+fn rdp_16bit_pure_blue() {
+    // R=0, G=0, B=31: 00000_000000_11111 = 0x001F
+    assert_eq!(rdp_16bit_to_rgb(0x001F), [0, 0, 255]);
+}

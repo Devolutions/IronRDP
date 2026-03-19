@@ -155,3 +155,44 @@ fn buffer_size_boundary_fast_path_update() {
     };
     assert_eq!(fph.size(), 3);
 }
+
+// Minimal palette: pad(2) + numberColors(1) + 1 x TS_COLOR_QUAD [B, G, R, pad]
+const PALETTE_PAYLOAD: [u8; 10] = [
+    0x00, 0x00, // pad
+    0x01, 0x00, 0x00, 0x00, // numberColors = 1
+    0xFF, 0x00, 0x80, 0x00, // B=0xFF, G=0x00, R=0x80, pad=0x00
+];
+
+// header(1) + length(2) + payload(10)
+const FAST_PATH_PALETTE_BUFFER: [u8; 13] = [
+    0x02, // updateCode=Palette(0x2), fragmentation=Single(0x0)
+    0x0A, 0x00, // data length = 10 (LE)
+    0x00, 0x00, // pad
+    0x01, 0x00, 0x00, 0x00, // numberColors = 1
+    0xFF, 0x00, 0x80, 0x00, // B=0xFF, G=0x00, R=0x80, pad=0x00
+];
+
+#[test]
+fn from_buffer_correctly_parses_palette_update() {
+    let pdu = decode::<FastPathUpdatePdu<'_>>(FAST_PATH_PALETTE_BUFFER.as_ref()).unwrap();
+    assert_eq!(pdu.update_code, UpdateCode::Palette);
+    assert_eq!(pdu.fragmentation, Fragmentation::Single);
+    assert_eq!(pdu.data, PALETTE_PAYLOAD.as_ref());
+}
+
+#[test]
+fn palette_update_round_trips() {
+    let pdu = decode::<FastPathUpdatePdu<'_>>(FAST_PATH_PALETTE_BUFFER.as_ref()).unwrap();
+    let mut buffer = vec![0u8; pdu.size()];
+    encode(&pdu, buffer.as_mut_slice()).unwrap();
+    assert_eq!(FAST_PATH_PALETTE_BUFFER.as_ref(), buffer.as_slice());
+}
+
+#[test]
+fn palette_decode_with_code_returns_palette_variant() {
+    let update = FastPathUpdate::decode_with_code(&PALETTE_PAYLOAD, UpdateCode::Palette).unwrap();
+    match update {
+        FastPathUpdate::Palette(data) => assert_eq!(data, PALETTE_PAYLOAD.as_ref()),
+        other => panic!("Expected Palette variant, got: {other:?}"),
+    }
+}
