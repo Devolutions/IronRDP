@@ -769,6 +769,9 @@ impl iron_remote_desktop::Session for Session {
                             "Multitransport request received (UDP transport not implemented)"
                         );
                     }
+                    ActiveStageOutput::AutoDetect(request) => {
+                        debug!(?request, "Auto-detect");
+                    }
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
             }

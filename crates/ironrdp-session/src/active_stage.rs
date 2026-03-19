@@ -9,6 +9,7 @@ use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
@@ -312,6 +313,15 @@ pub enum ActiveStageOutput {
     ///
     /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
     MultitransportRequest(MultitransportRequestPdu),
+    /// Server-reported network characteristics ([\[MS-RDPBCGR\] 2.2.14.1.5]).
+    ///
+    /// Contains an [`AutoDetectRequest::NetworkCharacteristicsResult`] with
+    /// RTT and/or bandwidth measurements computed by the server.
+    ///
+    /// See [\[MS-RDPBCGR\] 2.2.14.1.5].
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.14.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/228ffc5c-b60c-4d3e-9781-ac613f822fdf
+    AutoDetect(AutoDetectRequest),
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
@@ -334,6 +344,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
             }
             x224::ProcessorOutput::DeactivateAll(cas) => Ok(Self::DeactivateAll(cas)),
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
+            x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),
         }
     }
 }
