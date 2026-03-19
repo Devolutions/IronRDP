@@ -15,7 +15,7 @@ use ironrdp_pdu::x224::X224;
 use ironrdp_session::x224::Processor;
 use ironrdp_svc::StaticChannelSet;
 
-const USER_CHANNEL_ID: u16 = 1003;
+const USER_CHANNEL_ID: u16 = 1002;
 const IO_CHANNEL_ID: u16 = 1003;
 const SHARE_ID: u32 = 0x0001_0000;
 
