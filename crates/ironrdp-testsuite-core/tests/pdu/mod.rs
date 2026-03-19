@@ -9,4 +9,5 @@ mod mcs;
 mod pointer;
 mod rdp;
 mod rfx;
+mod slow_path;
 mod x224;
