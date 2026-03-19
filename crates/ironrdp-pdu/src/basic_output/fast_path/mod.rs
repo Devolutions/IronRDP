@@ -222,8 +222,9 @@ pub enum FastPathUpdate<'a> {
     Bitmap(BitmapUpdateData<'a>),
     Pointer(PointerUpdateData<'a>),
     /// Raw palette update data (TS_UPDATE_PALETTE_DATA).
-    /// Contains numberColors (u32) followed by TS_COLOR_QUAD entries [B, G, R, pad].
-    Palette(Vec<u8>),
+    /// Layout: pad(2) + numberColors(u32) + N x TS_COLOR_QUAD [B, G, R, pad].
+    /// See MS-RDPBCGR 2.2.9.1.1.3.1.1.
+    Palette(&'a [u8]),
 }
 
 impl<'a> FastPathUpdate<'a> {
@@ -246,7 +247,7 @@ impl<'a> FastPathUpdate<'a> {
             }
             UpdateCode::Bitmap => Ok(Self::Bitmap(decode_cursor(src)?)),
             UpdateCode::Palette => {
-                let data = src.remaining().to_vec();
+                let data = src.remaining();
                 src.advance(data.len());
                 Ok(Self::Palette(data))
             }

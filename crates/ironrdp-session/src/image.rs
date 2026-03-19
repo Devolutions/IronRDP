@@ -606,6 +606,14 @@ impl DecodedImage {
         rgb15: &[u8],
         update_rectangle: &InclusiveRectangle,
     ) -> SessionResult<InclusiveRectangle> {
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgb15 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+
         const SRC_COLOR_DEPTH: usize = 2;
         const DST_COLOR_DEPTH: usize = 4;
 
@@ -653,6 +661,14 @@ impl DecodedImage {
         bgr24: &[u8],
         update_rectangle: &InclusiveRectangle,
     ) -> SessionResult<InclusiveRectangle> {
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping bgr24 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+
         const SRC_COLOR_DEPTH: usize = 3;
         const DST_COLOR_DEPTH: usize = 4;
 
@@ -695,6 +711,14 @@ impl DecodedImage {
         update_rectangle: &InclusiveRectangle,
         palette: &[[u8; 3]; 256],
     ) -> SessionResult<InclusiveRectangle> {
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgb8 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+
         const DST_COLOR_DEPTH: usize = 4;
 
         let image_width = usize::from(self.width);
