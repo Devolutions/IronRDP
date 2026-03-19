@@ -477,6 +477,7 @@ impl Config {
             domain: args.domain,
             enable_tls: !args.no_tls,
             enable_credssp: !args.no_credssp,
+            enable_standard_rdp_security: false,
             keyboard_type: KeyboardType::parse(args.keyboard_type),
             keyboard_subtype: args.keyboard_subtype,
             keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
