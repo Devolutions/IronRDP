@@ -57,6 +57,7 @@ fn test_config() -> ironrdp_connector::Config {
         timezone_info: Default::default(),
         alternate_shell: String::new(),
         work_dir: String::new(),
+	allow_encryption_level_none: false,
     }
 }
 

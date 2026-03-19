@@ -885,6 +885,7 @@ fn build_config(
         // TODO(#327): expose these options from the WASM module.
         enable_tls: true,
         enable_credssp: true,
+        allow_encryption_level_none: false,
         keyboard_type: ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
