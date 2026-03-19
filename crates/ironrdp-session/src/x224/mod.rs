@@ -33,6 +33,12 @@ pub enum ProcessorOutput {
     /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
     /// [`MultitransportResponsePdu`]: ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu
     MultitransportRequest(MultitransportRequestPdu),
+    /// Slow-path graphics update ([MS-RDPBCGR] 2.2.9.1.1.3).
+    /// Raw update payload starting with `updateType(u16)`.
+    GraphicsUpdate(Vec<u8>),
+    /// Slow-path pointer update ([MS-RDPBCGR] 2.2.9.1.1.4).
+    /// Raw pointer payload starting with `messageType(u16) + pad(u16)`.
+    PointerUpdate(Vec<u8>),
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +186,18 @@ impl Processor {
                                 DisconnectReason::UserRequested,
                             )),
                         ])
+                    }
+                    // TODO: slow-path payloads may be bulk-compressed when
+                    // ClientInfoFlags::COMPRESSION is negotiated. Decompression
+                    // should happen here before passing data downstream. Currently
+                    // IronRDP does not wire bulk decompression into this path.
+                    ShareDataPdu::Update(data) => {
+                        debug!("Got slow-path graphics update ({} bytes)", data.len());
+                        Ok(vec![ProcessorOutput::GraphicsUpdate(data)])
+                    }
+                    ShareDataPdu::Pointer(data) => {
+                        debug!("Got slow-path pointer update ({} bytes)", data.len());
+                        Ok(vec![ProcessorOutput::PointerUpdate(data)])
                     }
                     _ => Err(reason_err!(
                         "IO channel",
