@@ -781,6 +781,9 @@ async fn active_session(
                         "Multitransport request received (UDP transport not implemented)"
                     );
                 }
+                ActiveStageOutput::AutoDetect(request) => {
+                    debug!(?request, "Auto-detect");
+                }
                 ActiveStageOutput::Terminate(reason) => break 'outer reason,
             }
         }

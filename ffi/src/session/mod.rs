@@ -197,6 +197,7 @@ pub mod ffi {
         Terminate,
         DeactivateAll,
         MultitransportRequest,
+        AutoDetect,
     }
 
     impl ActiveStageOutput {
@@ -213,6 +214,7 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::MultitransportRequest { .. } => {
                     ActiveStageOutputType::MultitransportRequest
                 }
+                ironrdp::session::ActiveStageOutput::AutoDetect { .. } => ActiveStageOutputType::AutoDetect,
             }
         }
 
