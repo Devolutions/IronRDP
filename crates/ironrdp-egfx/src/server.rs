@@ -1356,6 +1356,52 @@ impl GraphicsPipelineServer {
         Some(frame_id)
     }
 
+    /// Queue a ClearCodec frame for transmission.
+    ///
+    /// ClearCodec is a mandatory lossless codec for all EGFX versions. It
+    /// provides excellent compression for text, UI elements, and icons.
+    ///
+    /// `bitmap_data` should be a pre-encoded ClearCodec bitmap stream
+    /// (as produced by `ironrdp_graphics::clearcodec::ClearCodecEncoder`).
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if backpressure is active
+    /// or the server is not ready.
+    pub fn send_clearcodec_frame(
+        &mut self,
+        surface_id: u16,
+        destination_rectangle: InclusiveRectangle,
+        bitmap_data: Vec<u8>,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        if !self.is_ready() {
+            return None;
+        }
+        if self.should_backpressure() {
+            self.qoe.record_backpressure();
+            return None;
+        }
+
+        let surface = self.surfaces.get(surface_id)?;
+
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+
+        self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id,
+            codec_id: Codec1Type::ClearCodec,
+            pixel_format: surface.pixel_format,
+            destination_rectangle,
+            bitmap_data,
+        }));
+
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Some(frame_id)
+    }
+
     // ========================================================================
     // Output Management
     // ========================================================================
