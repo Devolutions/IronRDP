@@ -193,7 +193,7 @@ impl Processor {
                         let response = AutoDetectResponse::RttResponse { sequence_number };
                         let mut frame = WriteBuf::new();
                         ironrdp_connector::legacy::encode_share_data(
-                            data_ctx.initiator_id,
+                            self.user_channel_id,
                             self.io_channel_id,
                             self.share_id,
                             ShareDataPdu::AutoDetectRsp(response),
@@ -203,9 +203,9 @@ impl Processor {
                         debug!(sequence_number, "Responded to auto-detect RTT request");
                         Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
                     }
-                    ShareDataPdu::AutoDetectReq(ref req @ AutoDetectRequest::NetworkCharacteristicsResult { .. }) => {
+                    ShareDataPdu::AutoDetectReq(req @ AutoDetectRequest::NetworkCharacteristicsResult { .. }) => {
                         debug!(?req, "Received network characteristics from server");
-                        Ok(vec![ProcessorOutput::AutoDetect(req.clone())])
+                        Ok(vec![ProcessorOutput::AutoDetect(req)])
                     }
                     ShareDataPdu::AutoDetectReq(_) => {
                         debug!(pdu = %ctx.pdu.as_short_name(), "Auto-detect request not yet implemented");
