@@ -131,7 +131,7 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                         let two_ms = get_2magsign(input_first);
                         code_gr(&mut bits, &mut krp, two_ms);
                         if two_ms == 0 {
-                            kp = min(kp + UP_GR, KP_MAX);
+                            kp = min(kp + UQ_GR, KP_MAX);
                         } else {
                             kp = kp.saturating_sub(DQ_GR);
                         }
