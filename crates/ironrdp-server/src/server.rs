@@ -417,8 +417,7 @@ impl RdpServer {
                 if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
                     // Generic streams don't expose peer address. Use a neutral
                     // placeholder; it's unclear whether CredSSP/NTLM actually
-                    // uses this value in practice (the original code noted
-                    // "doesn't seem to matter yet").
+                    // uses this value in practice.
                     let client_name = "rdp-client".to_owned();
 
                     ironrdp_acceptor::accept_credssp(
