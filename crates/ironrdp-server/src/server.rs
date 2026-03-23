@@ -382,7 +382,7 @@ impl RdpServer {
 
     pub async fn run_connection<S>(&mut self, stream: S) -> Result<()>
     where
-        S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
         let framed = TokioFramed::new(stream);
 
@@ -415,9 +415,11 @@ impl RdpServer {
                 acceptor.mark_security_upgrade_as_done();
 
                 if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
-                    let client_name = self
-                        .local_addr
-                        .map_or_else(|| "rdp-client".to_owned(), |a| a.to_string());
+                    // Generic streams don't expose peer address. Use a neutral
+                    // placeholder; it's unclear whether CredSSP/NTLM actually
+                    // uses this value in practice (the original code noted
+                    // "doesn't seem to matter yet").
+                    let client_name = "rdp-client".to_owned();
 
                     ironrdp_acceptor::accept_credssp(
                         &mut framed,
