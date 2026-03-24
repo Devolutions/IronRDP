@@ -3,7 +3,9 @@
 //! Measures compress + decompress throughput for MPPC (RDP4, RDP5),
 //! NCRUSH (RDP6), and XCRUSH (RDP6.1) with realistic input patterns.
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use core::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
 
 /// Text-like data (highly compressible, typical of protocol messages).
