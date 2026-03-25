@@ -11,11 +11,14 @@ pub(crate) struct Palette {
 }
 
 impl Palette {
-    /// Create a palette initialized with the default Windows system colors.
-    /// First 10 and last 10 entries are the standard VGA colors;
-    /// the middle 236 entries are black.
+    /// Create a palette initialized with the 20 static colors from the
+    /// Windows default system palette. Indices 0-9 and 246-255 are the
+    /// reserved static colors; the middle 236 entries (10-245) are black.
+    ///
+    /// Reference: <https://learn.microsoft.com/en-us/windows/win32/gdi/default-palette>
     pub(crate) fn system_default() -> Self {
         let mut colors = [[0u8; 3]; 256];
+        // Lower 10 static colors (indices 0-9)
         colors[0] = [0, 0, 0]; // Black
         colors[1] = [128, 0, 0]; // Dark Red
         colors[2] = [0, 128, 0]; // Dark Green
@@ -24,14 +27,19 @@ impl Palette {
         colors[5] = [128, 0, 128]; // Dark Magenta
         colors[6] = [0, 128, 128]; // Dark Cyan
         colors[7] = [192, 192, 192]; // Light Gray
-        colors[8] = [128, 128, 128]; // Dark Gray
-        colors[9] = [255, 0, 0]; // Red
-        colors[246] = [0, 255, 0]; // Green
-        colors[247] = [255, 255, 0]; // Yellow
-        colors[248] = [0, 0, 255]; // Blue
-        colors[249] = [255, 0, 255]; // Magenta
-        colors[250] = [0, 255, 255]; // Cyan
-        colors[251] = [255, 255, 255]; // White
+        colors[8] = [192, 220, 192]; // Money Green
+        colors[9] = [166, 202, 240]; // Sky Blue
+        // Upper 10 static colors (indices 246-255)
+        colors[246] = [255, 251, 240]; // Cream
+        colors[247] = [160, 160, 164]; // Medium Gray
+        colors[248] = [128, 128, 128]; // Dark Gray
+        colors[249] = [255, 0, 0]; // Red
+        colors[250] = [0, 255, 0]; // Green
+        colors[251] = [255, 255, 0]; // Yellow
+        colors[252] = [0, 0, 255]; // Blue
+        colors[253] = [255, 0, 255]; // Magenta
+        colors[254] = [0, 255, 255]; // Cyan
+        colors[255] = [255, 255, 255]; // White
         Self { colors }
     }
 
