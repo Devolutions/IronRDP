@@ -6,6 +6,7 @@ use std::sync::Arc;
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
+use ironrdp_str::fixed::FixedString;
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 use tracing::{debug, error, info, warn};
 
@@ -674,11 +675,11 @@ fn create_gcc_blocks<'a>(
             sec_access_sequence: SecureAccessSequence::Del,
             keyboard_layout: config.keyboard_layout,
             client_build: config.client_build,
-            client_name: config.client_name.clone(),
+            client_name: FixedString::new_truncating(&config.client_name),
             keyboard_type: config.keyboard_type,
             keyboard_subtype: config.keyboard_subtype,
             keyboard_functional_keys_count: config.keyboard_functional_keys_count,
-            ime_file_name: config.ime_file_name.clone(),
+            ime_file_name: FixedString::new_truncating(&config.ime_file_name),
             optional_data: ClientCoreOptionalData {
                 post_beta2_color_depth: Some(ColorDepth::Bpp8), // ignored because we set high_color_depth
                 client_product_id: Some(1),
@@ -699,7 +700,7 @@ fn create_gcc_blocks<'a>(
 
                     Some(early_capability_flags)
                 },
-                dig_product_id: Some(config.dig_product_id.clone()),
+                dig_product_id: Some(FixedString::new_truncating(&config.dig_product_id)),
                 connection_type: Some(ConnectionType::Lan),
                 server_selected_protocol: Some(selected_protocol),
                 desktop_physical_width: Some(0),  // 0 per FreeRDP

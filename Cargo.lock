@@ -2564,6 +2564,7 @@ dependencies = [
  "bitflags 2.10.0",
  "ironrdp-core",
  "ironrdp-pdu",
+ "ironrdp-str",
  "ironrdp-svc",
  "tracing",
 ]
@@ -2594,6 +2595,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
+ "ironrdp-str",
  "ironrdp-svc",
  "picky",
  "picky-asn1-der",
@@ -2628,6 +2630,7 @@ version = "0.5.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
+ "ironrdp-str",
  "ironrdp-svc",
  "slab",
  "tracing",
@@ -2769,6 +2772,7 @@ dependencies = [
  "expect-test",
  "ironrdp-core",
  "ironrdp-error",
+ "ironrdp-str",
  "md-5 0.10.6",
  "num-bigint",
  "num-derive",
@@ -2807,6 +2811,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
+ "ironrdp-str",
  "ironrdp-svc",
  "tracing",
 ]
@@ -2877,6 +2882,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpsnd",
+ "ironrdp-str",
  "ironrdp-svc",
  "ironrdp-tokio",
  "qoicoubeh",

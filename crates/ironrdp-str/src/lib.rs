@@ -28,6 +28,9 @@ pub mod multi_sz;
 #[cfg(feature = "alloc")]
 pub mod unframed;
 
+#[cfg(feature = "alloc")]
+pub mod ansi;
+
 /// Error returned when a wire string contains an invalid UTF-16 sequence (lone surrogate).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidUtf16;

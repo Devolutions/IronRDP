@@ -4,11 +4,12 @@ use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode, ensure_fixed_part_size,
     ensure_size, invalid_field_err, unsupported_value_err, write_padding,
 };
+use ironrdp_str::ansi;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 use thiserror::Error;
 
-use crate::{PduError, utils};
+use crate::PduError;
 
 mod bitmap;
 mod bitmap_cache;
@@ -220,11 +221,9 @@ impl<'de> Decode<'de> for DemandActive {
         let _combined_capabilities_length = usize::from(src.read_u16());
 
         ensure_size!(in: src, size: source_descriptor_length);
-        let source_descriptor = utils::decode_string(
-            src.read_slice(source_descriptor_length),
-            utils::CharacterSet::Ansi,
-            false,
-        )?;
+        let source_descriptor_bytes = src.read_slice(source_descriptor_length);
+        let source_descriptor = ansi::decode_ansi(source_descriptor_bytes)
+            .map_err(|_| invalid_field_err!("sourceDescriptor", "invalid UTF-8"))?;
 
         ensure_size!(in: src, size: 2 + 2);
         let capability_sets_count = usize::from(src.read_u16());

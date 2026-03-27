@@ -5,9 +5,8 @@ use ironrdp_core::{
     Decode, DecodeError, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
     ensure_fixed_part_size, ensure_size, invalid_field_err, unsupported_value_err,
 };
-use ironrdp_pdu::utils::{
-    CharacterSet, checked_sum, encoded_str_len, read_string_from_cursor, strict_sum, write_string_to_cursor,
-};
+use ironrdp_pdu::utils::{checked_sum, strict_sum};
+use ironrdp_str::ansi;
 use ironrdp_svc::SvcEncode;
 
 use crate::{DynamicChannelId, String, Vec};
@@ -884,7 +883,7 @@ impl CreateRequestPdu {
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::headerless_fixed_part_size(&header));
         let channel_id = header.cb_id.decode_val(src)?;
-        let channel_name = read_string_from_cursor(src, CharacterSet::Ansi, true)?;
+        let channel_name = ansi::read_ansi_null_term(src)?;
         Ok(Self {
             header,
             channel_id,
@@ -896,7 +895,7 @@ impl CreateRequestPdu {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
         self.header.cb_id.encode_val(self.channel_id, dst)?;
-        write_string_to_cursor(dst, &self.channel_name, CharacterSet::Ansi, true)?;
+        ansi::write_ansi_with_null(dst, &self.channel_name)?;
         Ok(())
     }
 
@@ -912,7 +911,7 @@ impl CreateRequestPdu {
         strict_sum(&[
             Header::size(),
             Self::headerless_fixed_part_size(&self.header), // ChannelId
-            encoded_str_len(&self.channel_name, CharacterSet::Ansi, true), // ChannelName + Null terminator
+            ansi::encoded_ansi_len_with_null(&self.channel_name), // ChannelName + Null terminator
         ])
     }
 }

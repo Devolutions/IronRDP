@@ -414,7 +414,7 @@ fn file_list_pdu_ms() {
                     file_size: Some(
                         44,
                     ),
-                    name: "File1.txt",
+                    name: FixedString<260>(Wire("File1.txt")),
                 },
                 FileDescriptor {
                     attributes: Some(
@@ -428,7 +428,7 @@ fn file_list_pdu_ms() {
                     file_size: Some(
                         10,
                     ),
-                    name: "File2.txt",
+                    name: FixedString<260>(Wire("File2.txt")),
                 },
             ]
         "#]]

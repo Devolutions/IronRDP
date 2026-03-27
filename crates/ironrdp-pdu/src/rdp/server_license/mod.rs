@@ -43,9 +43,6 @@ const PROTOCOL_VERSION_MASK: u8 = 0x0F;
 const BLOB_TYPE_SIZE: usize = 2;
 const BLOB_LENGTH_SIZE: usize = 2;
 
-const UTF8_NULL_TERMINATOR_SIZE: usize = 1;
-const UTF16_NULL_TERMINATOR_SIZE: usize = 2;
-
 const KEY_EXCHANGE_ALGORITHM_RSA: u32 = 1;
 
 const MAC_SIZE: usize = 16;

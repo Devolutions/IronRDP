@@ -7,11 +7,12 @@ use core::fmt::{Debug, Display};
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    DecodeError, DecodeResult, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size, ensure_size,
-    invalid_field_err, invalid_field_err_with_source, unsupported_value_err,
+    DecodeError, DecodeOwned as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, cast_length,
+    ensure_fixed_part_size, ensure_size, invalid_field_err, invalid_field_err_with_source, unsupported_value_err,
 };
 use ironrdp_pdu::utils::{CharacterSet, decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor};
 use ironrdp_pdu::{PduError, read_padding, write_padding};
+use ironrdp_str::prefixed::CbU32StringNoNull;
 use tracing::error;
 
 use super::esc::rpce;
@@ -3419,20 +3420,18 @@ impl FileDispositionInformation {
 pub struct FileRenameInformation {
     pub replace_if_exists: Boolean,
     /// `file_name` is the relative path to the new location of the file
-    pub file_name: String,
+    /// (UTF-16LE, u32 byte-count prefix, **no** null terminator; §2.4.42 MS-FSCC).
+    pub file_name: CbU32StringNoNull,
 }
 
 impl FileRenameInformation {
-    const FIXED_PART_SIZE: usize = 1 /* ReplaceIfExists */ + 1 /* RootDirectory */ + 4 /* FileNameLength */;
+    const FIXED_PART_SIZE: usize = 1 /* ReplaceIfExists */ + 1 /* RootDirectory */;
 
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
         let replace_if_exists = Boolean::from(src.read_u8());
         let _ = src.read_u8(); // RootDirectory
-        let file_name_length = cast_length!("FileRenameInformation", "file_name_length", src.read_u32())?;
-
-        ensure_size!(in: src, size: file_name_length);
-        let file_name = decode_string(src.read_slice(file_name_length), CharacterSet::Unicode, true)?;
+        let file_name = CbU32StringNoNull::decode_owned(src)?;
 
         Ok(Self {
             replace_if_exists,
@@ -3441,7 +3440,7 @@ impl FileRenameInformation {
     }
 
     fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE + encoded_str_len(&self.file_name, CharacterSet::Unicode, true)
+        Self::FIXED_PART_SIZE + self.file_name.size()
     }
 }
 
