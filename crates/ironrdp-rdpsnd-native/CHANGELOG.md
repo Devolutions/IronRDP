@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.5.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.5.0...ironrdp-rdpsnd-native-v0.5.1)] - 2026-03-25
+
+### <!-- 6 -->Documentation
+
+- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
+
+  The MSRV is the oldest stable Rust release that is at least 6 months
+  old, bounded by the Rust version available in Debian stable-backports
+  and Fedora stable.
+
+### <!-- 7 -->Build
+
+- Bump cpal from 0.16.0 to 0.17.1 ([#1071](https://github.com/Devolutions/IronRDP/issues/1071)) ([71245d58cc](https://github.com/Devolutions/IronRDP/commit/71245d58ccfb35dcc403628000ac2649b4bf9697)) 
+
+
+
 ## [[0.4.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.4.0...ironrdp-rdpsnd-native-v0.4.1)] - 2025-09-24
 
 ### <!-- 7 -->Build
