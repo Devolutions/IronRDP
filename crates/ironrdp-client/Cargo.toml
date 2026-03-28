@@ -84,7 +84,7 @@ smallvec = "1.15"
 tap = "1"
 semver = "1"
 raw-window-handle = "0.6"
-uuid = { version = "1.21" }
+uuid = { version = ">=1.16, <1.21" } # Pinned below 1.21: see ironrdp-mstsgu/Cargo.toml for rationale.
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 url = "2"
 

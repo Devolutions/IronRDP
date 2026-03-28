@@ -12,6 +12,7 @@
 extern crate chrono as _;
 extern crate getrandom as _;
 extern crate getrandom2 as _;
+extern crate getrandom4 as _;
 extern crate time as _;
 
 mod canvas;

@@ -18,7 +18,7 @@ test = false
 
 [features]
 default = []
-reqwest = ["dep:reqwest", "dep:sspi", "dep:url", "dep:ironrdp-connector"]
+reqwest = ["dep:reqwest", "dep:url", "dep:ironrdp-connector"]
 reqwest-rustls-ring = ["reqwest", "reqwest?/rustls-tls-webpki-roots"]
 reqwest-native-tls = ["reqwest", "reqwest?/native-tls"]
 
@@ -27,7 +27,7 @@ ironrdp-async = { path = "../ironrdp-async", version = "0.8" } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.8", optional = true }
 tokio = { version = "1", features = ["io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "system-proxy"], optional = true }
-sspi = { version = "0.18", features = ["network_client", "dns_resolver"], optional = true }
+# sspi types accessed through ironrdp-connector::sspi re-export
 url = { version = "2.5", optional = true }
 
 [lints]
