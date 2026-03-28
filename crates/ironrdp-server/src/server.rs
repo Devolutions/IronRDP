@@ -22,7 +22,7 @@ use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor,
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use tokio::net::TcpListener;
+use tokio::net::TcpSocket;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
@@ -448,7 +448,25 @@ impl RdpServer {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        let listener = TcpListener::bind(self.opts.addr).await?;
+        // Create socket with SO_REUSEADDR and IPv6 dual-stack support.
+        // Using TcpSocket instead of TcpListener::bind() gives control
+        // over socket options before binding.
+        let socket = match self.opts.addr {
+            SocketAddr::V4(_) => TcpSocket::new_v4().context("Failed to create IPv4 socket")?,
+            SocketAddr::V6(_) => {
+                // IPv6 socket with dual-stack: accepts both IPv4 and IPv6
+                // on a single socket. IPv4 clients appear as IPv4-mapped
+                // addresses (::ffff:x.x.x.x). Dual-stack is the Linux
+                // default (net.ipv6.bindv6only=0).
+                TcpSocket::new_v6().context("Failed to create IPv6 socket")?
+            }
+        };
+
+        socket.set_reuseaddr(true).context("Failed to set SO_REUSEADDR")?;
+
+        socket.bind(self.opts.addr).context("Failed to bind listen address")?;
+
+        let listener = socket.listen(1024).context("Failed to start listener")?;
         let local_addr = listener.local_addr()?;
 
         debug!("Listening for connections on {local_addr}");
