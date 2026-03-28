@@ -38,6 +38,9 @@ use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
 use crate::{SoundServerFactory, builder, capabilities};
 
+/// TCP listen backlog size for the RDP server socket.
+const LISTENER_BACKLOG: u32 = 1024;
+
 #[derive(Clone)]
 pub struct RdpServerOptions {
     pub addr: SocketAddr,
@@ -448,25 +451,32 @@ impl RdpServer {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        // Create socket with SO_REUSEADDR and IPv6 dual-stack support.
-        // Using TcpSocket instead of TcpListener::bind() gives control
-        // over socket options before binding.
+        // Create socket with control over options before binding.
+        // Using TcpSocket instead of TcpListener::bind() allows setting
+        // SO_REUSEADDR and IPv6 dual-stack mode.
         let socket = match self.opts.addr {
-            SocketAddr::V4(_) => TcpSocket::new_v4().context("Failed to create IPv4 socket")?,
+            SocketAddr::V4(_) => TcpSocket::new_v4().context("create IPv4 socket")?,
             SocketAddr::V6(_) => {
-                // IPv6 socket with dual-stack: accepts both IPv4 and IPv6
-                // on a single socket. IPv4 clients appear as IPv4-mapped
-                // addresses (::ffff:x.x.x.x). Dual-stack is the Linux
-                // default (net.ipv6.bindv6only=0).
-                TcpSocket::new_v6().context("Failed to create IPv6 socket")?
+                // IPv6 socket: on Linux, dual-stack is the default
+                // (net.ipv6.bindv6only=0), so IPv4 clients connect as
+                // IPv4-mapped addresses (::ffff:x.x.x.x). On platforms
+                // where IPV6_V6ONLY defaults to 1 (Windows, some BSDs),
+                // only IPv6 clients will be accepted and a separate IPv4
+                // listener would be needed.
+                TcpSocket::new_v6().context("create IPv6 socket")?
             }
         };
 
-        socket.set_reuseaddr(true).context("Failed to set SO_REUSEADDR")?;
+        // SO_REUSEADDR prevents EADDRINUSE when restarting the server while
+        // the previous socket is still in TIME_WAIT. Only set on Unix;
+        // on Windows SO_REUSEADDR has different semantics that allow a
+        // second process to bind the same port, which is a security risk.
+        #[cfg(unix)]
+        socket.set_reuseaddr(true).context("set SO_REUSEADDR")?;
 
-        socket.bind(self.opts.addr).context("Failed to bind listen address")?;
+        socket.bind(self.opts.addr).context("bind listen address")?;
 
-        let listener = socket.listen(1024).context("Failed to start listener")?;
+        let listener = socket.listen(LISTENER_BACKLOG).context("start listener")?;
         let local_addr = listener.local_addr()?;
 
         debug!("Listening for connections on {local_addr}");
