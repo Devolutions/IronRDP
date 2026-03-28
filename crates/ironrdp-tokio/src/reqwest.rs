@@ -1,8 +1,8 @@
 use core::net::{IpAddr, Ipv4Addr};
 
+use ironrdp_connector::sspi::{self, Error, ErrorKind};
 use ironrdp_connector::{ConnectorResult, custom_err, general_err};
 use reqwest::Client;
-use sspi::{Error, ErrorKind};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpStream, UdpSocket};
 use url::Url;
