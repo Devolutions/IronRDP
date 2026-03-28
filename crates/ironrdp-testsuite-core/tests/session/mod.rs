@@ -1,3 +1,4 @@
+mod autodetect;
 mod rfx;
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ use ironrdp_connector::legacy::SendDataIndicationCtx;
 use ironrdp_core::WriteBuf;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
+use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
@@ -33,6 +34,13 @@ pub enum ProcessorOutput {
     /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
     /// [`MultitransportResponsePdu`]: ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu
     MultitransportRequest(MultitransportRequestPdu),
+    /// Auto-detect network characteristics from server ([\[MS-RDPBCGR\] 2.2.14]).
+    ///
+    /// Currently only surfaces [`AutoDetectRequest::NetworkCharacteristicsResult`].
+    /// RTT requests are handled internally with automatic responses.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
+    AutoDetect(AutoDetectRequest),
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +188,28 @@ impl Processor {
                                 DisconnectReason::UserRequested,
                             )),
                         ])
+                    }
+                    ShareDataPdu::AutoDetectReq(AutoDetectRequest::RttRequest { sequence_number, .. }) => {
+                        let response = AutoDetectResponse::RttResponse { sequence_number };
+                        let mut frame = WriteBuf::new();
+                        ironrdp_connector::legacy::encode_share_data(
+                            self.user_channel_id,
+                            self.io_channel_id,
+                            self.share_id,
+                            ShareDataPdu::AutoDetectRsp(response),
+                            &mut frame,
+                        )
+                        .map_err(crate::legacy::map_error)?;
+                        debug!(sequence_number, "Responded to auto-detect RTT request");
+                        Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
+                    }
+                    ShareDataPdu::AutoDetectReq(req @ AutoDetectRequest::NetworkCharacteristicsResult { .. }) => {
+                        debug!(?req, "Received network characteristics from server");
+                        Ok(vec![ProcessorOutput::AutoDetect(req)])
+                    }
+                    ShareDataPdu::AutoDetectReq(_) => {
+                        debug!(pdu = %ctx.pdu.as_short_name(), "Auto-detect request not yet implemented");
+                        Ok(Vec::new())
                     }
                     _ => Err(reason_err!(
                         "IO channel",
