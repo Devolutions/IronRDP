@@ -370,3 +370,59 @@ fn test_qoe_reset() {
     server.reset_qoe();
     assert!(server.qoe_snapshot().is_none());
 }
+
+// ============================================================================
+// Uncompressed Frame Tests
+// ============================================================================
+
+#[test]
+fn test_send_uncompressed_frame_queues_correctly() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    // V8 client: EGFX but no H.264
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(64, 64).unwrap();
+    server.map_surface_to_output(surface_id, 0, 0);
+    server.drain_output(); // Clear setup PDUs
+
+    // 64x64 XRGB = 16384 bytes
+    let pixel_data = vec![0xFFu8; 64 * 64 * 4];
+    let frame_id = server.send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 0);
+    assert!(frame_id.is_some());
+
+    // Output: StartFrame + WireToSurface1 + EndFrame
+    let output = server.drain_output();
+    assert_eq!(output.len(), 3);
+}
+
+#[test]
+fn test_send_uncompressed_frame_backpressure() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    server.set_max_frames_in_flight(1);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(64, 64).unwrap();
+    server.drain_output();
+
+    let pixel_data = vec![0xFFu8; 64 * 64 * 4];
+
+    // First frame succeeds
+    let frame1 = server.send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 0);
+    assert!(frame1.is_some());
+
+    // Second frame blocked by backpressure
+    let frame2 = server.send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 16);
+    assert!(frame2.is_none());
+}
