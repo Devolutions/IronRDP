@@ -68,7 +68,7 @@ sspi = { version = "0.18", features = ["network_client"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-rustls = "0.26"
-rand = "0.9"
+rand = "0.10"
 opus2 = "0.3"
 
 [package.metadata.docs.rs]
