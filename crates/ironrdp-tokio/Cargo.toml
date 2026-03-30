@@ -27,7 +27,6 @@ ironrdp-async = { path = "../ironrdp-async", version = "0.8" } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.8", optional = true }
 tokio = { version = "1", features = ["io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "system-proxy"], optional = true }
-# sspi types accessed through ironrdp-connector::sspi re-export
 url = { version = "2.5", optional = true }
 
 [lints]
