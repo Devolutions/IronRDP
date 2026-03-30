@@ -174,6 +174,9 @@ impl ActiveStage {
                 UpdateKind::PointerBitmap(pointer) => {
                     stage_outputs.push(ActiveStageOutput::PointerBitmap(pointer));
                 }
+                UpdateKind::FrameEnd => {
+                    stage_outputs.push(ActiveStageOutput::FrameEnd);
+                }
             }
         }
 
@@ -312,6 +315,8 @@ pub enum ActiveStageOutput {
     ///
     /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
     MultitransportRequest(MultitransportRequestPdu),
+    /// End of a logical frame.
+    FrameEnd,
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {

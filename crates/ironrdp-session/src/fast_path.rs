@@ -28,6 +28,7 @@ pub enum UpdateKind {
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
     PointerBitmap(Arc<DecodedPointer>),
+    FrameEnd,
 }
 
 pub struct Processor {
@@ -146,8 +147,11 @@ impl Processor {
         match update {
             Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
                 trace!("Received Surface Commands: {} pieces", surface_commands.len());
-                let update_region = self.process_surface_commands(image, output, surface_commands)?;
+                let (update_region, frame_end) = self.process_surface_commands(image, output, surface_commands)?;
                 processor_updates.push(UpdateKind::Region(update_region));
+                if frame_end {
+                    processor_updates.push(UpdateKind::FrameEnd);
+                }
             }
             Ok(FastPathUpdate::Bitmap(bitmap_update)) => {
                 trace!("Received bitmap update");
@@ -419,8 +423,9 @@ impl Processor {
         image: &mut DecodedImage,
         output: &mut WriteBuf,
         surface_commands: Vec<SurfaceCommand<'_>>,
-    ) -> SessionResult<InclusiveRectangle> {
+    ) -> SessionResult<(InclusiveRectangle, bool)> {
         let mut update_rectangle = None;
+        let mut frame_end = false;
 
         for command in surface_commands {
             match command {
@@ -518,11 +523,14 @@ impl Processor {
                         marker.frame_id.unwrap_or(0)
                     );
                     self.marker_processor.process(&marker, output)?;
+                    if marker.frame_action == FrameAction::End {
+                        frame_end = true;
+                    }
                 }
             }
         }
 
-        Ok(update_rectangle.unwrap_or_else(InclusiveRectangle::empty))
+        Ok((update_rectangle.unwrap_or_else(InclusiveRectangle::empty), frame_end))
     }
 }
 
