@@ -169,17 +169,6 @@ remote protocol. It defines only features that are meaningful for **any** remote
 keyboard/mouse input, canvas rendering and resize, clipboard text/binary, connection lifecycle,
 and cursor style.
 
-Public contracts: `UserInteraction` (consumer-facing), `Session` / `SessionBuilder` /
-`RemoteDesktopModule` (backend-facing).
-
-### Protocol-specific features go through the extension mechanism
-
-`Extension` is typed as `unknown` — intentionally opaque. The flow:
-1. Backend defines concrete `Extension` factory functions (e.g., `preConnectionBlob`, `kdcProxyUrl`).
-2. Consumer calls `userInteraction.configBuilder().withExtension(ext)` or `userInteraction.invokeExtension(ext)` on the `UserInteraction` instance received from the `ready` event.
-3. `iron-remote-desktop` passes the value to the backend without inspection.
-4. The backend interprets it.
-
 ### The API surface rule (Architectural Invariant)
 
 A method belongs in `UserInteraction`, `Session`, or `SessionBuilder` if either of the
