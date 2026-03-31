@@ -17,8 +17,10 @@ input, rendering, clipboard, resize, and connection lifecycle.
 crate and must be surfaced via the extension mechanism:
 
 - `Session::invoke_extension` / `SessionBuilder::extension` are the pass-through points.
-- The backend defines its own opaque `Extension` type and interprets values passed to it.
-- `iron-remote-desktop` never inspects extension values.
+- This crate defines a concrete `Extension` type used by the traits; each backend defines its own
+  extension identifiers and payload formats and interprets the values carried inside `Extension`.
+- `iron-remote-desktop` treats `Extension` as an opaque envelope and never inspects backend-specific
+  extension values.
 
 A method belongs in these traits if **either** of the following is true:
 
