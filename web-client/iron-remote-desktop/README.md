@@ -25,10 +25,19 @@ delivered via the extension mechanism:
 // Backend-defined factory (in iron-remote-desktop-rdp):
 import { preConnectionBlob, displayControl } from '@devolutions/iron-remote-desktop-rdp';
 
-// Consumer configures protocol-specific behaviour through extensions:
-configBuilder()
-  .withExtension(preConnectionBlob('...'))
-  .withExtension(displayControl(true));
+// Consumer configures protocol-specific behaviour through extensions on the UserInteraction
+// instance received from the `ready` event:
+ironRemoteDesktop.addEventListener('ready', (event) => {
+  const ui = event.detail;
+
+  const config = ui
+    .configBuilder()
+    .withExtension(preConnectionBlob('...'))
+    .withExtension(displayControl(true))
+    .build();
+
+  ui.connect(config);
+});
 ```
 
 The `Extension` type is `unknown` in `iron-remote-desktop`, opaque by design. The component
