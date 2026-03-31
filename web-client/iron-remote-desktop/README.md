@@ -31,11 +31,7 @@ import { preConnectionBlob, displayControl } from '@devolutions/iron-remote-desk
 ironRemoteDesktop.addEventListener('ready', (event) => {
   const ui = event.detail;
 
-  const config = ui
-    .configBuilder()
-    .withExtension(preConnectionBlob('...'))
-    .withExtension(displayControl(true))
-    .build();
+  const config = ui.configBuilder().withExtension(preConnectionBlob('...')).withExtension(displayControl(true)).build();
 
   ui.connect(config);
 });
@@ -135,4 +131,3 @@ connect(config: Config): Promise<NewSessionInfo>;
 
 > `invokeExtension(ext: Extension)` — Sends a protocol-specific extension command at runtime.
 > The extension value is passed to the backend without inspection.
-
