@@ -171,18 +171,9 @@ and cursor style.
 
 ### The API surface rule (Architectural Invariant)
 
-A method belongs in `UserInteraction`, `Session`, or `SessionBuilder` if either of the
-following is true:
-
-1. **The web component itself needs to call it** to implement transparent, protocol-independent
-   behaviour (e.g., `supportsUnicodeKeyboardShortcuts()` is called internally by the component
-   to adapt keyboard handling, without consumer involvement).
-2. **The feature is universal** — every reasonable remote protocol backend would implement it
-   in a meaningful way (e.g., resize, clipboard text, cursor style).
-
-If neither applies — particularly if the method exposes protocol wire concepts (PDU fields,
-lock IDs, stream IDs, protocol-specific flags) — it is protocol-specific and must be delivered
-via the extension mechanism in the backend package.
+The core rule is: a method belongs in the base API (`UserInteraction` / `Session` / `SessionBuilder`)
+if the web component itself needs to call it for transparent behaviour, or if the feature is universal
+across all remote protocol backends. Protocol-specific concepts must go through the extension mechanism instead.
 
 ## Domain Specifics & Non-Negotiables
 
