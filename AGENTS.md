@@ -157,6 +157,24 @@ Do not modify them unless specifically working on fixing their compilation.
 - Mixing unrelated refactors with feature/bugfix changes.
 - Ignoring existing encode/decode and protocol-structure conventions.
 
+## Web Client Design Philosophy
+
+The web client stack has a strict layering rule that must be respected when modifying or reviewing
+code under `web-client/` or `crates/iron-remote-desktop/`.
+
+### `iron-remote-desktop` is protocol-agnostic
+
+`iron-remote-desktop` (the NPM package and Svelte web component) knows nothing about any specific
+remote protocol. It defines only features that are meaningful for **any** remote desktop backend:
+keyboard/mouse input, canvas rendering and resize, clipboard text/binary, connection lifecycle,
+and cursor style.
+
+### The API surface rule (Architectural Invariant)
+
+The core rule is: a method belongs in the base API (`UserInteraction` / `Session` / `SessionBuilder`)
+if the web component itself needs to call it for transparent behaviour, or if the feature is universal
+across all remote protocol backends. Protocol-specific concepts must go through the extension mechanism instead.
+
 ## Domain Specifics & Non-Negotiables
 
 - **Protocol correctness first:** preserve wire compatibility and established encode/decode semantics.

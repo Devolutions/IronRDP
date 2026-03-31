@@ -178,13 +178,44 @@ This crate is an **API Boundary** (WASM module).
 
 #### [`web-client/iron-remote-desktop`](./web-client/iron-remote-desktop)
 
-Core frontend UI used by `iron-svelte-client` as a Web Component.
+Protocol-agnostic web component and NPM package for remote desktop sessions.
+Used by `iron-svelte-client` as a Web Component.
 
 This crate is an **API Boundary**.
 
+**Architectural Invariant**: `iron-remote-desktop` must remain completely agnostic of any specific
+remote protocol (RDP, VNC, or otherwise). It defines the universal surface for features that are
+meaningful regardless of the underlying protocol: keyboard and mouse input, canvas rendering,
+clipboard text/binary transfer, resize, connection lifecycle, and cursor style.
+
+A method belongs in the base API if **either** of the following is true:
+
+1. **The web component itself needs to call it** to implement transparent, protocol-independent
+   behaviour (e.g., `supportsUnicodeKeyboardShortcuts()` is called internally by the component
+   to adapt keyboard handling, without consumer involvement).
+2. **The feature is universal** — every reasonable remote protocol backend would implement it
+   in a meaningful way (e.g., resize, clipboard text/binary, cursor style).
+
+If neither applies, particularly if the method exposes protocol wire concepts such as PDU
+fields, lock IDs, stream IDs, or protocol-specific flags, it belongs in the backend and must
+be delivered via the extension mechanism.
+
+The extension system works as follows:
+- `Extension` is typed as `unknown`; intentionally opaque at this layer.
+- Backends define their own concrete `Extension` types and factory functions.
+- The consumer calls `userInteraction.configBuilder().withExtension(ext)` or
+  `userInteraction.invokeExtension(ext)` at runtime.
+- `iron-remote-desktop` passes the value through to the backend without inspection.
+- The backend (e.g., `iron-remote-desktop-rdp`) interprets it meaningfully.
+
+See [`web-client/iron-remote-desktop-rdp`](./web-client/iron-remote-desktop-rdp) for a concrete
+example: RDP-specific capabilities such as `preConnectionBlob`, `displayControl`, `kdcProxyUrl`,
+and `enableCredssp` are all delivered as backend extensions, not as base API surface.
+
 #### [`web-client/iron-remote-desktop-rdp`](./web-client/iron-remote-desktop-rdp)
 
-Implementation of the TypeScript interfaces exposed by WebAssembly bindings from `ironrdp-web` and used by `iron-svelte-client`.
+RDP backend for `iron-remote-desktop`. Implements `RemoteDesktopModule` using the WASM bindings
+from `ironrdp-web`, and exposes RDP-specific Extension factory functions.
 
 This crate is an **API Boundary**.
 

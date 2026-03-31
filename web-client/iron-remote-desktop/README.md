@@ -1,7 +1,58 @@
 # Iron Remote Desktop
 
-This is the core of the web client written on top of Svelte and built as a reusable Web Component.
-Also, it contains the TypeScript interfaces exposed by WebAssembly bindings from `ironrdp-web` and used by `iron-svelte-client`.
+Reusable web component and NPM package for remote desktop sessions, built with Svelte.
+
+## Design Philosophy
+
+`iron-remote-desktop` is **protocol-agnostic**. It knows nothing about RDP, VNC, or any other
+specific remote protocol. It defines only features that are universal across all remote backends:
+keyboard and mouse input, canvas rendering and resize, clipboard text/binary, connection
+lifecycle, and cursor style.
+
+### Backends
+
+A **backend** implements the `RemoteDesktopModule` interface and plugs in via the `module`
+component property/prop (for example, by assigning `element.module = Backend` or the
+framework-specific equivalent). The RDP backend is `iron-remote-desktop-rdp`; other backends
+can be written against the same interfaces.
+
+### Extension mechanism
+
+Protocol-specific features that have no equivalent in other protocols must never be added to
+`UserInteraction`, `Session`, or `SessionBuilder`. They belong in the backend package and are
+delivered via the extension mechanism:
+
+```typescript
+// Backend-defined factory (in iron-remote-desktop-rdp):
+import { preConnectionBlob, displayControl } from '@devolutions/iron-remote-desktop-rdp';
+
+// Consumer configures protocol-specific behaviour through extensions on the UserInteraction
+// instance received from the `ready` event:
+ironRemoteDesktop.addEventListener('ready', (event) => {
+  const ui = event.detail;
+
+  const config = ui.configBuilder().withExtension(preConnectionBlob('...')).withExtension(displayControl(true)).build();
+
+  ui.connect(config);
+});
+```
+
+The `Extension` type is `unknown` in `iron-remote-desktop`, opaque by design. The component
+passes extension values to the backend without inspection; the backend interprets them.
+
+At runtime, `invokeExtension(ext)` follows the same pattern for dynamic, post-connect control.
+
+**The guiding question for any new `UserInteraction` / `Session` / `SessionBuilder` method:**
+
+A method belongs in the base API if **either** of the following is true:
+
+1. **The web component itself needs to call it** to implement transparent, protocol-independent
+   behaviour (e.g., `supportsUnicodeKeyboardShortcuts()` is called by the component to adapt
+   keyboard handling, without consumer involvement).
+2. **The feature is universal**: every reasonable remote protocol backend would implement it
+   in a meaningful way (e.g., resize, clipboard text, cursor style).
+
+If neither applies, it is protocol-specific and must go through extensions.
 
 ## Development
 
@@ -29,16 +80,10 @@ In your code add a listener for the `ready` event on the `iron-remote-desktop` H
 Get `evt.detail.irgUserInteraction` from the `Promise`, a property whose type is `UserInteraction`.
 Call the `connect` method on this object.
 
-## Limitations
+## Supported Input
 
-For now, we didn't make the enums used by some method directly available (I didn't find the good way to export them directly with the component.).
-You need to recreate them on your application for now (it will be improved in future version);
-
-Also, even if the connection to RDP work there is still a lot of improvement to do.
-As of now, you can expect, mouse movement and click (4 buttons) - no scroll, Keyboard for at least the standard.
-Windows and CTRL+ALT+DEL can be called by method on `UserInteraction`.
-Lock keys (like caps lock), have a partial support.
-Other advanced functionalities (sharing / copy past...) are not implemented yet.
+Mouse: movement, click (4 buttons), scroll. Keyboard: standard layout, Windows key,
+Ctrl+Alt+Del. Lock keys (Caps Lock, Num Lock, Scroll Lock, Kana): partial support.
 
 ## Component parameters
 
@@ -54,72 +99,35 @@ You can add some parameters for default initialization on the component `<iron-r
 
 ## `UserInteraction` methods
 
+Build a `Config` using `configBuilder()`, then call `connect(config)`. Protocol-specific
+configuration (e.g., pre-connection blob, KDC proxy URL) is passed via extensions on the
+`ConfigBuilder` — see the backend package for available extension factories.
+
 ```ts
-connect(
-  username: string,
-  password: string,
-  destination: string,
-  proxyAddress: string,
-  serverDomain: string,
-  authToken: string,
-  desktopSize?: DesktopSize,
-  preConnectionBlob?: string,
-  kdc_proxy_url?: string,
-  use_display_control: boolean,
-): Observable<NewSessionInfo>;
+configBuilder(): ConfigBuilder;
+connect(config: Config): Promise<NewSessionInfo>;
 ```
 
-> `username` and `password` are the credentials to use on the remote host.
+> `ctrlAltDel()` — Sends Ctrl+Alt+Del to the remote host.
 
-> `destination` refers to the Devolutions Gateway hostname and port.
+> `metaKey()` — Sends the Windows/Meta key to the remote host.
 
-> `proxyAddress` is the address of the Devolutions Gateway proxy
+> `setVisibility(value: boolean)` — Shows or hides the rendering canvas.
 
-> `serverDomain` is the Windows domain name (if the target computer has one)
+> `setScale(scale: ScreenScale)` — Sets canvas scaling behaviour (`fit`, `real`, or `full`).
+> See [`ScreenScale`](./src/enums/ScreenScale.ts).
 
-> `authtoken` is the authentication token to send to the Devolutions Gateway.
+> `shutdown()` — Terminates the active session.
 
-> `desktopSize` is the initial size of the desktop
+> `setKeyboardUnicodeMode(useUnicode: boolean)` — Toggles Unicode keyboard mode.
 
-> `preConnectionBlob` is the pre connection blob data
+> `setCursorStyleOverride(style: string | null)` — Overrides cursor style; `null` restores default.
 
-> `kdc_proxy_url` is the URL to a KDC Proxy, as specified in [MS-KKDCP documentation](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/5bcebb8d-b747-4ee5-9453-428aec1c5c38)
+> `resize(width: number, height: number, scale?: number)` — Resizes the remote screen.
 
-> `use_display_control` is the value that defined if the Display Control Virtual Channel will be used.
+> `setEnableClipboard(enable: boolean)` — Enables or disables clipboard synchronization.
 
-> `ctrlAltDel()`
->
-> Sends the ctrl+alt+del key to server.
+> `setEnableAutoClipboard(enable: boolean)` — Enables or disables automatic clipboard polling.
 
-> `metaKey()`
->
-> Sends the meta key event to remote host (i.e.: Windows key).
-
-> `setVisibility(value: boolean)`
->
-> Shows or hides rendering canvas.
-
-> `setScale(scale: ScreenScale)`
->
-> Sets the scale behavior of the canvas.
-> See the [ScreenScale](./src/enums/ScreenScale.ts) enum for possible values.
-
-> `shutdown()`
->
-> Shutdowns the active session.
-
-> `setKeyboardUnicodeMode(use_unicode: boolean)`
->
-> Sets the keyboard Unicode mode.
-
-> `setCursorStyleOverride(style?: string)`
->
-> Overrides the default cursor style. If `style` is `null`, the default cursor style will be used.
-
-> `resize(width: number, height: number, scale?: number)`
->
-> Resizes the screen.
-
-> `setEnableClipboard(enable: boolean)`
->
-> Enables or disable the clipboard based on the `enable` value.
+> `invokeExtension(ext: Extension)` — Sends a protocol-specific extension command at runtime.
+> The extension value is passed to the backend without inspection.
