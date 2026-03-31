@@ -123,7 +123,7 @@ connect(config: Config): Promise<NewSessionInfo>;
 
 > `shutdown()` — Terminates the active session.
 
-> `setKeyboardUnicodeMode(use_unicode: boolean)` — Toggles Unicode keyboard mode.
+> `setKeyboardUnicodeMode(useUnicode: boolean)` — Toggles Unicode keyboard mode.
 
 > `setCursorStyleOverride(style: string | null)` — Overrides cursor style; `null` restores default.
 
