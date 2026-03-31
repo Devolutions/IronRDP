@@ -176,7 +176,7 @@ Public contracts: `UserInteraction` (consumer-facing), `Session` / `SessionBuild
 
 `Extension` is typed as `unknown` — intentionally opaque. The flow:
 1. Backend defines concrete `Extension` factory functions (e.g., `preConnectionBlob`, `kdcProxyUrl`).
-2. Consumer calls `configBuilder().withExtension(ext)` or `invokeExtension(ext)`.
+2. Consumer calls `userInteraction.configBuilder().withExtension(ext)` or `userInteraction.invokeExtension(ext)` on the `UserInteraction` instance received from the `ready` event.
 3. `iron-remote-desktop` passes the value to the backend without inspection.
 4. The backend interprets it.
 

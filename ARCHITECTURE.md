@@ -203,7 +203,8 @@ be delivered via the extension mechanism.
 The extension system works as follows:
 - `Extension` is typed as `unknown`; intentionally opaque at this layer.
 - Backends define their own concrete `Extension` types and factory functions.
-- The consumer calls `configBuilder().withExtension(ext)` or `invokeExtension(ext)` at runtime.
+- The consumer calls `userInteraction.configBuilder().withExtension(ext)` or
+  `userInteraction.invokeExtension(ext)` at runtime.
 - `iron-remote-desktop` passes the value through to the backend without inspection.
 - The backend (e.g., `iron-remote-desktop-rdp`) interprets it meaningfully.
 
