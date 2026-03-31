@@ -157,6 +157,44 @@ Do not modify them unless specifically working on fixing their compilation.
 - Mixing unrelated refactors with feature/bugfix changes.
 - Ignoring existing encode/decode and protocol-structure conventions.
 
+## Web Client Design Philosophy
+
+The web client stack has a strict layering rule that must be respected when modifying or reviewing
+code under `web-client/` or `crates/iron-remote-desktop/`.
+
+### `iron-remote-desktop` is protocol-agnostic
+
+`iron-remote-desktop` (the NPM package and Svelte web component) knows nothing about any specific
+remote protocol. It defines only features that are meaningful for **any** remote desktop backend:
+keyboard/mouse input, canvas rendering and resize, clipboard text/binary, connection lifecycle,
+and cursor style.
+
+Public contracts: `UserInteraction` (consumer-facing), `Session` / `SessionBuilder` /
+`RemoteDesktopModule` (backend-facing).
+
+### Protocol-specific features go through the extension mechanism
+
+`Extension` is typed as `unknown` — intentionally opaque. The flow:
+1. Backend defines concrete `Extension` factory functions (e.g., `preConnectionBlob`, `kdcProxyUrl`).
+2. Consumer calls `configBuilder().withExtension(ext)` or `invokeExtension(ext)`.
+3. `iron-remote-desktop` passes the value to the backend without inspection.
+4. The backend interprets it.
+
+### The API surface rule (Architectural Invariant)
+
+A method belongs in `UserInteraction`, `Session`, or `SessionBuilder` if either of the
+following is true:
+
+1. **The web component itself needs to call it** to implement transparent, protocol-independent
+   behaviour (e.g., `supportsUnicodeKeyboardShortcuts()` is called internally by the component
+   to adapt keyboard handling, without consumer involvement).
+2. **The feature is universal** — every reasonable remote protocol backend would implement it
+   in a meaningful way (e.g., resize, clipboard text, cursor style).
+
+If neither applies — particularly if the method exposes protocol wire concepts (PDU fields,
+lock IDs, stream IDs, protocol-specific flags) — it is protocol-specific and must be delivered
+via the extension mechanism in the backend package.
+
 ## Domain Specifics & Non-Negotiables
 
 - **Protocol correctness first:** preserve wire compatibility and established encode/decode semantics.
