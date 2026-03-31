@@ -11,14 +11,14 @@ use crate::{
     ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written, custom_err, general_err,
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct KerberosConfig {
     pub kdc_proxy_url: Option<url::Url>,
-    pub hostname: Option<String>,
+    pub hostname: String,
 }
 
 impl KerberosConfig {
-    pub fn new(kdc_proxy_url: Option<String>, hostname: Option<String>) -> ConnectorResult<Self> {
+    pub fn new(kdc_proxy_url: Option<String>, hostname: String) -> ConnectorResult<Self> {
         let kdc_proxy_url = kdc_proxy_url
             .map(|url| url::Url::parse(&url))
             .transpose()
@@ -34,7 +34,7 @@ impl From<KerberosConfig> for sspi::KerberosConfig {
     fn from(val: KerberosConfig) -> Self {
         sspi::KerberosConfig {
             kdc_url: val.kdc_proxy_url,
-            client_computer_name: val.hostname.unwrap_or_default(),
+            client_computer_name: val.hostname,
         }
     }
 }

@@ -1021,7 +1021,7 @@ async fn connect(
                 kdc_proxy_url: Some(url),
                 // HACK: It's supposed to be the computer name of the client, but since it's not easy to retrieve this information in the browser,
                 // we set the destination hostname instead because it happens to work.
-                hostname: Some(destination),
+                hostname: destination,
             }),
     )
     .await?;
