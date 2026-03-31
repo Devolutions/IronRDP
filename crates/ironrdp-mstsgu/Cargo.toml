@@ -36,7 +36,7 @@ log = "0.4"
 tokio-tungstenite = { version = "0.28" }
 tokio-util = { version = "0.7" }
 tokio = { version = "1.43", features = ["macros", "rt"] }
-uuid = { version = "1.21", features = ["v4"] }
+uuid = { version = ">=1.16, <1.21", features = ["v4"] } # Pinned below 1.21: uuid 1.21+ needs getrandom 0.4 -> rand_core 0.10 (stable), which conflicts with picky rc.22's pinned rand_core = "=0.10.0-rc-3". Remove this pin when picky ships with stable RustCrypto deps.
 
 [lints]
 workspace = true

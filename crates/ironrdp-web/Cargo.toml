@@ -61,6 +61,7 @@ rgb = "0.8"
 # Enable WebAssembly support for a few crates
 getrandom2 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom4 = { package = "getrandom", version = "0.4.0-rc.0", features = ["wasm_js"] } # picky rc.22 transitive dep
 chrono = { version = "0.4", features = ["wasmbind"] }
 time = { version = "0.3", features = ["wasm-bindgen"] }
 
