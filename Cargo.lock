@@ -2954,6 +2954,7 @@ dependencies = [
  "ironrdp-rdcleanpath",
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
+ "ironrdp-server",
  "ironrdp-session",
  "ironrdp-str",
  "ironrdp-svc",
