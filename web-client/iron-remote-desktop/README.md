@@ -11,9 +11,10 @@ lifecycle, and cursor style.
 
 ### Backends
 
-A **backend** implements the `RemoteDesktopModule` interface and plugs in via the `module=`
-component attribute. The RDP backend is `iron-remote-desktop-rdp`; other backends can be
-written against the same interfaces.
+A **backend** implements the `RemoteDesktopModule` interface and plugs in via the `module`
+component property/prop (for example, by assigning `element.module = Backend` or the
+framework-specific equivalent). The RDP backend is `iron-remote-desktop-rdp`; other backends
+can be written against the same interfaces.
 
 ### Extension mechanism
 
