@@ -21,7 +21,6 @@ fn main() -> anyhow::Result<()> {
 
     // TODO: get window size & scale factor from GUI/App
     let window_size = (1024, 768);
-    config.connector.desktop_scale_factor = 0;
     config.connector.desktop_size.width = window_size.0;
     config.connector.desktop_size.height = window_size.1;
 
