@@ -4,11 +4,10 @@
 
 extern crate alloc;
 
-use core::any::TypeId;
-
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::any::TypeId;
 
 use pdu::DrdynvcDataPdu;
 

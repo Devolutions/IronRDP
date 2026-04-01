@@ -1,5 +1,6 @@
 mod data_messages;
 mod header_messages;
+pub mod progressive;
 
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
