@@ -1,0 +1,35 @@
+{
+  "name": "@devolutions/iron-replay-player-wasm",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "npm run pre-build && vite",
+    "pre-build": "node ./pre-build.js",
+    "build": "npm run pre-build && vite build",
+    "build-alone": "vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "check:dist": "tsc ./dist/index.d.ts --noEmit",
+    "check:watch": "tsc --watch --noEmit",
+    "lint": "npm run lint:prettier && npm run lint:eslint",
+    "lint:prettier": "prettier --check .",
+    "lint:eslint": "eslint src/**",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.0",
+    "@eslint/js": "^9.21.0",
+    "@typescript-eslint/eslint-plugin": "^8.25.0",
+    "eslint": "^9.21.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.1",
+    "globals": "^16.0.0",
+    "prettier": "^3.1.0",
+    "tslib": "^2.4.1",
+    "typescript": "~5.7.2",
+    "vite": "^6.2.0",
+    "vite-plugin-dts": "^4.5.0",
+    "vite-plugin-top-level-await": "^1.2.2"
+  }
+}

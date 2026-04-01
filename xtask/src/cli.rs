@@ -56,6 +56,9 @@ TASKS:
   web install             Install dependencies required to build and run Web Client
   web build               Build the Web Client
   web run                 Run SvelteKit-based standalone Web Client
+  web install-replay      Install dependencies for the Replay WASM adapter
+  web build-replay        Build the Replay WASM crate and TS adapter
+  web check-replay        Ensure Replay WASM adapter builds without error
   ffi install             Install all requirements for ffi tasks
   ffi build [--release]   Build DLL for FFI (default is debug)
   ffi bindings [--skip-dotnet-build]            
@@ -154,6 +157,9 @@ pub enum Action {
     WebInstall,
     WebBuild,
     WebRun,
+    WebBuildReplay,
+    WebInstallReplay,
+    WebCheckReplay,
     FfiInstall,
     FfiBuildDll {
         release: bool,
@@ -258,6 +264,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("install") => Action::WebInstall,
                 Some("build") => Action::WebBuild,
                 Some("run") => Action::WebRun,
+                Some("build-replay") => Action::WebBuildReplay,
+                Some("install-replay") => Action::WebInstallReplay,
+                Some("check-replay") => Action::WebCheckReplay,
                 Some(unknown) => anyhow::bail!("unknown web action: {unknown}"),
                 None => Action::ShowHelp,
             },
