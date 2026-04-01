@@ -1356,6 +1356,58 @@ impl GraphicsPipelineServer {
         Some(frame_id)
     }
 
+    /// Queue an uncompressed bitmap frame for transmission via EGFX
+    ///
+    /// Sends raw pixel data through `WireToSurface1` with `Codec1Type::Uncompressed`.
+    /// Used for V8 clients that support EGFX but not H.264 (AVC420/AVC444).
+    ///
+    /// The `bitmap_data` should be in the surface's pixel format (typically XRGB).
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if not ready or backpressured.
+    pub fn send_uncompressed_frame(
+        &mut self,
+        surface_id: u16,
+        bitmap_data: &[u8],
+        dest_width: u16,
+        dest_height: u16,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        if !self.is_ready() {
+            return None;
+        }
+        if self.should_backpressure() {
+            self.qoe.record_backpressure();
+            return None;
+        }
+
+        let surface = self.surfaces.get(surface_id)?;
+
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+
+        let dest_rect = InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: dest_width.saturating_sub(1),
+            bottom: dest_height.saturating_sub(1),
+        };
+
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+
+        self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id,
+            codec_id: Codec1Type::Uncompressed,
+            pixel_format: surface.pixel_format,
+            destination_rectangle: dest_rect,
+            bitmap_data: bitmap_data.to_vec(),
+        }));
+
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Some(frame_id)
+    }
+
     // ========================================================================
     // Output Management
     // ========================================================================
