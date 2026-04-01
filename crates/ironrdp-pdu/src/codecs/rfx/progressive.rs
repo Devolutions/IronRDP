@@ -930,7 +930,7 @@ pub enum ProgressiveBlock<'a> {
 /// Parse a progressive bitmap stream (the `bitmapData` from `WireToSurface2Pdu`).
 ///
 /// Returns the sequence of progressive blocks. The stream always starts with
-/// SYNC + CONTEXT, followed by FRAME_BEGIN, one or more REGIONs (containing
+/// SYNC + CONTEXT, followed by FRAME_BEGIN, one or more REGION blocks (containing
 /// tiles), and FRAME_END.
 pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<ProgressiveBlock<'a>>> {
     let mut blocks = Vec::new();
