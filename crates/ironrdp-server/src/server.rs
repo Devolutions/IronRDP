@@ -22,7 +22,7 @@ use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor,
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use tokio::net::TcpListener;
+use tokio::net::TcpSocket;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
@@ -38,6 +38,9 @@ use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
 use crate::{SoundServerFactory, builder, capabilities};
+
+/// TCP listen backlog size for the RDP server socket.
+const LISTENER_BACKLOG: u32 = 1024;
 
 #[derive(Clone)]
 pub struct RdpServerOptions {
@@ -473,7 +476,32 @@ impl RdpServer {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        let listener = TcpListener::bind(self.opts.addr).await?;
+        // Create socket with control over options before binding.
+        // Using TcpSocket instead of TcpListener::bind() allows setting
+        // SO_REUSEADDR and IPv6 dual-stack mode.
+        let socket = match self.opts.addr {
+            SocketAddr::V4(_) => TcpSocket::new_v4().context("create IPv4 socket")?,
+            SocketAddr::V6(_) => {
+                // IPv6 socket: on Linux, dual-stack is the default
+                // (net.ipv6.bindv6only=0), so IPv4 clients connect as
+                // IPv4-mapped addresses (::ffff:x.x.x.x). On platforms
+                // where IPV6_V6ONLY defaults to 1 (Windows, some BSDs),
+                // only IPv6 clients will be accepted and a separate IPv4
+                // listener would be needed.
+                TcpSocket::new_v6().context("create IPv6 socket")?
+            }
+        };
+
+        // SO_REUSEADDR prevents EADDRINUSE when restarting the server while
+        // the previous socket is still in TIME_WAIT. Only set on Unix;
+        // on Windows SO_REUSEADDR has different semantics that allow a
+        // second process to bind the same port, which is a security risk.
+        #[cfg(unix)]
+        socket.set_reuseaddr(true).context("set SO_REUSEADDR")?;
+
+        socket.bind(self.opts.addr).context("bind listen address")?;
+
+        let listener = socket.listen(LISTENER_BACKLOG).context("start listener")?;
         let local_addr = listener.local_addr()?;
 
         debug!("Listening for connections on {local_addr}");
