@@ -249,6 +249,191 @@ pub fn progressive_quantize(coefficients: &mut [i16], prog_quant: &ComponentCode
     }
 }
 
+// ---------------------------------------------------------------------------
+// Server-side encode pipeline
+// ---------------------------------------------------------------------------
+
+/// Encode a first-pass component from spatial-domain coefficients.
+///
+/// Pipeline: forward DWT -> base quantization -> progressive quantization
+/// -> LL3 delta encode -> RLGR1 encode.
+///
+/// Returns the number of bytes written to `output`.
+///
+/// # Arguments
+/// - `coefficients`: spatial-domain coefficients (4096 i16, modified in-place)
+/// - `output`: output buffer for RLGR1-encoded data
+/// - `base_quant`: base quantization values
+/// - `prog_quant`: progressive quantization BitPos values for this quality level
+/// - `use_reduce_extrapolate`: DWT mode flag
+///
+/// # Panics
+///
+/// Panics if `coefficients` has fewer than 4096 elements.
+///
+/// # Errors
+/// Returns `RlgrError` if RLGR encoding fails.
+pub fn encode_first_pass(
+    coefficients: &mut [i16],
+    output: &mut [u8],
+    base_quant: &ComponentCodecQuant,
+    prog_quant: &ComponentCodecQuant,
+    use_reduce_extrapolate: bool,
+) -> Result<usize, RlgrError> {
+    assert!(coefficients.len() >= COEFFICIENTS_PER_COMPONENT);
+
+    let mut temp = [0i16; COEFFICIENTS_PER_COMPONENT];
+
+    // Step 1: Forward DWT
+    if use_reduce_extrapolate {
+        crate::dwt_extrapolate::encode(coefficients, &mut temp);
+    } else {
+        crate::dwt::encode(coefficients, &mut temp);
+    }
+
+    // Step 2: Base quantization (right-shift by quant - 1)
+    quantize_component_ccq(coefficients, base_quant, use_reduce_extrapolate);
+
+    // Step 3: Progressive quantization (right-shift by BitPos)
+    progressive_quantize(coefficients, prog_quant, use_reduce_extrapolate);
+
+    // Step 4: LL3 delta encoding
+    crate::subband_reconstruction::encode(&mut coefficients[ll3_offset(use_reduce_extrapolate)..]);
+
+    // Step 5: RLGR1 entropy encode
+    crate::rlgr::encode(EntropyAlgorithm::Rlgr1, coefficients, output)
+}
+
+/// Base quantization using `ComponentCodecQuant` (progressive format).
+///
+/// Each band is right-shifted by `(quant_value - 1)`. Inverse of `dequantize_component_ccq`.
+fn quantize_component_ccq(coefficients: &mut [i16], quant: &ComponentCodecQuant, use_reduce_extrapolate: bool) {
+    let bands = get_band_layout(use_reduce_extrapolate);
+
+    for (band_idx, band) in bands.iter().enumerate() {
+        let q = quant.for_band(band_idx);
+        let factor = q.saturating_sub(1);
+        if factor > 0 {
+            let start = band.offset;
+            let end = start + band.count();
+            for coeff in &mut coefficients[start..end] {
+                // Truncation toward zero (same as classic quantization::encode)
+                let val = i32::from(*coeff);
+                if val >= 0 {
+                    *coeff = clamp_i16(val >> i32::from(factor));
+                } else {
+                    *coeff = clamp_i16(-((-val) >> i32::from(factor)));
+                }
+            }
+        }
+    }
+}
+
+/// Compute the upgrade-pass data for a single component.
+///
+/// Given the previous and current progressive quantization, produces
+/// SRL-encoded data (for zero-DAS positions) and raw bit data (for
+/// non-zero DAS positions) representing the refinement.
+///
+/// # Arguments
+/// - `coefficients`: current full-resolution DWT coefficients for this component
+/// - `prev_coefficients`: coefficients as reconstructed from the previous pass
+/// - `prev_prog_quant`: BitPos values from the previous pass
+/// - `curr_prog_quant`: BitPos values for this upgrade pass
+/// - `sign`: DAS sign array from the previous pass
+/// - `use_reduce_extrapolate`: DWT mode flag
+///
+/// # Returns
+/// A tuple of `(srl_data, raw_data)` byte vectors.
+pub fn encode_upgrade_pass(
+    coefficients: &[i16],
+    prev_coefficients: &[i16],
+    prev_prog_quant: &ComponentCodecQuant,
+    curr_prog_quant: &ComponentCodecQuant,
+    sign: &[i8],
+    use_reduce_extrapolate: bool,
+) -> (Vec<u8>, Vec<u8>) {
+    let bands = get_band_layout(use_reduce_extrapolate);
+    let mut all_srl_values = Vec::new();
+    let mut raw_writer = RawBitWriter::new();
+
+    for (band_idx, band) in bands.iter().enumerate() {
+        let prev_bit_pos = prev_prog_quant.for_band(band_idx);
+        let curr_bit_pos = curr_prog_quant.for_band(band_idx);
+
+        let num_bits = prev_bit_pos.saturating_sub(curr_bit_pos);
+        if num_bits == 0 {
+            continue;
+        }
+
+        let mut band_srl_values = Vec::new();
+
+        for i in 0..band.count() {
+            let coeff_idx = band.offset + i;
+
+            if sign[coeff_idx] == SIGN_ZERO {
+                // Zero-DAS: compute the refined value and encode via SRL
+                let curr_shifted = i32::from(coefficients[coeff_idx]) >> i32::from(curr_bit_pos);
+                let prev_shifted = i32::from(prev_coefficients[coeff_idx]) >> i32::from(curr_bit_pos);
+                let delta = clamp_i16(curr_shifted - prev_shifted);
+                band_srl_values.push(delta);
+            } else {
+                // Non-zero DAS: compute raw magnitude bits
+                let curr_abs = i32::from(coefficients[coeff_idx]).unsigned_abs();
+                let prev_abs = i32::from(prev_coefficients[coeff_idx]).unsigned_abs();
+
+                let curr_q = curr_abs >> u32::from(curr_bit_pos);
+                let prev_q = prev_abs >> u32::from(curr_bit_pos);
+                let raw_mag = curr_q.saturating_sub(prev_q);
+
+                raw_writer.write_bits(raw_mag, u32::from(num_bits));
+            }
+        }
+
+        // Encode SRL values for this band
+        let srl_encoded = srl::encode_srl(&band_srl_values, num_bits);
+        all_srl_values.extend_from_slice(&srl_encoded);
+    }
+
+    let raw_data = raw_writer.finish();
+    (all_srl_values, raw_data)
+}
+
+/// Encode RGBA pixels to spatial-domain i16 coefficients (RGB to YCbCr).
+///
+/// Performs ITU-R BT.601 RGB-to-YCbCr conversion on a 64x64 pixel tile.
+/// Output is 3 buffers of 4096 i16 coefficients (Y, Cb, Cr) in tile order.
+///
+/// # Panics
+///
+/// Panics if `pixels` has fewer than 64 * 64 * 4 = 16384 bytes.
+#[expect(clippy::similar_names)]
+pub fn rgba_to_ycbcr(pixels: &[u8], y_out: &mut [i16], cb_out: &mut [i16], cr_out: &mut [i16]) {
+    assert!(pixels.len() >= 64 * 64 * 4);
+    assert!(y_out.len() >= COEFFICIENTS_PER_COMPONENT);
+    assert!(cb_out.len() >= COEFFICIENTS_PER_COMPONENT);
+    assert!(cr_out.len() >= COEFFICIENTS_PER_COMPONENT);
+
+    for i in 0..64 * 64 {
+        let off = i * 4;
+        let r = i32::from(pixels[off]);
+        let g = i32::from(pixels[off + 1]);
+        let b = i32::from(pixels[off + 2]);
+
+        // ITU-R BT.601: Y = 0.299R + 0.587G + 0.114B
+        //               Cb = -0.169R - 0.331G + 0.500B
+        //               Cr = 0.500R - 0.419G - 0.081B
+        // Fixed-point with 16-bit precision
+        let y = ((19595 * r + 38470 * g + 7471 * b + 32768) >> 16) - 128;
+        let cb = (-11059 * r - 21709 * g + 32768 * b + 32768) >> 16;
+        let cr = (32768 * r - 27439 * g - 5329 * b + 32768) >> 16;
+
+        y_out[i] = clamp_i16(y);
+        cb_out[i] = clamp_i16(cb);
+        cr_out[i] = clamp_i16(cr);
+    }
+}
+
 /// Base dequantization using `ComponentCodecQuant` (progressive-format quantization).
 ///
 /// Each band is shifted left by `(quant_value - 1)`. Uses `for_band()` to map
@@ -362,8 +547,49 @@ fn clamp_i16(value: i32) -> i16 {
 }
 
 // ---------------------------------------------------------------------------
-// Raw bit reader for upgrade pass
+// Raw bit I/O for upgrade pass
 // ---------------------------------------------------------------------------
+
+/// Writes raw magnitude bits MSB-first to a byte stream.
+struct RawBitWriter {
+    bytes: Vec<u8>,
+    current: u8,
+    bit_count: u8,
+}
+
+impl RawBitWriter {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            current: 0,
+            bit_count: 0,
+        }
+    }
+
+    fn write_bit(&mut self, bit: bool) {
+        self.current = (self.current << 1) | u8::from(bit);
+        self.bit_count += 1;
+        if self.bit_count >= 8 {
+            self.bytes.push(self.current);
+            self.current = 0;
+            self.bit_count = 0;
+        }
+    }
+
+    fn write_bits(&mut self, value: u32, count: u32) {
+        for i in (0..count).rev() {
+            self.write_bit((value >> i) & 1 != 0);
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.bit_count > 0 {
+            self.current <<= 8 - self.bit_count;
+            self.bytes.push(self.current);
+        }
+        self.bytes
+    }
+}
 
 /// Reads raw magnitude bits MSB-first from a byte stream.
 struct RawBitReader<'a> {
@@ -1338,5 +1564,174 @@ mod tests {
         assert_eq!(coefficients[0], 80);
         // LL3: shift left by (3 - 1) = 2 -> 5 << 2 = 20
         assert_eq!(coefficients[4032], 20);
+    }
+
+    // --- B10: Server encode pipeline tests ---
+
+    #[test]
+    fn rgba_to_ycbcr_pure_white() {
+        let pixels = vec![255u8; 64 * 64 * 4];
+        let mut y = vec![0i16; 4096];
+        let mut cb = vec![0i16; 4096];
+        let mut cr = vec![0i16; 4096];
+
+        rgba_to_ycbcr(&pixels, &mut y, &mut cb, &mut cr);
+
+        // Pure white: R=G=B=255
+        // Y = (19595*255 + 38470*255 + 7471*255 + 32768) >> 16 - 128
+        //   = (65536*255 + 32768) >> 16 - 128 = 255 - 128 = 127
+        // Cb and Cr should be ~0 (achromatic)
+        assert!((y[0] - 127).abs() <= 1, "Y for white: got {}", y[0]);
+        assert!(cb[0].abs() <= 1, "Cb for white: got {}", cb[0]);
+        assert!(cr[0].abs() <= 1, "Cr for white: got {}", cr[0]);
+    }
+
+    #[test]
+    fn rgba_to_ycbcr_pure_black() {
+        let pixels = vec![0u8; 64 * 64 * 4];
+        let mut y = vec![0i16; 4096];
+        let mut cb = vec![0i16; 4096];
+        let mut cr = vec![0i16; 4096];
+
+        rgba_to_ycbcr(&pixels, &mut y, &mut cb, &mut cr);
+
+        // Pure black: Y = -128, Cb = 0, Cr = 0
+        assert_eq!(y[0], -128);
+        assert_eq!(cb[0], 0);
+        assert_eq!(cr[0], 0);
+    }
+
+    #[test]
+    fn quantize_ccq_right_shifts() {
+        let mut coefficients = [0i16; 4096];
+        coefficients[0] = 80; // HL1 band
+        coefficients[4032] = 20; // LL3 band
+
+        let quant = ComponentCodecQuant {
+            ll3: 3,
+            hl3: 0,
+            lh3: 0,
+            hh3: 0,
+            hl2: 0,
+            lh2: 0,
+            hh2: 0,
+            hl1: 4,
+            lh1: 0,
+            hh1: 0,
+        };
+
+        quantize_component_ccq(&mut coefficients, &quant, false);
+
+        // HL1: 80 >> (4 - 1) = 80 >> 3 = 10
+        assert_eq!(coefficients[0], 10);
+        // LL3: 20 >> (3 - 1) = 20 >> 2 = 5
+        assert_eq!(coefficients[4032], 5);
+    }
+
+    #[test]
+    fn quantize_ccq_negative_truncates_toward_zero() {
+        let mut coefficients = [0i16; 4096];
+        coefficients[0] = -80; // HL1 band, negative
+
+        let quant = ComponentCodecQuant {
+            ll3: 0,
+            hl3: 0,
+            lh3: 0,
+            hh3: 0,
+            hl2: 0,
+            lh2: 0,
+            hh2: 0,
+            hl1: 4,
+            lh1: 0,
+            hh1: 0,
+        };
+
+        quantize_component_ccq(&mut coefficients, &quant, false);
+
+        // -80 truncated toward zero: -(80 >> 3) = -10
+        assert_eq!(coefficients[0], -10);
+    }
+
+    #[test]
+    fn raw_bit_writer_single_byte() {
+        let mut w = RawBitWriter::new();
+        w.write_bits(0xA5, 8);
+        assert_eq!(w.finish(), vec![0xA5]);
+    }
+
+    #[test]
+    fn raw_bit_writer_partial_byte_padded() {
+        let mut w = RawBitWriter::new();
+        w.write_bits(0b101, 3);
+        // 3 bits: 101, padded to 10100000 = 0xA0
+        assert_eq!(w.finish(), vec![0xA0]);
+    }
+
+    #[test]
+    fn raw_bit_writer_multi_byte() {
+        let mut w = RawBitWriter::new();
+        w.write_bits(0xFF, 8);
+        w.write_bits(0b1010, 4);
+        // First byte: 0xFF, second partial: 1010_0000 = 0xA0
+        assert_eq!(w.finish(), vec![0xFF, 0xA0]);
+    }
+
+    #[test]
+    fn encode_first_pass_produces_output() {
+        // Flat tile: all same value, should compress well
+        let mut coefficients = [100i16; 4096];
+        let mut output = vec![0u8; 8192];
+
+        let base_quant = ComponentCodecQuant::LOSSLESS;
+        let prog_quant = ComponentCodecQuant::LOSSLESS;
+
+        let result = encode_first_pass(&mut coefficients, &mut output, &base_quant, &prog_quant, false);
+
+        assert!(result.is_ok(), "RLGR encode failed: {:?}", result.err());
+        let bytes_written = result.unwrap();
+        assert!(bytes_written > 0, "expected non-zero encoded output");
+        assert!(bytes_written < 8192, "flat tile should compress");
+    }
+
+    #[test]
+    fn encode_first_pass_reduce_extrapolate() {
+        let mut coefficients = [50i16; 4096];
+        let mut output = vec![0u8; 8192];
+
+        let base_quant = ComponentCodecQuant::LOSSLESS;
+        let prog_quant = ComponentCodecQuant::LOSSLESS;
+
+        let result = encode_first_pass(
+            &mut coefficients,
+            &mut output,
+            &base_quant,
+            &prog_quant,
+            true, // reduce-extrapolate mode
+        );
+
+        assert!(result.is_ok(), "RLGR encode failed: {:?}", result.err());
+        assert!(result.unwrap() > 0);
+    }
+
+    #[test]
+    fn encode_upgrade_pass_empty_when_no_refinement() {
+        let coefficients = [0i16; 4096];
+        let prev_coefficients = [0i16; 4096];
+        let sign = [SIGN_ZERO; 4096];
+
+        // Same prog_quant for prev and curr -> num_bits = 0, no refinement
+        let prog_quant = ComponentCodecQuant::LOSSLESS;
+
+        let (srl_data, raw_data) = encode_upgrade_pass(
+            &coefficients,
+            &prev_coefficients,
+            &prog_quant,
+            &prog_quant,
+            &sign,
+            false,
+        );
+
+        assert!(srl_data.is_empty(), "no refinement bits, SRL should be empty");
+        assert!(raw_data.is_empty(), "no refinement bits, raw should be empty");
     }
 }
