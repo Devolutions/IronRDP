@@ -1,7 +1,9 @@
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
 #![allow(clippy::unwrap_used, reason = "unwrap is fine in tests")]
+#![allow(clippy::panic, reason = "panic is acceptable in tests")]
 
 mod config_rdp;
+mod web_replay;
 
 use core::time::Duration;
 use std::path::Path;
