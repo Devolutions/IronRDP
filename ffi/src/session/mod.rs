@@ -197,6 +197,10 @@ pub mod ffi {
         Terminate,
         DeactivateAll,
         MultitransportRequest,
+        /// Auto-detect network characteristics from server.
+        /// Use `get_autodetect_network_characteristics()` to retrieve
+        /// RTT and bandwidth values for connection quality monitoring.
+        AutoDetect,
     }
 
     impl ActiveStageOutput {
@@ -213,6 +217,7 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::MultitransportRequest { .. } => {
                     ActiveStageOutputType::MultitransportRequest
                 }
+                ironrdp::session::ActiveStageOutput::AutoDetect { .. } => ActiveStageOutputType::AutoDetect,
             }
         }
 
@@ -298,6 +303,46 @@ pub mod ffi {
                     .into()),
             }
         }
+
+        /// Connection quality signals from the server's auto-detect mechanism.
+        /// Returns RTT and bandwidth measurements for health monitoring.
+        /// These values will feed into FramePacingFeedback when the
+        /// library-level health observer traits from #1158 land.
+        pub fn get_autodetect_network_characteristics(&self) -> Result<NetworkCharacteristics, Box<IronRdpError>> {
+            match &self.0 {
+                ironrdp::session::ActiveStageOutput::AutoDetect(
+                    ironrdp::pdu::rdp::autodetect::AutoDetectRequest::NetworkCharacteristicsResult {
+                        base_rtt_ms,
+                        bandwidth_kbps,
+                        average_rtt_ms,
+                        ..
+                    },
+                ) => Ok(NetworkCharacteristics {
+                    base_rtt_ms: base_rtt_ms.unwrap_or(0),
+                    has_base_rtt: base_rtt_ms.is_some(),
+                    average_rtt_ms: *average_rtt_ms,
+                    bandwidth_kbps: bandwidth_kbps.unwrap_or(0),
+                    has_bandwidth: bandwidth_kbps.is_some(),
+                }),
+                _ => Err(IncorrectEnumTypeError::on_variant("AutoDetect")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
+            }
+        }
+    }
+
+    /// Connection quality measurements from server auto-detect (MS-RDPBCGR 2.2.14).
+    pub struct NetworkCharacteristics {
+        /// Lowest detected round-trip time in milliseconds.
+        /// Only valid when `has_base_rtt` is true.
+        pub base_rtt_ms: u32,
+        pub has_base_rtt: bool,
+        /// Current average round-trip time in milliseconds.
+        pub average_rtt_ms: u32,
+        /// Estimated bandwidth in kilobits per second.
+        /// Only valid when `has_bandwidth` is true.
+        pub bandwidth_kbps: u32,
+        pub has_bandwidth: bool,
     }
 
     pub struct MultitransportRequest {
