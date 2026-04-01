@@ -6,6 +6,7 @@ use ironrdp_egfx::pdu::{
     CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet, Codec1Type, CreateSurfacePdu,
     DeleteSurfacePdu, EndFramePdu, GfxPdu, PixelFormat, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
 };
+use ironrdp_graphics::clearcodec::ClearCodecEncoder;
 use ironrdp_graphics::zgfx::wrap_uncompressed;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 
@@ -216,8 +217,8 @@ fn client_handles_uncompressed_via_process() {
         destination_rectangle: InclusiveRectangle {
             left: 0,
             top: 0,
-            right: 3,
-            bottom: 3,
+            right: 4,
+            bottom: 4,
         },
         bitmap_data: vec![0u8; 4 * 4 * 4],
     });
@@ -248,8 +249,8 @@ fn client_dispatches_avc420_via_process() {
         destination_rectangle: InclusiveRectangle {
             left: 0,
             top: 0,
-            right: 15,
-            bottom: 15,
+            right: 16,
+            bottom: 16,
         },
         bitmap_data,
     });
@@ -279,8 +280,8 @@ fn client_skips_avc420_without_decoder() {
         destination_rectangle: InclusiveRectangle {
             left: 0,
             top: 0,
-            right: 15,
-            bottom: 15,
+            right: 16,
+            bottom: 16,
         },
         bitmap_data,
     });
@@ -313,8 +314,8 @@ fn client_frame_ordering_via_process() {
         destination_rectangle: InclusiveRectangle {
             left: 0,
             top: 0,
-            right: 3,
-            bottom: 3,
+            right: 4,
+            bottom: 4,
         },
         bitmap_data: vec![0u8; 4 * 4 * 4],
     });
@@ -406,8 +407,8 @@ fn client_rejects_wire_to_unknown_surface() {
         destination_rectangle: InclusiveRectangle {
             left: 0,
             top: 0,
-            right: 3,
-            bottom: 3,
+            right: 4,
+            bottom: 4,
         },
         bitmap_data: vec![0u8; 4 * 4 * 4],
     });
@@ -460,6 +461,175 @@ fn client_tolerates_out_of_bounds_rectangle() {
         result.is_ok(),
         "out-of-bounds rectangle should be tolerated (warn, not error)"
     );
+}
+
+// ============================================================================
+// Tests: ClearCodec Decode
+// ============================================================================
+
+#[test]
+fn client_dispatches_clearcodec_via_process() {
+    let mut client = setup_active_client_with_surface(None, 1, 4, 4);
+
+    // Encode a valid ClearCodec frame: 4x4 solid red (BGRA: B=0, G=0, R=255, A=255)
+    let mut cc_enc = ClearCodecEncoder::new();
+    let bgra: Vec<u8> = (0..16).flat_map(|_| [0x00u8, 0x00, 0xFF, 0xFF]).collect();
+    let cc_data = cc_enc.encode(&bgra, 4, 4);
+
+    let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
+        surface_id: 1,
+        codec_id: Codec1Type::ClearCodec,
+        pixel_format: PixelFormat::XRgb,
+        destination_rectangle: InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 4,
+        },
+        bitmap_data: cc_data,
+    });
+    client
+        .process(0, &encode_for_process(&pdu))
+        .expect("ClearCodec decode should succeed");
+}
+
+#[test]
+fn client_clearcodec_produces_rgba_output() {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct CapturedBitmap {
+        data: Option<Vec<u8>>,
+        codec: Option<Codec1Type>,
+    }
+
+    struct CapturingHandler {
+        captured: Arc<Mutex<CapturedBitmap>>,
+    }
+
+    impl GraphicsPipelineHandler for CapturingHandler {
+        fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
+            let mut cap = self.captured.lock().unwrap();
+            cap.data = Some(update.data.clone());
+            cap.codec = Some(update.codec_id);
+        }
+    }
+
+    let captured = Arc::new(Mutex::new(CapturedBitmap::default()));
+    let handler = CapturingHandler {
+        captured: Arc::clone(&captured),
+    };
+    let mut client = GraphicsPipelineClient::new(Box::new(handler), None);
+
+    // Activate and create surface
+    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu(CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::empty(),
+    }));
+    client.process(0, &encode_for_process(&confirm)).expect("confirm");
+
+    let create = GfxPdu::CreateSurface(CreateSurfacePdu {
+        surface_id: 1,
+        width: 2,
+        height: 1,
+        pixel_format: PixelFormat::XRgb,
+    });
+    client.process(0, &encode_for_process(&create)).expect("create surface");
+
+    // Encode a 2x1 frame: pixel 0 = blue (BGRA: FF,00,00,FF), pixel 1 = green (BGRA: 00,FF,00,FF)
+    let mut cc_enc = ClearCodecEncoder::new();
+    let bgra = vec![0xFF, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF];
+    let cc_data = cc_enc.encode(&bgra, 2, 1);
+
+    let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
+        surface_id: 1,
+        codec_id: Codec1Type::ClearCodec,
+        pixel_format: PixelFormat::XRgb,
+        destination_rectangle: InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 2,
+            bottom: 1,
+        },
+        bitmap_data: cc_data,
+    });
+    client
+        .process(0, &encode_for_process(&pdu))
+        .expect("ClearCodec should succeed");
+
+    // Verify BGRA-to-RGBA conversion: blue (BGRA FF,00,00,FF) -> RGBA (00,00,FF,FF)
+    let cap = captured.lock().unwrap();
+    assert_eq!(cap.codec, Some(Codec1Type::ClearCodec));
+    let bitmap = cap.data.as_ref().expect("handler should have received bitmap");
+    assert_eq!(bitmap.len(), 8, "2 pixels * 4 bytes");
+    assert_eq!(&bitmap[0..4], &[0x00, 0x00, 0xFF, 0xFF], "pixel 0: blue in RGBA");
+    assert_eq!(&bitmap[4..8], &[0x00, 0xFF, 0x00, 0xFF], "pixel 1: green in RGBA");
+}
+
+#[test]
+fn client_clearcodec_survives_reset() {
+    let mut client = setup_active_client_with_surface(None, 1, 4, 4);
+
+    // Encode and decode a ClearCodec frame
+    let mut cc_enc = ClearCodecEncoder::new();
+    let bgra: Vec<u8> = (0..16).flat_map(|_| [0x00u8, 0x00, 0xFF, 0xFF]).collect();
+    let cc_data = cc_enc.encode(&bgra, 4, 4);
+
+    let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
+        surface_id: 1,
+        codec_id: Codec1Type::ClearCodec,
+        pixel_format: PixelFormat::XRgb,
+        destination_rectangle: InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 4,
+        },
+        bitmap_data: cc_data,
+    });
+    client
+        .process(0, &encode_for_process(&pdu))
+        .expect("pre-reset ClearCodec should succeed");
+
+    // Reset graphics (clears decoder caches)
+    let reset = GfxPdu::ResetGraphics(ResetGraphicsPdu {
+        width: 1920,
+        height: 1080,
+        monitors: vec![],
+    });
+    client
+        .process(0, &encode_for_process(&reset))
+        .expect("reset should succeed");
+
+    // Re-create surface and decode another frame
+    let create = GfxPdu::CreateSurface(CreateSurfacePdu {
+        surface_id: 2,
+        width: 4,
+        height: 4,
+        pixel_format: PixelFormat::XRgb,
+    });
+    client
+        .process(0, &encode_for_process(&create))
+        .expect("create surface after reset");
+
+    // Use fresh encoder (seq starts at 0 again, matching reset decoder state)
+    let mut cc_enc2 = ClearCodecEncoder::new();
+    let cc_data2 = cc_enc2.encode(&bgra, 4, 4);
+
+    let pdu2 = GfxPdu::WireToSurface1(WireToSurface1Pdu {
+        surface_id: 2,
+        codec_id: Codec1Type::ClearCodec,
+        pixel_format: PixelFormat::XRgb,
+        destination_rectangle: InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 4,
+        },
+        bitmap_data: cc_data2,
+    });
+    client
+        .process(0, &encode_for_process(&pdu2))
+        .expect("post-reset ClearCodec should succeed with fresh decoder");
 }
 
 // ============================================================================
