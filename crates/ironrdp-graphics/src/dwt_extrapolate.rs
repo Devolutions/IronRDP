@@ -50,8 +50,8 @@ fn high_count(n: usize) -> usize {
 /// Returns 10 subbands in buffer order:
 /// `[HL1, LH1, HH1, HL2, LH2, HH2, HL3, LH3, HH3, LL3]`
 ///
-/// Band indices for progressive quantization (`ComponentCodecQuant::for_band()`):
-///   0=LL3, 1=HL3, 2=LH3, 3=HH3, 4=HL2, 5=LH2, 6=HH2, 7=HL1, 8=LH1, 9=HH1
+/// Band indices match `ComponentCodecQuant::for_band()`:
+///   0=HL1, 1=LH1, 2=HH1, 3=HL2, 4=LH2, 5=HH2, 6=HL3, 7=LH3, 8=HH3, 9=LL3
 #[expect(clippy::similar_names, reason = "lw/hw/lh/hh are standard DWT band dimensions")]
 pub fn band_layout() -> [BandInfo; 10] {
     let (lw1, hw1) = (low_count(64), high_count(64)); // (33, 31)

@@ -10,14 +10,11 @@
 
 use core::iter;
 
+use super::RfxRectangle;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
     ensure_size, invalid_field_err,
 };
-use num_derive::FromPrimitive;
-use num_traits::FromPrimitive as _;
-
-use super::RfxRectangle;
 
 // Wire constants
 const SYNC_MAGIC: u32 = 0xCACCACCA;
@@ -27,7 +24,7 @@ const TILE_SIZE: u16 = 0x0040;
 const BLOCK_HEADER_SIZE_U32: u32 = 6;
 
 /// Progressive block type discriminator.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ProgressiveBlockType {
     Sync = 0xCCC0,
@@ -41,6 +38,20 @@ pub enum ProgressiveBlockType {
 }
 
 impl ProgressiveBlockType {
+    fn from_u16(val: u16) -> Option<Self> {
+        match val {
+            0xCCC0 => Some(Self::Sync),
+            0xCCC1 => Some(Self::FrameBegin),
+            0xCCC2 => Some(Self::FrameEnd),
+            0xCCC3 => Some(Self::Context),
+            0xCCC4 => Some(Self::Region),
+            0xCCC5 => Some(Self::TileSimple),
+            0xCCC6 => Some(Self::TileFirst),
+            0xCCC7 => Some(Self::TileUpgrade),
+            _ => None,
+        }
+    }
+
     #[expect(
         clippy::as_conversions,
         reason = "repr(u16) discriminant cast is the canonical pattern"
@@ -807,7 +818,7 @@ impl Encode for ProgressiveRegion<'_> {
                 ProgressiveTile::First(f) => (ProgressiveBlockType::TileFirst, f.size()),
                 ProgressiveTile::Upgrade(u) => (ProgressiveBlockType::TileUpgrade, u.size()),
             };
-            let block_len = u32::try_from(ProgressiveBlockHeader::SIZE + body_size).expect("tile size fits u32");
+            let block_len: u32 = cast_length!("tileBlockLen", ProgressiveBlockHeader::SIZE + body_size)?;
             let header = ProgressiveBlockHeader { block_type, block_len };
             header.encode(dst)?;
             match tile {
@@ -857,6 +868,16 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
         let num_quant = usize::from(src.read_u8());
         let num_prog_quant = usize::from(src.read_u8());
         let flags = src.read_u8();
+
+        if num_rects == 0 {
+            return Err(invalid_field_err!(
+                "numRects",
+                "region must contain at least one rectangle"
+            ));
+        }
+        if num_quant > 7 {
+            return Err(invalid_field_err!("numQuant", "quant count exceeds maximum of 7"));
+        }
         let num_tiles = usize::from(src.read_u16());
         let _tile_data_size = src.read_u32();
 
@@ -902,6 +923,18 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
             tiles.push(tile);
         }
 
+        let quant_count = quant_vals.len();
+        for tile in &tiles {
+            let indices = match tile {
+                ProgressiveTile::Simple(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
+                ProgressiveTile::First(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
+                ProgressiveTile::Upgrade(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
+            };
+            if indices.iter().any(|&i| usize::from(i) >= quant_count) {
+                return Err(invalid_field_err!("quantIdx", "tile quant index out of range"));
+            }
+        }
+
         Ok(Self {
             tile_size,
             rects,
@@ -944,6 +977,21 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
             .ok_or_else(|| invalid_field_err!("blockLen", "block length too small"))?;
         let body_len: usize = cast_length!("bodyLen", body_len)?;
         ensure_size!(ctx: "ProgressiveStream", in: src, size: body_len);
+
+        // Fixed-size blocks have normative blockLen values (MS-RDPEGFX 2.2.4.2.1)
+        let expected_body: Option<usize> = match header.block_type {
+            ProgressiveBlockType::Sync => Some(ProgressiveSyncPdu::FIXED_PART_SIZE),
+            ProgressiveBlockType::FrameBegin => Some(ProgressiveFrameBeginPdu::FIXED_PART_SIZE),
+            ProgressiveBlockType::FrameEnd => Some(ProgressiveFrameEndPdu::FIXED_PART_SIZE),
+            ProgressiveBlockType::Context => Some(ProgressiveContextPdu::FIXED_PART_SIZE),
+            _ => None,
+        };
+        if let Some(expected) = expected_body {
+            if body_len != expected {
+                return Err(invalid_field_err!("blockLen", "unexpected size for fixed-size block"));
+            }
+        }
+
         let body_src = &mut ReadCursor::new(src.read_slice(body_len));
 
         let block = match header.block_type {
@@ -967,10 +1015,6 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
 
 /// Encode a progressive bitmap stream into bytes.
 ///
-/// # Panics
-///
-/// Cannot panic in practice. Internal `expect()` calls guard `u32::try_from`
-/// on block sizes that are bounded by available memory.
 pub fn encode_progressive_stream(blocks: &[ProgressiveBlock<'_>]) -> EncodeResult<Vec<u8>> {
     let total_size: usize = blocks
         .iter()
@@ -997,7 +1041,7 @@ pub fn encode_progressive_stream(blocks: &[ProgressiveBlock<'_>]) -> EncodeResul
             ProgressiveBlock::Context(c) => (ProgressiveBlockType::Context, c.size()),
             ProgressiveBlock::Region(r) => (ProgressiveBlockType::Region, r.size()),
         };
-        let block_len = u32::try_from(ProgressiveBlockHeader::SIZE + body_size).expect("block size fits u32");
+        let block_len: u32 = cast_length!("blockLen", ProgressiveBlockHeader::SIZE + body_size)?;
         ProgressiveBlockHeader { block_type, block_len }.encode(&mut dst)?;
 
         match block {

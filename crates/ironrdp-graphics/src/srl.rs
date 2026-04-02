@@ -38,20 +38,18 @@ pub fn decode_srl(data: &[u8], num_values: usize, num_bits: u8) -> Vec<i16> {
             continue;
         }
 
-        if k > 0 {
-            // Zero-run mode: read one bit to decide
+        // Zero-run mode: chunk_size = 1 << k (1 when k=0).
+        // read_bits(0) returns 0, so k=0 degenerates to single-zero runs.
+        {
             let bit = reader.read_bit();
             if !bit {
-                // Emit 1 << k zeros
                 nz = 1u32.checked_shl(k).unwrap_or(0);
                 kp = kp.saturating_add(4).min(80);
-                // First zero of the run
                 nz -= 1;
                 output[out_idx] = 0;
                 out_idx += 1;
                 continue;
             }
-            // Read k bits for exact remaining zero count
             let zeros = reader.read_bits(k);
             if zeros > 0 {
                 nz = zeros;
@@ -83,24 +81,24 @@ pub fn decode_srl(data: &[u8], num_values: usize, num_bits: u8) -> Vec<i16> {
             continue;
         }
 
-        // Decode unary magnitude: count leading zeros until a 1-bit.
-        // Cap at 16 bits to prevent overflow if the stream ends prematurely
-        // (BitReader returns 0 for out-of-bounds reads).
-        let mut magnitude: u32 = 1;
+        // Decode unary quotient: count 0-bits before the terminating 1-bit.
+        // magnitude = (quotient << extra_bits) | remainder.
+        let mut quotient: u32 = 0;
         loop {
             let bit = reader.read_bit();
-            if bit || magnitude >= 0x8000 {
+            if bit || quotient >= 0x8000 {
                 break;
             }
-            magnitude += 1;
+            quotient += 1;
         }
 
-        // Read remaining magnitude bits (num_bits - 1 bits)
         let extra_bits = u32::from(num_bits).saturating_sub(1);
-        if extra_bits > 0 && extra_bits < 16 {
-            let extra = reader.read_bits(extra_bits);
-            magnitude = (magnitude << extra_bits) | extra;
-        }
+        let magnitude = if extra_bits > 0 && extra_bits < 16 {
+            let remainder = reader.read_bits(extra_bits);
+            (quotient << extra_bits) | remainder
+        } else {
+            quotient
+        };
 
         let value = i16::try_from(magnitude.min(0x7FFF)).unwrap_or(i16::MAX);
         output[out_idx] = if sign { -value } else { value };
@@ -127,45 +125,40 @@ pub fn encode_srl(values: &[i16], num_bits: u8) -> Vec<u8> {
     let mut idx = 0;
 
     while idx < values.len() {
-        let k = kp >> 3;
+        // Count leading zeros (may be 0)
+        let mut zero_count: u32 = 0;
+        while idx + usize::try_from(zero_count).unwrap_or(usize::MAX) < values.len()
+            && values[idx + usize::try_from(zero_count).unwrap_or(usize::MAX)] == 0
+        {
+            zero_count += 1;
+        }
 
-        if values[idx] == 0 {
-            // Count consecutive zeros
-            let mut zero_count: u32 = 0;
-            while idx + usize::try_from(zero_count).unwrap_or(usize::MAX) < values.len()
-                && values[idx + usize::try_from(zero_count).unwrap_or(usize::MAX)] == 0
-            {
-                zero_count += 1;
-            }
-
-            // Encode zero run
-            if k > 0 {
-                let chunk_size = 1u32.checked_shl(k).unwrap_or(u32::MAX);
-                while zero_count >= chunk_size {
-                    writer.write_bit(false); // full chunk
-                    kp = kp.saturating_add(4).min(80);
-                    zero_count -= chunk_size;
-                    idx += usize::try_from(chunk_size).unwrap_or(usize::MAX);
-                }
-                // Emit remaining zeros with escape + count
-                writer.write_bit(true);
-                writer.write_bits(zero_count, k);
-                idx += usize::try_from(zero_count).unwrap_or(usize::MAX);
-
-                if zero_count > 0 {
-                    continue;
-                }
+        // Encode zero run one chunk at a time, recomputing k after
+        // each kp update to stay in sync with the decoder.
+        while zero_count > 0 {
+            let cur_k = kp >> 3;
+            let chunk_size = 1u32.checked_shl(cur_k).unwrap_or(u32::MAX);
+            if zero_count >= chunk_size {
+                writer.write_bit(false);
+                kp = kp.saturating_add(4).min(80);
+                zero_count -= chunk_size;
+                idx += usize::try_from(chunk_size).unwrap_or(usize::MAX);
             } else {
-                // k == 0, each zero is individually handled
-                // (zero coefficient in unary mode is skipped, we move to next)
+                // Remaining zeros < chunk: escape bit + count
+                writer.write_bit(true);
+                writer.write_bits(zero_count, cur_k);
                 idx += usize::try_from(zero_count).unwrap_or(usize::MAX);
+                zero_count = 0;
                 continue;
             }
+        }
+        // No remaining zeros: write escape with zero count
+        let cur_k = kp >> 3;
+        writer.write_bit(true);
+        writer.write_bits(0, cur_k);
 
-            // Fall through to encode the non-zero value that stopped the run
-            if idx >= values.len() {
-                break;
-            }
+        if idx >= values.len() {
+            break;
         }
 
         // Encode non-zero value
@@ -181,19 +174,17 @@ pub fn encode_srl(values: &[i16], num_bits: u8) -> Vec<u8> {
             continue;
         }
 
-        // Unary encode the magnitude
+        // Unary encode: quotient zeros + terminator + remainder bits.
+        // magnitude = (quotient << extra_bits) | remainder.
         let extra_bits = u32::from(num_bits).saturating_sub(1);
         if extra_bits > 0 && extra_bits < 16 {
-            let base = magnitude >> extra_bits;
+            let quotient = magnitude >> extra_bits;
             let remainder = magnitude & ((1u32 << extra_bits) - 1);
 
-            // Write base in unary: (base - 1) zeros + 1
-            for _ in 1..base {
+            for _ in 0..quotient {
                 writer.write_bit(false);
             }
             writer.write_bit(true);
-
-            // Write remainder
             writer.write_bits(remainder, extra_bits);
         }
 
@@ -314,9 +305,11 @@ mod tests {
     #[test]
     fn encode_all_zeros() {
         let encoded = encode_srl(&[0, 0, 0], 1);
-        // Should contain only the sentinel since k starts at 0
-        // and zeros with k=0 are just skipped
+        // Sentinel must be present
         assert_eq!(*encoded.last().unwrap(), 0x00);
+        // Round-trip: all zeros must survive
+        let decoded = decode_srl(&encoded, 3, 1);
+        assert_eq!(decoded, vec![0, 0, 0]);
     }
 
     #[test]
@@ -336,15 +329,20 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_mixed_zeros() {
+        // Zeros at the start (where k=0) must survive the round-trip
+        let original = vec![0, 0, 1, -1, 0, 3];
+        let encoded = encode_srl(&original, 4);
+        let decoded = decode_srl(&encoded, original.len(), 4);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
     fn round_trip_nonzero_only() {
-        // SRL is designed for coefficients already identified as non-zero
-        // by the DAS (delta-analysis state). Test with only non-zero values.
         let original = vec![1, -1, 2, -3, 1];
         let encoded = encode_srl(&original, 4);
         let decoded = decode_srl(&encoded, original.len(), 4);
-        for (i, (&orig, &dec)) in original.iter().zip(decoded.iter()).enumerate() {
-            assert_eq!(orig.signum(), dec.signum(), "index {i}: sign mismatch");
-        }
+        assert_eq!(decoded, original);
     }
 
     #[test]
