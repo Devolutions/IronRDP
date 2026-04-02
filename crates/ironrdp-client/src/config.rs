@@ -265,6 +265,10 @@ struct Args {
     #[clap(long)]
     small_cache: bool,
 
+    /// Scaling factor for desktop applications, percentage (value between 100 and 500)
+    #[clap(long, value_parser = clap::value_parser!(u32).range(100..=500))]
+    scale_desktop: Option<u32>,
+
     /// Set required color depth. Currently only 32 and 16 bit color depths are supported
     #[clap(long)]
     color_depth: Option<u32>,
@@ -483,7 +487,7 @@ impl Config {
                 width: DEFAULT_WIDTH,
                 height: DEFAULT_HEIGHT,
             },
-            desktop_scale_factor: 0, // Default to 0 per FreeRDP
+            desktop_scale_factor: args.scale_desktop.unwrap_or(0), // Default to 0 per FreeRDP
             bitmap: Some(bitmap),
             client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .map_or(0, |version| version.major * 100 + version.minor * 10 + version.patch)
