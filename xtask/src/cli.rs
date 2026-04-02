@@ -37,9 +37,9 @@ TASKS:
   web install             Install dependencies required to build and run Web Client
   web build               Build the Web Client
   web run                 Run SvelteKit-based standalone Web Client
-  web install-replay      Install dependencies for the Replay WASM adapter
-  web build-replay        Build the Replay WASM crate and TS adapter
-  web check-replay        Ensure Replay WASM adapter builds without error
+  web install-replay      Install dependencies for the Replay Web Client
+  web build-replay        Build the Replay Web Client
+  web check-replay        Ensure Replay Web Client builds without error
   ffi install             Install all requirements for ffi tasks
   ffi build [--release]   Build DLL for FFI (default is debug)
   ffi bindings [--skip-dotnet-build]            

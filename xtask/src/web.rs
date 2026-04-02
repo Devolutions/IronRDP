@@ -7,7 +7,7 @@ const IRON_REMOTE_DESKTOP_RDP_PATH: &str = "./web-client/iron-remote-desktop-rdp
 const IRON_SVELTE_CLIENT_PATH: &str = "./web-client/iron-svelte-client";
 const IRONRDP_WEB_PATH: &str = "./crates/ironrdp-web";
 const IRONRDP_WEB_PACKAGE_JS_PATH: &str = "./crates/ironrdp-web/pkg/ironrdp_web.js";
-
+const IRON_REPLAY_PLAYER_PATH: &str = "./web-client/iron-replay-player";
 const IRON_REPLAY_PLAYER_WASM_PATH: &str = "./web-client/iron-replay-player-wasm";
 const IRONRDP_WEB_REPLAY_PATH: &str = "./crates/ironrdp-web-replay";
 const IRONRDP_WEB_REPLAY_PACKAGE_JS_PATH: &str = "./crates/ironrdp-web-replay/pkg/ironrdp_web_replay.js";
@@ -106,8 +106,11 @@ pub fn build_replay(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
     let js_path = sh.current_dir().join(IRONRDP_WEB_REPLAY_PACKAGE_JS_PATH);
     patch_vite_wasm_url(&js_path, "ironrdp_web_replay_bg.wasm")?;
 
-    // Build the WASM adapter library (build-alone: WASM already patched above, avoids pre-build.js recursion)
+    // Build the WASM adapter library (build-alone: WASM already patched above, avoids pre-build.js recursion).
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_WASM_PATH, "{NPM} run build-alone")?;
+
+    // Build the UI component library.
+    run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} run build")?;
 
     Ok(())
 }
@@ -115,6 +118,7 @@ pub fn build_replay(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
 pub fn install_replay(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("WEB-INSTALL-REPLAY");
 
+    run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} install")?;
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_WASM_PATH, "{NPM} install")?;
 
     cargo_install(sh, &WASM_PACK)?;
@@ -127,6 +131,9 @@ pub fn check_replay(sh: &Shell) -> anyhow::Result<()> {
 
     build_replay(sh, true)?;
 
+    run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} run check")?;
+    run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} run lint")?;
+    run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} run test")?;
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_WASM_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_WASM_PATH, "{NPM} run lint")?;
 
