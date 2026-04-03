@@ -5,6 +5,7 @@ use ironrdp_pdu::rdp::client_info::{
     ExtendedClientInfo, ExtendedClientOptionalInfo, Month, OptionalSystemTime, PerformanceFlags, SystemTime,
     TimezoneInfo,
 };
+use ironrdp_str::fixed::FixedString;
 
 pub const CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS_LEN: usize = 218;
 
@@ -107,7 +108,7 @@ pub static CLIENT_INFO_UNICODE: LazyLock<ClientInfo> = LazyLock::new(|| ClientIn
         optional_data: ExtendedClientOptionalInfo::builder()
             .timezone(TimezoneInfo {
                 bias: 480,
-                standard_name: String::from("Pacific Standard Time"),
+                standard_name: FixedString::new("Pacific Standard Time").unwrap(),
                 standard_date: OptionalSystemTime(Some(SystemTime {
                     month: Month::October,
                     day_of_week: DayOfWeek::Sunday,
@@ -118,7 +119,7 @@ pub static CLIENT_INFO_UNICODE: LazyLock<ClientInfo> = LazyLock::new(|| ClientIn
                     milliseconds: 0,
                 })),
                 standard_bias: 0,
-                daylight_name: String::from("Pacific Daylight Time"),
+                daylight_name: FixedString::new("Pacific Daylight Time").unwrap(),
                 daylight_date: OptionalSystemTime(Some(SystemTime {
                     month: Month::April,
                     day_of_week: DayOfWeek::Sunday,

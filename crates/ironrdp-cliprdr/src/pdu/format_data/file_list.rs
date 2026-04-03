@@ -1,9 +1,11 @@
 use bitflags::bitflags;
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length,
+    ensure_fixed_part_size,
 };
-use ironrdp_pdu::utils::{CharacterSet, combine_u64, decode_string, encode_string, split_u64};
-use ironrdp_pdu::{impl_pdu_pod, write_padding};
+use ironrdp_pdu::impl_pdu_pod;
+use ironrdp_pdu::utils::{combine_u64, split_u64};
+use ironrdp_str::fixed::FixedString;
 
 const NAME_LENGTH: usize = 520;
 
@@ -56,8 +58,8 @@ pub struct FileDescriptor {
     pub attributes: Option<ClipboardFileAttributes>,
     pub last_write_time: Option<u64>,
     pub file_size: Option<u64>,
-    // TODO: Define a new type for "bounded" strings (this one should never be bigger than 260 characters, including the null-terminator)
-    pub name: String,
+    /// File name, stored as a fixed 260 WCHAR (520-byte) zero-padded field on the wire.
+    pub name: FixedString<260>,
 }
 
 impl_pdu_pod!(FileDescriptor);
@@ -101,11 +103,7 @@ impl Encode for FileDescriptor {
         dst.write_u32(size_hi);
         dst.write_u32(size_lo);
 
-        let written = encode_string(dst.remaining_mut(), &self.name, CharacterSet::Unicode, true)?;
-        dst.advance(written);
-
-        // Pad with zeroes, overriding any previously written data
-        write_padding!(dst, NAME_LENGTH - written);
+        self.name.encode(dst)?;
 
         Ok(())
     }
@@ -147,8 +145,7 @@ impl<'de> Decode<'de> for FileDescriptor {
             None
         };
 
-        let name = decode_string(src.remaining(), CharacterSet::Unicode, true)?;
-        src.advance(NAME_LENGTH);
+        let name = FixedString::<260>::decode_owned(src)?;
 
         Ok(Self {
             attributes,

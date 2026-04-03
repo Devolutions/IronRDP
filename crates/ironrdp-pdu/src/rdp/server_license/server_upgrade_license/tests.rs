@@ -248,8 +248,8 @@ const NEW_LICENSE_INFORMATION_BUFFER: [u8; 2031] = [
 static NEW_LICENSE_INFORMATION: LazyLock<LicenseInformation> = LazyLock::new(|| LicenseInformation {
     version: 0x0006_0000,
     scope: "microsoft.com".to_owned(),
-    company_name: "Microsoft Corporation".to_owned(),
-    product_id: "A02".to_owned(),
+    company_name: CbU32StringNullIncluded::new("Microsoft Corporation"),
+    product_id: CbU32StringNullIncluded::new("A02"),
     license_info: Vec::from(&NEW_LICENSE_INFORMATION_BUFFER[NEW_LICENSE_INFORMATION_BUFFER.len() - 0x0799..]),
 });
 static SERVER_UPGRADE_LICENSE: LazyLock<LicensePdu> = LazyLock::new(|| {

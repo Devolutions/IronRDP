@@ -7,15 +7,15 @@ use bitflags::bitflags;
 use ironrdp_core::{
     Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
+use ironrdp_str::ansi;
 use md5::Digest as _;
 
 use super::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA,
     LicenseEncryptionData, LicenseHeader, PREAMBLE_SIZE, PreambleFlags, PreambleType, PreambleVersion,
-    RANDOM_NUMBER_SIZE, ServerLicenseError, ServerLicenseRequest, UTF8_NULL_TERMINATOR_SIZE,
+    RANDOM_NUMBER_SIZE, ServerLicenseError, ServerLicenseRequest,
 };
 use crate::crypto::rsa::encrypt_with_public_key;
-use crate::utils::{self, CharacterSet};
 
 const LICENSE_REQUEST_STATIC_FIELDS_SIZE: usize = 20;
 
@@ -103,10 +103,8 @@ impl ClientNewLicenseRequest {
                     + PREAMBLE_SIZE
                     + LICENSE_REQUEST_STATIC_FIELDS_SIZE
                     + encrypted_premaster_secret.len()
-                    + client_machine_name.len()
-                    + UTF8_NULL_TERMINATOR_SIZE
-                    + client_username.len()
-                    + UTF8_NULL_TERMINATOR_SIZE,
+                    + ansi::encoded_ansi_len_with_null(client_machine_name)
+                    + ansi::encoded_ansi_len_with_null(client_username),
             )
             .map_err(|_| ServerLicenseError::InvalidField("preamble message size"))?,
         };
@@ -141,17 +139,17 @@ impl ClientNewLicenseRequest {
 
         BlobHeader::new(
             BlobType::CLIENT_USER_NAME,
-            self.client_username.len() + UTF8_NULL_TERMINATOR_SIZE,
+            ansi::encoded_ansi_len_with_null(&self.client_username),
         )
         .encode(dst)?;
-        utils::write_string_to_cursor(dst, &self.client_username, CharacterSet::Ansi, true)?;
+        ansi::write_ansi_with_null(dst, &self.client_username)?;
 
         BlobHeader::new(
             BlobType::CLIENT_MACHINE_NAME_BLOB,
-            self.client_machine_name.len() + UTF8_NULL_TERMINATOR_SIZE,
+            ansi::encoded_ansi_len_with_null(&self.client_machine_name),
         )
         .encode(dst)?;
-        utils::write_string_to_cursor(dst, &self.client_machine_name, CharacterSet::Ansi, true)?;
+        ansi::write_ansi_with_null(dst, &self.client_machine_name)?;
 
         Ok(())
     }
@@ -182,16 +180,16 @@ impl ClientNewLicenseRequest {
             return Err(invalid_field_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: username_blob_header.length);
-        let client_username =
-            utils::decode_string(src.read_slice(username_blob_header.length), CharacterSet::Ansi, false)?;
+        let client_username = ansi::decode_ansi(src.read_slice(username_blob_header.length))
+            .map_err(|_| invalid_field_err!("clientUserName", "invalid UTF-8"))?;
 
         let machine_name_blob = BlobHeader::decode(src)?;
         if machine_name_blob.blob_type != BlobType::CLIENT_MACHINE_NAME_BLOB {
             return Err(invalid_field_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: machine_name_blob.length);
-        let client_machine_name =
-            utils::decode_string(src.read_slice(machine_name_blob.length), CharacterSet::Ansi, false)?;
+        let client_machine_name = ansi::decode_ansi(src.read_slice(machine_name_blob.length))
+            .map_err(|_| invalid_field_err!("clientMachineName", "invalid UTF-8"))?;
 
         Ok(Self {
             license_header,
@@ -211,10 +209,8 @@ impl ClientNewLicenseRequest {
             + LICENSE_REQUEST_STATIC_FIELDS_SIZE
             + RANDOM_NUMBER_SIZE
             + self.encrypted_premaster_secret.len()
-            + self.client_machine_name.len()
-            + UTF8_NULL_TERMINATOR_SIZE
-            + self.client_username.len()
-            + UTF8_NULL_TERMINATOR_SIZE
+            + ansi::encoded_ansi_len_with_null(&self.client_machine_name)
+            + ansi::encoded_ansi_len_with_null(&self.client_username)
     }
 }
 
