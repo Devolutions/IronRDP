@@ -69,6 +69,10 @@ impl RdpdrBackend for NixRdpdrBackend {
             }
         }
     }
+
+    fn handle_user_logged_on(&mut self, _devices_list: &mut Devices) -> PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
 }
 
 pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWriteRequest) -> PduResult<Vec<SvcMessage>> {

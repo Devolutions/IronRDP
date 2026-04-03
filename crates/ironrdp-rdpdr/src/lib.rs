@@ -143,16 +143,25 @@ impl Rdpdr {
         Ok(Vec::new())
     }
 
+    fn handle_user_logged_on(&mut self) -> PduResult<Vec<SvcMessage>> {
+        let res = self.backend.handle_user_logged_on(&mut self.device_list)?;
+        trace!("handling user logged sending {:?}", res);
+        Ok(res)
+    }
+
     fn handle_device_io_request(
         &mut self,
         dev_io_req: DeviceIoRequest,
         src: &mut ReadCursor<'_>,
     ) -> PduResult<Vec<SvcMessage>> {
-        match self
-            .device_list
-            .for_device_type(dev_io_req.device_id)
-            .map_err(|e| decode_err!(e))?
-        {
+        let Ok(device_type) = self.device_list.for_device_type(dev_io_req.device_id) else {
+            // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9925f2e4-8d5a-4777-a41a-7ba6ef6e8bff
+            // "If a request is received that contains a DeviceId field that was not announced by the client or has
+            // been removed, the request SHOULD be ignored by the implementation." */
+            return Ok(vec![]);
+        };
+
+        match device_type {
             DeviceType::Smartcard => {
                 let req =
                     DeviceControlRequest::<ScardIoCtlCode>::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
@@ -207,7 +216,7 @@ impl SvcProcessor for Rdpdr {
             }
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => self.handle_server_device_announce_response(pdu),
             RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu, &mut src),
-            RdpdrPdu::UserLoggedon => Ok(vec![]),
+            RdpdrPdu::UserLoggedon => self.handle_user_logged_on(),
             // TODO: This can eventually become a `_ => {}` block, but being explicit for now
             // to make sure we don't miss handling new RdpdrPdu variants here during active development.
             RdpdrPdu::ClientNameRequest(_)
