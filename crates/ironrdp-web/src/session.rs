@@ -603,7 +603,7 @@ impl iron_remote_desktop::Session for Session {
                     }
                     ActiveStageOutput::GraphicsUpdate(region) => {
                         // PERF: some copies and conversion could be optimized
-                        let (region, buffer) = extract_partial_image(&image, region);
+                        let (region, buffer) = extract_partial_image(&image, region)?;
                         gui.draw(&buffer, region).context("draw updated region")?;
                     }
                     ActiveStageOutput::PointerDefault => {
