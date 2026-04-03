@@ -5,10 +5,11 @@ use crate::prelude::*;
 const IRON_REMOTE_DESKTOP_PATH: &str = "./web-client/iron-remote-desktop";
 const IRON_REMOTE_DESKTOP_RDP_PATH: &str = "./web-client/iron-remote-desktop-rdp";
 const IRON_SVELTE_CLIENT_PATH: &str = "./web-client/iron-svelte-client";
-const IRONRDP_WEB_PATH: &str = "./crates/ironrdp-web";
-const IRONRDP_WEB_PACKAGE_JS_PATH: &str = "./crates/ironrdp-web/pkg/ironrdp_web.js";
 const IRON_REPLAY_PLAYER_PATH: &str = "./web-client/iron-replay-player";
 const IRON_REPLAY_PLAYER_WASM_PATH: &str = "./web-client/iron-replay-player-wasm";
+const IRON_SVELTE_REPLAY_CLIENT_PATH: &str = "./web-client/iron-svelte-replay-client";
+const IRONRDP_WEB_PATH: &str = "./crates/ironrdp-web";
+const IRONRDP_WEB_PACKAGE_JS_PATH: &str = "./crates/ironrdp-web/pkg/ironrdp_web.js";
 const IRONRDP_WEB_REPLAY_PATH: &str = "./crates/ironrdp-web-replay";
 const IRONRDP_WEB_REPLAY_PACKAGE_JS_PATH: &str = "./crates/ironrdp-web-replay/pkg/ironrdp_web_replay.js";
 
@@ -112,6 +113,9 @@ pub fn build_replay(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
     // Build the UI component library.
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} run build")?;
 
+    // Build the demo app (build-no-wasm: libs already built above)
+    run_cmd_in!(sh, IRON_SVELTE_REPLAY_CLIENT_PATH, "{NPM} run build-no-wasm")?;
+
     Ok(())
 }
 
@@ -120,6 +124,7 @@ pub fn install_replay(sh: &Shell) -> anyhow::Result<()> {
 
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} install")?;
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_WASM_PATH, "{NPM} install")?;
+    run_cmd_in!(sh, IRON_SVELTE_REPLAY_CLIENT_PATH, "{NPM} install")?;
 
     cargo_install(sh, &WASM_PACK)?;
 
@@ -136,6 +141,16 @@ pub fn check_replay(sh: &Shell) -> anyhow::Result<()> {
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} run test")?;
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_WASM_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_WASM_PATH, "{NPM} run lint")?;
+    run_cmd_in!(sh, IRON_SVELTE_REPLAY_CLIENT_PATH, "{NPM} run check")?;
+    run_cmd_in!(sh, IRON_SVELTE_REPLAY_CLIENT_PATH, "{NPM} run lint")?;
+
+    Ok(())
+}
+
+pub fn run_replay(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("WEB-RUN-REPLAY");
+
+    run_cmd_in!(sh, IRON_SVELTE_REPLAY_CLIENT_PATH, "{NPM} run dev-no-wasm")?;
 
     Ok(())
 }

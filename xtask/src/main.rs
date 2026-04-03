@@ -116,6 +116,7 @@ fn main() -> anyhow::Result<()> {
         Action::WebBuildReplay => web::build_replay(&sh, false)?,
         Action::WebInstallReplay => web::install_replay(&sh)?,
         Action::WebCheckReplay => web::check_replay(&sh)?,
+        Action::WebRunReplay => web::run_replay(&sh)?,
         Action::FfiInstall => ffi::install(&sh)?,
         Action::FfiBuildDll { release } => ffi::build_dynamic_lib(&sh, release)?,
         Action::FfiBuildBindings { skip_dotnet_build } => ffi::build_bindings(&sh, skip_dotnet_build)?,
