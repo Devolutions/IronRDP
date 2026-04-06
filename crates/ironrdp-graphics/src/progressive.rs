@@ -1262,6 +1262,7 @@ mod tests {
         let mut decoder = ProgressiveDecoder::new();
 
         // Decode a minimal valid stream to create a context
+        use ironrdp_pdu::codecs::rfx::RfxRectangle;
         use ironrdp_pdu::codecs::rfx::progressive::{
             ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
             ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
@@ -1269,7 +1270,12 @@ mod tests {
 
         let region = ProgressiveRegion {
             tile_size: 0x40,
-            rects: vec![],
+            rects: vec![RfxRectangle {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            }],
             quant_vals: vec![],
             quant_prog_vals: vec![],
             flags: 0,
