@@ -10,11 +10,12 @@
 
 use core::iter;
 
-use super::RfxRectangle;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
     ensure_size, invalid_field_err,
 };
+
+use super::RfxRectangle;
 
 // Wire constants
 const SYNC_MAGIC: u32 = 0xCACCACCA;
