@@ -3919,9 +3919,9 @@ dependencies = [
 
 [[package]]
 name = "opus2"
-version = "0.3.3"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3a4200c196ebf402d8a7091ce21845e8f2cd2f9c0c00deb73aaa14d024f6e6e"
+checksum = "49521e33fbf825d2abc8d696506c278cb8469d0c6cc05d3785bef5c5f7ee957b"
 dependencies = [
  "libopus_sys",
 ]
