@@ -596,6 +596,8 @@ impl RdpServer {
                             error!(?error, "Connection error");
                         }
 
+                        self.static_channels = StaticChannelSet::new();
+
                         if let Some(ref mut handler) = self.connection_handler {
                             let action = handler.on_disconnected(
                                 peer,
@@ -608,8 +610,6 @@ impl RdpServer {
                             }
                         }
                     }
-
-                    self.static_channels = StaticChannelSet::new();
                 }
                 else => break,
             }
