@@ -42,7 +42,7 @@ pub struct Rdpdr {
     ///
     /// All devices not of the type [`DeviceType::Filesystem`] must be declared here.
     device_list: Devices,
-    backend: Box<dyn RdpdrBackend>,
+    backend: Option<Box<dyn RdpdrBackend>>,
 }
 
 impl_as_any!(Rdpdr);
@@ -56,7 +56,7 @@ impl Rdpdr {
             computer_name,
             capabilities: Capabilities::new(),
             device_list: Devices::new(),
-            backend,
+            backend: Some(backend),
         }
     }
 
@@ -97,11 +97,11 @@ impl Rdpdr {
     }
 
     pub fn downcast_backend<T: RdpdrBackend>(&self) -> Option<&T> {
-        self.backend.as_any().downcast_ref::<T>()
+        self.backend.as_ref()?.as_any().downcast_ref::<T>()
     }
 
     pub fn downcast_backend_mut<T: RdpdrBackend>(&mut self) -> Option<&mut T> {
-        self.backend.as_any_mut().downcast_mut::<T>()
+        self.backend.as_mut()?.as_any_mut().downcast_mut::<T>()
     }
 
     fn handle_server_announce(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
@@ -139,13 +139,18 @@ impl Rdpdr {
         &mut self,
         pdu: ServerDeviceAnnounceResponse,
     ) -> PduResult<Vec<SvcMessage>> {
-        self.backend.handle_server_device_announce_response(pdu)?;
+        self.backend
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+            .handle_server_device_announce_response(pdu)?;
         Ok(Vec::new())
     }
 
     fn handle_user_logged_on(&mut self) -> PduResult<Vec<SvcMessage>> {
-        let res = self.backend.handle_user_logged_on(&mut self.device_list)?;
-        trace!("handling user logged sending {:?}", res);
+        let mut backend = self.backend.take().expect("missing rdpdr backend");
+        let res = backend.handle_user_logged_on(self)?;
+        self.backend = Some(backend);
+        trace!("sending {:?}", res);
         Ok(res)
     }
 
@@ -155,9 +160,9 @@ impl Rdpdr {
         src: &mut ReadCursor<'_>,
     ) -> PduResult<Vec<SvcMessage>> {
         let Ok(device_type) = self.device_list.for_device_type(dev_io_req.device_id) else {
-            // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9925f2e4-8d5a-4777-a41a-7ba6ef6e8bff
-            // "If a request is received that contains a DeviceId field that was not announced by the client or has
-            // been removed, the request SHOULD be ignored by the implementation." */
+            // > If a request is received that contains a DeviceId field that was not announced by the client or has
+            // > been removed, the request SHOULD be ignored by the implementation.
+            // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9925f2e4-8d5a-4777-a41a-7ba6ef6e8bff
             return Ok(vec![]);
         };
 
@@ -170,7 +175,10 @@ impl Rdpdr {
                 debug!(?req);
                 debug!(?req.io_control_code, ?call);
 
-                self.backend.handle_scard_call(req, call)?;
+                self.backend
+                    .as_mut()
+                    .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                    .handle_scard_call(req, call)?;
 
                 Ok(Vec::new())
             }
@@ -179,7 +187,11 @@ impl Rdpdr {
 
                 debug!(?req);
 
-                Ok(self.backend.handle_drive_io_request(req)?)
+                Ok(self
+                    .backend
+                    .as_mut()
+                    .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                    .handle_drive_io_request(req)?)
             }
             _ => {
                 // This should never happen, as we only announce devices that we support.
