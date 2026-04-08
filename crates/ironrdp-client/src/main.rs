@@ -17,7 +17,8 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
-    let mut app = App::new(&event_loop, &input_event_sender).context("unable to initialize App")?;
+    let mut app =
+        App::new(&event_loop, &input_event_sender, config.fake_events_interval).context("unable to initialize App")?;
 
     // TODO: get window size & scale factor from GUI/App
     let window_size = (1024, 768);
