@@ -342,7 +342,7 @@ fn default_client_config() -> connector::Config {
         desktop_scale_factor: 0, // Default to 0 per FreeRDP
         enable_tls: true,
         enable_credssp: true,
-        enable_standard_rdp_security: false,
+        allow_encryption_level_none: false,
         credentials: connector::Credentials::UsernamePassword {
             username: USERNAME.into(),
             password: PASSWORD.into(),

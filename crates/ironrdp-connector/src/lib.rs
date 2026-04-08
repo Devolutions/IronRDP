@@ -193,20 +193,22 @@ pub struct Config {
     /// computers.
     #[doc(alias("enable_nla", "nla"))]
     pub enable_credssp: bool,
-    /// Allow standard RDP security (no TLS, no CredSSP)
+    /// Allow connections with no RDP-level encryption (`ENCRYPTION_LEVEL_NONE`)
     ///
-    /// Standard RDP security does not provide any transport-level encryption.
-    /// This is appropriate when the transport is already secured by other means,
-    /// such as a TLS WebSocket proxy or an SSH tunnel.
+    /// When enabled and the server selects Standard RDP Security
+    /// (`PROTOCOL_RDP`) with `ENCRYPTION_LEVEL_NONE` /
+    /// `ENCRYPTION_METHOD_NONE`, the connection proceeds without TLS
+    /// upgrade, CredSSP authentication, or RDP-layer encryption.
     ///
-    /// When this is enabled and the server selects standard RDP security,
-    /// the connection proceeds without TLS upgrade or CredSSP authentication.
+    /// This is appropriate when the transport is already secured by other
+    /// means, such as a TLS WebSocket proxy or an SSH tunnel.
     ///
     /// # Security Warning
     ///
-    /// Do **not** enable this unless the underlying transport is already encrypted.
-    /// Without TLS, all RDP traffic (including credentials) is sent in plaintext.
-    pub enable_standard_rdp_security: bool,
+    /// Do **not** enable this unless the underlying transport is already
+    /// encrypted. Without TLS, all RDP traffic (including credentials) is
+    /// sent in plaintext.
+    pub allow_encryption_level_none: bool,
     pub credentials: Credentials,
     pub domain: Option<String>,
     /// The build number of the client.

@@ -263,8 +263,8 @@ impl Sequence for ClientConnector {
                     security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
                 }
 
-                if security_protocol.is_standard_rdp_security() && !self.config.enable_standard_rdp_security {
-                    return Err(reason_err!("Initiation", "standard RDP security is not supported",));
+                if security_protocol.is_standard_rdp_security() && !self.config.allow_encryption_level_none {
+                    return Err(reason_err!("Initiation", "ENCRYPTION_LEVEL_NONE is not allowed",));
                 }
 
                 let connection_request = nego::ConnectionRequest {

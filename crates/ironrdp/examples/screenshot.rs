@@ -224,7 +224,7 @@ fn build_config(
         domain,
         enable_tls: false, // This example does not expose any frontend.
         enable_credssp: true,
-        enable_standard_rdp_security: false,
+        allow_encryption_level_none: false,
         keyboard_type: KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_layout: 0,
