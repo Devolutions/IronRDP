@@ -30,8 +30,13 @@ fn main() -> anyhow::Result<()> {
         u32::from(config.connector.desktop_size.width),
         u32::from(config.connector.desktop_size.height),
     );
-    let mut app =
-        App::new(&event_loop, &input_event_sender, initial_window_size).context("unable to initialize App")?;
+    let mut app = App::new(
+        &event_loop,
+        &input_event_sender,
+        config.fake_events_interval,
+        initial_window_size,
+    )
+    .context("unable to initialize App")?;
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()

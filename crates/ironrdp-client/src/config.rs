@@ -3,6 +3,7 @@
 use core::fmt;
 use core::num::ParseIntError;
 use core::str::FromStr;
+use core::time::Duration;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
@@ -27,6 +28,7 @@ pub struct Config {
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
     pub rdcleanpath: Option<RDCleanPathConfig>,
+    pub fake_events_interval: Option<Duration>,
 
     /// DVC channel <-> named pipe proxy configuration.
     ///
@@ -396,6 +398,11 @@ struct Args {
     #[clap(long, value_parser = clap::value_parser!(u32).range(0..=3), default_value_t = 3)]
     compression_level: u32,
 
+    /// Prevents session locking by injecting fake mouse movement events when
+    /// the connection is idle (interval in minutes)
+    #[clap(long)]
+    prevent_session_lock: Option<u32>,
+
     /// Add DVC channel named pipe proxy
     ///
     /// The format is `<name>=<pipe>`, e.g., `ChannelName=PipeName` where `ChannelName` is the name of the channel,
@@ -448,6 +455,7 @@ pub struct PartialConfig {
     pub clipboard_type: ClipboardType,
     pub codecs: Vec<String>,
     pub compression_level: u32,
+    pub prevent_session_lock: Option<u32>,
     pub dvc_pipe_proxies: Vec<DvcProxyInfo>,
     #[cfg(windows)]
     pub dvc_plugins: Vec<PathBuf>,
@@ -506,6 +514,7 @@ impl PartialConfig {
             clipboard_type: args.clipboard_type,
             codecs: args.codecs,
             compression_level: args.compression_level,
+            prevent_session_lock: args.prevent_session_lock,
             dvc_pipe_proxies: args.dvc_proxy,
             #[cfg(windows)]
             dvc_plugins: args.dvc_plugin,
@@ -629,6 +638,11 @@ impl PartialConfig {
             }
             bitmap.color_depth = color_depth;
         };
+
+        // make a duration from cmdline argument (minutes)
+        let fake_events_interval = self
+            .prevent_session_lock
+            .map(|v| Duration::from_secs(u64::from(v) * 60));
 
         let enable_credssp = properties.enable_credssp_support().unwrap_or(true);
 
@@ -764,6 +778,7 @@ impl PartialConfig {
             connector,
             clipboard_type,
             rdcleanpath: self.rdcleanpath,
+            fake_events_interval,
             dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(windows)]
             dvc_plugins: self.dvc_plugins,
