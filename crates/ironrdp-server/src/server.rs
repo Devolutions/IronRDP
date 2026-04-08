@@ -143,13 +143,23 @@ pub enum RdpServerSecurity {
     Tls(TlsAcceptor),
     /// Used for both hybrid + hybrid-ex.
     Hybrid((TlsAcceptor, Vec<u8>)),
+    /// The transport is already secured by external means (TLS WebSocket
+    /// proxy, SSH tunnel, vsock, etc.).
+    ///
+    /// Advertises `PROTOCOL_SSL` during X.224 negotiation so the client
+    /// sees Enhanced RDP Security, but skips the TLS handshake since the
+    /// underlying stream is already encrypted. The GCC Server Security
+    /// Data will contain `ENCRYPTION_LEVEL_NONE`, which is the correct
+    /// and spec-conformant response under Enhanced RDP Security
+    /// ([MS-RDPBCGR] Section 5.4.1).
+    PreSecured,
 }
 
 impl RdpServerSecurity {
     pub fn flag(&self) -> nego::SecurityProtocol {
         match self {
             RdpServerSecurity::None => nego::SecurityProtocol::empty(),
-            RdpServerSecurity::Tls(_) => nego::SecurityProtocol::SSL,
+            RdpServerSecurity::Tls(_) | RdpServerSecurity::PreSecured => nego::SecurityProtocol::SSL,
             RdpServerSecurity::Hybrid(_) => nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX,
         }
     }
@@ -474,44 +484,52 @@ impl RdpServer {
 
         match res {
             BeginResult::ShouldUpgrade(stream) => {
-                let tls_acceptor = match &self.opts.security {
-                    RdpServerSecurity::Tls(acceptor) => acceptor,
-                    RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
-                    RdpServerSecurity::None => unreachable!(),
-                };
-                let accept = match tls_acceptor.accept(stream).await {
-                    Ok(accept) => accept,
-                    Err(e) => {
-                        warn!("Failed to TLS accept: {}", e);
-                        return Ok(());
+                if let RdpServerSecurity::PreSecured = &self.opts.security {
+                    // Transport is already secured; skip TLS handshake but
+                    // continue the RDP connection sequence.
+                    let framed = TokioFramed::new(stream);
+                    acceptor.mark_security_upgrade_as_done();
+                    self.accept_finalize(framed, acceptor).await?;
+                } else {
+                    let tls_acceptor = match &self.opts.security {
+                        RdpServerSecurity::Tls(acceptor) => acceptor,
+                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
+                        RdpServerSecurity::None | RdpServerSecurity::PreSecured => unreachable!(),
+                    };
+                    let accept = match tls_acceptor.accept(stream).await {
+                        Ok(accept) => accept,
+                        Err(e) => {
+                            warn!("Failed to TLS accept: {}", e);
+                            return Ok(());
+                        }
+                    };
+                    let mut framed = TokioFramed::new(accept);
+
+                    acceptor.mark_security_upgrade_as_done();
+
+                    if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
+                        // Generic streams don't expose peer address. Use a neutral
+                        // placeholder; it's unclear whether CredSSP/NTLM actually
+                        // uses this value in practice.
+                        let client_name = "rdp-client".to_owned();
+
+                        ironrdp_acceptor::accept_credssp(
+                            &mut framed,
+                            &mut acceptor,
+                            &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+                            client_name.into(),
+                            pub_key.clone(),
+                            None,
+                        )
+                        .await?;
                     }
-                };
-                let mut framed = TokioFramed::new(accept);
 
-                acceptor.mark_security_upgrade_as_done();
-
-                if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
-                    // Generic streams don't expose peer address. Use a neutral
-                    // placeholder; it's unclear whether CredSSP/NTLM actually
-                    // uses this value in practice.
-                    let client_name = "rdp-client".to_owned();
-
-                    ironrdp_acceptor::accept_credssp(
-                        &mut framed,
-                        &mut acceptor,
-                        &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
-                        client_name.into(),
-                        pub_key.clone(),
-                        None,
-                    )
-                    .await?;
-                }
-
-                let framed = self.accept_finalize(framed, acceptor).await?;
-                debug!("Shutting down TLS connection");
-                let (mut tls_stream, _) = framed.into_inner();
-                if let Err(e) = tls_stream.shutdown().await {
-                    debug!(?e, "TLS shutdown error");
+                    let framed = self.accept_finalize(framed, acceptor).await?;
+                    debug!("Shutting down TLS connection");
+                    let (mut tls_stream, _) = framed.into_inner();
+                    if let Err(e) = tls_stream.shutdown().await {
+                        debug!(?e, "TLS shutdown error");
+                    }
                 }
             }
 

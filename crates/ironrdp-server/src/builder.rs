@@ -72,6 +72,18 @@ impl RdpServerBuilder<WantsSecurity> {
         }
     }
 
+    /// Use when the transport is already secured (TLS WebSocket proxy,
+    /// SSH tunnel, vsock, etc.). Advertises Enhanced RDP Security
+    /// (`PROTOCOL_SSL`) to the client but skips the TLS handshake.
+    pub fn with_pre_secured(self) -> RdpServerBuilder<WantsHandler> {
+        RdpServerBuilder {
+            state: WantsHandler {
+                addr: self.state.addr,
+                security: RdpServerSecurity::PreSecured,
+            },
+        }
+    }
+
     pub fn with_tls(self, acceptor: impl Into<TlsAcceptor>) -> RdpServerBuilder<WantsHandler> {
         RdpServerBuilder {
             state: WantsHandler {
