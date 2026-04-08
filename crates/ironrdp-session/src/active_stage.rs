@@ -416,6 +416,8 @@ fn process_slow_path_graphics(
             warn!("Slow-path palette update not supported (8bpp)");
             Ok(Vec::new())
         }
+        // Synchronize is an artifact from the T.128 multipoint protocol
+        // and carries no data. Safe to ignore.
         GraphicsUpdateType::Synchronize => {
             debug!("Ignoring slow-path synchronize update");
             Ok(Vec::new())

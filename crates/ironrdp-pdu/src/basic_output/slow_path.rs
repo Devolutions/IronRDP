@@ -11,7 +11,7 @@
 
 use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, ensure_size, invalid_field_err};
 
-use super::bitmap::BitmapUpdateData;
+use super::bitmap::{BitmapData, BitmapUpdateData};
 use super::pointer::{
     CachedPointerAttribute, ColorPointerAttribute, LargePointerAttribute, PointerAttribute, PointerPositionAttribute,
     PointerUpdateData,
@@ -50,7 +50,14 @@ pub fn read_graphics_update_type(src: &mut ReadCursor<'_>) -> DecodeResult<Graph
 /// The cursor must be positioned right after the `updateType` field
 /// (i.e. already consumed by [`read_graphics_update_type`]).
 pub fn decode_slow_path_bitmap<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<BitmapUpdateData<'a>> {
-    BitmapUpdateData::decode(src)
+    // Read numberRectangles directly; updateType was already consumed by the dispatcher.
+    ensure_size!(in: src, size: 2);
+    let rectangle_count = usize::from(src.read_u16());
+    let mut rectangles = Vec::with_capacity(rectangle_count);
+    for _ in 0..rectangle_count {
+        rectangles.push(BitmapData::decode(src)?);
+    }
+    Ok(BitmapUpdateData { rectangles })
 }
 
 // --- Pointer updates ([MS-RDPBCGR] 2.2.9.1.1.4) ---
