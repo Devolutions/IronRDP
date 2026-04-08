@@ -1,4 +1,5 @@
 use core::net::SocketAddr;
+use core::time::Duration;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -41,6 +42,50 @@ use crate::{SoundServerFactory, builder, capabilities};
 
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
+
+/// Action to take after a client disconnects.
+///
+/// Returned by [`ConnectionHandler::on_disconnected`] to control whether
+/// the server continues accepting new connections or shuts down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostConnectionAction {
+    /// Continue accepting new connections.
+    Continue,
+    /// Stop the accept loop and return from [`RdpServer::run`].
+    Stop,
+}
+
+/// Hooks for connection lifecycle events in [`RdpServer::run`].
+///
+/// Implement this trait to add pre-accept filtering (rate limiting,
+/// IP allowlists) and post-disconnect logic (cleanup, session validity
+/// checks, metrics).
+///
+/// All methods have default implementations that accept all connections
+/// and continue unconditionally.
+pub trait ConnectionHandler: Send {
+    /// Called after `accept()` returns but before `run_connection()`.
+    ///
+    /// Return `false` to reject the connection (the TCP stream is dropped).
+    fn on_accept(&mut self, peer: SocketAddr) -> bool {
+        let _ = peer;
+        true
+    }
+
+    /// Called after `run_connection()` completes (successfully or with error).
+    ///
+    /// `duration` is the wall-clock time the connection was active.
+    /// `error` is `Some` if the connection ended with an error.
+    fn on_disconnected(
+        &mut self,
+        peer: SocketAddr,
+        duration: Duration,
+        error: Option<&anyhow::Error>,
+    ) -> PostConnectionAction {
+        let _ = (peer, duration, error);
+        PostConnectionAction::Continue
+    }
+}
 
 #[derive(Clone)]
 pub struct RdpServerOptions {
@@ -245,6 +290,7 @@ pub struct RdpServer {
     creds: Option<Credentials>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
+    connection_handler: Option<Box<dyn ConnectionHandler>>,
 }
 
 #[derive(Debug)]
@@ -285,6 +331,7 @@ impl RdpServer {
         display: Box<dyn RdpServerDisplay>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+        connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
@@ -315,6 +362,7 @@ impl RdpServer {
             creds: None,
             local_addr: None,
             autodetect: None,
+            connection_handler,
         }
     }
 
@@ -531,10 +579,37 @@ impl RdpServer {
                 Ok((stream, peer)) = listener.accept() => {
                     debug!(?peer, "Received connection");
                     drop(ev_receiver);
-                    if let Err(error) = self.run_connection(stream).await {
-                        error!(?error, "Connection error");
+
+                    let accepted = self.connection_handler
+                        .as_mut()
+                        .is_none_or(|h| h.on_accept(peer));
+
+                    if !accepted {
+                        debug!(?peer, "Connection rejected by handler");
+                        drop(stream);
+                    } else {
+                        let started = tokio::time::Instant::now();
+                        let result = self.run_connection(stream).await;
+                        let duration = started.elapsed();
+
+                        if let Err(ref error) = result {
+                            error!(?error, "Connection error");
+                        }
+
+                        self.static_channels = StaticChannelSet::new();
+
+                        if let Some(ref mut handler) = self.connection_handler {
+                            let action = handler.on_disconnected(
+                                peer,
+                                duration,
+                                result.as_ref().err(),
+                            );
+                            if action == PostConnectionAction::Stop {
+                                debug!(?peer, "Handler requested stop after disconnect");
+                                break;
+                            }
+                        }
                     }
-                    self.static_channels = StaticChannelSet::new();
                 }
                 else => break,
             }
