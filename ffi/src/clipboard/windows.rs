@@ -102,7 +102,11 @@ impl WinCliprdrInner {
     }
 
     fn next_clipboard_message(&self) -> Result<Option<ironrdp::cliprdr::backend::ClipboardMessage>, Box<IronRdpError>> {
-        Ok(self.receiver.try_recv().ok())
+        match self.receiver.try_recv() {
+            Ok(msg) => Ok(Some(msg)),
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("clipboard message channel disconnected".into()),
+        }
     }
 
     fn backend_factory(&self) -> Result<CliprdrBackendFactory, Box<IronRdpError>> {

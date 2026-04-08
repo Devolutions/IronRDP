@@ -16,5 +16,7 @@ public enum ClipboardMessageType
     SendInitiateCopy = 0,
     SendFormatData = 1,
     SendInitiatePaste = 2,
-    Error = 3,
+    SendFileContentsRequest = 3,
+    SendFileContentsResponse = 4,
+    Error = 5,
 }

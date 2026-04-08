@@ -75,7 +75,7 @@ pub mod ffi {
             let formats = formats.0.clone();
             let clipboard = self
                 .0
-                .get_svc_processor::<ironrdp::cliprdr::CliprdrClient>()
+                .get_svc_processor_mut::<ironrdp::cliprdr::CliprdrClient>()
                 .ok_or("clipboard svc processor not found in active stage")?;
 
             let result = clipboard.initiate_copy(&formats)?;
@@ -92,7 +92,7 @@ pub mod ffi {
             let format_id = format_id.0;
             let clipboard = self
                 .0
-                .get_svc_processor::<ironrdp::cliprdr::CliprdrClient>()
+                .get_svc_processor_mut::<ironrdp::cliprdr::CliprdrClient>()
                 .ok_or("clipboard svc processor not found in active stage")?;
 
             let result = clipboard.initiate_paste(format_id)?;

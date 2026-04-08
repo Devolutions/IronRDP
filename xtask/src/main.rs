@@ -38,6 +38,7 @@ pub const FUZZ_TARGETS: &[&str] = &[
     "rle_decompression",
     "bitmap_stream",
     "cliprdr_format",
+    "cliprdr_channel_processing",
     "channel_processing",
 ];
 

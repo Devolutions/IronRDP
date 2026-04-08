@@ -12,10 +12,11 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct ClipboardSvgMessage
+public partial struct MultitransportRequest
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardSvgMessage_destroy", ExactSpelling = true)]
-    public static unsafe extern void Destroy(ClipboardSvgMessage* self);
+    public uint request_id;
+
+    public ushort requested_protocol;
 }

@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### <!-- 1 -->Features
+
+- [**breaking**] Add clipboard file transfer support per MS-RDPECLIP
+
+  Implements end-to-end clipboard file transfer (upload and download) across the
+  CLIPRDR channel. Key changes:
+
+  - Automatic clipboard locking: when `FileGroupDescriptorW` is detected in a
+    FormatList, the processor automatically sends Lock PDUs and manages the lock
+    lifecycle (expiry, cleanup, Unlock PDUs) internally.
+  - New `CliprdrBackend` methods with default implementations:
+    - `on_remote_file_list()` - called when remote announces files
+    - `on_file_contents_request()` - called when remote requests file data
+    - `on_outgoing_locks_cleared()` - called when locks are released
+    - `on_outgoing_locks_expired()` - called when locks expire
+    - `now_ms()` / `elapsed_ms()` - time source for timeout tracking
+  - New `drive_timeouts()` method for callers to invoke periodically to clean up
+    stale locks and pending requests.
+  - Comprehensive path sanitization to protect against path traversal attacks.
+
+- [**breaking**] Remove `ClipboardMessage::SendLockClipboard` and `SendUnlockClipboard` variants
+
+  Lock/unlock is now managed internally by the `Cliprdr` processor. Backends no
+  longer need to handle these messages. Remove any code that matches on these
+  variants.
+
+- [**breaking**] Rename `FileContentsFlags::DATA` to `FileContentsFlags::RANGE`
+
+  Aligns with MS-RDPECLIP 2.2.5.3 terminology where this flag indicates a
+  "range" request for file data bytes. Replace `FileContentsFlags::DATA` with
+  `FileContentsFlags::RANGE` in your code.
+
+- [**breaking**] Change `FileContentsRequest::index` type from `u32` to `i32`
+
+  Per MS-RDPECLIP 2.2.5.3, the `lindex` field is a signed 32-bit integer.
+  This corrects the spec compliance. Update code to use `i32` for the index field.
+
+- [**breaking**] Make `FileDescriptor` `#[non_exhaustive]` and add `relative_path` field
+
+  The `FileDescriptor` struct is now marked `#[non_exhaustive]` to allow future
+  field additions without breaking changes. A new `relative_path: Option<String>`
+  field has been added to support directory structure in file transfers.
+
+  **Migration:** Use the builder pattern instead of struct literals:
+  ```rust
+  // Before (no longer compiles)
+  let desc = FileDescriptor { name: "file.txt".into(), file_size: Some(1024), ... };
+
+  // After
+  let desc = FileDescriptor::new("file.txt").with_file_size(1024);
+  ```
+
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.4.0...ironrdp-cliprdr-v0.5.0)] - 2025-12-18
 
 ### <!-- 4 -->Bug Fixes

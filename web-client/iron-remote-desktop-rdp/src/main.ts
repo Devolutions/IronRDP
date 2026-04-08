@@ -24,6 +24,8 @@ export const Backend = {
     DeviceEvent: DeviceEvent,
 };
 
+// --- Pre-connection configuration extensions ---
+
 export function preConnectionBlob(pcb: string): Extension {
     return new Extension('pcb', pcb);
 }
@@ -43,3 +45,31 @@ export function outboundMessageSizeLimit(limit: number): Extension {
 export function enableCredssp(enable: boolean): Extension {
     return new Extension('enable_credssp', enable);
 }
+
+// --- File transfer (RDP-specific) ---
+
+export { RdpFileTransferProvider } from './RdpFileTransferProvider';
+export type {
+    RdpFileTransferProviderOptions,
+    TransferProgress,
+    FileTransferError,
+    DownloadHandle,
+    UploadHandle,
+    DroppedFile,
+} from './RdpFileTransferProvider';
+export type { FileInfo, FileContentsRequest, FileContentsResponse } from './FileTransfer';
+export { FileContentsFlags } from './FileContentsFlags';
+
+// Re-export extension factories for advanced consumers who want to
+// register callbacks or invoke file transfer operations directly.
+export {
+    filesAvailableCallback,
+    fileContentsRequestCallback,
+    fileContentsResponseCallback,
+    lockCallback,
+    unlockCallback,
+    locksExpiredCallback,
+    requestFileContents,
+    submitFileContents,
+    initiateFileCopy,
+} from './extensions';

@@ -1,6 +1,7 @@
 import type { Session } from './Session';
 import type { DesktopSize } from './DesktopSize';
 import type { ClipboardData } from './ClipboardData';
+import type { Extension } from './Extension';
 
 export interface SessionBuilder {
     /**
@@ -56,16 +57,21 @@ export interface SessionBuilder {
     /**
      * Optional
      */
-    remoteReceivedFormatListCallback(callback: RemoteReceiveForwardListCallback): SessionBuilder;
-    /**
-     * Optional
-     */
     forceClipboardUpdateCallback(callback: ForceClipboardUpdateCallback): SessionBuilder;
     /**
      * Optional
      */
     canvasResizedCallback(callback: CanvasResizedCallback): SessionBuilder;
-    extension(value: unknown): SessionBuilder;
+
+    /**
+     * Register a protocol-specific extension.
+     *
+     * File transfer callbacks (filesAvailableCallback, lockCallback, etc.) are
+     * protocol-specific and registered through this method via extension factory
+     * functions from the RDP backend package.
+     */
+    extension(ext: Extension): SessionBuilder;
+
     connect(): Promise<Session>;
 }
 
@@ -80,10 +86,6 @@ interface SetCursorStyleCallback {
 
 interface RemoteClipboardChangedCallback {
     (data: ClipboardData): void;
-}
-
-interface RemoteReceiveForwardListCallback {
-    (): void;
 }
 
 interface ForceClipboardUpdateCallback {

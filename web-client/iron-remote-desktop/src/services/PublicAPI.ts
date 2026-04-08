@@ -8,6 +8,7 @@ import { ConfigBuilder } from './ConfigBuilder';
 import { Config } from './Config';
 import type { Extension } from '../interfaces/Extension';
 import type { ClipboardService } from './clipboard.service';
+import type { FileTransferProvider } from '../interfaces/FileTransferProvider';
 
 export class PublicAPI {
     private remoteDesktopService: RemoteDesktopService;
@@ -33,6 +34,14 @@ export class PublicAPI {
 
     private metaKey() {
         this.remoteDesktopService.sendSpecialCombination(SpecialCombination.META);
+    }
+
+    private ctrlC() {
+        this.remoteDesktopService.sendSpecialCombination(SpecialCombination.CTRL_C);
+    }
+
+    private ctrlV() {
+        this.remoteDesktopService.sendSpecialCombination(SpecialCombination.CTRL_V);
     }
 
     private setVisibility(state: boolean) {
@@ -88,6 +97,22 @@ export class PublicAPI {
         this.remoteDesktopService.invokeExtension(ext);
     }
 
+    private enableFileTransfer(provider: FileTransferProvider): FileTransferProvider {
+        // Wire clipboard monitoring suppression so the polling loop does not
+        // clobber a file upload's FormatList with a text/image clipboard update.
+        const origStart = provider.onUploadStarted;
+        const origFinish = provider.onUploadFinished;
+        provider.onUploadStarted = () => {
+            origStart?.();
+            this.clipboardService.suppressMonitoring();
+        };
+        provider.onUploadFinished = () => {
+            this.clipboardService.resumeMonitoring();
+            origFinish?.();
+        };
+        return this.remoteDesktopService.enableFileTransfer(provider);
+    }
+
     getExposedFunctions(): UserInteraction {
         return {
             setVisibility: this.setVisibility.bind(this),
@@ -98,6 +123,8 @@ export class PublicAPI {
             setScale: this.setScale.bind(this),
             ctrlAltDel: this.ctrlAltDel.bind(this),
             metaKey: this.metaKey.bind(this),
+            ctrlC: this.ctrlC.bind(this),
+            ctrlV: this.ctrlV.bind(this),
             shutdown: this.shutdown.bind(this),
             setKeyboardUnicodeMode: this.setKeyboardUnicodeMode.bind(this),
             setCursorStyleOverride: this.setCursorStyleOverride.bind(this),
@@ -107,6 +134,7 @@ export class PublicAPI {
             saveRemoteClipboardData: this.saveRemoteClipboardData.bind(this),
             sendClipboardData: this.sendClipboardData.bind(this),
             invokeExtension: this.invokeExtension.bind(this),
+            enableFileTransfer: this.enableFileTransfer.bind(this),
         };
     }
 }
