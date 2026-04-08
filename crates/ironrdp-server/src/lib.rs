@@ -23,8 +23,8 @@ mod sound;
 
 pub use clipboard::CliprdrServerFactory;
 pub use display::{
-    BitmapUpdate, ColorPointer, DesktopSize, DisplayUpdate, Framebuffer, PixelFormat, RGBAPointer,
-    RdpServerDisplay, RdpServerDisplayUpdates,
+    BitmapUpdate, ColorPointer, DesktopSize, DisplayUpdate, Framebuffer, PixelFormat, RGBAPointer, RdpServerDisplay,
+    RdpServerDisplayUpdates,
 };
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
 #[cfg(feature = "egfx")]
@@ -33,8 +33,8 @@ pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
 pub use server::{
-    ConnectionHandler, Credentials, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity,
-    ServerEvent, ServerEventSender,
+    ConnectionHandler, Credentials, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent,
+    ServerEventSender,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 
