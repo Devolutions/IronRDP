@@ -6,7 +6,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context as _;
+use ironrdp::pdu::input::fast_path::FastPathInputEvent;
+use ironrdp::pdu::input::{MousePdu, mouse::PointerFlags};
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
+use smallvec::SmallVec;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 use winit::application::ApplicationHandler;
@@ -49,8 +52,7 @@ impl App {
         let context = softbuffer::Context::new(display_handle)
             .map_err(|e| anyhow::anyhow!("unable to initialize softbuffer context: {e}"))?;
 
-        let mut input_database = ironrdp::input::Database::new();
-        input_database.force_sending_same_position = fake_events_interval.is_some();
+        let input_database = ironrdp::input::Database::new();
         Ok(Self {
             input_event_sender: input_event_sender.clone(),
             context,
@@ -108,9 +110,15 @@ impl App {
         };
 
         if last_event.elapsed() > fake_events_interval {
-            let operation = ironrdp::input::Operation::MouseMove(self.input_database.mouse_position());
-            let input_events = self.input_database.apply(core::iter::once(operation));
-            send_fast_path_events(&self.input_event_sender, input_events, &mut self.last_event);
+            let mut events = SmallVec::new();
+            let curr_pos = self.input_database.mouse_position();
+            events.push(FastPathInputEvent::MouseEvent(MousePdu {
+                flags: PointerFlags::MOVE,
+                number_of_wheel_rotation_units: 0,
+                x_position: curr_pos.x,
+                y_position: curr_pos.y,
+            }));
+            let _ = self.input_event_sender.send(RdpInputEvent::FastPath(events));
         }
     }
 }

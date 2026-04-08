@@ -161,7 +161,6 @@ pub struct Database {
     keyboard: KeyboardState,
     mouse_buttons: MouseButtonsState,
     mouse_position: MousePosition,
-    pub force_sending_same_position: bool,
 }
 
 impl Default for Database {
@@ -177,7 +176,6 @@ impl Database {
             mouse_buttons: BitArray::ZERO,
             mouse_position: MousePosition { x: 0, y: 0 },
             unicode_keyboard_state: BTreeSet::new(),
-            force_sending_same_position: false,
         }
     }
 
@@ -264,7 +262,7 @@ impl Database {
                     }
                 }
                 Operation::MouseMove(position) => {
-                    if position != self.mouse_position || self.force_sending_same_position {
+                    if position != self.mouse_position {
                         self.mouse_position = position;
                         events.push(FastPathInputEvent::MouseEvent(MousePdu {
                             flags: PointerFlags::MOVE,
