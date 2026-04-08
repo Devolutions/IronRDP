@@ -27,6 +27,7 @@ qoiz = ["qoi"]
 bitflags = "2.9"
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
+ironrdp-str = { path = "../ironrdp-str", version = "0.1", features = ["alloc"] } # public
 tap = "1"
 
 # TODO: get rid of these dependencies (related code should probably go into another crate)

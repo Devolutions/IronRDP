@@ -20,7 +20,7 @@ encode_decode_test! {
         PreconnectionBlob {
             version: PcbVersion::V2,
             id: 0,
-            v2_payload: Some(String::from("TestVM")),
+            v2_payload: Some(CchString::new("TestVM")),
         },
         [
             0x20, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0x20 = 32 bytes
@@ -36,7 +36,7 @@ encode_decode_test! {
         PreconnectionBlob {
             version: PcbVersion::V2,
             id: 0,
-            v2_payload: Some(concat!(
+            v2_payload: Some(CchString::new(concat!(
                 "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoidG",
                 "NwOi8vMTAuMTAuMC4yOjIyIiwiZXhwIjoxNjg3ODE1OTIyLCJpYXQiOjE2ODc4MTU2MjIsImpldF9haWQi",
                 "OiI4ZDA2NjBhNy0xNDlkLTRkMDctOTUwNC0zNmM5NDhiMjQxMzYiLCJqZXRfYXAiOiJzc2giLCJqZXRfY2",
@@ -47,7 +47,7 @@ encode_decode_test! {
                 "p2dMBcElUOWU9Gh0YWlbIcRS6zkp6vAARdWGn0L98HgyxOFqnihsdmAESsm9ma7EVeTLoXJMYVCUwPj6tW",
                 "QOs9SGNnNoGShJLQbPeHUB6lGJs_g1V7ojSK-0K0rVtBRI6iG0a8Q6sMLomRoM7IKwVMHCfYte6I3fLaY1",
                 "_b3SrwXIWjn5A"
-            ).to_owned()),
+            ))),
         },
         hex::decode(concat!(
             "f2050000000000000200000000000000f002650079004a00680062004700630069004f0069004a00530055007a0049",

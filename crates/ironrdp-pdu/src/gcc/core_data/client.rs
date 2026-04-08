@@ -1,15 +1,15 @@
 use bitflags::bitflags;
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
-    invalid_field_err, write_padding,
+    Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size,
+    ensure_size, invalid_field_err, write_padding,
 };
+use ironrdp_str::fixed::FixedString;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 use tap::Pipe as _;
 
 use super::{RdpVersion, VERSION_SIZE};
 use crate::nego::SecurityProtocol;
-use crate::utils;
 
 pub const IME_FILE_NAME_SIZE: usize = 64;
 
@@ -53,11 +53,11 @@ pub struct ClientCoreData {
     pub sec_access_sequence: SecureAccessSequence,
     pub keyboard_layout: u32,
     pub client_build: u32,
-    pub client_name: String,
+    pub client_name: FixedString<16>,
     pub keyboard_type: KeyboardType,
     pub keyboard_subtype: u32,
     pub keyboard_functional_keys_count: u32,
-    pub ime_file_name: String,
+    pub ime_file_name: FixedString<32>,
     pub optional_data: ClientCoreOptionalData,
 }
 
@@ -100,11 +100,6 @@ impl Encode for ClientCoreData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let mut client_name_dst = utils::to_utf16_bytes(self.client_name.as_ref());
-        client_name_dst.resize(CLIENT_NAME_SIZE - 2, 0);
-        let mut ime_file_name_dst = utils::to_utf16_bytes(self.ime_file_name.as_ref());
-        ime_file_name_dst.resize(IME_FILE_NAME_SIZE - 2, 0);
-
         dst.write_u32(self.version.0);
         dst.write_u16(self.desktop_width);
         dst.write_u16(self.desktop_height);
@@ -112,13 +107,11 @@ impl Encode for ClientCoreData {
         dst.write_u16(self.sec_access_sequence.as_u16());
         dst.write_u32(self.keyboard_layout);
         dst.write_u32(self.client_build);
-        dst.write_slice(client_name_dst.as_ref());
-        dst.write_u16(0); // client name UTF-16 null terminator
+        self.client_name.encode(dst)?;
         dst.write_u32(self.keyboard_type.as_u32());
         dst.write_u32(self.keyboard_subtype);
         dst.write_u32(self.keyboard_functional_keys_count);
-        dst.write_slice(ime_file_name_dst.as_ref());
-        dst.write_u16(0); // ime file name UTF-16 null terminator
+        self.ime_file_name.encode(dst)?;
 
         self.optional_data.encode(dst)
     }
@@ -150,10 +143,7 @@ impl<'de> Decode<'de> for ClientCoreData {
         let keyboard_layout = src.read_u32();
         let client_build = src.read_u32();
 
-        let client_name_buffer = src.read_slice(CLIENT_NAME_SIZE);
-        let client_name = utils::from_utf16_bytes(client_name_buffer)
-            .trim_end_matches('\u{0}')
-            .into();
+        let client_name = FixedString::<16>::decode_owned(src)?;
 
         let keyboard_type = src
             .read_u32()
@@ -162,10 +152,7 @@ impl<'de> Decode<'de> for ClientCoreData {
         let keyboard_subtype = src.read_u32();
         let keyboard_functional_keys_count = src.read_u32();
 
-        let ime_file_name_buffer = src.read_slice(IME_FILE_NAME_SIZE);
-        let ime_file_name = utils::from_utf16_bytes(ime_file_name_buffer)
-            .trim_end_matches('\u{0}')
-            .into();
+        let ime_file_name = FixedString::<32>::decode_owned(src)?;
 
         let optional_data = ClientCoreOptionalData::decode(src)?;
 
@@ -204,7 +191,7 @@ pub struct ClientCoreOptionalData {
     /// Specifies the high color depths that the client is capable of supporting.
     pub supported_color_depths: Option<SupportedColorDepths>,
     pub early_capability_flags: Option<ClientEarlyCapabilityFlags>,
-    pub dig_product_id: Option<String>,
+    pub dig_product_id: Option<FixedString<32>>,
     pub connection_type: Option<ConnectionType>,
     pub server_selected_protocol: Option<SecurityProtocol>,
     pub desktop_physical_width: Option<u32>,
@@ -274,11 +261,7 @@ impl Encode for ClientCoreOptionalData {
                     "earlyCapabilityFlags must be present"
                 ));
             }
-            let mut dig_product_id_buffer = utils::to_utf16_bytes(value);
-            dig_product_id_buffer.resize(DIG_PRODUCT_ID_SIZE - 2, 0);
-            dig_product_id_buffer.extend_from_slice([0; 2].as_ref()); // UTF-16 null terminator
-
-            dst.write_slice(dig_product_id_buffer.as_ref())
+            value.encode(dst)?;
         }
 
         if let Some(value) = self.connection_type {
@@ -443,8 +426,7 @@ impl<'de> Decode<'de> for ClientCoreOptionalData {
             return Ok(optional_data);
         }
 
-        let dig_product_id = src.read_slice(DIG_PRODUCT_ID_SIZE);
-        optional_data.dig_product_id = Some(utils::from_utf16_bytes(dig_product_id).trim_end_matches('\u{0}').into());
+        optional_data.dig_product_id = Some(FixedString::<32>::decode_owned(src)?);
 
         optional_data.connection_type = Some(
             ConnectionType::from_u8(try_or_return!(src.try_read_u8(), optional_data))
