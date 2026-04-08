@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.14.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.14.0...ironrdp-v0.14.1)] - 2026-04-08
+
+### <!-- 0 -->Security
+
+- Add alternate_shell and work_dir configuration support ([#1095](https://github.com/Devolutions/IronRDP/issues/1095)) ([a33d27fe67](https://github.com/Devolutions/IronRDP/commit/a33d27fe6771a5a155161ef40a04de88803dd84c)) 
+
+  Add support for configuring `alternate_shell` and `work_dir` fields in
+  ClientInfoPdu, which are used by:
+    - CyberArk PSM (Privileged Session Manager) for session tokens
+    - Remote application scenarios (RemoteApp)
+    - Custom shell configurations
+
+### <!-- 1 -->Features
+
+- Add bulk compression and wire negotiation ([ebf5da5f33](https://github.com/Devolutions/IronRDP/commit/ebf5da5f3380a3355f6c95814d669f8190425ded)) 
+
+  - add ironrdp-bulk crate with MPPC/NCRUSH/XCRUSH, bitstream, benches, and metrics
+  - advertise compression in Client Info and plumb compression_type through connector
+  - decode compressed FastPath/ShareData updates using BulkCompressor
+  - update CLI to numeric compression flags (enabled by default, level 0-3)
+  - extend screenshot example with compression options and negotiated logging
+  - refresh tests, FFI/web configs, typos, and Cargo.lock
+
+- Advertise multitransport channel in GCC blocks ([#1092](https://github.com/Devolutions/IronRDP/issues/1092)) ([4f5fdd3628](https://github.com/Devolutions/IronRDP/commit/4f5fdd3628f4d0d2c2a4116e4e45269d802740f1)) 
+
+  Add multitransport_flags config option to populate the
+  MultiTransportChannelData GCC block during connection negotiation.
+  When None (the default), behavior is unchanged.
+
+- Implement ECHO virtual channel ([#1109](https://github.com/Devolutions/IronRDP/issues/1109)) ([6f6496ad29](https://github.com/Devolutions/IronRDP/commit/6f6496ad29395099563d50417d6dfff623914ee6)) 
+
+### <!-- 6 -->Documentation
+
+- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
+
+  The MSRV is the oldest stable Rust release that is at least 6 months
+  old, bounded by the Rust version available in Debian stable-backports
+  and Fedora stable.
+
+### <!-- 7 -->Build
+
+- Bump the patch group across 1 directory with 3 updates ([#1170](https://github.com/Devolutions/IronRDP/issues/1170)) ([ecc0504644](https://github.com/Devolutions/IronRDP/commit/ecc0504644c87b476173eaca5c7f85bda69a6817)) 
+
+- Upgrade sspi to 0.19, picky to rc.22, fix NTLM fallback ([#1188](https://github.com/Devolutions/IronRDP/issues/1188)) ([c70d38a9f1](https://github.com/Devolutions/IronRDP/commit/c70d38a9f190d6ad6c84bd9027a388b5db3296ba)) 
+
+- Bump opus2 from 0.3.3 to 0.4.0 ([#1204](https://github.com/Devolutions/IronRDP/issues/1204)) ([1eaf333057](https://github.com/Devolutions/IronRDP/commit/1eaf333057bec13778d78be2b2e71ca429733ee9)) 
+
+
+
 ## [[0.14.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.13.0...ironrdp-v0.14.0)] - 2025-12-18
 
 ### <!-- 7 -->Build
