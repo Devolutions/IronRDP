@@ -461,7 +461,9 @@ impl Config {
         };
 
         // make a duration from cmdline argument (minutes)
-        let fake_events_interval = args.prevent_session_lock.map(|v| Duration::from_secs(v as u64 * 60));
+        let fake_events_interval = args
+            .prevent_session_lock
+            .map(|v| Duration::from_secs(u64::from(v) * 60));
 
         let clipboard_type = if args.clipboard_type == ClipboardType::Default {
             #[cfg(windows)]
