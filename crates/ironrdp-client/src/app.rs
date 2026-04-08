@@ -220,7 +220,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 const ALT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x38);
                 const LOGO_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(true, 0x5B);
 
-                let mut operations = smallvec::SmallVec::<[ironrdp::input::Operation; 4]>::new();
+                let mut operations = SmallVec::<[ironrdp::input::Operation; 4]>::new();
 
                 let mut add_operation = |pressed: bool, scancode: ironrdp::input::Scancode| {
                     let operation = if pressed {
@@ -262,7 +262,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 send_fast_path_events(&self.input_event_sender, input_events, &mut self.last_event);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let mut operations = smallvec::SmallVec::<[ironrdp::input::Operation; 2]>::new();
+                let mut operations = SmallVec::<[ironrdp::input::Operation; 2]>::new();
 
                 match delta {
                     event::MouseScrollDelta::LineDelta(delta_x, delta_y) => {
@@ -434,7 +434,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
 fn send_fast_path_events(
     input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
-    input_events: smallvec::SmallVec<[ironrdp::pdu::input::fast_path::FastPathInputEvent; 2]>,
+    input_events: SmallVec<[FastPathInputEvent; 2]>,
     last_event: &mut Option<Instant>,
 ) {
     if !input_events.is_empty() {
