@@ -21,17 +21,22 @@ mod helper;
 mod server;
 mod sound;
 
-// FIXME: too much wildcards here.
-pub use clipboard::*;
-pub use display::*;
-pub use echo::*;
+pub use clipboard::CliprdrServerFactory;
+pub use display::{
+    BitmapUpdate, ColorPointer, DesktopSize, DisplayUpdate, Framebuffer, PixelFormat, RGBAPointer, RdpServerDisplay,
+    RdpServerDisplayUpdates,
+};
+pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
 #[cfg(feature = "egfx")]
-pub use gfx::*;
-pub use handler::*;
+pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle};
+pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
-pub use helper::*;
-pub use server::*;
-pub use sound::*;
+pub use helper::TlsIdentityCtx;
+pub use server::{
+    ConnectionHandler, Credentials, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent,
+    ServerEventSender,
+};
+pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 
 #[cfg(feature = "__bench")]
 pub mod bench {
