@@ -129,5 +129,78 @@ connect(config: Config): Promise<NewSessionInfo>;
 
 > `setEnableAutoClipboard(enable: boolean)` — Enables or disables automatic clipboard polling.
 
+> `metaKey()`
+>
+> Sends the meta key event to remote host (i.e.: Windows key).
+
+> `setVisibility(value: boolean)`
+>
+> Shows or hides rendering canvas.
+
+> `setScale(scale: ScreenScale)`
+>
+> Sets the scale behavior of the canvas.
+> See the [ScreenScale](./src/enums/ScreenScale.ts) enum for possible values.
+
+> `shutdown()`
+>
+> Shutdowns the active session.
+
+> `setKeyboardUnicodeMode(use_unicode: boolean)`
+>
+> Sets the keyboard Unicode mode.
+
+> `setCursorStyleOverride(style?: string)`
+>
+> Overrides the default cursor style. If `style` is `null`, the default cursor style will be used.
+
+> `resize(width: number, height: number, scale?: number)`
+>
+> Resizes the screen.
+
+> `setEnableClipboard(enable: boolean)`
+>
+> Enables or disable the clipboard based on the `enable` value.
+
 > `invokeExtension(ext: Extension)` — Sends a protocol-specific extension command at runtime.
 > The extension value is passed to the backend without inspection.
+
+## File Transfer
+
+File transfer is protocol-specific. The `iron-remote-desktop` package defines only the
+protocol-agnostic `FileTransferProvider` interface; the implementation lives in the backend
+package (e.g., `RdpFileTransferProvider` in `@devolutions/iron-remote-desktop-rdp`).
+
+### Enabling File Transfer
+
+```typescript
+import { RdpFileTransferProvider } from '@devolutions/iron-remote-desktop-rdp';
+
+// Create a provider and pass it to the web component
+const provider = new RdpFileTransferProvider({ chunkSize: 64 * 1024 });
+component.enableFileTransfer(provider);
+
+// Connect as usual - the provider receives builder extensions and session automatically
+await component.connect(config);
+
+// Listen for files available for download
+provider.on('files-available', async (files) => {
+  for (let i = 0; i < files.length; i++) {
+    const { completion } = provider.downloadFile(files[i], i);
+    const blob = await completion;
+    saveAs(blob, files[i].name);
+  }
+});
+
+// Track progress
+provider.on('download-progress', (progress) => {
+  console.log(`${progress.fileName}: ${progress.percentage}%`);
+});
+
+// Upload files via drag-and-drop or file picker
+const dropped = await provider.handleDrop(event);
+provider.uploadFiles(dropped);
+```
+
+See the `@devolutions/iron-remote-desktop-rdp` package for the full API, events, and
+extension factories.

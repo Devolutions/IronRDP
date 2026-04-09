@@ -39,6 +39,14 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
+    public MultitransportRequest MultitransportRequest
+    {
+        get
+        {
+            return GetMultitransportRequest();
+        }
+    }
+
     public DecodedPointer PointerBitmap
     {
         get
@@ -230,6 +238,35 @@ public partial class ActiveStageOutput: IDisposable
             }
             Raw.ConnectionActivationSequence* retVal = result.Ok;
             return new ConnectionActivationSequence(retVal);
+        }
+    }
+
+    /// <summary>
+    /// Returns the multitransport request ID and requested protocol.
+    /// </summary>
+    /// <remarks>
+    /// The security cookie is intentionally not exposed — it is sensitive
+    /// and only needed internally for transport binding.
+    /// </remarks>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>MultitransportRequest</c> allocated on C# side.
+    /// </returns>
+    public MultitransportRequest GetMultitransportRequest()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStageOutput");
+            }
+            Raw.SessionFfiResultMultitransportRequestBoxIronRdpError result = Raw.ActiveStageOutput.GetMultitransportRequest(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.MultitransportRequest retVal = result.Ok;
+            return new MultitransportRequest(retVal);
         }
     }
 

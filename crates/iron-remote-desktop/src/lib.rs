@@ -282,6 +282,9 @@ macro_rules! make_bridge {
                 Self($crate::SessionBuilder::canvas_resized_callback(&self.0, callback))
             }
 
+            // File transfer callbacks are protocol-specific and routed through
+            // extension() — see the RDP backend for available extension factories.
+
             pub fn extension(&self, ext: $crate::Extension) -> Self {
                 Self($crate::SessionBuilder::extension(&self.0, ext))
             }

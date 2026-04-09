@@ -15,11 +15,35 @@ public partial class ClipboardMessage: IDisposable
 {
     private unsafe Raw.ClipboardMessage* _inner;
 
+    public IronRdpError? Error
+    {
+        get
+        {
+            return GetError();
+        }
+    }
+
     public ClipboardMessageType MessageType
     {
         get
         {
             return GetMessageType();
+        }
+    }
+
+    public FfiFileContentsRequest? SendFileContentsRequest
+    {
+        get
+        {
+            return GetSendFileContentsRequest();
+        }
+    }
+
+    public FfiFileContentsResponse? SendFileContentsResponse
+    {
+        get
+        {
+            return GetSendFileContentsResponse();
         }
     }
 
@@ -134,6 +158,66 @@ public partial class ClipboardMessage: IDisposable
                 return null;
             }
             return new ClipboardFormatId(retVal);
+        }
+    }
+
+    /// <returns>
+    /// A <c>FfiFileContentsRequest</c> allocated on Rust side.
+    /// </returns>
+    public FfiFileContentsRequest? GetSendFileContentsRequest()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClipboardMessage");
+            }
+            Raw.FfiFileContentsRequest* retVal = Raw.ClipboardMessage.GetSendFileContentsRequest(_inner);
+            if (retVal == null)
+            {
+                return null;
+            }
+            return new FfiFileContentsRequest(retVal);
+        }
+    }
+
+    /// <returns>
+    /// A <c>FfiFileContentsResponse</c> allocated on Rust side.
+    /// </returns>
+    public FfiFileContentsResponse? GetSendFileContentsResponse()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClipboardMessage");
+            }
+            Raw.FfiFileContentsResponse* retVal = Raw.ClipboardMessage.GetSendFileContentsResponse(_inner);
+            if (retVal == null)
+            {
+                return null;
+            }
+            return new FfiFileContentsResponse(retVal);
+        }
+    }
+
+    /// <returns>
+    /// A <c>IronRdpError</c> allocated on Rust side.
+    /// </returns>
+    public IronRdpError? GetError()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClipboardMessage");
+            }
+            Raw.IronRdpError* retVal = Raw.ClipboardMessage.GetError(_inner);
+            if (retVal == null)
+            {
+                return null;
+            }
+            return new IronRdpError(retVal);
         }
     }
 

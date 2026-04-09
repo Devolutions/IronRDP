@@ -293,7 +293,7 @@ public partial class ActiveStage: IDisposable
         }
     }
 
-    public void SetFastpathProcessor(ushort ioChannelId, ushort userChannelId, bool enableServerPointer, bool pointerSoftwareRendering)
+    public void SetFastpathProcessor(ushort ioChannelId, ushort userChannelId, uint shareId, bool enableServerPointer, bool pointerSoftwareRendering)
     {
         unsafe
         {
@@ -301,7 +301,7 @@ public partial class ActiveStage: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStage");
             }
-            Raw.ActiveStage.SetFastpathProcessor(_inner, ioChannelId, userChannelId, enableServerPointer, pointerSoftwareRendering);
+            Raw.ActiveStage.SetFastpathProcessor(_inner, ioChannelId, userChannelId, shareId, enableServerPointer, pointerSoftwareRendering);
         }
     }
 

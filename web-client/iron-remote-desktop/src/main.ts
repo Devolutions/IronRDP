@@ -9,4 +9,8 @@ export type { DeviceEvent } from './interfaces/DeviceEvent';
 export type { InputTransaction } from './interfaces/InputTransaction';
 export type { Session } from './interfaces/Session';
 export type { SessionBuilder } from './interfaces/SessionBuilder';
+export type { DesktopSize } from './interfaces/DesktopSize';
 export type { UserInteraction } from './interfaces/UserInteraction';
+export type { FileTransferProvider } from './interfaces/FileTransferProvider';
+export { Config } from './services/Config';
+export { ConfigBuilder } from './services/ConfigBuilder';

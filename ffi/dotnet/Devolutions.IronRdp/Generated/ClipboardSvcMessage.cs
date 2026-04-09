@@ -11,12 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class ClipboardSvgMessage: IDisposable
+public partial class ClipboardSvcMessage: IDisposable
 {
-    private unsafe Raw.ClipboardSvgMessage* _inner;
+    private unsafe Raw.ClipboardSvcMessage* _inner;
 
     /// <summary>
-    /// Creates a managed <c>ClipboardSvgMessage</c> from a raw handle.
+    /// Creates a managed <c>ClipboardSvcMessage</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,7 +24,7 @@ public partial class ClipboardSvgMessage: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe ClipboardSvgMessage(Raw.ClipboardSvgMessage* handle)
+    public unsafe ClipboardSvcMessage(Raw.ClipboardSvcMessage* handle)
     {
         _inner = handle;
     }
@@ -32,7 +32,7 @@ public partial class ClipboardSvgMessage: IDisposable
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.ClipboardSvgMessage* AsFFI()
+    public unsafe Raw.ClipboardSvcMessage* AsFFI()
     {
         return _inner;
     }
@@ -49,14 +49,14 @@ public partial class ClipboardSvgMessage: IDisposable
                 return;
             }
 
-            Raw.ClipboardSvgMessage.Destroy(_inner);
+            Raw.ClipboardSvcMessage.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~ClipboardSvgMessage()
+    ~ClipboardSvcMessage()
     {
         Dispose();
     }

@@ -24,7 +24,7 @@ pub mod ffi {
     pub struct Cliprdr(pub Option<ironrdp::cliprdr::Cliprdr<Client>>);
 
     #[diplomat::opaque]
-    pub struct ClipboardSvgMessage(pub Option<ironrdp::cliprdr::CliprdrSvcMessages<Client>>);
+    pub struct ClipboardSvcMessage(pub Option<ironrdp::cliprdr::CliprdrSvcMessages<Client>>);
 }
 
 #[derive(Debug)]

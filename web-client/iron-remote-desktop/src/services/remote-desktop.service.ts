@@ -17,9 +17,9 @@ import type { Config } from './Config';
 import type { Extension } from '../interfaces/Extension';
 import { Observable } from '../lib/Observable';
 import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
+import type { FileTransferProvider } from '../interfaces/FileTransferProvider';
 
 type OnRemoteClipboardChanged = (data: ClipboardData) => void;
-type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
 type OnCanvasResized = () => void;
 type OnWarning = (data: string) => void;
@@ -31,11 +31,11 @@ export class RemoteDesktopService {
     private keyboardUnicodeMode: boolean = false;
     private backendSupportsUnicodeKeyboardShortcuts: boolean | undefined = undefined;
     private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
-    private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
     private onCanvasResized?: OnCanvasResized;
     private onWarningCallback?: OnWarning;
     private onClipboardRemoteUpdate?: OnClipboardRemoteUpdate;
+    private fileTransferProvider?: FileTransferProvider;
     private cursorHasOverride: boolean = false;
     private lastCursorStyle: string = 'default';
     private enableClipboard: boolean = true;
@@ -102,6 +102,20 @@ export class RemoteDesktopService {
         this.onClipboardRemoteUpdate = callback;
     }
 
+    /**
+     * Enable file transfer support. Must be called before connect().
+     * Implicitly enables clipboard (required for file transfer protocol).
+     *
+     * @param provider - Protocol-specific file transfer provider (e.g., RdpFileTransferProvider)
+     * @returns The same provider, for chaining
+     */
+    enableFileTransfer(provider: FileTransferProvider): FileTransferProvider {
+        this.fileTransferProvider?.dispose();
+        this.fileTransferProvider = provider;
+        this.enableClipboard = true;
+        return provider;
+    }
+
     mouseIn(event: MouseEvent) {
         this.syncModifier(event);
     }
@@ -115,6 +129,7 @@ export class RemoteDesktopService {
     }
 
     shutdown() {
+        this.fileTransferProvider?.dispose();
         this.session?.shutdown();
     }
 
@@ -157,11 +172,15 @@ export class RemoteDesktopService {
         if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
             sessionBuilder.remoteClipboardChangedCallback(this.onRemoteClipboardChanged);
         }
-        if (this.onRemoteReceivedFormatList != null && this.enableClipboard) {
-            sessionBuilder.remoteReceivedFormatListCallback(this.onRemoteReceivedFormatList);
-        }
         if (this.onForceClipboardUpdate != null && this.enableClipboard) {
             sessionBuilder.forceClipboardUpdateCallback(this.onForceClipboardUpdate);
+        }
+        // File transfer callbacks are protocol-specific and routed through
+        // the extension mechanism. The provider supplies the extensions.
+        if (this.fileTransferProvider != null && this.enableClipboard) {
+            for (const ext of this.fileTransferProvider.getBuilderExtensions()) {
+                sessionBuilder.extension(ext);
+            }
         }
         if (this.onCanvasResized != null) {
             sessionBuilder.canvasResizedCallback(this.onCanvasResized);
@@ -176,6 +195,7 @@ export class RemoteDesktopService {
         const session = await sessionBuilder.connect();
 
         this.session = session;
+        this.fileTransferProvider?.setSession(session);
 
         this.resizeObservable.publish({
             desktopSize: session.desktopSize(),
@@ -208,6 +228,12 @@ export class RemoteDesktopService {
                 break;
             case SpecialCombination.META:
                 this.sendMeta();
+                break;
+            case SpecialCombination.CTRL_C:
+                this.sendCtrlC();
+                break;
+            case SpecialCombination.CTRL_V:
+                this.sendCtrlV();
                 break;
         }
     }
@@ -477,6 +503,30 @@ export class RemoteDesktopService {
         this.doTransactionFromDeviceEvents([
             this.module.DeviceEvent.keyPressed(meta),
             this.module.DeviceEvent.keyReleased(meta),
+        ]);
+    }
+
+    private sendCtrlC() {
+        const ctrl = parseInt('0x001D', 16);
+        const c = parseInt('0x002E', 16);
+
+        this.doTransactionFromDeviceEvents([
+            this.module.DeviceEvent.keyPressed(ctrl),
+            this.module.DeviceEvent.keyPressed(c),
+            this.module.DeviceEvent.keyReleased(c),
+            this.module.DeviceEvent.keyReleased(ctrl),
+        ]);
+    }
+
+    private sendCtrlV() {
+        const ctrl = parseInt('0x001D', 16);
+        const v = parseInt('0x002F', 16);
+
+        this.doTransactionFromDeviceEvents([
+            this.module.DeviceEvent.keyPressed(ctrl),
+            this.module.DeviceEvent.keyPressed(v),
+            this.module.DeviceEvent.keyReleased(v),
+            this.module.DeviceEvent.keyReleased(ctrl),
         ]);
     }
 }

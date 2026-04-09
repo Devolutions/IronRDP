@@ -91,4 +91,12 @@ impl CliprdrBackend for WinCliprdrBackend {
     fn on_request_format_list(&mut self) {
         self.send_event(BackendEvent::RemoteRequestsFormatList);
     }
+
+    fn now_ms(&self) -> u64 {
+        crate::native_now_ms()
+    }
+
+    fn elapsed_ms(&self, since: u64) -> u64 {
+        self.now_ms().saturating_sub(since)
+    }
 }

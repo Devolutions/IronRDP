@@ -17,6 +17,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:dist": "tsc ./dist/index.d.ts --noEmit",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
@@ -48,6 +51,9 @@
     "vite-plugin-dts": "^4.5.0",
     "vite-plugin-top-level-await": "^1.2.2",
     "vite-plugin-wasm": "^3.1.0",
+    "vitest": "^2.1.8",
+    "@vitest/ui": "^2.1.8",
+    "jsdom": "^25.0.1",
     "ua-parser-js": "^1.0.33"
   }
 }
