@@ -2,6 +2,7 @@
 
 use core::num::ParseIntError;
 use core::str::FromStr;
+use core::time::Duration;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
@@ -25,6 +26,7 @@ pub struct Config {
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
     pub rdcleanpath: Option<RDCleanPathConfig>,
+    pub fake_events_interval: Option<Duration>,
 
     /// DVC channel <-> named pipe proxy configuration.
     ///
@@ -329,6 +331,11 @@ struct Args {
     #[clap(long, value_parser = clap::value_parser!(u32).range(0..=3), default_value_t = 3)]
     compression_level: u32,
 
+    /// Prevents session locking by injecting fake mouse movement events when
+    /// the connection is idle (interval in minutes)
+    #[clap(long)]
+    prevent_session_lock: Option<u32>,
+
     /// Add DVC channel named pipe proxy
     ///
     /// The format is `<name>=<pipe>`, e.g., `ChannelName=PipeName` where `ChannelName` is the name of the channel,
@@ -453,6 +460,11 @@ impl Config {
             bitmap.color_depth = color_depth;
         };
 
+        // make a duration from cmdline argument (minutes)
+        let fake_events_interval = args
+            .prevent_session_lock
+            .map(|v| Duration::from_secs(u64::from(v) * 60));
+
         let clipboard_type = if args.clipboard_type == ClipboardType::Default {
             #[cfg(windows)]
             {
@@ -532,6 +544,7 @@ impl Config {
             connector,
             clipboard_type,
             rdcleanpath,
+            fake_events_interval,
             dvc_pipe_proxies: args.dvc_proxy,
             #[cfg(windows)]
             dvc_plugins: args.dvc_plugin,
