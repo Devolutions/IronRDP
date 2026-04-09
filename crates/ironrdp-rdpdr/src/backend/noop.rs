@@ -3,7 +3,6 @@ use ironrdp_pdu::PduResult;
 use ironrdp_svc::SvcMessage;
 
 use super::RdpdrBackend;
-use crate::Rdpdr;
 use crate::pdu::efs::{DeviceControlRequest, ServerDeviceAnnounceResponse};
 use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 
@@ -20,9 +19,6 @@ impl RdpdrBackend for NoopRdpdrBackend {
         Ok(())
     }
     fn handle_drive_io_request(&mut self, _req: crate::pdu::efs::ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
-        Ok(Vec::new())
-    }
-    fn handle_user_logged_on(&mut self, _rdpdr: &mut Rdpdr) -> PduResult<Vec<SvcMessage>> {
         Ok(Vec::new())
     }
 }

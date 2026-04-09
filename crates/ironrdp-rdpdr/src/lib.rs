@@ -148,10 +148,9 @@ impl Rdpdr {
 
     fn handle_user_logged_on(&mut self) -> PduResult<Vec<SvcMessage>> {
         let mut backend = self.backend.take().expect("missing rdpdr backend");
-        let res = backend.handle_user_logged_on(self)?;
+        let res = backend.handle_user_logged_on(self);
         self.backend = Some(backend);
-        trace!("sending {:?}", res);
-        Ok(res)
+        res.inspect(|response| trace!("sending {:?}", response))
     }
 
     fn handle_device_io_request(

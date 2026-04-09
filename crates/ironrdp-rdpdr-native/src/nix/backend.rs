@@ -5,10 +5,10 @@ use std::os::unix::fs::MetadataExt;
 
 use ironrdp_core::impl_as_any;
 use ironrdp_pdu::{PduResult, encode_err};
+use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::*;
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
-use ironrdp_rdpdr::{Rdpdr, RdpdrBackend};
 use ironrdp_svc::SvcMessage;
 use nix::dir::{Dir, OwningIter};
 use tracing::{debug, warn};
@@ -68,10 +68,6 @@ impl RdpdrBackend for NixRdpdrBackend {
                 Ok(Vec::new())
             }
         }
-    }
-
-    fn handle_user_logged_on(&mut self, _rdpdr: &mut Rdpdr) -> PduResult<Vec<SvcMessage>> {
-        Ok(Vec::new())
     }
 }
 
