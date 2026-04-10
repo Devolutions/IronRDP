@@ -8,6 +8,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.5.0...ironrdp-cliprdr-v0.6.0)] - 2026-04-10
+
+### <!-- 1 -->Features
+
+- Add clipboard data locking methods ([#1064](https://github.com/Devolutions/IronRDP/issues/1064)) ([58c3df84bb](https://github.com/Devolutions/IronRDP/commit/58c3df84bb9cafc8669315834cead35a71483c34)) 
+
+  Per [MS-RDPECLIP sections 2.2.4.6 and 2.2.4.7][lock-spec], the Local
+  Clipboard
+  Owner may lock the Shared Clipboard Owner's clipboard data before
+  requesting
+  file contents to ensure data stability during multi-request transfers.
+  
+  This enables server implementations to safely request file data from
+  clients
+  when handling clipboard paste operations.
+  
+  ---------
+
+- Add request_file_contents method ([#1065](https://github.com/Devolutions/IronRDP/issues/1065)) ([c30fc35a28](https://github.com/Devolutions/IronRDP/commit/c30fc35a28d6218603c1662e98e8b3053bea3aa5)) 
+
+  Per [MS-RDPECLIP section 2.2.5.3][file-contents-spec], the Local
+  Clipboard Owner
+  sends File Contents Request PDU to retrieve file data from the Shared
+  Clipboard
+  Owner during paste operations.
+  
+  This enables server implementations to request file contents from
+  clients,
+  completing the bidirectional file transfer capability.
+
+- Add SendFileContentsResponse message variant ([#1066](https://github.com/Devolutions/IronRDP/issues/1066)) ([25f81337aa](https://github.com/Devolutions/IronRDP/commit/25f81337aa494af9a21f55f12ec27fd946465cbe)) 
+
+  Adds `SendFileContentsResponse` to `ClipboardMessage` enum, enabling
+  clipboard
+  backends to signal when file data is ready to send via
+  `submit_file_contents()`.
+  
+  This provides the message-based interface pattern used consistently by
+  server
+  implementations for clipboard operations.
+
+- Implement clipboard file transfer support ([#1166](https://github.com/Devolutions/IronRDP/issues/1166)) ([c98a8fb774](https://github.com/Devolutions/IronRDP/commit/c98a8fb7741986e9afef00cb5615250c963a7fa9)) 
+
+  Add end-to-end clipboard file transfer (upload and download) across the
+  CLIPRDR channel per MS-RDPECLIP.
+
+### <!-- 4 -->Bug Fixes
+
+- Replace all from_bits_truncate with from_bits_retain ([#1144](https://github.com/Devolutions/IronRDP/issues/1144)) ([353e30ddfd](https://github.com/Devolutions/IronRDP/commit/353e30ddfdaafc897db10b8663e364ef7775a7fd)) 
+
+  from_bits_truncate silently discards unknown bits, which breaks the
+  encode/decode round-trip property. This matters for fuzzing because a
+  PDU that decodes and re-encodes should produce identical bytes.
+  from_bits_retain preserves all bits, including those not yet defined in
+  our bitflags types, so the round-trip property holds.
+
+### <!-- 6 -->Documentation
+
+- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
+
+  The MSRV is the oldest stable Rust release that is at least 6 months
+  old, bounded by the Rust version available in Debian stable-backports
+  and Fedora stable.
+
+
+
 ### <!-- 1 -->Features
 
 - [**breaking**] Add clipboard file transfer support per MS-RDPECLIP

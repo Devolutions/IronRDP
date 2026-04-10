@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.7.0...ironrdp-rdpsnd-v0.7.1)] - 2026-04-10
+
+### <!-- 4 -->Bug Fixes
+
+- Replace all from_bits_truncate with from_bits_retain ([#1144](https://github.com/Devolutions/IronRDP/issues/1144)) ([353e30ddfd](https://github.com/Devolutions/IronRDP/commit/353e30ddfdaafc897db10b8663e364ef7775a7fd)) 
+
+  from_bits_truncate silently discards unknown bits, which breaks the
+  encode/decode round-trip property. This matters for fuzzing because a
+  PDU that decodes and re-encodes should produce identical bytes.
+  from_bits_retain preserves all bits, including those not yet defined in
+  our bitflags types, so the round-trip property holds.
+
+- Handle AudioFormat renegotiation in Ready state ([#1164](https://github.com/Devolutions/IronRDP/issues/1164)) ([2fe6fd0424](https://github.com/Devolutions/IronRDP/commit/2fe6fd04244a7031a19af5a321bdf44308f6df2d)) 
+
+  Sometimes Windows Server re-sends `SNDC_FORMATS` during Ready state
+  (e.g., after mute/unmute in remote browser). Previously this hit the
+  wildcard branch, entering Stop and permanently killing audio.
+    
+  Add an `AudioFormat` arm in Ready state to close the current stream and
+  restart negotiation.
+
+### <!-- 6 -->Documentation
+
+- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
+
+  The MSRV is the oldest stable Rust release that is at least 6 months
+  old, bounded by the Rust version available in Debian stable-backports
+  and Fedora stable.
+
+
+
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.4.0...ironrdp-rdpsnd-v0.5.0)] - 2025-05-27
 
 ### <!-- 1 -->Features

@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.5.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.5.0...ironrdp-dvc-v0.5.1)] - 2026-04-10
+
+### <!-- 1 -->Features
+
+- Implement ECHO virtual channel ([#1109](https://github.com/Devolutions/IronRDP/issues/1109)) ([6f6496ad29](https://github.com/Devolutions/IronRDP/commit/6f6496ad29395099563d50417d6dfff623914ee6)) 
+
+- Add DvcChannelListener for multi-instance DVC support ([#1142](https://github.com/Devolutions/IronRDP/issues/1142)) ([28e8628f0e](https://github.com/Devolutions/IronRDP/commit/28e8628f0e3cea9f7723a73abf5fd7ed2da968f0)) 
+
+### <!-- 4 -->Bug Fixes
+
+- Negotiate DVC version from server capabilities ([d094cbeb75](https://github.com/Devolutions/IronRDP/commit/d094cbeb7501c83fc6ad5401ba69d22f79d6657c)) 
+
+  The client was hardcoded to respond with CapsVersion::V1 regardless
+  of what the server requested. Servers that require V2 or V3 (such
+  as XRDP) would reject the channel with "Dynamic Virtual Channel
+  version 1 is not supported."
+  
+  Echo the server's requested version in the capabilities response
+  instead. This correctly handles V1, V2, and V3 depending on what
+  the server advertises. When a Create arrives before Capabilities
+  (fallback path), default to V2 as the most broadly compatible
+  version.
+  
+  Also bump the server-side capabilities request from V1 to V2 to
+  advertise priority charge support.
+  
+  Add CapabilitiesRequestPdu::version() accessor to expose the
+  server's requested version from the parsed PDU.
+
+### <!-- 6 -->Documentation
+
+- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
+
+  The MSRV is the oldest stable Rust release that is at least 6 months
+  old, bounded by the Rust version available in Debian stable-backports
+  and Fedora stable.
+
+
+
 ## [[0.4.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.4.0...ironrdp-dvc-v0.4.1)] - 2025-09-04
 
 ### <!-- 1 -->Features
