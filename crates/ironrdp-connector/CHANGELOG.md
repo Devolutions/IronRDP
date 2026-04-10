@@ -6,6 +6,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.8.0...ironrdp-connector-v0.9.0)] - 2026-04-10
+
+### <!-- 0 -->Security
+
+- Add alternate_shell and work_dir configuration support ([#1095](https://github.com/Devolutions/IronRDP/issues/1095)) ([a33d27fe67](https://github.com/Devolutions/IronRDP/commit/a33d27fe6771a5a155161ef40a04de88803dd84c)) 
+
+  Add support for configuring `alternate_shell` and `work_dir` fields in
+  ClientInfoPdu, which are used by:
+    - CyberArk PSM (Privileged Session Manager) for session tokens
+    - Remote application scenarios (RemoteApp)
+    - Custom shell configurations
+
+- Dispatch multitransport PDUs on IO channel ([#1096](https://github.com/Devolutions/IronRDP/issues/1096)) ([7853e3cc6f](https://github.com/Devolutions/IronRDP/commit/7853e3cc6f26acaf3da000c6177ca3cef6ef85fd)) 
+
+  `decode_io_channel()` assumes all IO channel PDUs begin with
+  a`ShareControlHeader`. Multitransport Request PDUs use a
+  `BasicSecurityHeader` with `SEC_TRANSPORT_REQ` instead ([MS-RDPBCGR]
+  2.2.15.1).
+  
+  This adds a peek-based dispatch: check the first `u16`
+  for`TRANSPORT_REQ`, decode as `MultitransportRequestPdu` if set,
+  otherwise fall through to the existing `decode_share_control()` path
+  unchanged.
+  
+  The new variant is propagated through `ProcessorOutput` and
+  'ActiveStageOutput` so applications can handle multitransport requests.
+  Client and web consumers log the request (no UDP transport yet).
+
+### <!-- 1 -->Features
+
+- Add bulk compression and wire negotiation ([ebf5da5f33](https://github.com/Devolutions/IronRDP/commit/ebf5da5f3380a3355f6c95814d669f8190425ded)) 
+
+  - add ironrdp-bulk crate with MPPC/NCRUSH/XCRUSH, bitstream, benches, and metrics
+  - advertise compression in Client Info and plumb compression_type through connector
+  - decode compressed FastPath/ShareData updates using BulkCompressor
+  - update CLI to numeric compression flags (enabled by default, level 0-3)
+  - extend screenshot example with compression options and negotiated logging
+  - refresh tests, FFI/web configs, typos, and Cargo.lock
+
+- Advertise multitransport channel in GCC blocks ([#1092](https://github.com/Devolutions/IronRDP/issues/1092)) ([4f5fdd3628](https://github.com/Devolutions/IronRDP/commit/4f5fdd3628f4d0d2c2a4116e4e45269d802740f1)) 
+
+  Add multitransport_flags config option to populate the
+  MultiTransportChannelData GCC block during connection negotiation.
+  When None (the default), behavior is unchanged.
+
+### <!-- 4 -->Bug Fixes
+
+- Make fields of Error private ([#1074](https://github.com/Devolutions/IronRDP/issues/1074)) ([e51ed236ce](https://github.com/Devolutions/IronRDP/commit/e51ed236ce5d55dc1a4bc5f5809fd106bdd2e834)) 
+
+- Propagate negotiated share_id to all outgoing ShareDataPdu ([#1147](https://github.com/Devolutions/IronRDP/issues/1147)) ([2b24e9664d](https://github.com/Devolutions/IronRDP/commit/2b24e9664dd05620ff63a24d092377477fdde863)) 
+
+### <!-- 5 -->Performance
+
+- Reduce connection latency when Kerberos is disabled ([#1107](https://github.com/Devolutions/IronRDP/issues/1107)) ([b1b0289e00](https://github.com/Devolutions/IronRDP/commit/b1b0289e0067228dbc973d3edb0e27136f7ca52a)) 
+
+### <!-- 6 -->Documentation
+
+- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
+
+  The MSRV is the oldest stable Rust release that is at least 6 months
+  old, bounded by the Rust version available in Debian stable-backports
+  and Fedora stable.
+
+### <!-- 7 -->Build
+
+- Upgrade sspi to 0.19, picky to rc.22, fix NTLM fallback ([#1188](https://github.com/Devolutions/IronRDP/issues/1188)) ([c70d38a9f1](https://github.com/Devolutions/IronRDP/commit/c70d38a9f190d6ad6c84bd9027a388b5db3296ba)) 
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.1...ironrdp-connector-v0.8.0)] - 2025-12-18
 
 ### <!-- 7 -->Build

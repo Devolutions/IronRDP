@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-tokio"
-version = "0.8.0"
+version = "0.8.1"
 readme = "README.md"
 description = "`Framed*` traits implementation above Tokio’s traits"
 edition.workspace = true
@@ -24,7 +24,7 @@ reqwest-native-tls = ["reqwest", "reqwest?/native-tls"]
 
 [dependencies]
 ironrdp-async = { path = "../ironrdp-async", version = "0.8" } # public
-ironrdp-connector = { path = "../ironrdp-connector", version = "0.8", optional = true }
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.9", optional = true }
 tokio = { version = "1", features = ["io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "system-proxy"], optional = true }
 url = { version = "2.5", optional = true }

@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [[0.1.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-echo-v0.1.0...ironrdp-echo-v0.1.1)] - 2026-04-10
+## [[0.1.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-bulk-v0.1.0...ironrdp-bulk-v0.1.1)] - 2026-04-10
 
 ### <!-- 6 -->Documentation
 
@@ -16,10 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old, bounded by the Rust version available in Debian stable-backports
   and Fedora stable.
 
+### <!-- 7 -->Build
 
-# Changelog
+- Bump criterion from 0.5.1 to 0.8.1 ([#1184](https://github.com/Devolutions/IronRDP/issues/1184)) ([d92dd382b3](https://github.com/Devolutions/IronRDP/commit/d92dd382b3fbaa163f355f6489db45ca8a3e7498)) 
 
-All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
