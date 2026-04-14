@@ -176,6 +176,7 @@ pub mod ffi {
                 domain: self.domain.clone(),
                 enable_tls: self.enable_tls.unwrap_or(false),
                 enable_credssp: self.enable_credssp.unwrap_or(true),
+                allow_encryption_level_none: false,
                 keyboard_layout: self.keyboard_layout.unwrap_or(0),
                 keyboard_type: self
                     .keyboard_type
