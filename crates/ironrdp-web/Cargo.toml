@@ -50,7 +50,7 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Performance", "Window"] }
 js-sys = "0.3"
 gloo-net = { version = "0.7", default-features = false, features = ["websocket", "http", "io-util"] }
-gloo-timers = { version = "0.3", default-features = false, features = ["futures"] }
+gloo-timers = { version = "0.4", default-features = false, features = ["futures"] }
 
 # Rendering
 softbuffer = { version = "0.4", default-features = false }
