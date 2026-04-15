@@ -1,5 +1,6 @@
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use core::fmt;
 use core::num::ParseIntError;
 use core::str::FromStr;
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ const DEFAULT_HEIGHT: u16 = 1080;
 pub struct Config {
     pub log_file: Option<String>,
     pub gw: Option<GwConnectTarget>,
+    pub kerberos_config: Option<connector::credssp::KerberosConfig>,
     pub destination: Destination,
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
@@ -50,6 +52,59 @@ pub enum ClipboardType {
     None,
 }
 
+fn apply_cli_args_to_properties(properties: &mut ironrdp_propertyset::PropertySet, args: &Args) {
+    if let Some(dest) = &args.destination {
+        // Format the host in .rdp canonical form: IPv6 gets bracketed ("[::1]"), others are plain.
+        let host = dest
+            .name()
+            .parse::<core::net::IpAddr>()
+            .map(ironrdp_cfg::TargetHost::Ip)
+            .unwrap_or_else(|_| ironrdp_cfg::TargetHost::Domain(dest.name().to_owned()));
+        properties.insert("full address", format!("{host}:{}", dest.port()));
+    }
+
+    if let Some(username) = &args.username {
+        properties.insert("username", username.as_str());
+    }
+
+    if let Some(password) = &args.password {
+        properties.insert("ClearTextPassword", password.as_str());
+    }
+
+    if let Some(domain) = &args.domain {
+        properties.insert("domain", domain.as_str());
+    }
+
+    if let Some(scale) = args.scale_desktop {
+        properties.insert("desktopscalefactor", i64::from(scale));
+    }
+
+    if let Some(gw_host) = &args.gw_endpoint {
+        properties.insert("gatewayhostname", gw_host.as_str());
+        // Ensure the gateway is treated as enabled when a host is provided explicitly.
+        properties.insert(
+            "gatewayusagemethod",
+            ironrdp_cfg::GatewayUsageMethod::UseAlways.as_i64(),
+        );
+    }
+
+    if let Some(gw_user) = &args.gw_user {
+        properties.insert("gatewayusername", gw_user.as_str());
+    }
+
+    if let Some(gw_pass) = &args.gw_pass {
+        properties.insert("GatewayPassword", gw_pass.as_str());
+    }
+
+    if args.no_credssp {
+        properties.insert("enablecredsspsupport", 0i64);
+    }
+
+    if let Some(enabled) = args.compression_enabled {
+        properties.insert("compression", enabled);
+    }
+}
+
 fn compression_type_from_level(level: u32) -> anyhow::Result<ironrdp::pdu::rdp::client_info::CompressionType> {
     use ironrdp::pdu::rdp::client_info::CompressionType;
 
@@ -63,7 +118,7 @@ fn compression_type_from_level(level: u32) -> anyhow::Result<ironrdp::pdu::rdp::
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum KeyboardType {
+pub enum KeyboardType {
     IbmPcXt,
     OlivettiIco,
     IbmPcAt,
@@ -138,6 +193,17 @@ impl Destination {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+}
+
+impl fmt::Display for Destination {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // IPv6 addresses must be bracketed in host:port notation.
+        if self.name.parse::<core::net::Ipv6Addr>().is_ok() {
+            write!(f, "[{}]:{}", self.name, self.port)
+        } else {
+            write!(f, "{}:{}", self.name, self.port)
+        }
     }
 }
 
@@ -315,9 +381,10 @@ struct Args {
     ///
     /// When enabled, the client advertises support for bulk compression and the
     /// server may send compressed PDUs. Use `--compression-enabled=false` to
-    /// disable.
-    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
-    compression_enabled: bool,
+    /// disable. When not specified, the value from the `.rdp` file is used (if
+    /// present), otherwise compression is enabled by default.
+    #[clap(long, action = clap::ArgAction::Set)]
+    compression_enabled: Option<bool>,
 
     /// Bulk compression level to negotiate with the server.
     ///
@@ -343,48 +410,150 @@ struct Args {
     #[cfg(windows)]
     #[clap(long)]
     dvc_plugin: Vec<PathBuf>,
+
+    /// Write the effective PropertySet (merged .rdp file and CLI overrides) to the given path and exit.
+    ///
+    /// The output is a standard `.rdp` file that can be used as a starting point for customisation
+    /// or passed back via `--rdp-file` on the next invocation.
+    #[clap(long)]
+    dump_rdp: Option<PathBuf>,
 }
 
-impl Config {
-    pub fn parse_args() -> anyhow::Result<Self> {
-        use ironrdp_cfg::PropertySetExt as _;
+/// The result of phase 1 parsing: the merged PropertySet plus CLI-only settings.
+///
+/// After obtaining a `PartialConfig`, callers may inspect or serialise [`PartialConfig::properties`]
+/// (e.g., with the `--dump-rdp` flag) before committing to a full session. Call
+/// [`PartialConfig::into_config`] to complete phase 2 (interactive prompts + strong typing).
+#[derive(Debug)]
+pub struct PartialConfig {
+    /// The merged PropertySet (`.rdp` file + CLI overrides).
+    pub properties: ironrdp_propertyset::PropertySet,
 
-        let args = Args::parse();
+    // CLI-only settings that are not representable as `.rdp` file properties.
+    pub log_file: Option<String>,
+    pub dump_rdp: Option<PathBuf>,
+    pub rdcleanpath: Option<RDCleanPathConfig>,
+    pub keyboard_type: KeyboardType,
+    pub keyboard_subtype: u32,
+    pub keyboard_functional_keys_count: u32,
+    pub ime_file_name: String,
+    pub dig_product_id: String,
+    pub thin_client: bool,
+    pub small_cache: bool,
+    pub color_depth: Option<u32>,
+    pub no_server_pointer: bool,
+    pub capabilities: u32,
+    pub autologon: bool,
+    pub no_tls: bool,
+    pub clipboard_type: ClipboardType,
+    pub codecs: Vec<String>,
+    pub compression_level: u32,
+    pub dvc_pipe_proxies: Vec<DvcProxyInfo>,
+    #[cfg(windows)]
+    pub dvc_plugins: Vec<PathBuf>,
+}
+
+impl PartialConfig {
+    pub fn parse_args() -> anyhow::Result<Self> {
+        Self::parse_from(std::env::args_os())
+    }
+
+    pub fn parse_from<I, T>(args: I) -> anyhow::Result<Self>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let args = Args::parse_from(args);
 
         let mut properties = ironrdp_propertyset::PropertySet::new();
 
-        if let Some(rdp_file) = args.rdp_file {
+        if let Some(rdp_file) = &args.rdp_file {
             let input =
-                std::fs::read_to_string(&rdp_file).with_context(|| format!("failed to read {}", rdp_file.display()))?;
+                std::fs::read_to_string(rdp_file).with_context(|| format!("failed to read {}", rdp_file.display()))?;
 
             if let Err(errors) = ironrdp_rdpfile::load(&mut properties, &input) {
-                for e in errors {
-                    #[expect(clippy::print_stderr)]
-                    {
-                        eprintln!("Error when reading {}: {e}", rdp_file.display())
-                    }
+                for error in &errors {
+                    eprintln!("Warning: skipped entry in {}: {error}", rdp_file.display());
                 }
             }
         }
 
-        let mut gw = args.gw_endpoint.map(|gw_addr| GwConnectTarget {
-            gw_endpoint: gw_addr,
-            gw_user: String::new(),
-            gw_pass: String::new(),
-            server: String::new(), // TODO: non-standard port? also dont use here?
-        });
+        // CLI arguments take precedence: upsert them after the .rdp file is loaded.
+        apply_cli_args_to_properties(&mut properties, &args);
+
+        let rdcleanpath = args
+            .rdcleanpath_url
+            .zip(args.rdcleanpath_token)
+            .map(|(url, auth_token)| RDCleanPathConfig { url, auth_token });
+
+        Ok(Self {
+            properties,
+            log_file: args.log_file,
+            dump_rdp: args.dump_rdp,
+            rdcleanpath,
+            keyboard_type: args.keyboard_type,
+            keyboard_subtype: args.keyboard_subtype,
+            keyboard_functional_keys_count: args.keyboard_functional_keys_count,
+            ime_file_name: args.ime_file_name,
+            dig_product_id: args.dig_product_id,
+            thin_client: args.thin_client,
+            small_cache: args.small_cache,
+            color_depth: args.color_depth,
+            no_server_pointer: args.no_server_pointer,
+            capabilities: args.capabilities,
+            autologon: args.autologon,
+            no_tls: args.no_tls,
+            clipboard_type: args.clipboard_type,
+            codecs: args.codecs,
+            compression_level: args.compression_level,
+            dvc_pipe_proxies: args.dvc_proxy,
+            #[cfg(windows)]
+            dvc_plugins: args.dvc_plugin,
+        })
+    }
+
+    pub fn into_config(self) -> anyhow::Result<Config> {
+        use ironrdp_cfg::{AudioMode, PropertySetExt as _};
+
+        let properties = &self.properties;
+
+        let has_gateway_host = properties.gateway_hostname().is_some();
+        let use_gateway = properties
+            .gateway_usage_method()
+            .unwrap_or_else(|e| {
+                eprintln!("Warning: {e}, assuming no gateway");
+                Some(ironrdp_cfg::GatewayUsageMethod::Direct)
+            })
+            .map_or(has_gateway_host, ironrdp_cfg::GatewayUsageMethod::is_gateway_required);
+
+        let mut gw: Option<GwConnectTarget> =
+            use_gateway
+                .then(|| properties.gateway_hostname())
+                .flatten()
+                .map(|gw_addr| GwConnectTarget {
+                    gw_endpoint: gw_addr.to_owned(),
+                    gw_user: String::new(),
+                    gw_pass: String::new(),
+                    server: String::new(), // TODO: non-standard port? also dont use here?
+                });
 
         if let Some(ref mut gw) = gw {
-            gw.gw_user = if let Some(gw_user) = args.gw_user {
-                gw_user
+            if let Ok(Some(gateway_credentials_source)) = properties.gateway_credentials_source() {
+                // All known credential sources fall through to username/password prompts.
+                // The value is available for future differentiation if needed.
+                let _ = gateway_credentials_source;
+            }
+
+            gw.gw_user = if let Some(gw_user) = properties.gateway_username() {
+                gw_user.to_owned()
             } else {
                 inquire::Text::new("Gateway username:")
                     .prompt()
                     .context("Username prompt")?
             };
 
-            gw.gw_pass = if let Some(gw_pass) = args.gw_pass {
-                gw_pass
+            gw.gw_pass = if let Some(gw_pass) = properties.gateway_password() {
+                gw_pass.to_owned()
             } else {
                 inquire::Password::new("Gateway password:")
                     .without_confirmation()
@@ -393,15 +562,27 @@ impl Config {
             };
         };
 
-        let destination = if let Some(destination) = args.destination {
-            destination
-        } else if let Some(destination) = properties.full_address() {
-            if let Some(port) = properties.server_port() {
-                format!("{destination}:{port}").parse()
-            } else {
-                destination.parse()
-            }
-            .context("invalid destination")?
+        let target = match properties.full_address().context("invalid 'full address' property")? {
+            Some(addr) => Some(addr),
+            None => properties
+                .alternate_full_address()
+                .context("invalid 'alternate full address' property")?,
+        };
+
+        let destination = if let Some(target) = target {
+            const RDP_DEFAULT_PORT: u16 = 3389;
+            let port = match target.port {
+                Some(p) => p,
+                None => properties
+                    .server_port()
+                    .context("invalid 'server port' property")?
+                    .unwrap_or(RDP_DEFAULT_PORT),
+            };
+            let name = match target.host {
+                ironrdp_cfg::TargetHost::Ip(ip) => ip.to_string(),
+                ironrdp_cfg::TargetHost::Domain(host) => host,
+            };
+            Destination { name, port }
         } else {
             inquire::Text::new("Server address:")
                 .prompt()
@@ -413,17 +594,13 @@ impl Config {
             gw.server = destination.name.clone(); // TODO
         }
 
-        let username = if let Some(username) = args.username {
-            username
-        } else if let Some(username) = properties.username() {
+        let username = if let Some(username) = properties.username() {
             username.to_owned()
         } else {
             inquire::Text::new("Username:").prompt().context("Username prompt")?
         };
 
-        let password = if let Some(password) = args.password {
-            password
-        } else if let Some(password) = properties.clear_text_password() {
+        let password = if let Some(password) = properties.clear_text_password() {
             password.to_owned()
         } else {
             inquire::Password::new("Password:")
@@ -432,7 +609,7 @@ impl Config {
                 .context("Password prompt")?
         };
 
-        let codecs: Vec<_> = args.codecs.iter().map(|s| s.as_str()).collect();
+        let codecs: Vec<_> = self.codecs.iter().map(|s| s.as_str()).collect();
         let codecs = match client_codecs_capabilities(&codecs) {
             Ok(codecs) => codecs,
             Err(help) => {
@@ -446,48 +623,107 @@ impl Config {
             codecs,
         };
 
-        if let Some(color_depth) = args.color_depth {
+        if let Some(color_depth) = self.color_depth {
             if color_depth != 16 && color_depth != 32 {
                 anyhow::bail!("Invalid color depth. Only 16 and 32 bit color depths are supported.");
             }
             bitmap.color_depth = color_depth;
         };
 
-        let clipboard_type = if args.clipboard_type == ClipboardType::Default {
-            #[cfg(windows)]
-            {
-                ClipboardType::Windows
-            }
-            #[cfg(not(windows))]
-            {
+        let enable_credssp = properties.enable_credssp_support().unwrap_or(true);
+
+        let redirect_clipboard = properties.redirect_clipboard().unwrap_or(true);
+        let clipboard_type = if self.clipboard_type == ClipboardType::Default {
+            if !redirect_clipboard {
                 ClipboardType::None
+            } else {
+                #[cfg(windows)]
+                {
+                    ClipboardType::Windows
+                }
+                #[cfg(not(windows))]
+                {
+                    ClipboardType::None
+                }
             }
         } else {
-            args.clipboard_type
+            self.clipboard_type
         };
 
-        let compression_type = if args.compression_enabled {
-            Some(compression_type_from_level(args.compression_level)?)
+        let enable_audio_playback = match properties.audio_mode() {
+            Ok(None) | Ok(Some(AudioMode::RedirectToClient)) => true,
+            Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => false,
+            Err(e) => {
+                eprintln!("Warning: {e}, defaulting to audio playback enabled");
+                true
+            }
+        };
+
+        let compression_enabled = properties.compression().unwrap_or(true);
+
+        let compression_type = if compression_enabled {
+            Some(compression_type_from_level(self.compression_level)?)
         } else {
             None
         };
 
+        let desktop_width = properties
+            .desktop_width()
+            .unwrap_or_else(|_| {
+                eprintln!("Warning: ignored out-of-range 'desktopwidth' property");
+                None
+            })
+            .unwrap_or(DEFAULT_WIDTH);
+        let desktop_height = properties
+            .desktop_height()
+            .unwrap_or_else(|_| {
+                eprintln!("Warning: ignored out-of-range 'desktopheight' property");
+                None
+            })
+            .unwrap_or(DEFAULT_HEIGHT);
+        let desktop_scale_factor = properties
+            .desktop_scale_factor()
+            .unwrap_or_else(|_| {
+                eprintln!("Warning: ignored out-of-range 'desktopscalefactor' property");
+                None
+            })
+            .unwrap_or(0);
+
+        let kdc_proxy_url = properties
+            .kdc_proxy_url()
+            .map(str::to_owned)
+            .or_else(|| properties.kdc_proxy_name().map(normalize_kdc_proxy_url_from_name));
+
+        let kerberos_config = kdc_proxy_url.and_then(|kdc_proxy_url| {
+            Url::parse(&kdc_proxy_url)
+                .ok()
+                .map(|url| connector::credssp::KerberosConfig {
+                    kdc_proxy_url: Some(url),
+                    // The hostname field is the client computer name used for Kerberos SPN negotiation.
+                    hostname: whoami::hostname().unwrap_or_else(|_| "ironrdp".to_owned()),
+                })
+                .or_else(|| {
+                    eprintln!("Warning: ignored invalid KDC proxy URL in 'kdcproxyname'/'KDCProxyURL' property");
+                    None
+                })
+        });
+
         let connector = connector::Config {
             credentials: Credentials::UsernamePassword { username, password },
-            domain: args.domain,
-            enable_tls: !args.no_tls,
-            enable_credssp: !args.no_credssp,
-            keyboard_type: KeyboardType::parse(args.keyboard_type),
-            keyboard_subtype: args.keyboard_subtype,
+            domain: properties.domain().map(str::to_owned),
+            enable_tls: !self.no_tls,
+            enable_credssp,
+            keyboard_type: KeyboardType::parse(self.keyboard_type),
+            keyboard_subtype: self.keyboard_subtype,
             keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
-            keyboard_functional_keys_count: args.keyboard_functional_keys_count,
-            ime_file_name: args.ime_file_name,
-            dig_product_id: args.dig_product_id,
+            keyboard_functional_keys_count: self.keyboard_functional_keys_count,
+            ime_file_name: self.ime_file_name,
+            dig_product_id: self.dig_product_id,
             desktop_size: connector::DesktopSize {
-                width: DEFAULT_WIDTH,
-                height: DEFAULT_HEIGHT,
+                width: desktop_width,
+                height: desktop_height,
             },
-            desktop_scale_factor: args.scale_desktop.unwrap_or(0), // Default to 0 per FreeRDP
+            desktop_scale_factor,
             bitmap: Some(bitmap),
             client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .map_or(0, |version| version.major * 100 + version.minor * 10 + version.patch)
@@ -507,34 +743,52 @@ impl Config {
             },
             hardware_id: None,
             license_cache: None,
-            enable_server_pointer: !args.no_server_pointer,
-            autologon: args.autologon,
-            enable_audio_playback: true,
+            enable_server_pointer: !self.no_server_pointer,
+            autologon: self.autologon,
+            enable_audio_playback,
             request_data: None,
             pointer_software_rendering: false,
             multitransport_flags: None,
             compression_type,
             performance_flags: PerformanceFlags::default(),
             timezone_info: TimezoneInfo::default(),
-            alternate_shell: String::new(),
-            work_dir: String::new(),
+            alternate_shell: properties.alternate_shell().unwrap_or_default().to_owned(),
+            work_dir: properties.shell_working_directory().unwrap_or_default().to_owned(),
         };
 
-        let rdcleanpath = args
-            .rdcleanpath_url
-            .zip(args.rdcleanpath_token)
-            .map(|(url, auth_token)| RDCleanPathConfig { url, auth_token });
-
-        Ok(Self {
-            log_file: args.log_file,
+        Ok(Config {
+            log_file: self.log_file,
             gw,
+            kerberos_config,
             destination,
             connector,
             clipboard_type,
-            rdcleanpath,
-            dvc_pipe_proxies: args.dvc_proxy,
+            rdcleanpath: self.rdcleanpath,
+            dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(windows)]
-            dvc_plugins: args.dvc_plugin,
+            dvc_plugins: self.dvc_plugins,
         })
+    }
+}
+
+impl Config {
+    pub fn parse_args() -> anyhow::Result<Self> {
+        Self::parse_from(std::env::args_os())
+    }
+
+    pub fn parse_from<I, T>(args: I) -> anyhow::Result<Self>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        PartialConfig::parse_from(args)?.into_config()
+    }
+}
+
+fn normalize_kdc_proxy_url_from_name(name: &str) -> String {
+    if name.starts_with("http://") || name.starts_with("https://") {
+        name.to_owned()
+    } else {
+        format!("https://{name}/KdcProxy")
     }
 }

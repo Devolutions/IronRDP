@@ -12,6 +12,7 @@
 //! Cargo will run all tests from a single binary in parallel, but
 //! binaries themselves are run sequentially.
 
+mod cfg;
 mod clipboard;
 mod displaycontrol;
 mod dvc;

@@ -13,9 +13,9 @@ use ironrdp_propertyset::{PropertySet, Value};
 
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
-    UnknownType { ty: String },
-    InvalidValue { ty: String, value: String },
-    MalformedLine { line: String },
+    UnknownType { key: String, ty: String },
+    InvalidValue { key: String, ty: String },
+    MalformedLine,
 }
 
 #[derive(Debug, Clone)]
@@ -31,11 +31,13 @@ impl fmt::Display for Error {
         let line_number = self.line;
 
         match &self.kind {
-            ErrorKind::UnknownType { ty } => write!(f, "unknown type at line {line_number} ({ty})"),
-            ErrorKind::InvalidValue { ty, value } => {
-                write!(f, "invalid value at line {line_number} for type {ty} ({value})")
+            ErrorKind::UnknownType { key, ty } => {
+                write!(f, "unknown type at line {line_number} for key '{key}' ({ty})")
             }
-            ErrorKind::MalformedLine { line } => write!(f, "malformed line at line {line_number} ({line})"),
+            ErrorKind::InvalidValue { key, ty } => {
+                write!(f, "invalid value at line {line_number} for key '{key}' (type {ty})")
+            }
+            ErrorKind::MalformedLine => write!(f, "malformed line at line {line_number}"),
         }
     }
 }
@@ -44,6 +46,7 @@ pub fn load(properties: &mut PropertySet, input: &str) -> Result<(), Vec<Error>>
     let mut errors = Vec::new();
 
     for (idx, line) in input.lines().enumerate() {
+        let line_number = idx + 1;
         let mut split = line.splitn(3, ':');
 
         if let (Some(key), Some(ty), Some(value)) = (split.next(), split.next(), split.next()) {
@@ -54,10 +57,10 @@ pub fn load(properties: &mut PropertySet, input: &str) -> Result<(), Vec<Error>>
                     } else {
                         errors.push(Error {
                             kind: ErrorKind::InvalidValue {
+                                key: key.to_owned(),
                                 ty: ty.to_owned(),
-                                value: value.to_owned(),
                             },
-                            line: idx,
+                            line: line_number,
                         });
                     }
                 }
@@ -66,15 +69,18 @@ pub fn load(properties: &mut PropertySet, input: &str) -> Result<(), Vec<Error>>
                 }
                 _ => {
                     errors.push(Error {
-                        kind: ErrorKind::UnknownType { ty: ty.to_owned() },
-                        line: idx,
+                        kind: ErrorKind::UnknownType {
+                            key: key.to_owned(),
+                            ty: ty.to_owned(),
+                        },
+                        line: line_number,
                     });
                 }
             }
         } else {
             errors.push(Error {
-                kind: ErrorKind::MalformedLine { line: line.to_owned() },
-                line: idx,
+                kind: ErrorKind::MalformedLine,
+                line: line_number,
             })
         }
     }
