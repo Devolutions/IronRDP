@@ -57,16 +57,15 @@ fn parse_file() {
     expect![[r#"
         [
             Error {
-                kind: MalformedLine {
-                    line: "MalformedLine:s",
-                },
-                line: 9,
+                kind: MalformedLine,
+                line: 10,
             },
             Error {
                 kind: UnknownType {
+                    key: "UnknownType",
                     ty: "z",
                 },
-                line: 10,
+                line: 11,
             },
         ]
     "#]]

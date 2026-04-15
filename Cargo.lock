@@ -2877,6 +2877,7 @@ dependencies = [
  "expect-test",
  "hex",
  "ironrdp-acceptor",
+ "ironrdp-cfg",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
  "ironrdp-connector",
@@ -2914,12 +2915,14 @@ dependencies = [
  "async-trait",
  "ironrdp",
  "ironrdp-async",
+ "ironrdp-client",
  "ironrdp-tls",
  "ironrdp-tokio",
  "semver",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

@@ -288,7 +288,7 @@ async fn connect(
         &mut ReqwestNetworkClient::new(),
         (&config.destination).into(),
         server_public_key.to_owned(),
-        None,
+        config.kerberos_config.clone(),
     )
     .await?;
 
@@ -405,7 +405,7 @@ async fn connect_ws(
         &mut ReqwestNetworkClient::new(),
         (&config.destination).into(),
         server_public_key,
-        None,
+        config.kerberos_config.clone(),
     )
     .await?;
 

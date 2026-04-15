@@ -52,6 +52,7 @@ ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
 ironrdp-server.path = "../ironrdp-server"
 ironrdp-session = { path = "../ironrdp-session", features = ["qoi"] }
+ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
 png = "0.18"

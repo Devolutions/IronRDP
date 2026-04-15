@@ -12,7 +12,44 @@ and winit for windowing.
 ironrdp-client <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
-## Configuring log filter directives
+## `.rdp` file support
+
+You can load a `.rdp` file with `--rdp-file <PATH>`.
+
+Currently supported properties:
+
+- `full address:s:<value>`
+- `alternate full address:s:<value>`
+- `server port:i:<value>`
+- `username:s:<value>`
+- `ClearTextPassword:s:<value>`
+- `domain:s:<value>`
+- `enablecredsspsupport:i:<0|1>`
+- `gatewayhostname:s:<value>`
+- `gatewayusagemethod:i:<value>`
+- `gatewaycredentialssource:i:<value>`
+- `gatewayusername:s:<value>`
+- `GatewayPassword:s:<value>`
+- `kdcproxyurl:s:<value>` (also `KDCProxyURL:s:<value>`)
+- `kdcproxyname:s:<value>`
+- `alternate shell:s:<value>`
+- `shell working directory:s:<value>`
+- `redirectclipboard:i:<0|1>`
+- `audiomode:i:<0|1|2>`
+- `desktopwidth:i:<value>`
+- `desktopheight:i:<value>`
+- `desktopscalefactor:i:<value>`
+- `compression:i:<0|1>`
+
+Property precedence is:
+
+1. CLI options
+2. `.rdp` file values
+3. Defaults and interactive prompts
+
+Unknown or unsupported `.rdp` properties are ignored and do not cause parsing failures. Parse
+issues are reported to stderr.
+
 
 The `IRONRDP_LOG` environment variable is used to set the log filter directives. 
 
@@ -45,4 +82,3 @@ This crate is part of the [IronRDP] project.
 
 [IronRDP]: https://github.com/Devolutions/IronRDP
 [awakecoding-repository]: https://github.com/awakecoding/wireshark-rdp#sslkeylogfile
-
