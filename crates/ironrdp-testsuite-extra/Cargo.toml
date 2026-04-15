@@ -10,12 +10,15 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
-
 autotests = false
+
+[lib]
+doctest = false
+test = false
 
 [[test]]
 name = "integration_tests_extra"
-path = "tests/mod.rs"
+path = "tests/main.rs"
 harness = true
 
 [dev-dependencies]
