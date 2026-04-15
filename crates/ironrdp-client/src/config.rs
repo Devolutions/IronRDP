@@ -505,13 +505,14 @@ impl PartialConfig {
 
         let properties = &self.properties;
 
-        let use_gateway = gateway_enabled_by_usage_method(
-            properties.gateway_usage_method().unwrap_or_else(|e| {
+        let has_gateway_host = properties.gateway_hostname().is_some();
+        let use_gateway = properties
+            .gateway_usage_method()
+            .unwrap_or_else(|e| {
                 eprintln!("Warning: {e}, assuming no gateway");
                 None
-            }),
-            properties.gateway_hostname().is_some(),
-        );
+            })
+            .map_or(has_gateway_host, ironrdp_cfg::GatewayUsageMethod::is_gateway_required);
 
         let mut gw: Option<GwConnectTarget> =
             use_gateway
@@ -778,8 +779,4 @@ fn normalize_kdc_proxy_url_from_name(name: &str) -> String {
     } else {
         format!("https://{name}/KdcProxy")
     }
-}
-
-fn gateway_enabled_by_usage_method(method: Option<ironrdp_cfg::GatewayUsageMethod>, has_gateway_host: bool) -> bool {
-    method.map_or(has_gateway_host, ironrdp_cfg::GatewayUsageMethod::is_gateway_required)
 }

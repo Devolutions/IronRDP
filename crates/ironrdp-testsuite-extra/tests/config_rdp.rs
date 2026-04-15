@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use std::fs;
 use std::path::PathBuf;
 
