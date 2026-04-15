@@ -7,8 +7,8 @@ use rstest::rstest;
 
 #[rstest]
 // hostname
-#[case("rdp.example.com",       TargetHost::Domain("rdp.example.com".to_owned()), None)]
-#[case("rdp.example.com:3389",  TargetHost::Domain("rdp.example.com".to_owned()), Some(3389))]
+#[case("rdp.example.com", TargetHost::Domain("rdp.example.com".to_owned()), None)]
+#[case("rdp.example.com:3389", TargetHost::Domain("rdp.example.com".to_owned()), Some(3389))]
 // IPv4
 #[case("192.168.1.1", TargetHost::Ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))), None)]
 #[case(
@@ -19,10 +19,10 @@ use rstest::rstest;
 // IPv6 (always bracketed in .rdp format)
 #[case("[::1]", TargetHost::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)), None)]
 #[case("[::1]:3389", TargetHost::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)), Some(3389))]
-#[case("[2001:db8::1]:443",     TargetHost::Ip(IpAddr::V6("2001:db8::1".parse().unwrap())), Some(443))]
-// Unbracketed IPv6 — no port, must not mis-parse trailing segment as port
+#[case("[2001:db8::1]:443", TargetHost::Ip(IpAddr::V6("2001:db8::1".parse().unwrap())), Some(443))]
+// Unbracketed IPv6 — no port, must not misparse trailing segment as port
 #[case("::1", TargetHost::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)), None)]
-#[case("fe80::1",   TargetHost::Ip(IpAddr::V6("fe80::1".parse().unwrap())), None)]
+#[case("fe80::1", TargetHost::Ip(IpAddr::V6("fe80::1".parse().unwrap())), None)]
 fn parse_valid(#[case] input: &str, #[case] expected_host: TargetHost, #[case] expected_port: Option<u16>) {
     let addr: TargetAddr = input.parse().unwrap();
     assert_eq!(addr.host, expected_host);

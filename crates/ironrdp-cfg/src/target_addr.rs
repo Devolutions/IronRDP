@@ -101,7 +101,7 @@ impl FromStr for TargetAddr {
         }
 
         // Bare IP address (no port) — must be checked before rsplit_once(':') because unbracketed
-        // IPv6 like "::1" or "fe80::1" would otherwise be mis-parsed (trailing segment treated as port).
+        // IPv6 like "::1" or "fe80::1" would otherwise be misparsed (trailing segment treated as port).
         if let Ok(ip) = s.parse::<IpAddr>() {
             return Ok(TargetAddr {
                 host: TargetHost::Ip(ip),

@@ -1,5 +1,6 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use core::fmt;
 use core::num::ParseIntError;
 use core::str::FromStr;
 use std::path::PathBuf;
@@ -192,6 +193,17 @@ impl Destination {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+}
+
+impl fmt::Display for Destination {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // IPv6 addresses must be bracketed in host:port notation.
+        if self.name.parse::<core::net::Ipv6Addr>().is_ok() {
+            write!(f, "[{}]:{}", self.name, self.port)
+        } else {
+            write!(f, "{}:{}", self.name, self.port)
+        }
     }
 }
 
@@ -691,7 +703,7 @@ impl PartialConfig {
                     hostname: whoami::hostname().unwrap_or_else(|_| "ironrdp".to_owned()),
                 })
                 .or_else(|| {
-                    eprintln!("Warning: ignored invalid KDC proxy URL from .RDP property: {kdc_proxy_url}");
+                    eprintln!("Warning: ignored invalid KDC proxy URL in 'kdcproxyname'/'KDCProxyURL' property");
                     None
                 })
         });

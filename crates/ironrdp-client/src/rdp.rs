@@ -188,7 +188,7 @@ async fn connect(
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
     dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
-    let dest = format!("{}:{}", config.destination.name(), config.destination.port());
+    let dest = config.destination.to_string();
 
     let (client_addr, stream) = if let Some(ref gw_config) = config.gw {
         let (gw, client_addr) = ironrdp_mstsgu::GwClient::connect(gw_config, &config.connector.client_name)
@@ -387,7 +387,7 @@ async fn connect_ws(
         connector.attach_static_channel(cliprdr);
     }
 
-    let destination = format!("{}:{}", config.destination.name(), config.destination.port());
+    let destination = config.destination.to_string();
 
     let (upgraded, server_public_key) = connect_rdcleanpath(
         &mut framed,

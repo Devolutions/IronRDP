@@ -15,7 +15,7 @@ impl TempRdpFile {
         TempRdpFile { path }
     }
 
-    fn path(&self) -> &PathBuf {
+    fn path(&self) -> &std::path::Path {
         &self.path
     }
 }
