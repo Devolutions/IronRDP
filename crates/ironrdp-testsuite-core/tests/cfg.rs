@@ -32,8 +32,10 @@ fn parse_valid(#[case] input: &str, #[case] expected_host: TargetHost, #[case] e
 #[rstest]
 #[case("[::1", ParseTargetAddrError::UnclosedBracket)]
 #[case("[not-ipv6]", ParseTargetAddrError::InvalidIpv6Addr)]
+#[case("[127.0.0.1]", ParseTargetAddrError::InvalidIpv6Addr)]
 #[case("[::1]:99999", ParseTargetAddrError::InvalidPort)]
 #[case("[::1]garbage", ParseTargetAddrError::UnexpectedTrailing)]
+#[case("rdp.example.com:99999", ParseTargetAddrError::InvalidPort)]
 fn parse_invalid(#[case] input: &str, #[case] expected: ParseTargetAddrError) {
     assert_eq!(input.parse::<TargetAddr>().unwrap_err(), expected);
 }

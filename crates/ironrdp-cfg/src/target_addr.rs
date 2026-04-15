@@ -1,5 +1,5 @@
 use core::fmt;
-use core::net::IpAddr;
+use core::net::{IpAddr, Ipv6Addr};
 use core::str::FromStr;
 
 /// The host component of an RDP target address.
@@ -85,7 +85,7 @@ impl FromStr for TargetAddr {
         // Bracketed IPv6: "[addr]:port" or "[addr]"
         if let Some(rest) = s.strip_prefix('[') {
             let (ipv6_str, rest) = rest.split_once(']').ok_or(ParseTargetAddrError::UnclosedBracket)?;
-            let ip: IpAddr = ipv6_str.parse().map_err(|_| ParseTargetAddrError::InvalidIpv6Addr)?;
+            let ip: Ipv6Addr = ipv6_str.parse().map_err(|_| ParseTargetAddrError::InvalidIpv6Addr)?;
             let port = match rest {
                 "" => None,
                 s if s.starts_with(':') => {
@@ -95,7 +95,7 @@ impl FromStr for TargetAddr {
                 _ => return Err(ParseTargetAddrError::UnexpectedTrailing),
             };
             return Ok(TargetAddr {
-                host: TargetHost::Ip(ip),
+                host: TargetHost::Ip(IpAddr::V6(ip)),
                 port,
             });
         }
@@ -110,15 +110,17 @@ impl FromStr for TargetAddr {
         }
 
         // "hostname:port" — use rsplit_once to separate on the last colon.
+        // Any colon present after a non-IP address is unambiguously a port separator in the
+        // .rdp format, so a non-numeric or out-of-range suffix is an error rather than a
+        // fallback to a bare hostname.
         if let Some((host, port_str)) = s.rsplit_once(':') {
-            if let Ok(port) = port_str.parse::<u16>() {
-                let host = if let Ok(ip) = host.parse::<IpAddr>() {
-                    TargetHost::Ip(ip)
-                } else {
-                    TargetHost::Domain(host.to_owned())
-                };
-                return Ok(TargetAddr { host, port: Some(port) });
-            }
+            let port = port_str.parse::<u16>().map_err(|_| ParseTargetAddrError::InvalidPort)?;
+            let host = if let Ok(ip) = host.parse::<IpAddr>() {
+                TargetHost::Ip(ip)
+            } else {
+                TargetHost::Domain(host.to_owned())
+            };
+            return Ok(TargetAddr { host, port: Some(port) });
         }
 
         // Bare hostname without port.

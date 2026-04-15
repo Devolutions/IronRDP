@@ -510,7 +510,7 @@ impl PartialConfig {
             .gateway_usage_method()
             .unwrap_or_else(|e| {
                 eprintln!("Warning: {e}, assuming no gateway");
-                None
+                Some(ironrdp_cfg::GatewayUsageMethod::Direct)
             })
             .map_or(has_gateway_host, ironrdp_cfg::GatewayUsageMethod::is_gateway_required);
 
