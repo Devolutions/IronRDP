@@ -107,7 +107,8 @@ pub type WriteDvcMessageFn = Box<dyn Fn(u32, SvcMessage) -> PduResult<()> + Send
 
 pub struct RdpClient {
     pub config: Config,
-    pub event_loop_proxy: EventLoopProxy<RdpOutputEvent>,
+    pub event_loop_proxy: EventLoopProxy,
+    pub rdp_output_sender: std::sync::mpsc::SyncSender<RdpOutputEvent>,
     pub input_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
     pub cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     pub dvc_pipe_proxy_factory: DvcPipeProxyFactory,
@@ -127,7 +128,8 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
+                        let _ = self.rdp_output_sender.send(RdpOutputEvent::ConnectionFailure(e));
+                        self.event_loop_proxy.wake_up();
                         break;
                     }
                 }
@@ -141,7 +143,8 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
+                        let _ = self.rdp_output_sender.send(RdpOutputEvent::ConnectionFailure(e));
+                        self.event_loop_proxy.wake_up();
                         break;
                     }
                 }
@@ -150,6 +153,7 @@ impl RdpClient {
             match active_session(
                 framed,
                 connection_result,
+                &self.rdp_output_sender,
                 &self.event_loop_proxy,
                 &mut self.input_event_receiver,
             )
@@ -160,11 +164,13 @@ impl RdpClient {
                     self.config.connector.desktop_size.height = height;
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
-                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Ok(reason)));
+                    let _ = self.rdp_output_sender.send(RdpOutputEvent::Terminated(Ok(reason)));
+                    self.event_loop_proxy.wake_up();
                     break;
                 }
                 Err(e) => {
-                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Err(e)));
+                    let _ = self.rdp_output_sender.send(RdpOutputEvent::Terminated(Err(e)));
+                    self.event_loop_proxy.wake_up();
                     break;
                 }
             }
@@ -572,7 +578,8 @@ where
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
-    event_loop_proxy: &EventLoopProxy<RdpOutputEvent>,
+    rdp_output_sender: &std::sync::mpsc::SyncSender<RdpOutputEvent>,
+    event_loop_proxy: &EventLoopProxy,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
@@ -586,6 +593,13 @@ async fn active_session(
 
     // Timer interval for driving clipboard lock timeouts (5 second interval)
     let mut cleanup_interval = tokio::time::interval(core::time::Duration::from_secs(5));
+
+    macro_rules! send_output {
+        ($event:expr) => {{
+            let _ = rdp_output_sender.send($event);
+            event_loop_proxy.wake_up();
+        }};
+    }
 
     let disconnect_reason = 'outer: loop {
         let outputs = tokio::select! {
@@ -713,36 +727,25 @@ async fn active_session(
                             u32::from_be_bytes([0, r, g, b])
                         })
                         .collect();
+                    use std::num::NonZero;
 
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::Image {
-                            buffer,
-                            width: NonZeroU16::new(image.width())
-                                .ok_or_else(|| session::general_err!("width is zero"))?,
-                            height: NonZeroU16::new(image.height())
-                                .ok_or_else(|| session::general_err!("height is zero"))?,
-                        })
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    send_output!(RdpOutputEvent::Image {
+                        buffer,
+                        width: NonZero::new(image.width()).unwrap(),
+                        height: NonZero::new(image.height()).unwrap()
+                    });
                 }
                 ActiveStageOutput::PointerDefault => {
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::PointerDefault)
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    send_output!(RdpOutputEvent::PointerDefault);
                 }
                 ActiveStageOutput::PointerHidden => {
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::PointerHidden)
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    send_output!(RdpOutputEvent::PointerHidden);
                 }
                 ActiveStageOutput::PointerPosition { x, y } => {
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::PointerPosition { x, y })
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    send_output!(RdpOutputEvent::PointerPosition { x, y });
                 }
                 ActiveStageOutput::PointerBitmap(pointer) => {
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::PointerBitmap(pointer))
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    send_output!(RdpOutputEvent::PointerBitmap(pointer));
                 }
                 ActiveStageOutput::DeactivateAll(mut connection_activation) => {
                     // Execute the Deactivation-Reactivation Sequence:
