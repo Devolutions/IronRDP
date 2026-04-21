@@ -18,7 +18,7 @@ doctest = false
 
 [dependencies]
 bit_field = "0.10"
-bitflags = "2.4"
+bitflags = "2.11"
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.5" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.7" } # public
