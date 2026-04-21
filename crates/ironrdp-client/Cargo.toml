@@ -62,7 +62,7 @@ winit = { version = "0.30", features = ["rwh_06"] }
 softbuffer = "0.4"
 
 # CLI
-clap = { version = "4.5", features = ["derive", "cargo"] }
+clap = { version = "4.6", features = ["derive", "cargo"] }
 proc-exit = "2"
 inquire = "0.9"
 
