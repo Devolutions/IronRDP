@@ -10,18 +10,27 @@ use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 use winit::application::ApplicationHandler;
+use winit::cursor::CustomCursor;
 use winit::dpi::{LogicalPosition, PhysicalSize};
+use winit::dpi::{PhysicalPosition, Position};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
-use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
+use winit::window::{Window, WindowAttributes};
+//use cursor_icon::CursorIcon;
+use winit::cursor::CursorIcon;
+use winit::cursor::CursorImage;
 
 use crate::rdp::{RdpInputEvent, RdpOutputEvent};
 
-type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
+type WindowSurface = (
+    Arc<dyn Window>,
+    softbuffer::Surface<DisplayHandle<'static>, Arc<dyn Window>>,
+);
 
 pub struct App {
     input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
+    rdp_output_receiver: std::sync::mpsc::Receiver<RdpOutputEvent>,
     context: softbuffer::Context<DisplayHandle<'static>>,
     initial_window_size: PhysicalSize<u32>,
     window: Option<WindowSurface>,
@@ -34,9 +43,10 @@ pub struct App {
 
 impl App {
     pub fn new(
-        event_loop: &EventLoop<RdpOutputEvent>,
+        event_loop: &EventLoop,
         input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
         initial_window_size: PhysicalSize<u32>,
+        rdp_output_receiver: std::sync::mpsc::Receiver<RdpOutputEvent>,
     ) -> anyhow::Result<Self> {
         // SAFETY: We drop the softbuffer context right before the event loop is stopped, thus making this safe.
         // FIXME: This is not a sufficient proof and the API is actually unsound as-is.
@@ -51,6 +61,7 @@ impl App {
         let input_database = ironrdp::input::Database::new();
         Ok(Self {
             input_event_sender: input_event_sender.clone(),
+            rdp_output_receiver,
             context,
             initial_window_size,
             window: None,
@@ -98,10 +109,94 @@ impl App {
         sb_buffer.copy_from_slice(self.buffer.as_slice());
         sb_buffer.present().expect("buffer present");
     }
+
+    fn handle_rdp_output_event(&mut self, event_loop: &dyn ActiveEventLoop, event: RdpOutputEvent) {
+        let Some((window, surface)) = self.window.as_mut() else {
+            return;
+        };
+        match event {
+            RdpOutputEvent::Image { buffer, width, height } => {
+                trace!(width = ?width, height = ?height, "Received image with size");
+                trace!(window_physical_size = ?window.surface_size(), "Drawing image to the window with size");
+                self.buffer_size = (width.get(), height.get());
+                self.buffer = buffer;
+                surface
+                    .resize(NonZeroU32::from(width), NonZeroU32::from(height))
+                    .expect("surface resize");
+
+                window.request_redraw();
+            }
+            RdpOutputEvent::ConnectionFailure(error) => {
+                error!(?error);
+                eprintln!("Connection error: {}", error.report());
+                // TODO set proc_exit::sysexits::PROTOCOL_ERR.as_raw());
+                event_loop.exit();
+            }
+            RdpOutputEvent::Terminated(result) => {
+                let _exit_code = match result {
+                    Ok(reason) => {
+                        println!("Terminated gracefully: {reason}");
+                        proc_exit::sysexits::OK
+                    }
+                    Err(error) => {
+                        error!(?error);
+                        eprintln!("Active session error: {}", error.report());
+                        proc_exit::sysexits::PROTOCOL_ERR
+                    }
+                };
+                // TODO set exit_code.as_raw());
+                event_loop.exit();
+            }
+            RdpOutputEvent::PointerHidden => {
+                window.set_cursor_visible(false);
+            }
+            RdpOutputEvent::PointerDefault => {
+                window.set_cursor(winit::cursor::Cursor::Icon(CursorIcon::default()));
+                window.set_cursor_visible(true);
+            }
+            RdpOutputEvent::PointerPosition { x, y } => {
+                if let Err(error) = window.set_cursor_position(winit::dpi::Position::from(PhysicalPosition::new(x, y)))
+                {
+                    error!(?error, "Failed to set cursor position");
+                }
+            }
+            RdpOutputEvent::PointerBitmap(pointer) => {
+                debug!(width = ?pointer.width, height = ?pointer.height, "Received pointer bitmap");
+                /*match CursorImage::from_rgba(
+                    pointer.bitmap_data.clone(),
+                    pointer.width,
+                    pointer.height,
+                    pointer.hotspot_x,
+                    pointer.hotspot_y,
+                ) {
+                    Ok(cursor) => (),//window.set_cursor(event_loop.create_custom_cursor(cursor).into()),
+                    Err(error) => error!(?error, "Failed to set cursor bitmap"),
+                }*/
+                window.set_cursor_visible(true);
+            }
+        }
+    }
 }
 
-impl ApplicationHandler<RdpOutputEvent> for App {
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+impl ApplicationHandler for App {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let window_attributes = WindowAttributes::default()
+            .with_title("IronRDP")
+            .with_surface_size(self.initial_window_size);
+        match event_loop.create_window(window_attributes) {
+            Ok(window) => {
+                let window: Arc<dyn Window> = Arc::from(window);
+                let surface = softbuffer::Surface::new(&self.context, Arc::clone(&window)).expect("surface");
+                self.window = Some((window, surface));
+            }
+            Err(error) => {
+                error!(%error, "Failed to create window");
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         if let Some(timeout) = self.resize_timeout {
             if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
                 event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
@@ -113,24 +208,25 @@ impl ApplicationHandler<RdpOutputEvent> for App {
         }
     }
 
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window_attributes = WindowAttributes::default()
-            .with_title("IronRDP")
-            .with_inner_size(self.initial_window_size);
-        match event_loop.create_window(window_attributes) {
-            Ok(window) => {
-                let window = Arc::new(window);
-                let surface = softbuffer::Surface::new(&self.context, Arc::clone(&window)).expect("surface");
-                self.window = Some((window, surface));
-            }
-            Err(error) => {
-                error!(%error, "Failed to create window");
-                event_loop.exit();
-            }
+    fn resumed(&mut self, _event_loop: &dyn ActiveEventLoop) {
+        // On desktop platforms, window creation is done in can_create_surfaces.
+        // resumed/suspended are only meaningful on iOS, Android, and Web.
+    }
+
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        //    fn user_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // Drain all pending RDP output events from the channel.
+        while let Ok(event) = self.rdp_output_receiver.try_recv() {
+            self.handle_rdp_output_event(event_loop, event);
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
         let Some((window, _)) = self.window.as_mut() else {
             return;
         };
@@ -139,7 +235,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
         }
 
         match event {
-            WindowEvent::Resized(size) => {
+            WindowEvent::SurfaceResized(size) => {
                 self.last_size = Some(size);
                 self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
@@ -148,9 +244,6 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     error!("Failed to send graceful shutdown event, closing the window");
                     event_loop.exit();
                 }
-            }
-            WindowEvent::DroppedFile(_) => {
-                // TODO(#110): File upload
             }
             // WindowEvent::ReceivedCharacter(_) => {
             // Sadly, we can't use this winit event to send RDP unicode events because
@@ -179,6 +272,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                             return;
                         }
                     };
+
                     let scancode = ironrdp::input::Scancode::from_u16(scancode);
 
                     let operation = match event.state {
@@ -210,7 +304,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
                 // NOTE: https://docs.rs/winit/0.30.12/src/winit/keyboard.rs.html#1737-1744
                 //
-                // We can’t use state.lshift_state(), state.lcontrol_state(), etc, because on some platforms such as
+                // We can't use state.lshift_state(), state.lcontrol_state(), etc, because on some platforms such as
                 // Linux, the modifiers change is hidden.
                 //
                 // > The exact modifier key is not used to represent modifiers state in the
@@ -220,14 +314,14 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 add_operation(modifiers.state().shift_key(), SHIFT_LEFT);
                 add_operation(modifiers.state().control_key(), CONTROL_LEFT);
                 add_operation(modifiers.state().alt_key(), ALT_LEFT);
-                add_operation(modifiers.state().super_key(), LOGO_LEFT);
+                add_operation(modifiers.state().meta_key(), LOGO_LEFT);
 
                 let input_events = self.input_database.apply(operations);
 
                 send_fast_path_events(&self.input_event_sender, input_events);
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                let win_size = window.inner_size();
+            WindowEvent::PointerMoved { position, .. } => {
+                let win_size = window.surface_size();
                 #[expect(clippy::as_conversions, reason = "casting f64 to u16")]
                 let x = (position.x / f64::from(win_size.width) * f64::from(self.buffer_size.0)) as u16;
                 #[expect(clippy::as_conversions, reason = "casting f64 to u16")]
@@ -290,20 +384,21 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
                 send_fast_path_events(&self.input_event_sender, input_events);
             }
-            WindowEvent::MouseInput { state, button, .. } => {
+            WindowEvent::PointerButton { state, button, .. } => {
                 let mouse_button = match button {
-                    event::MouseButton::Left => ironrdp::input::MouseButton::Left,
-                    event::MouseButton::Right => ironrdp::input::MouseButton::Right,
-                    event::MouseButton::Middle => ironrdp::input::MouseButton::Middle,
-                    event::MouseButton::Back => ironrdp::input::MouseButton::X1,
-                    event::MouseButton::Forward => ironrdp::input::MouseButton::X2,
-                    event::MouseButton::Other(native_button) => {
+                    event::ButtonSource::Mouse(event::MouseButton::Left) => ironrdp::input::MouseButton::Left,
+                    event::ButtonSource::Mouse(event::MouseButton::Right) => ironrdp::input::MouseButton::Right,
+                    event::ButtonSource::Mouse(event::MouseButton::Middle) => ironrdp::input::MouseButton::Middle,
+                    event::ButtonSource::Mouse(event::MouseButton::Back) => ironrdp::input::MouseButton::X1,
+                    event::ButtonSource::Mouse(event::MouseButton::Forward) => ironrdp::input::MouseButton::X2,
+                    /*event::ButtonSource::Mouse(event::MouseButton::Other(native_button)) => {
                         if let Some(button) = ironrdp::input::MouseButton::from_native_button(native_button) {
                             button
                         } else {
                             return;
                         }
-                    }
+                    }*/
+                    _ => return,
                 };
 
                 let operation = match state {
@@ -321,90 +416,21 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             WindowEvent::ActivationTokenDone { .. }
             | WindowEvent::Moved(_)
             | WindowEvent::Destroyed
-            | WindowEvent::HoveredFile(_)
-            | WindowEvent::HoveredFileCancelled
             | WindowEvent::Focused(_)
             | WindowEvent::Ime(_)
-            | WindowEvent::CursorEntered { .. }
-            | WindowEvent::CursorLeft { .. }
+            | WindowEvent::PointerEntered { .. }
+            | WindowEvent::PointerLeft { .. }
             | WindowEvent::PinchGesture { .. }
             | WindowEvent::PanGesture { .. }
             | WindowEvent::DoubleTapGesture { .. }
             | WindowEvent::RotationGesture { .. }
             | WindowEvent::TouchpadPressure { .. }
-            | WindowEvent::AxisMotion { .. }
-            | WindowEvent::Touch(_)
             | WindowEvent::ScaleFactorChanged { .. }
             | WindowEvent::ThemeChanged(_)
             | WindowEvent::Occluded(_) => {
                 // ignore
             }
-        }
-    }
-
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RdpOutputEvent) {
-        let Some((window, surface)) = self.window.as_mut() else {
-            return;
-        };
-        match event {
-            RdpOutputEvent::Image { buffer, width, height } => {
-                trace!(width = ?width, height = ?height, "Received image with size");
-                trace!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");
-                self.buffer_size = (width.get(), height.get());
-                self.buffer = buffer;
-                surface
-                    .resize(NonZeroU32::from(width), NonZeroU32::from(height))
-                    .expect("surface resize");
-
-                window.request_redraw();
-            }
-            RdpOutputEvent::ConnectionFailure(error) => {
-                error!(?error);
-                eprintln!("Connection error: {}", error.report());
-                // TODO set proc_exit::sysexits::PROTOCOL_ERR.as_raw());
-                event_loop.exit();
-            }
-            RdpOutputEvent::Terminated(result) => {
-                let _exit_code = match result {
-                    Ok(reason) => {
-                        println!("Terminated gracefully: {reason}");
-                        proc_exit::sysexits::OK
-                    }
-                    Err(error) => {
-                        error!(?error);
-                        eprintln!("Active session error: {}", error.report());
-                        proc_exit::sysexits::PROTOCOL_ERR
-                    }
-                };
-                // TODO set exit_code.as_raw());
-                event_loop.exit();
-            }
-            RdpOutputEvent::PointerHidden => {
-                window.set_cursor_visible(false);
-            }
-            RdpOutputEvent::PointerDefault => {
-                window.set_cursor(CursorIcon::default());
-                window.set_cursor_visible(true);
-            }
-            RdpOutputEvent::PointerPosition { x, y } => {
-                if let Err(error) = window.set_cursor_position(LogicalPosition::new(x, y)) {
-                    error!(?error, "Failed to set cursor position");
-                }
-            }
-            RdpOutputEvent::PointerBitmap(pointer) => {
-                debug!(width = ?pointer.width, height = ?pointer.height, "Received pointer bitmap");
-                match CustomCursor::from_rgba(
-                    pointer.bitmap_data.clone(),
-                    pointer.width,
-                    pointer.height,
-                    pointer.hotspot_x,
-                    pointer.hotspot_y,
-                ) {
-                    Ok(cursor) => window.set_cursor(event_loop.create_custom_cursor(cursor)),
-                    Err(error) => error!(?error, "Failed to set cursor bitmap"),
-                }
-                window.set_cursor_visible(true);
-            }
+            _ => todo!(),
         }
     }
 }

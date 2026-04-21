@@ -58,7 +58,7 @@ ironrdp-rdpfile.path = "../ironrdp-rdpfile"
 ironrdp-cfg.path = "../ironrdp-cfg"
 
 # Windowing and rendering
-winit = { version = "0.30", features = ["rwh_06"] }
+winit = "0.31.0-beta.2"
 softbuffer = "0.4"
 
 # CLI

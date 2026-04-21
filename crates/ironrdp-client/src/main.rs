@@ -23,15 +23,21 @@ fn main() -> anyhow::Result<()> {
     let config = partial.into_config().context("configuration")?;
 
     debug!("Initialize App");
-    let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
+    let event_loop = EventLoop::new()?;
     let event_loop_proxy = event_loop.create_proxy();
+    let (rdp_output_sender, rdp_output_receiver) = std::sync::mpsc::sync_channel::<RdpOutputEvent>(64);
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
     let initial_window_size = PhysicalSize::new(
         u32::from(config.connector.desktop_size.width),
         u32::from(config.connector.desktop_size.height),
     );
-    let mut app =
-        App::new(&event_loop, &input_event_sender, initial_window_size).context("unable to initialize App")?;
+    let app = App::new(
+        &event_loop,
+        &input_event_sender,
+        initial_window_size,
+        rdp_output_receiver,
+    )
+    .context("unable to initialize App")?;
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
@@ -70,6 +76,7 @@ fn main() -> anyhow::Result<()> {
     let client = RdpClient {
         config,
         event_loop_proxy,
+        rdp_output_sender,
         input_event_receiver,
         cliprdr_factory,
         dvc_pipe_proxy_factory,
@@ -81,7 +88,7 @@ fn main() -> anyhow::Result<()> {
     });
 
     debug!("Run App");
-    event_loop.run_app(&mut app)?;
+    event_loop.run_app(app)?;
     Ok(())
 }
 
