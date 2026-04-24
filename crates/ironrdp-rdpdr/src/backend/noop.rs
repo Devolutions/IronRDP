@@ -3,7 +3,7 @@ use ironrdp_pdu::PduResult;
 use ironrdp_svc::SvcMessage;
 
 use super::RdpdrBackend;
-use crate::pdu::efs::{DeviceControlRequest, ServerDeviceAnnounceResponse};
+use crate::pdu::efs::{DeviceControlRequest, PrinterIoRequest, ServerDeviceAnnounceResponse};
 use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 
 #[derive(Debug)]
@@ -19,6 +19,9 @@ impl RdpdrBackend for NoopRdpdrBackend {
         Ok(())
     }
     fn handle_drive_io_request(&mut self, _req: crate::pdu::efs::ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+    fn handle_printer_io_request(&mut self, _req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
         Ok(Vec::new())
     }
 }

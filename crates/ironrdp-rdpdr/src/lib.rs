@@ -9,7 +9,7 @@ use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProce
 use pdu::RdpdrPdu;
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest, ClientNameRequestUnicodeFlag,
-    CoreCapability, CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices,
+    CoreCapability, CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices, PrinterIoRequest,
     ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
@@ -80,6 +80,22 @@ impl Rdpdr {
                 self.device_list.add_drive(device_id, path);
             }
         }
+        self
+    }
+
+    /// Adds printer redirection capability and announces a single
+    /// virtual printer under `device_id` with the user-visible name
+    /// `print_name`.
+    ///
+    /// Uses `"Microsoft XPS Document Writer"` as the driver and marks
+    /// the device as the session's default printer — see
+    /// [`pdu::efs::Devices::add_printer`] for the rationale. IRPs
+    /// targeting this device are dispatched to
+    /// [`RdpdrBackend::handle_printer_io_request`].
+    #[must_use]
+    pub fn with_printer(mut self, device_id: u32, print_name: String) -> Self {
+        self.capabilities.add_printer();
+        self.device_list.add_printer(device_id, print_name);
         self
     }
 
@@ -171,6 +187,11 @@ impl Rdpdr {
                 debug!(?req);
 
                 Ok(self.backend.handle_drive_io_request(req)?)
+            }
+            DeviceType::Print => {
+                let req = PrinterIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                debug!(?req, "dispatching printer IRP to backend");
+                self.backend.handle_printer_io_request(req)
             }
             _ => {
                 // This should never happen, as we only announce devices that we support.

@@ -317,6 +317,10 @@ impl Capabilities {
         self.push(CapabilityMessage::new_drive());
     }
 
+    pub fn add_printer(&mut self) {
+        self.push(CapabilityMessage::new_printer());
+    }
+
     fn add_general(&mut self, special_type_device_cap: u32) {
         self.push(CapabilityMessage::new_general(special_type_device_cap));
     }
@@ -404,6 +408,16 @@ impl CapabilityMessage {
         }
     }
 
+    /// Creates a new [`PRINTER_CAPS_SET`].
+    ///
+    /// [`PRINTER_CAPS_SET`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/28d2d0f8-f7c8-4c8a-94c2-cdf04ff60b7a
+    pub fn new_printer() -> Self {
+        Self {
+            header: CapabilityHeader::new_printer(),
+            capability_data: CapabilityData::Printer,
+        }
+    }
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
@@ -462,6 +476,14 @@ impl CapabilityHeader {
         }
     }
 
+    fn new_printer() -> Self {
+        Self {
+            cap_type: CapabilityType::Printer,
+            length: u16::try_from(Self::SIZE).expect("value fits into u16"),
+            version: PRINTER_CAPABILITY_VERSION_01,
+        }
+    }
+
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::SIZE);
         let cap_type: CapabilityType = src.read_u16().try_into()?;
@@ -515,6 +537,24 @@ pub const GENERAL_CAPABILITY_VERSION_02: u32 = 0x0000_0002;
 pub const SMARTCARD_CAPABILITY_VERSION_01: u32 = 0x0000_0001;
 /// DRIVE_CAPABILITY_VERSION_02
 pub const DRIVE_CAPABILITY_VERSION_02: u32 = 0x0000_0002;
+/// PRINTER_CAPABILITY_VERSION_01
+///
+/// Windows hosts accept v1 and v2 here; v1 is the lowest-common-denominator
+/// and has no additional body, which is the usual choice for virtual printers.
+pub const PRINTER_CAPABILITY_VERSION_01: u32 = 0x0000_0001;
+
+/// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: ASCII encoding for names.
+///
+/// [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/2057a02f-57d5-47db-9a32-e337ac3f50e9
+pub const RDPDR_PRINTER_ANNOUNCE_FLAG_ASCII: u32 = 0x0000_0001;
+/// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: this printer is the default.
+pub const RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER: u32 = 0x0000_0002;
+/// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: the printer is a network printer.
+pub const RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER: u32 = 0x0000_0004;
+/// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: the printer is a Terminal Services printer.
+pub const RDPDR_PRINTER_ANNOUNCE_FLAG_TSPRINTER: u32 = 0x0000_0008;
+/// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: the server should expect XPS output.
+pub const RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT: u32 = 0x0000_0010;
 
 impl TryFrom<u16> for CapabilityType {
     type Error = DecodeError;
@@ -858,6 +898,18 @@ impl Devices {
         self.push(DeviceAnnounceHeader::new_drive(device_id, name));
     }
 
+    /// Announce a virtual printer device to the server.
+    ///
+    /// Uses sensible defaults for web-client / virtual-printer scenarios:
+    /// flagged as the session's default printer, empty PnP name (so the
+    /// server resolves the driver from `DriverName`), and
+    /// `"Microsoft XPS Document Writer"` as the driver — which ships with
+    /// every Windows ≥ 7 install. Callers who need a different driver
+    /// should drop down to [`DeviceAnnounceHeader::new_printer_with_driver`].
+    pub fn add_printer(&mut self, device_id: u32, print_name: String) {
+        self.push(DeviceAnnounceHeader::new_printer(device_id, print_name));
+    }
+
     pub fn remove_device(&mut self, device_id: u32) -> Option<u32> {
         self.remove(device_id)
     }
@@ -941,6 +993,109 @@ impl DeviceAnnounceHeader {
             //
             // Since we do support DRIVE_CAPABILITY_VERSION_02, we'll put the full name in the DeviceData field.
             preferred_dos_name: PreferredDosName("ignored".to_owned()),
+            device_data,
+        }
+    }
+
+    /// Construct a printer announce with sensible defaults — see
+    /// [`Devices::add_printer`] for the policy. Callers with custom
+    /// driver requirements should use
+    /// [`Self::new_printer_with_driver`].
+    pub fn new_printer(device_id: u32, print_name: String) -> Self {
+        Self::new_printer_with_driver(device_id, print_name, "Microsoft XPS Document Writer".to_owned())
+    }
+
+    /// Construct a printer announce with an explicit driver name.
+    ///
+    /// `driver_name` is used by the server to locate a print-driver
+    /// package; `"Microsoft XPS Document Writer"` is the safest default
+    /// (see [`Self::new_printer`]). Other commonly-shipping drivers
+    /// include `"Microsoft Print To PDF"` (Windows 10+) and
+    /// `"Generic / Text Only"` (Windows all versions).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the encoded UTF-16LE of any name field exceeds
+    /// `u32::MAX` bytes. Real printer names are well under 200 bytes,
+    /// so this is unreachable in practice.
+    pub fn new_printer_with_driver(device_id: u32, print_name: String, driver_name: String) -> Self {
+        // [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE device_data layout:
+        //   Flags            u32 LE
+        //   CodePage         u32 LE   (reserved; MUST be ignored)
+        //   PnPNameLen       u32 LE   (bytes, includes trailing UTF-16 NUL)
+        //   DriverNameLen    u32 LE   (bytes, includes trailing UTF-16 NUL)
+        //   PrintNameLen     u32 LE   (bytes, includes trailing UTF-16 NUL)
+        //   CachedFieldsLen  u32 LE
+        //   PnPName          UTF-16LE, NUL-terminated
+        //   DriverName       UTF-16LE, NUL-terminated
+        //   PrintName        UTF-16LE, NUL-terminated
+        //   CachedFields     opaque bytes
+        //
+        // An empty PnPName is represented as 1 UTF-16 unit (the NUL),
+        // so its length field reads 2, not 0 — some Windows hosts reject
+        // zero-length names outright.
+        //
+        // [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/2057a02f-57d5-47db-9a32-e337ac3f50e9
+
+        fn utf16le_with_nul(s: &str) -> Vec<u8> {
+            let mut out = Vec::with_capacity((s.len() + 1) * 2 /* 2 bytes per UTF-16 unit */);
+            for unit in s.encode_utf16() {
+                out.extend_from_slice(&unit.to_le_bytes());
+            }
+            out.extend_from_slice(&[0, 0] /* UTF-16 NUL terminator */);
+            out
+        }
+
+        let pnp_name_bytes = utf16le_with_nul("");
+        let driver_name_bytes = utf16le_with_nul(&driver_name);
+        let print_name_bytes = utf16le_with_nul(&print_name);
+
+        let flags: u32 = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER;
+        let code_page: u32 = 0;
+        let cached_fields_len: u32 = 0;
+
+        let mut device_data = Vec::with_capacity(
+            4 /* Flags */
+                + 4 /* CodePage */
+                + 4 /* PnPNameLen */
+                + 4 /* DriverNameLen */
+                + 4 /* PrintNameLen */
+                + 4 /* CachedFieldsLen */
+                + pnp_name_bytes.len()
+                + driver_name_bytes.len()
+                + print_name_bytes.len(),
+        );
+        device_data.extend_from_slice(&flags.to_le_bytes());
+        device_data.extend_from_slice(&code_page.to_le_bytes());
+        device_data.extend_from_slice(
+            &u32::try_from(pnp_name_bytes.len())
+                .expect("PnPName length fits in u32")
+                .to_le_bytes(),
+        );
+        device_data.extend_from_slice(
+            &u32::try_from(driver_name_bytes.len())
+                .expect("DriverName length fits in u32")
+                .to_le_bytes(),
+        );
+        device_data.extend_from_slice(
+            &u32::try_from(print_name_bytes.len())
+                .expect("PrintName length fits in u32")
+                .to_le_bytes(),
+        );
+        device_data.extend_from_slice(&cached_fields_len.to_le_bytes());
+        device_data.extend_from_slice(&pnp_name_bytes);
+        device_data.extend_from_slice(&driver_name_bytes);
+        device_data.extend_from_slice(&print_name_bytes);
+
+        Self {
+            device_type: DeviceType::Print,
+            device_id,
+            // Per spec: when DeviceDataLength is non-zero PreferredDosName
+            // is ignored, but it still needs a value that wouldn't trip
+            // the character validator (forbidden: < > " / \ |; colon only
+            // at end). "PRN1" is the conventional choice for the first
+            // redirected printer.
+            preferred_dos_name: PreferredDosName("PRN1".to_owned()),
             device_data,
         }
     }
@@ -1575,6 +1730,45 @@ impl From<ServerDriveLockControlRequest> for ServerDriveIoRequest {
     }
 }
 
+/// Printer-targeted IRP (subset of [MS-RDPEFS] 2.2.1.4 that virtual printers care about).
+///
+/// A printer device only ever sees open/write/close: the server opens a file
+/// handle against the virtual device (Create), streams print-job bytes into it
+/// (Write, possibly many times), and then closes the handle when the job is
+/// finished (Close). Every other [`MajorFunction`] reaches the printer path
+/// only in malformed or off-spec traffic and is surfaced as an [`Unsupported`]
+/// variant so backends can NAK with `STATUS_NOT_IMPLEMENTED` without being
+/// force-fed fields that don't exist on the wire.
+///
+/// [`Unsupported`]: PrinterIoRequest::Unsupported
+#[derive(Debug, PartialEq, Clone)]
+pub enum PrinterIoRequest {
+    /// Server opened the virtual printer; answer with a [`DeviceCreateResponse`]
+    /// that stamps a backend-assigned `file_id` and `FILE_OPENED`.
+    Create(DeviceCreateRequest),
+    /// Server pushed print-job bytes into the opened handle; answer with a
+    /// [`DeviceWriteResponse`] echoing the request length.
+    Write(DeviceWriteRequest),
+    /// Server finalized the print job; answer with a [`DeviceCloseResponse`]
+    /// and finalize whatever document buffer the backend accumulated.
+    Close(DeviceCloseRequest),
+    /// Any other major function. Backends should complete the IRP with
+    /// `STATUS_NOT_IMPLEMENTED`; printers don't legitimately see Read,
+    /// DirectoryControl, QueryInformation, etc.
+    Unsupported(DeviceIoRequest),
+}
+
+impl PrinterIoRequest {
+    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        match dev_io_req.major_function {
+            MajorFunction::Create => Ok(Self::Create(DeviceCreateRequest::decode(dev_io_req, src)?)),
+            MajorFunction::Write => Ok(Self::Write(DeviceWriteRequest::decode(dev_io_req, src)?)),
+            MajorFunction::Close => Ok(Self::Close(DeviceCloseRequest::decode(dev_io_req))),
+            _ => Ok(Self::Unsupported(dev_io_req)),
+        }
+    }
+}
+
 /// [2.2.3.3.1] Server Create Drive Request (DR_DRIVE_CREATE_REQ)
 /// and [2.2.1.4.1] Device Create Request (DR_CREATE_REQ)
 ///
@@ -1602,7 +1796,7 @@ impl DeviceCreateRequest {
                                  + 4  // CreateOptions
                                  + 4; // PathLength
 
-    fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(ctx: "DeviceCreateRequest", in: src, size: Self::FIXED_PART_SIZE);
         let desired_access = DesiredAccess::from_bits_retain(src.read_u32());
         let allocation_size = src.read_u64();
@@ -3521,5 +3715,140 @@ impl ServerDriveLockControlRequest {
         Ok(Self {
             device_io_request: dev_io_req,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capability_message_new_printer_has_expected_header() {
+        let msg = CapabilityMessage::new_printer();
+        assert_eq!(msg.header.cap_type, CapabilityType::Printer);
+        assert_eq!(msg.header.version, PRINTER_CAPABILITY_VERSION_01);
+        assert_eq!(usize::from(msg.header.length), CapabilityHeader::SIZE);
+        assert_eq!(msg.capability_data, CapabilityData::Printer);
+    }
+
+    #[test]
+    fn capabilities_add_printer_pushes_printer_set() {
+        let mut caps = Capabilities::new();
+        let before = caps.0.len();
+        caps.add_printer();
+        assert_eq!(caps.0.len(), before + 1);
+        let last = caps.0.last().expect("capability was pushed");
+        assert_eq!(last.header.cap_type, CapabilityType::Printer);
+    }
+
+    #[test]
+    fn capabilities_add_printer_does_not_touch_special_device_count() {
+        // Printer redirection is post-logon by default; only smart cards
+        // bump special_type_device_cap (pre-logon devices).
+        let mut caps = Capabilities::new();
+        caps.add_printer();
+        let general = caps.0.iter().find_map(|c| match c.capability_data {
+            CapabilityData::General(g) => Some(g),
+            _ => None,
+        });
+        assert_eq!(general.expect("general cap is always first").special_type_device_cap, 0);
+    }
+
+    #[test]
+    fn device_announce_header_new_printer_sets_fields_for_virtual_printer() {
+        let announce = DeviceAnnounceHeader::new_printer(7, "CloudPanel Printer".to_owned());
+        assert_eq!(announce.device_type, DeviceType::Print);
+        assert_eq!(announce.device_id, 7);
+        // DeviceData MUST be non-empty; PreferredDosName is ignored server-side.
+        assert!(!announce.device_data.is_empty());
+    }
+
+    #[test]
+    fn printer_announce_body_layout_matches_ms_rdpepc_2_2_2_3() {
+        let announce = DeviceAnnounceHeader::new_printer(42, "PrintMe".to_owned());
+        let body = &announce.device_data;
+
+        // Fixed 6 x u32 header.
+        assert!(
+            body.len() >= 24,
+            "device_data must carry the 24-byte fixed printer announce header"
+        );
+
+        let read_u32_as_usize = |slice: &[u8]| -> usize {
+            usize::try_from(u32::from_le_bytes(slice.try_into().unwrap()))
+                .expect("u32 fits in usize on supported targets")
+        };
+
+        let flags = u32::from_le_bytes(body[0..4].try_into().unwrap());
+        let code_page = u32::from_le_bytes(body[4..8].try_into().unwrap());
+        let pnp_name_len = read_u32_as_usize(&body[8..12]);
+        let driver_name_len = read_u32_as_usize(&body[12..16]);
+        let print_name_len = read_u32_as_usize(&body[16..20]);
+        let cached_fields_len = read_u32_as_usize(&body[20..24]);
+
+        assert_eq!(flags, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER);
+        assert_eq!(code_page, 0);
+        // Empty PnPName is still 1 UTF-16 unit (2 bytes) — the NUL terminator.
+        assert_eq!(pnp_name_len, 2);
+        assert_eq!(cached_fields_len, 0);
+
+        // The three name fields are UTF-16LE NUL-terminated; verify the
+        // offsets line up by slicing and decoding.
+        let mut offset = 24;
+        let pnp_bytes = &body[offset..offset + pnp_name_len];
+        offset += pnp_name_len;
+        let driver_bytes = &body[offset..offset + driver_name_len];
+        offset += driver_name_len;
+        let print_bytes = &body[offset..offset + print_name_len];
+        offset += print_name_len;
+
+        assert_eq!(offset, body.len(), "no trailing bytes beyond printed section");
+
+        fn utf16le_to_string(bytes: &[u8]) -> String {
+            assert_eq!(bytes.len() % 2, 0, "UTF-16LE buffers must be even length");
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .take_while(|&u| u != 0)
+                .collect();
+            String::from_utf16(&units).expect("round-trip utf-16le decode")
+        }
+
+        assert_eq!(utf16le_to_string(pnp_bytes), "");
+        assert_eq!(utf16le_to_string(driver_bytes), "Microsoft XPS Document Writer");
+        assert_eq!(utf16le_to_string(print_bytes), "PrintMe");
+    }
+
+    #[test]
+    fn printer_announce_respects_explicit_driver() {
+        let announce = DeviceAnnounceHeader::new_printer_with_driver(
+            1,
+            "PDF Printer".to_owned(),
+            "Microsoft Print To PDF".to_owned(),
+        );
+        let body = &announce.device_data;
+        let read_u32_as_usize = |slice: &[u8]| -> usize {
+            usize::try_from(u32::from_le_bytes(slice.try_into().unwrap()))
+                .expect("u32 fits in usize on supported targets")
+        };
+        let pnp_name_len = read_u32_as_usize(&body[8..12]);
+        let driver_name_len = read_u32_as_usize(&body[12..16]);
+        let driver_bytes = &body[24 + pnp_name_len..24 + pnp_name_len + driver_name_len];
+        let driver_units: Vec<u16> = driver_bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&u| u != 0)
+            .collect();
+        let driver = String::from_utf16(&driver_units).unwrap();
+        assert_eq!(driver, "Microsoft Print To PDF");
+    }
+
+    #[test]
+    fn devices_add_printer_appends_printer_entry() {
+        let mut devices = Devices::new();
+        assert!(devices.0.is_empty());
+        devices.add_printer(9, "Lobby Printer".to_owned());
+        assert_eq!(devices.0.len(), 1);
+        assert_eq!(devices.for_device_type(9).unwrap(), DeviceType::Print);
     }
 }
