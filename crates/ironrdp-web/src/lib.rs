@@ -21,6 +21,7 @@ mod error;
 mod image;
 mod input;
 mod network_client;
+mod printer;
 mod rdp_file;
 mod session;
 

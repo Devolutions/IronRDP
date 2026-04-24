@@ -26,6 +26,7 @@ use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp::rdpdr::Rdpdr;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, fast_path};
 use ironrdp_core::WriteBuf;
@@ -33,8 +34,7 @@ use ironrdp_futures::{FramedWrite, single_sequence_step_read};
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use tracing::{debug, error, info, trace, warn};
-use wasm_bindgen::JsCast as _;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
@@ -45,6 +45,7 @@ use crate::error::IronError;
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
+use crate::printer::{WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
@@ -76,6 +77,14 @@ struct SessionBuilderInner {
     lock_callback: Option<js_sys::Function>,
     unlock_callback: Option<js_sys::Function>,
     locks_expired_callback: Option<js_sys::Function>,
+
+    // Printer (RDPDR) — protocol-specific, routed through extension().
+    // Setting `print_job_complete_callback` activates the virtual printer
+    // device; `printer_name` and `printer_device_id` are optional and fall
+    // back to sensible defaults.
+    print_job_complete_callback: Option<js_sys::Function>,
+    printer_name: Option<String>,
+    printer_device_id: Option<u32>,
 
     use_display_control: bool,
     enable_credssp: bool,
@@ -110,6 +119,10 @@ impl Default for SessionBuilderInner {
             lock_callback: None,
             unlock_callback: None,
             locks_expired_callback: None,
+
+            print_job_complete_callback: None,
+            printer_name: None,
+            printer_device_id: None,
 
             use_display_control: false,
             enable_credssp: true,
@@ -260,6 +273,24 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |locks_expired_callback: JsValue| {
                 self.0.borrow_mut().locks_expired_callback = locks_expired_callback.dyn_into::<js_sys::Function>().ok();
             };
+            // Printer callbacks - protocol-specific, routed through extension()
+            // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
+            |print_job_complete_callback: JsValue| {
+                self.0.borrow_mut().print_job_complete_callback = print_job_complete_callback.dyn_into::<js_sys::Function>().ok();
+            };
+            |printer_name: String| {
+                self.0.borrow_mut().printer_name = if printer_name.is_empty() { None } else { Some(printer_name) };
+            };
+            |printer_device_id: f64| {
+                let id = if printer_device_id >= 0.0 && printer_device_id <= f64::from(u32::MAX) {
+                    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    { printer_device_id as u32 }
+                } else {
+                    warn!(printer_device_id, "Invalid printer_device_id; falling back to default");
+                    0
+                };
+                self.0.borrow_mut().printer_device_id = if id > 0 { Some(id) } else { None };
+            };
         }
 
         self.clone()
@@ -288,6 +319,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback,
             unlock_callback,
             locks_expired_callback,
+            print_job_complete_callback,
+            printer_name,
+            printer_device_id,
             outbound_message_size_limit,
         );
 
@@ -323,12 +357,15 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback = inner.lock_callback.clone();
             unlock_callback = inner.unlock_callback.clone();
             locks_expired_callback = inner.locks_expired_callback.clone();
+            print_job_complete_callback = inner.print_job_complete_callback.clone();
+            printer_name = inner.printer_name.clone();
+            printer_device_id = inner.printer_device_id;
             outbound_message_size_limit = inner.outbound_message_size_limit;
         }
 
         info!("Connect to RDP host");
 
-        let mut config = build_config(username, password, server_domain, client_name, desktop_size);
+        let mut config = build_config(username, password, server_domain, client_name.clone(), desktop_size);
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
@@ -350,6 +387,23 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 },
             )
         });
+
+        // Build the virtual-printer pair when a JS `on_job_complete` callback
+        // was registered via extension(). Backend is Send (holds the mpsc
+        // proxy only) and goes into the SVC processor below; the front-end
+        // `WasmPrinter` owns the JS callback and lives on `Session`.
+        let (printer_backend, printer) = match print_job_complete_callback {
+            Some(callback) => {
+                let (backend, printer) = wasm_printer_pair(input_events_tx.clone(), callback);
+                (Some(backend), Some(printer))
+            }
+            None => (None, None),
+        };
+
+        // Device id 1 is reserved for the drive device; default to 2 here to
+        // avoid a collision if drive redirection is ever enabled alongside.
+        let printer_device_id = printer_device_id.unwrap_or(2);
+        let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
 
         let ws = WebSocket::open(&proxy_address).context("couldn't open WebSocket")?;
 
@@ -387,6 +441,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             pcb,
             kdc_proxy_url,
             clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
+            printer_backend,
+            printer_device_id,
+            printer_name,
+            computer_name: client_name.clone(),
             use_display_control,
         })
         .await?;
@@ -413,6 +471,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             rdp_reader: RefCell::new(Some(rdp_reader)),
             connection_result: RefCell::new(Some(connection_result)),
             clipboard: RefCell::new(Some(clipboard)),
+            printer: RefCell::new(Some(printer)),
         })
     }
 }
@@ -423,6 +482,9 @@ pub(crate) type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]
 pub(crate) enum RdpInputEvent {
     Cliprdr(ClipboardMessage),
     ClipboardBackend(WasmClipboardBackendMessage),
+    /// Printer backend → event loop: a print job finished and its bytes are
+    /// ready for delivery to JS. See [`crate::printer::PrinterBackendMessage`].
+    Printer(crate::printer::PrinterBackendMessage),
     FastPath(FastPathInputEvents),
     Resize {
         width: u32,
@@ -458,6 +520,7 @@ pub(crate) struct Session {
     connection_result: RefCell<Option<connector::ConnectionResult>>,
     rdp_reader: RefCell<Option<ReadHalf<WebSocket>>>,
     clipboard: RefCell<Option<Option<WasmClipboard>>>,
+    printer: RefCell<Option<Option<WasmPrinter>>>,
 }
 
 impl Session {
@@ -526,6 +589,7 @@ impl iron_remote_desktop::Session for Session {
             .expect("run called only once");
 
         let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
+        let wasm_printer = self.printer.borrow_mut().take().expect("run called only once");
 
         let mut framed = ironrdp_futures::LocalFuturesFramed::new(rdp_reader);
 
@@ -720,6 +784,18 @@ impl iron_remote_desktop::Session for Session {
                                 Vec::new()
                             }
                         },
+                        RdpInputEvent::Printer(message) => {
+                            // The printer backend lives inside the Rdpdr SVC
+                            // processor (Send-only); the front-end
+                            // `WasmPrinter` owns the JS callback (!Send) and
+                            // lives here. Just forward the message.
+                            if let Some(ref wasm_printer) = wasm_printer {
+                                wasm_printer.process_message(message);
+                            } else {
+                                warn!("Printer event received, but no printer is configured");
+                            }
+                            Vec::new()
+                        }
                         RdpInputEvent::TerminateSession => {
                             active_stage.graceful_shutdown()
                                 .context("graceful shutdown")?
@@ -1342,6 +1418,12 @@ struct ConnectParams {
     pcb: Option<String>,
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
+    printer_backend: Option<WasmPrinterBackend>,
+    printer_device_id: u32,
+    printer_name: String,
+    /// Matches the `client_name` in the connector config; used as the
+    /// `computer_name` when constructing the `Rdpdr` processor.
+    computer_name: String,
     use_display_control: bool,
 }
 
@@ -1354,6 +1436,10 @@ async fn connect(
         pcb,
         kdc_proxy_url,
         clipboard_backend,
+        printer_backend,
+        printer_device_id,
+        printer_name,
+        computer_name,
         use_display_control,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
@@ -1366,6 +1452,12 @@ async fn connect(
 
     if let Some(clipboard_backend) = clipboard_backend {
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
+    }
+
+    if let Some(printer_backend) = printer_backend {
+        connector.attach_static_channel(
+            Rdpdr::new(Box::new(printer_backend), computer_name).with_printer(printer_device_id, printer_name),
+        );
     }
 
     if use_display_control {

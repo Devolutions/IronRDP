@@ -32,6 +32,7 @@ ironrdp = { path = "../ironrdp", features = [
     "graphics",
     "dvc",
     "cliprdr",
+    "rdpdr",
     "svc",
     "displaycontrol",
     "pdu",
@@ -39,9 +40,11 @@ ironrdp = { path = "../ironrdp", features = [
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-futures.path = "../ironrdp-futures"
+ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
+ironrdp-svc.path = "../ironrdp-svc"
 iron-remote-desktop.path = "../iron-remote-desktop"
 
 # WASM
