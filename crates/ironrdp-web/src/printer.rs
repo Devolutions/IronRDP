@@ -146,22 +146,24 @@ impl RdpdrBackend for WasmPrinterBackend {
                 let data_len =
                     u32::try_from(write.write_data.len()).expect("write length round-trips from u32 wire decode");
 
-                if let Some(buf) = self.open_files.get_mut(&file_id) {
+                let io_status = if let Some(buf) = self.open_files.get_mut(&file_id) {
                     buf.extend_from_slice(&write.write_data);
                     trace!(file_id, chunk = data_len, total = buf.len(), "IRP_MJ_WRITE: appended");
+                    NtStatus::SUCCESS
                 } else {
-                    warn!(file_id, "IRP_MJ_WRITE for unknown file_id; acknowledging anyway");
-                }
+                    warn!(file_id, "IRP_MJ_WRITE for unknown file_id; rejecting");
+                    NtStatus::UNSUCCESSFUL
+                };
 
                 let response = DeviceWriteResponse {
-                    device_io_reply: DeviceIoResponse::new(write.device_io_request, NtStatus::SUCCESS),
-                    length: data_len,
+                    device_io_reply: DeviceIoResponse::new(write.device_io_request, io_status),
+                    length: if io_status == NtStatus::SUCCESS { data_len } else { 0 },
                 };
                 Ok(vec![SvcMessage::from(RdpdrPdu::DeviceWriteResponse(response))])
             }
             PrinterIoRequest::Close(close) => {
                 let file_id = close.device_io_request.file_id;
-                if let Some(document_bytes) = self.open_files.remove(&file_id) {
+                let io_status = if let Some(document_bytes) = self.open_files.remove(&file_id) {
                     debug!(
                         file_id,
                         bytes = document_bytes.len(),
@@ -171,12 +173,14 @@ impl RdpdrBackend for WasmPrinterBackend {
                         file_id,
                         document_bytes,
                     });
+                    NtStatus::SUCCESS
                 } else {
                     warn!(file_id, "IRP_MJ_CLOSE for unknown file_id; no job to deliver");
-                }
+                    NtStatus::UNSUCCESSFUL
+                };
 
                 let response = DeviceCloseResponse {
-                    device_io_response: DeviceIoResponse::new(close.device_io_request, NtStatus::SUCCESS),
+                    device_io_response: DeviceIoResponse::new(close.device_io_request, io_status),
                 };
                 Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCloseResponse(response))])
             }

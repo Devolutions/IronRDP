@@ -27,6 +27,7 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::rdpdr::Rdpdr;
+use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, fast_path};
 use ironrdp_core::WriteBuf;
@@ -1455,6 +1456,10 @@ async fn connect(
     }
 
     if let Some(printer_backend) = printer_backend {
+        // Windows servers only speak on RDPDR when RDPSND is advertised too
+        // (MS-RDPEFS Appendix A<1>). We do not play audio in the web client,
+        // but the no-op RDPSND processor satisfies that channel dependency.
+        connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
         connector.attach_static_channel(
             Rdpdr::new(Box::new(printer_backend), computer_name).with_printer(printer_device_id, printer_name),
         );

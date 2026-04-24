@@ -69,6 +69,22 @@ impl RdpdrBackend for NixRdpdrBackend {
             }
         }
     }
+
+    fn handle_printer_io_request(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
+        let device_io_request = match req {
+            PrinterIoRequest::Create(req) => req.device_io_request,
+            PrinterIoRequest::Write(req) => req.device_io_request,
+            PrinterIoRequest::Close(req) => req.device_io_request,
+            PrinterIoRequest::Unsupported(req) => req,
+        };
+
+        warn!(?device_io_request, "Printer IRP reached drive-only backend");
+        Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCloseResponse(
+            DeviceCloseResponse {
+                device_io_response: DeviceIoResponse::new(device_io_request, NtStatus::NOT_IMPLEMENTED),
+            },
+        ))])
+    }
 }
 
 pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWriteRequest) -> PduResult<Vec<SvcMessage>> {

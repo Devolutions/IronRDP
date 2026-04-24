@@ -33,6 +33,7 @@ ironrdp = { path = "../ironrdp", features = [
     "dvc",
     "cliprdr",
     "rdpdr",
+    "rdpsnd",
     "svc",
     "displaycontrol",
     "pdu",
