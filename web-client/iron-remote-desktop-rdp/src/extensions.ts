@@ -45,6 +45,26 @@ export function locksExpiredCallback(cb: (clipDataIds: Uint32Array) => void): Ex
     return new Extension('locks_expired_callback', cb as unknown);
 }
 
+// Virtual printer (RDPDR) extensions
+//
+// Registering `printJobCompleteCallback` activates the browser-side virtual
+// printer device. The server-side print driver's XPS / PDF / PCL stream is
+// buffered per-handle and delivered as a single `Uint8Array` when the server
+// closes the file handle (IRP_MJ_CLOSE). `printerName` and `printerDeviceId`
+// are optional; sensible defaults are applied when omitted.
+
+export function printJobCompleteCallback(cb: (documentBytes: Uint8Array) => void): Extension {
+    return new Extension('print_job_complete_callback', cb as unknown);
+}
+
+export function printerName(name: string): Extension {
+    return new Extension('printer_name', name);
+}
+
+export function printerDeviceId(id: number): Extension {
+    return new Extension('printer_device_id', id);
+}
+
 // Runtime operation extensions (invoked via Session.invokeExtension())
 
 export function requestFileContents(params: {

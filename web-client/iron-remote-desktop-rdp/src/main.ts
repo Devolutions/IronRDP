@@ -72,4 +72,7 @@ export {
     requestFileContents,
     submitFileContents,
     initiateFileCopy,
+    printJobCompleteCallback,
+    printerName,
+    printerDeviceId,
 } from './extensions';
