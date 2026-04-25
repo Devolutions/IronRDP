@@ -106,8 +106,18 @@ impl WasmPrinterBackend {
 
 impl RdpdrBackend for WasmPrinterBackend {
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
-        // The printer is attached at connect time; all we do here is trace.
-        debug!(?pdu, "RDPDR device announce response (printer backend)");
+        // Surface server-side rejection at `warn!` so silent failures
+        // (where a redirected device never appears in the session) are
+        // visible at the default tracing level.
+        if pdu.result_code == NtStatus::SUCCESS {
+            debug!(device_id = pdu.device_id, "RDPDR device announce accepted by server");
+        } else {
+            warn!(
+                device_id = pdu.device_id,
+                result_code = ?pdu.result_code,
+                "RDPDR device announce rejected by server; redirected device will not appear in session"
+            );
+        }
         Ok(())
     }
 
@@ -185,7 +195,13 @@ impl RdpdrBackend for WasmPrinterBackend {
                 Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCloseResponse(response))])
             }
             PrinterIoRequest::Unsupported(req) => {
-                debug!(?req, "unsupported printer IRP; responding STATUS_NOT_IMPLEMENTED");
+                debug!(
+                    major = ?req.major_function,
+                    minor = ?req.minor_function,
+                    file_id = req.file_id,
+                    completion_id = req.completion_id,
+                    "Unsupported printer IRP; responding STATUS_NOT_IMPLEMENTED"
+                );
                 // `RdpdrPdu` has no bare `DeviceIoResponse` variant, so we
                 // reuse `DeviceCloseResponse` — its wire shape is
                 // `DeviceIoResponse` + 4 bytes of zero padding, which is

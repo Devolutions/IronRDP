@@ -2,7 +2,6 @@ use core::fmt::{self, Display};
 
 use ironrdp_core::{
     Decode, DecodeError, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
-    unsupported_value_err,
 };
 use ironrdp_svc::SvcEncode;
 
@@ -37,6 +36,15 @@ pub enum RdpdrPdu {
     ClientDriveSetInformationResponse(ClientDriveSetInformationResponse),
     UserLoggedon,
     EmptyResponse,
+    /// A PDU whose `PacketId` decodes successfully but for which we have no
+    /// first-class handler. The body bytes are left unread in the source
+    /// cursor; the processor is expected to log-and-drop.
+    ///
+    /// Used for the printer-cache family (`PAKID_PRN_CACHE_DATA`,
+    /// `PAKID_PRN_USING_XPS`) that Server 2025's spooler sends after a
+    /// printer announce. Returning a decode error here would tear down the
+    /// SVC session, so we tolerate the PDU instead.
+    Unhandled(PacketId),
 }
 
 impl RdpdrPdu {
@@ -104,6 +112,12 @@ impl RdpdrPdu {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreUserLoggedon,
             },
+            // Decode-only variant; echo the original `PacketId` so
+            // `header()` stays total and Debug round-trips cleanly.
+            RdpdrPdu::Unhandled(packet_id) => SharedHeader {
+                component: Component::RdpdrCtypCore,
+                packet_id: *packet_id,
+            },
         }
     }
 }
@@ -120,11 +134,9 @@ impl Decode<'_> for RdpdrPdu {
             )),
             PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
             PacketId::CoreUserLoggedon => Ok(RdpdrPdu::UserLoggedon),
-            _ => Err(unsupported_value_err!(
-                "RdpdrPdu",
-                "PacketId",
-                header.packet_id.to_string()
-            )),
+            // Tolerate any other valid `PacketId` so an unrecognised PDU
+            // doesn't tear down the SVC session; see [`RdpdrPdu::Unhandled`].
+            packet_id => Ok(RdpdrPdu::Unhandled(packet_id)),
         }
     }
 }
@@ -156,6 +168,8 @@ impl Encode for RdpdrPdu {
                 dst.write_u32(0);
                 Ok(())
             }
+            // Decode-only; no body to write back on the wire.
+            RdpdrPdu::Unhandled(_) => Ok(()),
         }
     }
 
@@ -179,6 +193,7 @@ impl Encode for RdpdrPdu {
             RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.name(),
             RdpdrPdu::UserLoggedon => "UserLoggedon",
             RdpdrPdu::EmptyResponse => "EmptyResponse",
+            RdpdrPdu::Unhandled(_) => "Unhandled",
         }
     }
 
@@ -203,6 +218,8 @@ impl Encode for RdpdrPdu {
                 RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.size(),
                 RdpdrPdu::UserLoggedon => 0,
                 RdpdrPdu::EmptyResponse => size_of::<u32>(),
+                // Unhandled carries no body on the wire (see encode impl).
+                RdpdrPdu::Unhandled(_) => 0,
             }
     }
 }
@@ -265,6 +282,9 @@ impl fmt::Debug for RdpdrPdu {
             }
             Self::EmptyResponse => {
                 write!(f, "RdpdrPdu(EmptyResponse)")
+            }
+            Self::Unhandled(packet_id) => {
+                write!(f, "RdpdrPdu(Unhandled({packet_id}))")
             }
         }
     }

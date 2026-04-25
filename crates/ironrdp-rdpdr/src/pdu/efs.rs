@@ -903,9 +903,11 @@ impl Devices {
     /// Uses sensible defaults for web-client / virtual-printer scenarios:
     /// flagged as the session's default printer, empty PnP name (so the
     /// server resolves the driver from `DriverName`), and
-    /// `"Microsoft XPS Document Writer"` as the driver — which ships with
-    /// every Windows ≥ 7 install. Callers who need a different driver
-    /// should drop down to [`DeviceAnnounceHeader::new_printer_with_driver`].
+    /// `"MS Publisher Imagesetter"` as the driver — a PostScript Level 2
+    /// driver that ships in every Windows server's core driver store.
+    /// See [`DeviceAnnounceHeader::new_printer`] for the rationale.
+    /// Callers needing a different driver should use
+    /// [`DeviceAnnounceHeader::new_printer_with_driver`].
     pub fn add_printer(&mut self, device_id: u32, print_name: String) {
         self.push(DeviceAnnounceHeader::new_printer(device_id, print_name));
     }
@@ -1002,16 +1004,32 @@ impl DeviceAnnounceHeader {
     /// driver requirements should use
     /// [`Self::new_printer_with_driver`].
     pub fn new_printer(device_id: u32, print_name: String) -> Self {
-        Self::new_printer_with_driver(device_id, print_name, "Microsoft XPS Document Writer".to_owned())
+        // `"MS Publisher Imagesetter"` is a PostScript Level 2 driver that
+        // ships in every Windows server's core driver store, so the announce
+        // resolves without needing `UseUniversalPrinterDriverFirst` or the
+        // XPS Services feature. Same approach Guacamole and Kasm take.
+        //
+        // Trade-off: the server's spooler emits PostScript (not XPS) for
+        // jobs on this queue, so consumers of
+        // [`RdpdrBackend::handle_printer_io_request`] need a PostScript→PDF
+        // pipeline (e.g. Ghostscript). Print bytes are passed through
+        // verbatim — IronRDP itself is format-agnostic.
+        Self::new_printer_with_driver(device_id, print_name, "MS Publisher Imagesetter".to_owned())
     }
 
     /// Construct a printer announce with an explicit driver name.
     ///
     /// `driver_name` is used by the server to locate a print-driver
-    /// package; `"Microsoft XPS Document Writer"` is the safest default
-    /// (see [`Self::new_printer`]). Other commonly-shipping drivers
-    /// include `"Microsoft Print To PDF"` (Windows 10+) and
-    /// `"Generic / Text Only"` (Windows all versions).
+    /// package. `"MS Publisher Imagesetter"` is the safest default
+    /// (see [`Self::new_printer`]). Other commonly-shipping drivers:
+    /// `"Microsoft XPS Document Writer"` (XPS; may need
+    /// `UseUniversalPrinterDriverFirst` to fall back to Easy Print when
+    /// the v3 variant isn't installed), `"Microsoft Print To PDF"`
+    /// (Windows 10+), and `"Generic / Text Only"` (all versions).
+    ///
+    /// Do not pass `"Remote Desktop Easy Print"` — it's a server-side-only
+    /// substitute driver and some Windows builds silently drop announces
+    /// that name it directly.
     ///
     /// # Panics
     ///
@@ -1050,6 +1068,14 @@ impl DeviceAnnounceHeader {
         let driver_name_bytes = utf16le_with_nul(&driver_name);
         let print_name_bytes = utf16le_with_nul(&print_name);
 
+        // [MS-RDPEPC 2.2.2.3] Flags. We set DEFAULTPRINTER (mark as the
+        // session's default) and intentionally leave the others off:
+        //  - XPSFORMAT (0x10): advertises *client* XPS-consumption support;
+        //    our driver is PostScript so this is irrelevant and could nudge
+        //    mixed-driver hosts toward the XPS path.
+        //  - TSPRINTER (0x08): "printer is from a previous terminal server
+        //    session" (i.e. nested-hop re-redirection). We're a first-hop
+        //    client, so setting it would be a lie.
         let flags: u32 = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER;
         let code_page: u32 = 0;
         let cached_fields_len: u32 = 0;

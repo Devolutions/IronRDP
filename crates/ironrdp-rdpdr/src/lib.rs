@@ -87,8 +87,9 @@ impl Rdpdr {
     /// virtual printer under `device_id` with the user-visible name
     /// `print_name`.
     ///
-    /// Uses `"Microsoft XPS Document Writer"` as the driver and marks
-    /// the device as the session's default printer — see
+    /// Uses `"MS Publisher Imagesetter"` (a universally-present
+    /// Windows PostScript driver) as the driver and marks the device
+    /// as the session's default printer — see
     /// [`pdu::efs::Devices::add_printer`] for the rationale. IRPs
     /// targeting this device are dispatched to
     /// [`RdpdrBackend::handle_printer_io_request`].
@@ -229,6 +230,12 @@ impl SvcProcessor for Rdpdr {
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => self.handle_server_device_announce_response(pdu),
             RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu, &mut src),
             RdpdrPdu::UserLoggedon => Ok(vec![]),
+            // Log-and-drop unrecognised PacketIds (e.g. PrnCacheData,
+            // PrnUsingXps); see [`RdpdrPdu::Unhandled`] for rationale.
+            RdpdrPdu::Unhandled(packet_id) => {
+                warn!(?packet_id, "Ignoring unhandled RDPDR PacketId");
+                Ok(vec![])
+            }
             // TODO: This can eventually become a `_ => {}` block, but being explicit for now
             // to make sure we don't miss handling new RdpdrPdu variants here during active development.
             RdpdrPdu::ClientNameRequest(_)
