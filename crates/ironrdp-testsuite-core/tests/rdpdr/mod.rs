@@ -1,9 +1,9 @@
 use ironrdp_core::encode_vec;
-use ironrdp_rdpdr::pdu::efs::{
-    Capabilities, ClientDeviceListAnnounce, CoreCapability, DeviceAnnounceHeader, DeviceType, Devices,
-    PRINTER_CAPABILITY_VERSION_01, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
-};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
+use ironrdp_rdpdr::pdu::efs::{
+    Capabilities, ClientDeviceListAnnounce, CoreCapability, DEFAULT_PRINTER_DRIVER_NAME, DeviceAnnounceHeader,
+    DeviceType, Devices, PRINTER_CAPABILITY_VERSION_01, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
+};
 
 fn read_u16(bytes: &[u8]) -> u16 {
     u16::from_le_bytes(bytes[..2].try_into().unwrap())
@@ -115,7 +115,7 @@ fn printer_announce_body_layout_matches_ms_rdpepc_2_2_2_1() {
 
     assert_eq!(offset, body.len());
     assert_eq!(utf16le_to_string(pnp_bytes), "");
-    assert_eq!(utf16le_to_string(driver_bytes), "Microsoft XPS Document Writer");
+    assert_eq!(utf16le_to_string(driver_bytes), DEFAULT_PRINTER_DRIVER_NAME);
     assert_eq!(utf16le_to_string(print_bytes), "PrintMe");
 }
 

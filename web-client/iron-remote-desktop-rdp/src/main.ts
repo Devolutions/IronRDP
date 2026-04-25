@@ -75,4 +75,5 @@ export {
     printJobCompleteCallback,
     printerName,
     printerDeviceId,
+    printerDriverName,
 } from './extensions';

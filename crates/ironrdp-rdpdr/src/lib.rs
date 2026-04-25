@@ -9,8 +9,8 @@ use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProce
 use pdu::RdpdrPdu;
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest, ClientNameRequestUnicodeFlag,
-    CoreCapability, CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices, PrinterIoRequest,
-    ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME, DeviceControlRequest, DeviceIoRequest, DeviceType,
+    Devices, PrinterIoRequest, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use tracing::{debug, trace, warn};
@@ -87,16 +87,26 @@ impl Rdpdr {
     /// virtual printer under `device_id` with the user-visible name
     /// `print_name`.
     ///
-    /// Uses `"MS Publisher Imagesetter"` (a universally-present
-    /// Windows PostScript driver) as the driver and marks the device
-    /// as the session's default printer — see
+    /// Uses [`DEFAULT_PRINTER_DRIVER_NAME`] as the PostScript driver and
+    /// marks the device as the session's default printer — see
     /// [`pdu::efs::Devices::add_printer`] for the rationale. IRPs
     /// targeting this device are dispatched to
     /// [`RdpdrBackend::handle_printer_io_request`].
     #[must_use]
-    pub fn with_printer(mut self, device_id: u32, print_name: String) -> Self {
+    pub fn with_printer(self, device_id: u32, print_name: String) -> Self {
+        self.with_printer_driver(device_id, print_name, DEFAULT_PRINTER_DRIVER_NAME.to_owned())
+    }
+
+    /// Adds printer redirection capability with an explicit server-side
+    /// printer driver name.
+    ///
+    /// Use this when the target host needs a driver other than
+    /// [`DEFAULT_PRINTER_DRIVER_NAME`] for the redirected printer queue.
+    #[must_use]
+    pub fn with_printer_driver(mut self, device_id: u32, print_name: String, driver_name: String) -> Self {
         self.capabilities.add_printer();
-        self.device_list.add_printer(device_id, print_name);
+        self.device_list
+            .add_printer_with_driver(device_id, print_name, driver_name);
         self
     }
 

@@ -36,13 +36,16 @@ use wasm_bindgen::prelude::*;
 
 use crate::session::RdpInputEvent;
 
+/// Maximum in-memory print job accepted by the browser backend.
+const MAX_PRINT_JOB_BYTES: usize = 128 * 1024 * 1024; // 128 MiB
+
 /// Messages sent from the printer backend to the session event loop.
 #[derive(Debug)]
 pub(crate) enum PrinterBackendMessage {
     /// A print job's file handle was closed by the server; the accumulated
-    /// bytes are the complete document (XPS, PDF, PCL — whatever the server
-    /// drove into the virtual printer). The event loop fires the registered
-    /// JS `on_job_complete` callback with these bytes.
+    /// bytes are the complete document produced by the announced server-side
+    /// driver. The default web path uses PostScript and expects the receiver
+    /// to convert it before presenting a browser print dialog.
     JobComplete {
         #[expect(dead_code, reason = "retained for diagnostics / future per-handle correlation")]
         file_id: u32,
@@ -156,14 +159,34 @@ impl RdpdrBackend for WasmPrinterBackend {
                 let data_len =
                     u32::try_from(write.write_data.len()).expect("write length round-trips from u32 wire decode");
 
-                let io_status = if let Some(buf) = self.open_files.get_mut(&file_id) {
-                    buf.extend_from_slice(&write.write_data);
-                    trace!(file_id, chunk = data_len, total = buf.len(), "IRP_MJ_WRITE: appended");
-                    NtStatus::SUCCESS
-                } else {
-                    warn!(file_id, "IRP_MJ_WRITE for unknown file_id; rejecting");
-                    NtStatus::UNSUCCESSFUL
+                let mut drop_partial_job = false;
+                let io_status = match self.open_files.get_mut(&file_id) {
+                    Some(buf) => {
+                        let projected_len = buf.len().checked_add(write.write_data.len());
+                        if projected_len.is_some_and(|len| len <= MAX_PRINT_JOB_BYTES) {
+                            buf.extend_from_slice(&write.write_data);
+                            trace!(file_id, chunk = data_len, total = buf.len(), "IRP_MJ_WRITE: appended");
+                            NtStatus::SUCCESS
+                        } else {
+                            warn!(
+                                file_id,
+                                chunk = data_len,
+                                current = buf.len(),
+                                limit = MAX_PRINT_JOB_BYTES,
+                                "IRP_MJ_WRITE exceeds print job size limit; rejecting and dropping partial job"
+                            );
+                            drop_partial_job = true;
+                            NtStatus::UNSUCCESSFUL
+                        }
+                    }
+                    None => {
+                        warn!(file_id, "IRP_MJ_WRITE for unknown file_id; rejecting");
+                        NtStatus::UNSUCCESSFUL
+                    }
                 };
+                if drop_partial_job {
+                    self.open_files.remove(&file_id);
+                }
 
                 let response = DeviceWriteResponse {
                     device_io_reply: DeviceIoResponse::new(write.device_io_request, io_status),

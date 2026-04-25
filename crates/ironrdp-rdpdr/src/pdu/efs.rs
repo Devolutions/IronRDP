@@ -556,6 +556,14 @@ pub const RDPDR_PRINTER_ANNOUNCE_FLAG_TSPRINTER: u32 = 0x0000_0008;
 /// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: the server should expect XPS output.
 pub const RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT: u32 = 0x0000_0010;
 
+/// Default server-side printer driver announced for PostScript virtual printers.
+///
+/// `MS Publisher Imagesetter` is the PostScript driver used by Guacamole-like
+/// RDP printer redirection flows. If a target host does not have this driver
+/// installed, callers can use the explicit-driver helpers to advertise a
+/// different server-side driver.
+pub const DEFAULT_PRINTER_DRIVER_NAME: &str = "MS Publisher Imagesetter";
+
 impl TryFrom<u16> for CapabilityType {
     type Error = DecodeError;
 
@@ -903,13 +911,21 @@ impl Devices {
     /// Uses sensible defaults for web-client / virtual-printer scenarios:
     /// flagged as the session's default printer, empty PnP name (so the
     /// server resolves the driver from `DriverName`), and
-    /// `"MS Publisher Imagesetter"` as the driver — a PostScript Level 2
-    /// driver that ships in every Windows server's core driver store.
+    /// [`DEFAULT_PRINTER_DRIVER_NAME`] as the PostScript driver.
     /// See [`DeviceAnnounceHeader::new_printer`] for the rationale.
     /// Callers needing a different driver should use
     /// [`DeviceAnnounceHeader::new_printer_with_driver`].
     pub fn add_printer(&mut self, device_id: u32, print_name: String) {
-        self.push(DeviceAnnounceHeader::new_printer(device_id, print_name));
+        self.add_printer_with_driver(device_id, print_name, DEFAULT_PRINTER_DRIVER_NAME.to_owned());
+    }
+
+    /// Announce a virtual printer device with an explicit server-side driver.
+    pub fn add_printer_with_driver(&mut self, device_id: u32, print_name: String, driver_name: String) {
+        self.push(DeviceAnnounceHeader::new_printer_with_driver(
+            device_id,
+            print_name,
+            driver_name,
+        ));
     }
 
     pub fn remove_device(&mut self, device_id: u32) -> Option<u32> {
@@ -1004,24 +1020,24 @@ impl DeviceAnnounceHeader {
     /// driver requirements should use
     /// [`Self::new_printer_with_driver`].
     pub fn new_printer(device_id: u32, print_name: String) -> Self {
-        // `"MS Publisher Imagesetter"` is a PostScript Level 2 driver that
-        // ships in every Windows server's core driver store, so the announce
+        // `MS Publisher Imagesetter` is the PostScript driver used by
+        // Guacamole-like RDP printer redirection flows, so the announce
         // resolves without needing `UseUniversalPrinterDriverFirst` or the
-        // XPS Services feature. Same approach Guacamole and Kasm take.
+        // XPS Services feature on hosts where that driver is installed.
         //
         // Trade-off: the server's spooler emits PostScript (not XPS) for
         // jobs on this queue, so consumers of
         // [`RdpdrBackend::handle_printer_io_request`] need a PostScript→PDF
         // pipeline (e.g. Ghostscript). Print bytes are passed through
         // verbatim — IronRDP itself is format-agnostic.
-        Self::new_printer_with_driver(device_id, print_name, "MS Publisher Imagesetter".to_owned())
+        Self::new_printer_with_driver(device_id, print_name, DEFAULT_PRINTER_DRIVER_NAME.to_owned())
     }
 
     /// Construct a printer announce with an explicit driver name.
     ///
     /// `driver_name` is used by the server to locate a print-driver
-    /// package. `"MS Publisher Imagesetter"` is the safest default
-    /// (see [`Self::new_printer`]). Other commonly-shipping drivers:
+    /// package. [`DEFAULT_PRINTER_DRIVER_NAME`] is the default used by
+    /// [`Self::new_printer`]. Other commonly-shipping drivers:
     /// `"Microsoft XPS Document Writer"` (XPS; may need
     /// `UseUniversalPrinterDriverFirst` to fall back to Easy Print when
     /// the v3 variant isn't installed), `"Microsoft Print To PDF"`
