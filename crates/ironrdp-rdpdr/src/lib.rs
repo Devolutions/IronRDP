@@ -9,8 +9,9 @@ use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProce
 use pdu::RdpdrPdu;
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest, ClientNameRequestUnicodeFlag,
-    CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME, DeviceControlRequest, DeviceIoRequest, DeviceType,
-    Devices, PrinterIoRequest, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME, DeviceAnnounceHeader, DeviceControlRequest,
+    DeviceIoRequest, DeviceType, Devices, PrinterIoRequest, ServerDeviceAnnounceResponse, VersionAndIdPdu,
+    VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use tracing::{debug, trace, warn};
@@ -42,6 +43,7 @@ pub struct Rdpdr {
     ///
     /// All devices not of the type [`DeviceType::Filesystem`] must be declared here.
     device_list: Devices,
+    post_logon_devices_announced: bool,
     backend: Box<dyn RdpdrBackend>,
 }
 
@@ -56,6 +58,7 @@ impl Rdpdr {
             computer_name,
             capabilities: Capabilities::new(),
             device_list: Devices::new(),
+            post_logon_devices_announced: false,
             backend,
         }
     }
@@ -149,15 +152,54 @@ impl Rdpdr {
     }
 
     fn handle_server_capability(&mut self, _req: CoreCapability) -> PduResult<Vec<SvcMessage>> {
-        let res = RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_inner()));
-        trace!("sending {:?}", res);
-        Ok(vec![SvcMessage::from(res)])
+        let client_capability_response =
+            RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_inner()));
+        trace!("sending {:?}", client_capability_response);
+        Ok(vec![SvcMessage::from(client_capability_response)])
     }
 
     fn handle_client_id_confirm(&mut self) -> PduResult<Vec<SvcMessage>> {
-        let res = RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
-            device_list: self.device_list.clone_inner(),
-        });
+        let device_list = self
+            .device_list
+            .clone_inner()
+            .into_iter()
+            .filter(Self::is_pre_logon_device)
+            .collect::<Vec<_>>();
+
+        if device_list.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Self::announce_devices(device_list)
+    }
+
+    fn handle_user_loggedon(&mut self) -> PduResult<Vec<SvcMessage>> {
+        if self.post_logon_devices_announced {
+            return Ok(Vec::new());
+        }
+
+        self.post_logon_devices_announced = true;
+
+        let device_list = self
+            .device_list
+            .clone_inner()
+            .into_iter()
+            .filter(|device| !Self::is_pre_logon_device(device))
+            .collect::<Vec<_>>();
+
+        if device_list.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Self::announce_devices(device_list)
+    }
+
+    fn is_pre_logon_device(device: &DeviceAnnounceHeader) -> bool {
+        matches!(device.device_type(), DeviceType::Smartcard)
+    }
+
+    fn announce_devices(device_list: Vec<DeviceAnnounceHeader>) -> PduResult<Vec<SvcMessage>> {
+        let res = RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce { device_list });
         trace!("sending {:?}", res);
         Ok(vec![SvcMessage::from(res)])
     }
@@ -239,7 +281,7 @@ impl SvcProcessor for Rdpdr {
             }
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => self.handle_server_device_announce_response(pdu),
             RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu, &mut src),
-            RdpdrPdu::UserLoggedon => Ok(vec![]),
+            RdpdrPdu::UserLoggedon => self.handle_user_loggedon(),
             // Log-and-drop unrecognised PacketIds (e.g. PrnCacheData,
             // PrnUsingXps); see [`RdpdrPdu::Unhandled`] for rationale.
             RdpdrPdu::Unhandled(packet_id) => {

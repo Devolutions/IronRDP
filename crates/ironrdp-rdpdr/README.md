@@ -13,6 +13,8 @@ This crate is part of the [IronRDP] project.
 `MS Publisher Imagesetter` as the default server-side driver. This matches the
 driver used by Guacamole-like RDP printer redirection flows and keeps the client
 format-agnostic: printer IRPs deliver the raw job bytes to the backend.
+Printer devices are advertised after the server sends `RDPDR_USER_LOGGEDON_PDU`;
+pre-logon announces remain reserved for special devices such as smart cards.
 
 Use `Rdpdr::with_printer_driver` when the target host needs a different
 installed printer driver. The selected driver controls the document format the

@@ -3,7 +3,10 @@ use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, CoreCapability, DEFAULT_PRINTER_DRIVER_NAME, DeviceAnnounceHeader,
     DeviceType, Devices, PRINTER_CAPABILITY_VERSION_01, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
+    RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER, VersionAndIdPdu, VersionAndIdPduKind,
 };
+use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr};
+use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
 fn read_u16(bytes: &[u8]) -> u16 {
     u16::from_le_bytes(bytes[..2].try_into().unwrap())
@@ -32,6 +35,44 @@ fn encoded_printer_announce(device: DeviceAnnounceHeader) -> Vec<u8> {
         device_list: vec![device],
     }))
     .unwrap()
+}
+
+fn encoded_server_client_id_confirm() -> Vec<u8> {
+    encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+        version_major: 1,
+        version_minor: 12,
+        client_id: 0x1234,
+        kind: VersionAndIdPduKind::ServerClientIdConfirm,
+    }))
+    .unwrap()
+}
+
+fn announced_devices(message: &SvcMessage) -> Vec<(u32, DeviceType)> {
+    let encoded = message.encode_unframed_pdu().unwrap();
+    assert_eq!(&encoded[..4], &[0x72, 0x44, 0x41, 0x44]); // RDPDR + DEVICELIST_ANNOUNCE
+
+    let mut offset = 4;
+    let device_count = read_u32_as_usize(&encoded[offset..]);
+    offset += 4;
+
+    let mut devices = Vec::with_capacity(device_count);
+    for _ in 0..device_count {
+        let device_type = DeviceType::try_from(read_u32(&encoded[offset..])).unwrap();
+        offset += 4;
+
+        let device_id = read_u32(&encoded[offset..]);
+        offset += 4;
+
+        offset += 8; // PreferredDosName
+
+        let device_data_length = read_u32_as_usize(&encoded[offset..]);
+        offset += 4 + device_data_length;
+
+        devices.push((device_id, device_type));
+    }
+
+    assert_eq!(offset, encoded.len());
+    devices
 }
 
 fn printer_device_data(encoded: &[u8]) -> &[u8] {
@@ -87,7 +128,7 @@ fn printer_capability_wire_layout() {
 }
 
 #[test]
-fn printer_announce_body_layout_matches_ms_rdpepc_2_2_2_1() {
+fn printer_announce_body_layout_matches_guacamole_postscript_defaults() {
     let encoded = encoded_printer_announce(DeviceAnnounceHeader::new_printer(42, "PrintMe".to_owned()));
     let body = printer_device_data(&encoded);
 
@@ -100,9 +141,12 @@ fn printer_announce_body_layout_matches_ms_rdpepc_2_2_2_1() {
     let print_name_len = read_u32_as_usize(&body[16..]);
     let cached_fields_len = read_u32_as_usize(&body[20..]);
 
-    assert_eq!(flags, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER);
+    assert_eq!(
+        flags,
+        RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER | RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER
+    );
     assert_eq!(code_page, 0);
-    assert_eq!(pnp_name_len, 2);
+    assert_eq!(pnp_name_len, 0);
     assert_eq!(cached_fields_len, 0);
 
     let mut offset = 24;
@@ -141,4 +185,40 @@ fn devices_add_printer_appends_printer_entry() {
     devices.add_printer(9, "Lobby Printer".to_owned());
 
     assert_eq!(devices.for_device_type(9).unwrap(), DeviceType::Print);
+}
+
+#[test]
+fn printer_device_announce_is_deferred_until_user_loggedon() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+
+    assert!(rdpdr.process(&encoded_server_client_id_confirm()).unwrap().is_empty());
+
+    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(responses.len(), 1);
+
+    assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Print)]);
+
+    assert!(
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn smartcard_device_announce_remains_pre_logon() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
+        .with_smartcard(1)
+        .with_printer(42, "PrintMe".to_owned());
+
+    let responses = rdpdr.process(&encoded_server_client_id_confirm()).unwrap();
+    assert_eq!(responses.len(), 1);
+
+    assert_eq!(announced_devices(&responses[0]), vec![(1, DeviceType::Smartcard)]);
+
+    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(responses.len(), 1);
+
+    assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Print)]);
 }

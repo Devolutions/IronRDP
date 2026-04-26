@@ -961,7 +961,7 @@ impl Devices {
         )
     }
 
-    pub fn clone_inner(&mut self) -> Vec<DeviceAnnounceHeader> {
+    pub fn clone_inner(&self) -> Vec<DeviceAnnounceHeader> {
         self.0.clone()
     }
 }
@@ -1065,9 +1065,9 @@ impl DeviceAnnounceHeader {
         //   PrintName        UTF-16LE, NUL-terminated
         //   CachedFields     opaque bytes
         //
-        // An empty PnPName is represented as 1 UTF-16 unit (the NUL),
-        // so its length field reads 2, not 0 — some Windows hosts reject
-        // zero-length names outright.
+        // Guacamole omits PnPName entirely for this PostScript path and lets
+        // the server resolve the queue from DriverName + PrintName. Matching
+        // that behavior avoids exercising server-side PnP-name edge cases.
         //
         // [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/2057a02f-57d5-47db-9a32-e337ac3f50e9
 
@@ -1080,19 +1080,20 @@ impl DeviceAnnounceHeader {
             out
         }
 
-        let pnp_name_bytes = utf16le_with_nul("");
+        let pnp_name_bytes = Vec::new();
         let driver_name_bytes = utf16le_with_nul(&driver_name);
         let print_name_bytes = utf16le_with_nul(&print_name);
 
-        // [MS-RDPEPC 2.2.2.3] Flags. We set DEFAULTPRINTER (mark as the
-        // session's default) and intentionally leave the others off:
+        // [MS-RDPEPC 2.2.2.3] Flags. We match Guacamole's PostScript
+        // redirection behavior: mark the queue as the session default and as
+        // a network printer. We intentionally leave the others off:
         //  - XPSFORMAT (0x10): advertises *client* XPS-consumption support;
         //    our driver is PostScript so this is irrelevant and could nudge
         //    mixed-driver hosts toward the XPS path.
         //  - TSPRINTER (0x08): "printer is from a previous terminal server
         //    session" (i.e. nested-hop re-redirection). We're a first-hop
         //    client, so setting it would be a lie.
-        let flags: u32 = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER;
+        let flags: u32 = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER | RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER;
         let code_page: u32 = 0;
         let cached_fields_len: u32 = 0;
 
@@ -1140,6 +1141,10 @@ impl DeviceAnnounceHeader {
             preferred_dos_name: PreferredDosName("PRN1".to_owned()),
             device_data,
         }
+    }
+
+    pub(crate) fn device_type(&self) -> DeviceType {
+        self.device_type
     }
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
