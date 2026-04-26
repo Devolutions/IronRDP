@@ -648,10 +648,15 @@ fn create_gcc_blocks<'a>(
 
     let max_color_depth = config.bitmap.as_ref().map(|bitmap| bitmap.color_depth).unwrap_or(32);
 
+    // Always advertise BPP16 alongside the requested depth so the server can
+    // negotiate down if it doesn't support the preferred depth. Without a
+    // fallback, modern Windows hosts (which dropped BPP24 RDP support) reset
+    // the connection rather than negotiate, leaving xrdp-friendly clients
+    // stuck choosing between "works on Windows" and "smooth on xrdp".
     let supported_color_depths = match max_color_depth {
         15 => SupportedColorDepths::BPP15,
         16 => SupportedColorDepths::BPP16,
-        24 => SupportedColorDepths::BPP24,
+        24 => SupportedColorDepths::BPP24 | SupportedColorDepths::BPP16,
         32 => SupportedColorDepths::BPP32 | SupportedColorDepths::BPP16,
         _ => {
             return Err(reason_err!(
