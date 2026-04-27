@@ -648,11 +648,12 @@ fn create_gcc_blocks<'a>(
 
     let max_color_depth = config.bitmap.as_ref().map(|bitmap| bitmap.color_depth).unwrap_or(32);
 
-    let supported_color_depths = match max_color_depth {
-        15 => SupportedColorDepths::BPP15,
-        16 => SupportedColorDepths::BPP16,
-        24 => SupportedColorDepths::BPP24,
-        32 => SupportedColorDepths::BPP32 | SupportedColorDepths::BPP16,
+    // Derive the preferred depth indicator. 32bpp has no highColorDepth value; it is
+    // expressed via WANT_32_BPP_SESSION in earlyCapabilityFlags instead.
+    let high_color_depth = match max_color_depth {
+        15 => HighColorDepth::Rgb555Bpp16,
+        16 => HighColorDepth::Rgb565Bpp16,
+        24 | 32 => HighColorDepth::Bpp24,
         _ => {
             return Err(reason_err!(
                 "create gcc blocks",
@@ -660,6 +661,14 @@ fn create_gcc_blocks<'a>(
             ));
         }
     };
+
+    // Advertise all colour depth capabilities unconditionally. The preferred depth is
+    // expressed via highColorDepth and WANT_32_BPP_SESSION, not by restricting this
+    // bitmask. This lets servers negotiate down without resetting the connection.
+    let supported_color_depths = SupportedColorDepths::BPP32
+        | SupportedColorDepths::BPP24
+        | SupportedColorDepths::BPP16
+        | SupportedColorDepths::BPP15;
 
     let channels = static_channels
         .map(ironrdp_svc::make_channel_definition)
@@ -683,7 +692,7 @@ fn create_gcc_blocks<'a>(
                 post_beta2_color_depth: Some(ColorDepth::Bpp8), // ignored because we set high_color_depth
                 client_product_id: Some(1),
                 serial_number: Some(0),
-                high_color_depth: Some(HighColorDepth::Bpp24),
+                high_color_depth: Some(high_color_depth),
                 supported_color_depths: Some(supported_color_depths),
                 early_capability_flags: {
                     let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
