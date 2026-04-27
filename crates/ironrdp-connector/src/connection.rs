@@ -652,9 +652,11 @@ fn create_gcc_blocks<'a>(
     // negotiate down if it doesn't support the preferred depth. Without a
     // fallback, modern Windows hosts (which dropped BPP24 RDP support) reset
     // the connection rather than negotiate, leaving xrdp-friendly clients
-    // stuck choosing between "works on Windows" and "smooth on xrdp".
+    // stuck choosing between "works on Windows" and "smooth on xrdp". BPP15
+    // gets the same treatment for consistency — historic clients targeting
+    // 15bpp shouldn't fail outright on a server that only does 16bpp.
     let supported_color_depths = match max_color_depth {
-        15 => SupportedColorDepths::BPP15,
+        15 => SupportedColorDepths::BPP15 | SupportedColorDepths::BPP16,
         16 => SupportedColorDepths::BPP16,
         24 => SupportedColorDepths::BPP24 | SupportedColorDepths::BPP16,
         32 => SupportedColorDepths::BPP32 | SupportedColorDepths::BPP16,
