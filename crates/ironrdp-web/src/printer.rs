@@ -4,16 +4,18 @@
 //!
 //! * [`WasmPrinterBackend`] lives on the SVC processor side and implements
 //!   [`ironrdp::rdpdr::backend::RdpdrBackend`]. It is `Send` (required by the
-//!   trait) and holds only per-handle byte buffers plus an mpsc proxy — no
+//!   trait) and holds only per-handle byte counts plus an mpsc proxy — no
 //!   JS callbacks.
 //! * [`WasmPrinter`] lives in the session event loop and owns the
-//!   `js_sys::Function` callbacks. Per-job completion messages flow from the
+//!   `js_sys::Function` callbacks. Per-job stream messages flow from the
 //!   backend to the event loop via [`PrinterBackendMessage`].
 //!
 //! The IRP completion responses (DR_CREATE_RSP / DR_WRITE_RSP / DR_CLOSE_RSP)
 //! are synthesised synchronously inside the backend — the RDP peer tracks
 //! outstanding IRPs by `completion_id`, so completions just need to get
-//! queued onto the SVC out-stream; they don't need JS roundtrips. Each
+//! queued onto the SVC out-stream; they don't need JS roundtrips. Print data
+//! is streamed to the event loop as writes arrive, so completed jobs are not
+//! buffered inside the RDPDR backend. Each
 //! response is wrapped in its matching [`RdpdrPdu`] variant so the
 //! [`SvcMessage`] layer prepends the correct RDPDR `SharedHeader`
 //! (`RDPDR_CTYP_CORE` + `PAKID_CORE_DEVICE_IOCOMPLETION`) automatically.
@@ -42,75 +44,90 @@ use crate::session::RdpInputEvent;
 
 /// Maximum in-memory print job accepted by the browser backend.
 const MAX_PRINT_JOB_BYTES: usize = 128 * 1024 * 1024; // 128 MiB
-/// Maximum completed print-job bytes allowed to wait in the event queue.
-const MAX_QUEUED_PRINT_JOB_BYTES: usize = MAX_PRINT_JOB_BYTES;
+/// Maximum pending print data bytes allowed to wait in the event queue.
+const MAX_QUEUED_PRINT_DATA_BYTES: usize = MAX_PRINT_JOB_BYTES;
 
 /// Messages sent from the printer backend to the session event loop.
 #[derive(Debug)]
 pub(crate) enum PrinterBackendMessage {
-    /// A print job's file handle was closed by the server; the accumulated
-    /// bytes are the complete document produced by the announced server-side
-    /// driver. The default web path uses PostScript and expects the receiver
-    /// to convert it before presenting a browser print dialog.
-    JobComplete {
+    /// A server-created printer file handle started a new print job.
+    Created { file_id: u32 },
+    /// A print job data chunk produced by the announced server-side driver.
+    Data {
         file_id: u32,
         document_bytes: Vec<u8>,
-        _queued_bytes: QueuedPrintJobBytes,
+        _queued_bytes: QueuedPrintDataBytes,
     },
+    /// The server closed the print job file handle.
+    Completed { file_id: u32 },
+    /// The backend rejected or dropped the job before completion.
+    Aborted { file_id: u32 },
 }
 
-pub(crate) struct QueuedPrintJobBytes {
+pub(crate) struct QueuedPrintDataBytes {
     len: usize,
     queued_bytes: Arc<AtomicUsize>,
 }
 
-impl Drop for QueuedPrintJobBytes {
+impl Drop for QueuedPrintDataBytes {
     fn drop(&mut self) {
         self.queued_bytes.fetch_sub(self.len, Ordering::AcqRel);
     }
 }
 
-impl fmt::Debug for QueuedPrintJobBytes {
+impl fmt::Debug for QueuedPrintDataBytes {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("QueuedPrintJobBytes")
+        f.debug_struct("QueuedPrintDataBytes")
             .field("len", &self.len)
             .finish_non_exhaustive()
     }
 }
 
-/// mpsc proxy used by the backend to hand completed jobs to the event loop.
+/// mpsc proxy used by the backend to stream print jobs to the event loop.
 #[derive(Debug, Clone)]
 pub(crate) struct WasmPrinterMessageProxy {
     tx: mpsc::UnboundedSender<RdpInputEvent>,
-    queued_job_bytes: Arc<AtomicUsize>,
-    queued_job_bytes_limit: usize,
+    queued_data_bytes: Arc<AtomicUsize>,
+    queued_data_bytes_limit: usize,
 }
 
 impl WasmPrinterMessageProxy {
     pub(crate) fn new(tx: mpsc::UnboundedSender<RdpInputEvent>) -> Self {
-        Self::new_with_limit(tx, MAX_QUEUED_PRINT_JOB_BYTES)
+        Self::new_with_limit(tx, MAX_QUEUED_PRINT_DATA_BYTES)
     }
 
-    fn send_job_complete(&self, file_id: u32, document_bytes: Vec<u8>) -> bool {
+    fn send_job_created(&self, file_id: u32) -> bool {
+        self.send_message(PrinterBackendMessage::Created { file_id })
+    }
+
+    fn send_job_data(&self, file_id: u32, document_bytes: Vec<u8>) -> bool {
         let Some(queued_bytes) = self.reserve_queue_capacity(document_bytes.len()) else {
             warn!(
                 file_id,
                 bytes = document_bytes.len(),
-                limit = self.queued_job_bytes_limit,
-                "Completed print job exceeds queued print job byte budget"
+                limit = self.queued_data_bytes_limit,
+                "Print job data exceeds queued print data byte budget"
             );
             return false;
         };
 
-        if self
-            .tx
-            .unbounded_send(RdpInputEvent::Printer(PrinterBackendMessage::JobComplete {
-                file_id,
-                document_bytes,
-                _queued_bytes: queued_bytes,
-            }))
-            .is_err()
-        {
+        self.send_message(PrinterBackendMessage::Data {
+            file_id,
+            document_bytes,
+            _queued_bytes: queued_bytes,
+        })
+    }
+
+    fn send_job_completed(&self, file_id: u32) -> bool {
+        self.send_message(PrinterBackendMessage::Completed { file_id })
+    }
+
+    fn send_job_aborted(&self, file_id: u32) {
+        let _ = self.send_message(PrinterBackendMessage::Aborted { file_id });
+    }
+
+    fn send_message(&self, message: PrinterBackendMessage) -> bool {
+        if self.tx.unbounded_send(RdpInputEvent::Printer(message)).is_err() {
             error!("Failed to queue printer backend message, event loop receiver is closed");
             return false;
         }
@@ -118,22 +135,22 @@ impl WasmPrinterMessageProxy {
         true
     }
 
-    fn reserve_queue_capacity(&self, len: usize) -> Option<QueuedPrintJobBytes> {
-        let mut queued = self.queued_job_bytes.load(Ordering::Acquire);
+    fn reserve_queue_capacity(&self, len: usize) -> Option<QueuedPrintDataBytes> {
+        let mut queued = self.queued_data_bytes.load(Ordering::Acquire);
         loop {
             let next = queued.checked_add(len)?;
-            if next > self.queued_job_bytes_limit {
+            if next > self.queued_data_bytes_limit {
                 return None;
             }
 
             match self
-                .queued_job_bytes
+                .queued_data_bytes
                 .compare_exchange_weak(queued, next, Ordering::AcqRel, Ordering::Acquire)
             {
                 Ok(_) => {
-                    return Some(QueuedPrintJobBytes {
+                    return Some(QueuedPrintDataBytes {
                         len,
-                        queued_bytes: Arc::clone(&self.queued_job_bytes),
+                        queued_bytes: Arc::clone(&self.queued_data_bytes),
                     });
                 }
                 Err(actual) => queued = actual,
@@ -141,23 +158,27 @@ impl WasmPrinterMessageProxy {
         }
     }
 
-    fn new_with_limit(tx: mpsc::UnboundedSender<RdpInputEvent>, queued_job_bytes_limit: usize) -> Self {
+    fn new_with_limit(tx: mpsc::UnboundedSender<RdpInputEvent>, queued_data_bytes_limit: usize) -> Self {
         Self {
             tx,
-            queued_job_bytes: Arc::new(AtomicUsize::new(0)),
-            queued_job_bytes_limit,
+            queued_data_bytes: Arc::new(AtomicUsize::new(0)),
+            queued_data_bytes_limit,
         }
     }
 }
 
-/// RDPDR backend that buffers a server-initiated print job in memory and
-/// hands the finished document off to the session event loop on
-/// `IRP_MJ_CLOSE`.
+#[derive(Debug)]
+struct OpenPrintJob {
+    bytes_written: usize,
+}
+
+/// RDPDR backend that streams a server-initiated print job to the session
+/// event loop as write IRPs arrive.
 #[derive(Debug)]
 pub(crate) struct WasmPrinterBackend {
-    /// Per-file-handle document byte buffer. Populated on `IRP_MJ_CREATE`,
-    /// appended by `IRP_MJ_WRITE`, drained on `IRP_MJ_CLOSE`.
-    open_files: HashMap<u32, Vec<u8>>,
+    /// Per-file-handle document byte counts. Populated on `IRP_MJ_CREATE`,
+    /// updated by `IRP_MJ_WRITE`, drained on `IRP_MJ_CLOSE`.
+    open_files: HashMap<u32, OpenPrintJob>,
     /// Monotonic file id counter. The server doesn't care what we stamp
     /// into `DR_CREATE_RSP::FileId` as long as it's unique per open handle
     /// and we echo it back on subsequent Write/Close IRPs.
@@ -223,40 +244,70 @@ impl RdpdrBackend for WasmPrinterBackend {
         match req {
             PrinterIoRequest::Create(create) => {
                 let file_id = self.allocate_file_id();
-                self.open_files.insert(file_id, Vec::new());
-                trace!(file_id, path = %create.path, "IRP_MJ_CREATE: opened print handle");
+                let io_status = if self.proxy.send_job_created(file_id) {
+                    self.open_files.insert(file_id, OpenPrintJob { bytes_written: 0 });
+                    trace!(file_id, path = %create.path, "IRP_MJ_CREATE: opened print handle");
+                    NtStatus::SUCCESS
+                } else {
+                    NtStatus::UNSUCCESSFUL
+                };
 
                 let response = DeviceCreateResponse {
-                    device_io_reply: DeviceIoResponse::new(create.device_io_request, NtStatus::SUCCESS),
+                    device_io_reply: DeviceIoResponse::new(create.device_io_request, io_status),
                     file_id,
                     // A virtual printer is conceptually opened fresh every time;
                     // the bridge's former implementation used FILE_OPENED and
                     // Windows' own redirector accepts either value.
-                    information: Information::FILE_OPENED,
+                    information: if io_status == NtStatus::SUCCESS {
+                        Information::FILE_OPENED
+                    } else {
+                        Information::empty()
+                    },
                 };
                 Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(response))])
             }
             PrinterIoRequest::Write(write) => {
                 let file_id = write.device_io_request.file_id;
+                let device_io_request = write.device_io_request;
+                let write_data = write.write_data;
                 // INVARIANT: write.write_data was decoded via a u32-length-prefixed
                 // wire field (MS-RDPEFS 2.2.1.4.4 DR_WRITE_REQ Length), so its
                 // in-memory Vec length always round-trips back to a u32.
-                let data_len =
-                    u32::try_from(write.write_data.len()).expect("write length round-trips from u32 wire decode");
+                let data_len = u32::try_from(write_data.len()).expect("write length round-trips from u32 wire decode");
 
                 let mut drop_partial_job = false;
                 let io_status = match self.open_files.get_mut(&file_id) {
-                    Some(buf) => {
-                        let projected_len = buf.len().checked_add(write.write_data.len());
-                        if projected_len.is_some_and(|len| len <= self.max_print_job_bytes) {
-                            buf.extend_from_slice(&write.write_data);
-                            trace!(file_id, chunk = data_len, total = buf.len(), "IRP_MJ_WRITE: appended");
-                            NtStatus::SUCCESS
+                    Some(job) => {
+                        if let Some(projected_len) = job
+                            .bytes_written
+                            .checked_add(write_data.len())
+                            .filter(|len| *len <= self.max_print_job_bytes)
+                        {
+                            if self.proxy.send_job_data(file_id, write_data) {
+                                job.bytes_written = projected_len;
+                                trace!(
+                                    file_id,
+                                    chunk = data_len,
+                                    total = job.bytes_written,
+                                    "IRP_MJ_WRITE: streamed"
+                                );
+                                NtStatus::SUCCESS
+                            } else {
+                                warn!(
+                                    file_id,
+                                    chunk = data_len,
+                                    current = job.bytes_written,
+                                    limit = self.max_print_job_bytes,
+                                    "IRP_MJ_WRITE could not be queued; rejecting and dropping partial job"
+                                );
+                                drop_partial_job = true;
+                                NtStatus::UNSUCCESSFUL
+                            }
                         } else {
                             warn!(
                                 file_id,
                                 chunk = data_len,
-                                current = buf.len(),
+                                current = job.bytes_written,
                                 limit = self.max_print_job_bytes,
                                 "IRP_MJ_WRITE exceeds print job size limit; rejecting and dropping partial job"
                             );
@@ -271,23 +322,24 @@ impl RdpdrBackend for WasmPrinterBackend {
                 };
                 if drop_partial_job {
                     self.open_files.remove(&file_id);
+                    self.proxy.send_job_aborted(file_id);
                 }
 
                 let response = DeviceWriteResponse {
-                    device_io_reply: DeviceIoResponse::new(write.device_io_request, io_status),
+                    device_io_reply: DeviceIoResponse::new(device_io_request, io_status),
                     length: if io_status == NtStatus::SUCCESS { data_len } else { 0 },
                 };
                 Ok(vec![SvcMessage::from(RdpdrPdu::DeviceWriteResponse(response))])
             }
             PrinterIoRequest::Close(close) => {
                 let file_id = close.device_io_request.file_id;
-                let io_status = if let Some(document_bytes) = self.open_files.remove(&file_id) {
+                let io_status = if let Some(job) = self.open_files.remove(&file_id) {
                     debug!(
                         file_id,
-                        bytes = document_bytes.len(),
-                        "IRP_MJ_CLOSE: handing job to event loop"
+                        bytes = job.bytes_written,
+                        "IRP_MJ_CLOSE: completing streamed print job"
                     );
-                    if self.proxy.send_job_complete(file_id, document_bytes) {
+                    if self.proxy.send_job_completed(file_id) {
                         NtStatus::SUCCESS
                     } else {
                         NtStatus::UNSUCCESSFUL
@@ -312,39 +364,65 @@ impl RdpdrBackend for WasmPrinterBackend {
 /// [`PrinterBackendMessage`] into [`WasmPrinter::process_message`].
 #[derive(Debug)]
 pub(crate) struct WasmPrinter {
-    callbacks: JsPrinterCallbacks,
+    callbacks: JsPrinterStreamCallbacks,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct JsPrinterCallbacks {
-    /// `function(document_bytes: Uint8Array): void`
+pub(crate) struct JsPrinterStreamCallbacks {
+    /// Optional `function(fileId: number): void`.
+    pub(crate) on_job_start: Option<js_sys::Function>,
+    /// Required `function(fileId: number, chunk: Uint8Array): void`.
+    pub(crate) on_job_data: js_sys::Function,
+    /// Required `function(fileId: number): void`.
     pub(crate) on_job_complete: js_sys::Function,
+    /// Optional `function(fileId: number): void`.
+    pub(crate) on_job_error: Option<js_sys::Function>,
 }
 
 impl WasmPrinter {
-    pub(crate) fn new(callbacks: JsPrinterCallbacks) -> Self {
+    pub(crate) fn new(callbacks: JsPrinterStreamCallbacks) -> Self {
         Self { callbacks }
     }
 
     pub(crate) fn process_message(&self, message: PrinterBackendMessage) {
+        let this = JsValue::NULL;
         match message {
-            PrinterBackendMessage::JobComplete {
+            PrinterBackendMessage::Created { file_id } => {
+                if let Some(on_job_start) = &self.callbacks.on_job_start {
+                    let file_id = JsValue::from(file_id);
+                    if let Err(err) = on_job_start.call1(&this, &file_id) {
+                        error!(?err, "on_job_start JS callback threw");
+                    }
+                }
+            }
+            PrinterBackendMessage::Data {
                 file_id,
                 document_bytes,
                 _queued_bytes: _,
             } => {
-                // Hand the bytes to JS as a Uint8Array. The conversion copies
-                // the Rust buffer, so peak memory can temporarily include both
-                // the Rust buffer and the JS array for one job.
                 trace!(
                     file_id,
                     bytes = document_bytes.len(),
-                    "Delivering print job to JS callback"
+                    "Delivering print data chunk to JS callback"
                 );
+                let file_id = JsValue::from(file_id);
                 let array = js_sys::Uint8Array::from(document_bytes.as_slice());
-                let this = JsValue::NULL;
-                if let Err(err) = self.callbacks.on_job_complete.call1(&this, &array) {
+                if let Err(err) = self.callbacks.on_job_data.call2(&this, &file_id, &array) {
+                    error!(?err, "on_job_data JS callback threw");
+                }
+            }
+            PrinterBackendMessage::Completed { file_id } => {
+                let file_id = JsValue::from(file_id);
+                if let Err(err) = self.callbacks.on_job_complete.call1(&this, &file_id) {
                     error!(?err, "on_job_complete JS callback threw");
+                }
+            }
+            PrinterBackendMessage::Aborted { file_id } => {
+                if let Some(on_job_error) = &self.callbacks.on_job_error {
+                    let file_id = JsValue::from(file_id);
+                    if let Err(err) = on_job_error.call1(&this, &file_id) {
+                        error!(?err, "on_job_error JS callback threw");
+                    }
                 }
             }
         }
@@ -355,11 +433,11 @@ impl WasmPrinter {
 /// matched (backend, event-loop) pair from a single mpsc channel.
 pub(crate) fn wasm_printer_pair(
     input_events_tx: mpsc::UnboundedSender<RdpInputEvent>,
-    on_job_complete: js_sys::Function,
+    callbacks: JsPrinterStreamCallbacks,
 ) -> (WasmPrinterBackend, WasmPrinter) {
     let proxy = WasmPrinterMessageProxy::new(input_events_tx);
     let backend = WasmPrinterBackend::new(proxy);
-    let printer = WasmPrinter::new(JsPrinterCallbacks { on_job_complete });
+    let printer = WasmPrinter::new(callbacks);
     (backend, printer)
 }
 
@@ -374,7 +452,7 @@ mod tests {
     const DEVICE_ID: u32 = 42;
 
     fn printer_backend() -> (WasmPrinterBackend, mpsc::UnboundedReceiver<RdpInputEvent>) {
-        printer_backend_with_limits(MAX_PRINT_JOB_BYTES, MAX_QUEUED_PRINT_JOB_BYTES)
+        printer_backend_with_limits(MAX_PRINT_JOB_BYTES, MAX_QUEUED_PRINT_DATA_BYTES)
     }
 
     fn printer_backend_with_limits(
@@ -436,8 +514,49 @@ mod tests {
         NtStatus::from(read_u32(&encoded[12..]))
     }
 
+    fn expect_job_created(rx: &mut mpsc::UnboundedReceiver<RdpInputEvent>, expected_file_id: u32) {
+        match rx.try_recv().unwrap() {
+            RdpInputEvent::Printer(PrinterBackendMessage::Created { file_id }) => {
+                assert_eq!(file_id, expected_file_id);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    fn expect_job_data(rx: &mut mpsc::UnboundedReceiver<RdpInputEvent>, expected_file_id: u32, expected_data: &[u8]) {
+        match rx.try_recv().unwrap() {
+            RdpInputEvent::Printer(PrinterBackendMessage::Data {
+                file_id,
+                document_bytes,
+                _queued_bytes: _,
+            }) => {
+                assert_eq!(file_id, expected_file_id);
+                assert_eq!(document_bytes, expected_data);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    fn expect_job_completed(rx: &mut mpsc::UnboundedReceiver<RdpInputEvent>, expected_file_id: u32) {
+        match rx.try_recv().unwrap() {
+            RdpInputEvent::Printer(PrinterBackendMessage::Completed { file_id }) => {
+                assert_eq!(file_id, expected_file_id);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    fn expect_job_aborted(rx: &mut mpsc::UnboundedReceiver<RdpInputEvent>, expected_file_id: u32) {
+        match rx.try_recv().unwrap() {
+            RdpInputEvent::Printer(PrinterBackendMessage::Aborted { file_id }) => {
+                assert_eq!(file_id, expected_file_id);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
     #[test]
-    fn create_write_close_delivers_completed_print_job() {
+    fn create_write_close_streams_print_job_events() {
         let (mut backend, mut rx) = printer_backend();
 
         let create_response = response_bytes(
@@ -447,6 +566,7 @@ mod tests {
         );
         assert_eq!(response_status(&create_response), NtStatus::SUCCESS);
         let file_id = read_u32(&create_response[16..]);
+        expect_job_created(&mut rx, file_id);
 
         let write_response = response_bytes(
             backend
@@ -455,6 +575,7 @@ mod tests {
         );
         assert_eq!(response_status(&write_response), NtStatus::SUCCESS);
         assert_eq!(read_u32(&write_response[16..]), 5);
+        expect_job_data(&mut rx, file_id, b"hello");
 
         let close_response = response_bytes(
             backend
@@ -462,18 +583,8 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(response_status(&close_response), NtStatus::SUCCESS);
-
-        match rx.try_recv().unwrap() {
-            RdpInputEvent::Printer(PrinterBackendMessage::JobComplete {
-                file_id: delivered_file_id,
-                document_bytes,
-                _queued_bytes: _,
-            }) => {
-                assert_eq!(delivered_file_id, file_id);
-                assert_eq!(document_bytes, b"hello");
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
+        expect_job_completed(&mut rx, file_id);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -492,7 +603,7 @@ mod tests {
 
     #[test]
     fn oversized_write_rejects_and_drops_partial_job() {
-        let (mut backend, _rx) = printer_backend_with_limits(4, MAX_QUEUED_PRINT_JOB_BYTES);
+        let (mut backend, mut rx) = printer_backend_with_limits(4, MAX_QUEUED_PRINT_DATA_BYTES);
 
         let create_response = response_bytes(
             backend
@@ -500,6 +611,7 @@ mod tests {
                 .unwrap(),
         );
         let file_id = read_u32(&create_response[16..]);
+        expect_job_created(&mut rx, file_id);
 
         let write_response = response_bytes(
             backend
@@ -512,6 +624,7 @@ mod tests {
         );
         assert_eq!(response_status(&write_response), NtStatus::UNSUCCESSFUL);
         assert_eq!(read_u32(&write_response[16..]), 0);
+        expect_job_aborted(&mut rx, file_id);
 
         let close_response = response_bytes(
             backend
@@ -522,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_job_queue_budget_rejects_second_pending_job() {
+    fn queued_print_data_budget_rejects_second_pending_chunk() {
         let (mut backend, mut rx) = printer_backend_with_limits(MAX_PRINT_JOB_BYTES, 4);
 
         let first_create = response_bytes(
@@ -531,6 +644,7 @@ mod tests {
                 .unwrap(),
         );
         let first_file_id = read_u32(&first_create[16..]);
+        expect_job_created(&mut rx, first_file_id);
         response_bytes(
             backend
                 .handle_printer_io_request(PrinterIoRequest::Write(write_request(
@@ -540,12 +654,6 @@ mod tests {
                 )))
                 .unwrap(),
         );
-        let first_close = response_bytes(
-            backend
-                .handle_printer_io_request(PrinterIoRequest::Close(close_request(first_file_id, 3)))
-                .unwrap(),
-        );
-        assert_eq!(response_status(&first_close), NtStatus::SUCCESS);
 
         let second_create = response_bytes(
             backend
@@ -553,24 +661,32 @@ mod tests {
                 .unwrap(),
         );
         let second_file_id = read_u32(&second_create[16..]);
-        response_bytes(
+        let second_write = response_bytes(
             backend
                 .handle_printer_io_request(PrinterIoRequest::Write(write_request(second_file_id, 5, b"1".to_vec())))
                 .unwrap(),
         );
+        assert_eq!(response_status(&second_write), NtStatus::UNSUCCESSFUL);
+        assert_eq!(read_u32(&second_write[16..]), 0);
+
+        expect_job_data(&mut rx, first_file_id, b"1234");
+        expect_job_created(&mut rx, second_file_id);
+        expect_job_aborted(&mut rx, second_file_id);
+
+        let first_close = response_bytes(
+            backend
+                .handle_printer_io_request(PrinterIoRequest::Close(close_request(first_file_id, 3)))
+                .unwrap(),
+        );
+        assert_eq!(response_status(&first_close), NtStatus::SUCCESS);
+        expect_job_completed(&mut rx, first_file_id);
+
         let second_close = response_bytes(
             backend
                 .handle_printer_io_request(PrinterIoRequest::Close(close_request(second_file_id, 6)))
                 .unwrap(),
         );
         assert_eq!(response_status(&second_close), NtStatus::UNSUCCESSFUL);
-
-        match rx.try_recv().unwrap() {
-            RdpInputEvent::Printer(PrinterBackendMessage::JobComplete { document_bytes, .. }) => {
-                assert_eq!(document_bytes, b"1234");
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
         assert!(rx.try_recv().is_err());
     }
 }

@@ -24,15 +24,13 @@ Import the `iron-remote-desktop-rdp.umd.cjs` from `node_modules/` folder.
 
 ## Virtual Printer
 
-Register `printJobCompleteCallback` before connecting to enable the browser-side
-RDPDR virtual printer. By default, the web connector follows FreeRDP's macOS
-heuristic where possible: browser-reported macOS 14+ uses `Microsoft Print to
-PDF`, and other clients use `MS Publisher Imagesetter` for PostScript data. Pass
+Register `printJobStreamCallbacks` before connecting to enable the browser-side
+RDPDR virtual printer. The RDPDR backend forwards write chunks as they arrive
+instead of buffering the completed job in Rust.
+
+By default, the web connector follows FreeRDP's macOS heuristic where possible:
+browser-reported macOS 14+ uses `Microsoft Print to PDF`, and other clients use
+`MS Publisher Imagesetter` for PostScript data. Pass
 `printerDriverName(PrinterDriverName.PostScript)` or another explicit driver if
-your target host requires a different installed driver. The callback receives
-the completed job as a single `Uint8Array`, so the application should convert
-PostScript to PDF when using the PostScript driver before opening a browser print
-dialog. Jobs larger than 128 MiB are rejected to protect browser memory.
-The completed-job queue is also capped at 128 MiB, and handing the job to JS
-copies it into a `Uint8Array`, so peak memory can temporarily include both the
-Rust buffer and the JS array for one job.
+your target host requires a different installed driver. Jobs larger than 128 MiB
+are rejected, and queued write chunks are bounded to protect browser memory.

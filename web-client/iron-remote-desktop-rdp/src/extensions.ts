@@ -47,25 +47,31 @@ export function locksExpiredCallback(cb: (clipDataIds: Uint32Array) => void): Ex
 
 // Virtual printer (RDPDR) extensions
 //
-// Registering `printJobCompleteCallback` activates the browser-side virtual
-// printer device. By default, the web connector follows FreeRDP's macOS
-// heuristic where possible: browser-reported macOS 14+ uses Microsoft Print to
-// PDF, and other clients use MS Publisher Imagesetter for PostScript bytes.
-// Use `printerDriverName` when the target host needs a different installed
-// printer driver. The stream is buffered per-handle and delivered as a single
-// `Uint8Array` when the server closes the file handle (IRP_MJ_CLOSE). Jobs
-// larger than 128 MiB are rejected, and the completed-job queue is also capped
-// at 128 MiB; converting the Rust buffer into a JS `Uint8Array` can temporarily
-// double memory for one job. `printerName`, `printerDeviceId`, and
-// `printerDriverName` are optional; sensible defaults are applied when omitted.
+// Registering `printJobStreamCallbacks` activates the browser-side virtual
+// printer device. The printer backend streams write chunks as they arrive
+// instead of buffering a completed job in WASM memory. By default, the web
+// connector follows FreeRDP's macOS heuristic where possible:
+// browser-reported macOS 14+ uses Microsoft Print to PDF, and other clients use
+// MS Publisher Imagesetter for PostScript bytes. Use `printerDriverName` when
+// the target host needs a different installed printer driver. Jobs larger than
+// 128 MiB are rejected, and queued write chunks are bounded to protect browser
+// memory. `printerName`, `printerDeviceId`, and `printerDriverName` are
+// optional; sensible defaults are applied when omitted.
 
 export const PrinterDriverName = {
     PostScript: 'MS Publisher Imagesetter',
     MicrosoftPrintToPdf: 'Microsoft Print to PDF',
 } as const;
 
-export function printJobCompleteCallback(cb: (documentBytes: Uint8Array) => void): Extension {
-    return new Extension('print_job_complete_callback', cb as unknown);
+export interface PrintJobStreamCallbacks {
+    onJobStart?: (fileId: number) => void;
+    onJobData: (fileId: number, chunk: Uint8Array) => void;
+    onJobComplete: (fileId: number) => void;
+    onJobError?: (fileId: number) => void;
+}
+
+export function printJobStreamCallbacks(callbacks: PrintJobStreamCallbacks): Extension {
+    return new Extension('print_job_stream_callbacks', callbacks as unknown);
 }
 
 export function printerName(name: string): Extension {

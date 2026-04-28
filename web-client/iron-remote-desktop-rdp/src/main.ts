@@ -72,9 +72,10 @@ export {
     requestFileContents,
     submitFileContents,
     initiateFileCopy,
-    printJobCompleteCallback,
+    printJobStreamCallbacks,
     PrinterDriverName,
     printerName,
     printerDeviceId,
     printerDriverName,
 } from './extensions';
+export type { PrintJobStreamCallbacks } from './extensions';

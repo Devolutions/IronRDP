@@ -592,7 +592,9 @@ pub const RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT: u32 = 0x0000_0010;
 /// installed, callers can use the explicit-driver helpers to advertise a
 /// different server-side driver.
 pub const DEFAULT_PRINTER_DRIVER_NAME: &str = "MS Publisher Imagesetter";
-/// Server-side PDF printer driver used by Windows 10+ hosts.
+/// Server-side PDF printer driver used by the macOS 14+ printer default.
+///
+/// The target Windows host still needs this driver installed.
 pub const MICROSOFT_PRINT_TO_PDF_DRIVER_NAME: &str = "Microsoft Print to PDF";
 
 impl TryFrom<u16> for CapabilityType {
@@ -1147,16 +1149,7 @@ impl DeviceAnnounceHeader {
         device_data.extend_from_slice(&driver_name_bytes);
         device_data.extend_from_slice(&print_name_bytes);
 
-        fn utf16le_with_nul(s: &str) -> Vec<u8> {
-            let mut out = Vec::with_capacity((s.len() + 1) * 2 /* 2 bytes per UTF-16 unit */);
-            for unit in s.encode_utf16() {
-                out.extend_from_slice(&unit.to_le_bytes());
-            }
-            out.extend_from_slice(&[0, 0] /* UTF-16 NUL terminator */);
-            out
-        }
-
-        Self {
+        return Self {
             device_type: DeviceType::Print,
             device_id,
             // Per spec: when DeviceDataLength is non-zero PreferredDosName
@@ -1166,6 +1159,15 @@ impl DeviceAnnounceHeader {
             // redirected printer.
             preferred_dos_name: PreferredDosName("PRN1".to_owned()),
             device_data,
+        };
+
+        fn utf16le_with_nul(s: &str) -> Vec<u8> {
+            let mut out = Vec::with_capacity((s.len() + 1) * 2 /* 2 bytes per UTF-16 unit */);
+            for unit in s.encode_utf16() {
+                out.extend_from_slice(&unit.to_le_bytes());
+            }
+            out.extend_from_slice(&[0, 0] /* UTF-16 NUL terminator */);
+            out
         }
     }
 

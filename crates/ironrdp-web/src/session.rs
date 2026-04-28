@@ -47,7 +47,7 @@ use crate::error::IronError;
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
-use crate::printer::{WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
+use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
@@ -80,9 +80,9 @@ struct SessionBuilderInner {
     unlock_callback: Option<js_sys::Function>,
     locks_expired_callback: Option<js_sys::Function>,
 
-    // Setting `print_job_complete_callback` activates the virtual printer.
-    invalid_print_job_complete_callback: bool,
-    print_job_complete_callback: Option<js_sys::Function>,
+    // Setting printer stream callbacks activates the virtual printer.
+    invalid_print_job_stream_callbacks: bool,
+    print_job_stream_callbacks: Option<JsPrinterStreamCallbacks>,
     printer_name: Option<String>,
     printer_device_id: Option<u32>,
     printer_driver_name: Option<String>,
@@ -121,8 +121,8 @@ impl Default for SessionBuilderInner {
             unlock_callback: None,
             locks_expired_callback: None,
 
-            invalid_print_job_complete_callback: false,
-            print_job_complete_callback: None,
+            invalid_print_job_stream_callbacks: false,
+            print_job_stream_callbacks: None,
             printer_name: None,
             printer_device_id: None,
             printer_driver_name: None,
@@ -276,17 +276,17 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |locks_expired_callback: JsValue| {
                 self.0.borrow_mut().locks_expired_callback = locks_expired_callback.dyn_into::<js_sys::Function>().ok();
             };
-            |print_job_complete_callback: JsValue| {
+            |print_job_stream_callbacks: JsValue| {
                 let mut inner = self.0.borrow_mut();
-                match print_job_complete_callback.dyn_into::<js_sys::Function>() {
-                    Ok(callback) => {
-                        inner.invalid_print_job_complete_callback = false;
-                        inner.print_job_complete_callback = Some(callback);
+                match parse_print_job_stream_callbacks(print_job_stream_callbacks) {
+                    Ok(callbacks) => {
+                        inner.invalid_print_job_stream_callbacks = false;
+                        inner.print_job_stream_callbacks = Some(callbacks);
                     }
-                    Err(_) => {
-                        inner.invalid_print_job_complete_callback = true;
-                        inner.print_job_complete_callback = None;
-                        warn!("Invalid print_job_complete_callback; printer redirection requires a function");
+                    Err(error) => {
+                        inner.invalid_print_job_stream_callbacks = true;
+                        inner.print_job_stream_callbacks = None;
+                        warn!(%error, "Invalid print_job_stream_callbacks; printer streaming requires onJobData and onJobComplete functions");
                     }
                 }
             };
@@ -341,8 +341,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback,
             unlock_callback,
             locks_expired_callback,
-            invalid_print_job_complete_callback,
-            print_job_complete_callback,
+            invalid_print_job_stream_callbacks,
+            print_job_stream_callbacks,
             printer_name,
             printer_device_id,
             printer_driver_name,
@@ -381,8 +381,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback = inner.lock_callback.clone();
             unlock_callback = inner.unlock_callback.clone();
             locks_expired_callback = inner.locks_expired_callback.clone();
-            invalid_print_job_complete_callback = inner.invalid_print_job_complete_callback;
-            print_job_complete_callback = inner.print_job_complete_callback.clone();
+            invalid_print_job_stream_callbacks = inner.invalid_print_job_stream_callbacks;
+            print_job_stream_callbacks = inner.print_job_stream_callbacks.clone();
             printer_name = inner.printer_name.clone();
             printer_device_id = inner.printer_device_id;
             printer_driver_name = inner.printer_driver_name.clone();
@@ -414,19 +414,19 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             )
         });
 
-        if invalid_print_job_complete_callback {
+        if invalid_print_job_stream_callbacks {
             return Err(IronError::from(anyhow::anyhow!(
-                "printer redirection requires a valid print_job_complete_callback"
+                "printer redirection requires valid print_job_stream_callbacks"
             )));
         }
 
-        // Build the virtual-printer pair when a JS `on_job_complete` callback
-        // was registered via extension(). Backend is Send (holds the mpsc
-        // proxy only) and goes into the SVC processor below; the front-end
-        // `WasmPrinter` owns the JS callback and lives on `Session`.
-        let (printer_backend, printer) = match print_job_complete_callback {
-            Some(callback) => {
-                let (backend, printer) = wasm_printer_pair(input_events_tx.clone(), callback);
+        // Build the virtual-printer pair when JS printer callbacks were
+        // registered via extension(). Backend is Send (holds the mpsc proxy
+        // only) and goes into the SVC processor below; the front-end
+        // `WasmPrinter` owns the JS callbacks and lives on `Session`.
+        let (printer_backend, printer) = match print_job_stream_callbacks {
+            Some(callbacks) => {
+                let (backend, printer) = wasm_printer_pair(input_events_tx.clone(), callbacks);
                 (Some(backend), Some(printer))
             }
             None => (None, None),
@@ -623,7 +623,7 @@ impl iron_remote_desktop::Session for Session {
             .expect("run called only once");
 
         let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
-        let wasm_printer = self.printer.borrow_mut().take().expect("run called only once");
+        let mut wasm_printer = self.printer.borrow_mut().take().expect("run called only once");
 
         let mut framed = ironrdp_futures::LocalFuturesFramed::new(rdp_reader);
 
@@ -823,7 +823,7 @@ impl iron_remote_desktop::Session for Session {
                             // processor (Send-only); the front-end
                             // `WasmPrinter` owns the JS callback (!Send) and
                             // lives here. Just forward the message.
-                            if let Some(ref wasm_printer) = wasm_printer {
+                            if let Some(ref mut wasm_printer) = wasm_printer {
                                 wasm_printer.process_message(message);
                             } else {
                                 warn!("Printer event received, but no printer is configured");
@@ -1265,6 +1265,36 @@ fn get_u32_opt(obj: &js_sys::Object, key: &str) -> Result<Option<u32>, IronError
         .as_f64()
         .with_context(|| format!("invalid type for property `{key}`"))?;
     Ok(Some(f64_to_u32_saturating_cast(f)))
+}
+
+fn parse_print_job_stream_callbacks(callbacks: JsValue) -> anyhow::Result<JsPrinterStreamCallbacks> {
+    let callbacks = callbacks
+        .dyn_into::<js_sys::Object>()
+        .map_err(|_| anyhow::anyhow!("expected object"))?;
+
+    Ok(JsPrinterStreamCallbacks {
+        on_job_start: get_optional_function(&callbacks, "onJobStart")?,
+        on_job_data: get_required_function(&callbacks, "onJobData")?,
+        on_job_complete: get_required_function(&callbacks, "onJobComplete")?,
+        on_job_error: get_optional_function(&callbacks, "onJobError")?,
+    })
+}
+
+fn get_required_function(obj: &js_sys::Object, key: &str) -> anyhow::Result<js_sys::Function> {
+    get_optional_function(obj, key)?.with_context(|| format!("missing function `{key}`"))
+}
+
+fn get_optional_function(obj: &js_sys::Object, key: &str) -> anyhow::Result<Option<js_sys::Function>> {
+    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
+
+    if val.is_undefined() || val.is_null() {
+        return Ok(None);
+    }
+
+    val.dyn_into::<js_sys::Function>()
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("property `{key}` must be a function"))
 }
 
 #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
