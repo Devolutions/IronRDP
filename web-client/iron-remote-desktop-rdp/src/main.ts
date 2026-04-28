@@ -73,6 +73,7 @@ export {
     submitFileContents,
     initiateFileCopy,
     printJobCompleteCallback,
+    PrinterDriverName,
     printerName,
     printerDeviceId,
     printerDriverName,

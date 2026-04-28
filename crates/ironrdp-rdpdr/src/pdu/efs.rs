@@ -592,6 +592,8 @@ pub const RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT: u32 = 0x0000_0010;
 /// installed, callers can use the explicit-driver helpers to advertise a
 /// different server-side driver.
 pub const DEFAULT_PRINTER_DRIVER_NAME: &str = "MS Publisher Imagesetter";
+/// Server-side PDF printer driver used by Windows 10+ hosts.
+pub const MICROSOFT_PRINT_TO_PDF_DRIVER_NAME: &str = "Microsoft Print to PDF";
 
 impl TryFrom<u16> for CapabilityType {
     type Error = DecodeError;
@@ -1070,7 +1072,7 @@ impl DeviceAnnounceHeader {
     /// [`Self::new_printer`]. Other commonly-shipping drivers:
     /// `"Microsoft XPS Document Writer"` (XPS; may need
     /// `UseUniversalPrinterDriverFirst` to fall back to Easy Print when
-    /// the v3 variant isn't installed), `"Microsoft Print To PDF"`
+    /// the v3 variant isn't installed), `"Microsoft Print to PDF"`
     /// (Windows 10+), and `"Generic / Text Only"` (all versions).
     ///
     /// Do not pass `"Remote Desktop Easy Print"`; it's a server-side-only

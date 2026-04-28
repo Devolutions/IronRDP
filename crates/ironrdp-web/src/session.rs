@@ -27,7 +27,7 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::rdpdr::Rdpdr;
-use ironrdp::rdpdr::pdu::efs::DEFAULT_PRINTER_DRIVER_NAME;
+use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, fast_path};
@@ -436,7 +436,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         // enabled in the same session.
         let printer_device_id = printer_device_id.unwrap_or(2);
         let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
-        let printer_driver_name = printer_driver_name.unwrap_or_else(|| DEFAULT_PRINTER_DRIVER_NAME.to_owned());
+        let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
 
         let ws = WebSocket::open(&proxy_address).context("couldn't open WebSocket")?;
 
@@ -1462,6 +1462,38 @@ struct ConnectParams {
     use_display_control: bool,
 }
 
+fn default_printer_driver_name() -> String {
+    printer_driver_name_for_macos_major_version(browser_macos_major_version()).to_owned()
+}
+
+fn printer_driver_name_for_macos_major_version(macos_major_version: Option<u32>) -> &'static str {
+    if macos_major_version.is_some_and(|major| 14 <= major) {
+        MICROSOFT_PRINT_TO_PDF_DRIVER_NAME
+    } else {
+        DEFAULT_PRINTER_DRIVER_NAME
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_macos_major_version() -> Option<u32> {
+    let user_agent = web_sys::window()?.navigator().user_agent().ok()?;
+    macos_major_version_from_user_agent(&user_agent)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn browser_macos_major_version() -> Option<u32> {
+    None
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn macos_major_version_from_user_agent(user_agent: &str) -> Option<u32> {
+    let (_, version) = user_agent.split_once("Mac OS X ")?;
+    version
+        .split(|ch: char| !ch.is_ascii_digit())
+        .next()
+        .and_then(|major| major.parse().ok())
+}
+
 async fn connect(
     ConnectParams {
         ws,
@@ -1710,6 +1742,46 @@ mod tests {
         mpsc::UnboundedReceiver<RdpInputEvent>,
     ) {
         mpsc::unbounded()
+    }
+
+    #[test]
+    fn printer_driver_defaults_to_postscript_when_macos_version_is_unknown() {
+        assert_eq!(
+            printer_driver_name_for_macos_major_version(None),
+            DEFAULT_PRINTER_DRIVER_NAME
+        );
+    }
+
+    #[test]
+    fn printer_driver_uses_pdf_for_macos_14_and_newer() {
+        assert_eq!(
+            printer_driver_name_for_macos_major_version(Some(13)),
+            DEFAULT_PRINTER_DRIVER_NAME
+        );
+        assert_eq!(
+            printer_driver_name_for_macos_major_version(Some(14)),
+            MICROSOFT_PRINT_TO_PDF_DRIVER_NAME
+        );
+        assert_eq!(
+            printer_driver_name_for_macos_major_version(Some(15)),
+            MICROSOFT_PRINT_TO_PDF_DRIVER_NAME
+        );
+    }
+
+    #[test]
+    fn macos_major_version_is_parsed_from_user_agent() {
+        assert_eq!(
+            macos_major_version_from_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_1) AppleWebKit/605.1.15"),
+            Some(14)
+        );
+        assert_eq!(
+            macos_major_version_from_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"),
+            Some(10)
+        );
+        assert_eq!(
+            macos_major_version_from_user_agent("Mozilla/5.0 (Windows NT 10.0)"),
+            None
+        );
     }
 
     #[test]

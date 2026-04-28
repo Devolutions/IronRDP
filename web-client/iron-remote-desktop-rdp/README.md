@@ -25,11 +25,13 @@ Import the `iron-remote-desktop-rdp.umd.cjs` from `node_modules/` folder.
 ## Virtual Printer
 
 Register `printJobCompleteCallback` before connecting to enable the browser-side
-RDPDR virtual printer. The default server-side driver is
-`MS Publisher Imagesetter`, which produces PostScript data; pass
-`printerDriverName(...)` if your target host requires a different installed
-driver. The callback receives the completed job as a single `Uint8Array`, so the
-application should convert PostScript to PDF before opening a browser print
+RDPDR virtual printer. By default, the web connector follows FreeRDP's macOS
+heuristic where possible: browser-reported macOS 14+ uses `Microsoft Print to
+PDF`, and other clients use `MS Publisher Imagesetter` for PostScript data. Pass
+`printerDriverName(PrinterDriverName.PostScript)` or another explicit driver if
+your target host requires a different installed driver. The callback receives
+the completed job as a single `Uint8Array`, so the application should convert
+PostScript to PDF when using the PostScript driver before opening a browser print
 dialog. Jobs larger than 128 MiB are rejected to protect browser memory.
 The completed-job queue is also capped at 128 MiB, and handing the job to JS
 copies it into a `Uint8Array`, so peak memory can temporarily include both the
