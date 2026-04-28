@@ -6,6 +6,7 @@ use tracing::{debug, warn};
 
 use crate::{
     Config, ConnectionFinalizationSequence, ConnectorResult, DesktopSize, Sequence, State, Written, general_err, legacy,
+    reason_err,
 };
 
 /// Represents the Capability Exchange and Connection Finalization phases
@@ -122,8 +123,10 @@ impl Sequence for ConnectionActivationSequence {
                 {
                     server_demand_active.pdu.capability_sets
                 } else {
-                    return Err(general_err!(
-                        "unexpected Share Control Pdu (expected ServerDemandActive)",
+                    return Err(reason_err!(
+                        "ConnectionActivation::CapabilitiesExchange",
+                        "unexpected Share Control PDU during capabilities exchange: got {} (expected Server Demand Active PDU)",
+                        share_control_ctx.pdu.as_short_name(),
                     ));
                 };
 
