@@ -31,3 +31,6 @@ RDPDR virtual printer. The default server-side driver is
 driver. The callback receives the completed job as a single `Uint8Array`, so the
 application should convert PostScript to PDF before opening a browser print
 dialog. Jobs larger than 128 MiB are rejected to protect browser memory.
+The completed-job queue is also capped at 128 MiB, and handing the job to JS
+copies it into a `Uint8Array`, so peak memory can temporarily include both the
+Rust buffer and the JS array for one job.

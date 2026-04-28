@@ -80,11 +80,8 @@ struct SessionBuilderInner {
     unlock_callback: Option<js_sys::Function>,
     locks_expired_callback: Option<js_sys::Function>,
 
-    // Printer (RDPDR) — protocol-specific, routed through extension().
-    // Setting `print_job_complete_callback` activates the virtual printer
-    // device; `printer_name`, `printer_device_id`, and `printer_driver_name`
-    // are optional and fall back to sensible defaults.
-    printer_requested: bool,
+    // Setting `print_job_complete_callback` activates the virtual printer.
+    invalid_print_job_complete_callback: bool,
     print_job_complete_callback: Option<js_sys::Function>,
     printer_name: Option<String>,
     printer_device_id: Option<u32>,
@@ -124,7 +121,7 @@ impl Default for SessionBuilderInner {
             unlock_callback: None,
             locks_expired_callback: None,
 
-            printer_requested: false,
+            invalid_print_job_complete_callback: false,
             print_job_complete_callback: None,
             printer_name: None,
             printer_device_id: None,
@@ -279,14 +276,15 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |locks_expired_callback: JsValue| {
                 self.0.borrow_mut().locks_expired_callback = locks_expired_callback.dyn_into::<js_sys::Function>().ok();
             };
-            // Printer callbacks - protocol-specific, routed through extension()
-            // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
             |print_job_complete_callback: JsValue| {
                 let mut inner = self.0.borrow_mut();
-                inner.printer_requested = true;
                 match print_job_complete_callback.dyn_into::<js_sys::Function>() {
-                    Ok(callback) => inner.print_job_complete_callback = Some(callback),
+                    Ok(callback) => {
+                        inner.invalid_print_job_complete_callback = false;
+                        inner.print_job_complete_callback = Some(callback);
+                    }
                     Err(_) => {
+                        inner.invalid_print_job_complete_callback = true;
                         inner.print_job_complete_callback = None;
                         warn!("Invalid print_job_complete_callback; printer redirection requires a function");
                     }
@@ -294,7 +292,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             };
             |printer_name: String| {
                 let mut inner = self.0.borrow_mut();
-                inner.printer_requested |= !printer_name.is_empty();
                 inner.printer_name = if printer_name.is_empty() { None } else { Some(printer_name) };
             };
             |printer_device_id: f64| {
@@ -306,12 +303,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     0
                 };
                 let mut inner = self.0.borrow_mut();
-                inner.printer_requested |= id > 0;
                 inner.printer_device_id = if id > 0 { Some(id) } else { None };
             };
             |printer_driver_name: String| {
                 let mut inner = self.0.borrow_mut();
-                inner.printer_requested |= !printer_driver_name.is_empty();
                 inner.printer_driver_name = if printer_driver_name.is_empty() {
                     None
                 } else {
@@ -346,7 +341,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback,
             unlock_callback,
             locks_expired_callback,
-            printer_requested,
+            invalid_print_job_complete_callback,
             print_job_complete_callback,
             printer_name,
             printer_device_id,
@@ -386,7 +381,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback = inner.lock_callback.clone();
             unlock_callback = inner.unlock_callback.clone();
             locks_expired_callback = inner.locks_expired_callback.clone();
-            printer_requested = inner.printer_requested;
+            invalid_print_job_complete_callback = inner.invalid_print_job_complete_callback;
             print_job_complete_callback = inner.print_job_complete_callback.clone();
             printer_name = inner.printer_name.clone();
             printer_device_id = inner.printer_device_id;
@@ -419,7 +414,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             )
         });
 
-        if printer_requested && print_job_complete_callback.is_none() {
+        if invalid_print_job_complete_callback {
             return Err(IronError::from(anyhow::anyhow!(
                 "printer redirection requires a valid print_job_complete_callback"
             )));
@@ -437,8 +432,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             None => (None, None),
         };
 
-        // Device id 1 is reserved for the drive device; default to 2 here to
-        // avoid a collision if drive redirection is ever enabled alongside.
+        // Default to 2 to avoid a potential collision if drive redirection is
+        // enabled in the same session.
         let printer_device_id = printer_device_id.unwrap_or(2);
         let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
         let printer_driver_name = printer_driver_name.unwrap_or_else(|| DEFAULT_PRINTER_DRIVER_NAME.to_owned());

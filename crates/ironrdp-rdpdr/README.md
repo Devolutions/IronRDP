@@ -10,9 +10,9 @@ This crate is part of the [IronRDP] project.
 ## Virtual Printers
 
 `Rdpdr::with_printer` announces a PostScript virtual printer using
-`MS Publisher Imagesetter` as the default server-side driver. This matches the
-driver used by Guacamole-like RDP printer redirection flows and keeps the client
-format-agnostic: printer IRPs deliver the raw job bytes to the backend.
+`MS Publisher Imagesetter` as the default server-side driver. This matches
+FreeRDP's default CUPS printer driver for PostScript redirection and keeps the
+client format-agnostic: printer IRPs deliver the raw job bytes to the backend.
 Printer devices are advertised after the server sends `RDPDR_USER_LOGGEDON_PDU`;
 pre-logon announces remain reserved for special devices such as smart cards.
 

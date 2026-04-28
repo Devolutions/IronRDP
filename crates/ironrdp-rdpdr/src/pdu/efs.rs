@@ -304,8 +304,37 @@ impl Capabilities {
         this
     }
 
-    pub fn clone_inner(&mut self) -> Vec<CapabilityMessage> {
+    pub fn clone_inner(&self) -> Vec<CapabilityMessage> {
         self.0.clone()
+    }
+
+    pub fn clone_supported_by(&self, server_capability: &CoreCapability) -> Vec<CapabilityMessage> {
+        let mut capabilities = self
+            .0
+            .iter()
+            .copied()
+            .filter(|capability| {
+                capability.header.cap_type == CapabilityType::General
+                    || server_capability
+                        .capabilities
+                        .iter()
+                        .any(|server_capability| server_capability.header.cap_type == capability.header.cap_type)
+            })
+            .collect::<Vec<_>>();
+
+        let special_type_device_cap = capabilities
+            .iter()
+            .filter(|capability| capability.header.cap_type == CapabilityType::Smartcard)
+            .fold(0u32, |count, _| count.saturating_add(1));
+
+        for capability in capabilities.iter_mut() {
+            if let CapabilityData::General(general_capability) = &mut capability.capability_data {
+                general_capability.special_type_device_cap = special_type_device_cap;
+                break;
+            }
+        }
+
+        capabilities
     }
 
     pub fn add_smartcard(&mut self) {
@@ -558,8 +587,8 @@ pub const RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT: u32 = 0x0000_0010;
 
 /// Default server-side printer driver announced for PostScript virtual printers.
 ///
-/// `MS Publisher Imagesetter` is the PostScript driver used by Guacamole-like
-/// RDP printer redirection flows. If a target host does not have this driver
+/// `MS Publisher Imagesetter` matches FreeRDP's default CUPS printer driver
+/// for PostScript redirection. If a target host does not have this driver
 /// installed, callers can use the explicit-driver helpers to advertise a
 /// different server-side driver.
 pub const DEFAULT_PRINTER_DRIVER_NAME: &str = "MS Publisher Imagesetter";
@@ -804,6 +833,7 @@ bitflags! {
 ///
 /// [Server Client ID Confirm (section 2.2.2.6)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/bbbb9666-6994-4cf6-8e65-0d46eb319c6e
 /// [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d6fe6d1b-c145-4a6f-99aa-4fe3cdcea398
+pub const VERSION_MINOR_RDP51: u16 = 0x0005;
 pub const VERSION_MINOR_12: u16 = 0x000C;
 pub const VERSION_MAJOR: u16 = 0x0001;
 
@@ -1015,21 +1045,21 @@ impl DeviceAnnounceHeader {
         }
     }
 
-    /// Construct a printer announce with sensible defaults — see
+    /// Construct a printer announce with sensible defaults; see
     /// [`Devices::add_printer`] for the policy. Callers with custom
     /// driver requirements should use
     /// [`Self::new_printer_with_driver`].
     pub fn new_printer(device_id: u32, print_name: String) -> Self {
-        // `MS Publisher Imagesetter` is the PostScript driver used by
-        // Guacamole-like RDP printer redirection flows, so the announce
-        // resolves without needing `UseUniversalPrinterDriverFirst` or the
-        // XPS Services feature on hosts where that driver is installed.
+        // `MS Publisher Imagesetter` matches FreeRDP's default CUPS
+        // PostScript printer driver, so the announce resolves without
+        // needing `UseUniversalPrinterDriverFirst` or the XPS Services
+        // feature on hosts where that driver is installed.
         //
         // Trade-off: the server's spooler emits PostScript (not XPS) for
         // jobs on this queue, so consumers of
-        // [`RdpdrBackend::handle_printer_io_request`] need a PostScript→PDF
+        // [`RdpdrBackend::handle_printer_io_request`] need a PostScript-to-PDF
         // pipeline (e.g. Ghostscript). Print bytes are passed through
-        // verbatim — IronRDP itself is format-agnostic.
+        // verbatim; IronRDP itself is format-agnostic.
         Self::new_printer_with_driver(device_id, print_name, DEFAULT_PRINTER_DRIVER_NAME.to_owned())
     }
 
@@ -1043,7 +1073,7 @@ impl DeviceAnnounceHeader {
     /// the v3 variant isn't installed), `"Microsoft Print To PDF"`
     /// (Windows 10+), and `"Generic / Text Only"` (all versions).
     ///
-    /// Do not pass `"Remote Desktop Easy Print"` — it's a server-side-only
+    /// Do not pass `"Remote Desktop Easy Print"`; it's a server-side-only
     /// substitute driver and some Windows builds silently drop announces
     /// that name it directly.
     ///
@@ -1065,26 +1095,16 @@ impl DeviceAnnounceHeader {
         //   PrintName        UTF-16LE, NUL-terminated
         //   CachedFields     opaque bytes
         //
-        // Guacamole omits PnPName entirely for this PostScript path and lets
-        // the server resolve the queue from DriverName + PrintName. Matching
-        // that behavior avoids exercising server-side PnP-name edge cases.
+        // FreeRDP leaves PnPName empty for this PostScript path and lets the
+        // server resolve the queue from DriverName + PrintName. Matching that
+        // behavior avoids exercising server-side PnP-name edge cases.
         //
         // [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/2057a02f-57d5-47db-9a32-e337ac3f50e9
 
-        fn utf16le_with_nul(s: &str) -> Vec<u8> {
-            let mut out = Vec::with_capacity((s.len() + 1) * 2 /* 2 bytes per UTF-16 unit */);
-            for unit in s.encode_utf16() {
-                out.extend_from_slice(&unit.to_le_bytes());
-            }
-            out.extend_from_slice(&[0, 0] /* UTF-16 NUL terminator */);
-            out
-        }
-
-        let pnp_name_bytes = Vec::new();
         let driver_name_bytes = utf16le_with_nul(&driver_name);
         let print_name_bytes = utf16le_with_nul(&print_name);
 
-        // [MS-RDPEPC 2.2.2.3] Flags. We match Guacamole's PostScript
+        // [MS-RDPEPC 2.2.2.3] Flags. We match FreeRDP's PostScript
         // redirection behavior: mark the queue as the session default and as
         // a network printer. We intentionally leave the others off:
         //  - XPSFORMAT (0x10): advertises *client* XPS-consumption support;
@@ -1095,6 +1115,7 @@ impl DeviceAnnounceHeader {
         //    client, so setting it would be a lie.
         let flags: u32 = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER | RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER;
         let code_page: u32 = 0;
+        let pnp_name_len: u32 = 0;
         let cached_fields_len: u32 = 0;
 
         let mut device_data = Vec::with_capacity(
@@ -1104,17 +1125,12 @@ impl DeviceAnnounceHeader {
                 + 4 /* DriverNameLen */
                 + 4 /* PrintNameLen */
                 + 4 /* CachedFieldsLen */
-                + pnp_name_bytes.len()
                 + driver_name_bytes.len()
                 + print_name_bytes.len(),
         );
         device_data.extend_from_slice(&flags.to_le_bytes());
         device_data.extend_from_slice(&code_page.to_le_bytes());
-        device_data.extend_from_slice(
-            &u32::try_from(pnp_name_bytes.len())
-                .expect("PnPName length fits in u32")
-                .to_le_bytes(),
-        );
+        device_data.extend_from_slice(&pnp_name_len.to_le_bytes());
         device_data.extend_from_slice(
             &u32::try_from(driver_name_bytes.len())
                 .expect("DriverName length fits in u32")
@@ -1126,9 +1142,17 @@ impl DeviceAnnounceHeader {
                 .to_le_bytes(),
         );
         device_data.extend_from_slice(&cached_fields_len.to_le_bytes());
-        device_data.extend_from_slice(&pnp_name_bytes);
         device_data.extend_from_slice(&driver_name_bytes);
         device_data.extend_from_slice(&print_name_bytes);
+
+        fn utf16le_with_nul(s: &str) -> Vec<u8> {
+            let mut out = Vec::with_capacity((s.len() + 1) * 2 /* 2 bytes per UTF-16 unit */);
+            for unit in s.encode_utf16() {
+                out.extend_from_slice(&unit.to_le_bytes());
+            }
+            out.extend_from_slice(&[0, 0] /* UTF-16 NUL terminator */);
+            out
+        }
 
         Self {
             device_type: DeviceType::Print,
@@ -1779,15 +1803,11 @@ impl From<ServerDriveLockControlRequest> for ServerDriveIoRequest {
 
 /// Printer-targeted IRP (subset of [MS-RDPEFS] 2.2.1.4 that virtual printers care about).
 ///
-/// A printer device only ever sees open/write/close: the server opens a file
-/// handle against the virtual device (Create), streams print-job bytes into it
-/// (Write, possibly many times), and then closes the handle when the job is
-/// finished (Close). Every other [`MajorFunction`] reaches the printer path
-/// only in malformed or off-spec traffic and is surfaced as an [`Unsupported`]
-/// variant so backends can NAK with `STATUS_NOT_IMPLEMENTED` without being
-/// force-fed fields that don't exist on the wire.
-///
-/// [`Unsupported`]: PrinterIoRequest::Unsupported
+/// A printer device sees open/write/close on the print-job path: the server
+/// opens a file handle against the virtual device (Create), streams print-job
+/// bytes into it (Write, possibly many times), and then closes the handle when
+/// the job is finished (Close). Device-control requests are handled directly by
+/// the RDPDR SVC processor before a backend is called.
 #[derive(Debug, PartialEq, Clone)]
 pub enum PrinterIoRequest {
     /// Server opened the virtual printer; answer with a [`DeviceCreateResponse`]
@@ -1799,10 +1819,6 @@ pub enum PrinterIoRequest {
     /// Server finalized the print job; answer with a [`DeviceCloseResponse`]
     /// and finalize whatever document buffer the backend accumulated.
     Close(DeviceCloseRequest),
-    /// Any other major function. Backends should complete the IRP with
-    /// `STATUS_NOT_IMPLEMENTED`; printers don't legitimately see Read,
-    /// DirectoryControl, QueryInformation, etc.
-    Unsupported(DeviceIoRequest),
 }
 
 impl PrinterIoRequest {
@@ -1811,7 +1827,19 @@ impl PrinterIoRequest {
             MajorFunction::Create => Ok(Self::Create(DeviceCreateRequest::decode(dev_io_req, src)?)),
             MajorFunction::Write => Ok(Self::Write(DeviceWriteRequest::decode(dev_io_req, src)?)),
             MajorFunction::Close => Ok(Self::Close(DeviceCloseRequest::decode(dev_io_req))),
-            _ => Ok(Self::Unsupported(dev_io_req)),
+            _ => Err(invalid_field_err!(
+                "PrinterIoRequest::decode",
+                "MajorFunction",
+                "unsupported value"
+            )),
+        }
+    }
+
+    pub fn into_device_io_request(self) -> DeviceIoRequest {
+        match self {
+            Self::Create(req) => req.device_io_request,
+            Self::Write(req) => req.device_io_request,
+            Self::Close(req) => req.device_io_request,
         }
     }
 }

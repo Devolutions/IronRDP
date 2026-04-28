@@ -6,7 +6,11 @@ use ironrdp_core::AsAny;
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::SvcMessage;
 
-use crate::pdu::efs::{DeviceControlRequest, PrinterIoRequest, ServerDeviceAnnounceResponse, ServerDriveIoRequest};
+use crate::pdu::RdpdrPdu;
+use crate::pdu::efs::{
+    DeviceCloseResponse, DeviceControlRequest, DeviceIoResponse, NtStatus, PrinterIoRequest,
+    ServerDeviceAnnounceResponse, ServerDriveIoRequest,
+};
 use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 
 /// OS-specific device redirection backend interface.
@@ -18,9 +22,9 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
     ///
     /// `req` carries the fully-decoded printer IRP. Printers only see
     /// [`PrinterIoRequest::Create`] / [`PrinterIoRequest::Write`] /
-    /// [`PrinterIoRequest::Close`] on the happy path; any other major
-    /// function arrives as [`PrinterIoRequest::Unsupported`] and
-    /// should be NAK'd with `STATUS_NOT_IMPLEMENTED`.
+    /// [`PrinterIoRequest::Close`] on the backend path. Unsupported printer
+    /// major functions are completed by the SVC processor before the backend
+    /// is called.
     ///
     /// Return the PDUs to send back on the RDPDR channel —
     /// typically a [`crate::pdu::efs::DeviceIoResponse`]-wrapped
@@ -28,5 +32,12 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
     /// `DeviceCloseResponse`. Returning an empty `Vec` is allowed
     /// when the backend has already queued a response out of band
     /// and/or wants to defer.
-    fn handle_printer_io_request(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>>;
+    fn handle_printer_io_request(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
+        let device_io_request = req.into_device_io_request();
+        Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCloseResponse(
+            DeviceCloseResponse {
+                device_io_response: DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED),
+            },
+        ))])
+    }
 }

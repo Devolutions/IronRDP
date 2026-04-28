@@ -52,8 +52,10 @@ export function locksExpiredCallback(cb: (clipDataIds: Uint32Array) => void): Ex
 // which produces PostScript bytes; use `printerDriverName` when the target
 // host needs a different installed printer driver. The stream is buffered
 // per-handle and delivered as a single `Uint8Array` when the server closes
-// the file handle (IRP_MJ_CLOSE). Jobs larger than 128 MiB are rejected to
-// protect browser memory. `printerName`, `printerDeviceId`, and
+// the file handle (IRP_MJ_CLOSE). Jobs larger than 128 MiB are rejected, and
+// the completed-job queue is also capped at 128 MiB; converting the Rust
+// buffer into a JS `Uint8Array` can temporarily double memory for one job.
+// `printerName`, `printerDeviceId`, and
 // `printerDriverName` are optional; sensible defaults are applied when omitted.
 
 export function printJobCompleteCallback(cb: (documentBytes: Uint8Array) => void): Extension {
