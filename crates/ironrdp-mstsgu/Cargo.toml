@@ -33,7 +33,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] }
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
 log = "0.4"
-tokio-tungstenite = { version = "0.28" }
+tokio-tungstenite = { version = "0.29" }
 tokio-util = { version = "0.7" }
 tokio = { version = "1.52", features = ["macros", "rt"] }
 uuid = { version = ">=1.16, <1.21", features = ["v4"] } # Pinned below 1.21: uuid 1.21+ needs getrandom 0.4 -> rand_core 0.10 (stable), which conflicts with picky rc.22's pinned rand_core = "=0.10.0-rc-3". Remove this pin when picky ships with stable RustCrypto deps.
