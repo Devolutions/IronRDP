@@ -5,8 +5,8 @@ use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use tracing::{debug, warn};
 
 use crate::{
-    Config, ConnectionFinalizationSequence, ConnectorResult, DesktopSize, Sequence, State, Written, general_err, legacy,
-    reason_err,
+    Config, ConnectionFinalizationSequence, ConnectorResult, DesktopSize, Sequence, State, Written, general_err,
+    legacy, reason_err,
 };
 
 /// Represents the Capability Exchange and Connection Finalization phases
