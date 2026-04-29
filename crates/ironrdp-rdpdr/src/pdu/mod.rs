@@ -347,7 +347,7 @@ impl SharedHeader {
         Ok(())
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+    pub fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::SIZE);
         Ok(Self {
             component: src.read_u16().try_into()?,
