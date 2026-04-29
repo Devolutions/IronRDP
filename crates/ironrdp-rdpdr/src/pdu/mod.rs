@@ -2,6 +2,7 @@ use core::fmt::{self, Display};
 
 use ironrdp_core::{
     Decode, DecodeError, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
+    unsupported_value_err,
 };
 use ironrdp_svc::SvcEncode;
 
@@ -116,10 +117,10 @@ impl RdpdrPdu {
             )),
             PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
             PacketId::CoreUserLoggedon => Ok(RdpdrPdu::UserLoggedon),
-            _ => Err(invalid_field_err!(
+            packet_id => Err(unsupported_value_err!(
                 "RdpdrPdu::decode_body",
                 "PacketId",
-                "unexpected packet id"
+                format!("{packet_id} ({:#06X})", u16::from(packet_id))
             )),
         }
     }
