@@ -7,7 +7,7 @@ use ironrdp_core::{
 };
 use ironrdp_dvc::DvcEncode;
 use ironrdp_pdu::gcc::Monitor;
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
 use ironrdp_pdu::{DecodeError, cast_length, ensure_size, read_padding, write_padding};
 use tracing::warn;
 
@@ -510,7 +510,9 @@ impl<'a> Decode<'a> for DeleteEncodingContextPdu {
 pub struct SolidFillPdu {
     pub surface_id: u16,
     pub fill_pixel: Color,
-    pub rectangles: Vec<InclusiveRectangle>,
+    /// Filled regions; each is an exclusive `RDPGFX_RECT16` per
+    /// MS-RDPEGFX 2.2.1.4.1 (`right` / `bottom` are one-past-end).
+    pub rectangles: Vec<ExclusiveRectangle>,
 }
 
 impl SolidFillPdu {
@@ -551,8 +553,8 @@ impl<'a> Decode<'a> for SolidFillPdu {
         let fill_pixel = Color::decode(src)?;
         let rectangles_count = src.read_u16();
 
-        ensure_size!(in: src, size: usize::from(rectangles_count) * InclusiveRectangle::FIXED_PART_SIZE);
-        let rectangles = iter::repeat_with(|| InclusiveRectangle::decode(src))
+        ensure_size!(in: src, size: usize::from(rectangles_count) * ExclusiveRectangle::ENCODED_SIZE);
+        let rectangles = iter::repeat_with(|| ExclusiveRectangle::decode(src))
             .take(usize::from(rectangles_count))
             .collect::<Result<_, _>>()?;
 
@@ -571,14 +573,16 @@ impl<'a> Decode<'a> for SolidFillPdu {
 pub struct SurfaceToSurfacePdu {
     pub source_surface_id: u16,
     pub destination_surface_id: u16,
-    pub source_rectangle: InclusiveRectangle,
+    /// Source region; an exclusive `RDPGFX_RECT16` per MS-RDPEGFX 2.2.1.4.1
+    /// (`right` / `bottom` are one-past-end).
+    pub source_rectangle: ExclusiveRectangle,
     pub destination_points: Vec<Point>,
 }
 
 impl SurfaceToSurfacePdu {
     const NAME: &'static str = "SurfaceToSurfacePdu";
 
-    const FIXED_PART_SIZE: usize = 2 /* SourceId */ + 2 /* DestId */ + InclusiveRectangle::FIXED_PART_SIZE /* SourceRect */ + 2 /* DestPointsCount */;
+    const FIXED_PART_SIZE: usize = 2 /* SourceId */ + 2 /* DestId */ + ExclusiveRectangle::ENCODED_SIZE /* SourceRect */ + 2 /* DestPointsCount */;
 }
 
 impl Encode for SurfaceToSurfacePdu {
@@ -612,7 +616,7 @@ impl<'a> Decode<'a> for SurfaceToSurfacePdu {
 
         let source_surface_id = src.read_u16();
         let destination_surface_id = src.read_u16();
-        let source_rectangle = InclusiveRectangle::decode(src)?;
+        let source_rectangle = ExclusiveRectangle::decode(src)?;
         let destination_points_count = src.read_u16();
 
         let destination_points = iter::repeat_with(|| Point::decode(src))
@@ -636,13 +640,15 @@ pub struct SurfaceToCachePdu {
     pub surface_id: u16,
     pub cache_key: u64,
     pub cache_slot: u16,
-    pub source_rectangle: InclusiveRectangle,
+    /// Source region; an exclusive `RDPGFX_RECT16` per MS-RDPEGFX 2.2.1.4.1
+    /// (`right` / `bottom` are one-past-end).
+    pub source_rectangle: ExclusiveRectangle,
 }
 
 impl SurfaceToCachePdu {
     const NAME: &'static str = "SurfaceToCachePdu";
 
-    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 8 /* CacheKey */ + 2 /* CacheSlot */ + InclusiveRectangle::FIXED_PART_SIZE /* SourceRect */;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 8 /* CacheKey */ + 2 /* CacheSlot */ + ExclusiveRectangle::ENCODED_SIZE /* SourceRect */;
 }
 
 impl Encode for SurfaceToCachePdu {
@@ -673,7 +679,7 @@ impl<'a> Decode<'a> for SurfaceToCachePdu {
         let surface_id = src.read_u16();
         let cache_key = src.read_u64();
         let cache_slot = src.read_u16();
-        let source_rectangle = InclusiveRectangle::decode(src)?;
+        let source_rectangle = ExclusiveRectangle::decode(src)?;
 
         Ok(Self {
             surface_id,
