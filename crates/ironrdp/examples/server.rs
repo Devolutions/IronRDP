@@ -429,5 +429,5 @@ async fn run(
         domain: None,
     }));
 
-    server.run().await
+    server.run().await.map_err(|e| anyhow::anyhow!(e))
 }
