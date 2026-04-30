@@ -261,6 +261,34 @@ pub struct Config {
     /// [\[MS-RDPBCGR\] 2.2.1.3.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/861f2bbb-6ca2-4c5a-8c44-0714fa901e70
     /// [`MultiTransportChannelData`]: ironrdp_pdu::gcc::MultiTransportChannelData
     pub multitransport_flags: Option<gcc::MultiTransportFlags>,
+
+    /// Advertise client support for the Graphics Pipeline Extension
+    /// (MS-RDPEGFX) over the Dynamic Virtual Channel.
+    ///
+    /// When `true`, the `SUPPORT_DYN_VC_GFX_PROTOCOL` flag is set in
+    /// [`ClientEarlyCapabilityFlags`], telling the server it may
+    /// negotiate the `Microsoft::Windows::RDS::Graphics` channel for
+    /// surface-based graphics updates instead of (or in addition to)
+    /// the legacy slow-path bitmap protocol.
+    ///
+    /// Setting this **without** wiring an EGFX-capable
+    /// [`DvcClientProcessor`] for that channel will cause modern
+    /// Windows servers to stop sending legacy bitmap updates and
+    /// route everything over EGFX — which the connector consumer
+    /// can't decode, leaving the desktop blank. To enable EGFX:
+    ///
+    /// 1. Set this field to `true`.
+    /// 2. Attach a [`DvcClientProcessor`] for
+    ///    `Microsoft::Windows::RDS::Graphics` via
+    ///    [`ClientConnector::with_static_channel`] +
+    ///    [`ironrdp_dvc::DrdynvcClient::with_dynamic_channel`].
+    /// 3. Decode `ironrdp_pdu::rdp::vc::dvc::gfx::ServerPdu` and
+    ///    paint the surfaces.
+    ///
+    /// Default: `false` (legacy slow-path bitmap only).
+    ///
+    /// [`DvcClientProcessor`]: https://docs.rs/ironrdp-dvc/latest/ironrdp_dvc/trait.DvcClientProcessor.html
+    pub support_dyn_vc_gfx_protocol: bool,
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);
