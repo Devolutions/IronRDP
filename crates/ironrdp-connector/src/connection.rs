@@ -1367,6 +1367,10 @@ fn create_gcc_blocks<'a>(
                         early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
                     }
 
+                    if config.support_dyn_vc_gfx_protocol {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
+                    }
+
                     Some(early_capability_flags)
                 },
                 dig_product_id: Some(config.dig_product_id.clone()),
@@ -1498,5 +1502,98 @@ fn create_client_info_pdu(
     ClientInfoPdu {
         security_header,
         client_info,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_pdu::gcc::ClientEarlyCapabilityFlags;
+    use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
+
+    use super::*;
+    use crate::Credentials;
+
+    fn config(support_dyn_vc_gfx_protocol: bool) -> Config {
+        Config {
+            desktop_size: DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            desktop_scale_factor: 0,
+            enable_tls: true,
+            enable_credssp: false,
+            credentials: Credentials::UsernamePassword {
+                username: "test".into(),
+                password: "test".into(),
+            },
+            domain: None,
+            client_build: 0,
+            client_name: "test".into(),
+            keyboard_type: gcc::KeyboardType::IbmEnhanced,
+            keyboard_subtype: 0,
+            keyboard_layout: 0,
+            keyboard_functional_keys_count: 12,
+            connection_type: gcc::ConnectionType::Lan,
+            ime_file_name: String::new(),
+            bitmap: None,
+            dig_product_id: String::new(),
+            client_dir: String::new(),
+            platform: MajorPlatformType::UNIX,
+            hardware_id: None,
+            request_data: None,
+            autologon: false,
+            enable_audio_playback: false,
+            license_cache: None,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+            multitransport_flags: None,
+            support_dyn_vc_gfx_protocol,
+            performance_flags: Default::default(),
+            timezone_info: Default::default(),
+            alternate_shell: String::new(),
+            work_dir: String::new(),
+        }
+    }
+
+    fn early_capability_flags(config: &Config) -> ClientEarlyCapabilityFlags {
+        create_gcc_blocks(config, nego::SecurityProtocol::SSL, core::iter::empty())
+            .expect("GCC blocks")
+            .core
+            .optional_data
+            .early_capability_flags
+            .expect("early capability flags are always emitted")
+    }
+
+    /// The default must leave the wire bit clear: a client that has not wired up
+    /// an EGFX-capable DVC processor and gets this flag set anyway sees modern
+    /// Windows servers stop sending legacy bitmap updates, and the desktop goes
+    /// blank.
+    #[test]
+    fn dyn_vc_gfx_protocol_bit_is_absent_by_default() {
+        assert!(
+            !early_capability_flags(&config(false)).contains(ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL)
+        );
+    }
+
+    /// Opting in sets the bit the server negotiates the Graphics Pipeline on.
+    #[test]
+    fn dyn_vc_gfx_protocol_bit_is_set_when_enabled() {
+        assert!(
+            early_capability_flags(&config(true)).contains(ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL)
+        );
+    }
+
+    /// The opt-in is additive: it must not disturb the flags the connector
+    /// always advertises, nor the ones derived from other config.
+    #[test]
+    fn dyn_vc_gfx_protocol_opt_in_changes_exactly_one_bit() {
+        let without = early_capability_flags(&config(false));
+        let with = early_capability_flags(&config(true));
+
+        assert_eq!(
+            with.symmetric_difference(without),
+            ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL,
+        );
     }
 }
