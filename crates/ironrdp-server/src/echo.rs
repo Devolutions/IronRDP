@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use anyhow::{Context as _, Result};
 use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_echo::server::EchoServer;
@@ -152,6 +151,6 @@ impl DvcProcessor for EchoDvcBridge {
 
 impl DvcServerProcessor for EchoDvcBridge {}
 
-pub(crate) fn build_echo_request(payload: Vec<u8>) -> Result<DvcMessage> {
-    EchoServer::request_message(payload).context("build ECHO request message")
+pub(crate) fn build_echo_request(payload: Vec<u8>) -> ServerResult<DvcMessage> {
+    EchoServer::request_message(payload).map_err(|e| ServerError::custom("build ECHO request message", e))
 }
