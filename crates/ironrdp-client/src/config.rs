@@ -1619,6 +1619,7 @@ impl ConfigBuilder {
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
             compression_type,
             performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
