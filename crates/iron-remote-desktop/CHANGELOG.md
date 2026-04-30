@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.7.0...iron-remote-desktop-v0.7.1)] - 2026-04-30
+
+### <!-- 1 -->Features
+
+- Expose granular RDCleanPath error details ([#1117](https://github.com/Devolutions/IronRDP/issues/1117)) ([2911124e8f](https://github.com/Devolutions/IronRDP/commit/2911124e8fe6160bc8ba03a574b67077e6d2cca9)) 
+
+  Add RDCleanPathDetails struct to provide detailed error information for
+  RDCleanPath errors, including HTTP status codes, WSA error codes, and
+  TLS alert codes.
+  
+  Allows the web client to distinguish between different types of network
+  errors (say, WSAEACCES/10013) instead of showing a generic RDCleanpath
+  error message.
+
+- Implement clipboard file transfer support ([#1166](https://github.com/Devolutions/IronRDP/issues/1166)) ([c98a8fb774](https://github.com/Devolutions/IronRDP/commit/c98a8fb7741986e9afef00cb5615250c963a7fa9)) 
+
+  Add end-to-end clipboard file transfer (upload and download) across the
+  CLIPRDR channel per MS-RDPECLIP.
+
+### <!-- 6 -->Documentation
+
+- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
+
+  The MSRV is the oldest stable Rust release that is at least 6 months
+  old, bounded by the Rust version available in Debian stable-backports
+  and Fedora stable.
+
+- Document iron-remote-desktop API design philosophy ([#1192](https://github.com/Devolutions/IronRDP/issues/1192)) ([9bb909eca2](https://github.com/Devolutions/IronRDP/commit/9bb909eca2b14e87c43daac443ed369e5341a425)) 
+
+  The core rule is: a method belongs in the base API (UserInteraction /
+  Session / SessionBuilder) if the web component itself needs to call it
+  for transparent behaviour, or if the feature is universal across all
+  remote protocol backends. Protocol-specific concepts must go through the
+  extension mechanism instead.
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.6.0...iron-remote-desktop-v0.7.0)] - 2025-09-29
 
 ### <!-- 4 -->Bug Fixes
