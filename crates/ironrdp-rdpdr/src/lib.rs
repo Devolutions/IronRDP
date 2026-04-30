@@ -45,7 +45,7 @@ pub struct Rdpdr {
     /// All devices not of the type [`DeviceType::Filesystem`] must be declared here.
     device_list: Devices,
     post_logon_devices_announced: bool,
-    backend: Box<dyn RdpdrBackend>,
+    backend: Option<Box<dyn RdpdrBackend>>,
 }
 
 impl_as_any!(Rdpdr);
@@ -60,7 +60,7 @@ impl Rdpdr {
             capabilities: Capabilities::new(),
             device_list: Devices::new(),
             post_logon_devices_announced: false,
-            backend,
+            backend: Some(backend),
         }
     }
 
@@ -128,11 +128,11 @@ impl Rdpdr {
     }
 
     pub fn downcast_backend<T: RdpdrBackend>(&self) -> Option<&T> {
-        self.backend.as_any().downcast_ref::<T>()
+        self.backend.as_ref()?.as_any().downcast_ref::<T>()
     }
 
     pub fn downcast_backend_mut<T: RdpdrBackend>(&mut self) -> Option<&mut T> {
-        self.backend.as_any_mut().downcast_mut::<T>()
+        self.backend.as_mut()?.as_any_mut().downcast_mut::<T>()
     }
 
     fn handle_server_announce(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
@@ -179,7 +179,7 @@ impl Rdpdr {
         Self::announce_devices(device_list)
     }
 
-    fn handle_user_loggedon(&mut self) -> PduResult<Vec<SvcMessage>> {
+    fn announce_post_logon_devices(&mut self) -> PduResult<Vec<SvcMessage>> {
         if self.post_logon_devices_announced {
             return Ok(Vec::new());
         }
@@ -214,8 +214,21 @@ impl Rdpdr {
         &mut self,
         pdu: ServerDeviceAnnounceResponse,
     ) -> PduResult<Vec<SvcMessage>> {
-        self.backend.handle_server_device_announce_response(pdu)?;
+        self.backend
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+            .handle_server_device_announce_response(pdu)?;
         Ok(Vec::new())
+    }
+
+    fn handle_user_logged_on(&mut self) -> PduResult<Vec<SvcMessage>> {
+        let mut backend = self.backend.take().expect("missing rdpdr backend");
+        let res = backend.handle_user_logged_on(self);
+        self.backend = Some(backend);
+        let mut messages = res?;
+        messages.extend(self.announce_post_logon_devices()?);
+        trace!("sending {:?}", messages);
+        Ok(messages)
     }
 
     fn handle_device_io_request(
@@ -223,11 +236,14 @@ impl Rdpdr {
         dev_io_req: DeviceIoRequest,
         src: &mut ReadCursor<'_>,
     ) -> PduResult<Vec<SvcMessage>> {
-        match self
-            .device_list
-            .for_device_type(dev_io_req.device_id)
-            .map_err(|e| decode_err!(e))?
-        {
+        let Ok(device_type) = self.device_list.for_device_type(dev_io_req.device_id) else {
+            // > If a request is received that contains a DeviceId field that was not announced by the client or has
+            // > been removed, the request SHOULD be ignored by the implementation.
+            // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9925f2e4-8d5a-4777-a41a-7ba6ef6e8bff
+            return Ok(vec![]);
+        };
+
+        match device_type {
             DeviceType::Smartcard => {
                 let req =
                     DeviceControlRequest::<ScardIoCtlCode>::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
@@ -236,7 +252,10 @@ impl Rdpdr {
                 debug!(?req);
                 debug!(?req.io_control_code, ?call);
 
-                self.backend.handle_scard_call(req, call)?;
+                self.backend
+                    .as_mut()
+                    .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                    .handle_scard_call(req, call)?;
 
                 Ok(Vec::new())
             }
@@ -245,7 +264,11 @@ impl Rdpdr {
 
                 debug!(?req);
 
-                Ok(self.backend.handle_drive_io_request(req)?)
+                Ok(self
+                    .backend
+                    .as_mut()
+                    .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                    .handle_drive_io_request(req)?)
             }
             DeviceType::Print => match dev_io_req.major_function {
                 MajorFunction::DeviceControl => {
@@ -260,7 +283,10 @@ impl Rdpdr {
                 MajorFunction::Create | MajorFunction::Write | MajorFunction::Close => {
                     let req = PrinterIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
                     debug!(?req, "Dispatching printer IRP to backend");
-                    self.backend.handle_printer_io_request(req)
+                    self.backend
+                        .as_mut()
+                        .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                        .handle_printer_io_request(req)
                 }
                 _ => {
                     debug!(
@@ -324,7 +350,7 @@ impl SvcProcessor for Rdpdr {
             }
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => self.handle_server_device_announce_response(pdu),
             RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu, &mut src),
-            RdpdrPdu::UserLoggedon => self.handle_user_loggedon(),
+            RdpdrPdu::UserLoggedon => self.handle_user_logged_on(),
             // TODO: This can eventually become a `_ => {}` block, but being explicit for now
             // to make sure we don't miss handling new RdpdrPdu variants here during active development.
             RdpdrPdu::ClientNameRequest(_)

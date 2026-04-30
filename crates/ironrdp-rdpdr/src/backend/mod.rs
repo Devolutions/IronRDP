@@ -6,6 +6,7 @@ use ironrdp_core::AsAny;
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::SvcMessage;
 
+use crate::Rdpdr;
 use crate::pdu::RdpdrPdu;
 use crate::pdu::efs::{
     DeviceCloseResponse, DeviceControlRequest, DeviceIoResponse, NtStatus, PrinterIoRequest,
@@ -18,6 +19,11 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()>;
     fn handle_scard_call(&mut self, req: DeviceControlRequest<ScardIoCtlCode>, call: ScardCall) -> PduResult<()>;
     fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>>;
+
+    fn handle_user_logged_on(&mut self, _rdpdr: &mut Rdpdr) -> PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+
     /// Handle a server-initiated IRP addressed to a printer device.
     ///
     /// `req` carries the fully-decoded printer IRP. Printers only see
