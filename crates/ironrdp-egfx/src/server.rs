@@ -62,7 +62,7 @@ use ironrdp_core::{Encode, EncodeResult, WriteCursor, decode, impl_as_any};
 use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
 use ironrdp_pdu::gcc::Monitor;
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::{PduResult, decode_err};
 use tracing::{debug, trace, warn};
 
@@ -1197,8 +1197,12 @@ impl GraphicsPipelineServer {
         }
     }
 
-    /// Compute bounding rectangle from regions
-    fn compute_dest_rect(regions: &[Avc420Region], default_width: u16, default_height: u16) -> InclusiveRectangle {
+    /// Compute bounding rectangle from regions.
+    ///
+    /// Avc420Region uses inclusive bounds; the wire format (RDPGFX_RECT16) is
+    /// exclusive, so the returned ExclusiveRectangle adds 1 to the max right
+    /// and bottom of the inclusive bounding box.
+    fn compute_dest_rect(regions: &[Avc420Region], default_width: u16, default_height: u16) -> ExclusiveRectangle {
         if let Some(first) = regions.first() {
             let mut left = first.left;
             let mut top = first.top;
@@ -1212,18 +1216,18 @@ impl GraphicsPipelineServer {
                 bottom = bottom.max(r.bottom);
             }
 
-            InclusiveRectangle {
+            ExclusiveRectangle {
                 left,
                 top,
-                right,
-                bottom,
+                right: right.saturating_add(1),
+                bottom: bottom.saturating_add(1),
             }
         } else {
-            InclusiveRectangle {
+            ExclusiveRectangle {
                 left: 0,
                 top: 0,
-                right: default_width.saturating_sub(1),
-                bottom: default_height.saturating_sub(1),
+                right: default_width,
+                bottom: default_height,
             }
         }
     }
@@ -1385,11 +1389,11 @@ impl GraphicsPipelineServer {
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
 
-        let dest_rect = InclusiveRectangle {
+        let dest_rect = ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: dest_width.saturating_sub(1),
-            bottom: dest_height.saturating_sub(1),
+            right: dest_width,
+            bottom: dest_height,
         };
 
         self.output_queue
