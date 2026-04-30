@@ -29,13 +29,13 @@ egfx = ["dep:ironrdp-egfx"]
 __bench = ["dep:visibility"]
 
 [dependencies]
-anyhow = "1.0"
 tokio = { version = "1", features = ["net", "macros", "sync", "rt"] } # public
 tokio-rustls = "0.26" # public
 async-trait = "0.1"
 ironrdp-async = { path = "../ironrdp-async", version = "0.8" }
 ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.5" }
-ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
+ironrdp-error = { path = "../ironrdp-error", version = "0.1", features = ["std"] } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.6" } # public
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.5" } # public

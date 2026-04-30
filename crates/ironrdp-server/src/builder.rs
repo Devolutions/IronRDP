@@ -1,6 +1,5 @@
 use core::net::SocketAddr;
 
-use anyhow::Result;
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, server_codecs_capabilities};
 use tokio_rustls::TlsAcceptor;
 
@@ -10,6 +9,7 @@ use super::display::{DesktopSize, RdpServerDisplay};
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{ConnectionHandler, RdpServer, RdpServerOptions, RdpServerSecurity};
+use crate::error::ServerResult;
 use crate::{DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
 
 pub struct WantsAddr {}
@@ -228,7 +228,7 @@ struct NoopDisplayUpdates;
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for NoopDisplayUpdates {
-    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
         let () = core::future::pending().await;
         unreachable!()
     }
@@ -242,7 +242,7 @@ impl RdpServerDisplay for NoopDisplay {
         DesktopSize { width: 0, height: 0 }
     }
 
-    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(NoopDisplayUpdates {}))
     }
 }
