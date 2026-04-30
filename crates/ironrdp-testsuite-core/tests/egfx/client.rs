@@ -7,7 +7,7 @@ use ironrdp_egfx::pdu::{
     DeleteSurfacePdu, EndFramePdu, GfxPdu, PixelFormat, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
 };
 use ironrdp_graphics::zgfx::wrap_uncompressed;
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::ExclusiveRectangle;
 
 // ============================================================================
 // Test Handler
@@ -213,11 +213,11 @@ fn client_handles_uncompressed_via_process() {
         surface_id: 1,
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 3,
-            bottom: 3,
+            right: 4,
+            bottom: 4,
         },
         bitmap_data: vec![0u8; 4 * 4 * 4],
     });
@@ -245,11 +245,11 @@ fn client_dispatches_avc420_via_process() {
         surface_id: 1,
         codec_id: Codec1Type::Avc420,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 15,
-            bottom: 15,
+            right: 16,
+            bottom: 16,
         },
         bitmap_data,
     });
@@ -276,11 +276,11 @@ fn client_skips_avc420_without_decoder() {
         surface_id: 1,
         codec_id: Codec1Type::Avc420,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 15,
-            bottom: 15,
+            right: 16,
+            bottom: 16,
         },
         bitmap_data,
     });
@@ -310,11 +310,11 @@ fn client_frame_ordering_via_process() {
         surface_id: 1,
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 3,
-            bottom: 3,
+            right: 4,
+            bottom: 4,
         },
         bitmap_data: vec![0u8; 4 * 4 * 4],
     });
@@ -403,11 +403,11 @@ fn client_rejects_wire_to_unknown_surface() {
         surface_id: 99, // does not exist
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 3,
-            bottom: 3,
+            right: 4,
+            bottom: 4,
         },
         bitmap_data: vec![0u8; 4 * 4 * 4],
     });
@@ -424,7 +424,7 @@ fn client_rejects_invalid_rectangle_ordering() {
         surface_id: 1,
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 50,
             top: 0,
             right: 10,
@@ -447,7 +447,7 @@ fn client_tolerates_out_of_bounds_rectangle() {
         surface_id: 1,
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
             right: 200, // exceeds surface width of 100

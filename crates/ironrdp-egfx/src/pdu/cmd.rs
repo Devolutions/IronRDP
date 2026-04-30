@@ -7,7 +7,7 @@ use ironrdp_core::{
 };
 use ironrdp_dvc::DvcEncode;
 use ironrdp_pdu::gcc::Monitor;
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
 use ironrdp_pdu::{DecodeError, cast_length, ensure_size, read_padding, write_padding};
 use tracing::warn;
 
@@ -306,13 +306,17 @@ impl<'de> Decode<'de> for GfxPdu {
 
 /// 2.2.2.1 RDPGFX_WIRE_TO_SURFACE_PDU_1
 ///
+/// `destination_rectangle` is an [`ExclusiveRectangle`] because MS-RDPEGFX
+/// 2.2.1.4.1 RDPGFX_RECT16 specifies `right` and `bottom` as exclusive
+/// (one-past-end), matching FreeRDP and the Windows reference clients.
+///
 /// [2.2.2.1]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/fb919fce-cc97-4d2b-8cf5-a737a00ef1a6>
 #[derive(Clone, PartialEq, Eq)]
 pub struct WireToSurface1Pdu {
     pub surface_id: u16,
     pub codec_id: Codec1Type,
     pub pixel_format: PixelFormat,
-    pub destination_rectangle: InclusiveRectangle,
+    pub destination_rectangle: ExclusiveRectangle,
     pub bitmap_data: Vec<u8>,
 }
 
@@ -331,7 +335,7 @@ impl fmt::Debug for WireToSurface1Pdu {
 impl WireToSurface1Pdu {
     const NAME: &'static str = "WireToSurface1Pdu";
 
-    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 2 /* CodecId */ + 1 /* PixelFormat */ + InclusiveRectangle::FIXED_PART_SIZE /* Dest */ + 4 /* BitmapDataLen */;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 2 /* CodecId */ + 1 /* PixelFormat */ + ExclusiveRectangle::ENCODED_SIZE /* Dest */ + 4 /* BitmapDataLen */;
 }
 
 impl Encode for WireToSurface1Pdu {
@@ -363,7 +367,7 @@ impl<'a> Decode<'a> for WireToSurface1Pdu {
         let surface_id = src.read_u16();
         let codec_id = Codec1Type::try_from(src.read_u16())?;
         let pixel_format = PixelFormat::try_from(src.read_u8())?;
-        let destination_rectangle = InclusiveRectangle::decode(src)?;
+        let destination_rectangle = ExclusiveRectangle::decode(src)?;
         let bitmap_data_length = cast_length!("BitmapDataLen", src.read_u32())?;
 
         ensure_size!(in: src, size: bitmap_data_length);
