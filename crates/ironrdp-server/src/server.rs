@@ -43,6 +43,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
+use crate::error::{ServerResult, from_anyhow};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -986,7 +987,7 @@ impl RdpServer {
     ///
     /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
     /// [`TransportTls::Managed`].
-    pub async fn run_connection<S>(&mut self, stream: S) -> Result<()>
+    pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
@@ -1063,7 +1064,20 @@ impl RdpServer {
     /// under [`TransportTls::AlreadyDone`] is that after the negotiation reaches
     /// the security-upgrade gate, no TLS handshake is performed on the byte
     /// stream, because the caller's stream is already past TLS at a lower layer.
-    pub async fn run_connection_with<S>(&mut self, stream: S, tls: TransportTls) -> Result<()>
+    pub async fn run_connection_with<S>(&mut self, stream: S, tls: TransportTls) -> ServerResult<()>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        self.run_connection_with_inner(stream, tls).await.map_err(from_anyhow)
+    }
+
+    /// The anyhow-returning body behind [`Self::run_connection_with`].
+    ///
+    /// Kept private and untyped only because the accept loop feeds its error to
+    /// [`ServerConnectionHandler::on_disconnected`], whose parameter is still
+    /// `Option<&anyhow::Error>`. Migrating that callback is tracked under #1209;
+    /// once it takes a `ServerError` this helper collapses into its caller.
+    async fn run_connection_with_inner<S>(&mut self, stream: S, tls: TransportTls) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
@@ -1171,7 +1185,11 @@ impl RdpServer {
         Ok(())
     }
 
-    pub async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> ServerResult<()> {
+        self.run_inner().await.map_err(from_anyhow)
+    }
+
+    async fn run_inner(&mut self) -> Result<()> {
         // Create socket with control over options before binding.
         // Using TcpSocket instead of TcpListener::bind() allows setting
         // SO_REUSEADDR and IPv6 dual-stack mode.
@@ -1240,7 +1258,11 @@ impl RdpServer {
                         drop(stream);
                     } else {
                         let started = tokio::time::Instant::now();
-                        let result = self.run_connection(stream).await;
+                        // Internal accept loop uses the anyhow-returning inner method so the
+                        // existing `on_disconnected(error: Option<&anyhow::Error>)` parameter
+                        // continues to receive an anyhow value. Migration of that parameter
+                        // to ServerError is tracked as a follow-up PR per #1209.
+                        let result = self.run_connection_with_inner(stream, TransportTls::Managed).await;
                         let duration = started.elapsed();
 
                         if let Err(ref error) = result {
