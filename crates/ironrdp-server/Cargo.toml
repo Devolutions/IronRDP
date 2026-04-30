@@ -29,7 +29,6 @@ egfx = ["dep:ironrdp-egfx"]
 __bench = ["dep:visibility"]
 
 [dependencies]
-anyhow = "1.0"
 tokio = { version = "1", features = ["net", "macros", "sync", "rt"] } # public
 tokio-rustls = "0.26" # public
 async-trait = "0.1"

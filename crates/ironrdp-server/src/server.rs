@@ -34,7 +34,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
-use crate::error::{ServerError, ServerErrorExt as _, ServerResult, from_anyhow};
+use crate::error::{ServerError, ServerErrorExt as _, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -223,8 +223,7 @@ impl DisplayControlHandler for DisplayControlBackend {
 /// ```
 /// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay, RdpServerDisplayUpdates};
 ///
-///# use anyhow::Result;
-///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent};
+///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent, ServerResult};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
 ///# impl RdpServerInputHandler for NoopInputHandler {
@@ -237,11 +236,11 @@ impl DisplayControlHandler for DisplayControlBackend {
 ///#     async fn size(&mut self) -> DesktopSize {
 ///#         todo!()
 ///#     }
-///#     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+///#     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///#         todo!()
 ///#     }
 ///# }
-///# async fn stub() -> Result<()> {
+///# async fn stub() -> ServerResult<()> {
 /// fn make_tls_acceptor() -> TlsAcceptor {
 ///    /* snip */
 ///#    todo!()
@@ -868,7 +867,7 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Starting client loop");
-        let mut display_updates = self.display.lock().await.updates().await.map_err(from_anyhow)?;
+        let mut display_updates = self.display.lock().await.updates().await?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();

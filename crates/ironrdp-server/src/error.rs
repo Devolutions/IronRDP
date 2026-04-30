@@ -170,29 +170,3 @@ impl<T> ServerResultExt for ServerResult<T> {
         self.map_err(|e| e.with_source(source))
     }
 }
-
-/// Bridges anyhow errors at the public API boundary while the migration to
-/// typed errors is staged.
-///
-/// Internal call sites still use `anyhow::Result`; conversion happens here so
-/// the public signatures can advertise [`ServerResult`] today without forcing
-/// every internal site to convert in this PR. PR #2 in the staged migration
-/// (see [#1209]) removes the remaining `anyhow` usage and this helper.
-///
-/// [#1209]: https://github.com/Devolutions/IronRDP/issues/1209
-pub(crate) fn from_anyhow(error: anyhow::Error) -> ServerError {
-    ServerError::new("server error", ServerErrorKind::Custom).with_source(AnyhowError(error))
-}
-
-/// Newtype wrapper that gives [`anyhow::Error`] a `core::error::Error` impl
-/// suitable for `ironrdp_error::Error::with_source`.
-#[derive(Debug)]
-struct AnyhowError(anyhow::Error);
-
-impl fmt::Display for AnyhowError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#}", self.0)
-    }
-}
-
-impl core::error::Error for AnyhowError {}
