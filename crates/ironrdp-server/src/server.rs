@@ -53,7 +53,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
-use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult, from_anyhow_with_context};
+use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -530,7 +530,6 @@ pub enum TransportTls {
 /// ```
 /// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay, RdpServerDisplayUpdates};
 ///
-///# use anyhow::Result;
 ///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent, ServerResult};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
@@ -544,7 +543,7 @@ pub enum TransportTls {
 ///#     async fn size(&mut self) -> DesktopSize {
 ///#         todo!()
 ///#     }
-///#     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+///#     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///#         todo!()
 ///#     }
 ///# }
@@ -2024,13 +2023,7 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Starting client loop");
-        let mut display_updates = self
-            .display
-            .lock()
-            .await
-            .updates()
-            .await
-            .map_err(|e| from_anyhow_with_context(e, "getting display updates"))?;
+        let mut display_updates = self.display.lock().await.updates().await?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
