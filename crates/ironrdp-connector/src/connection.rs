@@ -17,6 +17,20 @@ use crate::{
     NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
 };
 
+/// Outcome of a single multitransport bootstrapping request, passed to
+/// [`ClientConnector::complete_multitransport()`].
+///
+/// The connector uses this to build the response PDU internally, paired with
+/// the request ID and cookie from the server's original request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MultitransportResult {
+    /// UDP transport was established successfully (`S_OK`).
+    Success,
+    /// UDP transport failed. The `u32` is the HRESULT error code (typically
+    /// [`MultitransportResponsePdu::E_ABORT`](rdp::multitransport::MultitransportResponsePdu::E_ABORT)).
+    Failure(u32),
+}
+
 #[derive(Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectionResult {
@@ -72,9 +86,32 @@ pub enum ClientConnectorState {
         user_channel_id: u16,
         license_exchange: LicenseExchangeSequence,
     },
+    /// Reading the server's optional Initiate Multitransport Request PDU(s).
+    ///
+    /// The server may send 0, 1, or 2 requests (one per transport protocol).
+    /// If the first PDU on the IO channel after licensing is a Demand Active
+    /// (capabilities exchange), the server sent no multitransport requests and
+    /// the connector transitions directly to `CapabilitiesExchange`.
     MultitransportBootstrapping {
         io_channel_id: u16,
         user_channel_id: u16,
+        /// Multitransport requests received from the server so far.
+        requests: Vec<rdp::multitransport::MultitransportRequestPdu>,
+    },
+    /// The server sent multitransport request(s) and the connector is paused
+    /// waiting for the application to establish UDP transport or decline.
+    ///
+    /// Call [`ClientConnector::complete_multitransport()`] or
+    /// [`ClientConnector::skip_multitransport()`] to advance. The buffered
+    /// Demand Active PDU is replayed internally — no re-feeding needed.
+    MultitransportPending {
+        io_channel_id: u16,
+        user_channel_id: u16,
+        requests: Vec<rdp::multitransport::MultitransportRequestPdu>,
+        /// The raw Demand Active PDU bytes that arrived after the last
+        /// multitransport request. Replayed through the activation sequence
+        /// when the application completes or skips multitransport.
+        buffered_demand_active: Vec<u8>,
     },
     CapabilitiesExchange {
         connection_activation: ConnectionActivationSequence,
@@ -102,6 +139,7 @@ impl State for ClientConnectorState {
             Self::ConnectTimeAutoDetection { .. } => "ConnectTimeAutoDetection",
             Self::LicensingExchange { .. } => "LicensingExchange",
             Self::MultitransportBootstrapping { .. } => "MultitransportBootstrapping",
+            Self::MultitransportPending { .. } => "MultitransportPending",
             Self::CapabilitiesExchange {
                 connection_activation, ..
             } => connection_activation.state().name(),
@@ -201,6 +239,141 @@ impl ClientConnector {
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
     }
+
+    /// Returns `true` when the connector has collected all multitransport
+    /// requests from the server and is waiting for the application to either
+    /// establish the UDP transport(s) or decline them.
+    ///
+    /// The application should:
+    ///
+    /// 1. Call [`multitransport_requests()`](Self::multitransport_requests) to
+    ///    get the server's request(s)
+    /// 2. Establish UDP transport (RDPEUDP2 + TLS + RDPEMT) for each, or decide
+    ///    not to
+    /// 3. Call [`complete_multitransport()`](Self::complete_multitransport) with
+    ///    a [`MultitransportResult`] for each request, or
+    ///    [`skip_multitransport()`](Self::skip_multitransport) to decline all
+    pub fn should_perform_multitransport(&self) -> bool {
+        matches!(self.state, ClientConnectorState::MultitransportPending { .. })
+    }
+
+    /// Returns the multitransport request PDUs received from the server.
+    ///
+    /// Only meaningful when
+    /// [`should_perform_multitransport()`](Self::should_perform_multitransport)
+    /// returns `true`.
+    pub fn multitransport_requests(&self) -> &[rdp::multitransport::MultitransportRequestPdu] {
+        match &self.state {
+            ClientConnectorState::MultitransportPending { requests, .. } => requests,
+            _ => &[],
+        }
+    }
+
+    /// Send multitransport response PDU(s) and advance past the bootstrapping
+    /// phase to capabilities exchange.
+    ///
+    /// Pass one [`MultitransportResult`] per request (in the same order as
+    /// [`multitransport_requests()`](Self::multitransport_requests)). The
+    /// connector builds the response PDUs internally using the stored request
+    /// IDs and cookies, then replays the buffered Demand Active PDU through
+    /// the activation sequence.
+    ///
+    /// Returns an error if the connector is not in `MultitransportPending`
+    /// state, or if `results.len()` does not match the number of pending
+    /// requests.
+    pub fn complete_multitransport(
+        &mut self,
+        results: &[MultitransportResult],
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        let ClientConnectorState::MultitransportPending {
+            io_channel_id,
+            user_channel_id,
+            requests,
+            buffered_demand_active,
+        } = mem::replace(&mut self.state, ClientConnectorState::Consumed)
+        else {
+            return Err(general_err!(
+                "complete_multitransport called outside MultitransportPending state"
+            ));
+        };
+
+        if results.len() != requests.len() {
+            return Err(general_err!(
+                "multitransport results count does not match requests count"
+            ));
+        }
+
+        let mut total_written = 0;
+
+        for (request, result) in requests.iter().zip(results) {
+            let response = match result {
+                MultitransportResult::Success => {
+                    rdp::multitransport::MultitransportResponsePdu::success(request.request_id)
+                }
+                MultitransportResult::Failure(hr) => rdp::multitransport::MultitransportResponsePdu {
+                    security_header: rdp::headers::BasicSecurityHeader {
+                        flags: rdp::headers::BasicSecurityHeaderFlags::TRANSPORT_RSP,
+                    },
+                    request_id: request.request_id,
+                    hr_response: *hr,
+                },
+            };
+            total_written += encode_send_data_request(user_channel_id, io_channel_id, &response, output)?;
+        }
+
+        // Replay the buffered Demand Active through the activation sequence
+        let mut connection_activation =
+            ConnectionActivationSequence::new(self.config.clone(), io_channel_id, user_channel_id);
+        let replay_written = connection_activation.step(&buffered_demand_active, output)?;
+        total_written += replay_written.size().unwrap_or(0);
+
+        self.state = match connection_activation.connection_activation_state() {
+            ConnectionActivationState::ConnectionFinalization { .. } => {
+                ClientConnectorState::ConnectionFinalization { connection_activation }
+            }
+            _ => ClientConnectorState::CapabilitiesExchange { connection_activation },
+        };
+
+        Written::from_size(total_written)
+    }
+
+    /// Skip multitransport bootstrapping without sending any responses.
+    ///
+    /// Use this when the application doesn't support or doesn't want UDP
+    /// transport. The server will continue with TCP-only operation.
+    ///
+    /// The buffered Demand Active PDU is replayed internally.
+    ///
+    /// Returns an error if the connector is not in `MultitransportPending`
+    /// state.
+    pub fn skip_multitransport(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
+        let ClientConnectorState::MultitransportPending {
+            io_channel_id,
+            user_channel_id,
+            buffered_demand_active,
+            ..
+        } = mem::replace(&mut self.state, ClientConnectorState::Consumed)
+        else {
+            return Err(general_err!(
+                "skip_multitransport called outside MultitransportPending state"
+            ));
+        };
+
+        // Replay the buffered Demand Active through the activation sequence
+        let mut connection_activation =
+            ConnectionActivationSequence::new(self.config.clone(), io_channel_id, user_channel_id);
+        let written = connection_activation.step(&buffered_demand_active, output)?;
+
+        self.state = match connection_activation.connection_activation_state() {
+            ConnectionActivationState::ConnectionFinalization { .. } => {
+                ClientConnectorState::ConnectionFinalization { connection_activation }
+            }
+            _ => ClientConnectorState::CapabilitiesExchange { connection_activation },
+        };
+
+        Ok(written)
+    }
 }
 
 impl Sequence for ClientConnector {
@@ -217,7 +390,8 @@ impl Sequence for ClientConnector {
             ClientConnectorState::SecureSettingsExchange { .. } => None,
             ClientConnectorState::ConnectTimeAutoDetection { .. } => None,
             ClientConnectorState::LicensingExchange { license_exchange, .. } => license_exchange.next_pdu_hint(),
-            ClientConnectorState::MultitransportBootstrapping { .. } => None,
+            ClientConnectorState::MultitransportBootstrapping { .. } => Some(&ironrdp_pdu::X224_HINT),
+            ClientConnectorState::MultitransportPending { .. } => None,
             ClientConnectorState::CapabilitiesExchange {
                 connection_activation, ..
             } => connection_activation.next_pdu_hint(),
@@ -522,6 +696,7 @@ impl Sequence for ClientConnector {
                     ClientConnectorState::MultitransportBootstrapping {
                         io_channel_id,
                         user_channel_id,
+                        requests: Vec::new(),
                     }
                 } else {
                     ClientConnectorState::LicensingExchange {
@@ -535,20 +710,88 @@ impl Sequence for ClientConnector {
             }
 
             //== Optional Multitransport Bootstrapping ==//
-            // NOTE: our implementation is not expecting the Auto-Detect Request PDU from server
+            //
+            // The server may send 0, 1, or 2 Initiate Multitransport Request PDUs
+            // after licensing. We distinguish them from the Demand Active PDU by
+            // attempting to decode as MultitransportRequestPdu first — it has a
+            // distinctive structure (SEC_TRANSPORT_REQ flag + request_id + protocol
+            // + cookie). If decode fails, this is the Demand Active.
             ClientConnectorState::MultitransportBootstrapping {
                 io_channel_id,
                 user_channel_id,
-            } => (
-                Written::Nothing,
-                ClientConnectorState::CapabilitiesExchange {
-                    connection_activation: ConnectionActivationSequence::new(
-                        self.config.clone(),
-                        io_channel_id,
-                        user_channel_id,
-                    ),
-                },
-            ),
+                mut requests,
+            } => {
+                let ctx = crate::legacy::decode_send_data_indication(input)?;
+
+                // Try decoding as a multitransport request. The decoder validates
+                // the SEC_TRANSPORT_REQ flag, so a Demand Active PDU will fail
+                // cleanly without false positives.
+                match decode::<rdp::multitransport::MultitransportRequestPdu>(ctx.user_data) {
+                    Ok(pdu) => {
+                        debug!(
+                            request_id = pdu.request_id,
+                            protocol = ?pdu.requested_protocol,
+                            "Received Initiate Multitransport Request"
+                        );
+
+                        requests.push(pdu);
+
+                        // Stay in this state to read more requests (server may send a second)
+                        (
+                            Written::Nothing,
+                            ClientConnectorState::MultitransportBootstrapping {
+                                io_channel_id,
+                                user_channel_id,
+                                requests,
+                            },
+                        )
+                    }
+                    Err(_) if !requests.is_empty() => {
+                        // Decode failed → this is the Demand Active PDU. Buffer it
+                        // and pause for the application to handle multitransport.
+                        info!(
+                            count = requests.len(),
+                            "Multitransport bootstrapping: pausing for application"
+                        );
+
+                        (
+                            Written::Nothing,
+                            ClientConnectorState::MultitransportPending {
+                                io_channel_id,
+                                user_channel_id,
+                                requests,
+                                buffered_demand_active: input.to_vec(),
+                            },
+                        )
+                    }
+                    Err(_) => {
+                        // No multitransport requests — server went straight to
+                        // capabilities exchange. Forward the PDU.
+                        let mut connection_activation =
+                            ConnectionActivationSequence::new(self.config.clone(), io_channel_id, user_channel_id);
+                        let written = connection_activation.step(input, output)?;
+
+                        match connection_activation.connection_activation_state() {
+                            ConnectionActivationState::ConnectionFinalization { .. } => (
+                                written,
+                                ClientConnectorState::ConnectionFinalization { connection_activation },
+                            ),
+                            _ => (
+                                written,
+                                ClientConnectorState::CapabilitiesExchange { connection_activation },
+                            ),
+                        }
+                    }
+                }
+            }
+
+            // MultitransportPending: application should call complete_multitransport()
+            // or skip_multitransport() instead of step()
+            ClientConnectorState::MultitransportPending { .. } => {
+                return Err(general_err!(
+                    "multitransport pending: call complete_multitransport() or skip_multitransport()"
+                ));
+            }
 
             //== Capabilities Exchange ==/
             // The server sends the set of capabilities it supports to the client.
