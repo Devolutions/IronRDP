@@ -13,6 +13,7 @@ mod clipboard;
 mod display;
 mod echo;
 mod encoder;
+mod error;
 #[cfg(feature = "egfx")]
 mod gfx;
 mod handler;
@@ -27,6 +28,7 @@ pub use display::{
     RdpServerDisplayUpdates,
 };
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
+pub use error::{ServerError, ServerErrorExt, ServerErrorKind, ServerResult, ServerResultExt};
 #[cfg(feature = "egfx")]
 pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle};
 pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};

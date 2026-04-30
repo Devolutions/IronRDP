@@ -39,6 +39,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
+use crate::error::{ServerResult, from_anyhow};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -690,7 +691,14 @@ impl RdpServer {
         acceptor.attach_static_channel(dvc);
     }
 
-    pub async fn run_connection<S>(&mut self, stream: S) -> Result<()>
+    pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        self.run_connection_inner(stream).await.map_err(from_anyhow)
+    }
+
+    async fn run_connection_inner<S>(&mut self, stream: S) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
@@ -769,7 +777,11 @@ impl RdpServer {
         Ok(())
     }
 
-    pub async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> ServerResult<()> {
+        self.run_inner().await.map_err(from_anyhow)
+    }
+
+    async fn run_inner(&mut self) -> Result<()> {
         // Create socket with control over options before binding.
         // Using TcpSocket instead of TcpListener::bind() allows setting
         // SO_REUSEADDR and IPv6 dual-stack mode.
@@ -835,7 +847,11 @@ impl RdpServer {
                         drop(stream);
                     } else {
                         let started = tokio::time::Instant::now();
-                        let result = self.run_connection(stream).await;
+                        // Internal accept loop uses the anyhow-returning inner method so the
+                        // existing `on_disconnected(error: Option<&anyhow::Error>)` parameter
+                        // continues to receive an anyhow value. Migration of that parameter
+                        // to ServerError is tracked as a follow-up PR per #1209.
+                        let result = self.run_connection_inner(stream).await;
                         let duration = started.elapsed();
 
                         if let Err(ref error) = result {
