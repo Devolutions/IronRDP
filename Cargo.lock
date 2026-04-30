@@ -2915,8 +2915,11 @@ dependencies = [
  "ironrdp",
  "ironrdp-async",
  "ironrdp-client",
+ "ironrdp-graphics",
+ "ironrdp-session",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-web-replay",
  "semver",
  "tokio",
  "tracing",
@@ -2982,6 +2985,22 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "x509-cert",
+]
+
+[[package]]
+name = "ironrdp-web-replay"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "getrandom 0.4.0-rc.0",
+ "ironrdp-core",
+ "ironrdp-error",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
+ "ironrdp-session",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
