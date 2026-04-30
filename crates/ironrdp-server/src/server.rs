@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Instant;
 
-use anyhow::{Context as _, Result, bail};
 use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
@@ -42,7 +41,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
-use crate::error::{ServerResult, from_anyhow};
+use crate::error::{ServerError, ServerErrorExt as _, ServerResult, from_anyhow};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -99,7 +98,7 @@ pub trait ConnectionHandler: Send {
         &mut self,
         peer: SocketAddr,
         duration: Duration,
-        error: Option<&anyhow::Error>,
+        error: Option<&ServerError>,
     ) -> PostConnectionAction {
         let _ = (peer, duration, error);
         PostConnectionAction::Continue
@@ -1046,19 +1045,6 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        self.run_connection_with_inner(stream, tls).await.map_err(from_anyhow)
-    }
-
-    /// The anyhow-returning body behind [`Self::run_connection_with`].
-    ///
-    /// Kept private and untyped only because the accept loop feeds its error to
-    /// [`ServerConnectionHandler::on_disconnected`], whose parameter is still
-    /// `Option<&anyhow::Error>`. Migrating that callback is tracked under #1209;
-    /// once it takes a `ServerError` this helper collapses into its caller.
-    async fn run_connection_with_inner<S>(&mut self, stream: S, tls: TransportTls) -> Result<()>
-    where
-        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
-    {
         // Per-connection state must start fresh: if the previous client
         // disconnected while it had sent `SuppressOutput { None }` (e.g.,
         // closed the mstsc window while minimized so the matching resume
@@ -1081,7 +1067,7 @@ impl RdpServer {
 
         let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
             .await
-            .context("accept_begin failed")?;
+            .map_err(|e| ServerError::custom("accept_begin failed", e))?;
 
         match res {
             // The only thing that varies between the two modes is who performs
@@ -1130,7 +1116,7 @@ impl RdpServer {
         mut framed: TokioFramed<S>,
         mut acceptor: Acceptor,
         shutdown_label: &str,
-    ) -> Result<()>
+    ) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
@@ -1150,7 +1136,8 @@ impl RdpServer {
                 pub_key.clone(),
                 None,
             )
-            .await?;
+            .await
+            .map_err(|e| ServerError::custom("accept_credssp", e))?;
         }
 
         let framed = self.accept_finalize(framed, acceptor).await?;
@@ -1164,15 +1151,11 @@ impl RdpServer {
     }
 
     pub async fn run(&mut self) -> ServerResult<()> {
-        self.run_inner().await.map_err(from_anyhow)
-    }
-
-    async fn run_inner(&mut self) -> Result<()> {
         // Create socket with control over options before binding.
         // Using TcpSocket instead of TcpListener::bind() allows setting
         // SO_REUSEADDR and IPv6 dual-stack mode.
         let socket = match self.opts.addr {
-            SocketAddr::V4(_) => TcpSocket::new_v4().context("create IPv4 socket")?,
+            SocketAddr::V4(_) => TcpSocket::new_v4().map_err(|e| ServerError::io("create IPv4 socket", e))?,
             SocketAddr::V6(_) => {
                 // IPv6 socket: on Linux, dual-stack is the default
                 // (net.ipv6.bindv6only=0), so IPv4 clients connect as
@@ -1180,7 +1163,7 @@ impl RdpServer {
                 // where IPV6_V6ONLY defaults to 1 (Windows, some BSDs),
                 // only IPv6 clients will be accepted and a separate IPv4
                 // listener would be needed.
-                TcpSocket::new_v6().context("create IPv6 socket")?
+                TcpSocket::new_v6().map_err(|e| ServerError::io("create IPv6 socket", e))?
             }
         };
 
@@ -1189,12 +1172,18 @@ impl RdpServer {
         // on Windows SO_REUSEADDR has different semantics that allow a
         // second process to bind the same port, which is a security risk.
         #[cfg(unix)]
-        socket.set_reuseaddr(true).context("set SO_REUSEADDR")?;
+        socket
+            .set_reuseaddr(true)
+            .map_err(|e| ServerError::io("set SO_REUSEADDR", e))?;
 
-        socket.bind(self.opts.addr).context("bind listen address")?;
+        socket
+            .bind(self.opts.addr)
+            .map_err(|e| ServerError::io("bind listen address", e))?;
 
-        let listener = socket.listen(LISTENER_BACKLOG).context("start listener")?;
-        let local_addr = listener.local_addr()?;
+        let listener = socket
+            .listen(LISTENER_BACKLOG)
+            .map_err(|e| ServerError::io("start listener", e))?;
+        let local_addr = listener.local_addr().map_err(|e| ServerError::io("local_addr", e))?;
 
         debug!("Listening for connections on {local_addr}");
         self.local_addr = Some(local_addr);
@@ -1236,11 +1225,7 @@ impl RdpServer {
                         drop(stream);
                     } else {
                         let started = tokio::time::Instant::now();
-                        // Internal accept loop uses the anyhow-returning inner method so the
-                        // existing `on_disconnected(error: Option<&anyhow::Error>)` parameter
-                        // continues to receive an anyhow value. Migration of that parameter
-                        // to ServerError is tracked as a follow-up PR per #1209.
-                        let result = self.run_connection_with_inner(stream, TransportTls::Managed).await;
+                        let result = self.run_connection(stream).await;
                         let duration = started.elapsed();
 
                         if let Err(ref error) = result {
@@ -1287,10 +1272,10 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
-    ) -> Result<RunState> {
+    ) -> ServerResult<RunState> {
         match action {
             Action::FastPath => {
-                let input = decode(&bytes)?;
+                let input = decode(&bytes).map_err(ServerError::decode)?;
                 self.handle_fastpath(input).await;
             }
 
@@ -1298,7 +1283,7 @@ impl RdpServer {
                 if self
                     .handle_x224(writer, io_channel_id, user_channel_id, message_channel_id, &bytes)
                     .await
-                    .context("X224 input error")?
+                    .map_err(|e| ServerError::custom("X224 input error", e))?
                 {
                     debug!("Got disconnect request");
                     return Ok(RunState::Disconnect);
@@ -1316,7 +1301,7 @@ impl RdpServer {
         io_channel_id: u16,
         buffer: &mut Vec<u8>,
         mut encoder: UpdateEncoder,
-    ) -> Result<(RunState, UpdateEncoder)> {
+    ) -> ServerResult<(RunState, UpdateEncoder)> {
         if let DisplayUpdate::Resize(desktop_size) = update {
             debug!(?desktop_size, "Display resize");
             encoder.set_desktop_size(desktop_size);
@@ -1330,7 +1315,7 @@ impl RdpServer {
                 break;
             };
 
-            let mut fragmenter = fragmenter.context("error while encoding")?;
+            let mut fragmenter = fragmenter?;
             if fragmenter.size_hint() > buffer.len() {
                 buffer.resize(fragmenter.size_hint(), 0);
             }
@@ -1339,7 +1324,7 @@ impl RdpServer {
                 writer
                     .write_all(&buffer[..len])
                     .await
-                    .context("failed to write display update")?;
+                    .map_err(|e| ServerError::custom("failed to write display update", e))?;
             }
         }
 
@@ -1353,7 +1338,7 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
-    ) -> Result<RunState> {
+    ) -> ServerResult<RunState> {
         // Avoid wave messages queuing up and causing extra delay. When a
         // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
         // and keep the most recent — playing stale audio just bakes the
@@ -1408,12 +1393,16 @@ impl RdpServer {
                             continue;
                         }
                     }
-                    .context("failed to send rdpsnd event")?;
+                    .map_err(|e| ServerError::custom("failed to send rdpsnd event", e))?;
                     let channel_id = self
                         .get_channel_id_by_type::<RdpsndServer>()
-                        .context("SVC channel not found")?;
-                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                    writer.write_all(&data).await?;
+                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Clipboard(c) => {
                     let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
@@ -1432,12 +1421,16 @@ impl RdpServer {
                             continue;
                         }
                     }
-                    .context("failed to send clipboard event")?;
+                    .map_err(|e| ServerError::custom("failed to send clipboard event", e))?;
                     let channel_id = self
                         .get_channel_id_by_type::<CliprdrServer>()
-                        .context("SVC channel not found")?;
-                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                    writer.write_all(&data).await?;
+                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Echo(msg) => match msg {
                     EchoServerMessage::SendRequest { payload } => {
@@ -1460,14 +1453,19 @@ impl RdpServer {
 
                         let request = build_echo_request(payload)?;
                         let messages =
-                            dvc::encode_dvc_messages(echo_channel_id, vec![request], ChannelFlags::SHOW_PROTOCOL)?;
+                            dvc::encode_dvc_messages(echo_channel_id, vec![request], ChannelFlags::SHOW_PROTOCOL)
+                                .map_err(ServerError::encode)?;
 
                         let drdynvc_channel_id = self
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
-                            .context("DRDYNVC channel not found")?;
+                            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
 
-                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
-                        writer.write_all(&data).await?;
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)
+                            .map_err(ServerError::encode)?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
                     }
                 },
                 #[cfg(feature = "egfx")]
@@ -1475,9 +1473,13 @@ impl RdpServer {
                     EgfxServerMessage::SendMessages { messages } => {
                         let drdynvc_channel_id = self
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
-                            .context("DRDYNVC channel not found")?;
-                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
-                        writer.write_all(&data).await?;
+                            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)
+                            .map_err(ServerError::encode)?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
                     }
                 },
                 ServerEvent::AutoDetectRttRequest => {
@@ -1489,7 +1491,10 @@ impl RdpServer {
                         ad.expire_stale_probes(now_ms, crate::autodetect::RTT_PROBE_MAX_AGE_MS);
                         let request = ad.send_rtt_request(now_ms);
                         let data = encode_autodetect_request(request, message_channel_id, user_channel_id)?;
-                        writer.write_all(&data).await?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
                     }
                 }
             }
@@ -1506,13 +1511,13 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         mut encoder: UpdateEncoder,
-    ) -> Result<RunState>
+    ) -> ServerResult<RunState>
     where
         R: FramedRead,
         W: FramedWrite,
     {
         debug!("Starting client loop");
-        let mut display_updates = self.display.lock().await.updates().await?;
+        let mut display_updates = self.display.lock().await.updates().await.map_err(from_anyhow)?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
@@ -1523,7 +1528,10 @@ impl RdpServer {
         let this = Rc::clone(&s);
         let dispatch_pdu = async move {
             loop {
-                let (action, bytes) = reader.read_pdu().await?;
+                let (action, bytes) = reader
+                    .read_pdu()
+                    .await
+                    .map_err(|e| ServerError::custom("read pdu", e))?;
                 let mut this = this.lock().await;
                 match this
                     .dispatch_pdu(
@@ -1636,7 +1644,7 @@ impl RdpServer {
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
         result: AcceptorResult,
-    ) -> Result<RunState>
+    ) -> ServerResult<RunState>
     where
         R: FramedRead,
         W: FramedWrite,
@@ -1669,12 +1677,12 @@ impl RdpServer {
                     Ok(CredentialDecision::Reject) => {
                         warn!("Credential validation rejected");
                         send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                        bail!("credential validation rejected");
+                        return Err(ServerError::reason("credential validation", "rejected by validator"));
                     }
                     Err(e) => {
                         error!(error = %e, "Credential validator backend error");
                         send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                        bail!("credential validation backend error");
+                        return Err(ServerError::custom("credential validation", e));
                     }
                 }
             } else {
@@ -1701,9 +1709,13 @@ impl RdpServer {
                 let Some(channel_id) = channel_id else {
                     continue;
                 };
-                let svc_responses = channel.start()?;
-                let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)?;
-                writer.write_all(&response).await?;
+                let svc_responses = channel.start().map_err(|e| ServerError::custom("svc start", e))?;
+                let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)
+                    .map_err(ServerError::encode)?;
+                writer
+                    .write_all(&response)
+                    .await
+                    .map_err(|e| ServerError::io("write svc response", e))?;
             }
         }
 
@@ -1714,7 +1726,7 @@ impl RdpServer {
                 CapabilitySet::General(c) => {
                     let fastpath = c.extra_flags.contains(GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED);
                     if !fastpath {
-                        bail!("Fastpath output not supported!");
+                        return Err(ServerError::unsupported("Fastpath output"));
                     }
                 }
                 CapabilitySet::Bitmap(b) => {
@@ -1794,7 +1806,11 @@ impl RdpServer {
 
         let desktop_size = self.display.lock().await.size().await;
         let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs, self.opts.max_request_size)
-            .context("failed to initialize update encoder")?;
+            .map_err(|e| {
+                let mut e = e;
+                e.set_context("failed to initialize update encoder");
+                e
+            })?;
 
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
             .await?;
@@ -1809,7 +1825,11 @@ impl RdpServer {
                 encoder,
             )
             .await
-            .context("client loop failure")?;
+            .map_err(|e| {
+                let mut e = e;
+                e.set_context("client loop failure");
+                e
+            })?;
 
         Ok(state)
     }
@@ -1821,11 +1841,11 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         frames: Vec<Vec<u8>>,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
                 Ok(Action::FastPath) => {
-                    let input = decode(&frame)?;
+                    let input = decode(&frame).map_err(ServerError::decode)?;
                     self.handle_fastpath(input).await;
                 }
 
@@ -1879,8 +1899,8 @@ impl RdpServer {
         }
     }
 
-    async fn handle_io_channel_data(&mut self, data: SendDataRequest<'_>) -> Result<bool> {
-        let control: rdp::headers::ShareControlHeader = decode(data.user_data.as_ref())?;
+    async fn handle_io_channel_data(&mut self, data: SendDataRequest<'_>) -> ServerResult<bool> {
+        let control: rdp::headers::ShareControlHeader = decode(data.user_data.as_ref()).map_err(ServerError::decode)?;
 
         match control.share_control_pdu {
             ShareControlPdu::Data(header) => match header.share_data_pdu {
@@ -1962,8 +1982,8 @@ impl RdpServer {
         user_channel_id: u16,
         message_channel_id: Option<u16>,
         frame: &[u8],
-    ) -> Result<bool> {
-        let message = decode::<X224<mcs::McsMessage<'_>>>(frame)?;
+    ) -> ServerResult<bool> {
+        let message = decode::<X224<mcs::McsMessage<'_>>>(frame).map_err(ServerError::decode)?;
         match message.0 {
             mcs::McsMessage::SendDataRequest(data) => {
                 debug!(
@@ -1982,9 +2002,15 @@ impl RdpServer {
                 }
 
                 if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
-                    let response_pdus = svc.process(&data.user_data)?;
-                    let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)?;
-                    writer.write_all(&response).await?;
+                    let response_pdus = svc
+                        .process(&data.user_data)
+                        .map_err(|e| ServerError::custom("svc process", e))?;
+                    let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&response)
+                        .await
+                        .map_err(|e| ServerError::io("write svc response", e))?;
                 } else {
                     warn!(channel_id = data.channel_id, "Unexpected channel received: ID",);
                 }
@@ -2037,14 +2063,18 @@ impl RdpServer {
         }
     }
 
-    async fn accept_finalize<S>(&mut self, mut framed: TokioFramed<S>, mut acceptor: Acceptor) -> Result<TokioFramed<S>>
+    async fn accept_finalize<S>(
+        &mut self,
+        mut framed: TokioFramed<S>,
+        mut acceptor: Acceptor,
+    ) -> ServerResult<TokioFramed<S>>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
         loop {
             let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
                 .await
-                .context("failed to accept client during finalize")?;
+                .map_err(|e| ServerError::custom("failed to accept client during finalize", e))?;
 
             let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
@@ -2061,7 +2091,8 @@ impl RdpServer {
                         acceptor,
                         core::mem::take(&mut self.static_channels),
                         desktop_size,
-                    )?;
+                    )
+                    .map_err(|e| ServerError::custom("deactivation-reactivation acceptor", e))?;
                     framed = unsplit_tokio_framed(reader, writer);
                     continue;
                 }
@@ -2088,17 +2119,17 @@ fn encode_autodetect_request(
     request: rdp::autodetect::AutoDetectRequest,
     message_channel_id: u16,
     user_channel_id: u16,
-) -> Result<Vec<u8>> {
+) -> ServerResult<Vec<u8>> {
     // Auto-detect rides the MCS message channel framed by a Basic Security
     // Header (SEC_AUTODETECT_REQ), not a Share Control / Share Data header.
     let pdu = rdp::autodetect::AutoDetectReqPdu::new(request);
-    let user_data = encode_vec(&pdu)?.into();
+    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
     let mcs_pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: message_channel_id,
         user_data,
     };
-    Ok(encode_vec(&X224(mcs_pdu))?)
+    encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
 }
 
 /// Encode a Share Data PDU wrapped in a Share Control header and carried in an
@@ -2112,7 +2143,7 @@ fn encode_share_data_pdu(
     share_data_pdu: rdp::headers::ShareDataPdu,
     io_channel_id: u16,
     user_channel_id: u16,
-) -> Result<Vec<u8>> {
+) -> ServerResult<Vec<u8>> {
     let header = rdp::headers::ShareDataHeader {
         share_data_pdu,
         stream_priority: rdp::headers::StreamPriority::Medium,
@@ -2124,34 +2155,33 @@ fn encode_share_data_pdu(
         pdu_source: user_channel_id,
         share_control_pdu: ShareControlPdu::Data(header),
     };
-    let user_data = encode_vec(&pdu)?.into();
+    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
     let mcs_pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: io_channel_id,
         user_data,
     };
-    Ok(encode_vec(&X224(mcs_pdu))?)
+    encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
 }
 
-async fn deactivate_all(
-    io_channel_id: u16,
-    user_channel_id: u16,
-    writer: &mut impl FramedWrite,
-) -> Result<(), anyhow::Error> {
+async fn deactivate_all(io_channel_id: u16, user_channel_id: u16, writer: &mut impl FramedWrite) -> ServerResult<()> {
     let pdu = ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll);
     let pdu = rdp::headers::ShareControlHeader {
         share_id: 0,
         pdu_source: io_channel_id,
         share_control_pdu: pdu,
     };
-    let user_data = encode_vec(&pdu)?.into();
+    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
     let pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: io_channel_id,
         user_data,
     };
-    let msg = encode_vec(&X224(pdu))?;
-    writer.write_all(&msg).await?;
+    let msg = encode_vec(&X224(pdu)).map_err(ServerError::encode)?;
+    writer
+        .write_all(&msg)
+        .await
+        .map_err(|e| ServerError::io("write deactivate_all", e))?;
     Ok(())
 }
 
@@ -2163,18 +2193,21 @@ async fn send_access_denied(
     io_channel_id: u16,
     user_channel_id: u16,
     writer: &mut impl FramedWrite,
-) -> Result<(), anyhow::Error> {
+) -> ServerResult<()> {
     let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
         ProtocolIndependentCode::ServerDeniedConnection,
     ));
-    let user_data = encode_vec(&info)?.into();
+    let user_data = encode_vec(&info).map_err(ServerError::encode)?.into();
     let pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: io_channel_id,
         user_data,
     };
-    let msg = encode_vec(&X224(pdu))?;
-    writer.write_all(&msg).await?;
+    let msg = encode_vec(&X224(pdu)).map_err(ServerError::encode)?;
+    writer
+        .write_all(&msg)
+        .await
+        .map_err(|e| ServerError::io("write access_denied", e))?;
     Ok(())
 }
 
