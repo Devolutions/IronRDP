@@ -45,6 +45,47 @@ export function locksExpiredCallback(cb: (clipDataIds: Uint32Array) => void): Ex
     return new Extension('locks_expired_callback', cb as unknown);
 }
 
+// Virtual printer (RDPDR) extensions
+//
+// Registering `printJobStreamCallbacks` activates the browser-side virtual
+// printer device. The printer backend streams write chunks as they arrive
+// instead of buffering a completed job in WASM memory. By default, the web
+// connector follows FreeRDP's macOS heuristic where possible:
+// browser-reported macOS 14+ uses Microsoft Print to PDF, and other clients use
+// MS Publisher Imagesetter for PostScript bytes. Use `printerDriverName` when
+// the target host needs a different installed printer driver. Jobs larger than
+// 128 MiB are rejected, and queued write chunks are bounded to protect browser
+// memory. `printerName`, `printerDeviceId`, and `printerDriverName` are
+// optional; sensible defaults are applied when omitted.
+
+export const PrinterDriverName = {
+    PostScript: 'MS Publisher Imagesetter',
+    MicrosoftPrintToPdf: 'Microsoft Print to PDF',
+} as const;
+
+export interface PrintJobStreamCallbacks {
+    onJobStart?: (fileId: number) => void;
+    onJobData: (fileId: number, chunk: Uint8Array) => void;
+    onJobComplete: (fileId: number) => void;
+    onJobError?: (fileId: number) => void;
+}
+
+export function printJobStreamCallbacks(callbacks: PrintJobStreamCallbacks): Extension {
+    return new Extension('print_job_stream_callbacks', callbacks as unknown);
+}
+
+export function printerName(name: string): Extension {
+    return new Extension('printer_name', name);
+}
+
+export function printerDeviceId(id: number): Extension {
+    return new Extension('printer_device_id', id);
+}
+
+export function printerDriverName(driverName: string): Extension {
+    return new Extension('printer_driver_name', driverName);
+}
+
 // Runtime operation extensions (invoked via Session.invokeExtension())
 
 export function requestFileContents(params: {

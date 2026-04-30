@@ -32,6 +32,8 @@ ironrdp = { path = "../ironrdp", features = [
     "graphics",
     "dvc",
     "cliprdr",
+    "rdpdr",
+    "rdpsnd",
     "svc",
     "displaycontrol",
     "pdu",
@@ -39,15 +41,17 @@ ironrdp = { path = "../ironrdp", features = [
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-futures.path = "../ironrdp-futures"
+ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
+ironrdp-svc.path = "../ironrdp-svc"
 iron-remote-desktop.path = "../iron-remote-desktop"
 
 # WASM
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Performance", "Window"] }
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Navigator", "Performance", "Window"] }
 js-sys = "0.3"
 gloo-net = { version = "0.7", default-features = false, features = ["websocket", "http", "io-util"] }
 gloo-timers = { version = "0.4", default-features = false, features = ["futures"] }

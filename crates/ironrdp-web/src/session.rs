@@ -26,6 +26,9 @@ use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp::rdpdr::Rdpdr;
+use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
+use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, fast_path};
 use ironrdp_core::WriteBuf;
@@ -33,8 +36,7 @@ use ironrdp_futures::{FramedWrite, single_sequence_step_read};
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use tracing::{debug, error, info, trace, warn};
-use wasm_bindgen::JsCast as _;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
@@ -45,6 +47,7 @@ use crate::error::IronError;
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
+use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
@@ -76,6 +79,13 @@ struct SessionBuilderInner {
     lock_callback: Option<js_sys::Function>,
     unlock_callback: Option<js_sys::Function>,
     locks_expired_callback: Option<js_sys::Function>,
+
+    // Setting printer stream callbacks activates the virtual printer.
+    invalid_print_job_stream_callbacks: bool,
+    print_job_stream_callbacks: Option<JsPrinterStreamCallbacks>,
+    printer_name: Option<String>,
+    printer_device_id: Option<u32>,
+    printer_driver_name: Option<String>,
 
     use_display_control: bool,
     enable_credssp: bool,
@@ -110,6 +120,12 @@ impl Default for SessionBuilderInner {
             lock_callback: None,
             unlock_callback: None,
             locks_expired_callback: None,
+
+            invalid_print_job_stream_callbacks: false,
+            print_job_stream_callbacks: None,
+            printer_name: None,
+            printer_device_id: None,
+            printer_driver_name: None,
 
             use_display_control: false,
             enable_credssp: true,
@@ -260,6 +276,43 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |locks_expired_callback: JsValue| {
                 self.0.borrow_mut().locks_expired_callback = locks_expired_callback.dyn_into::<js_sys::Function>().ok();
             };
+            |print_job_stream_callbacks: JsValue| {
+                let mut inner = self.0.borrow_mut();
+                match parse_print_job_stream_callbacks(print_job_stream_callbacks) {
+                    Ok(callbacks) => {
+                        inner.invalid_print_job_stream_callbacks = false;
+                        inner.print_job_stream_callbacks = Some(callbacks);
+                    }
+                    Err(error) => {
+                        inner.invalid_print_job_stream_callbacks = true;
+                        inner.print_job_stream_callbacks = None;
+                        warn!(%error, "Invalid print_job_stream_callbacks; printer streaming requires onJobData and onJobComplete functions");
+                    }
+                }
+            };
+            |printer_name: String| {
+                let mut inner = self.0.borrow_mut();
+                inner.printer_name = if printer_name.is_empty() { None } else { Some(printer_name) };
+            };
+            |printer_device_id: f64| {
+                let id = if printer_device_id >= 0.0 && printer_device_id <= f64::from(u32::MAX) {
+                    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    { printer_device_id as u32 }
+                } else {
+                    warn!(printer_device_id, "Invalid printer_device_id; falling back to default");
+                    0
+                };
+                let mut inner = self.0.borrow_mut();
+                inner.printer_device_id = if id > 0 { Some(id) } else { None };
+            };
+            |printer_driver_name: String| {
+                let mut inner = self.0.borrow_mut();
+                inner.printer_driver_name = if printer_driver_name.is_empty() {
+                    None
+                } else {
+                    Some(printer_driver_name)
+                };
+            };
         }
 
         self.clone()
@@ -288,6 +341,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback,
             unlock_callback,
             locks_expired_callback,
+            invalid_print_job_stream_callbacks,
+            print_job_stream_callbacks,
+            printer_name,
+            printer_device_id,
+            printer_driver_name,
             outbound_message_size_limit,
         );
 
@@ -323,12 +381,17 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback = inner.lock_callback.clone();
             unlock_callback = inner.unlock_callback.clone();
             locks_expired_callback = inner.locks_expired_callback.clone();
+            invalid_print_job_stream_callbacks = inner.invalid_print_job_stream_callbacks;
+            print_job_stream_callbacks = inner.print_job_stream_callbacks.clone();
+            printer_name = inner.printer_name.clone();
+            printer_device_id = inner.printer_device_id;
+            printer_driver_name = inner.printer_driver_name.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
         }
 
         info!("Connect to RDP host");
 
-        let mut config = build_config(username, password, server_domain, client_name, desktop_size);
+        let mut config = build_config(username, password, server_domain, client_name.clone(), desktop_size);
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
@@ -350,6 +413,30 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 },
             )
         });
+
+        if invalid_print_job_stream_callbacks {
+            return Err(IronError::from(anyhow::anyhow!(
+                "printer redirection requires valid print_job_stream_callbacks"
+            )));
+        }
+
+        // Build the virtual-printer pair when JS printer callbacks were
+        // registered via extension(). Backend is Send (holds the mpsc proxy
+        // only) and goes into the SVC processor below; the front-end
+        // `WasmPrinter` owns the JS callbacks and lives on `Session`.
+        let (printer_backend, printer) = match print_job_stream_callbacks {
+            Some(callbacks) => {
+                let (backend, printer) = wasm_printer_pair(input_events_tx.clone(), callbacks);
+                (Some(backend), Some(printer))
+            }
+            None => (None, None),
+        };
+
+        // Default to 2 to avoid a potential collision if drive redirection is
+        // enabled in the same session.
+        let printer_device_id = printer_device_id.unwrap_or(2);
+        let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
+        let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
 
         let ws = WebSocket::open(&proxy_address).context("couldn't open WebSocket")?;
 
@@ -387,6 +474,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             pcb,
             kdc_proxy_url,
             clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
+            printer_backend,
+            printer_device_id,
+            printer_name,
+            printer_driver_name,
+            computer_name: client_name.clone(),
             use_display_control,
         })
         .await?;
@@ -413,6 +505,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             rdp_reader: RefCell::new(Some(rdp_reader)),
             connection_result: RefCell::new(Some(connection_result)),
             clipboard: RefCell::new(Some(clipboard)),
+            printer: RefCell::new(Some(printer)),
         })
     }
 }
@@ -423,6 +516,9 @@ pub(crate) type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]
 pub(crate) enum RdpInputEvent {
     Cliprdr(ClipboardMessage),
     ClipboardBackend(WasmClipboardBackendMessage),
+    /// Printer backend → event loop: a print job finished and its bytes are
+    /// ready for delivery to JS. See [`crate::printer::PrinterBackendMessage`].
+    Printer(crate::printer::PrinterBackendMessage),
     FastPath(FastPathInputEvents),
     Resize {
         width: u32,
@@ -458,6 +554,7 @@ pub(crate) struct Session {
     connection_result: RefCell<Option<connector::ConnectionResult>>,
     rdp_reader: RefCell<Option<ReadHalf<WebSocket>>>,
     clipboard: RefCell<Option<Option<WasmClipboard>>>,
+    printer: RefCell<Option<Option<WasmPrinter>>>,
 }
 
 impl Session {
@@ -526,6 +623,7 @@ impl iron_remote_desktop::Session for Session {
             .expect("run called only once");
 
         let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
+        let mut wasm_printer = self.printer.borrow_mut().take().expect("run called only once");
 
         let mut framed = ironrdp_futures::LocalFuturesFramed::new(rdp_reader);
 
@@ -720,6 +818,18 @@ impl iron_remote_desktop::Session for Session {
                                 Vec::new()
                             }
                         },
+                        RdpInputEvent::Printer(message) => {
+                            // The printer backend lives inside the Rdpdr SVC
+                            // processor (Send-only); the front-end
+                            // `WasmPrinter` owns the JS callback (!Send) and
+                            // lives here. Just forward the message.
+                            if let Some(ref mut wasm_printer) = wasm_printer {
+                                wasm_printer.process_message(message);
+                            } else {
+                                warn!("Printer event received, but no printer is configured");
+                            }
+                            Vec::new()
+                        }
                         RdpInputEvent::TerminateSession => {
                             active_stage.graceful_shutdown()
                                 .context("graceful shutdown")?
@@ -1157,6 +1267,36 @@ fn get_u32_opt(obj: &js_sys::Object, key: &str) -> Result<Option<u32>, IronError
     Ok(Some(f64_to_u32_saturating_cast(f)))
 }
 
+fn parse_print_job_stream_callbacks(callbacks: JsValue) -> anyhow::Result<JsPrinterStreamCallbacks> {
+    let callbacks = callbacks
+        .dyn_into::<js_sys::Object>()
+        .map_err(|_| anyhow::anyhow!("expected object"))?;
+
+    Ok(JsPrinterStreamCallbacks {
+        on_job_start: get_optional_function(&callbacks, "onJobStart")?,
+        on_job_data: get_required_function(&callbacks, "onJobData")?,
+        on_job_complete: get_required_function(&callbacks, "onJobComplete")?,
+        on_job_error: get_optional_function(&callbacks, "onJobError")?,
+    })
+}
+
+fn get_required_function(obj: &js_sys::Object, key: &str) -> anyhow::Result<js_sys::Function> {
+    get_optional_function(obj, key)?.with_context(|| format!("missing function `{key}`"))
+}
+
+fn get_optional_function(obj: &js_sys::Object, key: &str) -> anyhow::Result<Option<js_sys::Function>> {
+    let val = js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .map_err(|e| anyhow::anyhow!("get property `{key}`: {e:?}"))?;
+
+    if val.is_undefined() || val.is_null() {
+        return Ok(None);
+    }
+
+    val.dyn_into::<js_sys::Function>()
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("property `{key}` must be a function"))
+}
+
 #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn f64_to_u32_saturating_cast(f: f64) -> u32 {
     f.clamp(0.0, f64::from(u32::MAX)) as u32
@@ -1342,7 +1482,46 @@ struct ConnectParams {
     pcb: Option<String>,
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
+    printer_backend: Option<WasmPrinterBackend>,
+    printer_device_id: u32,
+    printer_name: String,
+    printer_driver_name: String,
+    /// Matches the `client_name` in the connector config; used as the
+    /// `computer_name` when constructing the `Rdpdr` processor.
+    computer_name: String,
     use_display_control: bool,
+}
+
+fn default_printer_driver_name() -> String {
+    printer_driver_name_for_macos_major_version(browser_macos_major_version()).to_owned()
+}
+
+fn printer_driver_name_for_macos_major_version(macos_major_version: Option<u32>) -> &'static str {
+    if macos_major_version.is_some_and(|major| 14 <= major) {
+        MICROSOFT_PRINT_TO_PDF_DRIVER_NAME
+    } else {
+        DEFAULT_PRINTER_DRIVER_NAME
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_macos_major_version() -> Option<u32> {
+    let user_agent = web_sys::window()?.navigator().user_agent().ok()?;
+    macos_major_version_from_user_agent(&user_agent)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn browser_macos_major_version() -> Option<u32> {
+    None
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn macos_major_version_from_user_agent(user_agent: &str) -> Option<u32> {
+    let (_, version) = user_agent.split_once("Mac OS X ")?;
+    version
+        .split(|ch: char| !ch.is_ascii_digit())
+        .next()
+        .and_then(|major| major.parse().ok())
 }
 
 async fn connect(
@@ -1354,6 +1533,11 @@ async fn connect(
         pcb,
         kdc_proxy_url,
         clipboard_backend,
+        printer_backend,
+        printer_device_id,
+        printer_name,
+        printer_driver_name,
+        computer_name,
         use_display_control,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
@@ -1366,6 +1550,20 @@ async fn connect(
 
     if let Some(clipboard_backend) = clipboard_backend {
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
+    }
+
+    if let Some(printer_backend) = printer_backend {
+        // Windows servers only speak on RDPDR when RDPSND is advertised too
+        // (MS-RDPEFS Appendix A<1>). We do not play audio in the web client,
+        // but the no-op RDPSND processor satisfies that channel dependency.
+        connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
+        connector.attach_static_channel(
+            Rdpdr::new(Box::new(printer_backend), computer_name).with_printer_driver(
+                printer_device_id,
+                printer_name,
+                printer_driver_name,
+            ),
+        );
     }
 
     if use_display_control {
@@ -1574,6 +1772,46 @@ mod tests {
         mpsc::UnboundedReceiver<RdpInputEvent>,
     ) {
         mpsc::unbounded()
+    }
+
+    #[test]
+    fn printer_driver_defaults_to_postscript_when_macos_version_is_unknown() {
+        assert_eq!(
+            printer_driver_name_for_macos_major_version(None),
+            DEFAULT_PRINTER_DRIVER_NAME
+        );
+    }
+
+    #[test]
+    fn printer_driver_uses_pdf_for_macos_14_and_newer() {
+        assert_eq!(
+            printer_driver_name_for_macos_major_version(Some(13)),
+            DEFAULT_PRINTER_DRIVER_NAME
+        );
+        assert_eq!(
+            printer_driver_name_for_macos_major_version(Some(14)),
+            MICROSOFT_PRINT_TO_PDF_DRIVER_NAME
+        );
+        assert_eq!(
+            printer_driver_name_for_macos_major_version(Some(15)),
+            MICROSOFT_PRINT_TO_PDF_DRIVER_NAME
+        );
+    }
+
+    #[test]
+    fn macos_major_version_is_parsed_from_user_agent() {
+        assert_eq!(
+            macos_major_version_from_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_1) AppleWebKit/605.1.15"),
+            Some(14)
+        );
+        assert_eq!(
+            macos_major_version_from_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"),
+            Some(10)
+        );
+        assert_eq!(
+            macos_major_version_from_user_agent("Mozilla/5.0 (Windows NT 10.0)"),
+            None
+        );
     }
 
     #[test]
