@@ -749,6 +749,7 @@ impl PartialConfig {
             request_data: None,
             pointer_software_rendering: false,
             multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
             compression_type,
             performance_flags: PerformanceFlags::default(),
             timezone_info: TimezoneInfo::default(),
