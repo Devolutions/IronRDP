@@ -11,6 +11,7 @@ use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
@@ -58,11 +59,12 @@ pub enum PostConnectionAction {
 /// Hooks for connection lifecycle events in [`RdpServer::run`].
 ///
 /// Implement this trait to add pre-accept filtering (rate limiting,
-/// IP allowlists) and post-disconnect logic (cleanup, session validity
-/// checks, metrics).
+/// IP allowlists), post-disconnect logic (cleanup, session validity
+/// checks, metrics), and per-connection responses to client share-data
+/// PDUs that the server core does not consume directly.
 ///
-/// All methods have default implementations that accept all connections
-/// and continue unconditionally.
+/// All methods have default implementations that accept all connections,
+/// continue unconditionally, and ignore client share-data signals.
 pub trait ConnectionHandler: Send {
     /// Called after `accept()` returns but before `run_connection()`.
     ///
@@ -84,6 +86,50 @@ pub trait ConnectionHandler: Send {
     ) -> PostConnectionAction {
         let _ = (peer, duration, error);
         PostConnectionAction::Continue
+    }
+
+    /// Called when the client sends a [Suppress Output PDU][2.2.11.3].
+    ///
+    /// `allow` is `true` when the client wants display updates resumed
+    /// and `false` when it wants them suspended (typically because the
+    /// client window is minimized or fully occluded). When `allow` is
+    /// `true`, `desktop_rect` carries the region the client wants
+    /// updates within; when `allow` is `false`, `desktop_rect` is `None`.
+    ///
+    /// The server core does not act on this PDU. Implementations should
+    /// pause their capture pipeline when `allow` is `false` and resume
+    /// when it is `true`, to save bandwidth and CPU.
+    ///
+    /// [2.2.11.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/47b1ace4-f2ba-4d11-93ed-c0e1c8e62221
+    fn on_suppress_output(&mut self, allow: bool, desktop_rect: Option<&InclusiveRectangle>) {
+        let _ = (allow, desktop_rect);
+    }
+
+    /// Called when the client sends a [Refresh Rectangle PDU][2.2.11.2].
+    ///
+    /// `areas` is the list of regions the client is asking the server to
+    /// retransmit. Typical triggers include unminimize, restore from
+    /// occlusion, and explicit user-driven refresh.
+    ///
+    /// The server core does not act on this PDU. Implementations should
+    /// invalidate the listed regions in their capture pipeline so the
+    /// next encoded frame includes them.
+    ///
+    /// [2.2.11.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15679f83-0e1e-4a36-a4e6-3cb7b6e0a6ce
+    fn on_refresh_rectangle(&mut self, areas: &[InclusiveRectangle]) {
+        let _ = areas;
+    }
+
+    /// Called when the client sends a slow-path Frame Acknowledge PDU.
+    ///
+    /// `frame_id` is the most recently rendered frame the client has
+    /// acknowledged. Implementations can use this for slow-path flow
+    /// control to limit unacknowledged in-flight frames.
+    ///
+    /// EGFX (graphics pipeline) Frame Acknowledge is delivered through
+    /// the dynamic virtual channel, not this trait.
+    fn on_frame_acknowledge(&mut self, frame_id: u32) {
+        let _ = frame_id;
     }
 }
 
@@ -1140,6 +1186,34 @@ impl RdpServer {
                         } else {
                             trace!(seq = response.sequence_number(), "Unmatched auto-detect response");
                         }
+                    }
+                }
+
+                rdp::headers::ShareDataPdu::SuppressOutput(pdu) => {
+                    let allow = pdu.desktop_rect.is_some();
+                    if let Some(ref mut handler) = self.connection_handler {
+                        handler.on_suppress_output(allow, pdu.desktop_rect.as_ref());
+                    } else {
+                        trace!(allow, "Suppress Output PDU (no handler installed)");
+                    }
+                }
+
+                rdp::headers::ShareDataPdu::RefreshRectangle(pdu) => {
+                    if let Some(ref mut handler) = self.connection_handler {
+                        handler.on_refresh_rectangle(&pdu.areas_to_refresh);
+                    } else {
+                        trace!(
+                            count = pdu.areas_to_refresh.len(),
+                            "Refresh Rectangle PDU (no handler installed)"
+                        );
+                    }
+                }
+
+                rdp::headers::ShareDataPdu::FrameAcknowledge(pdu) => {
+                    if let Some(ref mut handler) = self.connection_handler {
+                        handler.on_frame_acknowledge(pdu.frame_id);
+                    } else {
+                        trace!(frame_id = pdu.frame_id, "Frame Acknowledge PDU (no handler installed)");
                     }
                 }
 
