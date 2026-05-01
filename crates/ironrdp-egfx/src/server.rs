@@ -70,9 +70,10 @@ use crate::CHANNEL_NAME;
 use crate::pdu::{
     Avc420BitmapStream, Avc420Region, Avc444BitmapStream, CacheImportOfferPdu, CacheImportReplyPdu,
     CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
-    CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet, Codec1Type, CreateSurfacePdu,
-    DeleteSurfacePdu, Encoding, EndFramePdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToOutputPdu, PixelFormat,
-    QoeFrameAcknowledgePdu, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+    CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet, Codec1Type, Codec2Type,
+    CreateSurfacePdu, DeleteSurfacePdu, Encoding, EndFramePdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToOutputPdu,
+    PixelFormat, QoeFrameAcknowledgePdu, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
+    WireToSurface2Pdu, encode_avc420_bitmap_stream,
 };
 
 // ============================================================================
@@ -863,6 +864,31 @@ pub struct GraphicsPipelineServer {
     compression_mode: CompressionMode,
 }
 
+/// Payload for a single tile within a mixed-codec frame.
+///
+/// Each variant corresponds to a different EGFX codec. Used with
+/// [`GraphicsPipelineServer::send_mixed_frame()`] to pack multiple codec
+/// types into a single `StartFrame`/`EndFrame` pair.
+pub enum MixedTilePayload {
+    /// Lossless ClearCodec tile (text, UI elements, icons).
+    /// `bitmap_data` is a pre-encoded ClearCodec bitmap stream.
+    ClearCodec {
+        destination: InclusiveRectangle,
+        bitmap_data: Vec<u8>,
+    },
+    /// RemoteFX Progressive tile (photos, gradients).
+    /// `progressive_data` is a valid progressive block stream.
+    RemoteFxProgressive {
+        codec_context_id: u32,
+        progressive_data: Vec<u8>,
+    },
+    /// H.264 AVC420 tile (video, high-motion content).
+    Avc420 {
+        regions: Vec<Avc420Region>,
+        h264_data: Vec<u8>,
+    },
+}
+
 impl GraphicsPipelineServer {
     /// Create a new GraphicsPipelineServer
     pub fn new(handler: Box<dyn GraphicsPipelineHandler>) -> Self {
@@ -1402,6 +1428,137 @@ impl GraphicsPipelineServer {
             destination_rectangle: dest_rect,
             bitmap_data: bitmap_data.to_vec(),
         }));
+
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Some(frame_id)
+    }
+
+    /// Queue a RemoteFX Progressive frame for transmission.
+    ///
+    /// Progressive frames use `WireToSurface2Pdu` with a pre-encoded progressive
+    /// block stream as the bitmap payload. The `codec_context_id` associates
+    /// this data with persistent tile state on the client.
+    ///
+    /// The `progressive_data` must be a valid progressive block stream
+    /// (SYNC + CONTEXT + FRAME_BEGIN + REGION + FRAME_END) as produced by
+    /// `ironrdp_pdu::codecs::rfx::progressive::encode_progressive_stream()`.
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if not ready or backpressured.
+    pub fn send_remotefx_progressive_frame(
+        &mut self,
+        surface_id: u16,
+        codec_context_id: u32,
+        progressive_data: Vec<u8>,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        if !self.is_ready() {
+            return None;
+        }
+        if self.should_backpressure() {
+            return None;
+        }
+
+        let surface = self.surfaces.get(surface_id)?;
+
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+
+        self.output_queue.push_back(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+            surface_id,
+            codec_id: Codec2Type::RemoteFxProgressive,
+            codec_context_id,
+            pixel_format: surface.pixel_format,
+            bitmap_data: progressive_data,
+        }));
+
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Some(frame_id)
+    }
+
+    // ========================================================================
+    // Mixed-Codec Frame Support
+    // ========================================================================
+
+    /// Queue a mixed-codec frame containing tiles encoded with different codecs.
+    ///
+    /// This is the core of multi-codec EGFX: a single frame update can contain
+    /// ClearCodec tiles (lossless text), Progressive tiles (photos), and H.264
+    /// tiles (video), all sent between one `StartFrame`/`EndFrame` pair.
+    ///
+    /// This matches how Azure VDI achieves its visual quality — each tile uses
+    /// the codec best suited to its content type.
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if not ready or backpressured.
+    pub fn send_mixed_frame(
+        &mut self,
+        surface_id: u16,
+        tiles: Vec<MixedTilePayload>,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        if !self.is_ready() {
+            return None;
+        }
+        if self.should_backpressure() {
+            return None;
+        }
+        if tiles.is_empty() {
+            return None;
+        }
+
+        let surface = self.surfaces.get(surface_id)?;
+        let pixel_format = surface.pixel_format;
+
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+
+        for tile in tiles {
+            match tile {
+                MixedTilePayload::ClearCodec {
+                    destination,
+                    bitmap_data,
+                } => {
+                    self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                        surface_id,
+                        codec_id: Codec1Type::ClearCodec,
+                        pixel_format,
+                        destination_rectangle: destination,
+                        bitmap_data,
+                    }));
+                }
+                MixedTilePayload::RemoteFxProgressive {
+                    codec_context_id,
+                    progressive_data,
+                } => {
+                    self.output_queue.push_back(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+                        surface_id,
+                        codec_id: Codec2Type::RemoteFxProgressive,
+                        codec_context_id,
+                        pixel_format,
+                        bitmap_data: progressive_data,
+                    }));
+                }
+                MixedTilePayload::Avc420 { regions, h264_data } => {
+                    let encoded_stream = encode_avc420_bitmap_stream(&regions, &h264_data);
+                    let target_rect = Self::compute_dest_rect(&regions, surface.width, surface.height);
+
+                    self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                        surface_id,
+                        codec_id: Codec1Type::Avc420,
+                        pixel_format,
+                        destination_rectangle: target_rect,
+                        bitmap_data: encoded_stream,
+                    }));
+                }
+            }
+        }
 
         self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
