@@ -10,11 +10,12 @@
 
 use core::iter;
 
-use super::RfxRectangle;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
     ensure_size, invalid_field_err,
 };
+
+use super::RfxRectangle;
 
 // Wire constants
 const SYNC_MAGIC: u32 = 0xCACCACCA;
@@ -963,8 +964,8 @@ pub enum ProgressiveBlock<'a> {
 /// Parse a progressive bitmap stream (the `bitmapData` from `WireToSurface2Pdu`).
 ///
 /// Returns the sequence of progressive blocks. The stream always starts with
-/// SYNC + CONTEXT, followed by FRAME_BEGIN, one or more REGION blocks
-/// (containing tiles), and FRAME_END.
+/// SYNC + CONTEXT, followed by FRAME_BEGIN, one or more REGION blocks (containing
+/// tiles), and FRAME_END.
 pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<ProgressiveBlock<'a>>> {
     let mut blocks = Vec::new();
     let mut src = ReadCursor::new(data);
