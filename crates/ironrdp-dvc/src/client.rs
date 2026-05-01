@@ -4,7 +4,6 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
 
-use crate::alloc::borrow::ToOwned as _;
 use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
@@ -12,6 +11,7 @@ use pdu::PduResult;
 use pdu::gcc::ChannelName;
 use tracing::debug;
 
+use crate::alloc::borrow::ToOwned as _;
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
     DrdynvcServerPdu,

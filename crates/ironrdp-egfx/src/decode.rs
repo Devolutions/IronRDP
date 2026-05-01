@@ -149,8 +149,9 @@ pub trait H264Decoder: Send {
 
 #[cfg(feature = "openh264")]
 mod openh264_impl {
-    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
     use tracing::warn;
+
+    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
 
     /// H.264 decoder backed by Cisco's OpenH264 library
     ///
