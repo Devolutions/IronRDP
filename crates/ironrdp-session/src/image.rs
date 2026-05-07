@@ -193,6 +193,8 @@ impl DecodedImage {
         let start = usize::from(rect.left) * self.bytes_per_pixel() + usize::from(rect.top) * self.stride();
         let end =
             start + usize::from(rect.height() - 1) * self.stride() + usize::from(rect.width()) * self.bytes_per_pixel();
+        let end = end.min(self.data.len());
+        let start = start.min(end);
         &self.data[start..end]
     }
 
@@ -587,11 +589,13 @@ impl DecodedImage {
                         );
                         let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                        let [r, g, b] = rdp_16bit_to_rgb(rgb16_value);
-                        self.data[dst_idx + ri] = r;
-                        self.data[dst_idx + gi] = g;
-                        self.data[dst_idx + bi] = b;
-                        self.data[dst_idx + ai] = 0xff;
+                        if dst_idx + 3 < self.data.len() {
+                            let [r, g, b] = rdp_16bit_to_rgb(rgb16_value);
+                            self.data[dst_idx + ri] = r;
+                            self.data[dst_idx + gi] = g;
+                            self.data[dst_idx + bi] = b;
+                            self.data[dst_idx + ai] = 0xff;
+                        }
                     })
             });
 
@@ -640,11 +644,13 @@ impl DecodedImage {
                         );
                         let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                        let [r, g, b] = rdp_15bit_to_rgb(rgb15_value);
-                        self.data[dst_idx + ri] = r;
-                        self.data[dst_idx + gi] = g;
-                        self.data[dst_idx + bi] = b;
-                        self.data[dst_idx + ai] = 0xff;
+                        if dst_idx + 3 < self.data.len() {
+                            let [r, g, b] = rdp_15bit_to_rgb(rgb15_value);
+                            self.data[dst_idx + ri] = r;
+                            self.data[dst_idx + gi] = g;
+                            self.data[dst_idx + bi] = b;
+                            self.data[dst_idx + ai] = 0xff;
+                        }
                     })
             });
 
@@ -690,11 +696,13 @@ impl DecodedImage {
                     .for_each(|(col_idx, src_pixel)| {
                         let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                        // BGR -> RGB channel swap
-                        self.data[dst_idx + ri] = src_pixel[2];
-                        self.data[dst_idx + gi] = src_pixel[1];
-                        self.data[dst_idx + bi] = src_pixel[0];
-                        self.data[dst_idx + ai] = 0xff;
+                        if dst_idx + 3 < self.data.len() {
+                            // BGR -> RGB channel swap
+                            self.data[dst_idx + ri] = src_pixel[2];
+                            self.data[dst_idx + gi] = src_pixel[1];
+                            self.data[dst_idx + bi] = src_pixel[0];
+                            self.data[dst_idx + ai] = 0xff;
+                        }
                     })
             });
 
@@ -736,11 +744,13 @@ impl DecodedImage {
             .for_each(|(row_idx, row)| {
                 row.iter().enumerate().for_each(|(col_idx, &index)| {
                     let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
-                    let [r, g, b] = palette[usize::from(index)];
-                    self.data[dst_idx + ri] = r;
-                    self.data[dst_idx + gi] = g;
-                    self.data[dst_idx + bi] = b;
-                    self.data[dst_idx + ai] = 0xff;
+                    if dst_idx + 3 < self.data.len() {
+                        let [r, g, b] = palette[usize::from(index)];
+                        self.data[dst_idx + ri] = r;
+                        self.data[dst_idx + gi] = g;
+                        self.data[dst_idx + bi] = b;
+                        self.data[dst_idx + ai] = 0xff;
+                    }
                 })
             });
 
@@ -775,16 +785,20 @@ impl DecodedImage {
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
-        rgb24.enumerate().for_each(|(row_idx, row)| {
+        let max_rows = usize::from(update_rectangle.height()).min(usize::from(self.height).saturating_sub(top));
+
+        rgb24.enumerate().take(max_rows).for_each(|(row_idx, row)| {
             row.chunks_exact(SRC_COLOR_DEPTH)
                 .enumerate()
                 .for_each(|(col_idx, src_pixel)| {
                     let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                    self.data[dst_idx + ri] = src_pixel[0];
-                    self.data[dst_idx + gi] = src_pixel[1];
-                    self.data[dst_idx + bi] = src_pixel[2];
-                    self.data[dst_idx + ai] = 0xFF;
+                    if dst_idx + 3 < self.data.len() {
+                        self.data[dst_idx + ri] = src_pixel[0];
+                        self.data[dst_idx + gi] = src_pixel[1];
+                        self.data[dst_idx + bi] = src_pixel[2];
+                        self.data[dst_idx + ai] = 0xFF;
+                    }
                 })
         });
 
@@ -844,7 +858,9 @@ impl DecodedImage {
                         .for_each(|(col_idx, src_pixel)| {
                             let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                            self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
+                            if dst_idx + SRC_COLOR_DEPTH <= self.data.len() {
+                                self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
+                            }
                         })
                 });
         } else {
@@ -859,14 +875,16 @@ impl DecodedImage {
                         .try_for_each(|(col_idx, src_pixel)| {
                             let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                            let c = format
-                                .read_color(src_pixel)
-                                .map_err(|err| custom_err!("read color", err))?;
+                            if dst_idx + 3 < self.data.len() {
+                                let c = format
+                                    .read_color(src_pixel)
+                                    .map_err(|err| custom_err!("read color", err))?;
 
-                            self.data[dst_idx + ri] = c.r;
-                            self.data[dst_idx + gi] = c.g;
-                            self.data[dst_idx + bi] = c.b;
-                            self.data[dst_idx + ai] = c.a;
+                                self.data[dst_idx + ri] = c.r;
+                                self.data[dst_idx + gi] = c.g;
+                                self.data[dst_idx + bi] = c.b;
+                                self.data[dst_idx + ai] = c.a;
+                            }
 
                             Ok(())
                         })?;

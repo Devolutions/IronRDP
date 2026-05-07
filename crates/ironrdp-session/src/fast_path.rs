@@ -192,6 +192,18 @@ impl Processor {
             trace!("{update:?}");
             buf.clear();
 
+            // The bitmap data dimensions (update.width x update.height) may differ
+            // from the destination rectangle dimensions (update.rectangle.width() x
+            // update.rectangle.height()). The apply_* methods use the rectangle's
+            // width for row stride, so we must use a rectangle whose dimensions
+            // match the actual bitmap data to avoid diagonal distortion.
+            let blit_rect = InclusiveRectangle {
+                left: update.rectangle.left,
+                top: update.rectangle.top,
+                right: update.rectangle.left + update.width.saturating_sub(1),
+                bottom: update.rectangle.top + update.height.saturating_sub(1),
+            };
+
             // Bitmap data is either compressed or uncompressed, depending
             // on whether the BITMAP_COMPRESSION flag is present in the
             // flags field.
@@ -211,7 +223,7 @@ impl Processor {
                         usize::from(update.width),
                         usize::from(update.height),
                     ) {
-                        Ok(()) => image.apply_rgb24(&buf, &update.rectangle, true)?,
+                        Ok(()) => image.apply_rgb24(&buf, &blit_rect, true)?,
                         Err(err) => {
                             warn!("Invalid RDP6_BITMAP_STREAM: {err}");
                             update.rectangle.clone()
@@ -230,11 +242,11 @@ impl Processor {
                         usize::from(update.height),
                         usize::from(update.bits_per_pixel),
                     ) {
-                        Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
-                        Ok(RlePixelFormat::Rgb15) => image.apply_rgb15_bitmap(&buf, &update.rectangle)?,
-                        Ok(RlePixelFormat::Rgb24) => image.apply_bgr24_bitmap(&buf, &update.rectangle)?,
+                        Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &blit_rect)?,
+                        Ok(RlePixelFormat::Rgb15) => image.apply_rgb15_bitmap(&buf, &blit_rect)?,
+                        Ok(RlePixelFormat::Rgb24) => image.apply_bgr24_bitmap(&buf, &blit_rect)?,
                         Ok(RlePixelFormat::Rgb8) => {
-                            image.apply_rgb8_with_palette(&buf, &update.rectangle, self.palette.colors())?
+                            image.apply_rgb8_with_palette(&buf, &blit_rect, self.palette.colors())?
                         }
 
                         Err(e) => {
@@ -266,11 +278,11 @@ impl Processor {
                     }
 
                     match update.bits_per_pixel {
-                        8 => image.apply_rgb8_with_palette(&buf, &update.rectangle, self.palette.colors())?,
-                        15 => image.apply_rgb15_bitmap(&buf, &update.rectangle)?,
-                        16 => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
-                        24 => image.apply_bgr24_bitmap(&buf, &update.rectangle)?,
-                        32 => image.apply_rgb32_bitmap(&buf, PixelFormat::BgrX32, &update.rectangle)?,
+                        8 => image.apply_rgb8_with_palette(&buf, &blit_rect, self.palette.colors())?,
+                        15 => image.apply_rgb15_bitmap(&buf, &blit_rect)?,
+                        16 => image.apply_rgb16_bitmap(&buf, &blit_rect)?,
+                        24 => image.apply_bgr24_bitmap(&buf, &blit_rect)?,
+                        32 => image.apply_rgb32_bitmap(&buf, PixelFormat::BgrX32, &blit_rect)?,
                         _ => {
                             warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
                             update.rectangle.clone()
@@ -280,13 +292,13 @@ impl Processor {
                     match update.bits_per_pixel {
                         8 => image.apply_rgb8_with_palette(
                             update.bitmap_data,
-                            &update.rectangle,
+                            &blit_rect,
                             self.palette.colors(),
                         )?,
-                        15 => image.apply_rgb15_bitmap(update.bitmap_data, &update.rectangle)?,
-                        16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
-                        24 => image.apply_bgr24_bitmap(update.bitmap_data, &update.rectangle)?,
-                        32 => image.apply_rgb32_bitmap(update.bitmap_data, PixelFormat::BgrX32, &update.rectangle)?,
+                        15 => image.apply_rgb15_bitmap(update.bitmap_data, &blit_rect)?,
+                        16 => image.apply_rgb16_bitmap(update.bitmap_data, &blit_rect)?,
+                        24 => image.apply_bgr24_bitmap(update.bitmap_data, &blit_rect)?,
+                        32 => image.apply_rgb32_bitmap(update.bitmap_data, PixelFormat::BgrX32, &blit_rect)?,
                         _ => {
                             warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
                             update.rectangle.clone()
