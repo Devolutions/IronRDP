@@ -48,20 +48,32 @@ impl ActiveStage {
             connection_result.connection_activation,
         );
 
-        // Create bulk decompressor if compression was negotiated
-        let bulk_decompressor = connection_result.compression_type.and_then(|ct| {
-            let bulk_ct = to_bulk_compression_type(ct);
-            match BulkCompressor::new(bulk_ct) {
-                Ok(compressor) => {
-                    info!(compression_type = %bulk_ct, "Bulk decompressor initialized for FastPath");
-                    Some(compressor)
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to create bulk decompressor, compression disabled");
-                    None
-                }
+        // Always create a bulk decompressor for FastPath. Microsoft RDP servers
+        // send compressed FastPath updates in some scenarios (notably full-frame
+        // redraws after a window resize or fullscreen toggle) regardless of
+        // whether the client advertised compression in the Client Info PDU.
+        // When no compression type was negotiated, default to Rdp61 (XCRUSH);
+        // the per-update compression type from the FastPath header is passed
+        // through to `decompress` per call, so the decompressor handles
+        // whatever variant the server actually sends.
+        let bulk_ct = connection_result
+            .compression_type
+            .map(to_bulk_compression_type)
+            .unwrap_or(ironrdp_bulk::CompressionType::Rdp61);
+        let bulk_decompressor = match BulkCompressor::new(bulk_ct) {
+            Ok(compressor) => {
+                info!(
+                    compression_type = %bulk_ct,
+                    negotiated = connection_result.compression_type.is_some(),
+                    "Bulk decompressor initialized for FastPath",
+                );
+                Some(compressor)
             }
-        });
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to create bulk decompressor");
+                None
+            }
+        };
 
         let fast_path_processor = fast_path::ProcessorBuilder {
             io_channel_id: connection_result.io_channel_id,
