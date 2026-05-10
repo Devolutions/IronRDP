@@ -118,6 +118,19 @@ impl Sequence for ConnectionActivationSequence {
                     );
                 }
 
+                // Some servers (e.g. GNOME Remote Desktop) send a ServerDeactivateAll PDU
+                // before ServerDemandActive as part of a Deactivation-Reactivation Sequence
+                // (MS-RDPBCGR §1.3.1.3). Skip it and stay in the same state to wait for
+                // the actual DemandActive PDU.
+                if matches!(share_control_ctx.pdu, rdp::headers::ShareControlPdu::ServerDeactivateAll(_)) {
+                    debug!("Received ServerDeactivateAll during CapabilitiesExchange, waiting for ServerDemandActive");
+                    self.state = ConnectionActivationState::CapabilitiesExchange {
+                        io_channel_id,
+                        user_channel_id,
+                    };
+                    return Ok(Written::Nothing);
+                }
+
                 let capability_sets = if let rdp::headers::ShareControlPdu::ServerDemandActive(server_demand_active) =
                     share_control_ctx.pdu
                 {
