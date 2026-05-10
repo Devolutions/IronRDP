@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ironrdp_bulk::BulkCompressor;
+use ironrdp_bulk::{BulkCompressor, CompressionType};
 use ironrdp_core::{DecodeErrorKind, ReadCursor, WriteBuf, decode_cursor};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
@@ -41,9 +41,12 @@ pub struct Processor {
     mouse_pos_update: Option<(u16, u16)>,
     enable_server_pointer: bool,
     pointer_software_rendering: bool,
-    /// Bulk decompressor for server-to-client compressed PDUs.
-    /// `None` when compression was not negotiated.
-    bulk_decompressor: Option<BulkCompressor>,
+    /// Bulk decompressor for server-to-client compressed PDUs. Always present:
+    /// the library constructs it in `ProcessorBuilder::build`, so compressed
+    /// FastPath updates are always decodable. The construction-time type is
+    /// irrelevant on receive; `decompress` routes per update on the packet's
+    /// type bits.
+    bulk_decompressor: BulkCompressor,
     /// Current 8bpp color palette. Updated by Palette fast-path updates.
     palette: Palette,
     #[cfg(feature = "qoiz")]
@@ -104,26 +107,22 @@ impl Processor {
                 let bulk_flags =
                     u32::from(flags.bits()) | u32::from(update_pdu.compression_type.map_or(0, |ct| ct.as_u8()));
 
-                if let Some(ref mut decompressor) = self.bulk_decompressor {
-                    let decompressed = decompressor
-                        .decompress(update_pdu.data, bulk_flags)
-                        .map_err(|e| reason_err!("FastPath", "bulk decompression failed: {}", e))?;
-                    // Copy decompressed data before accessing metrics (releases the mutable borrow).
-                    decompressed_data = decompressed.to_vec();
-                    debug!(
-                        compressed_size = update_pdu.data.len(),
-                        decompressed_size = decompressed_data.len(),
-                        compression_type = ?update_pdu.compression_type,
-                        compression_ratio = format_args!("{:.2}x", decompressor.compression_ratio()),
-                        total_compressed = decompressor.total_compressed_bytes(),
-                        total_uncompressed = decompressor.total_uncompressed_bytes(),
-                        "Decompressed FastPath update"
-                    );
-                    decompressed_data.as_slice()
-                } else {
-                    warn!("Received compressed FastPath data but no decompressor is configured");
-                    update_pdu.data
-                }
+                let decompressor = &mut self.bulk_decompressor;
+                let decompressed = decompressor
+                    .decompress(update_pdu.data, bulk_flags)
+                    .map_err(|e| reason_err!("FastPath", "bulk decompression failed: {}", e))?;
+                // Copy decompressed data before accessing metrics (releases the mutable borrow).
+                decompressed_data = decompressed.to_vec();
+                debug!(
+                    compressed_size = update_pdu.data.len(),
+                    decompressed_size = decompressed_data.len(),
+                    compression_type = ?update_pdu.compression_type,
+                    compression_ratio = format_args!("{:.2}x", decompressor.compression_ratio()),
+                    total_compressed = decompressor.total_compressed_bytes(),
+                    total_uncompressed = decompressor.total_uncompressed_bytes(),
+                    "Decompressed FastPath update"
+                );
+                decompressed_data.as_slice()
             } else {
                 // Compression flags present but COMPRESSED bit not set — pass data through.
                 // Still need to inform the decompressor of FLUSHED/AT_FRONT flags even
@@ -598,9 +597,6 @@ pub struct ProcessorBuilder {
     /// `UpdateKind::PointerBitmap` will not be generated. Remote pointer will be drawn
     /// via software rendering on top of the output image.
     pub pointer_software_rendering: bool,
-    /// Bulk decompressor for server-to-client compressed PDUs.
-    /// `None` when compression was not negotiated.
-    pub bulk_decompressor: Option<BulkCompressor>,
 }
 
 impl ProcessorBuilder {
@@ -615,7 +611,9 @@ impl ProcessorBuilder {
             mouse_pos_update: None,
             enable_server_pointer: self.enable_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
-            bulk_decompressor: self.bulk_decompressor,
+            // Always present; Rdp61 is an arbitrary default because `decompress`
+            // routes per update on the packet's type bits, not on this value.
+            bulk_decompressor: BulkCompressor::new(CompressionType::Rdp61),
             palette: Palette::system_default(),
             #[cfg(feature = "qoiz")]
             zdctx: zstd_safe::DCtx::default(),

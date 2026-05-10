@@ -33,27 +33,21 @@ pub fn bulk_decompress_mppc(data: &[u8]) {
     } else {
         (CompressionType::Rdp5, 0x01)
     };
-    let Ok(mut bulk) = BulkCompressor::new(comp_type) else {
-        return;
-    };
+    let mut bulk = BulkCompressor::new(comp_type);
     let _ = bulk.decompress(payload, flags::PACKET_COMPRESSED | algo_bits);
 }
 
 pub fn bulk_decompress_ncrush(data: &[u8]) {
     use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
 
-    let Ok(mut bulk) = BulkCompressor::new(CompressionType::Rdp6) else {
-        return;
-    };
+    let mut bulk = BulkCompressor::new(CompressionType::Rdp6);
     let _ = bulk.decompress(data, flags::PACKET_COMPRESSED | 0x02);
 }
 
 pub fn bulk_decompress_xcrush(data: &[u8]) {
     use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
 
-    let Ok(mut bulk) = BulkCompressor::new(CompressionType::Rdp61) else {
-        return;
-    };
+    let mut bulk = BulkCompressor::new(CompressionType::Rdp61);
     let _ = bulk.decompress(data, flags::PACKET_COMPRESSED | 0x03);
 }
 
@@ -84,9 +78,7 @@ pub fn bulk_round_trip(data: &[u8]) {
         _ => CompressionType::Rdp61,
     };
 
-    let Ok(mut sender) = BulkCompressor::new(algo) else {
-        return;
-    };
+    let mut sender = BulkCompressor::new(algo);
     let Ok((compressed_size, compress_flags)) = sender.compress(src) else {
         return;
     };
@@ -101,9 +93,7 @@ pub fn bulk_round_trip(data: &[u8]) {
         sender.compressed_data(compressed_size)
     };
 
-    let Ok(mut receiver) = BulkCompressor::new(algo) else {
-        return;
-    };
+    let mut receiver = BulkCompressor::new(algo);
     let decompressed = receiver
         .decompress(payload, compress_flags)
         .unwrap_or_else(|e| panic!("bulk round-trip decompress failed for {algo:?}: {e:?}"));

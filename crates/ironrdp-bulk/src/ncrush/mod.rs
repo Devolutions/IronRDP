@@ -175,7 +175,7 @@ impl NCrushContext {
     /// Allocates the history, hash, and match buffers on the heap, generates
     /// the runtime Huffman tables, and calls `reset(false)`.
     ///
-    pub(crate) fn new() -> Result<Self, BulkError> {
+    pub(crate) fn new() -> Self {
         let mut ctx = Self {
             history_offset: 0,
             history_end_offset: HISTORY_BUFFER_SIZE - 1,
@@ -189,10 +189,10 @@ impl NCrushContext {
             huff_table_lom: heap_zeroed_array::<HUFF_TABLE_LOM_SIZE, u8>(),
         };
 
-        ctx.generate_tables()?;
+        ctx.generate_tables();
         ctx.reset(false);
 
-        Ok(ctx)
+        ctx
     }
 
     /// Generates the runtime Huffman lookup tables for CopyOffset and
@@ -206,7 +206,7 @@ impl NCrushContext {
         clippy::cast_possible_truncation,
         reason = "table generation: k (usize ≤4096) safely cast to u32 for verification"
     )]
-    fn generate_tables(&mut self) -> Result<(), BulkError> {
+    fn generate_tables(&mut self) {
         // --- Generate HuffTableLOM ---
         // For each LOM index i (0..28), fill entries for all values that
         // map to that index (based on LOMBitsLUT).
@@ -232,20 +232,18 @@ impl NCrushContext {
                 28usize
             };
 
-            if i >= tables::LOMBitsLUT.len() || i >= tables::LOMBaseLUT.len() {
-                return Err(BulkError::InvalidCompressedData(
-                    "NCRUSH: generate_tables LOM index out of range",
-                ));
-            }
+            debug_assert!(
+                i < tables::LOMBitsLUT.len() && i < tables::LOMBaseLUT.len(),
+                "NCRUSH: generate_tables LOM index out of range (static-table invariant)"
+            );
 
             let mask = (1u32 << tables::LOMBitsLUT[i]) - 1;
             let base = tables::LOMBaseLUT[i];
             let reconstructed = (mask & (k as u32 - 2)) + base;
-            if reconstructed != k as u32 {
-                return Err(BulkError::InvalidCompressedData(
-                    "NCRUSH: generate_tables LOM verification failed",
-                ));
-            }
+            debug_assert_eq!(
+                reconstructed, k as u32,
+                "NCRUSH: generate_tables LOM verification failed (static-table invariant)"
+            );
         }
 
         // --- Generate HuffTableCopyOffset ---
@@ -279,13 +277,10 @@ impl NCrushContext {
             }
         }
 
-        if (k + 256) > HUFF_TABLE_COPY_OFFSET_SIZE {
-            return Err(BulkError::InvalidCompressedData(
-                "NCRUSH: generate_tables CopyOffset overflow",
-            ));
-        }
-
-        Ok(())
+        debug_assert!(
+            (k + 256) <= HUFF_TABLE_COPY_OFFSET_SIZE,
+            "NCRUSH: generate_tables CopyOffset overflow (static-table invariant)"
+        );
     }
 
     /// Refills the bit accumulator from the source data.
@@ -1456,7 +1451,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_context_new() {
-        let ctx = NCrushContext::new().unwrap();
+        let ctx = NCrushContext::new();
         assert_eq!(ctx.history_buffer_size, HISTORY_BUFFER_SIZE);
         assert_eq!(ctx.history_end_offset, HISTORY_BUFFER_SIZE - 1);
         assert_eq!(ctx.history_offset, 0);
@@ -1466,7 +1461,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_context_reset_no_flush() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         ctx.history_offset = 12345;
         ctx.offset_cache[0] = 42;
         ctx.offset_cache[1] = 99;
@@ -1481,7 +1476,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_context_reset_flush() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         ctx.reset(true);
 
         assert_eq!(ctx.history_offset, HISTORY_BUFFER_SIZE + 1);
@@ -1489,7 +1484,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_generate_tables_lom() {
-        let ctx = NCrushContext::new().unwrap();
+        let ctx = NCrushContext::new();
 
         // First entry at index 2 should be 0 (LOM index 0)
         assert_eq!(ctx.huff_table_lom[2], 0);
@@ -1503,7 +1498,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_generate_tables_copy_offset() {
-        let ctx = NCrushContext::new().unwrap();
+        let ctx = NCrushContext::new();
 
         // First entry at index 2 should be 0
         assert_eq!(ctx.huff_table_copy_offset[2], 0);
@@ -1521,7 +1516,7 @@ mod tests {
     fn test_ncrush_decompress_uncompressed_passthrough() {
         use crate::flags;
 
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         let data = b"hello world";
 
         // No PACKET_COMPRESSED flag → should return source data directly
@@ -1535,7 +1530,7 @@ mod tests {
     fn test_ncrush_decompress_flushed_clears_state() {
         use crate::flags;
 
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         ctx.history_offset = 1000;
         ctx.offset_cache[0] = 42;
         ctx.history_buffer[500] = 0xFF;
@@ -1553,7 +1548,7 @@ mod tests {
     fn test_ncrush_decompress_compressed_too_short() {
         use crate::flags;
 
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         let data = [0u8; 3]; // less than 4 bytes
 
         let result = ctx.decompress(&data, flags::PACKET_FLUSHED | flags::PACKET_COMPRESSED);
@@ -1635,7 +1630,7 @@ mod tests {
     fn test_ncrush_decompress_bells() {
         use crate::flags;
 
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
 
         // flags: PACKET_COMPRESSED | 2 (compression type NCRUSH)
         let flags_value = flags::PACKET_COMPRESSED | 0x02;
@@ -1661,7 +1656,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_hash_table_add_basic() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
 
         // Write "ABABAB..." into history at offset 100
         let data = b"ABABABABAB"; // 10 bytes
@@ -1698,7 +1693,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_hash_table_add_chain() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
 
         // Insert two blocks with the same starting bytes to create a chain
         let data1 = b"XYXYXYXYXY"; // 10 bytes at offset 50
@@ -1718,7 +1713,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_find_match_length_basic() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
 
         // Write identical data at two positions
         ctx.history_buffer[10] = b'A';
@@ -1742,7 +1737,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_find_match_length_limit() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
 
         // Write identical data at two positions
         for i in 0..10 {
@@ -1759,7 +1754,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_find_match_length_immediate_limit() {
-        let ctx = NCrushContext::new().unwrap();
+        let ctx = NCrushContext::new();
 
         // offset1 > limit immediately → returns -1
         let len = ctx.find_match_length(10, 20, 5);
@@ -1768,7 +1763,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_find_best_match_no_chain() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
 
         // match_table[100] = 0 → no chain
         let result = ctx.find_best_match(100).unwrap();
@@ -1777,7 +1772,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_find_best_match_simple() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
 
         // Set up: write "ABCDEF" at position 50 and "ABCDXY" at position 100
         let pattern1 = b"ABCDEF";
@@ -1807,7 +1802,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_move_encoder_windows_basic() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
 
         // Write some data in the second half of the buffer
         for i in 0..100 {
@@ -1837,7 +1832,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_move_encoder_windows_clamps_negative() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
 
         // Entry pointing before the offset should be clamped to 0
         ctx.hash_table[42] = 50; // 50 < offset (say, 100)
@@ -1993,7 +1988,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_encode_length_of_match_simple() {
-        let ctx = NCrushContext::new().unwrap();
+        let ctx = NCrushContext::new();
         let mut buf = [0u8; 16];
         let mut writer = NCrushBitWriter::new(&mut buf);
 
@@ -2009,7 +2004,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_encode_copy_offset_small() {
-        let ctx = NCrushContext::new().unwrap();
+        let ctx = NCrushContext::new();
         let mut buf = [0u8; 16];
         let mut writer = NCrushBitWriter::new(&mut buf);
 
@@ -2038,7 +2033,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_compress_basic() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         let data = b"hello world";
         let mut dst = vec![0u8; 256];
 
@@ -2053,7 +2048,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_compress_with_repeats() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         // Repetitive data should compress well
         let data = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         let mut dst = vec![0u8; 256];
@@ -2069,7 +2064,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_compress_empty() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         let data = b"";
         let mut dst = vec![0u8; 256];
 
@@ -2080,7 +2075,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_compress_updates_history_offset() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         let data = b"some test data for ncrush compression";
         let mut dst = vec![0u8; 256];
 
@@ -2095,7 +2090,7 @@ mod tests {
 
     #[test]
     fn test_ncrush_compress_offset_cache_updated() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         // Use data with a repeated pattern to trigger back-references
         let data = b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!";
         let mut dst = vec![0u8; 256];
@@ -2116,7 +2111,7 @@ mod tests {
     /// and verifies the output matches the expected compressed bytes exactly.
     #[test]
     fn test_ncrush_compress_bells() {
-        let mut ctx = NCrushContext::new().unwrap();
+        let mut ctx = NCrushContext::new();
         let mut dst = vec![0u8; 65536];
 
         let (size, flags_out) = ctx.compress(test_data::TEST_BELLS_DATA, &mut dst).unwrap();
@@ -2152,8 +2147,8 @@ mod tests {
     /// Compress → decompress → verify output matches original input.
     #[test]
     fn test_ncrush_roundtrip_bells() {
-        let mut compressor = NCrushContext::new().unwrap();
-        let mut decompressor = NCrushContext::new().unwrap();
+        let mut compressor = NCrushContext::new();
+        let mut decompressor = NCrushContext::new();
 
         let input = test_data::TEST_BELLS_DATA;
         let mut compressed = vec![0u8; 65536];
@@ -2179,8 +2174,8 @@ mod tests {
     /// Round-trip test with a short repetitive pattern.
     #[test]
     fn test_ncrush_roundtrip_repetitive() {
-        let mut compressor = NCrushContext::new().unwrap();
-        let mut decompressor = NCrushContext::new().unwrap();
+        let mut compressor = NCrushContext::new();
+        let mut decompressor = NCrushContext::new();
 
         let input = b"ABCABCABCABCABCABCABCABCABCABCABCABC";
         let mut compressed = vec![0u8; 65536];
@@ -2196,8 +2191,8 @@ mod tests {
     /// Round-trip test with a longer text block containing varied content.
     #[test]
     fn test_ncrush_roundtrip_prose() {
-        let mut compressor = NCrushContext::new().unwrap();
-        let mut decompressor = NCrushContext::new().unwrap();
+        let mut compressor = NCrushContext::new();
+        let mut decompressor = NCrushContext::new();
 
         let input = b"The quick brown fox jumps over the lazy dog. \
                        The quick brown fox jumps over the lazy dog again. \
@@ -2215,8 +2210,8 @@ mod tests {
     /// Round-trip test with binary-like data (all byte values 0-255).
     #[test]
     fn test_ncrush_roundtrip_binary() {
-        let mut compressor = NCrushContext::new().unwrap();
-        let mut decompressor = NCrushContext::new().unwrap();
+        let mut compressor = NCrushContext::new();
+        let mut decompressor = NCrushContext::new();
 
         // Create a pattern with all 256 byte values repeated
         let mut input = Vec::new();
@@ -2239,8 +2234,8 @@ mod tests {
     /// (tests that history buffer state carries across calls).
     #[test]
     fn test_ncrush_roundtrip_sequential() {
-        let mut compressor = NCrushContext::new().unwrap();
-        let mut decompressor = NCrushContext::new().unwrap();
+        let mut compressor = NCrushContext::new();
+        let mut decompressor = NCrushContext::new();
 
         let inputs: &[&[u8]] = &[
             b"first.message.to.compress",
