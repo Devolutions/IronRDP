@@ -6,8 +6,6 @@ mod macros;
 
 mod proto;
 
-use core::fmt;
-use core::fmt::Display;
 use core::pin::Pin;
 use core::task::Poll;
 use core::time::Duration;
@@ -46,15 +44,22 @@ pub struct GwConnectTarget {
 
 type Error = ironrdp_error::Error<GwErrorKind>;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum GwErrorKind {
+    #[error("invalid GW Target")]
     InvalidGwTarget,
+    #[error("connection error")]
     Connect,
+    #[error("PacketEOF")]
     PacketEof,
+    #[error("unsupported feature")]
     UnsupportedFeature,
+    #[error("custom")]
     Custom,
+    #[error("encode")]
     Encode,
+    #[error("decode")]
     Decode,
 }
 
@@ -72,23 +77,6 @@ impl GwErrorExt for ironrdp_error::Error<GwErrorKind> {
         Self::new(context, GwErrorKind::Custom).with_source(e)
     }
 }
-
-impl Display for GwErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let x = match self {
-            GwErrorKind::InvalidGwTarget => "invalid GW Target",
-            GwErrorKind::Connect => "connection error",
-            GwErrorKind::PacketEof => "PacketEOF",
-            GwErrorKind::UnsupportedFeature => "unsupported feature",
-            GwErrorKind::Custom => "custom",
-            GwErrorKind::Encode => "encode",
-            GwErrorKind::Decode => "decode",
-        };
-        f.write_str(x)
-    }
-}
-
-impl core::error::Error for GwErrorKind {}
 
 struct GwConn {
     client_name: String,

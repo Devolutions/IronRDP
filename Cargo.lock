@@ -2690,6 +2690,7 @@ dependencies = [
  "ironrdp-error",
  "ironrdp-tls",
  "log",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
