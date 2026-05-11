@@ -2547,6 +2547,7 @@ name = "ironrdp-core"
 version = "0.1.5"
 dependencies = [
  "ironrdp-error",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

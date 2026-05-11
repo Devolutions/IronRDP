@@ -2,7 +2,6 @@
 use alloc::string::String;
 #[cfg(feature = "alloc")]
 use alloc::{vec, vec::Vec};
-use core::fmt;
 
 #[cfg(feature = "alloc")]
 use crate::WriteBuf;
@@ -20,9 +19,10 @@ pub type EncodeError = ironrdp_error::Error<EncodeErrorKind>;
 
 /// Represents the different kinds of errors that can occur during encoding operations.
 #[non_exhaustive]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum EncodeErrorKind {
     /// Indicates that there were not enough bytes to complete the encoding operation.
+    #[error("not enough bytes provided to decode: received {received} bytes, expected {expected} bytes")]
     NotEnoughBytes {
         /// The number of bytes actually received.
         received: usize,
@@ -30,6 +30,7 @@ pub enum EncodeErrorKind {
         expected: usize,
     },
     /// Indicates that a field in the data being encoded is invalid.
+    #[error("invalid `{field}`: {reason}")]
     InvalidField {
         /// The name of the invalid field.
         field: &'static str,
@@ -37,17 +38,20 @@ pub enum EncodeErrorKind {
         reason: &'static str,
     },
     /// Indicates that an unexpected message type was encountered during encoding.
+    #[error("invalid message type ({got})")]
     UnexpectedMessageType {
         /// The unexpected message type that was received.
         got: u8,
     },
     /// Indicates that an unsupported version was encountered during encoding.
+    #[error("unsupported version ({got})")]
     UnsupportedVersion {
         /// The unsupported version that was received.
         got: u8,
     },
     /// Indicates that an unsupported value was encountered during encoding.
     #[cfg(feature = "alloc")]
+    #[error("unsupported {name} ({value})")]
     UnsupportedValue {
         /// The name of the field or parameter with the unsupported value.
         name: &'static str,
@@ -56,49 +60,17 @@ pub enum EncodeErrorKind {
     },
     /// Indicates that an unsupported value was encountered during encoding (no-alloc version).
     #[cfg(not(feature = "alloc"))]
+    #[error("unsupported {name}")]
     UnsupportedValue {
         /// The name of the field or parameter with the unsupported value.
         name: &'static str,
     },
     /// Represents any other error that doesn't fit into the above categories.
+    #[error("other ({description})")]
     Other {
         /// A description of the error.
         description: &'static str,
     },
-}
-
-#[cfg(feature = "std")]
-impl core::error::Error for EncodeErrorKind {}
-
-impl fmt::Display for EncodeErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotEnoughBytes { received, expected } => write!(
-                f,
-                "not enough bytes provided to decode: received {received} bytes, expected {expected} bytes"
-            ),
-            Self::InvalidField { field, reason } => {
-                write!(f, "invalid `{field}`: {reason}")
-            }
-            Self::UnexpectedMessageType { got } => {
-                write!(f, "invalid message type ({got})")
-            }
-            Self::UnsupportedVersion { got } => {
-                write!(f, "unsupported version ({got})")
-            }
-            #[cfg(feature = "alloc")]
-            Self::UnsupportedValue { name, value } => {
-                write!(f, "unsupported {name} ({value})")
-            }
-            #[cfg(not(feature = "alloc"))]
-            Self::UnsupportedValue { name } => {
-                write!(f, "unsupported {name}")
-            }
-            Self::Other { description } => {
-                write!(f, "other ({description})")
-            }
-        }
-    }
 }
 
 impl NotEnoughBytesErr for EncodeError {

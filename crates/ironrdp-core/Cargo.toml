@@ -18,8 +18,9 @@ test = false
 
 [features]
 default = []
-std = ["alloc", "ironrdp-error/std"]
+std = ["alloc", "ironrdp-error/std", "thiserror/std"]
 alloc = ["ironrdp-error/alloc"]
 
 [dependencies]
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
+thiserror = { version = "2", default-features = false }
