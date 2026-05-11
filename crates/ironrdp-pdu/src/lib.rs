@@ -37,10 +37,13 @@ pub type PduResult<T> = Result<T, PduError>;
 pub type PduError = ironrdp_error::Error<PduErrorKind>;
 
 #[non_exhaustive]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum PduErrorKind {
+    #[error("encode error")]
     Encode,
+    #[error("decode error")]
     Decode,
+    #[error("other ({description})")]
     Other { description: &'static str },
 }
 
@@ -57,24 +60,6 @@ impl PduErrorExt for PduError {
 
     fn encode<E: Source>(context: &'static str, source: E) -> Self {
         Self::new(context, PduErrorKind::Encode).with_source(source)
-    }
-}
-
-impl core::error::Error for PduErrorKind {}
-
-impl fmt::Display for PduErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Encode => {
-                write!(f, "encode error")
-            }
-            Self::Decode => {
-                write!(f, "decode error")
-            }
-            Self::Other { description } => {
-                write!(f, "other ({description})")
-            }
-        }
     }
 }
 

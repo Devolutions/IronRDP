@@ -2538,6 +2538,7 @@ dependencies = [
  "picky-asn1-x509",
  "rand 0.9.2",
  "sspi",
+ "thiserror 2.0.18",
  "tracing",
  "url",
 ]
@@ -2842,6 +2843,7 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
  "qoicoubeh",
+ "thiserror 2.0.18",
  "tracing",
  "zstd-safe",
 ]
