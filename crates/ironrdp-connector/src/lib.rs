@@ -341,46 +341,24 @@ ironrdp_core::assert_obj_safe!(Sequence);
 pub type ConnectorResult<T> = Result<T, ConnectorError>;
 
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConnectorErrorKind {
-    Encode(ironrdp_core::EncodeError),
-    Decode(ironrdp_core::DecodeError),
-    Credssp(sspi::Error),
+    #[error("encode error")]
+    Encode(#[source] ironrdp_core::EncodeError),
+    #[error("decode error")]
+    Decode(#[source] ironrdp_core::DecodeError),
+    #[error("CredSSP")]
+    Credssp(#[source] sspi::Error),
+    #[error("reason: {0}")]
     Reason(String),
+    #[error("access denied")]
     AccessDenied,
+    #[error("general error")]
     General,
+    #[error("custom error")]
     Custom,
-    Negotiation(NegotiationFailure),
-}
-
-impl fmt::Display for ConnectorErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self {
-            ConnectorErrorKind::Encode(_) => write!(f, "encode error"),
-            ConnectorErrorKind::Decode(_) => write!(f, "decode error"),
-            ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
-            ConnectorErrorKind::Reason(description) => write!(f, "reason: {description}"),
-            ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
-            ConnectorErrorKind::General => write!(f, "general error"),
-            ConnectorErrorKind::Custom => write!(f, "custom error"),
-            ConnectorErrorKind::Negotiation(failure) => write!(f, "negotiation failure: {failure}"),
-        }
-    }
-}
-
-impl core::error::Error for ConnectorErrorKind {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match &self {
-            ConnectorErrorKind::Encode(e) => Some(e),
-            ConnectorErrorKind::Decode(e) => Some(e),
-            ConnectorErrorKind::Credssp(e) => Some(e),
-            ConnectorErrorKind::Reason(_) => None,
-            ConnectorErrorKind::AccessDenied => None,
-            ConnectorErrorKind::Custom => None,
-            ConnectorErrorKind::General => None,
-            ConnectorErrorKind::Negotiation(failure) => Some(failure),
-        }
-    }
+    #[error("negotiation failure: {0}")]
+    Negotiation(#[source] NegotiationFailure),
 }
 
 pub type ConnectorError = ironrdp_error::Error<ConnectorErrorKind>;

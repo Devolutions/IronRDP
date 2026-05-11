@@ -35,6 +35,7 @@ tracing = { version = "0.1", features = ["log"] }
 picky-asn1-der = "0.5"
 picky-asn1-x509 = "0.15"
 picky = "=7.0.0-rc.22" # FIXME: We are pinning with = because the candidate version number counts as the minor number by Cargo, and will be automatically bumped in the Cargo.lock.
+thiserror = "2"
 
 [lints]
 workspace = true

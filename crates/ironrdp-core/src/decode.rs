@@ -1,6 +1,5 @@
 #[cfg(feature = "alloc")]
 use alloc::string::String;
-use core::fmt;
 
 use crate::{
     InvalidFieldErr, NotEnoughBytesErr, OtherErr, ReadCursor, UnexpectedMessageTypeErr, UnsupportedValueErr,
@@ -16,9 +15,10 @@ pub type DecodeError = ironrdp_error::Error<DecodeErrorKind>;
 
 /// Enum representing different kinds of decode errors.
 #[non_exhaustive]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum DecodeErrorKind {
     /// Error when there are not enough bytes to decode.
+    #[error("not enough bytes provided to decode: received {received} bytes, expected {expected} bytes")]
     NotEnoughBytes {
         /// Number of bytes received.
         received: usize,
@@ -26,6 +26,7 @@ pub enum DecodeErrorKind {
         expected: usize,
     },
     /// Error when a field is invalid.
+    #[error("invalid `{field}`: {reason}")]
     InvalidField {
         /// Name of the invalid field.
         field: &'static str,
@@ -33,17 +34,20 @@ pub enum DecodeErrorKind {
         reason: &'static str,
     },
     /// Error when an unexpected message type is encountered.
+    #[error("invalid message type ({got})")]
     UnexpectedMessageType {
         /// The unexpected message type received.
         got: u8,
     },
     /// Error when an unsupported version is encountered.
+    #[error("unsupported version ({got})")]
     UnsupportedVersion {
         /// The unsupported version received.
         got: u8,
     },
     /// Error when an unsupported value is encountered (with allocation feature).
     #[cfg(feature = "alloc")]
+    #[error("unsupported {name} ({value})")]
     UnsupportedValue {
         /// Name of the unsupported value.
         name: &'static str,
@@ -52,49 +56,17 @@ pub enum DecodeErrorKind {
     },
     /// Error when an unsupported value is encountered (without allocation feature).
     #[cfg(not(feature = "alloc"))]
+    #[error("unsupported {name}")]
     UnsupportedValue {
         /// Name of the unsupported value.
         name: &'static str,
     },
     /// Generic error for other cases.
+    #[error("other ({description})")]
     Other {
         /// Description of the error.
         description: &'static str,
     },
-}
-
-#[cfg(feature = "std")]
-impl core::error::Error for DecodeErrorKind {}
-
-impl fmt::Display for DecodeErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotEnoughBytes { received, expected } => write!(
-                f,
-                "not enough bytes provided to decode: received {received} bytes, expected {expected} bytes"
-            ),
-            Self::InvalidField { field, reason } => {
-                write!(f, "invalid `{field}`: {reason}")
-            }
-            Self::UnexpectedMessageType { got } => {
-                write!(f, "invalid message type ({got})")
-            }
-            Self::UnsupportedVersion { got } => {
-                write!(f, "unsupported version ({got})")
-            }
-            #[cfg(feature = "alloc")]
-            Self::UnsupportedValue { name, value } => {
-                write!(f, "unsupported {name} ({value})")
-            }
-            #[cfg(not(feature = "alloc"))]
-            Self::UnsupportedValue { name } => {
-                write!(f, "unsupported {name}")
-            }
-            Self::Other { description } => {
-                write!(f, "other ({description})")
-            }
-        }
-    }
 }
 
 impl NotEnoughBytesErr for DecodeError {
