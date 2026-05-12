@@ -1,9 +1,9 @@
+use core::fmt;
 use std::io;
 
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, invalid_field_err,
 };
-use thiserror::Error;
 
 use crate::PduError;
 use crate::input::InputEventError;
@@ -74,36 +74,100 @@ impl<'de> Decode<'de> for ClientInfoPdu {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum RdpError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("client Info PDU error")]
-    ClientInfoError(#[from] ClientInfoError),
-    #[error("server License PDU error")]
-    ServerLicenseError(#[from] ServerLicenseError),
-    #[error("capability sets error")]
-    CapabilitySetsError(#[from] CapabilitySetsError),
-    #[error("invalid RDP security header")]
+    IOError(io::Error),
+    ClientInfoError(ClientInfoError),
+    ServerLicenseError(ServerLicenseError),
+    CapabilitySetsError(CapabilitySetsError),
     InvalidSecurityHeader,
-    #[error("invalid RDP Share Control Header: {0}")]
     InvalidShareControlHeader(String),
-    #[error("invalid RDP Share Data Header: {0}")]
     InvalidShareDataHeader(String),
-    #[error("invalid RDP Connection Sequence PDU")]
     InvalidPdu(String),
-    #[error("unexpected RDP Share Control Header PDU type: {0:?}")]
     UnexpectedShareControlPdu(ShareControlPduType),
-    #[error("unexpected RDP Share Data Header PDU type: {0:?}")]
     UnexpectedShareDataPdu(ShareDataPduType),
-    #[error("save session info PDU error")]
-    SaveSessionInfoError(#[from] session_info::SessionError),
-    #[error("input event PDU error")]
-    InputEventError(#[from] InputEventError),
-    #[error("not enough bytes")]
+    SaveSessionInfoError(session_info::SessionError),
+    InputEventError(InputEventError),
     NotEnoughBytes,
-    #[error("PDU error: {0}")]
     Pdu(PduError),
+}
+
+impl fmt::Display for RdpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(_) => f.write_str("IO error"),
+            Self::ClientInfoError(_) => f.write_str("client Info PDU error"),
+            Self::ServerLicenseError(_) => f.write_str("server License PDU error"),
+            Self::CapabilitySetsError(_) => f.write_str("capability sets error"),
+            Self::InvalidSecurityHeader => f.write_str("invalid RDP security header"),
+            Self::InvalidShareControlHeader(s) => write!(f, "invalid RDP Share Control Header: {s}"),
+            Self::InvalidShareDataHeader(s) => write!(f, "invalid RDP Share Data Header: {s}"),
+            Self::InvalidPdu(_) => f.write_str("invalid RDP Connection Sequence PDU"),
+            Self::UnexpectedShareControlPdu(ty) => write!(f, "unexpected RDP Share Control Header PDU type: {ty:?}"),
+            Self::UnexpectedShareDataPdu(ty) => write!(f, "unexpected RDP Share Data Header PDU type: {ty:?}"),
+            Self::SaveSessionInfoError(_) => f.write_str("save session info PDU error"),
+            Self::InputEventError(_) => f.write_str("input event PDU error"),
+            Self::NotEnoughBytes => f.write_str("not enough bytes"),
+            Self::Pdu(e) => write!(f, "PDU error: {e}"),
+        }
+    }
+}
+
+impl core::error::Error for RdpError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::ClientInfoError(e) => Some(e),
+            Self::ServerLicenseError(e) => Some(e),
+            Self::CapabilitySetsError(e) => Some(e),
+            Self::SaveSessionInfoError(e) => Some(e),
+            Self::InputEventError(e) => Some(e),
+            Self::InvalidSecurityHeader
+            | Self::InvalidShareControlHeader(_)
+            | Self::InvalidShareDataHeader(_)
+            | Self::InvalidPdu(_)
+            | Self::UnexpectedShareControlPdu(_)
+            | Self::UnexpectedShareDataPdu(_)
+            | Self::NotEnoughBytes
+            | Self::Pdu(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for RdpError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
+}
+
+impl From<ClientInfoError> for RdpError {
+    fn from(e: ClientInfoError) -> Self {
+        Self::ClientInfoError(e)
+    }
+}
+
+impl From<ServerLicenseError> for RdpError {
+    fn from(e: ServerLicenseError) -> Self {
+        Self::ServerLicenseError(e)
+    }
+}
+
+impl From<CapabilitySetsError> for RdpError {
+    fn from(e: CapabilitySetsError) -> Self {
+        Self::CapabilitySetsError(e)
+    }
+}
+
+impl From<session_info::SessionError> for RdpError {
+    fn from(e: session_info::SessionError) -> Self {
+        Self::SaveSessionInfoError(e)
+    }
+}
+
+impl From<InputEventError> for RdpError {
+    fn from(e: InputEventError) -> Self {
+        Self::InputEventError(e)
+    }
 }
 
 impl From<PduError> for RdpError {

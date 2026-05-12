@@ -1,3 +1,4 @@
+use core::fmt;
 use std::borrow::Cow;
 use std::{io, str};
 
@@ -7,7 +8,6 @@ use ironrdp_core::{
     ensure_size, invalid_field_err, read_padding, write_padding,
 };
 use num_integer::Integer as _;
-use thiserror::Error;
 
 const CHANNELS_MAX: usize = 31;
 
@@ -289,14 +289,43 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum NetworkDataError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("UTF-8 error")]
-    Utf8Error(#[from] str::Utf8Error),
-    #[error("invalid channel options field")]
+    IOError(io::Error),
+    Utf8Error(str::Utf8Error),
     InvalidChannelOptions,
-    #[error("invalid channel count field")]
     InvalidChannelCount,
+}
+
+impl fmt::Display for NetworkDataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(_) => f.write_str("IO error"),
+            Self::Utf8Error(_) => f.write_str("UTF-8 error"),
+            Self::InvalidChannelOptions => f.write_str("invalid channel options field"),
+            Self::InvalidChannelCount => f.write_str("invalid channel count field"),
+        }
+    }
+}
+
+impl core::error::Error for NetworkDataError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::Utf8Error(e) => Some(e),
+            Self::InvalidChannelOptions | Self::InvalidChannelCount => None,
+        }
+    }
+}
+
+impl From<io::Error> for NetworkDataError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
+}
+
+impl From<str::Utf8Error> for NetworkDataError {
+    fn from(e: str::Utf8Error) -> Self {
+        Self::Utf8Error(e)
+    }
 }

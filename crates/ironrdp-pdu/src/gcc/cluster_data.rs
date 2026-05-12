@@ -1,3 +1,4 @@
+use core::fmt;
 use std::io;
 
 use bitflags::bitflags;
@@ -6,7 +7,6 @@ use ironrdp_core::{
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
 const REDIRECTION_VERSION_MASK: u32 = 0x0000_003C;
 
@@ -97,10 +97,32 @@ impl RedirectionVersion {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum ClusterDataError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid redirection flags field")]
+    IOError(io::Error),
     InvalidRedirectionFlags,
+}
+
+impl fmt::Display for ClusterDataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(_) => f.write_str("IO error"),
+            Self::InvalidRedirectionFlags => f.write_str("invalid redirection flags field"),
+        }
+    }
+}
+
+impl core::error::Error for ClusterDataError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::InvalidRedirectionFlags => None,
+        }
+    }
+}
+
+impl From<io::Error> for ClusterDataError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
 }

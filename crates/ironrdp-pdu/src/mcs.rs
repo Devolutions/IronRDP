@@ -940,10 +940,10 @@ mod legacy {
         reason = "Cannot move the implementation from the legacy module"
     )]
 
+    use core::fmt;
     use std::io;
 
     use ironrdp_core::{Decode, DecodeResult, Encode, cast_int};
-    use thiserror::Error;
 
     use super::{
         ConnectInitial, ConnectResponse, DomainParameters, PduError, RESULT_ENUM_LENGTH, ReadCursor, WriteCursor,
@@ -1177,22 +1177,55 @@ mod legacy {
         }
     }
 
-    #[derive(Debug, Error)]
+    #[derive(Debug)]
     pub enum McsError {
-        #[error("IO error")]
-        IOError(#[from] io::Error),
-        #[error("GCC block error")]
-        GccError(#[from] GccError),
-        #[error("invalid disconnect provider ultimatum")]
+        IOError(io::Error),
+        GccError(GccError),
         InvalidDisconnectProviderUltimatum,
-        #[error("invalid domain MCS PDU")]
         InvalidDomainMcsPdu,
-        #[error("invalid MCS Connection Sequence PDU")]
         InvalidPdu(String),
-        #[error("invalid invalid MCS channel id")]
         UnexpectedChannelId(String),
-        #[error("PDU error: {0}")]
         Pdu(PduError),
+    }
+
+    impl fmt::Display for McsError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Self::IOError(_) => f.write_str("IO error"),
+                Self::GccError(_) => f.write_str("GCC block error"),
+                Self::InvalidDisconnectProviderUltimatum => f.write_str("invalid disconnect provider ultimatum"),
+                Self::InvalidDomainMcsPdu => f.write_str("invalid domain MCS PDU"),
+                Self::InvalidPdu(_) => f.write_str("invalid MCS Connection Sequence PDU"),
+                Self::UnexpectedChannelId(_) => f.write_str("invalid invalid MCS channel id"),
+                Self::Pdu(e) => write!(f, "PDU error: {e}"),
+            }
+        }
+    }
+
+    impl core::error::Error for McsError {
+        fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+            match self {
+                Self::IOError(e) => Some(e),
+                Self::GccError(e) => Some(e),
+                Self::InvalidDisconnectProviderUltimatum
+                | Self::InvalidDomainMcsPdu
+                | Self::InvalidPdu(_)
+                | Self::UnexpectedChannelId(_)
+                | Self::Pdu(_) => None,
+            }
+        }
+    }
+
+    impl From<io::Error> for McsError {
+        fn from(e: io::Error) -> Self {
+            Self::IOError(e)
+        }
+    }
+
+    impl From<GccError> for McsError {
+        fn from(e: GccError) -> Self {
+            Self::GccError(e)
+        }
     }
 
     impl From<PduError> for McsError {

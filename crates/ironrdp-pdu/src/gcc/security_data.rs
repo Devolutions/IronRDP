@@ -1,3 +1,4 @@
+use core::fmt;
 use std::io;
 
 use bitflags::bitflags;
@@ -7,7 +8,6 @@ use ironrdp_core::{
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
 const CLIENT_ENCRYPTION_METHODS_SIZE: usize = 4;
 const CLIENT_EXT_ENCRYPTION_METHODS_SIZE: usize = 4;
@@ -219,18 +219,44 @@ impl EncryptionLevel {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum SecurityDataError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid encryption methods field")]
+    IOError(io::Error),
     InvalidEncryptionMethod,
-    #[error("invalid encryption level field")]
     InvalidEncryptionLevel,
-    #[error("invalid server random length field: {0}")]
     InvalidServerRandomLen(u32),
-    #[error("invalid input: {0}")]
     InvalidInput(String),
-    #[error("invalid server certificate length: {0}")]
     InvalidServerCertificateLen(u32),
+}
+
+impl fmt::Display for SecurityDataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(_) => f.write_str("IO error"),
+            Self::InvalidEncryptionMethod => f.write_str("invalid encryption methods field"),
+            Self::InvalidEncryptionLevel => f.write_str("invalid encryption level field"),
+            Self::InvalidServerRandomLen(n) => write!(f, "invalid server random length field: {n}"),
+            Self::InvalidInput(s) => write!(f, "invalid input: {s}"),
+            Self::InvalidServerCertificateLen(n) => write!(f, "invalid server certificate length: {n}"),
+        }
+    }
+}
+
+impl core::error::Error for SecurityDataError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::InvalidEncryptionMethod
+            | Self::InvalidEncryptionLevel
+            | Self::InvalidServerRandomLen(_)
+            | Self::InvalidInput(_)
+            | Self::InvalidServerCertificateLen(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for SecurityDataError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
 }
