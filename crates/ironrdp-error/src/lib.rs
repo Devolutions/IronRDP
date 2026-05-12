@@ -212,12 +212,12 @@ macro_rules! bail {
 #[macro_export]
 macro_rules! ensure {
     ($condition:expr, $kind:expr $(,)?) => {
-        if !$condition {
+        if !($condition) {
             return ::core::result::Result::Err($crate::Error::new("", $kind));
         }
     };
     ($condition:expr, $context:expr, $kind:expr $(,)?) => {
-        if !$condition {
+        if !($condition) {
             return ::core::result::Result::Err($crate::Error::new($context, $kind));
         }
     };
