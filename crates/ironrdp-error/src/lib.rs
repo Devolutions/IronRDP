@@ -200,3 +200,59 @@ where
         Ok(())
     }
 }
+
+/// Returns from the enclosing function with an [`Error`] built from a kind variant.
+///
+/// Three forms are supported:
+///
+/// - `bail!(kind)` — empty context.
+/// - `bail!(context, kind)` — explicit `&'static str` context.
+/// - `bail!(context, kind, source: source)` — explicit context plus a chained source error.
+///
+/// The kind type is inferred from the enclosing function's return type, which must be
+/// `Result<_, Error<Kind>>` (or any type alias resolving to it).
+///
+/// Mirrors the call-site shape of [`anyhow::bail!`] but produces a typed
+/// `Error<Kind>` rather than a type-erased `anyhow::Error`.
+///
+/// [`anyhow::bail!`]: https://docs.rs/anyhow/latest/anyhow/macro.bail.html
+#[macro_export]
+macro_rules! bail {
+    ($kind:expr $(,)?) => {
+        return ::core::result::Result::Err($crate::Error::new("", $kind))
+    };
+    ($context:expr, $kind:expr $(,)?) => {
+        return ::core::result::Result::Err($crate::Error::new($context, $kind))
+    };
+    ($context:expr, $kind:expr, source: $source:expr $(,)?) => {
+        return ::core::result::Result::Err($crate::Error::new($context, $kind).with_source($source))
+    };
+}
+
+/// Returns from the enclosing function with an [`Error`] if the given condition is false.
+///
+/// Two forms are supported:
+///
+/// - `ensure!(condition, kind)` — empty context.
+/// - `ensure!(condition, context, kind)` — explicit `&'static str` context.
+///
+/// The kind type is inferred from the enclosing function's return type, which must be
+/// `Result<_, Error<Kind>>` (or any type alias resolving to it).
+///
+/// Mirrors the call-site shape of [`anyhow::ensure!`] but produces a typed
+/// `Error<Kind>` rather than a type-erased `anyhow::Error`.
+///
+/// [`anyhow::ensure!`]: https://docs.rs/anyhow/latest/anyhow/macro.ensure.html
+#[macro_export]
+macro_rules! ensure {
+    ($condition:expr, $kind:expr $(,)?) => {
+        if !($condition) {
+            return ::core::result::Result::Err($crate::Error::new("", $kind));
+        }
+    };
+    ($condition:expr, $context:expr, $kind:expr $(,)?) => {
+        if !($condition) {
+            return ::core::result::Result::Err($crate::Error::new($context, $kind));
+        }
+    };
+}
