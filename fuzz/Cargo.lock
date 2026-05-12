@@ -394,7 +394,6 @@ dependencies = [
  "pkcs1",
  "sha1",
  "tap",
- "thiserror",
  "x509-cert",
 ]
 
