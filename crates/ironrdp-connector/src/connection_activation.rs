@@ -122,7 +122,13 @@ impl Sequence for ConnectionActivationSequence {
                 // before ServerDemandActive as part of a Deactivation-Reactivation Sequence
                 // (MS-RDPBCGR §1.3.1.3). Skip it and stay in the same state to wait for
                 // the actual DemandActive PDU.
-                if matches!(share_control_ctx.pdu, rdp::headers::ShareControlPdu::ServerDeactivateAll(_)) {
+                //
+                // The decoded PDU is intentionally discarded: the DeactivateAll body carries
+                // no payload we need during initial activation.
+                if matches!(
+                    share_control_ctx.pdu,
+                    rdp::headers::ShareControlPdu::ServerDeactivateAll(_)
+                ) {
                     debug!("Received ServerDeactivateAll during CapabilitiesExchange, waiting for ServerDemandActive");
                     self.state = ConnectionActivationState::CapabilitiesExchange {
                         io_channel_id,
