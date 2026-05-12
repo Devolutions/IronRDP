@@ -21,9 +21,9 @@ pub trait Source: fmt::Display + fmt::Debug + Send + Sync + 'static {}
 #[cfg(not(feature = "std"))]
 impl<T> Source for T where T: fmt::Display + fmt::Debug + Send + Sync + 'static {}
 
-#[derive(Debug)]
 pub struct Error<Kind> {
     context: &'static str,
+    location: &'static core::panic::Location<'static>,
     kind: Kind,
     #[cfg(feature = "std")]
     source: Option<Box<dyn core::error::Error + Sync + Send>>,
@@ -31,12 +31,29 @@ pub struct Error<Kind> {
     source: Option<Box<dyn Source>>,
 }
 
+// Manual `Debug` impl that excludes the `location` field. The location is
+// captured via `core::panic::Location::caller()` and rendered in `Display`,
+// but its `file()` returns platform-native paths (`/` on Unix, `\` on
+// Windows). Including it in `Debug` would break cross-platform snapshot
+// tests. Consumers needing programmatic access can use `Error::location()`.
+impl<Kind: fmt::Debug> fmt::Debug for Error<Kind> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut dbg = f.debug_struct("Error");
+        dbg.field("context", &self.context).field("kind", &self.kind);
+        #[cfg(any(feature = "std", feature = "alloc"))]
+        dbg.field("source", &self.source);
+        dbg.finish()
+    }
+}
+
 impl<Kind> Error<Kind> {
     #[cold]
     #[must_use]
+    #[track_caller]
     pub fn new(context: &'static str, kind: Kind) -> Self {
         Self {
             context,
+            location: core::panic::Location::caller(),
             kind,
             #[cfg(feature = "alloc")]
             source: None,
@@ -70,6 +87,7 @@ impl<Kind> Error<Kind> {
     {
         Error {
             context: self.context,
+            location: self.location,
             kind: self.kind.into(),
             #[cfg(any(feature = "std", feature = "alloc"))]
             source: self.source,
@@ -78,6 +96,15 @@ impl<Kind> Error<Kind> {
 
     pub fn kind(&self) -> &Kind {
         &self.kind
+    }
+
+    /// Returns the source code location at which this error was constructed.
+    ///
+    /// Captured automatically by [`Error::new`] via [`core::panic::Location::caller`]
+    /// and `#[track_caller]`. Useful for diagnostic logging and error reporting
+    /// when the variant alone does not narrow down the call site enough.
+    pub fn location(&self) -> &'static core::panic::Location<'static> {
+        self.location
     }
 
     pub fn set_context(&mut self, context: &'static str) {
@@ -94,7 +121,14 @@ where
     Kind: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}] {}", self.context, self.kind)
+        write!(
+            f,
+            "[{} @ {}:{}] {}",
+            self.context,
+            self.location.file(),
+            self.location.line(),
+            self.kind
+        )
     }
 }
 
