@@ -796,7 +796,7 @@ impl<'de> Decode<'de> for AutoDetectReqPdu {
         let security_header = BasicSecurityHeader::decode(src)?;
 
         if !security_header.flags.contains(BasicSecurityHeaderFlags::AUTODETECT_REQ) {
-            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_REQ flag"));
+            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_REQ flag", in: src));
         }
 
         let request = AutoDetectRequest::decode(src)?;
@@ -856,7 +856,7 @@ impl<'de> Decode<'de> for AutoDetectRspPdu {
         let security_header = BasicSecurityHeader::decode(src)?;
 
         if !security_header.flags.contains(BasicSecurityHeaderFlags::AUTODETECT_RSP) {
-            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_RSP flag"));
+            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_RSP flag", in: src));
         }
 
         let response = AutoDetectResponse::decode(src)?;

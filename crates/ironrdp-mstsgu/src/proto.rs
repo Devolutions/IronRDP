@@ -111,7 +111,8 @@ impl<'a> Decode<'a> for PktHdr {
         ensure_fixed_part_size!(in: src);
 
         let ty = src.read_u16();
-        let mty = PktTy::try_from(ty).map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{ty:x}")))?;
+        let mty =
+            PktTy::try_from(ty).map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{ty:x}"), None))?;
 
         Ok(PktHdr {
             ty: mty,

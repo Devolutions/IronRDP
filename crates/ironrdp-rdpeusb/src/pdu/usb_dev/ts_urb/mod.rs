@@ -54,7 +54,7 @@ impl Decode<'_> for TsUrbIn {
             return Err(invalid_field_err!(
                 "TRANSFER_IN_REQUEST::TsUrb::TS_URB_HEADER::NoAck",
                 "is non-zero: NoAck MUST be set to zero for TRANSFER_IN_REQUEST"
-            ));
+            , in: src));
         }
 
         let kind = TsUrbInKind::decode(src, header)?;
@@ -69,13 +69,13 @@ impl Encode for TsUrbIn {
             return Err(invalid_field_err!(
                 "TRANSFER_IN_REQUEST::TsUrb::TS_URB_HEADER::NoAck",
                 "is non-zero: NoAck MUST be set to zero for TRANSFER_IN_REQUEST"
-            ));
+            , in: dst));
         }
         if !self.kind.matches_func(self.header.func) {
             return Err(invalid_field_err!(
                 "TRANSFER_IN_REQUEST::TsUrb::TS_URB_HEADER::URB_Function",
                 "does not match TS_URB payload"
-            ));
+            , in: dst));
         }
 
         ensure_size!(in: dst, size: self.size());
@@ -209,7 +209,7 @@ impl TsUrbInKind {
             UrbFunction::URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR => {
                 Self::OsFeatDescReq(TsUrbOsFeatDescRequest::decode(&mut src)?)
             }
-            func => return Err(unsupported_value_err!("URB Function", format!("{}", u16::from(func)))),
+            func => return Err(unsupported_value_err!("URB Function", format!("{}", u16::from(func)), in: src)),
         };
 
         Ok(ts_urb)
@@ -381,7 +381,7 @@ impl Encode for TsUrbOut {
             return Err(invalid_field_err!(
                 "TRANSFER_OUT_REQUEST::TsUrb::TS_URB_HEADER::URB_Function",
                 "does not match TS_URB payload"
-            ));
+            , in: dst));
         }
         if self.header.no_ack
             && !matches!(
@@ -392,7 +392,7 @@ impl Encode for TsUrbOut {
             return Err(invalid_field_err!(
                 "TRANSFER_OUT_REQUEST::TsUrb::TS_URB_HEADER::NoAck",
                 "can only be set for TS_URB_ISOCH_TRANSFER"
-            ));
+            , in: dst));
         }
 
         ensure_size!(in: dst, size: self.size());
@@ -482,7 +482,7 @@ impl TsUrbOutKind {
                 );
                 Self::VendorClassReq(urb)
             }
-            func => return Err(unsupported_value_err!("URB Function", format!("{}", u16::from(func)))),
+            func => return Err(unsupported_value_err!("URB Function", format!("{}", u16::from(func)), in: src)),
         };
 
         Ok(ts_urb)
@@ -953,7 +953,7 @@ impl Encode for TsUrbIsochTransfer {
             invalid_field_err!(
                 "TS_URB_ISOCH_TRANSFER::IsoPacket",
                 "too many packets: count exceeded field NumberOfPackets (4 bytes)"
-            )
+            , in: dst)
         })?);
         dst.write_u32(self.error_count);
         self.iso_packet.iter().try_for_each(|packet| packet.encode(dst))
@@ -1311,7 +1311,7 @@ impl Decode<'_> for TsUrbOsFeatDescRequest {
             return Err(invalid_field_err!(
                 "TRANSFER_IN_REQUEST::TsUrb: TS_URB_OS_FEATURE_DESCRIPTOR_REQUEST::MS_PageIndex",
                 "must be: 0x0"
-            ));
+            , in: src));
         }
         let ms_feat_desc_index = src.read_u16();
         read_padding!(src, 3);

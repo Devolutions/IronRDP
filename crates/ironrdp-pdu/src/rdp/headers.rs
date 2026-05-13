@@ -947,7 +947,8 @@ mod tests {
             error.kind(),
             ironrdp_core::DecodeErrorKind::NotEnoughBytes {
                 received: 0,
-                expected: 18
+                expected: 18,
+                ..
             }
         ));
     }

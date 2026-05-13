@@ -100,15 +100,16 @@ fn null_size() {
         .unwrap();
 
     expect![[r#"
-            Error {
-                context: "PreconnectionBlob",
-                kind: InvalidField {
-                    field: "cbSize",
-                    reason: "advertised size too small for Preconnection PDU V1",
-                },
-                source: None,
-            }
-        "#]]
+        Error {
+            context: "PreconnectionBlob",
+            kind: InvalidField {
+                field: "cbSize",
+                reason: "advertised size too small for Preconnection PDU V1",
+                offset: None,
+            },
+            source: None,
+        }
+    "#]]
     .assert_debug_eq(&e);
 }
 
@@ -131,6 +132,9 @@ fn truncated() {
             kind: NotEnoughBytes {
                 received: 0,
                 expected: 239,
+                offset: Some(
+                    16,
+                ),
             },
             source: None,
         }
@@ -155,14 +159,15 @@ fn pcb_v2_string_too_big() {
         .unwrap();
 
     expect![[r#"
-            Error {
-                context: "PreconnectionBlob",
-                kind: InvalidField {
-                    field: "cchPCB",
-                    reason: "PCB string bigger than advertised size",
-                },
-                source: None,
-            }
-        "#]]
+        Error {
+            context: "PreconnectionBlob",
+            kind: InvalidField {
+                field: "cchPCB",
+                reason: "PCB string bigger than advertised size",
+                offset: None,
+            },
+            source: None,
+        }
+    "#]]
     .assert_debug_eq(&e);
 }

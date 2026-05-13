@@ -16,7 +16,6 @@ use ironrdp_pdu::rdp::headers::{
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
-
 use ironrdp_testsuite_core::capsets::SERVER_DEMAND_ACTIVE;
 
 const USER_CHANNEL_ID: u16 = 1002;

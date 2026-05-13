@@ -373,6 +373,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
                 Self::NAME,
                 "TPDU header variable part",
                 "advertised size too small",
+                None,
             ));
         };
 
@@ -560,7 +561,7 @@ fn read_nego_data(src: &mut ReadCursor<'_>, ctx: &'static str, prefix: &str) -> 
     src.advance(2);
 
     let data = core::str::from_utf8(&src.inner()[identifier_start..identifier_end])
-        .map_err(|_| invalid_field_err(ctx, "identifier", "not valid UTF-8"))?
+        .map_err(|_| invalid_field_err(ctx, "identifier", "not valid UTF-8", None))?
         .to_owned();
 
     Ok(Some(data))
