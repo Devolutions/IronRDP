@@ -1,3 +1,4 @@
+use core::fmt;
 use std::io;
 
 use ironrdp_core::{
@@ -6,7 +7,6 @@ use ironrdp_core::{
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
 pub mod fast_path;
 pub mod mouse;
@@ -182,20 +182,47 @@ impl From<&InputEvent> for InputEventType {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum InputEventError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid Input Event type: {0}")]
+    IOError(io::Error),
     InvalidInputEventType(u16),
-    #[error("encryption not supported")]
     EncryptionNotSupported,
-    #[error("event code not supported {0}")]
     EventCodeUnsupported(u8),
-    #[error("keyboard flags not supported {0}")]
     KeyboardFlagsUnsupported(u8),
-    #[error("synchronize flags not supported {0}")]
     SynchronizeFlagsUnsupported(u8),
-    #[error("Fast-Path Input Event PDU is empty")]
     EmptyFastPathInput,
+}
+
+impl fmt::Display for InputEventError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(_) => f.write_str("IO error"),
+            Self::InvalidInputEventType(n) => write!(f, "invalid Input Event type: {n}"),
+            Self::EncryptionNotSupported => f.write_str("encryption not supported"),
+            Self::EventCodeUnsupported(n) => write!(f, "event code not supported {n}"),
+            Self::KeyboardFlagsUnsupported(n) => write!(f, "keyboard flags not supported {n}"),
+            Self::SynchronizeFlagsUnsupported(n) => write!(f, "synchronize flags not supported {n}"),
+            Self::EmptyFastPathInput => f.write_str("Fast-Path Input Event PDU is empty"),
+        }
+    }
+}
+
+impl core::error::Error for InputEventError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::InvalidInputEventType(_)
+            | Self::EncryptionNotSupported
+            | Self::EventCodeUnsupported(_)
+            | Self::KeyboardFlagsUnsupported(_)
+            | Self::SynchronizeFlagsUnsupported(_)
+            | Self::EmptyFastPathInput => None,
+        }
+    }
+}
+
+impl From<io::Error> for InputEventError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
 }

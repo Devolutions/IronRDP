@@ -1,9 +1,8 @@
 pub(crate) mod client;
 pub(crate) mod server;
 
+use core::fmt;
 use std::io;
-
-use thiserror::Error;
 
 use crate::PduError;
 
@@ -43,32 +42,64 @@ impl RdpVersion {
     pub const V10_12: Self = Self(0x0008_0011);
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum CoreDataError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid version field")]
+    IOError(io::Error),
     InvalidVersion,
-    #[error("invalid color depth field")]
     InvalidColorDepth,
-    #[error("invalid post beta color depth field")]
     InvalidPostBetaColorDepth,
-    #[error("invalid high color depth field")]
     InvalidHighColorDepth,
-    #[error("invalid supported color depths field")]
     InvalidSupportedColorDepths,
-    #[error("invalid secure access sequence field")]
     InvalidSecureAccessSequence,
-    #[error("invalid keyboard type field")]
     InvalidKeyboardType,
-    #[error("invalid early capability flags field")]
     InvalidEarlyCapabilityFlags,
-    #[error("invalid connection type field")]
     InvalidConnectionType,
-    #[error("invalid server security protocol field")]
     InvalidServerSecurityProtocol,
-    #[error("PDU error: {0}")]
     Pdu(PduError),
+}
+
+impl fmt::Display for CoreDataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(_) => f.write_str("IO error"),
+            Self::InvalidVersion => f.write_str("invalid version field"),
+            Self::InvalidColorDepth => f.write_str("invalid color depth field"),
+            Self::InvalidPostBetaColorDepth => f.write_str("invalid post beta color depth field"),
+            Self::InvalidHighColorDepth => f.write_str("invalid high color depth field"),
+            Self::InvalidSupportedColorDepths => f.write_str("invalid supported color depths field"),
+            Self::InvalidSecureAccessSequence => f.write_str("invalid secure access sequence field"),
+            Self::InvalidKeyboardType => f.write_str("invalid keyboard type field"),
+            Self::InvalidEarlyCapabilityFlags => f.write_str("invalid early capability flags field"),
+            Self::InvalidConnectionType => f.write_str("invalid connection type field"),
+            Self::InvalidServerSecurityProtocol => f.write_str("invalid server security protocol field"),
+            Self::Pdu(e) => write!(f, "PDU error: {e}"),
+        }
+    }
+}
+
+impl core::error::Error for CoreDataError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::InvalidVersion
+            | Self::InvalidColorDepth
+            | Self::InvalidPostBetaColorDepth
+            | Self::InvalidHighColorDepth
+            | Self::InvalidSupportedColorDepths
+            | Self::InvalidSecureAccessSequence
+            | Self::InvalidKeyboardType
+            | Self::InvalidEarlyCapabilityFlags
+            | Self::InvalidConnectionType
+            | Self::InvalidServerSecurityProtocol
+            | Self::Pdu(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for CoreDataError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
 }
 
 impl From<PduError> for CoreDataError {

@@ -2715,7 +2715,6 @@ dependencies = [
  "pkcs1 0.7.5",
  "sha1 0.10.6",
  "tap",
- "thiserror 2.0.18",
  "x509-cert",
 ]
 

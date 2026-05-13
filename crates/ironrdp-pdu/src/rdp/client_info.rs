@@ -8,7 +8,6 @@ use ironrdp_core::{
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
 use crate::utils::CharacterSet;
 use crate::{PduError, utils};
@@ -757,22 +756,55 @@ impl CompressionType {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum ClientInfoError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("UTF-8 error")]
-    Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("invalid address family field")]
+    IOError(io::Error),
+    Utf8Error(std::string::FromUtf8Error),
     InvalidAddressFamily,
-    #[error("invalid flags field")]
     InvalidClientInfoFlags,
-    #[error("invalid performance flags field")]
     InvalidPerformanceFlags,
-    #[error("invalid reconnect cookie field")]
     InvalidReconnectCookie,
-    #[error("PDU error: {0}")]
     Pdu(PduError),
+}
+
+impl fmt::Display for ClientInfoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(_) => f.write_str("IO error"),
+            Self::Utf8Error(_) => f.write_str("UTF-8 error"),
+            Self::InvalidAddressFamily => f.write_str("invalid address family field"),
+            Self::InvalidClientInfoFlags => f.write_str("invalid flags field"),
+            Self::InvalidPerformanceFlags => f.write_str("invalid performance flags field"),
+            Self::InvalidReconnectCookie => f.write_str("invalid reconnect cookie field"),
+            Self::Pdu(e) => write!(f, "PDU error: {e}"),
+        }
+    }
+}
+
+impl core::error::Error for ClientInfoError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::Utf8Error(e) => Some(e),
+            Self::InvalidAddressFamily
+            | Self::InvalidClientInfoFlags
+            | Self::InvalidPerformanceFlags
+            | Self::InvalidReconnectCookie
+            | Self::Pdu(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for ClientInfoError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for ClientInfoError {
+    fn from(e: std::string::FromUtf8Error) -> Self {
+        Self::Utf8Error(e)
+    }
 }
 
 impl From<PduError> for ClientInfoError {

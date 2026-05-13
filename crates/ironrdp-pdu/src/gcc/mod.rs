@@ -1,3 +1,4 @@
+use core::fmt;
 use std::io;
 
 use ironrdp_core::{
@@ -6,7 +7,6 @@ use ironrdp_core::{
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-use thiserror::Error;
 
 use crate::PduError;
 
@@ -356,30 +356,89 @@ impl UserDataHeader {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum GccError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("core data block error")]
-    CoreError(#[from] CoreDataError),
-    #[error("security data block error")]
-    SecurityError(#[from] SecurityDataError),
-    #[error("network data block error")]
-    NetworkError(#[from] NetworkDataError),
-    #[error("cluster data block error")]
-    ClusterError(#[from] ClusterDataError),
-    #[error("invalid GCC block type")]
+    IOError(io::Error),
+    CoreError(CoreDataError),
+    SecurityError(SecurityDataError),
+    NetworkError(NetworkDataError),
+    ClusterError(ClusterDataError),
     InvalidGccType,
-    #[error("invalid conference create request: {0}")]
     InvalidConferenceCreateRequest(String),
-    #[error("invalid Conference create response: {0}")]
     InvalidConferenceCreateResponse(String),
-    #[error("a server did not send the required GCC data block: {0:?}")]
     RequiredClientDataBlockIsAbsent(ClientGccType),
-    #[error("a client did not send the required GCC data block: {0:?}")]
     RequiredServerDataBlockIsAbsent(ServerGccType),
-    #[error("PDU error: {0}")]
     Pdu(PduError),
+}
+
+impl fmt::Display for GccError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(_) => f.write_str("IO error"),
+            Self::CoreError(_) => f.write_str("core data block error"),
+            Self::SecurityError(_) => f.write_str("security data block error"),
+            Self::NetworkError(_) => f.write_str("network data block error"),
+            Self::ClusterError(_) => f.write_str("cluster data block error"),
+            Self::InvalidGccType => f.write_str("invalid GCC block type"),
+            Self::InvalidConferenceCreateRequest(s) => write!(f, "invalid conference create request: {s}"),
+            Self::InvalidConferenceCreateResponse(s) => write!(f, "invalid Conference create response: {s}"),
+            Self::RequiredClientDataBlockIsAbsent(ty) => {
+                write!(f, "a server did not send the required GCC data block: {ty:?}")
+            }
+            Self::RequiredServerDataBlockIsAbsent(ty) => {
+                write!(f, "a client did not send the required GCC data block: {ty:?}")
+            }
+            Self::Pdu(e) => write!(f, "PDU error: {e}"),
+        }
+    }
+}
+
+impl core::error::Error for GccError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::CoreError(e) => Some(e),
+            Self::SecurityError(e) => Some(e),
+            Self::NetworkError(e) => Some(e),
+            Self::ClusterError(e) => Some(e),
+            Self::InvalidGccType
+            | Self::InvalidConferenceCreateRequest(_)
+            | Self::InvalidConferenceCreateResponse(_)
+            | Self::RequiredClientDataBlockIsAbsent(_)
+            | Self::RequiredServerDataBlockIsAbsent(_)
+            | Self::Pdu(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for GccError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
+}
+
+impl From<CoreDataError> for GccError {
+    fn from(e: CoreDataError) -> Self {
+        Self::CoreError(e)
+    }
+}
+
+impl From<SecurityDataError> for GccError {
+    fn from(e: SecurityDataError) -> Self {
+        Self::SecurityError(e)
+    }
+}
+
+impl From<NetworkDataError> for GccError {
+    fn from(e: NetworkDataError) -> Self {
+        Self::NetworkError(e)
+    }
+}
+
+impl From<ClusterDataError> for GccError {
+    fn from(e: ClusterDataError) -> Self {
+        Self::ClusterError(e)
+    }
 }
 
 impl From<PduError> for GccError {

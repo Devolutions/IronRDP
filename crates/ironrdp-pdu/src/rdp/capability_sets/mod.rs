@@ -1,3 +1,4 @@
+use core::fmt;
 use std::io;
 
 use ironrdp_core::{
@@ -6,7 +7,6 @@ use ironrdp_core::{
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
 use crate::{PduError, utils};
 
@@ -606,64 +606,118 @@ impl CapabilitySetType {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum CapabilitySetsError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("UTF-8 error")]
-    Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("invalid type field")]
+    IOError(io::Error),
+    Utf8Error(std::string::FromUtf8Error),
     InvalidType,
-    #[error("invalid bitmap compression field")]
     InvalidCompressionFlag,
-    #[error("invalid multiple rectangle support field")]
     InvalidMultipleRectSupport,
-    #[error("invalid protocol version field")]
     InvalidProtocolVersion,
-    #[error("invalid compression types field")]
     InvalidCompressionTypes,
-    #[error("invalid update capability flags field")]
     InvalidUpdateCapFlag,
-    #[error("invalid remote unshare flag field")]
     InvalidRemoteUnshareFlag,
-    #[error("invalid compression level field")]
     InvalidCompressionLevel,
-    #[error("invalid brush support level field")]
     InvalidBrushSupportLevel,
-    #[error("invalid glyph support level field")]
     InvalidGlyphSupportLevel,
-    #[error("invalid RemoteFX capability version")]
     InvalidRfxICapVersion,
-    #[error("invalid RemoteFX capability tile size")]
     InvalidRfxICapTileSize,
-    #[error("invalid RemoteFXICap color conversion bits")]
     InvalidRfxICapColorConvBits,
-    #[error("invalid RemoteFXICap transform bits")]
     InvalidRfxICapTransformBits,
-    #[error("invalid RemoteFXICap entropy bits field")]
     InvalidRfxICapEntropyBits,
-    #[error("invalid RemoteFX capability set block type")]
     InvalidRfxCapsetBlockType,
-    #[error("invalid RemoteFX capability set type")]
     InvalidRfxCapsetType,
-    #[error("invalid RemoteFX capabilities block type")]
     InvalidRfxCapsBlockType,
-    #[error("invalid RemoteFX capabilities block length")]
     InvalidRfxCapsBockLength,
-    #[error("invalid number of capability sets in RemoteFX capabilities")]
     InvalidRfxCapsNumCapsets,
-    #[error("invalid codec property field")]
     InvalidCodecProperty,
-    #[error("invalid codec ID")]
     InvalidCodecID,
-    #[error("invalid channel chunk size field")]
     InvalidChunkSize,
-    #[error("invalid codec property length for the current property ID")]
     InvalidPropertyLength,
-    #[error("invalid data length")]
     InvalidLength,
-    #[error("PDU error: {0}")]
     Pdu(PduError),
+}
+
+impl fmt::Display for CapabilitySetsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(_) => f.write_str("IO error"),
+            Self::Utf8Error(_) => f.write_str("UTF-8 error"),
+            Self::InvalidType => f.write_str("invalid type field"),
+            Self::InvalidCompressionFlag => f.write_str("invalid bitmap compression field"),
+            Self::InvalidMultipleRectSupport => f.write_str("invalid multiple rectangle support field"),
+            Self::InvalidProtocolVersion => f.write_str("invalid protocol version field"),
+            Self::InvalidCompressionTypes => f.write_str("invalid compression types field"),
+            Self::InvalidUpdateCapFlag => f.write_str("invalid update capability flags field"),
+            Self::InvalidRemoteUnshareFlag => f.write_str("invalid remote unshare flag field"),
+            Self::InvalidCompressionLevel => f.write_str("invalid compression level field"),
+            Self::InvalidBrushSupportLevel => f.write_str("invalid brush support level field"),
+            Self::InvalidGlyphSupportLevel => f.write_str("invalid glyph support level field"),
+            Self::InvalidRfxICapVersion => f.write_str("invalid RemoteFX capability version"),
+            Self::InvalidRfxICapTileSize => f.write_str("invalid RemoteFX capability tile size"),
+            Self::InvalidRfxICapColorConvBits => f.write_str("invalid RemoteFXICap color conversion bits"),
+            Self::InvalidRfxICapTransformBits => f.write_str("invalid RemoteFXICap transform bits"),
+            Self::InvalidRfxICapEntropyBits => f.write_str("invalid RemoteFXICap entropy bits field"),
+            Self::InvalidRfxCapsetBlockType => f.write_str("invalid RemoteFX capability set block type"),
+            Self::InvalidRfxCapsetType => f.write_str("invalid RemoteFX capability set type"),
+            Self::InvalidRfxCapsBlockType => f.write_str("invalid RemoteFX capabilities block type"),
+            Self::InvalidRfxCapsBockLength => f.write_str("invalid RemoteFX capabilities block length"),
+            Self::InvalidRfxCapsNumCapsets => f.write_str("invalid number of capability sets in RemoteFX capabilities"),
+            Self::InvalidCodecProperty => f.write_str("invalid codec property field"),
+            Self::InvalidCodecID => f.write_str("invalid codec ID"),
+            Self::InvalidChunkSize => f.write_str("invalid channel chunk size field"),
+            Self::InvalidPropertyLength => f.write_str("invalid codec property length for the current property ID"),
+            Self::InvalidLength => f.write_str("invalid data length"),
+            Self::Pdu(e) => write!(f, "PDU error: {e}"),
+        }
+    }
+}
+
+impl core::error::Error for CapabilitySetsError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::Utf8Error(e) => Some(e),
+            Self::InvalidType
+            | Self::InvalidCompressionFlag
+            | Self::InvalidMultipleRectSupport
+            | Self::InvalidProtocolVersion
+            | Self::InvalidCompressionTypes
+            | Self::InvalidUpdateCapFlag
+            | Self::InvalidRemoteUnshareFlag
+            | Self::InvalidCompressionLevel
+            | Self::InvalidBrushSupportLevel
+            | Self::InvalidGlyphSupportLevel
+            | Self::InvalidRfxICapVersion
+            | Self::InvalidRfxICapTileSize
+            | Self::InvalidRfxICapColorConvBits
+            | Self::InvalidRfxICapTransformBits
+            | Self::InvalidRfxICapEntropyBits
+            | Self::InvalidRfxCapsetBlockType
+            | Self::InvalidRfxCapsetType
+            | Self::InvalidRfxCapsBlockType
+            | Self::InvalidRfxCapsBockLength
+            | Self::InvalidRfxCapsNumCapsets
+            | Self::InvalidCodecProperty
+            | Self::InvalidCodecID
+            | Self::InvalidChunkSize
+            | Self::InvalidPropertyLength
+            | Self::InvalidLength
+            | Self::Pdu(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for CapabilitySetsError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for CapabilitySetsError {
+    fn from(e: std::string::FromUtf8Error) -> Self {
+        Self::Utf8Error(e)
+    }
 }
 
 impl From<PduError> for CapabilitySetsError {
