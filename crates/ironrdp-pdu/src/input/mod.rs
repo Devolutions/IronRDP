@@ -1,6 +1,3 @@
-use core::fmt;
-use std::io;
-
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
     ensure_size, invalid_field_err, read_padding, write_padding,
@@ -179,50 +176,5 @@ impl From<&InputEvent> for InputEventType {
             InputEvent::MouseX(_) => Self::MouseX,
             InputEvent::MouseRel(_) => Self::MouseRel,
         }
-    }
-}
-
-#[derive(Debug)]
-pub enum InputEventError {
-    IOError(io::Error),
-    InvalidInputEventType(u16),
-    EncryptionNotSupported,
-    EventCodeUnsupported(u8),
-    KeyboardFlagsUnsupported(u8),
-    SynchronizeFlagsUnsupported(u8),
-    EmptyFastPathInput,
-}
-
-impl fmt::Display for InputEventError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IOError(_) => f.write_str("IO error"),
-            Self::InvalidInputEventType(n) => write!(f, "invalid Input Event type: {n}"),
-            Self::EncryptionNotSupported => f.write_str("encryption not supported"),
-            Self::EventCodeUnsupported(n) => write!(f, "event code not supported {n}"),
-            Self::KeyboardFlagsUnsupported(n) => write!(f, "keyboard flags not supported {n}"),
-            Self::SynchronizeFlagsUnsupported(n) => write!(f, "synchronize flags not supported {n}"),
-            Self::EmptyFastPathInput => f.write_str("Fast-Path Input Event PDU is empty"),
-        }
-    }
-}
-
-impl core::error::Error for InputEventError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::IOError(e) => Some(e),
-            Self::InvalidInputEventType(_)
-            | Self::EncryptionNotSupported
-            | Self::EventCodeUnsupported(_)
-            | Self::KeyboardFlagsUnsupported(_)
-            | Self::SynchronizeFlagsUnsupported(_)
-            | Self::EmptyFastPathInput => None,
-        }
-    }
-}
-
-impl From<io::Error> for InputEventError {
-    fn from(e: io::Error) -> Self {
-        Self::IOError(e)
     }
 }

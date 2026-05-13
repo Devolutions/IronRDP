@@ -1,14 +1,9 @@
-use core::fmt;
-use std::io;
-
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
     invalid_field_err, read_padding, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-
-use crate::PduError;
 
 #[cfg(test)]
 mod tests;
@@ -125,67 +120,4 @@ pub enum InfoData {
     LogonInfoV2(LogonInfoVersion2),
     PlainNotify,
     LogonExtended(LogonInfoExtended),
-}
-
-#[derive(Debug)]
-pub enum SessionError {
-    IOError(io::Error),
-    InvalidSaveSessionInfoType,
-    InvalidDomainNameSize,
-    InvalidUserNameSize,
-    InvalidLogonVersion2,
-    InvalidLogonVersion2Size,
-    InvalidAutoReconnectPacketSize,
-    InvalidAutoReconnectVersion,
-    InvalidLogonErrorType,
-    InvalidLogonErrorData,
-    Pdu(PduError),
-}
-
-impl fmt::Display for SessionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IOError(_) => f.write_str("IO error"),
-            Self::InvalidSaveSessionInfoType => f.write_str("invalid save session info type value"),
-            Self::InvalidDomainNameSize => f.write_str("invalid domain name size value"),
-            Self::InvalidUserNameSize => f.write_str("invalid user name size value"),
-            Self::InvalidLogonVersion2 => f.write_str("invalid logon version value"),
-            Self::InvalidLogonVersion2Size => f.write_str("invalid logon info version2 size value"),
-            Self::InvalidAutoReconnectPacketSize => f.write_str("invalid server auto-reconnect packet size value"),
-            Self::InvalidAutoReconnectVersion => f.write_str("invalid server auto-reconnect version"),
-            Self::InvalidLogonErrorType => f.write_str("invalid logon error type value"),
-            Self::InvalidLogonErrorData => f.write_str("invalid logon error data value"),
-            Self::Pdu(e) => write!(f, "PDU error: {e}"),
-        }
-    }
-}
-
-impl core::error::Error for SessionError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::IOError(e) => Some(e),
-            Self::InvalidSaveSessionInfoType
-            | Self::InvalidDomainNameSize
-            | Self::InvalidUserNameSize
-            | Self::InvalidLogonVersion2
-            | Self::InvalidLogonVersion2Size
-            | Self::InvalidAutoReconnectPacketSize
-            | Self::InvalidAutoReconnectVersion
-            | Self::InvalidLogonErrorType
-            | Self::InvalidLogonErrorData
-            | Self::Pdu(_) => None,
-        }
-    }
-}
-
-impl From<io::Error> for SessionError {
-    fn from(e: io::Error) -> Self {
-        Self::IOError(e)
-    }
-}
-
-impl From<PduError> for SessionError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
-    }
 }

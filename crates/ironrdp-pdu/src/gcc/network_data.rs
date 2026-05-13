@@ -1,6 +1,5 @@
-use core::fmt;
 use std::borrow::Cow;
-use std::{io, str};
+use std::str;
 
 use bitflags::bitflags;
 use ironrdp_core::{
@@ -286,46 +285,5 @@ bitflags! {
         const COMPRESS = 0x0040_0000;
         const SHOW_PROTOCOL = 0x0020_0000;
         const REMOTE_CONTROL_PERSISTENT = 0x0010_0000;
-    }
-}
-
-#[derive(Debug)]
-pub enum NetworkDataError {
-    IOError(io::Error),
-    Utf8Error(str::Utf8Error),
-    InvalidChannelOptions,
-    InvalidChannelCount,
-}
-
-impl fmt::Display for NetworkDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IOError(_) => f.write_str("IO error"),
-            Self::Utf8Error(_) => f.write_str("UTF-8 error"),
-            Self::InvalidChannelOptions => f.write_str("invalid channel options field"),
-            Self::InvalidChannelCount => f.write_str("invalid channel count field"),
-        }
-    }
-}
-
-impl core::error::Error for NetworkDataError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::IOError(e) => Some(e),
-            Self::Utf8Error(e) => Some(e),
-            Self::InvalidChannelOptions | Self::InvalidChannelCount => None,
-        }
-    }
-}
-
-impl From<io::Error> for NetworkDataError {
-    fn from(e: io::Error) -> Self {
-        Self::IOError(e)
-    }
-}
-
-impl From<str::Utf8Error> for NetworkDataError {
-    fn from(e: str::Utf8Error) -> Self {
-        Self::Utf8Error(e)
     }
 }

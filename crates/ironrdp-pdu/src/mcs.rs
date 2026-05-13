@@ -9,7 +9,7 @@ use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, Conferenc
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::{X224Pdu, user_data_size};
-use crate::{DecodeResult, EncodeResult, PduError, impl_x224_pdu_borrowing, impl_x224_pdu_pod, per};
+use crate::{DecodeResult, EncodeResult, impl_x224_pdu_borrowing, impl_x224_pdu_pod, per};
 
 // T.125 MCS is defined in:
 //
@@ -932,24 +932,19 @@ impl DomainParameters {
     }
 }
 
-pub use legacy::McsError;
-
 mod legacy {
     #![allow(
         clippy::multiple_inherent_impl,
         reason = "Cannot move the implementation from the legacy module"
     )]
 
-    use core::fmt;
-    use std::io;
-
     use ironrdp_core::{Decode, DecodeResult, Encode, cast_int};
 
     use super::{
-        ConnectInitial, ConnectResponse, DomainParameters, PduError, RESULT_ENUM_LENGTH, ReadCursor, WriteCursor,
-        cast_length, ensure_size,
+        ConnectInitial, ConnectResponse, DomainParameters, RESULT_ENUM_LENGTH, ReadCursor, WriteCursor, cast_length,
+        ensure_size,
     };
-    use crate::gcc::{ConferenceCreateRequest, ConferenceCreateResponse, GccError};
+    use crate::gcc::{ConferenceCreateRequest, ConferenceCreateResponse};
     use crate::{EncodeResult, ber};
 
     // impl<'de> McsPdu<'de> for ConnectInitial {
@@ -1174,69 +1169,6 @@ mod legacy {
                 max_mcs_pdu_size,
                 protocol_version,
             })
-        }
-    }
-
-    #[derive(Debug)]
-    pub enum McsError {
-        IOError(io::Error),
-        GccError(GccError),
-        InvalidDisconnectProviderUltimatum,
-        InvalidDomainMcsPdu,
-        InvalidPdu(String),
-        UnexpectedChannelId(String),
-        Pdu(PduError),
-    }
-
-    impl fmt::Display for McsError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match self {
-                Self::IOError(_) => f.write_str("IO error"),
-                Self::GccError(_) => f.write_str("GCC block error"),
-                Self::InvalidDisconnectProviderUltimatum => f.write_str("invalid disconnect provider ultimatum"),
-                Self::InvalidDomainMcsPdu => f.write_str("invalid domain MCS PDU"),
-                Self::InvalidPdu(_) => f.write_str("invalid MCS Connection Sequence PDU"),
-                Self::UnexpectedChannelId(_) => f.write_str("invalid MCS channel id"),
-                Self::Pdu(e) => write!(f, "PDU error: {e}"),
-            }
-        }
-    }
-
-    impl core::error::Error for McsError {
-        fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-            match self {
-                Self::IOError(e) => Some(e),
-                Self::GccError(e) => Some(e),
-                Self::InvalidDisconnectProviderUltimatum
-                | Self::InvalidDomainMcsPdu
-                | Self::InvalidPdu(_)
-                | Self::UnexpectedChannelId(_)
-                | Self::Pdu(_) => None,
-            }
-        }
-    }
-
-    impl From<io::Error> for McsError {
-        fn from(e: io::Error) -> Self {
-            Self::IOError(e)
-        }
-    }
-
-    impl From<GccError> for McsError {
-        fn from(e: GccError) -> Self {
-            Self::GccError(e)
-        }
-    }
-
-    impl From<PduError> for McsError {
-        fn from(e: PduError) -> Self {
-            Self::Pdu(e)
-        }
-    }
-
-    impl From<McsError> for io::Error {
-        fn from(e: McsError) -> io::Error {
-            io::Error::other(format!("MCS Connection Sequence error: {e}"))
         }
     }
 }
