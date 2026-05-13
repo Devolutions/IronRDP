@@ -22,6 +22,8 @@ mod write_buf;
 
 // Flat API hierarchy of common traits and types
 
+pub use ironrdp_error::{ErrorCategory, ErrorClassification};
+
 pub use self::as_any::*;
 pub use self::cursor::*;
 pub use self::decode::*;

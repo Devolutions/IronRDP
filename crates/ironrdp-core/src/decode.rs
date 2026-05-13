@@ -2,6 +2,8 @@
 use alloc::string::String;
 use core::fmt;
 
+use ironrdp_error::{ErrorCategory, ErrorClassification};
+
 use crate::{
     InvalidFieldErr, NotEnoughBytesErr, OtherErr, ReadCursor, UnexpectedMessageTypeErr, UnsupportedValueErr,
     UnsupportedVersionErr,
@@ -65,6 +67,23 @@ pub enum DecodeErrorKind {
 
 #[cfg(feature = "std")]
 impl core::error::Error for DecodeErrorKind {}
+
+impl ErrorClassification for DecodeErrorKind {
+    fn classify(&self) -> ErrorCategory {
+        // All structured variants are peer-driven: the input came from the
+        // wire and failed to conform to the spec at some level. `Other` is
+        // a free-form catch-all that cannot be classified without inspecting
+        // the description, so it stays `Unknown`.
+        match self {
+            Self::NotEnoughBytes { .. }
+            | Self::InvalidField { .. }
+            | Self::UnexpectedMessageType { .. }
+            | Self::UnsupportedVersion { .. }
+            | Self::UnsupportedValue { .. } => ErrorCategory::Protocol,
+            Self::Other { .. } => ErrorCategory::Unknown,
+        }
+    }
+}
 
 impl fmt::Display for DecodeErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

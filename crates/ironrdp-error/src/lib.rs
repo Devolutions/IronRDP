@@ -26,6 +26,65 @@ struct ErrorMeta {
     source: Option<Box<dyn Source>>,
 }
 
+/// Coarse category assigned to a `*ErrorKind` variant by [`ErrorClassification`],
+/// used to drive triage logic that does not depend on the specific kind shape.
+///
+/// The intended primary consumer is the structured-fuzzing oracle code in
+/// `ironrdp-fuzzing`, which uses the category to distinguish "the decoder
+/// correctly rejected malformed input" from "the decoder hit an internal
+/// invariant violation" without parsing `Display` strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ErrorCategory {
+    /// Wire-protocol violation by the peer: the input does not conform to the
+    /// specification (invalid field, unsupported version, unexpected message
+    /// type, premature end of input, etc.).
+    ///
+    /// For a fuzz oracle, this is the expected outcome when fuzzing decoders
+    /// with arbitrary bytes: the decoder caught a malformed input.
+    Protocol,
+
+    /// Logical inconsistency in otherwise spec-conformant data: the peer
+    /// sent something whose individual fields parse but whose meaning is
+    /// internally contradictory (e.g. mismatched lengths, impossible
+    /// references, failed integrity checks).
+    ///
+    /// For a fuzz oracle, this is also an expected rejection; treated
+    /// separately from [`ErrorCategory::Protocol`] because the diagnostic
+    /// implications differ (deeper validation logic was reached before the
+    /// rejection).
+    DataCorruption,
+
+    /// Internal invariant violation in our own code: an unexpected state
+    /// was reached that should not occur for any valid or invalid input.
+    ///
+    /// For a fuzz oracle, this is the bug signal: the kind of failure that
+    /// should be minimized to a crasher and reported.
+    InternalBug,
+
+    /// Classification not specified for this variant. Either the `Kind`
+    /// type has not yet been audited to assign categories to all its
+    /// variants, or the variant is intentionally left uncategorized
+    /// pending design decisions.
+    Unknown,
+}
+
+/// Assigns an [`ErrorCategory`] to each variant of a `*ErrorKind` enum.
+///
+/// Implement on the `Kind` type carried by [`Error<Kind>`]. Once implemented,
+/// [`Error::classify`] becomes available on `Error<Kind>` and forwards to this
+/// trait's [`classify`](Self::classify) method.
+///
+/// Per the [`ErrorCategory`] documentation, the primary consumer is the
+/// structured-fuzzing oracle code. Other consumers may include diagnostic
+/// logging that routes errors to different sinks based on category, or
+/// integration tests that assert on the expected category of an induced
+/// failure without depending on the specific variant shape.
+pub trait ErrorClassification {
+    /// Returns the category for this variant.
+    fn classify(&self) -> ErrorCategory;
+}
+
 /// A typed error wrapper carrying a `Kind` discriminant plus diagnostic metadata.
 ///
 /// # `no_alloc` platforms
@@ -154,6 +213,19 @@ impl<Kind> Error<Kind> {
 
     pub fn report(&self) -> ErrorReport<'_, Kind> {
         ErrorReport(self)
+    }
+}
+
+impl<Kind> Error<Kind>
+where
+    Kind: ErrorClassification,
+{
+    /// Returns the [`ErrorCategory`] of this error, forwarded from the
+    /// inner `Kind` via its [`ErrorClassification`] impl.
+    ///
+    /// Only available when `Kind` implements [`ErrorClassification`].
+    pub fn classify(&self) -> ErrorCategory {
+        self.kind.classify()
     }
 }
 

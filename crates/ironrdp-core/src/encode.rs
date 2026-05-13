@@ -4,6 +4,8 @@ use alloc::string::String;
 use alloc::{vec, vec::Vec};
 use core::fmt;
 
+use ironrdp_error::{ErrorCategory, ErrorClassification};
+
 #[cfg(feature = "alloc")]
 use crate::WriteBuf;
 use crate::{
@@ -69,6 +71,24 @@ pub enum EncodeErrorKind {
 
 #[cfg(feature = "std")]
 impl core::error::Error for EncodeErrorKind {}
+
+impl ErrorClassification for EncodeErrorKind {
+    fn classify(&self) -> ErrorCategory {
+        // Encode errors are produced by our own code while serialising data
+        // we constructed; every structured variant indicates we hit an
+        // internal invariant violation (under-sized buffer, attempting to
+        // write an out-of-range value, etc.). `Other` is a free-form
+        // catch-all and stays `Unknown`.
+        match self {
+            Self::NotEnoughBytes { .. }
+            | Self::InvalidField { .. }
+            | Self::UnexpectedMessageType { .. }
+            | Self::UnsupportedVersion { .. }
+            | Self::UnsupportedValue { .. } => ErrorCategory::InternalBug,
+            Self::Other { .. } => ErrorCategory::Unknown,
+        }
+    }
+}
 
 impl fmt::Display for EncodeErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
