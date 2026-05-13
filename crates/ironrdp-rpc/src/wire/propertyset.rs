@@ -73,7 +73,7 @@ pub fn read(properties: &mut PropertySet, src: &mut ReadCursor<'_>) -> DecodeRes
                 let value = read_string(src)?;
                 properties.insert(key, value);
             }
-            _ => return Err(ironrdp_core::invalid_field_err!("property value tag", "unknown tag")),
+            _ => return Err(ironrdp_core::invalid_field_err!("property value tag", "unknown tag", in: src)),
         }
     }
 
