@@ -53,9 +53,9 @@ impl<'de> Decode<'de> for ClientClusterData {
         let redirected_session_id = src.read_u32();
 
         let flags = RedirectionFlags::from_bits(flags_with_version & !REDIRECTION_VERSION_MASK)
-            .ok_or_else(|| invalid_field_err!("flags", "invalid redirection flags"))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid redirection flags", at: 0))?;
         let redirection_version = RedirectionVersion::from_u32((flags_with_version & REDIRECTION_VERSION_MASK) >> 2)
-            .ok_or_else(|| invalid_field_err!("redirVersion", "invalid redirection version"))?;
+            .ok_or_else(|| invalid_field_err!("redirVersion", "invalid redirection version", at: 0))?;
 
         Ok(Self {
             flags,

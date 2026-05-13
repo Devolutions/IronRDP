@@ -45,15 +45,13 @@ impl ServerUpgradeLicense {
         if license_header.preamble_message_type != PreambleType::UpgradeLicense
             && license_header.preamble_message_type != PreambleType::NewLicense
         {
-            return Err(invalid_field_err!(
-                "preambleType",
-                "got unexpected message preamble type"
-            ));
+            return Err(invalid_field_err!( "preambleType",
+                "got unexpected message preamble type", at: 0));
         }
 
         let encrypted_license_info_blob = BlobHeader::decode(src)?;
         if encrypted_license_info_blob.blob_type != BlobType::ENCRYPTED_DATA {
-            return Err(invalid_field_err!("blobType", "unexpected blob type"));
+            return Err(invalid_field_err!("blobType", "unexpected blob type", at: 0));
         }
 
         ensure_size!(in: src, size: encrypted_license_info_blob.length + MAC_SIZE);

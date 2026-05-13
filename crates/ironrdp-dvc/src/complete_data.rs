@@ -75,7 +75,7 @@ impl CompleteData {
                     }
                 }
             }
-            _ => Err(invalid_field_err!("DVC message", "data", "overflow occurred")),
+            _ => Err(invalid_field_err!("DVC message", "data", "overflow occurred", at: 0)),
         }
     }
 }

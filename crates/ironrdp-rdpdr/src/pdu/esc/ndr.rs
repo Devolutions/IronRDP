@@ -62,7 +62,7 @@ pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> DecodeResult<u32
     let expect_ptr = 0x0002_0000 + *index * 4;
     *index += 1;
     if ptr != expect_ptr {
-        Err(invalid_field_err!("decode_ptr", "ptr", "ptr != expect_ptr"))
+        Err(invalid_field_err!("decode_ptr", "ptr", "ptr != expect_ptr", at: 0))
     } else {
         Ok(ptr)
     }

@@ -70,7 +70,7 @@ impl<'de> Decode<'de> for BitmapUpdateData<'de> {
 
         let update_type = BitmapFlags::from_bits_retain(src.read_u16());
         if !update_type.contains(BitmapFlags::BITMAP_UPDATE_TYPE) {
-            return Err(invalid_field_err!("updateType", "invalid update type"));
+            return Err(invalid_field_err!("updateType", "invalid update type", at: 0));
         }
 
         let rectangle_count = usize::from(src.read_u16());
@@ -157,10 +157,8 @@ impl<'de> Decode<'de> for BitmapData<'de> {
         {
             // Check if encoded_bitmap_data_length is at least CompressedDataHeader::ENCODED_SIZE
             if encoded_bitmap_data_length < CompressedDataHeader::ENCODED_SIZE {
-                return Err(invalid_field_err!(
-                    "cbCompEncodedBitmapDataLength",
-                    "length is less than CompressedDataHeader::ENCODED_SIZE"
-                ));
+                return Err(invalid_field_err!( "cbCompEncodedBitmapDataLength",
+                    "length is less than CompressedDataHeader::ENCODED_SIZE", at: 0));
             }
 
             let buffer_length = encoded_bitmap_data_length - CompressedDataHeader::ENCODED_SIZE;
@@ -219,17 +217,15 @@ impl<'de> Decode<'de> for CompressedDataHeader {
 
         let size = src.read_u16();
         if size != FIRST_ROW_SIZE_VALUE {
-            return Err(invalid_field_err!("cbCompFirstRowSize", "invalid first row size"));
+            return Err(invalid_field_err!("cbCompFirstRowSize", "invalid first row size", at: 0));
         }
 
         let main_body_size = src.read_u16();
         let scan_width = src.read_u16();
 
         if !scan_width.is_multiple_of(4) {
-            return Err(invalid_field_err!(
-                "cbScanWidth",
-                "The width of the bitmap must be divisible by 4"
-            ));
+            return Err(invalid_field_err!( "cbScanWidth",
+                "The width of the bitmap must be divisible by 4", at: 0));
         }
         let uncompressed_size = src.read_u16();
 
@@ -246,10 +242,8 @@ impl Encode for CompressedDataHeader {
         ensure_fixed_part_size!(in: dst);
 
         if !self.scan_width.is_multiple_of(4) {
-            return Err(invalid_field_err!(
-                "cbScanWidth",
-                "The width of the bitmap must be divisible by 4"
-            ));
+            return Err(invalid_field_err!( "cbScanWidth",
+                "The width of the bitmap must be divisible by 4", at: 0));
         }
         dst.write_u16(FIRST_ROW_SIZE_VALUE);
         dst.write_u16(self.main_body_size);

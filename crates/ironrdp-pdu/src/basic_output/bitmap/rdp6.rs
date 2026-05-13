@@ -127,10 +127,8 @@ impl<'a> Decode<'a> for BitmapStream<'a> {
         let color_planes_size = if !header.enable_rle_compression {
             // Cut padding field if RLE flags is set to 0
             if src.is_empty() {
-                return Err(invalid_field_err!(
-                    "padding",
-                    "missing padding byte from zero-sized non-RLE bitmap data",
-                ));
+                return Err(invalid_field_err!( "padding",
+                    "missing padding byte from zero-sized non-RLE bitmap data", at: 0));
             }
             src.len() - NON_RLE_PADDING_SIZE
         } else {
@@ -297,6 +295,7 @@ mod tests {
                     kind: NotEnoughBytes {
                         received: 0,
                         expected: 1,
+                        offset: 0,
                     },
                     source: None,
                 }
@@ -312,6 +311,7 @@ mod tests {
                     kind: InvalidField {
                         field: "padding",
                         reason: "missing padding byte from zero-sized non-RLE bitmap data",
+                        offset: 0,
                     },
                     source: None,
                 }

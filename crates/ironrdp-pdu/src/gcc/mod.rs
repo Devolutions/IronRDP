@@ -164,8 +164,9 @@ impl<'de> Decode<'de> for ClientGccBlocks {
         }
 
         Ok(Self {
-            core: core.ok_or_else(|| invalid_field_err!("core", "required GCC core is absent"))?,
-            security: security.ok_or_else(|| invalid_field_err!("security", "required GCC security is absent"))?,
+            core: core.ok_or_else(|| invalid_field_err!("core", "required GCC core is absent", at: 0))?,
+            security: security
+                .ok_or_else(|| invalid_field_err!("security", "required GCC security is absent", at: 0))?,
             network,
             cluster,
             monitor,
@@ -256,9 +257,10 @@ impl<'de> Decode<'de> for ServerGccBlocks {
         }
 
         Ok(Self {
-            core: core.ok_or_else(|| invalid_field_err!("core", "required GCC core is absent"))?,
-            network: network.ok_or_else(|| invalid_field_err!("network", "required GCC network is absent"))?,
-            security: security.ok_or_else(|| invalid_field_err!("security", "required GCC security is absent"))?,
+            core: core.ok_or_else(|| invalid_field_err!("core", "required GCC core is absent", at: 0))?,
+            network: network.ok_or_else(|| invalid_field_err!("network", "required GCC network is absent", at: 0))?,
+            security: security
+                .ok_or_else(|| invalid_field_err!("security", "required GCC security is absent", at: 0))?,
             message_channel,
             multi_transport_channel,
         })
@@ -338,11 +340,11 @@ impl UserDataHeader {
         ensure_fixed_part_size!(in: src);
 
         let block_type =
-            T::from_u16(src.read_u16()).ok_or_else(|| invalid_field_err!("blockType", "invalid GCC type"))?;
+            T::from_u16(src.read_u16()).ok_or_else(|| invalid_field_err!("blockType", "invalid GCC type", at: 0))?;
         let block_length: usize = cast_length!("blockLen", src.read_u16())?;
 
         if block_length <= USER_DATA_HEADER_SIZE {
-            return Err(invalid_field_err!("blockLen", "invalid UserDataHeader length"));
+            return Err(invalid_field_err!("blockLen", "invalid UserDataHeader length", at: 0));
         }
 
         let len = block_length - USER_DATA_HEADER_SIZE;

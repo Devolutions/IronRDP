@@ -86,6 +86,7 @@ where
                 "TpduHeader",
                 "li",
                 "fixed part bigger than total header size",
+                0,
             ));
         }
 

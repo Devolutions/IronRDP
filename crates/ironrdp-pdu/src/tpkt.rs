@@ -56,7 +56,7 @@ impl TpktHeader {
         let version = src.read_u8();
 
         if version != Self::VERSION {
-            return Err(unsupported_version_err!("TPKT version", version));
+            return Err(unsupported_version_err!("TPKT version", version, at: 0));
         }
 
         read_padding!(src, 1);

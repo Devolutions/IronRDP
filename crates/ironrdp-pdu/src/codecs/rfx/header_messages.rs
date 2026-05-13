@@ -48,11 +48,11 @@ impl<'de> Decode<'de> for SyncPdu {
 
         let magic = src.read_u32();
         if magic != SYNC_MAGIC {
-            return Err(invalid_field_err!("magic", "Invalid sync magic"));
+            return Err(invalid_field_err!("magic", "Invalid sync magic", at: 0));
         }
         let version = src.read_u16();
         if version != SYNC_VERSION {
-            return Err(invalid_field_err!("version", "Invalid sync version"));
+            return Err(invalid_field_err!("version", "Invalid sync version", at: 0));
         }
 
         Ok(Self)
@@ -97,7 +97,7 @@ impl<'de> Decode<'de> for CodecVersionsPdu {
 
         let codec_number = src.read_u8();
         if codec_number != CODECS_NUMBER {
-            return Err(invalid_field_err!("codec_number", "Invalid codec number"));
+            return Err(invalid_field_err!("codec_number", "Invalid codec number", at: 0));
         }
 
         let _codec_version = CodecVersion::decode(src)?;
@@ -195,7 +195,7 @@ impl<'de> Decode<'de> for RfxChannel {
 
         let channel_id = src.read_u8();
         if channel_id != CHANNEL_ID {
-            return Err(invalid_field_err!("channelId", "Invalid channel ID"));
+            return Err(invalid_field_err!("channelId", "Invalid channel ID", at: 0));
         }
 
         let width = src.read_i16();
@@ -242,11 +242,11 @@ impl<'de> Decode<'de> for CodecVersion {
 
         let codec_id = src.read_u8();
         if codec_id != CODEC_ID {
-            return Err(invalid_field_err!("codec_id", "Invalid codec ID"));
+            return Err(invalid_field_err!("codec_id", "Invalid codec ID", at: 0));
         }
         let codec_version = src.read_u16();
         if codec_version != CODEC_VERSION {
-            return Err(invalid_field_err!("codec_version", "Invalid codec version"));
+            return Err(invalid_field_err!("codec_version", "Invalid codec version", at: 0));
         }
 
         Ok(Self)

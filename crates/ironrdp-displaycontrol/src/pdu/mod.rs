@@ -89,7 +89,7 @@ impl<'de> Decode<'de> for DisplayControlPdu {
 
         let _payload_length = pdu_length
             .checked_sub(Self::FIXED_PART_SIZE.try_into().expect("always in range"))
-            .ok_or_else(|| invalid_field_err!("Length", "Display control PDU length is too small"))?;
+            .ok_or_else(|| invalid_field_err!("Length", "Display control PDU length is too small", at: 0))?;
 
         match kind {
             DISPLAYCONTROL_PDU_TYPE_CAPS => {
@@ -100,7 +100,7 @@ impl<'de> Decode<'de> for DisplayControlPdu {
                 let layout = DisplayControlMonitorLayout::decode(src)?;
                 Ok(DisplayControlPdu::MonitorLayout(layout))
             }
-            _ => Err(invalid_field_err!("Type", "Unknown display control PDU type")),
+            _ => Err(invalid_field_err!("Type", "Unknown display control PDU type", at: 0)),
         }
     }
 }
@@ -220,16 +220,14 @@ impl DisplayControlMonitorLayout {
 
     pub fn new(monitors: &[MonitorLayoutEntry]) -> EncodeResult<Self> {
         if monitors.len() > MAX_SUPPORTED_MONITORS.into() {
-            return Err(invalid_field_err!("NumMonitors", "Too many monitors",));
+            return Err(invalid_field_err!("NumMonitors", "Too many monitors", at: 0));
         }
 
         let primary_monitors_count = monitors.iter().filter(|monitor| monitor.is_primary()).count();
 
         if primary_monitors_count != 1 {
-            return Err(invalid_field_err!(
-                "PrimaryMonitor",
-                "There must be exactly one primary monitor"
-            ));
+            return Err(invalid_field_err!( "PrimaryMonitor",
+                "There must be exactly one primary monitor", at: 0));
         }
 
         Ok(Self {
@@ -293,7 +291,7 @@ impl Encode for DisplayControlMonitorLayout {
             .monitors
             .len()
             .try_into()
-            .map_err(|_| invalid_field_err!("NumMonitors", "Number of monitors is too big"))?;
+            .map_err(|_| invalid_field_err!("NumMonitors", "Number of monitors is too big", at: 0))?;
 
         dst.write_u32(monitors_count);
 
@@ -325,16 +323,14 @@ impl<'de> Decode<'de> for DisplayControlMonitorLayout {
         let monitor_layout_size = src.read_u32();
 
         if monitor_layout_size != MonitorLayoutEntry::FIXED_PART_SIZE.try_into().expect("always in range") {
-            return Err(invalid_field_err!(
-                "MonitorLayoutSize",
-                "Monitor layout size is invalid"
-            ));
+            return Err(invalid_field_err!( "MonitorLayoutSize",
+                "Monitor layout size is invalid", at: 0));
         }
 
         let num_monitors = cast_length!("number of monitors", src.read_u32())?;
 
         if num_monitors > MAX_SUPPORTED_MONITORS.into() {
-            return Err(invalid_field_err!("NumMonitors", "Too many monitors"));
+            return Err(invalid_field_err!("NumMonitors", "Too many monitors", at: 0));
         }
 
         let mut monitors = Vec::with_capacity(num_monitors);
@@ -367,13 +363,13 @@ pub struct MonitorLayoutEntry {
 macro_rules! validate_dimensions {
     ($width:expr, $height:expr) => {{
         if !(200..=8192).contains(&$width) {
-            return Err(invalid_field_err!("Width", "Monitor width is out of range"));
+            return Err(invalid_field_err!("Width", "Monitor width is out of range", at: 0));
         }
         if $width % 2 != 0 {
-            return Err(invalid_field_err!("Width", "Monitor width cannot be odd"));
+            return Err(invalid_field_err!("Width", "Monitor width cannot be odd", at: 0));
         }
         if !(200..=8192).contains(&$height) {
-            return Err(invalid_field_err!("Height", "Monitor height is out of range"));
+            return Err(invalid_field_err!("Height", "Monitor height is out of range", at: 0));
         }
         Ok(())
     }};
@@ -701,10 +697,8 @@ impl DeviceScaleFactor {
 
 fn validate_position(left: i32, top: i32, is_primary: bool) -> EncodeResult<()> {
     if is_primary && (left != 0 || top != 0) {
-        return Err(invalid_field_err!(
-            "Position",
-            "Primary monitor position must be (0, 0)"
-        ));
+        return Err(invalid_field_err!( "Position",
+            "Primary monitor position must be (0, 0)", at: 0));
     }
 
     Ok(())
@@ -712,10 +706,8 @@ fn validate_position(left: i32, top: i32, is_primary: bool) -> EncodeResult<()> 
 
 fn validate_desktop_scale_factor(desktop_scale_factor: u32) -> EncodeResult<()> {
     if !(100..=500).contains(&desktop_scale_factor) {
-        return Err(invalid_field_err!(
-            "DesktopScaleFactor",
-            "Desktop scale factor is out of range"
-        ));
+        return Err(invalid_field_err!( "DesktopScaleFactor",
+            "Desktop scale factor is out of range", at: 0));
     }
 
     Ok(())
@@ -723,10 +715,10 @@ fn validate_desktop_scale_factor(desktop_scale_factor: u32) -> EncodeResult<()> 
 
 fn validate_physical_dimensions(physical_width: u32, physical_height: u32) -> EncodeResult<()> {
     if !(10..=10000).contains(&physical_width) {
-        return Err(invalid_field_err!("PhysicalWidth", "Physical width is out of range"));
+        return Err(invalid_field_err!("PhysicalWidth", "Physical width is out of range", at: 0));
     }
     if !(10..=10000).contains(&physical_height) {
-        return Err(invalid_field_err!("PhysicalHeight", "Physical height is out of range"));
+        return Err(invalid_field_err!("PhysicalHeight", "Physical height is out of range", at: 0));
     }
 
     Ok(())
@@ -738,16 +730,14 @@ fn calculate_monitor_area(
     max_monitor_area_factor_b: u32,
 ) -> DecodeResult<u64> {
     if max_num_monitors > MAX_SUPPORTED_MONITORS.into() {
-        return Err(invalid_field_err!("NumMonitors", "Too many monitors"));
+        return Err(invalid_field_err!("NumMonitors", "Too many monitors", at: 0));
     }
 
     if max_monitor_area_factor_a > MAX_MONITOR_AREA_FACTOR.into()
         || max_monitor_area_factor_b > MAX_MONITOR_AREA_FACTOR.into()
     {
-        return Err(invalid_field_err!(
-            "MaxMonitorAreaFactor",
-            "Invalid monitor area factor"
-        ));
+        return Err(invalid_field_err!( "MaxMonitorAreaFactor",
+            "Invalid monitor area factor", at: 0));
     }
 
     // As per invariants: This multiplication would never overflow.

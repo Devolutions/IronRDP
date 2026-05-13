@@ -47,11 +47,11 @@ pub fn decode_rlex(data: &[u8]) -> DecodeResult<RlexData> {
     let palette_count = src.read_u8();
 
     if palette_count == 0 {
-        return Err(invalid_field_err!("paletteCount", "palette count is 0"));
+        return Err(invalid_field_err!("paletteCount", "palette count is 0", in: src));
     }
 
     if palette_count > MAX_PALETTE_COUNT {
-        return Err(invalid_field_err!("paletteCount", "palette count exceeds 127"));
+        return Err(invalid_field_err!("paletteCount", "palette count exceeds 127", in: src));
     }
 
     let palette_byte_count = usize::from(palette_count) * 3;

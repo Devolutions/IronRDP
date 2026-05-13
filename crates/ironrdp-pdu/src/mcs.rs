@@ -142,7 +142,7 @@ const SEND_DATA_PDU_DATA_PRIORITY_AND_SEGMENTATION: u8 = 0x70;
 /// |e| <crate::PduError as crate::PduErrorExt>::invalid_field(Self::MCS_NAME, field_name, "PER").with_source(e)
 /// ```
 macro_rules! per_field_err {
-    ($field_name:expr) => {{ |error| ironrdp_core::invalid_field_err_with_source(Self::MCS_NAME, $field_name, "PER", error) }};
+    ($field_name:expr) => {{ |error| ironrdp_core::invalid_field_err_with_source(Self::MCS_NAME, $field_name, "PER", 0, error) }};
 }
 
 #[doc(hidden)]
@@ -202,7 +202,7 @@ enum DomainMcsPdu {
 impl DomainMcsPdu {
     fn check_expected(self, name: &'static str, expected: DomainMcsPdu) -> DecodeResult<()> {
         if self != expected {
-            Err(unexpected_message_type_err!(name, self.as_u8()))
+            Err(unexpected_message_type_err!(name, self.as_u8(), at: 0))
         } else {
             Ok(())
         }
@@ -243,14 +243,14 @@ fn read_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> DecodeResu
     let choice = src.try_read_u8().map_err(|e| other_err!(ctx, source: e))?;
 
     DomainMcsPdu::from_choice(choice)
-        .ok_or_else(|| invalid_field_err(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
+        .ok_or_else(|| invalid_field_err(ctx, "domain-mcspdu", "unexpected application tag for CHOICE", 0))
 }
 
 fn peek_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> DecodeResult<DomainMcsPdu> {
     let choice = src.try_peek_u8().map_err(|e| other_err!(ctx, source: e))?;
 
     DomainMcsPdu::from_choice(choice)
-        .ok_or_else(|| invalid_field_err(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
+        .ok_or_else(|| invalid_field_err(ctx, "domain-mcspdu", "unexpected application tag for CHOICE", 0))
 }
 
 fn write_mcspdu_header(dst: &mut WriteCursor<'_>, domain_mcspdu: DomainMcsPdu, options: u8) {
@@ -617,6 +617,7 @@ impl<'de> McsPdu<'de> for SendDataRequest<'de> {
                 Self::MCS_NAME,
                 "userDataLength",
                 "inconsistent with user data size advertised in TPDU",
+                0,
             ));
         }
 
@@ -695,6 +696,7 @@ impl<'de> McsPdu<'de> for SendDataIndication<'de> {
                 Self::MCS_NAME,
                 "userDataLength",
                 "inconsistent with user data size advertised in TPDU",
+                0,
             ));
         }
 
@@ -829,12 +831,19 @@ impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
         let reason = ((b1 & 0x03) << 1) | (b2 >> 7);
 
         DomainMcsPdu::from_u8(domain_mcspdu_choice)
-            .ok_or_else(|| invalid_field_err(Self::MCS_NAME, "domain-mcspdu", "unexpected application tag for CHOICE"))?
+            .ok_or_else(|| {
+                invalid_field_err(
+                    Self::MCS_NAME,
+                    "domain-mcspdu",
+                    "unexpected application tag for CHOICE",
+                    0,
+                )
+            })?
             .check_expected(Self::MCS_NAME, DomainMcsPdu::DisconnectProviderUltimatum)?;
 
         Ok(Self {
             reason: DisconnectReason::from_u8(reason)
-                .ok_or_else(|| invalid_field_err(Self::MCS_NAME, "reason", "unknown variant"))?,
+                .ok_or_else(|| invalid_field_err(Self::MCS_NAME, "reason", "unknown variant", 0))?,
         })
     }
 

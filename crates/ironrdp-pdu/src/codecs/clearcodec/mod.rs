@@ -123,7 +123,7 @@ impl<'a> CompositePayload<'a> {
         let total = residual_byte_count
             .checked_add(bands_byte_count)
             .and_then(|s| s.checked_add(subcodec_byte_count))
-            .ok_or_else(|| invalid_field_err!("byteCount", "layer byte counts overflow"))?;
+            .ok_or_else(|| invalid_field_err!("byteCount", "layer byte counts overflow", in: src))?;
 
         ensure_size!(ctx: Self::NAME, in: src, size: total);
 

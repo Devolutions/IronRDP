@@ -105,23 +105,21 @@ impl<'de> Decode<'de> for LicenseHeader {
         let security_header = BasicSecurityHeader::decode(src)?;
 
         if !security_header.flags.contains(BasicSecurityHeaderFlags::LICENSE_PKT) {
-            return Err(invalid_field_err!(
-                "securityHeaderFlags",
-                "invalid security header flags"
-            ));
+            return Err(invalid_field_err!( "securityHeaderFlags",
+                "invalid security header flags", at: 0));
         }
 
         let preamble_message_type = PreambleType::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("preambleType", "invalid license type"))?;
+            .ok_or_else(|| invalid_field_err!("preambleType", "invalid license type", at: 0))?;
 
         let flags_with_version = src.read_u8();
         let preamble_message_size = src.read_u16();
 
         let preamble_flags = PreambleFlags::from_bits(flags_with_version & !PROTOCOL_VERSION_MASK)
-            .ok_or_else(|| invalid_field_err!("preambleFlags", "Got invalid flags field"))?;
+            .ok_or_else(|| invalid_field_err!("preambleFlags", "Got invalid flags field", at: 0))?;
 
         let preamble_version = PreambleVersion::from_u8(flags_with_version & PROTOCOL_VERSION_MASK)
-            .ok_or_else(|| invalid_field_err!("preambleVersion", "Got invalid version in the flags filed"))?;
+            .ok_or_else(|| invalid_field_err!("preambleVersion", "Got invalid version in the flags filed", at: 0))?;
 
         Ok(Self {
             security_header,
@@ -482,10 +480,8 @@ impl<'de> Decode<'de> for LicensePdu {
             PreambleType::NewLicense | PreambleType::UpgradeLicense => {
                 Ok(ServerUpgradeLicense::decode(license_header, src)?.into())
             }
-            PreambleType::LicenseInfo => Err(unsupported_value_err!(
-                "LicensePdu::LicenseInfo",
-                "LicenseInfo is not supported".to_owned()
-            )),
+            PreambleType::LicenseInfo => Err(unsupported_value_err!( "LicensePdu::LicenseInfo",
+                "LicenseInfo is not supported".to_owned(), at: 0)),
             PreambleType::NewLicenseRequest => Ok(ClientNewLicenseRequest::decode(license_header, src)?.into()),
             PreambleType::PlatformChallengeResponse => {
                 Ok(ClientPlatformChallengeResponse::decode(license_header, src)?.into())
