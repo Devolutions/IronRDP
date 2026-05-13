@@ -14,6 +14,10 @@ use crate::generators::BitmapInput;
 
 pub fn pdu_decode(data: &[u8]) {
     use ironrdp_core::decode;
+    use ironrdp_egfx::pdu::{
+        Avc420BitmapStream, Avc444BitmapStream, CacheToSurfacePdu, CapabilitySet as EgfxCapabilitySet, Color, GfxPdu,
+        Point, QuantQuality,
+    };
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::{ClientInfoPdu, capability_sets, headers, server_error_info, server_license, vc};
@@ -80,6 +84,15 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>>(data);
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
+
+    let _ = decode::<GfxPdu>(data);
+    let _ = decode::<CacheToSurfacePdu>(data);
+    let _ = decode::<EgfxCapabilitySet>(data);
+    let _ = decode::<Avc420BitmapStream<'_>>(data);
+    let _ = decode::<Avc444BitmapStream<'_>>(data);
+    let _ = decode::<QuantQuality>(data);
+    let _ = decode::<Point>(data);
+    let _ = decode::<Color>(data);
 }
 
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {

@@ -19,6 +19,7 @@ ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
+ironrdp-egfx.path = "../ironrdp-egfx"
 ironrdp-svc.path = "../ironrdp-svc"
 
 [lints]
