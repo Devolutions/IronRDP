@@ -1196,7 +1196,7 @@ mod legacy {
                 Self::InvalidDisconnectProviderUltimatum => f.write_str("invalid disconnect provider ultimatum"),
                 Self::InvalidDomainMcsPdu => f.write_str("invalid domain MCS PDU"),
                 Self::InvalidPdu(_) => f.write_str("invalid MCS Connection Sequence PDU"),
-                Self::UnexpectedChannelId(_) => f.write_str("invalid invalid MCS channel id"),
+                Self::UnexpectedChannelId(_) => f.write_str("invalid MCS channel id"),
                 Self::Pdu(e) => write!(f, "PDU error: {e}"),
             }
         }
