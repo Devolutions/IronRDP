@@ -13,6 +13,7 @@ const CONNECT_FLAGS_FIELD_SIZE: usize = 4;
 ///
 /// [2.2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/41e129ad-0f35-43ad-a399-1b10e7d007a9
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerPlatformChallenge {
     pub license_header: LicenseHeader,
     pub encrypted_platform_challenge: Vec<u8>,

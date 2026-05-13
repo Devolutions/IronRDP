@@ -13,6 +13,7 @@ use crate::per;
 
 /// Implements the Fast-Path RDP message header PDU.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FastPathInputHeader {
     pub flags: EncryptionFlags,
     pub data_length: usize,
@@ -87,6 +88,7 @@ impl<'de> Decode<'de> for FastPathInputHeader {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u8)]
 pub enum FastpathInputEventType {
     ScanCode = 0x0000,
@@ -109,6 +111,7 @@ impl FastpathInputEventType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum FastPathInputEvent {
     KeyboardEvent(KeyboardFlags, u8),
     UnicodeKeyboardEvent(KeyboardFlags, u16),
@@ -235,6 +238,7 @@ impl<'de> Decode<'de> for FastPathInputEvent {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct KeyboardFlags: u8 {
         const RELEASE = 0x01;
         const EXTENDED = 0x02;
@@ -244,6 +248,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct SynchronizeFlags: u8 {
         const SCROLL_LOCK = 0x01;
         const NUM_LOCK = 0x02;
@@ -257,6 +262,21 @@ pub struct FastPathInput(
     /// INVARIANT: (1..=255).contains(len()) = at least one, and at most 255 elements.
     Vec<FastPathInputEvent>,
 );
+
+// Hand-rolled because `derive(Arbitrary)` cannot encode the 1..=255 length
+// invariant. Without this constraint, encode()/size() panic via u8::try_from
+// on out-of-range lengths under fuzz.
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for FastPathInput {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let len = u.int_in_range::<usize>(1..=255)?;
+        let mut events = Vec::with_capacity(len);
+        for _ in 0..len {
+            events.push(FastPathInputEvent::arbitrary(u)?);
+        }
+        Ok(Self(events))
+    }
+}
 
 impl FastPathInput {
     const NAME: &'static str = "FastPathInput";

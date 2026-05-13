@@ -90,6 +90,7 @@ pub trait Rectangle: RectangleImpl {
 /// This struct is defined as an **inclusive** rectangle.
 /// That is, the pixel at coordinate (right, bottom) is included in the rectangle.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct InclusiveRectangle {
     pub left: u16,
     pub top: u16,
@@ -101,6 +102,7 @@ pub struct InclusiveRectangle {
 /// This struct is defined as an **exclusive** rectangle.
 /// That is, the pixel at coordinate (right, bottom) is not included in the rectangle.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ExclusiveRectangle {
     pub left: u16,
     pub top: u16,

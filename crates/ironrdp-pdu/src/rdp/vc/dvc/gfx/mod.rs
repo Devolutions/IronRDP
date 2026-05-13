@@ -17,6 +17,7 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ServerPdu {
     WireToSurface1(WireToSurface1Pdu),
     WireToSurface2(WireToSurface2Pdu),
@@ -160,6 +161,7 @@ impl<'a> Decode<'a> for ServerPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ClientPdu {
     FrameAcknowledge(FrameAcknowledgePdu),
     CapabilitiesAdvertise(CapabilitiesAdvertisePdu),
@@ -223,6 +225,7 @@ impl<'a> Decode<'a> for ClientPdu {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ClientPduType {
     FrameAcknowledge = 0x0d,
     CacheImportOffer = 0x10,
@@ -251,6 +254,7 @@ impl<'a> From<&'a ClientPdu> for ClientPduType {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ServerPduType {
     WireToSurface1 = 0x01,
     WireToSurface2 = 0x02,

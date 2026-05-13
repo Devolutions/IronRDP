@@ -10,6 +10,7 @@ const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 
 /// Channel PDU Header (CHANNEL_PDU_HEADER)
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ChannelPduHeader {
     /// The total length in bytes of the uncompressed channel data, excluding this header
     ///
@@ -58,6 +59,7 @@ impl<'de> Decode<'de> for ChannelPduHeader {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct ChannelControlFlags: u32 {
         const FLAG_FIRST = 0x0000_0001;
         const FLAG_LAST = 0x0000_0002;

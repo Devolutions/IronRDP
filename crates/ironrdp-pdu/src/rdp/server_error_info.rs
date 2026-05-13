@@ -5,6 +5,7 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerSetErrorInfoPdu(pub ErrorInfo);
 
 impl ServerSetErrorInfoPdu {
@@ -44,6 +45,7 @@ impl<'de> Decode<'de> for ServerSetErrorInfoPdu {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ErrorInfo {
     ProtocolIndependentCode(ProtocolIndependentCode),
     ProtocolIndependentLicensingCode(ProtocolIndependentLicensingCode),
@@ -105,6 +107,7 @@ impl FromPrimitive for ErrorInfo {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ProtocolIndependentCode {
     None = 0x0000_0000,
     RpcInitiatedDisconnect = 0x0000_0001,
@@ -181,6 +184,7 @@ impl ProtocolIndependentCode {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ProtocolIndependentLicensingCode {
     Internal = 0x0000_0100,
     NoLicenseServer = 0x0000_0101,
@@ -225,6 +229,7 @@ impl ProtocolIndependentLicensingCode {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ProtocolIndependentConnectionBrokerCode {
     DestinationNotFound = 0x0000_0400,
     LoadingDestination = 0x0000_0402,
@@ -285,6 +290,7 @@ impl ProtocolIndependentConnectionBrokerCode {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum RdpSpecificCode {
     UnknownPduType2 = 0x0000_10C9,
     UnknownPduType = 0x0000_10CA,

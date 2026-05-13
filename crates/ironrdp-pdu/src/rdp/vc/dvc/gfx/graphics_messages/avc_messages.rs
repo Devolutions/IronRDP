@@ -10,6 +10,7 @@ use ironrdp_core::{
 use crate::geometry::InclusiveRectangle;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct QuantQuality {
     pub quantization_parameter: u8,
     pub progressive: bool,
@@ -60,6 +61,7 @@ impl<'de> Decode<'de> for QuantQuality {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Avc420BitmapStream<'a> {
     pub rectangles: Vec<InclusiveRectangle>,
     pub quant_qual_vals: Vec<QuantQuality>,
@@ -132,6 +134,7 @@ impl<'de> Decode<'de> for Avc420BitmapStream<'de> {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct Encoding: u8 {
         const LUMA_AND_CHROMA = 0x00;
         const LUMA = 0x01;
@@ -142,6 +145,7 @@ bitflags! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Avc444BitmapStream<'a> {
     pub encoding: Encoding,
     pub stream1: Avc420BitmapStream<'a>,

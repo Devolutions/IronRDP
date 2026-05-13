@@ -11,6 +11,7 @@ pub const MONITOR_FLAGS_SIZE: usize = 4;
 const MONITOR_COUNT_MAX: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientMonitorData {
     pub monitors: Vec<Monitor>,
 }
@@ -65,6 +66,7 @@ impl<'de> Decode<'de> for ClientMonitorData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Monitor {
     pub left: i32,
     pub top: i32,
@@ -124,6 +126,7 @@ impl<'de> Decode<'de> for Monitor {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct MonitorFlags: u32 {
         const PRIMARY = 1;
     }

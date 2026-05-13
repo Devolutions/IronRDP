@@ -18,6 +18,7 @@ const AUTO_RECONNECT_RANDOM_BITS_SIZE: usize = 16;
 const LOGON_ERRORS_INFO_SIZE: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LogonInfoExtended {
     pub present_fields_flags: LogonExFlags,
     pub auto_reconnect: Option<ServerAutoReconnect>,
@@ -97,6 +98,7 @@ impl<'de> Decode<'de> for LogonInfoExtended {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerAutoReconnect {
     pub logon_id: u32,
     pub random_bits: [u8; AUTO_RECONNECT_RANDOM_BITS_SIZE],
@@ -157,6 +159,7 @@ impl<'de> Decode<'de> for ServerAutoReconnect {
 ///
 /// [Doc](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/845eb789-6edf-453a-8b0e-c976823d1f72)
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LogonErrorsInfo {
     pub error_type: LogonErrorNotificationType,
     pub error_data: LogonErrorNotificationData,
@@ -207,6 +210,7 @@ impl<'de> Decode<'de> for LogonErrorsInfo {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct LogonExFlags: u32 {
         const AUTO_RECONNECT_COOKIE = 0x0000_0001;
         const LOGON_ERRORS = 0x0000_0002;
@@ -217,6 +221,7 @@ bitflags! {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LogonErrorNotificationType {
     SessionBusyOptions = 0xFFFF_FFF8,
     DisconnectRefused = 0xFFFF_FFF9,
@@ -240,6 +245,7 @@ impl LogonErrorNotificationType {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LogonErrorNotificationDataErrorCode {
     FailedBadPassword = 0x0000_0000,
     FailedUpdatePassword = 0x0000_0001,
@@ -258,6 +264,7 @@ impl LogonErrorNotificationDataErrorCode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LogonErrorNotificationData {
     ErrorCode(LogonErrorNotificationDataErrorCode),
     SessionId(u32),

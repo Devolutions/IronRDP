@@ -33,6 +33,7 @@ const COMPRESSION_TYPE_FIELD_SIZE: usize = 1;
 const COMPRESSED_LENGTH_FIELD_SIZE: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BasicSecurityHeader {
     pub flags: BasicSecurityHeaderFlags,
 }
@@ -74,6 +75,7 @@ impl<'de> Decode<'de> for BasicSecurityHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ShareControlHeader {
     pub share_control_pdu: ShareControlPdu,
     pub pdu_source: u16,
@@ -157,6 +159,7 @@ impl<'de> Decode<'de> for ShareControlHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ShareControlPdu {
     ServerDemandActive(ServerDemandActive),
     ClientConfirmActive(ClientConfirmActive),
@@ -227,6 +230,7 @@ impl Encode for ShareControlPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ShareDataHeader {
     pub share_data_pdu: ShareDataPdu,
     pub stream_priority: StreamPriority,
@@ -305,6 +309,7 @@ impl<'de> Decode<'de> for ShareDataHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ShareDataPdu {
     Synchronize(SynchronizePdu),
     Control(ControlPdu),
@@ -510,6 +515,7 @@ impl Encode for ShareDataPdu {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct BasicSecurityHeaderFlags: u16 {
         const EXCHANGE_PKT = 0x0001;
         const TRANSPORT_REQ = 0x0002;
@@ -532,6 +538,7 @@ bitflags! {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum StreamPriority {
     Undefined = 0,
     Low = 1,
@@ -551,6 +558,7 @@ impl StreamPriority {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ShareControlPduType {
     DemandActivePdu = 0x1,
     ConfirmActivePdu = 0x3,
@@ -570,6 +578,7 @@ impl ShareControlPduType {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u8)]
 pub enum ShareDataPduType {
     Update = 0x02,
@@ -618,6 +627,7 @@ impl ShareDataPduType {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CompressionFlags: u8 {
         const COMPRESSED = 0x20;
         const AT_FRONT = 0x40;
@@ -631,6 +641,7 @@ bitflags! {
 ///
 /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/8a29971a-df3c-48da-add2-8ed9a05edc89
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerDeactivateAll;
 
 impl ServerDeactivateAll {

@@ -24,6 +24,7 @@ use crate::rdp::headers::{CompressionFlags, SHARE_DATA_HEADER_COMPRESSION_MASK};
     reason = "this structure is used in the match expression in the integration tests"
 )]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FastPathHeader {
     pub flags: EncryptionFlags,
     pub data_length: usize,
@@ -116,6 +117,7 @@ impl<'de> Decode<'de> for FastPathHeader {
 
 /// TS_FP_UPDATE
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FastPathUpdatePdu<'a> {
     pub fragmentation: Fragmentation,
     pub update_code: UpdateCode,
@@ -217,6 +219,7 @@ impl<'de> Decode<'de> for FastPathUpdatePdu<'de> {
 
 /// TS_FP_UPDATE data
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum FastPathUpdate<'a> {
     SurfaceCommands(Vec<SurfaceCommand<'a>>),
     Bitmap(BitmapUpdateData<'a>),
@@ -329,6 +332,7 @@ impl Encode for FastPathUpdate<'_> {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum UpdateCode {
     Orders = 0x0,
     Bitmap = 0x1,
@@ -375,6 +379,7 @@ impl From<&FastPathUpdate<'_>> for UpdateCode {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Fragmentation {
     Single = 0x0,
     Last = 0x1,
@@ -394,6 +399,7 @@ impl Fragmentation {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct EncryptionFlags: u8 {
         const SECURE_CHECKSUM = 0x1;
         const ENCRYPTED = 0x2;
@@ -404,6 +410,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct Compression: u8 {
         const COMPRESSION_USED = 0x2;
 

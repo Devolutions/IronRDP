@@ -2,6 +2,7 @@ use bitflags::bitflags;
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MouseXPdu {
     pub flags: PointerXFlags,
     pub x_position: u16,
@@ -52,6 +53,7 @@ impl<'de> Decode<'de> for MouseXPdu {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct PointerXFlags: u16 {
         const DOWN = 0x8000;
         const BUTTON1 = 0x0001;

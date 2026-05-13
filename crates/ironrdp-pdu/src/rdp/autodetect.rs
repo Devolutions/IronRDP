@@ -135,6 +135,7 @@ pub const NETCHAR_SYNC: u16 = 0x0018;
 ///
 /// [\[MS-RDPBCGR\] 2.2.14.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5a53eadd-64a2-430d-b197-56bdf7ac9ee9
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum AutoDetectRequest {
     /// [\[MS-RDPBCGR\] 2.2.14.1.1] RTT Measure Request
     ///
@@ -497,6 +498,7 @@ impl<'de> Decode<'de> for AutoDetectRequest {
 ///
 /// [\[MS-RDPBCGR\] 2.2.14.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/fd28dcb8-671d-48bf-8a98-18be46785dab
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum AutoDetectResponse {
     /// [\[MS-RDPBCGR\] 2.2.14.2.1] RTT Measure Response
     ///

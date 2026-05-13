@@ -51,6 +51,7 @@ const KEY_EXCHANGE_ALGORITHM_RSA: u32 = 1;
 const MAC_SIZE: usize = 16;
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseEncryptionData {
     pub premaster_secret: Vec<u8>,
     pub mac_salt_key: Vec<u8>,
@@ -58,6 +59,7 @@ pub struct LicenseEncryptionData {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseHeader {
     pub security_header: BasicSecurityHeader,
     pub preamble_message_type: PreambleType,
@@ -136,6 +138,7 @@ impl<'de> Decode<'de> for LicenseHeader {
 /// [2.2.1.12.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/73170ca2-5f82-4a2d-9d1b-b439f3d8dadc
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum PreambleType {
     LicenseRequest = 0x01,
     PlatformChallenge = 0x02,
@@ -159,6 +162,7 @@ impl PreambleType {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct PreambleFlags: u8 {
         const EXTENDED_ERROR_MSG_SUPPORTED = 0x80;
     }
@@ -166,6 +170,7 @@ bitflags! {
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum PreambleVersion {
     V2 = 2, // RDP 4.0
     V3 = 3, // RDP 5.0, 5.1, 5.2, 6.0, 6.1, 7.0, 7.1, 8.0, 8.1, 10.0, 10.1, 10.2, 10.3, 10.4, and 10.5
@@ -182,6 +187,7 @@ impl PreambleVersion {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BlobType(u16);
 
 impl BlobType {
@@ -381,6 +387,7 @@ impl From<LicensingErrorMessage> for ServerLicenseError {
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BlobHeader {
     pub blob_type: BlobType,
     pub length: usize,
@@ -454,6 +461,7 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Result<Vec<u8>, ServerL
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LicensePdu {
     ClientNewLicenseRequest(ClientNewLicenseRequest),
     ClientLicenseInfo(ClientLicenseInfo),

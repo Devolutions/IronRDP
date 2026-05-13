@@ -21,6 +21,7 @@ const INFO_TYPE_FIELD_SIZE: usize = 4;
 const PLAIN_NOTIFY_PADDING_SIZE: usize = 576;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SaveSessionInfoPdu {
     pub info_type: InfoType,
     pub info_data: InfoData,
@@ -97,6 +98,7 @@ impl<'de> Decode<'de> for SaveSessionInfoPdu {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum InfoType {
     Logon = 0x0000_0000,
     LogonLong = 0x0000_0001,
@@ -115,6 +117,7 @@ impl InfoType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum InfoData {
     LogonInfoV1(LogonInfoVersion1),
     LogonInfoV2(LogonInfoVersion2),

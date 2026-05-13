@@ -19,6 +19,7 @@ pub mod suppress_output;
 pub mod vc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientInfoPdu {
     pub security_header: BasicSecurityHeader,
     pub client_info: ClientInfo,

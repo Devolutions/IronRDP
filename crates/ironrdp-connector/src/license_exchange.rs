@@ -56,7 +56,6 @@ impl State for LicenseExchangeState {
 ///
 /// [3.1.5.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/8f9b860a-3687-401d-b3bc-7e9f5d4f7528
 #[derive(Debug)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseExchangeSequence {
     pub state: LicenseExchangeState,
     pub io_channel_id: u16,
@@ -64,6 +63,29 @@ pub struct LicenseExchangeSequence {
     pub domain: Option<String>,
     pub hardware_id: [u32; 4],
     pub license_cache: Arc<dyn LicenseCache>,
+}
+
+// `license_cache` is `Arc<dyn LicenseCache>` which cannot be derived. The hand-rolled impl
+// hardcodes `NoopLicenseCache`, so license-cache-dependent paths are not exercised under fuzz.
+// Reaching the license sequence is still useful coverage (MS-RDPELE is a historically
+// interesting target). A fuzz-mode `LicenseCache` impl is a possible follow-up.
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for LicenseExchangeSequence {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            state: LicenseExchangeState::arbitrary(u)?,
+            io_channel_id: u16::arbitrary(u)?,
+            username: String::arbitrary(u)?,
+            domain: Option::<String>::arbitrary(u)?,
+            hardware_id: [
+                u32::arbitrary(u)?,
+                u32::arbitrary(u)?,
+                u32::arbitrary(u)?,
+                u32::arbitrary(u)?,
+            ],
+            license_cache: Arc::new(NoopLicenseCache),
+        })
+    }
 }
 
 // Use RefUnwindSafe so that types that embed LicenseCache remain UnwindSafe

@@ -8,6 +8,7 @@ use ironrdp_core::{
 use super::CapabilitySet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CapabilitiesAdvertisePdu(pub Vec<CapabilitySet>);
 
 impl CapabilitiesAdvertisePdu {
@@ -55,6 +56,7 @@ impl<'a> Decode<'a> for CapabilitiesAdvertisePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FrameAcknowledgePdu {
     pub queue_depth: QueueDepth,
     pub frame_id: u32,
@@ -104,6 +106,7 @@ impl<'a> Decode<'a> for FrameAcknowledgePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CacheImportReplyPdu {
     pub cache_slots: Vec<u16>,
 }
@@ -150,6 +153,7 @@ impl<'a> Decode<'a> for CacheImportReplyPdu {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum QueueDepth {
     Unavailable,
     AvailableBytes(u32),
