@@ -8,7 +8,6 @@ use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlHeader, ShareControlPdu};
 use ironrdp_pdu::x224::X224;
-
 use ironrdp_testsuite_core::capsets::SERVER_DEMAND_ACTIVE;
 
 const USER_CHANNEL_ID: u16 = 1002;

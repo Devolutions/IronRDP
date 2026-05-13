@@ -45,7 +45,7 @@ impl TryFrom<u16> for Version {
             0x05 => Ok(Self::V5),
             0x06 => Ok(Self::V6),
             0x08 => Ok(Self::V8),
-            _ => Err(invalid_field_err!("Version", "unknown audio output version")),
+            _ => Err(invalid_field_err!("Version", "unknown audio output version", at: 0)),
         }
     }
 }
@@ -486,7 +486,7 @@ impl TryFrom<u16> for QualityMode {
             0x00 => Ok(Self::Dynamic),
             0x01 => Ok(Self::Medium),
             0x02 => Ok(Self::High),
-            _ => Err(invalid_field_err!("QualityMode", "unknown audio quality mode")),
+            _ => Err(invalid_field_err!("QualityMode", "unknown audio quality mode", at: 0)),
         }
     }
 }
@@ -636,7 +636,7 @@ impl<'de> Decode<'de> for TrainingPdu {
         let len = usize::from(src.read_u16());
         let data = if len != 0 {
             if len < Self::FIXED_PART_SIZE + ServerAudioOutputPdu::FIXED_PART_SIZE {
-                return Err(invalid_field_err!("TrainingPdu::wPackSize", "too small"));
+                return Err(invalid_field_err!("TrainingPdu::wPackSize", "too small", at: 0));
             }
             let len = len - Self::FIXED_PART_SIZE - ServerAudioOutputPdu::FIXED_PART_SIZE;
             ensure_size!(in: src, size: len);
@@ -849,7 +849,7 @@ impl WavePdu<'_> {
         let body_size = usize::from(body_size);
         let data_len = body_size
             .checked_sub(info.size())
-            .ok_or_else(|| invalid_field_err!("Length", "WaveInfo body_size is too small"))?;
+            .ok_or_else(|| invalid_field_err!("Length", "WaveInfo body_size is too small", at: 0))?;
         let wave = SndWavePdu::decode(src, data_len)?;
 
         let mut data = Vec::with_capacity(wave.size());
@@ -1264,10 +1264,8 @@ impl<'de> Decode<'de> for ServerAudioOutputPdu<'_> {
                 let pdu = PitchPdu::decode(src)?;
                 Ok(Self::Pitch(pdu))
             }
-            _ => Err(invalid_field_err!(
-                "ServerAudioOutputPdu::msgType",
-                "Unknown audio output PDU type"
-            )),
+            _ => Err(invalid_field_err!( "ServerAudioOutputPdu::msgType",
+                "Unknown audio output PDU type", at: 0)),
         }
     }
 }
@@ -1355,10 +1353,8 @@ impl<'de> Decode<'de> for ClientAudioOutputPdu {
                 let pdu = WaveConfirmPdu::decode(src)?;
                 Ok(Self::WaveConfirm(pdu))
             }
-            _ => Err(invalid_field_err!(
-                "ClientAudioOutputPdu::msgType",
-                "Unknown audio output PDU type"
-            )),
+            _ => Err(invalid_field_err!( "ClientAudioOutputPdu::msgType",
+                "Unknown audio output PDU type", at: 0)),
         }
     }
 }

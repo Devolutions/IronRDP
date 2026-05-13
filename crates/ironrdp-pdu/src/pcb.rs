@@ -58,6 +58,7 @@ impl<'de> Decode<'de> for PreconnectionBlob {
                 Self::NAME,
                 "cbSize",
                 "advertised size too small for Preconnection PDU V1",
+                0,
             ));
         }
 
@@ -83,13 +84,14 @@ impl<'de> Decode<'de> for PreconnectionBlob {
                     Self::NAME,
                     "cchPCB",
                     "PCB string bigger than advertised size",
+                    0,
                 ));
             }
 
             let wsz_pcb_utf16 = src.read_slice(cb_pcb);
 
             let payload = crate::utf16::read_utf16_string(wsz_pcb_utf16, Some(cch_pcb))
-                .map_err(|e| invalid_field_err_with_source(Self::NAME, "wszPCB", "bad UTF-16 string", e))?;
+                .map_err(|e| invalid_field_err_with_source(Self::NAME, "wszPCB", "bad UTF-16 string", 0, e))?;
 
             let leftover_size = remaining_size - 2 - cb_pcb;
             src.advance(leftover_size); // Consume (unused) leftover data
@@ -116,6 +118,7 @@ impl Encode for PreconnectionBlob {
                 Self::NAME,
                 "version",
                 "there is no string payload in Preconnection PDU V1",
+                0,
             ));
         }
 

@@ -211,11 +211,9 @@ impl StreamHeader {
                 filler,
             })
         } else {
-            Err(invalid_field_err!(
-                "decode",
+            Err(invalid_field_err!( "decode",
                 "StreamHeader",
-                "server returned big-endian data, parsing not implemented"
-            ))
+                "server returned big-endian data, parsing not implemented", at: 0))
         }
     }
 
@@ -238,7 +236,7 @@ impl TryFrom<u8> for Endianness {
         match value {
             0x00 => Ok(Endianness::BigEndian),
             0x10 => Ok(Endianness::LittleEndian),
-            _ => Err(invalid_field_err!("try_from", "RpceEndianness", "unsupported value")),
+            _ => Err(invalid_field_err!("try_from", "RpceEndianness", "unsupported value", at: 0)),
         }
     }
 }

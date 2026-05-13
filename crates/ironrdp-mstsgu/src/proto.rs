@@ -109,7 +109,7 @@ impl<'a> Decode<'a> for PktHdr {
         ensure_fixed_part_size!(in: src);
 
         let ty = src.read_u16();
-        let mty = PktTy::try_from(ty).map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{ty:x}")))?;
+        let mty = PktTy::try_from(ty).map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{ty:x}"), 0))?;
 
         Ok(PktHdr {
             ty: mty,
@@ -182,7 +182,7 @@ impl Decode<'_> for HandshakeRespPkt {
             _extended_auth: {
                 let raw = src.read_u16();
                 HttpExtendedAuth::from_bits(raw)
-                    .ok_or_else(|| unsupported_value_err("HandshakeResp", "extended_auth", format!("0x{raw:x}")))?
+                    .ok_or_else(|| unsupported_value_err("HandshakeResp", "extended_auth", format!("0x{raw:x}"), 0))?
             },
         })
     }

@@ -170,10 +170,8 @@ impl<'de> Decode<'de> for CapabilitySet {
                 let general = GeneralCapabilitySet::decode(src)?;
                 Ok(Self::General(general))
             }
-            _ => Err(invalid_field_err!(
-                "capabilitySetType",
-                "invalid clipboard capability set type"
-            )),
+            _ => Err(invalid_field_err!( "capabilitySetType",
+                "invalid clipboard capability set type", at: 0)),
         }
     }
 }

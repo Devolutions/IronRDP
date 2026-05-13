@@ -168,24 +168,24 @@ impl<'de> Decode<'de> for General {
 
         let compression_types = src.read_u16();
         if compression_types != 0 {
-            return Err(invalid_field_err!("compressionTypes", "invalid compression types"));
+            return Err(invalid_field_err!("compressionTypes", "invalid compression types", at: 0));
         }
 
         let extra_flags = GeneralExtraFlags::from_bits_retain(src.read_u16());
 
         let update_cap_flags = src.read_u16();
         if update_cap_flags != 0 {
-            return Err(invalid_field_err!("updateCapFlags", "invalid update cap flags"));
+            return Err(invalid_field_err!("updateCapFlags", "invalid update cap flags", at: 0));
         }
 
         let remote_unshare_flag = src.read_u16();
         if remote_unshare_flag != 0 {
-            return Err(invalid_field_err!("remoteUnshareFlags", "invalid remote unshare flag"));
+            return Err(invalid_field_err!("remoteUnshareFlags", "invalid remote unshare flag", at: 0));
         }
 
         let compression_level = src.read_u16();
         if compression_level != 0 {
-            return Err(invalid_field_err!("compressionLevel", "invalid compression level"));
+            return Err(invalid_field_err!("compressionLevel", "invalid compression level", at: 0));
         }
 
         let refresh_rect_support = src.read_u8() != 0;

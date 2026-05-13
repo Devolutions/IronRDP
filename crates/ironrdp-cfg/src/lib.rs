@@ -1,7 +1,6 @@
 mod target_addr;
-pub use target_addr::{ParseTargetAddrError, TargetAddr, TargetHost};
-
 use ironrdp_propertyset::PropertySet;
+pub use target_addr::{ParseTargetAddrError, TargetAddr, TargetHost};
 
 /// Error returned when the `server port` property value is outside the valid port range (1–65535).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
