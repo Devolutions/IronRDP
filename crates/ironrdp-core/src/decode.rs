@@ -2,6 +2,7 @@
 use alloc::string::String;
 use core::fmt;
 
+use crate::error::At;
 use crate::{
     InvalidFieldErr, NotEnoughBytesErr, OtherErr, ReadCursor, UnexpectedMessageTypeErr, UnsupportedValueErr,
     UnsupportedVersionErr,
@@ -14,7 +15,16 @@ pub type DecodeResult<T> = Result<T, DecodeError>;
 /// An error type specifically for encoding operations, wrapping an [`DecodeErrorKind`].
 pub type DecodeError = ironrdp_error::Error<DecodeErrorKind>;
 
-/// Enum representing different kinds of decode errors.
+/// Structured decode errors carry the fields needed to describe the failure,
+/// including a byte `offset` when the error can be associated with
+/// a position in the input stream.
+///
+/// The `offset` is the cursor position at, or nearest to, where the error was
+/// detected. Producers without a stream cursor (a `try_from` on a primitive,
+/// a constructor, a validator) pass `0`.
+///
+/// [`DecodeErrorKind::Other`] is reserved for errors that do not fit one of the
+/// structured variants and therefore does not carry an offset.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum DecodeErrorKind {
@@ -24,6 +34,13 @@ pub enum DecodeErrorKind {
         received: usize,
         /// Number of bytes expected.
         expected: usize,
+        /// Byte offset in the input stream where the shortage was detected.
+        ///
+        /// `None` when the error has no position in the input stream at all:
+        /// a constructor validating its arguments, an integer conversion, a
+        /// cache-state failure. Not a placeholder for a position that was
+        /// merely unavailable.
+        offset: Option<usize>,
     },
     /// Error when a field is invalid.
     InvalidField {
@@ -31,16 +48,28 @@ pub enum DecodeErrorKind {
         field: &'static str,
         /// Reason for invalidity.
         reason: &'static str,
+        /// Byte offset in the input stream where the invalid field was decoded.
+        ///
+        /// `None` when the error has no position in the input stream at all.
+        offset: Option<usize>,
     },
     /// Error when an unexpected message type is encountered.
     UnexpectedMessageType {
         /// The unexpected message type received.
         got: u8,
+        /// Byte offset in the input stream where the unexpected type was read.
+        ///
+        /// `None` when the error has no position in the input stream at all.
+        offset: Option<usize>,
     },
     /// Error when an unsupported version is encountered.
     UnsupportedVersion {
         /// The unsupported version received.
         got: u8,
+        /// Byte offset in the input stream where the unsupported version was read.
+        ///
+        /// `None` when the error has no position in the input stream at all.
+        offset: Option<usize>,
     },
     /// Error when an unsupported value is encountered (with allocation feature).
     #[cfg(feature = "alloc")]
@@ -49,14 +78,26 @@ pub enum DecodeErrorKind {
         name: &'static str,
         /// The unsupported value.
         value: String,
+        /// Byte offset in the input stream where the unsupported value was read.
+        ///
+        /// `None` when the error has no position in the input stream at all.
+        offset: Option<usize>,
     },
     /// Error when an unsupported value is encountered (without allocation feature).
     #[cfg(not(feature = "alloc"))]
     UnsupportedValue {
         /// Name of the unsupported value.
         name: &'static str,
+        /// Byte offset in the input stream where the unsupported value was read.
+        ///
+        /// `None` when the error has no position in the input stream at all.
+        offset: Option<usize>,
     },
     /// Generic error for other cases.
+    ///
+    /// Does not carry an offset: producers of this variant typically do not
+    /// have stream-cursor access, and the variant exists precisely for those
+    /// cases.
     Other {
         /// Description of the error.
         description: &'static str,
@@ -69,26 +110,31 @@ impl core::error::Error for DecodeErrorKind {}
 impl fmt::Display for DecodeErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotEnoughBytes { received, expected } => write!(
+            Self::NotEnoughBytes {
+                received,
+                expected,
+                offset,
+            } => write!(
                 f,
-                "not enough bytes provided to decode: received {received} bytes, expected {expected} bytes"
+                "not enough bytes provided to decode{at}: received {received} bytes, expected {expected} bytes",
+                at = At(*offset)
             ),
-            Self::InvalidField { field, reason } => {
-                write!(f, "invalid `{field}`: {reason}")
+            Self::InvalidField { field, reason, offset } => {
+                write!(f, "invalid `{field}`{at}: {reason}", at = At(*offset))
             }
-            Self::UnexpectedMessageType { got } => {
-                write!(f, "invalid message type ({got})")
+            Self::UnexpectedMessageType { got, offset } => {
+                write!(f, "invalid message type ({got}){at}", at = At(*offset))
             }
-            Self::UnsupportedVersion { got } => {
-                write!(f, "unsupported version ({got})")
+            Self::UnsupportedVersion { got, offset } => {
+                write!(f, "unsupported version ({got}){at}", at = At(*offset))
             }
             #[cfg(feature = "alloc")]
-            Self::UnsupportedValue { name, value } => {
-                write!(f, "unsupported {name} ({value})")
+            Self::UnsupportedValue { name, value, offset } => {
+                write!(f, "unsupported {name} ({value}){at}", at = At(*offset))
             }
             #[cfg(not(feature = "alloc"))]
-            Self::UnsupportedValue { name } => {
-                write!(f, "unsupported {name}")
+            Self::UnsupportedValue { name, offset } => {
+                write!(f, "unsupported {name}{at}", at = At(*offset))
             }
             Self::Other { description } => {
                 write!(f, "other ({description})")
@@ -99,42 +145,49 @@ impl fmt::Display for DecodeErrorKind {
 
 impl NotEnoughBytesErr for DecodeError {
     #[track_caller]
-    fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self {
-        Self::new(context, DecodeErrorKind::NotEnoughBytes { received, expected })
+    fn not_enough_bytes(context: &'static str, received: usize, expected: usize, offset: Option<usize>) -> Self {
+        Self::new(
+            context,
+            DecodeErrorKind::NotEnoughBytes {
+                received,
+                expected,
+                offset,
+            },
+        )
     }
 }
 
 impl InvalidFieldErr for DecodeError {
     #[track_caller]
-    fn invalid_field(context: &'static str, field: &'static str, reason: &'static str) -> Self {
-        Self::new(context, DecodeErrorKind::InvalidField { field, reason })
+    fn invalid_field(context: &'static str, field: &'static str, reason: &'static str, offset: Option<usize>) -> Self {
+        Self::new(context, DecodeErrorKind::InvalidField { field, reason, offset })
     }
 }
 
 impl UnexpectedMessageTypeErr for DecodeError {
     #[track_caller]
-    fn unexpected_message_type(context: &'static str, got: u8) -> Self {
-        Self::new(context, DecodeErrorKind::UnexpectedMessageType { got })
+    fn unexpected_message_type(context: &'static str, got: u8, offset: Option<usize>) -> Self {
+        Self::new(context, DecodeErrorKind::UnexpectedMessageType { got, offset })
     }
 }
 
 impl UnsupportedVersionErr for DecodeError {
     #[track_caller]
-    fn unsupported_version(context: &'static str, got: u8) -> Self {
-        Self::new(context, DecodeErrorKind::UnsupportedVersion { got })
+    fn unsupported_version(context: &'static str, got: u8, offset: Option<usize>) -> Self {
+        Self::new(context, DecodeErrorKind::UnsupportedVersion { got, offset })
     }
 }
 
 impl UnsupportedValueErr for DecodeError {
     #[cfg(feature = "alloc")]
     #[track_caller]
-    fn unsupported_value(context: &'static str, name: &'static str, value: String) -> Self {
-        Self::new(context, DecodeErrorKind::UnsupportedValue { name, value })
+    fn unsupported_value(context: &'static str, name: &'static str, value: String, offset: Option<usize>) -> Self {
+        Self::new(context, DecodeErrorKind::UnsupportedValue { name, value, offset })
     }
     #[cfg(not(feature = "alloc"))]
     #[track_caller]
-    fn unsupported_value(context: &'static str, name: &'static str) -> Self {
-        Self::new(context, DecodeErrorKind::UnsupportedValue { name })
+    fn unsupported_value(context: &'static str, name: &'static str, offset: Option<usize>) -> Self {
+        Self::new(context, DecodeErrorKind::UnsupportedValue { name, offset })
     }
 }
 

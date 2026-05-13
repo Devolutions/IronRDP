@@ -21,6 +21,7 @@ fn invalid_domain_mcspdu() {
             kind: InvalidField {
                 field: "domain-mcspdu",
                 reason: "unexpected application tag for CHOICE",
+                offset: None,
             },
             source: None,
         }

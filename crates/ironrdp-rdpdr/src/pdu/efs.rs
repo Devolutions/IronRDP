@@ -1537,7 +1537,7 @@ where
         let input_buffer_length = src.read_u32();
         let io_control_code = T::try_from(src.read_u32()).map_err(|e| {
             error!("Failed to parse IoCtlCode");
-            invalid_field_err_with_source("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode", e)
+            invalid_field_err_with_source("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode", None, e)
         })?;
 
         // Padding (20 bytes): An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
