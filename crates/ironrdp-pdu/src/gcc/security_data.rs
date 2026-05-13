@@ -1,6 +1,3 @@
-use core::fmt;
-use std::io;
-
 use bitflags::bitflags;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
@@ -216,47 +213,5 @@ impl EncryptionLevel {
     )]
     fn as_u32(self) -> u32 {
         self as u32
-    }
-}
-
-#[derive(Debug)]
-pub enum SecurityDataError {
-    IOError(io::Error),
-    InvalidEncryptionMethod,
-    InvalidEncryptionLevel,
-    InvalidServerRandomLen(u32),
-    InvalidInput(String),
-    InvalidServerCertificateLen(u32),
-}
-
-impl fmt::Display for SecurityDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IOError(_) => f.write_str("IO error"),
-            Self::InvalidEncryptionMethod => f.write_str("invalid encryption methods field"),
-            Self::InvalidEncryptionLevel => f.write_str("invalid encryption level field"),
-            Self::InvalidServerRandomLen(n) => write!(f, "invalid server random length field: {n}"),
-            Self::InvalidInput(s) => write!(f, "invalid input: {s}"),
-            Self::InvalidServerCertificateLen(n) => write!(f, "invalid server certificate length: {n}"),
-        }
-    }
-}
-
-impl core::error::Error for SecurityDataError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::IOError(e) => Some(e),
-            Self::InvalidEncryptionMethod
-            | Self::InvalidEncryptionLevel
-            | Self::InvalidServerRandomLen(_)
-            | Self::InvalidInput(_)
-            | Self::InvalidServerCertificateLen(_) => None,
-        }
-    }
-}
-
-impl From<io::Error> for SecurityDataError {
-    fn from(e: io::Error) -> Self {
-        Self::IOError(e)
     }
 }

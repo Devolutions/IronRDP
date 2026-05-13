@@ -1,6 +1,3 @@
-use core::fmt;
-use std::io;
-
 use bitflags::bitflags;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, invalid_field_err,
@@ -94,35 +91,5 @@ impl RedirectionVersion {
     )]
     fn as_u32(self) -> u32 {
         self as u32
-    }
-}
-
-#[derive(Debug)]
-pub enum ClusterDataError {
-    IOError(io::Error),
-    InvalidRedirectionFlags,
-}
-
-impl fmt::Display for ClusterDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IOError(_) => f.write_str("IO error"),
-            Self::InvalidRedirectionFlags => f.write_str("invalid redirection flags field"),
-        }
-    }
-}
-
-impl core::error::Error for ClusterDataError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::IOError(e) => Some(e),
-            Self::InvalidRedirectionFlags => None,
-        }
-    }
-}
-
-impl From<io::Error> for ClusterDataError {
-    fn from(e: io::Error) -> Self {
-        Self::IOError(e)
     }
 }

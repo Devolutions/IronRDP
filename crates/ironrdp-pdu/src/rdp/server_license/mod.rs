@@ -199,6 +199,8 @@ impl BlobType {
     pub const CLIENT_MACHINE_NAME_BLOB: Self = Self(0x10);
 }
 
+// FIXME: licensing logic and any code that is not purely about PDU
+// encoding/decoding concerns should be moved out of ironrdp-pdu.
 #[derive(Debug)]
 pub enum ServerLicenseError {
     IOError(io::Error),

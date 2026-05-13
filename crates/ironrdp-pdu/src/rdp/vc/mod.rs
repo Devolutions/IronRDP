@@ -3,13 +3,8 @@ pub mod dvc;
 #[cfg(test)]
 mod tests;
 
-use core::fmt;
-use std::{io, str};
-
 use bitflags::bitflags;
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size};
-
-use crate::PduError;
 
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 
@@ -76,85 +71,5 @@ bitflags! {
         const COMPRESSION_TYPE_MASK = 0x000F_0000;
 
         const _ = !0;
-    }
-}
-
-#[derive(Debug)]
-pub enum ChannelError {
-    IOError(io::Error),
-    FromUtf8Error(std::string::FromUtf8Error),
-    InvalidChannelPduHeader,
-    InvalidChannelTotalDataLength,
-    InvalidDvcPduType,
-    InvalidDVChannelIdLength,
-    InvalidDvcDataLength,
-    InvalidDvcCapabilitiesVersion,
-    InvalidDvcMessageSize,
-    InvalidDvcTotalMessageSize { actual: usize, expected: usize },
-    Pdu(PduError),
-}
-
-impl fmt::Display for ChannelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IOError(_) => f.write_str("IO error"),
-            Self::FromUtf8Error(_) => f.write_str("from UTF-8 error"),
-            Self::InvalidChannelPduHeader => f.write_str("invalid channel PDU header"),
-            Self::InvalidChannelTotalDataLength => f.write_str("invalid channel total data length"),
-            Self::InvalidDvcPduType => f.write_str("invalid DVC PDU type"),
-            Self::InvalidDVChannelIdLength => f.write_str("invalid DVC id length value"),
-            Self::InvalidDvcDataLength => f.write_str("invalid DVC data length value"),
-            Self::InvalidDvcCapabilitiesVersion => f.write_str("invalid DVC capabilities version"),
-            Self::InvalidDvcMessageSize => f.write_str("invalid DVC message size"),
-            Self::InvalidDvcTotalMessageSize { actual, expected } => {
-                write!(
-                    f,
-                    "invalid DVC total message size: actual ({actual}) > expected ({expected})"
-                )
-            }
-            Self::Pdu(e) => write!(f, "PDU error: {e}"),
-        }
-    }
-}
-
-impl core::error::Error for ChannelError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::IOError(e) => Some(e),
-            Self::FromUtf8Error(e) => Some(e),
-            Self::InvalidChannelPduHeader
-            | Self::InvalidChannelTotalDataLength
-            | Self::InvalidDvcPduType
-            | Self::InvalidDVChannelIdLength
-            | Self::InvalidDvcDataLength
-            | Self::InvalidDvcCapabilitiesVersion
-            | Self::InvalidDvcMessageSize
-            | Self::InvalidDvcTotalMessageSize { .. }
-            | Self::Pdu(_) => None,
-        }
-    }
-}
-
-impl From<io::Error> for ChannelError {
-    fn from(e: io::Error) -> Self {
-        Self::IOError(e)
-    }
-}
-
-impl From<std::string::FromUtf8Error> for ChannelError {
-    fn from(e: std::string::FromUtf8Error) -> Self {
-        Self::FromUtf8Error(e)
-    }
-}
-
-impl From<PduError> for ChannelError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
-    }
-}
-
-impl From<ChannelError> for io::Error {
-    fn from(e: ChannelError) -> io::Error {
-        io::Error::other(format!("Virtual channel error: {e}"))
     }
 }
