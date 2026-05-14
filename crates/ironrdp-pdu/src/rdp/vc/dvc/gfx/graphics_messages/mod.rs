@@ -27,6 +27,7 @@ const CAPABILITY_SET_HEADER_SIZE: usize = 8;
 const V10_1_RESERVED: u128 = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CapabilitySet {
     V8 { flags: CapabilitiesV8Flags },
     V8_1 { flags: CapabilitiesV81Flags },
@@ -183,6 +184,7 @@ impl<'de> Decode<'de> for CapabilitySet {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Color {
     pub b: u8,
     pub g: u8,
@@ -231,6 +233,7 @@ impl<'de> Decode<'de> for Color {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Point {
     pub x: u16,
     pub y: u16,
@@ -301,6 +304,7 @@ impl CapabilityVersion {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CapabilitiesV8Flags: u32  {
         const THIN_CLIENT = 0x1;
         const SMALL_CACHE = 0x2;
@@ -311,6 +315,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CapabilitiesV81Flags: u32  {
         const THIN_CLIENT = 0x01;
         const SMALL_CACHE = 0x02;
@@ -322,6 +327,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CapabilitiesV10Flags: u32 {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;
@@ -332,6 +338,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CapabilitiesV103Flags: u32  {
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
@@ -342,6 +349,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CapabilitiesV104Flags: u32  {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;
@@ -353,6 +361,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CapabilitiesV107Flags: u32  {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;

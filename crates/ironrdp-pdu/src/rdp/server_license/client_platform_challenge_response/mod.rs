@@ -27,6 +27,7 @@ pub(crate) const CLIENT_HARDWARE_IDENTIFICATION_SIZE: usize = 20;
 ///
 /// [2.2.2.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/f53ab87c-d07d-4bf9-a2ac-79542f7b456c
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientPlatformChallengeResponse {
     pub license_header: LicenseHeader,
     pub encrypted_challenge_response_data: Vec<u8>,
@@ -165,6 +166,7 @@ impl ClientPlatformChallengeResponse {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ClientType {
     Win32 = 0x0100,
     Win16 = 0x0200,
@@ -184,6 +186,7 @@ impl ClientType {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LicenseDetailLevel {
     Simple = 1,
     Moderate = 2,
@@ -201,6 +204,7 @@ impl LicenseDetailLevel {
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct PlatformChallengeResponseData {
     pub client_type: ClientType,
     pub license_detail_level: LicenseDetailLevel,
@@ -263,6 +267,7 @@ impl<'de> Decode<'de> for PlatformChallengeResponseData {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientHardwareIdentification {
     pub platform_id: u32,
     pub data: Vec<u8>,

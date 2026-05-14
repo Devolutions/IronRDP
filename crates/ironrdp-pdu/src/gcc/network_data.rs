@@ -29,6 +29,21 @@ pub struct ChannelName {
     inner: Cow<'static, [u8; Self::SIZE]>,
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for ChannelName {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Generate up to seven ANSI characters then enforce the null terminator,
+        // preserving both INVARIANTs on the inner array.
+        let len = u.int_in_range::<usize>(0..=Self::SIZE - 1)?;
+        let mut bytes = [0u8; Self::SIZE];
+        let payload = u.bytes(len)?;
+        bytes[..len].copy_from_slice(payload);
+        Ok(Self {
+            inner: Cow::Owned(bytes),
+        })
+    }
+}
+
 impl ChannelName {
     pub const SIZE: usize = 8;
 
@@ -98,6 +113,7 @@ impl ChannelName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientNetworkData {
     pub channels: Vec<ChannelDef>,
 }
@@ -150,6 +166,7 @@ impl<'de> Decode<'de> for ClientNetworkData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerNetworkData {
     pub channel_ids: Vec<u16>,
     pub io_channel: u16,
@@ -227,6 +244,7 @@ impl<'de> Decode<'de> for ServerNetworkData {
 
 /// Channel Definition Structure (CHANNEL_DEF)
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ChannelDef {
     pub name: ChannelName,
     pub options: ChannelOptions,
@@ -273,6 +291,7 @@ impl<'de> Decode<'de> for ChannelDef {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct ChannelOptions: u32 {
         const INITIALIZED = 0x8000_0000;
         const ENCRYPT_RDP = 0x4000_0000;

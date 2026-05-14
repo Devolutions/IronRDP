@@ -11,6 +11,7 @@ const DESKTOP_SAVE_Y_GRAN_VAL: u16 = 20;
 
 #[repr(u8)]
 #[derive(Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum OrderSupportIndex {
     DstBlt = 0x00,
     PatBlt = 0x01,
@@ -47,6 +48,7 @@ impl OrderSupportIndex {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct OrderFlags: u16 {
         const NEGOTIATE_ORDER_SUPPORT = 0x0002;
         const ZERO_BOUNDS_DELTAS_SUPPORT = 0x0008;
@@ -60,6 +62,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct OrderSupportExFlags: u16 {
         const CACHE_BITMAP_REV3_SUPPORT = 2;
         const ALTSEC_FRAME_MARKER_SUPPORT = 4;
@@ -69,6 +72,7 @@ bitflags! {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Order {
     order_flags: OrderFlags,
     order_support: [u8; SUPPORT_ARRAY_LEN],

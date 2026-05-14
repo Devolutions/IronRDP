@@ -17,6 +17,7 @@ const FIRST_ROW_SIZE_VALUE: u16 = 0;
 
 /// TS_UPDATE_BITMAP_DATA
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapUpdateData<'a> {
     pub rectangles: Vec<BitmapData<'a>>,
 }
@@ -85,6 +86,7 @@ impl<'de> Decode<'de> for BitmapUpdateData<'de> {
 
 /// TS_BITMAP_DATA
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapData<'a> {
     pub rectangle: InclusiveRectangle,
     pub width: u16,
@@ -197,6 +199,7 @@ impl Debug for BitmapData<'_> {
 
 /// TS_CD_HEADER
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CompressedDataHeader {
     pub main_body_size: u16,
     pub scan_width: u16,
@@ -267,6 +270,7 @@ impl Encode for CompressedDataHeader {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct BitmapFlags: u16{
         const BITMAP_UPDATE_TYPE = 0x0001;
 
@@ -276,6 +280,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct Compression: u16 {
        const BITMAP_COMPRESSION = 0x0001;
        const NO_BITMAP_COMPRESSION_HDR = 0x0400;

@@ -23,6 +23,7 @@ pub use self::unicode::UnicodePdu;
 pub use self::unused::UnusedPdu;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct InputEventPdu(pub Vec<InputEvent>);
 
 impl InputEventPdu {
@@ -70,6 +71,7 @@ impl<'de> Decode<'de> for InputEventPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum InputEvent {
     Sync(SyncPdu),
     Unused(UnusedPdu),

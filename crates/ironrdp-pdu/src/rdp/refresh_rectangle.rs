@@ -15,6 +15,7 @@ use crate::geometry::InclusiveRectangle;
 ///
 /// [2.2.11.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/fe04a39d-dc10-489f-bea7-08dad5538547
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RefreshRectanglePdu {
     pub areas_to_refresh: Vec<InclusiveRectangle>,
 }

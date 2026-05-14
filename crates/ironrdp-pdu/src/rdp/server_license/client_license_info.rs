@@ -23,6 +23,7 @@ const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 ///
 /// [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/9407b2eb-f180-4827-9488-cdbff4a5d4ea
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientLicenseInfo {
     pub license_header: LicenseHeader,
     pub client_random: Vec<u8>,

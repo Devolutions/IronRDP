@@ -18,6 +18,7 @@ const DOMAIN_NAME_SIZE_V2: usize = 52;
 const USER_NAME_SIZE_V2: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LogonInfoVersion1 {
     pub logon_info: LogonInfo,
 }
@@ -96,6 +97,7 @@ impl<'de> Decode<'de> for LogonInfoVersion1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LogonInfoVersion2 {
     pub logon_info: LogonInfo,
 }
@@ -189,6 +191,7 @@ impl<'de> Decode<'de> for LogonInfoVersion2 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LogonInfo {
     pub session_id: u32,
     pub user_name: String,

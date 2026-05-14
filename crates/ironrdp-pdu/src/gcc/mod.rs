@@ -49,6 +49,7 @@ const USER_DATA_HEADER_SIZE: usize = 4;
 ///
 /// [2.2.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/db6713ee-1c0e-4064-a3b3-0fac30b4037b
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientGccBlocks {
     pub core: ClientCoreData,
     pub security: ClientSecurityData,
@@ -176,6 +177,7 @@ impl<'de> Decode<'de> for ClientGccBlocks {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerGccBlocks {
     pub core: ServerCoreData,
     pub network: ServerNetworkData,
@@ -265,6 +267,7 @@ impl<'de> Decode<'de> for ServerGccBlocks {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ClientGccType {
     CoreData = 0xC001,
     SecurityData = 0xC002,
@@ -288,6 +291,7 @@ impl ClientGccType {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ServerGccType {
     CoreData = 0x0C01,
     SecurityData = 0x0C02,
@@ -307,6 +311,7 @@ impl ServerGccType {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct UserDataHeader;
 
 impl UserDataHeader {

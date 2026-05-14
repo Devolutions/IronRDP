@@ -20,6 +20,7 @@ const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 ///
 /// [2.2.2.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/e8339fbd-1fe3-42c2-a599-27c04407166d
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerUpgradeLicense {
     pub license_header: LicenseHeader,
     pub encrypted_license_info: Vec<u8>,
@@ -98,6 +99,7 @@ impl ServerUpgradeLicense {
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseInformation {
     pub version: u32,
     pub scope: String,

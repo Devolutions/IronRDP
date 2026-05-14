@@ -5,6 +5,7 @@ use ironrdp_core::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SyncPdu {
     pub flags: SyncToggleFlags,
 }
@@ -47,6 +48,7 @@ impl<'de> Decode<'de> for SyncPdu {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct SyncToggleFlags: u32 {
         const SCROLL_LOCK = 0x1;
         const NUM_LOCK = 0x2;

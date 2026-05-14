@@ -64,6 +64,7 @@ const NULL_TERMINATOR: &str = "\0";
 ///
 /// [2.2.1.13.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a07abad1-38bb-4a1a-96c9-253e3d5440df
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerDemandActive {
     pub pdu: DemandActive,
 }
@@ -108,6 +109,7 @@ impl<'de> Decode<'de> for ServerDemandActive {
 ///
 /// [2.2.1.13.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4c3c2710-0bf0-4c54-8e69-aff40ffcde66
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientConfirmActive {
     /// According to [MSDN](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4e9722c3-ad83-43f5-af5a-529f73d88b48),
     /// this field MUST be set to [SERVER_CHANNEL_ID](constant.SERVER_CHANNEL_ID.html).
@@ -158,6 +160,7 @@ impl<'de> Decode<'de> for ClientConfirmActive {
 ///
 /// [2.2.1.13.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/bd612af5-cb54-43a2-9646-438bc3ecf5db
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct DemandActive {
     pub source_descriptor: String,
     pub capability_sets: Vec<CapabilitySet>,
@@ -241,6 +244,7 @@ impl<'de> Decode<'de> for DemandActive {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CapabilitySet {
     // mandatory
     General(General),

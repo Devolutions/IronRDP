@@ -18,7 +18,7 @@ test = false
 
 [features]
 default = []
-arbitrary = ["dep:arbitrary"]
+arbitrary = ["dep:arbitrary", "ironrdp-pdu/arbitrary"]
 qoi = ["ironrdp-pdu/qoi"]
 qoiz = ["ironrdp-pdu/qoiz"]
 

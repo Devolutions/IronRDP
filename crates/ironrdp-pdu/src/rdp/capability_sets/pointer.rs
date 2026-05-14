@@ -6,6 +6,7 @@ use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, Write
 const POINTER_LENGTH: usize = 6;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Pointer {
     pub color_pointer_cache_size: u16,
     pub pointer_cache_size: u16,

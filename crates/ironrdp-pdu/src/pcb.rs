@@ -9,6 +9,7 @@ use crate::Pdu;
 
 /// Preconnection PDU version
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct PcbVersion(pub u32);
 
 impl PcbVersion {
@@ -26,6 +27,7 @@ impl PcbVersion {
 /// use this string and the Id field of the RDP_PRECONNECTION_PDU_V1 packet to
 /// determine the RDP source. This string is opaque to the protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct PreconnectionBlob {
     /// Preconnection PDU version
     pub version: PcbVersion,
