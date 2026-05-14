@@ -9,26 +9,42 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::fmt;
 
-#[cfg(feature = "std")]
-pub trait Source: core::error::Error + Sync + Send + 'static {}
+pub trait Source: core::error::Error + Send + Sync + 'static {}
 
-#[cfg(feature = "std")]
-impl<T> Source for T where T: core::error::Error + Sync + Send + 'static {}
+impl<T> Source for T where T: core::error::Error + Send + Sync + 'static {}
 
-#[cfg(not(feature = "std"))]
-pub trait Source: fmt::Display + fmt::Debug + Send + Sync + 'static {}
-
-#[cfg(not(feature = "std"))]
-impl<T> Source for T where T: fmt::Display + fmt::Debug + Send + Sync + 'static {}
-
-pub struct Error<Kind> {
+/// Diagnostic metadata stored behind a [`Box`] so that `Error<Kind>` stays small.
+///
+/// All fields here are purely for display and error-chain traversal; none are
+/// needed for matching on the error kind. The allocation only occurs when an
+/// error is *constructed* — a cold path — so the per-error heap cost is
+/// acceptable.
+#[cfg(feature = "alloc")]
+struct ErrorMeta {
     context: &'static str,
     location: &'static core::panic::Location<'static>,
-    kind: Kind,
-    #[cfg(feature = "std")]
-    source: Option<Box<dyn core::error::Error + Sync + Send>>,
-    #[cfg(all(not(feature = "std"), feature = "alloc"))]
     source: Option<Box<dyn Source>>,
+}
+
+/// A typed error wrapper carrying a `Kind` discriminant plus diagnostic metadata.
+///
+/// # `no_alloc` platforms
+///
+/// When compiled without the `alloc` feature, `Error<Kind>` retains `kind`,
+/// `context`, and `location` inline. The error source chain is unavailable.
+/// `no_alloc` targets are supported on a best-effort basis and are not a
+/// primary target of this crate. Do not add more inline fields here: the
+/// struct should stay lean for stack-constrained environments.
+pub struct Error<Kind> {
+    kind: Kind,
+    /// Diagnostic metadata. Present only when `alloc` is available.
+    #[cfg(feature = "alloc")]
+    meta: Box<ErrorMeta>,
+    /// Minimal context kept for `no_alloc` targets (no source chain).
+    #[cfg(not(feature = "alloc"))]
+    context: &'static str,
+    #[cfg(not(feature = "alloc"))]
+    location: &'static core::panic::Location<'static>,
 }
 
 // Manual `Debug` impl that excludes the `location` field. The location is
@@ -39,9 +55,12 @@ pub struct Error<Kind> {
 impl<Kind: fmt::Debug> fmt::Debug for Error<Kind> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut dbg = f.debug_struct("Error");
+        #[cfg(feature = "alloc")]
+        dbg.field("context", &self.meta.context)
+            .field("kind", &self.kind)
+            .field("source", &self.meta.source);
+        #[cfg(not(feature = "alloc"))]
         dbg.field("context", &self.context).field("kind", &self.kind);
-        #[cfg(any(feature = "std", feature = "alloc"))]
-        dbg.field("source", &self.source);
         dbg.finish()
     }
 }
@@ -52,11 +71,17 @@ impl<Kind> Error<Kind> {
     #[track_caller]
     pub fn new(context: &'static str, kind: Kind) -> Self {
         Self {
-            context,
-            location: core::panic::Location::caller(),
             kind,
             #[cfg(feature = "alloc")]
-            source: None,
+            meta: Box::new(ErrorMeta {
+                context,
+                location: core::panic::Location::caller(),
+                source: None,
+            }),
+            #[cfg(not(feature = "alloc"))]
+            context,
+            #[cfg(not(feature = "alloc"))]
+            location: core::panic::Location::caller(),
         }
     }
 
@@ -69,11 +94,11 @@ impl<Kind> Error<Kind> {
         #[cfg(feature = "alloc")]
         {
             let mut this = self;
-            this.source = Some(Box::new(source));
+            this.meta.source = Some(Box::new(source));
             this
         }
 
-        // No source when no std and no alloc crates
+        // No source when no alloc
         #[cfg(not(feature = "alloc"))]
         {
             let _ = source;
@@ -86,11 +111,13 @@ impl<Kind> Error<Kind> {
         Kind: Into<OtherKind>,
     {
         Error {
-            context: self.context,
-            location: self.location,
             kind: self.kind.into(),
-            #[cfg(any(feature = "std", feature = "alloc"))]
-            source: self.source,
+            #[cfg(feature = "alloc")]
+            meta: self.meta,
+            #[cfg(not(feature = "alloc"))]
+            context: self.context,
+            #[cfg(not(feature = "alloc"))]
+            location: self.location,
         }
     }
 
@@ -104,11 +131,25 @@ impl<Kind> Error<Kind> {
     /// and `#[track_caller]`. Useful for diagnostic logging and error reporting
     /// when the variant alone does not narrow down the call site enough.
     pub fn location(&self) -> &'static core::panic::Location<'static> {
-        self.location
+        #[cfg(feature = "alloc")]
+        {
+            self.meta.location
+        }
+        #[cfg(not(feature = "alloc"))]
+        {
+            self.location
+        }
     }
 
     pub fn set_context(&mut self, context: &'static str) {
-        self.context = context;
+        #[cfg(feature = "alloc")]
+        {
+            self.meta.context = context;
+        }
+        #[cfg(not(feature = "alloc"))]
+        {
+            self.context = context;
+        }
     }
 
     pub fn report(&self) -> ErrorReport<'_, Kind> {
@@ -121,14 +162,28 @@ where
     Kind: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{} @ {}:{}] {}",
-            self.context,
-            self.location.file(),
-            self.location.line(),
-            self.kind
-        )
+        #[cfg(feature = "alloc")]
+        {
+            write!(
+                f,
+                "[{} @ {}:{}] {}",
+                self.meta.context,
+                self.meta.location.file(),
+                self.meta.location.line(),
+                self.kind
+            )
+        }
+        #[cfg(not(feature = "alloc"))]
+        {
+            write!(
+                f,
+                "[{} @ {}:{}] {}",
+                self.context,
+                self.location.file(),
+                self.location.line(),
+                self.kind
+            )
+        }
     }
 }
 
@@ -141,8 +196,8 @@ where
         if let Some(source) = self.kind.source() {
             Some(source)
         } else {
-            // NOTE: we can’t use Option::as_ref here because of type inference
-            if let Some(e) = &self.source {
+            // NOTE: we can't use Option::as_ref here because of type inference
+            if let Some(e) = &self.meta.source {
                 Some(e.as_ref())
             } else {
                 None
@@ -193,7 +248,7 @@ where
         write!(f, "{}", self.0)?;
 
         #[cfg(feature = "alloc")]
-        if let Some(source) = &self.0.source {
+        if let Some(source) = &self.0.meta.source {
             write!(f, ", caused by: {source}")?;
         }
 
