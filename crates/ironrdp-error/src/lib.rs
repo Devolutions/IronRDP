@@ -175,7 +175,14 @@ where
         }
         #[cfg(not(feature = "alloc"))]
         {
-            write!(f, "[{} @ {}:{}] {}", self.context, self.location.file(), self.location.line(), self.kind)
+            write!(
+                f,
+                "[{} @ {}:{}] {}",
+                self.context,
+                self.location.file(),
+                self.location.line(),
+                self.kind
+            )
         }
     }
 }
