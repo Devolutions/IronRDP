@@ -105,6 +105,52 @@ The error reporter (e.g.: `ironrdp_error::ErrorReport`) is responsible for addin
 [api-guidelines-errors]: https://rust-lang.github.io/api-guidelines/interoperability.html#error-types-are-meaningful-and-well-behaved-c-good-err
 [std-error-trait]: https://doc.rust-lang.org/stable/std/error/trait.Error.html
 
+### Bugs vs anticipated failures
+
+Distinguish between two categories of failure when choosing between asserts and `Result`:
+
+- **Bugs** (an internal invariant or problem-domain assumption was violated): prefer `debug_assert!`
+  by default, `assert!` when the check is cheap enough to keep in release builds, and `panic!` /
+  `unreachable!` for branches that should be impossible. These signals are exactly what fuzzers
+  look for, and `debug_assert*!` is stripped from release builds so there is no production cost.
+
+- **Anticipated failures** (peer input, I/O, capacity, format negotiation, anything driven by the
+  outside world): return `Result`. These are not bugs and the caller has a meaningful response.
+
+```rust
+// GOOD — internal invariant: this can only fail because of a bug in the caller
+debug_assert!(buffer.len() >= header.declared_size);
+
+// GOOD — peer-driven: the input may legitimately disagree with our expectations
+ensure!(declared_size <= MAX_PDU_SIZE, "PDU exceeds maximum size");
+```
+
+**Rationale**: every bug-shaped `Result::Err` is a fuzzer signal we threw away and a code path the
+reader has to mentally distinguish from real recoverable errors. Asserts make the intent explicit,
+keep the happy path uncluttered, and give fuzzers something concrete to find.
+
+#### Process resilience comes from boundaries, not from `Result`
+
+The instinct to "return an error instead of panicking, just in case the bug is recoverable" is
+better served by an isolation boundary than by polluting the error type. Place
+`std::panic::catch_unwind` (or equivalent) at session/connection scope so a bug in one session
+doesn't take down the whole process. The bug site itself stays a panic — fuzzer-visible and
+honestly typed.
+
+#### Narrow exceptions where `Result` for bug-shaped conditions is justified
+
+There are a few legitimate reasons to keep a bug-shaped failure as a typed error rather than a
+panic:
+
+- **FFI / C ABI boundaries**: unwinding into C is undefined behavior, and downstream consumers
+  may build with `panic = "abort"`. A small number of well-placed input guards at the FFI surface
+  should validate caller assumptions and return a typed error rather than rely on internal asserts.
+- **External callers we cannot afford to crash**: when a bug at our layer would terminate a
+  long-lived host process that has no isolation boundary of its own.
+
+Treat both as exceptions, not as the default. Prefer the audit direction: if a `Result::Err`
+arm exists only to report "we made a mistake," it is a candidate for an assert.
+
 ## Logging
 
 If any, the human-readable message should start with a capital letter and not end with a period.
