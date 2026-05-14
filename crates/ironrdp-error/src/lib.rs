@@ -30,18 +30,21 @@ struct ErrorMeta {
 ///
 /// # `no_alloc` platforms
 ///
-/// When compiled without the `alloc` feature, `Error<Kind>` retains only
-/// `kind` and `context`; the call-site location and error source chain are
-/// unavailable. This is intentional: `no_alloc` targets are supported on a
-/// best-effort basis and are not a primary target of this crate.
+/// When compiled without the `alloc` feature, `Error<Kind>` retains `kind`,
+/// `context`, and `location` inline. The error source chain is unavailable.
+/// `no_alloc` targets are supported on a best-effort basis and are not a
+/// primary target of this crate. Do not add more inline fields here: the
+/// struct should stay lean for stack-constrained environments.
 pub struct Error<Kind> {
     kind: Kind,
     /// Diagnostic metadata. Present only when `alloc` is available.
     #[cfg(feature = "alloc")]
     meta: Box<ErrorMeta>,
-    /// Minimal context kept for `no_alloc` targets (no location, no source).
+    /// Minimal context kept for `no_alloc` targets (no source chain).
     #[cfg(not(feature = "alloc"))]
     context: &'static str,
+    #[cfg(not(feature = "alloc"))]
+    location: &'static core::panic::Location<'static>,
 }
 
 // Manual `Debug` impl that excludes the `location` field. The location is
@@ -77,6 +80,8 @@ impl<Kind> Error<Kind> {
             }),
             #[cfg(not(feature = "alloc"))]
             context,
+            #[cfg(not(feature = "alloc"))]
+            location: core::panic::Location::caller(),
         }
     }
 
@@ -111,6 +116,8 @@ impl<Kind> Error<Kind> {
             meta: self.meta,
             #[cfg(not(feature = "alloc"))]
             context: self.context,
+            #[cfg(not(feature = "alloc"))]
+            location: self.location,
         }
     }
 
@@ -123,11 +130,15 @@ impl<Kind> Error<Kind> {
     /// Captured automatically by [`Error::new`] via [`core::panic::Location::caller`]
     /// and `#[track_caller]`. Useful for diagnostic logging and error reporting
     /// when the variant alone does not narrow down the call site enough.
-    ///
-    /// Not available on `no_alloc` platforms (see crate-level documentation).
-    #[cfg(feature = "alloc")]
     pub fn location(&self) -> &'static core::panic::Location<'static> {
-        self.meta.location
+        #[cfg(feature = "alloc")]
+        {
+            self.meta.location
+        }
+        #[cfg(not(feature = "alloc"))]
+        {
+            self.location
+        }
     }
 
     pub fn set_context(&mut self, context: &'static str) {
@@ -164,7 +175,7 @@ where
         }
         #[cfg(not(feature = "alloc"))]
         {
-            write!(f, "[{}] {}", self.context, self.kind)
+            write!(f, "[{} @ {}:{}] {}", self.context, self.location.file(), self.location.line(), self.kind)
         }
     }
 }
