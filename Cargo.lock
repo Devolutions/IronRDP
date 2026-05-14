@@ -2531,7 +2531,6 @@ dependencies = [
 name = "ironrdp-connector"
 version = "0.8.0"
 dependencies = [
- "arbitrary",
  "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",

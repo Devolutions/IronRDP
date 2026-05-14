@@ -11,7 +11,6 @@ use crate::{ConnectorResult, Sequence, State, Written, general_err, legacy, reas
 
 #[derive(Default, Debug, Copy, Clone)]
 #[non_exhaustive]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ConnectionFinalizationState {
     #[default]
     Consumed,
@@ -49,7 +48,6 @@ impl State for ConnectionFinalizationState {
 }
 
 #[derive(Debug, Copy, Clone)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectionFinalizationSequence {
     pub state: ConnectionFinalizationState,
     pub io_channel_id: u16,
