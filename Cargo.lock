@@ -1081,23 +1081,22 @@ dependencies = [
 
 [[package]]
 name = "cryptoki"
-version = "0.10.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "781357a7779a8e92ea985121bbf379a9adf0777f44ab6392efc6abd5aa9b67db"
+checksum = "ff765b99fc49f3116c9a908484486a2b92fd73c48da45c3a69716471c6cc56c6"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.11.1",
  "cryptoki-sys",
  "libloading",
  "log",
- "paste",
  "secrecy",
 ]
 
 [[package]]
 name = "cryptoki-sys"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "753e27d860277930ae9f394c119c8c70303236aab0ffab1d51f3d207dbb2bc4b"
+checksum = "f1fd850498411e4057f1cba79e6e2bc7cbe960544c1046ab46d4685c403a1121"
 dependencies = [
  "libloading",
 ]
@@ -5103,9 +5102,9 @@ dependencies = [
 
 [[package]]
 name = "secrecy"
-version = "0.8.0"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
 dependencies = [
  "zeroize",
 ]
@@ -5474,9 +5473,9 @@ dependencies = [
 
 [[package]]
 name = "sspi"
-version = "0.19.2"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0484adc2dd72428a01644ddb55fd87c5518ff2c7c663544fb6b1ee39a65d897a"
+checksum = "82d4e729e937757a093b8ebe84933747db961e2f20744f957f5e6fbf6e0e2610"
 dependencies = [
  "async-dnssd",
  "async-recursion",
