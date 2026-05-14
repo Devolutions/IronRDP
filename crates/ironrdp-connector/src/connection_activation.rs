@@ -129,7 +129,9 @@ impl Sequence for ConnectionActivationSequence {
                     share_control_ctx.pdu,
                     rdp::headers::ShareControlPdu::ServerDeactivateAll(_)
                 ) {
-                    debug!("Skipping Server Deactivate All PDU received during Capabilities Exchange, awaiting Server Demand Active");
+                    debug!(
+                        "Skipping Server Deactivate All PDU received during Capabilities Exchange, awaiting Server Demand Active"
+                    );
                     self.state = ConnectionActivationState::CapabilitiesExchange {
                         io_channel_id,
                         user_channel_id,
