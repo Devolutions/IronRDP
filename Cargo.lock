@@ -2830,6 +2830,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "cpal",
+ "ironrdp-error",
  "ironrdp-rdpsnd",
  "opus2",
  "tracing",
