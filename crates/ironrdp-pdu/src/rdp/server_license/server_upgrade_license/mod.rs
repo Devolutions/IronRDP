@@ -46,12 +46,12 @@ impl ServerUpgradeLicense {
             && license_header.preamble_message_type != PreambleType::NewLicense
         {
             return Err(invalid_field_err!( "preambleType",
-                "got unexpected message preamble type", at: 0));
+                "got unexpected message preamble type", in: src));
         }
 
         let encrypted_license_info_blob = BlobHeader::decode(src)?;
         if encrypted_license_info_blob.blob_type != BlobType::ENCRYPTED_DATA {
-            return Err(invalid_field_err!("blobType", "unexpected blob type", at: 0));
+            return Err(invalid_field_err!("blobType", "unexpected blob type", in: src));
         }
 
         ensure_size!(in: src, size: encrypted_license_info_blob.length + MAC_SIZE);
@@ -118,22 +118,20 @@ impl Encode for LicenseInformation {
 
         dst.write_u32(self.version);
 
-        dst.write_u32(cast_length!("scopeLen", self.scope.len() + UTF8_NULL_TERMINATOR_SIZE)?);
+        dst.write_u32(cast_length!("scopeLen", self.scope.len() + UTF8_NULL_TERMINATOR_SIZE, in: dst)?);
         utils::write_string_to_cursor(dst, &self.scope, CharacterSet::Ansi, true)?;
 
         dst.write_u32(cast_length!(
             "companyLen",
-            self.company_name.len() * 2 + UTF16_NULL_TERMINATOR_SIZE
-        )?);
+            self.company_name.len() * 2 + UTF16_NULL_TERMINATOR_SIZE, in: dst)?);
         utils::write_string_to_cursor(dst, &self.company_name, CharacterSet::Unicode, true)?;
 
         dst.write_u32(cast_length!(
             "produceIdLen",
-            self.product_id.len() * 2 + UTF16_NULL_TERMINATOR_SIZE
-        )?);
+            self.product_id.len() * 2 + UTF16_NULL_TERMINATOR_SIZE, in: dst)?);
         utils::write_string_to_cursor(dst, &self.product_id, CharacterSet::Unicode, true)?;
 
-        dst.write_u32(cast_length!("licenseInfoLen", self.license_info.len())?);
+        dst.write_u32(cast_length!("licenseInfoLen", self.license_info.len(), in: dst)?);
         dst.write_slice(self.license_info.as_slice());
 
         Ok(())
@@ -160,19 +158,19 @@ impl<'de> Decode<'de> for LicenseInformation {
 
         let version = src.read_u32();
 
-        let scope_len: usize = cast_length!("scopeLen", src.read_u32())?;
+        let scope_len: usize = cast_length!("scopeLen", src.read_u32(), in: src)?;
         ensure_size!(in: src, size: scope_len);
         let scope = utils::decode_string(src.read_slice(scope_len), CharacterSet::Ansi, true)?;
 
-        let company_name_len: usize = cast_length!("companyLen", src.read_u32())?;
+        let company_name_len: usize = cast_length!("companyLen", src.read_u32(), in: src)?;
         ensure_size!(in: src, size: company_name_len);
         let company_name = utils::decode_string(src.read_slice(company_name_len), CharacterSet::Unicode, true)?;
 
-        let product_id_len: usize = cast_length!("productIdLen", src.read_u32())?;
+        let product_id_len: usize = cast_length!("productIdLen", src.read_u32(), in: src)?;
         ensure_size!(in: src, size: product_id_len);
         let product_id = utils::decode_string(src.read_slice(product_id_len), CharacterSet::Unicode, true)?;
 
-        let license_info_len = cast_length!("licenseInfoLen", src.read_u32())?;
+        let license_info_len = cast_length!("licenseInfoLen", src.read_u32(), in: src)?;
         ensure_size!(in: src, size: license_info_len);
         let license_info = src.read_slice(license_info_len).into();
 

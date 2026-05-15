@@ -123,19 +123,19 @@ impl ClientPlatformChallengeResponse {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::PlatformChallengeResponse {
             return Err(invalid_field_err!( "preambleMessageType",
-                "unexpected preamble message type", at: 0));
+                "unexpected preamble message type", in: src));
         }
 
         let encrypted_challenge_blob = BlobHeader::decode(src)?;
         if encrypted_challenge_blob.blob_type != BlobType::ENCRYPTED_DATA {
-            return Err(invalid_field_err!("blobType", "unexpected blob type", at: 0));
+            return Err(invalid_field_err!("blobType", "unexpected blob type", in: src));
         }
         ensure_size!(in: src, size: encrypted_challenge_blob.length);
         let encrypted_challenge_response_data = src.read_slice(encrypted_challenge_blob.length).into();
 
         let encrypted_hwid_blob = BlobHeader::decode(src)?;
         if encrypted_hwid_blob.blob_type != BlobType::ENCRYPTED_DATA {
-            return Err(invalid_field_err!("blobType", "unexpected blob type", at: 0));
+            return Err(invalid_field_err!("blobType", "unexpected blob type", in: src));
         }
         ensure_size!(in: src, size: encrypted_hwid_blob.length);
         let encrypted_hwid = src.read_slice(encrypted_hwid_blob.length).into();
@@ -222,7 +222,7 @@ impl Encode for PlatformChallengeResponseData {
         dst.write_u16(RESPONSE_DATA_VERSION);
         dst.write_u16(self.client_type.as_u16());
         dst.write_u16(self.license_detail_level.as_u16());
-        dst.write_u16(cast_length!("len", self.challenge.len())?);
+        dst.write_u16(cast_length!("len", self.challenge.len(), in: dst)?);
         dst.write_slice(&self.challenge);
 
         Ok(())
@@ -243,16 +243,16 @@ impl<'de> Decode<'de> for PlatformChallengeResponseData {
 
         let version = src.read_u16();
         if version != RESPONSE_DATA_VERSION {
-            return Err(invalid_field_err!("version", "invalid challenge response version", at: 0));
+            return Err(invalid_field_err!("version", "invalid challenge response version", in: src));
         }
 
         let client_type = ClientType::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("clientType", "invalid client type", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("clientType", "invalid client type", in: src))?;
 
         let license_detail_level = LicenseDetailLevel::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("licenseDetailLevel", "invalid license detail level", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("licenseDetailLevel", "invalid license detail level", in: src))?;
 
-        let challenge_len: usize = cast_length!("len", src.read_u16())?;
+        let challenge_len: usize = cast_length!("len", src.read_u16(), in: src)?;
         ensure_size!(in: src, size: challenge_len);
         let challenge = src.read_slice(challenge_len).into();
 

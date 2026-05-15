@@ -60,12 +60,12 @@ impl Capabilities {
 
 impl Encode for Capabilities {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        let header = PartialHeader::new(cast_int!("dataLen", self.inner_size())?);
+        let header = PartialHeader::new(cast_int!("dataLen", self.inner_size(), in: dst)?);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.inner_size());
 
-        dst.write_u16(cast_length!(Self::NAME, "cCapabilitiesSets", self.capabilities.len())?);
+        dst.write_u16(cast_length!(Self::NAME, "cCapabilitiesSets", self.capabilities.len(), in: dst)?);
         write_padding!(dst, 2);
 
         for capability in &self.capabilities {
@@ -141,7 +141,7 @@ impl Encode for CapabilitySet {
 
         ensure_size!(in: dst, size: length);
         dst.write_u16(Self::CAPSTYPE_GENERAL);
-        dst.write_u16(cast_int!("lengthCapability", length)?);
+        dst.write_u16(cast_int!("lengthCapability", length, in: dst)?);
         caps.encode(dst)
     }
 
@@ -171,7 +171,7 @@ impl<'de> Decode<'de> for CapabilitySet {
                 Ok(Self::General(general))
             }
             _ => Err(invalid_field_err!( "capabilitySetType",
-                "invalid clipboard capability set type", at: 0)),
+                "invalid clipboard capability set type", in: src)),
         }
     }
 }

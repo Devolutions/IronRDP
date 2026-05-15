@@ -60,7 +60,7 @@ impl<'de> Decode<'de> for ClientSecurityData {
         ensure_fixed_part_size!(in: src);
 
         let encryption_methods = EncryptionMethod::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("encryptionMethods", "invalid encryption methods", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("encryptionMethods", "invalid encryption methods", in: src))?;
         let ext_encryption_methods = src.read_u32();
 
         Ok(Self {
@@ -104,7 +104,7 @@ impl Encode for ServerSecurityData {
         if self.encryption_method.is_empty() && self.encryption_level == EncryptionLevel::None {
             if self.server_random.is_some() || !self.server_cert.is_empty() {
                 Err(invalid_field_err!( "serverRandom",
-                    "An encryption method and encryption level is none, but the server random or certificate is not empty", at: 0))
+                    "An encryption method and encryption level is none, but the server random or certificate is not empty", in: dst))
             } else {
                 Ok(())
             }
@@ -113,8 +113,8 @@ impl Encode for ServerSecurityData {
                 Some(ref server_random) => server_random.len(),
                 None => 0,
             };
-            dst.write_u32(cast_length!("serverRandomLen", server_random_len)?);
-            dst.write_u32(cast_length!("serverCertLen", self.server_cert.len())?);
+            dst.write_u32(cast_length!("serverRandomLen", server_random_len, in: dst)?);
+            dst.write_u32(cast_length!("serverCertLen", self.server_cert.len(), in: dst)?);
 
             if let Some(ref server_random) = self.server_random {
                 dst.write_slice(server_random.as_ref());
@@ -148,9 +148,9 @@ impl<'de> Decode<'de> for ServerSecurityData {
         ensure_fixed_part_size!(in: src);
 
         let encryption_method = EncryptionMethod::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("encryptionMethod", "invalid encryption method", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("encryptionMethod", "invalid encryption method", in: src))?;
         let encryption_level = EncryptionLevel::from_u32(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("encryptionLevel", "invalid encryption level", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("encryptionLevel", "invalid encryption level", in: src))?;
 
         let (server_random, server_cert) = if encryption_method.is_empty() && encryption_level == EncryptionLevel::None
         {
@@ -158,15 +158,15 @@ impl<'de> Decode<'de> for ServerSecurityData {
         } else {
             ensure_size!(in: src, size: 4 + 4);
 
-            let server_random_len: usize = cast_length!("serverRandomLen", src.read_u32())?;
+            let server_random_len: usize = cast_length!("serverRandomLen", src.read_u32(), in: src)?;
             if server_random_len != SERVER_RANDOM_LEN {
-                return Err(invalid_field_err!("serverRandomLen", "Invalid server random length", at: 0));
+                return Err(invalid_field_err!("serverRandomLen", "Invalid server random length", in: src));
             }
 
-            let server_cert_len = cast_length!("serverCertLen", src.read_u32())?;
+            let server_cert_len = cast_length!("serverCertLen", src.read_u32(), in: src)?;
 
             if server_cert_len > MAX_SERVER_CERT_LEN {
-                return Err(invalid_field_err!("serverCetLen", "Invalid server certificate length", at: 0));
+                return Err(invalid_field_err!("serverCetLen", "Invalid server certificate length", in: src));
             }
 
             ensure_size!(in: src, size: SERVER_RANDOM_LEN);

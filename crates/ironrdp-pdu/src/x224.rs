@@ -43,14 +43,13 @@ where
         ensure_size!(in: dst, size: packet_length);
 
         TpktHeader {
-            packet_length: cast_length!("packet length", packet_length)?,
+            packet_length: cast_length!("packet length", packet_length, in: dst)?,
         }
         .write(dst)?;
 
         let li = cast_length!(
             "length indicator",
-            (T::TPDU_CODE.header_fixed_part_size() + self.0.tpdu_header_variable_part_size() - 1)
-        )?;
+            (T::TPDU_CODE.header_fixed_part_size() + self.0.tpdu_header_variable_part_size() - 1), in: dst)?;
 
         TpduHeader { li, code: T::TPDU_CODE }.write(dst)?;
 

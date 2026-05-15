@@ -182,12 +182,11 @@ impl Encode for DemandActive {
 
         dst.write_u16(cast_length!(
             "sourceDescLen",
-            self.source_descriptor.len() + NULL_TERMINATOR.len()
-        )?);
-        dst.write_u16(cast_length!("combinedLen", combined_length)?);
+            self.source_descriptor.len() + NULL_TERMINATOR.len(), in: dst)?);
+        dst.write_u16(cast_length!("combinedLen", combined_length, in: dst)?);
         dst.write_slice(self.source_descriptor.as_ref());
         dst.write_slice(NULL_TERMINATOR.as_bytes());
-        dst.write_u16(cast_length!("len", self.capability_sets.len())?);
+        dst.write_u16(cast_length!("len", self.capability_sets.len(), in: dst)?);
         write_padding!(dst, 2);
 
         for capability_set in self.capability_sets.iter() {
@@ -297,136 +296,119 @@ impl Encode for CapabilitySet {
                 dst.write_u16(CapabilitySetType::General.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::Bitmap(capset) => {
                 dst.write_u16(CapabilitySetType::Bitmap.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::Order(capset) => {
                 dst.write_u16(CapabilitySetType::Order.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::BitmapCache(capset) => {
                 dst.write_u16(CapabilitySetType::BitmapCache.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::BitmapCacheRev2(capset) => {
                 dst.write_u16(CapabilitySetType::BitmapCacheRev2.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::Pointer(capset) => {
                 dst.write_u16(CapabilitySetType::Pointer.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::Sound(capset) => {
                 dst.write_u16(CapabilitySetType::Sound.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::Input(capset) => {
                 dst.write_u16(CapabilitySetType::Input.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::Brush(capset) => {
                 dst.write_u16(CapabilitySetType::Brush.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::GlyphCache(capset) => {
                 dst.write_u16(CapabilitySetType::GlyphCache.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::OffscreenBitmapCache(capset) => {
                 dst.write_u16(CapabilitySetType::OffscreenBitmapCache.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::VirtualChannel(capset) => {
                 dst.write_u16(CapabilitySetType::VirtualChannel.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::SurfaceCommands(capset) => {
                 dst.write_u16(CapabilitySetType::SurfaceCommands.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::BitmapCodecs(capset) => {
                 dst.write_u16(CapabilitySetType::BitmapCodecs.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::MultiFragmentUpdate(capset) => {
                 dst.write_u16(CapabilitySetType::MultiFragmentUpdate.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::LargePointer(capset) => {
                 dst.write_u16(CapabilitySetType::LargePointer.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             CapabilitySet::FrameAcknowledge(capset) => {
                 dst.write_u16(CapabilitySetType::FrameAcknowledge.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 capset.encode(dst)?;
             }
             _ => {
@@ -451,8 +433,7 @@ impl Encode for CapabilitySet {
                 dst.write_u16(capability_set_type.as_u16());
                 dst.write_u16(cast_length!(
                     "len",
-                    capability_set_buffer.len() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
-                )?);
+                    capability_set_buffer.len() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE, in: dst)?);
                 dst.write_slice(capability_set_buffer);
             }
         };
@@ -506,13 +487,13 @@ impl<'de> Decode<'de> for CapabilitySet {
         let capability_set_type_raw = src.read_u16();
         let capability_set_type = CapabilitySetType::from_u16(capability_set_type_raw).ok_or_else(|| {
             unsupported_value_err!( "capabilitySetType",
-                format!("invalid capability set type: {}", capability_set_type_raw), at: 0)
+                format!("invalid capability set type: {}", capability_set_type_raw), in: src)
         })?;
 
         let length = usize::from(src.read_u16());
 
         if length < CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE {
-            return Err(invalid_field_err!("len", "invalid capability set length", at: 0));
+            return Err(invalid_field_err!("len", "invalid capability set length", in: src));
         }
 
         let buffer_length = length - CAPABILITY_SET_TYPE_FIELD_SIZE - CAPABILITY_SET_LENGTH_FIELD_SIZE;

@@ -111,12 +111,12 @@ impl<'de> Decode<'de> for ServerCoreOptionalData {
 
         optional_data.client_requested_protocols = Some(
             SecurityProtocol::from_bits(try_or_return!(src.try_read_u32(), optional_data))
-                .ok_or_else(|| invalid_field_err!("clientReqProtocols", "invalid server security protocol", at: 0))?,
+                .ok_or_else(|| invalid_field_err!("clientReqProtocols", "invalid server security protocol", in: src))?,
         );
 
         optional_data.early_capability_flags = Some(
             ServerEarlyCapabilityFlags::from_bits(try_or_return!(src.try_read_u32(), optional_data))
-                .ok_or_else(|| invalid_field_err!("earlyCapFlags", "invalid early capability flags", at: 0))?,
+                .ok_or_else(|| invalid_field_err!("earlyCapFlags", "invalid early capability flags", in: src))?,
         );
 
         Ok(optional_data)

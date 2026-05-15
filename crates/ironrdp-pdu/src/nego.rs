@@ -326,7 +326,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             let msg_type = NegoMsgType::from(src.read_u8());
 
             if msg_type != NegoMsgType::REQUEST {
-                return Err(unexpected_message_type_err!(Self::NAME, u8::from(msg_type), at: 0));
+                return Err(unexpected_message_type_err!(Self::NAME, u8::from(msg_type), in: src));
             }
 
             let flags = RequestFlags::from_bits_retain(src.read_u8());
@@ -435,7 +435,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
 
                     Ok(Self::Failure { code })
                 }
-                unexpected => Err(unexpected_message_type_err!(Self::X224_NAME, u8::from(unexpected), at: 0)),
+                unexpected => Err(unexpected_message_type_err!(Self::X224_NAME, u8::from(unexpected), in: src)),
             }
         } else {
             Ok(Self::Response {
@@ -480,7 +480,7 @@ fn read_nego_data(src: &mut ReadCursor<'_>, ctx: &'static str, prefix: &str) -> 
     src.advance(2);
 
     let data = core::str::from_utf8(&src.inner()[identifier_start..identifier_end])
-        .map_err(|_| invalid_field_err(ctx, "identifier", "not valid UTF-8", 0))?
+        .map_err(|_| invalid_field_err(ctx, "identifier", "not valid UTF-8", identifier_start))?
         .to_owned();
 
     Ok(Some(data))

@@ -38,7 +38,7 @@ impl<'de> Decode<'de> for MultiTransportChannelData {
         ensure_fixed_part_size!(in: src);
 
         let flags = MultiTransportFlags::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("flags", "invalid multitransport flags", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid multitransport flags", in: src))?;
 
         Ok(Self { flags })
     }

@@ -43,7 +43,7 @@ impl Encode for LogonInfoExtended {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u16(cast_length!("internalSize", self.get_internal_size())?);
+        dst.write_u16(cast_length!("internalSize", self.get_internal_size(), in: dst)?);
         dst.write_u32(self.present_fields_flags.bits());
 
         if let Some(ref reconnect) = self.auto_reconnect {
@@ -140,12 +140,12 @@ impl<'de> Decode<'de> for ServerAutoReconnect {
         let packet_length = src.read_u32();
         if packet_length != u32::try_from(AUTO_RECONNECT_PACKET_SIZE).expect("AUTO_RECONNECT_PACKET_SIZE fits into u32")
         {
-            return Err(invalid_field_err!("packetLen", "invalid auto-reconnect packet size", at: 0));
+            return Err(invalid_field_err!("packetLen", "invalid auto-reconnect packet size", in: src));
         }
 
         let version = src.read_u32();
         if version != AUTO_RECONNECT_VERSION_1 {
-            return Err(invalid_field_err!("version", "invalid auto-reconnect version", at: 0));
+            return Err(invalid_field_err!("version", "invalid auto-reconnect version", in: src));
         }
 
         let logon_id = src.read_u32();
@@ -197,7 +197,7 @@ impl<'de> Decode<'de> for LogonErrorsInfo {
 
         let _data_length = src.read_u32();
         let error_type = LogonErrorNotificationType::from_u32(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("errorType", "invalid logon error type", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("errorType", "invalid logon error type", in: src))?;
 
         let error_notification_data = src.read_u32();
         let error_data = LogonErrorNotificationDataErrorCode::from_u32(error_notification_data)

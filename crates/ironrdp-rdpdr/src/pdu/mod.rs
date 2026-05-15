@@ -119,7 +119,7 @@ impl RdpdrPdu {
             PacketId::CoreUserLoggedon => Ok(RdpdrPdu::UserLoggedon),
             packet_id => Err(unsupported_value_err!( "RdpdrPdu::decode_body",
                 "PacketId",
-                format!("{packet_id} ({:#06X})", u16::from(packet_id)), at: 0)),
+                format!("{packet_id} ({:#06X})", u16::from(packet_id)), in: src)),
         }
     }
 }

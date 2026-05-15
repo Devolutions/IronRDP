@@ -126,7 +126,7 @@ fn rejects_null_counted_zero_cch() {
             kind: InvalidField {
                 field: "length prefix",
                 reason: "NullCounted prefix of 0 is invalid; minimum is 1 (empty string with null)",
-                offset: 0,
+                offset: 2,
             },
             source: None,
         }
@@ -151,7 +151,7 @@ fn rejects_nonzero_null_terminator_null_counted() {
             kind: InvalidField {
                 field: "null terminator",
                 reason: "expected 0x0000 null terminator",
-                offset: 0,
+                offset: 6,
             },
             source: None,
         }
@@ -174,7 +174,7 @@ fn rejects_nonzero_null_terminator_null_uncounted() {
             kind: InvalidField {
                 field: "null terminator",
                 reason: "expected 0x0000 null terminator",
-                offset: 0,
+                offset: 6,
             },
             source: None,
         }
@@ -195,7 +195,7 @@ fn rejects_odd_byte_count() {
             kind: InvalidField {
                 field: "length prefix",
                 reason: "odd byte count for utf-16 string field",
-                offset: 0,
+                offset: 2,
             },
             source: None,
         }

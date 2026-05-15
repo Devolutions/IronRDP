@@ -128,7 +128,7 @@ impl<'a> Decode<'a> for BitmapStream<'a> {
             // Cut padding field if RLE flags is set to 0
             if src.is_empty() {
                 return Err(invalid_field_err!( "padding",
-                    "missing padding byte from zero-sized non-RLE bitmap data", at: 0));
+                    "missing padding byte from zero-sized non-RLE bitmap data", in: src));
             }
             src.len() - NON_RLE_PADDING_SIZE
         } else {
@@ -311,7 +311,7 @@ mod tests {
                     kind: InvalidField {
                         field: "padding",
                         reason: "missing padding byte from zero-sized non-RLE bitmap data",
-                        offset: 0,
+                        offset: 1,
                     },
                     source: None,
                 }

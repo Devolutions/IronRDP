@@ -76,24 +76,19 @@ impl Encode for ClientInfo {
         let domain = self.credentials.domain.clone().unwrap_or_default();
         dst.write_u16(cast_length!(
             "domain length",
-            string_len(domain.as_str(), character_set)
-        )?);
+            string_len(domain.as_str(), character_set), in: dst)?);
         dst.write_u16(cast_length!(
             "username length",
-            string_len(self.credentials.username.as_str(), character_set)
-        )?);
+            string_len(self.credentials.username.as_str(), character_set), in: dst)?);
         dst.write_u16(cast_length!(
             "password length",
-            string_len(self.credentials.password.as_str(), character_set)
-        )?);
+            string_len(self.credentials.password.as_str(), character_set), in: dst)?);
         dst.write_u16(cast_length!(
             "alternate shell length",
-            string_len(self.alternate_shell.as_str(), character_set)
-        )?);
+            string_len(self.alternate_shell.as_str(), character_set), in: dst)?);
         dst.write_u16(cast_length!(
             "work dir length",
-            string_len(self.work_dir.as_str(), character_set)
-        )?);
+            string_len(self.work_dir.as_str(), character_set), in: dst)?);
 
         utils::write_string_to_cursor(dst, domain.as_str(), character_set, true)?;
         utils::write_string_to_cursor(dst, self.credentials.username.as_str(), character_set, true)?;
@@ -143,9 +138,9 @@ impl<'de> Decode<'de> for ClientInfo {
         let flags_with_compression_type = src.read_u32();
 
         let flags = ClientInfoFlags::from_bits(flags_with_compression_type & !COMPRESSION_TYPE_MASK)
-            .ok_or_else(|| invalid_field_err!("flags", "invalid ClientInfoFlags", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid ClientInfoFlags", in: src))?;
         let compression_type = CompressionType::from_u32((flags_with_compression_type & COMPRESSION_TYPE_MASK) >> 9)
-            .ok_or_else(|| invalid_field_err!("flags", "invalid CompressionType", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid CompressionType", in: src))?;
 
         let character_set = if flags.contains(ClientInfoFlags::UNICODE) {
             CharacterSet::Unicode
@@ -249,8 +244,9 @@ impl ExtendedClientInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>, character_set: CharacterSet) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size(character_set));
 
-        let address_string_len: u16 = cast_length!("address length", string_len(self.address.as_str(), character_set))?;
-        let dir_string_len: u16 = cast_length!("dir length", string_len(self.dir.as_str(), character_set))?;
+        let address_string_len: u16 =
+            cast_length!("address length", string_len(self.address.as_str(), character_set), in: dst)?;
+        let dir_string_len: u16 = cast_length!("dir length", string_len(self.dir.as_str(), character_set), in: dst)?;
 
         dst.write_u16(self.address_family.as_u16());
         // // + size of null terminator, which will write in the write_string function
@@ -375,7 +371,7 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
         }
         optional_data.performance_flags = Some(
             PerformanceFlags::from_bits(src.read_u32())
-                .ok_or_else(|| invalid_field_err!("performanceFlags", "invalid performance flags", at: 0))?,
+                .ok_or_else(|| invalid_field_err!("performanceFlags", "invalid performance flags", in: src))?,
         );
 
         if src.len() < 2 {
@@ -385,11 +381,11 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
         if reconnect_cookie_size != u16::try_from(RECONNECT_COOKIE_LEN).expect("RECONNECT_COOKIE_LEN fit into u16")
             && reconnect_cookie_size != 0
         {
-            return Err(invalid_field_err!("cbAutoReconnectCookie", "invalid cookie size", at: 0));
+            return Err(invalid_field_err!("cbAutoReconnectCookie", "invalid cookie size", in: src));
         }
         if reconnect_cookie_size != 0 {
             if src.len() < RECONNECT_COOKIE_LEN {
-                return Err(invalid_field_err!("cbAutoReconnectCookie", "missing cookie data", at: 0));
+                return Err(invalid_field_err!("cbAutoReconnectCookie", "missing cookie data", in: src));
             }
             optional_data.reconnect_cookie = Some(src.read_array());
         }

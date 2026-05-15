@@ -105,7 +105,7 @@ fn null_size() {
             kind: InvalidField {
                 field: "cbSize",
                 reason: "advertised size too small for Preconnection PDU V1",
-                offset: 0,
+                offset: 4,
             },
             source: None,
         }
@@ -132,7 +132,7 @@ fn truncated() {
             kind: NotEnoughBytes {
                 received: 0,
                 expected: 239,
-                offset: 0,
+                offset: 16,
             },
             source: None,
         }
@@ -162,7 +162,7 @@ fn pcb_v2_string_too_big() {
             kind: InvalidField {
                 field: "cchPCB",
                 reason: "PCB string bigger than advertised size",
-                offset: 0,
+                offset: 18,
             },
             source: None,
         }

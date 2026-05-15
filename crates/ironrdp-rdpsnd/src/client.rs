@@ -130,7 +130,7 @@ impl Rdpsnd {
     }
 
     pub fn training_confirm(&mut self, pdu: &TrainingPdu) -> PduResult<RdpsndSvcMessages> {
-        let pack_size: EncodeResult<_> = cast_length!("wPackSize", pdu.data.len());
+        let pack_size: EncodeResult<_> = cast_length!("wPackSize", pdu.data.len(), at: 0);
         let pack_size = pack_size.map_err(|e| encode_err!(e))?;
         let pdu = pdu::TrainingConfirmPdu {
             timestamp: pdu.timestamp,

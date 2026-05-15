@@ -399,7 +399,8 @@ impl Encode for FormatList<'_> {
             ClipboardPduFlags::empty()
         };
 
-        let header = PartialHeader::new_with_flags(cast_int!("dataLen", self.encoded_formats.len())?, header_flags);
+        let header =
+            PartialHeader::new_with_flags(cast_int!("dataLen", self.encoded_formats.len(), in: dst)?, header_flags);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.encoded_formats.len());
@@ -457,7 +458,7 @@ impl<'de> Decode<'de> for FormatListResponse {
         match header.message_flags {
             ClipboardPduFlags::RESPONSE_OK => Ok(FormatListResponse::Ok),
             ClipboardPduFlags::RESPONSE_FAIL => Ok(FormatListResponse::Fail),
-            _ => Err(invalid_field_err!("msgFlags", "invalid format list message flags", at: 0)),
+            _ => Err(invalid_field_err!("msgFlags", "invalid format list message flags", in: src)),
         }
     }
 }
