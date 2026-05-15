@@ -192,11 +192,10 @@ impl Encode for FileDescriptor {
         let encoded_len = wire_name.encode_utf16().count() * 2 + 2;
         if NAME_LENGTH < encoded_len {
             return Err(ironrdp_core::invalid_field_err!( "cFileName",
-                "encoded wire name exceeds NAME_LENGTH (520 bytes)", at: 0));
+                "encoded wire name exceeds NAME_LENGTH (520 bytes)", in: dst));
         }
 
-        let written = encode_string(dst.remaining_mut(), &wire_name, CharacterSet::Unicode, true)?;
-        dst.advance(written);
+        let written = encode_string(dst, &wire_name, CharacterSet::Unicode, true)?;
 
         // Pad with zeroes, overriding any previously written data
         write_padding!(dst, NAME_LENGTH - written);
@@ -278,7 +277,7 @@ impl Encode for PackedFileList {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(cast_length!(Self::NAME, "cItems", self.files.len())?);
+        dst.write_u32(cast_length!(Self::NAME, "cItems", self.files.len(), in: dst)?);
 
         for file in &self.files {
             file.encode(dst)?;
@@ -299,11 +298,11 @@ impl Encode for PackedFileList {
 impl<'de> Decode<'de> for PackedFileList {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
-        let file_count: usize = cast_length!(Self::NAME, "cItems", src.read_u32())?;
+        let file_count: usize = cast_length!(Self::NAME, "cItems", src.read_u32(), in: src)?;
 
         if MAX_FILE_COUNT < file_count {
             return Err(ironrdp_core::invalid_field_err!( "cItems",
-                "file count exceeds maximum of 100000", at: 0));
+                "file count exceeds maximum of 100000", in: src));
         }
 
         // Cap pre-allocation against remaining bytes to prevent OOM from

@@ -67,7 +67,7 @@ impl<'de> Decode<'de> for BasicSecurityHeader {
         ensure_fixed_part_size!(in: src);
 
         let flags = BasicSecurityHeaderFlags::from_bits(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("securityHeader", "invalid basic security header", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("securityHeader", "invalid basic security header", in: src))?;
         let _flags_hi = src.read_u16(); // unused
 
         Ok(Self { flags })
@@ -96,8 +96,7 @@ impl Encode for ShareControlHeader {
 
         dst.write_u16(cast_length!(
             "len",
-            self.share_control_pdu.size() + SHARE_CONTROL_HEADER_SIZE
-        )?);
+            self.share_control_pdu.size() + SHARE_CONTROL_HEADER_SIZE, in: dst)?);
         dst.write_u16(pdu_type_with_version);
         dst.write_u16(self.pdu_source);
         dst.write_u32(self.share_id);
@@ -124,10 +123,10 @@ impl<'de> Decode<'de> for ShareControlHeader {
         let share_id = src.read_u32();
 
         let pdu_type = ShareControlPduType::from_u16(pdu_type_with_version & SHARE_CONTROL_HEADER_MASK)
-            .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type", in: src))?;
         let pdu_version = pdu_type_with_version & !SHARE_CONTROL_HEADER_MASK;
         if pdu_version != PROTOCOL_VERSION {
-            return Err(invalid_field_err!("pdu_version", "invalid PDU version", at: 0));
+            return Err(invalid_field_err!("pdu_version", "invalid PDU version", in: src));
         }
 
         let share_pdu = ShareControlPdu::from_type(src, pdu_type)?;
@@ -145,7 +144,7 @@ impl<'de> Decode<'de> for ShareControlHeader {
 
             if header_length != total_length {
                 if total_length < header_length {
-                    return Err(not_enough_bytes_err!(total_length, header_length, at: 0));
+                    return Err(not_enough_bytes_err!(total_length, header_length, in: src));
                 }
 
                 let padding = total_length - header_length;
@@ -200,7 +199,7 @@ impl ShareControlPdu {
             ShareControlPduType::DeactivateAllPdu => {
                 Ok(ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll::decode(src)?))
             }
-            _ => Err(invalid_field_err!("share_type", "unexpected share control PDU type", at: 0)),
+            _ => Err(invalid_field_err!("share_type", "unexpected share control PDU type", in: src)),
         }
     }
 }
@@ -258,7 +257,7 @@ impl Encode for ShareDataHeader {
 
             write_padding!(dst, 1);
             dst.write_u8(self.stream_priority.as_u8());
-            dst.write_u16(cast_length!("uncompressedLength", self.share_data_pdu.size())?);
+            dst.write_u16(cast_length!("uncompressedLength", self.share_data_pdu.size(), in: dst)?);
             dst.write_u8(self.share_data_pdu.share_header_type().as_u8());
             dst.write_u8(compression_flags_with_type);
             dst.write_u16(0); // compressed length
@@ -284,17 +283,17 @@ impl<'de> Decode<'de> for ShareDataHeader {
 
         read_padding!(src, 1);
         let stream_priority = StreamPriority::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("streamPriority", "Invalid stream priority", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("streamPriority", "Invalid stream priority", in: src))?;
         let _uncompressed_length = src.read_u16();
         let pdu_type = ShareDataPduType::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("pduType", "Invalid pdu type", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("pduType", "Invalid pdu type", in: src))?;
         let compression_flags_with_type = src.read_u8();
 
         let compression_flags =
             CompressionFlags::from_bits_retain(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
         let compression_type =
             client_info::CompressionType::from_u8(compression_flags_with_type & SHARE_DATA_HEADER_COMPRESSION_MASK)
-                .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type", at: 0))?;
+                .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type", in: src))?;
         let _compressed_length = src.read_u16();
 
         let share_data_pdu = ShareDataPdu::from_type(src, pdu_type)?;

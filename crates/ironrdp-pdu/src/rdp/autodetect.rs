@@ -389,7 +389,7 @@ impl<'de> Decode<'de> for AutoDetectRequest {
 
         if header_type_id != TYPE_ID_AUTODETECT_REQUEST {
             return Err(invalid_field_err!( "headerTypeId",
-                "expected TYPE_ID_AUTODETECT_REQUEST (0x00)", at: 0));
+                "expected TYPE_ID_AUTODETECT_REQUEST (0x00)", in: src));
         }
 
         let sequence_number = src.read_u16();
@@ -479,7 +479,7 @@ impl<'de> Decode<'de> for AutoDetectRequest {
                 })
             }
 
-            _ => Err(invalid_field_err!("requestType", "unknown autodetect request type", at: 0)),
+            _ => Err(invalid_field_err!("requestType", "unknown autodetect request type", in: src)),
         }
     }
 }
@@ -635,7 +635,7 @@ impl<'de> Decode<'de> for AutoDetectResponse {
 
         if header_type_id != TYPE_ID_AUTODETECT_RESPONSE {
             return Err(invalid_field_err!( "headerTypeId",
-                "expected TYPE_ID_AUTODETECT_RESPONSE (0x01)", at: 0));
+                "expected TYPE_ID_AUTODETECT_RESPONSE (0x01)", in: src));
         }
 
         let sequence_number = src.read_u16();
@@ -667,7 +667,7 @@ impl<'de> Decode<'de> for AutoDetectResponse {
                 })
             }
 
-            _ => Err(invalid_field_err!("responseType", "unknown autodetect response type", at: 0)),
+            _ => Err(invalid_field_err!("responseType", "unknown autodetect response type", in: src)),
         }
     }
 }

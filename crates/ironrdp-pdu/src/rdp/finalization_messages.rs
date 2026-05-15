@@ -51,7 +51,7 @@ impl<'de> Decode<'de> for SynchronizePdu {
 
         let message_type = src.read_u16();
         if message_type != SYNCHRONIZE_MESSAGE_TYPE {
-            return Err(invalid_field_err!("messageType", "invalid message type", at: 0));
+            return Err(invalid_field_err!("messageType", "invalid message type", in: src));
         }
 
         let target_user_id = src.read_u16();
@@ -99,7 +99,7 @@ impl<'de> Decode<'de> for ControlPdu {
         ensure_fixed_part_size!(in: src);
 
         let action = ControlAction::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("action", "invalid control action", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("action", "invalid control action", in: src))?;
         let grant_id = src.read_u16();
         let control_id = src.read_u32();
 
@@ -169,7 +169,7 @@ impl<'de> Decode<'de> for FontPdu {
         let number = src.read_u16();
         let total_number = src.read_u16();
         let flags = SequenceFlags::from_bits(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("flags", "invalid sequence flags", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid sequence flags", in: src))?;
         let entry_size = src.read_u16();
 
         Ok(Self {
@@ -197,7 +197,7 @@ impl Encode for MonitorLayoutPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(cast_length!("nMonitors", self.monitors.len())?);
+        dst.write_u32(cast_length!("nMonitors", self.monitors.len(), in: dst)?);
 
         for monitor in self.monitors.iter() {
             monitor.encode(dst)?;
@@ -221,7 +221,7 @@ impl<'de> Decode<'de> for MonitorLayoutPdu {
 
         let monitor_count = src.read_u32();
         if monitor_count > MAX_MONITOR_COUNT {
-            return Err(invalid_field_err!("nMonitors", "invalid monitor count", at: 0));
+            return Err(invalid_field_err!("nMonitors", "invalid monitor count", in: src));
         }
 
         let mut monitors = Vec::with_capacity(

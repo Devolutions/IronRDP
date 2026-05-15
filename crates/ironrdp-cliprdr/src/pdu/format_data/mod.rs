@@ -177,7 +177,7 @@ impl Encode for FormatDataResponse<'_> {
             ClipboardPduFlags::RESPONSE_OK
         };
 
-        let header = PartialHeader::new_with_flags(cast_int!("dataLen", self.data.len())?, flags);
+        let header = PartialHeader::new_with_flags(cast_int!("dataLen", self.data.len(), in: dst)?, flags);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.data.len());
@@ -228,7 +228,7 @@ impl FormatDataRequest {
 
 impl Encode for FormatDataRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        let header = PartialHeader::new(cast_int!("dataLen", Self::FIXED_PART_SIZE)?);
+        let header = PartialHeader::new(cast_int!("dataLen", Self::FIXED_PART_SIZE, in: dst)?);
         header.encode(dst)?;
 
         ensure_fixed_part_size!(in: dst);

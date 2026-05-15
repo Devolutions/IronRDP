@@ -308,12 +308,10 @@ macro_rules! ensure_size {
         let received = $buf.len();
         let expected = $expected;
         if !(received >= expected) {
-            // ensure_size!'s $buf binding is either a ReadCursor, a WriteCursor,
-            // or a plain `&[u8]` / `&mut [u8]`. The first two expose `.pos()`,
-            // the latter do not. We pass offset 0 from this macro; callers that
-            // want a real offset use `not_enough_bytes_err!(..., in: cursor)`
-            // directly.
-            return Err($crate::not_enough_bytes_err($ctx, received, expected, 0));
+            // `$buf` is always a `ReadCursor` or `WriteCursor` in practice;
+            // both expose `.pos()`. The previous `encode_string` slice path
+            // was refactored to take a `WriteCursor` so this invariant holds.
+            return Err($crate::not_enough_bytes_err($ctx, received, expected, $buf.pos()));
         }
     }};
     (in: $buf:ident, size: $expected:expr) => {{
@@ -365,17 +363,17 @@ macro_rules! ensure_fixed_part_size {
 /// * `ctx` - The context for the error message (optional)
 /// * `field` - The name of the field being cast
 /// * `len` - The length value to cast
+/// * `in: $cursor` or `at: $offset` - cursor whose `pos()` to read, or an
+///   explicit byte offset (`0` if the producer has no stream-cursor access)
 ///
 /// # Examples
 ///
-/// ```
-/// use ironrdp_core::cast_length;
+/// ```ignore
+/// // Inside a decode method with a `src: &mut ReadCursor<'_>` parameter:
+/// let len: u16 = cast_length!("data length", data.len(), in: src)?;
 ///
-/// fn process_data(data: &[u8]) -> Result<(), Error> {
-///     let len: u16 = cast_length!("data length", data.len())?;
-///     // ... rest of the processing logic
-///     Ok(())
-/// }
+/// // Outside any decode context (e.g. a getter on a decoded struct):
+/// let len: u16 = cast_length!("data length", data.len(), at: 0)?;
 /// ```
 ///
 /// # Note
@@ -383,11 +381,23 @@ macro_rules! ensure_fixed_part_size {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! cast_length {
-    ($ctx:expr, $field:expr, $len:expr) => {{
+    // offset extracted from cursor.pos()
+    ($ctx:expr, $field:expr, $len:expr, in: $cursor:expr $(,)?) => {{
+        let __offset = $cursor.pos();
         $len.try_into()
-            .map_err(|e| $crate::invalid_field_err_with_source($ctx, $field, "too many elements", 0, e))
+            .map_err(|e| $crate::invalid_field_err_with_source($ctx, $field, "too many elements", __offset, e))
     }};
-    ($field:expr, $len:expr) => {{ $crate::cast_length!($crate::function!(), $field, $len) }};
+    ($field:expr, $len:expr, in: $cursor:expr $(,)?) => {{
+        $crate::cast_length!($crate::function!(), $field, $len, in: $cursor)
+    }};
+    // explicit offset (use 0 only when the producer has no stream-cursor access)
+    ($ctx:expr, $field:expr, $len:expr, at: $offset:expr $(,)?) => {{
+        $len.try_into()
+            .map_err(|e| $crate::invalid_field_err_with_source($ctx, $field, "too many elements", $offset, e))
+    }};
+    ($field:expr, $len:expr, at: $offset:expr $(,)?) => {{
+        $crate::cast_length!($crate::function!(), $field, $len, at: $offset)
+    }};
 }
 
 /// Safely casts an integer to a different integer type.
@@ -400,16 +410,17 @@ macro_rules! cast_length {
 /// * `ctx` - The context for the error message (optional)
 /// * `field` - The name of the field being cast
 /// * `len` - The integer value to cast
+/// * `in: $cursor` or `at: $offset` - cursor whose `pos()` to read, or an
+///   explicit byte offset (`0` if the producer has no stream-cursor access)
 ///
 /// # Examples
 ///
-/// ```
-/// use ironrdp_core::cast_int;
+/// ```ignore
+/// // Inside a decode method with a `src: &mut ReadCursor<'_>` parameter:
+/// let v: i32 = cast_int!("input value", value, in: src)?;
 ///
-/// fn process_value(value: u64) -> Result<i32, Error> {
-///     let casted_value: i32 = cast_int!("input value", value)?;
-///     Ok(casted_value)
-/// }
+/// // Outside any decode context:
+/// let v: i32 = cast_int!("input value", value, at: 0)?;
 /// ```
 ///
 /// # Note
@@ -417,12 +428,25 @@ macro_rules! cast_length {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! cast_int {
-    ($ctx:expr, $field:expr, $len:expr) => {{
+    // offset extracted from cursor.pos()
+    ($ctx:expr, $field:expr, $len:expr, in: $cursor:expr $(,)?) => {{
+        let __offset = $cursor.pos();
         $len.try_into().map_err(|e| {
-            $crate::invalid_field_err_with_source($ctx, $field, "out of range integral type conversion", 0, e)
+            $crate::invalid_field_err_with_source($ctx, $field, "out of range integral type conversion", __offset, e)
         })
     }};
-    ($field:expr, $len:expr) => {{ $crate::cast_int!($crate::function!(), $field, $len) }};
+    ($field:expr, $len:expr, in: $cursor:expr $(,)?) => {{
+        $crate::cast_int!($crate::function!(), $field, $len, in: $cursor)
+    }};
+    // explicit offset (use 0 only when the producer has no stream-cursor access)
+    ($ctx:expr, $field:expr, $len:expr, at: $offset:expr $(,)?) => {{
+        $len.try_into().map_err(|e| {
+            $crate::invalid_field_err_with_source($ctx, $field, "out of range integral type conversion", $offset, e)
+        })
+    }};
+    ($field:expr, $len:expr, at: $offset:expr $(,)?) => {{
+        $crate::cast_int!($crate::function!(), $field, $len, at: $offset)
+    }};
 }
 
 /// Writes zeroes using as few `write_u*` calls as possible.

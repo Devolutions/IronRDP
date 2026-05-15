@@ -74,33 +74,33 @@ impl<'de> Decode<'de> for ContextPdu {
 
         let id = src.read_u8();
         if id != CONTEXT_ID {
-            return Err(invalid_field_err!("ctxId", "Invalid context ID", at: 0));
+            return Err(invalid_field_err!("ctxId", "Invalid context ID", in: src));
         }
 
         let tile_size = src.read_u16();
         if tile_size != TILE_SIZE {
-            return Err(invalid_field_err!("tileSize", "Invalid tile size", at: 0));
+            return Err(invalid_field_err!("tileSize", "Invalid tile size", in: src));
         }
 
         let properties = src.read_u16();
         let flags = OperatingMode::from_bits_retain(properties.get_bits(0..3));
         let color_conversion_transform = properties.get_bits(3..5);
         if color_conversion_transform != COLOR_CONVERSION_ICT {
-            return Err(invalid_field_err!("cct", "Invalid color conversion transform", at: 0));
+            return Err(invalid_field_err!("cct", "Invalid color conversion transform", in: src));
         }
 
         let dwt = properties.get_bits(5..9);
         if dwt != CLW_XFORM_DWT_53_A {
-            return Err(invalid_field_err!("dwt", "Invalid DWT", at: 0));
+            return Err(invalid_field_err!("dwt", "Invalid DWT", in: src));
         }
 
         let entropy_algorithm_bits = properties.get_bits(9..13);
         let entropy_algorithm = EntropyAlgorithm::from_u16(entropy_algorithm_bits)
-            .ok_or_else(|| invalid_field_err!("entropy_algorithm", "Invalid entropy algorithm", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("entropy_algorithm", "Invalid entropy algorithm", in: src))?;
 
         let quantization_type = properties.get_bits(13..15);
         if quantization_type != SCALAR_QUANTIZATION {
-            return Err(invalid_field_err!("qt", "Invalid quantization type", at: 0));
+            return Err(invalid_field_err!("qt", "Invalid quantization type", in: src));
         }
 
         let _reserved = properties.get_bit(15);
@@ -221,7 +221,7 @@ impl Encode for RegionPdu {
         region_flags.set_bit(0, LRF);
         dst.write_u8(region_flags);
 
-        dst.write_u16(cast_length!("numRectangles", self.rectangles.len())?);
+        dst.write_u16(cast_length!("numRectangles", self.rectangles.len(), in: dst)?);
         for rectangle in self.rectangles.iter() {
             rectangle.encode(dst)?;
         }
@@ -248,7 +248,7 @@ impl<'de> Decode<'de> for RegionPdu {
         let region_flags = src.read_u8();
         let lrf = region_flags.get_bit(0);
         if lrf != LRF {
-            return Err(invalid_field_err!("lrf", "Invalid lrf", at: 0));
+            return Err(invalid_field_err!("lrf", "Invalid lrf", in: src));
         }
 
         let number_of_rectangles = usize::from(src.read_u16());
@@ -263,12 +263,12 @@ impl<'de> Decode<'de> for RegionPdu {
 
         let region_type = src.read_u16();
         if region_type != CBT_REGION {
-            return Err(invalid_field_err!("regionType", "Invalid region type", at: 0));
+            return Err(invalid_field_err!("regionType", "Invalid region type", in: src));
         }
 
         let number_of_tilesets = src.read_u16();
         if number_of_tilesets != NUMBER_OF_TILESETS {
-            return Err(invalid_field_err!("numTilesets", "Invalid number of tilesets", at: 0));
+            return Err(invalid_field_err!("numTilesets", "Invalid number of tilesets", in: src));
         }
 
         Ok(Self { rectangles })
@@ -308,12 +308,12 @@ impl Encode for TileSetPdu<'_> {
         properties.set_bits(14..16, SCALAR_QUANTIZATION);
         dst.write_u16(properties);
 
-        dst.write_u8(cast_length!("numQuant", self.quants.len())?);
+        dst.write_u8(cast_length!("numQuant", self.quants.len(), in: dst)?);
         dst.write_u8(u8::try_from(TILE_SIZE).expect("TILE_SIZE value fits into u8"));
-        dst.write_u16(cast_length!("numTiles", self.tiles.len())?);
+        dst.write_u16(cast_length!("numTiles", self.tiles.len(), in: dst)?);
 
         let tiles_data_size = self.tiles.iter().map(|t| Block::Tile(t.clone()).size()).sum::<usize>();
-        dst.write_u32(cast_length!("tilesDataSize", tiles_data_size)?);
+        dst.write_u32(cast_length!("tilesDataSize", tiles_data_size, in: dst)?);
 
         for quant in &self.quants {
             quant.encode(dst)?;
@@ -343,18 +343,18 @@ impl<'de> Decode<'de> for TileSetPdu<'de> {
 
         let subtype = src.read_u16();
         if subtype != CBT_TILESET {
-            return Err(invalid_field_err!("subtype", "Invalid message type", at: 0));
+            return Err(invalid_field_err!("subtype", "Invalid message type", in: src));
         }
 
         let id_of_context = src.read_u16();
         if id_of_context != IDX {
-            return Err(invalid_field_err!("id_of_context", "Invalid RFX context", at: 0));
+            return Err(invalid_field_err!("id_of_context", "Invalid RFX context", in: src));
         }
 
         let properties = src.read_u16();
         let is_last = properties.get_bit(0);
         if is_last != IS_LAST_TILESET_FLAG {
-            return Err(invalid_field_err!("last", "Invalid last flag", at: 0));
+            return Err(invalid_field_err!("last", "Invalid last flag", in: src));
         }
 
         // The encoder MUST set `flags` value to the value of flags
@@ -364,28 +364,28 @@ impl<'de> Decode<'de> for TileSetPdu<'de> {
 
         let color_conversion_transform = properties.get_bits(4..6);
         if color_conversion_transform != COLOR_CONVERSION_ICT {
-            return Err(invalid_field_err!("cct", "Invalid color conversion", at: 0));
+            return Err(invalid_field_err!("cct", "Invalid color conversion", in: src));
         }
 
         let dwt = properties.get_bits(6..10);
         if dwt != CLW_XFORM_DWT_53_A {
-            return Err(invalid_field_err!("xft", "Invalid DWT", at: 0));
+            return Err(invalid_field_err!("xft", "Invalid DWT", in: src));
         }
 
         let entropy_algorithm_bits = properties.get_bits(10..14);
         let entropy_algorithm = EntropyAlgorithm::from_u16(entropy_algorithm_bits)
-            .ok_or_else(|| invalid_field_err!("entropy", "Invalid entropy algorithm", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("entropy", "Invalid entropy algorithm", in: src))?;
 
         let quantization_type = properties.get_bits(14..16);
         if quantization_type != SCALAR_QUANTIZATION {
-            return Err(invalid_field_err!("scalar", "Invalid quantization type", at: 0));
+            return Err(invalid_field_err!("scalar", "Invalid quantization type", in: src));
         }
 
         let number_of_quants = usize::from(src.read_u8());
 
         let tile_size = u16::from(src.read_u8());
         if tile_size != TILE_SIZE {
-            return Err(invalid_field_err!("tile_size", "Invalid tile size", at: 0));
+            return Err(invalid_field_err!("tile_size", "Invalid tile size", in: src));
         }
 
         let number_of_tiles = usize::from(src.read_u16());
@@ -403,7 +403,7 @@ impl<'de> Decode<'de> for TileSetPdu<'de> {
             .into_iter()
             .map(|b| match b {
                 Block::Tile(tile) => Ok(tile),
-                _ => Err(invalid_field_err!("tile", "Invalid block type, expected Tile", at: 0)),
+                _ => Err(invalid_field_err!("tile", "Invalid block type, expected Tile", in: src)),
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -627,9 +627,9 @@ impl Encode for Tile<'_> {
         dst.write_u16(self.x);
         dst.write_u16(self.y);
 
-        dst.write_u16(cast_length!("YLen", self.y_data.len())?);
-        dst.write_u16(cast_length!("CbLen", self.cb_data.len())?);
-        dst.write_u16(cast_length!("CrLen", self.cr_data.len())?);
+        dst.write_u16(cast_length!("YLen", self.y_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("CbLen", self.cb_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("CrLen", self.cr_data.len(), in: dst)?);
 
         dst.write_slice(self.y_data);
         dst.write_slice(self.cb_data);

@@ -28,7 +28,7 @@ impl CompleteData {
     }
 
     fn process_data_first_pdu(&mut self, data_first: DataFirstPdu) -> DecodeResult<Option<Vec<u8>>> {
-        let total_data_size: DecodeResult<_> = cast_length!("DataFirstPdu::length", data_first.length());
+        let total_data_size: DecodeResult<_> = cast_length!("DataFirstPdu::length", data_first.length(), at: 0);
         let total_data_size = total_data_size?;
         if self.total_size != 0 || !self.data.is_empty() {
             error!("Incomplete DVC message, it will be skipped");

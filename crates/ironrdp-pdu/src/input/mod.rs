@@ -36,7 +36,7 @@ impl Encode for InputEventPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u16(cast_length!("input events count", self.0.len())?);
+        dst.write_u16(cast_length!("input events count", self.0.len(), in: dst)?);
         write_padding!(dst, 2);
 
         for event in self.0.iter() {
@@ -131,7 +131,7 @@ impl<'de> Decode<'de> for InputEvent {
         let _event_time = src.read_u32(); // ignored by a server
         let event_type = src.read_u16();
         let event_type = InputEventType::from_u16(event_type)
-            .ok_or_else(|| invalid_field_err!("eventType", "invalid input event type", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("eventType", "invalid input event type", in: src))?;
 
         match event_type {
             InputEventType::Sync => Ok(Self::Sync(SyncPdu::decode(src)?)),

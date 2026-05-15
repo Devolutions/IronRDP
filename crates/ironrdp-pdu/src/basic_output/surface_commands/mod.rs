@@ -61,7 +61,7 @@ impl<'de> Decode<'de> for SurfaceCommand<'de> {
 
         let cmd_type = src.read_u16();
         let cmd_type = SurfaceCommandType::from_u16(cmd_type)
-            .ok_or_else(|| invalid_field_err!("cmdType", "invalid surface command", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("cmdType", "invalid surface command", in: src))?;
 
         match cmd_type {
             SurfaceCommandType::SetSurfaceBits => Ok(Self::SetSurfaceBits(SurfaceBitsPdu::decode(src)?)),
@@ -151,7 +151,7 @@ impl<'de> Decode<'de> for FrameMarkerPdu {
         let frame_action = src.read_u16();
 
         let frame_action = FrameAction::from_u16(frame_action)
-            .ok_or_else(|| invalid_field_err!("frameAction", "invalid frame action", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("frameAction", "invalid frame action", in: src))?;
 
         let frame_id = if src.is_empty() {
             // Sometimes Windows 10 RDP server sends not complete FrameMarker PDU (without frame ID),
@@ -201,7 +201,7 @@ impl Encode for ExtendedBitmapDataPdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let data_len = cast_length!("bitmap data length", self.data.len())?;
+        let data_len = cast_length!("bitmap data length", self.data.len(), in: dst)?;
 
         dst.write_u8(self.bpp);
         let flags = if self.header.is_some() {
@@ -242,7 +242,7 @@ impl<'de> Decode<'de> for ExtendedBitmapDataPdu<'de> {
         let codec_id = src.read_u8();
         let width = src.read_u16();
         let height = src.read_u16();
-        let data_length = cast_length!("bitmap data length", src.read_u32())?;
+        let data_length = cast_length!("bitmap data length", src.read_u32(), in: src)?;
 
         let expected_remaining_size = if flags.contains(BitmapDataFlags::COMPRESSED_BITMAP_HEADER_PRESENT) {
             data_length + BitmapDataHeader::ENCODED_SIZE

@@ -40,7 +40,7 @@ pub fn read_graphics_update_type(src: &mut ReadCursor<'_>) -> DecodeResult<Graph
         0x0002 => Ok(GraphicsUpdateType::Palette),
         0x0003 => Ok(GraphicsUpdateType::Synchronize),
         _ => Err(invalid_field_err!( "updateType",
-            "unknown slow-path graphics update type", at: 0)),
+            "unknown slow-path graphics update type", in: src)),
     }
 }
 
@@ -103,7 +103,7 @@ pub fn decode_slow_path_pointer<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Po
             match system_type {
                 0x0000_0000 => Ok(PointerUpdateData::SetHidden),
                 0x0000_7F00 => Ok(PointerUpdateData::SetDefault),
-                _ => Err(invalid_field_err!("systemPointerType", "unknown system pointer type", at: 0)),
+                _ => Err(invalid_field_err!("systemPointerType", "unknown system pointer type", in: src)),
             }
         }
         0x0003 => {
@@ -127,6 +127,6 @@ pub fn decode_slow_path_pointer<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Po
             Ok(PointerUpdateData::Large(large))
         }
         _ => Err(invalid_field_err!( "messageType",
-            "unknown slow-path pointer message type", at: 0)),
+            "unknown slow-path pointer message type", in: src)),
     }
 }

@@ -128,7 +128,7 @@ impl Encode for ClientNetworkData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(cast_length!("channelCount", self.channels.len())?);
+        dst.write_u32(cast_length!("channelCount", self.channels.len(), in: dst)?);
 
         for channel in self.channels.iter().take(CHANNELS_MAX) {
             channel.encode(dst)?;
@@ -150,10 +150,10 @@ impl<'de> Decode<'de> for ClientNetworkData {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let channel_count = cast_length!("channelCount", src.read_u32())?;
+        let channel_count = cast_length!("channelCount", src.read_u32(), in: src)?;
 
         if channel_count > CHANNELS_MAX {
-            return Err(invalid_field_err!("channelCount", "invalid channel count", at: 0));
+            return Err(invalid_field_err!("channelCount", "invalid channel count", in: src));
         }
 
         let mut channels = Vec::with_capacity(channel_count);
@@ -187,7 +187,7 @@ impl Encode for ServerNetworkData {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.io_channel);
-        dst.write_u16(cast_length!("channelIdLen", self.channel_ids.len())?);
+        dst.write_u16(cast_length!("channelIdLen", self.channel_ids.len(), in: dst)?);
 
         for channel_id in self.channel_ids.iter() {
             dst.write_u16(*channel_id);
@@ -221,7 +221,7 @@ impl<'de> Decode<'de> for ServerNetworkData {
         ensure_fixed_part_size!(in: src);
 
         let io_channel = src.read_u16();
-        let channel_count = cast_length!("channelCount", src.read_u16())?;
+        let channel_count = cast_length!("channelCount", src.read_u16(), in: src)?;
 
         ensure_size!(in: src, size: channel_count * 2);
         let mut channel_ids = Vec::with_capacity(channel_count);
@@ -283,7 +283,7 @@ impl<'de> Decode<'de> for ChannelDef {
         let name = ChannelName::new(name);
 
         let options = ChannelOptions::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("options", "invalid channel options", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("options", "invalid channel options", in: src))?;
 
         Ok(Self { name, options })
     }

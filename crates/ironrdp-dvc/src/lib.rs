@@ -82,7 +82,7 @@ pub fn encode_dvc_messages(
             let pdu = if needs_splitting && first {
                 DrdynvcDataPdu::DataFirst(pdu::DataFirstPdu::new(
                     channel_id,
-                    cast_length!("total_length", total_length)?,
+                    cast_length!("total_length", total_length, at: 0)?,
                     msg[off..end].to_vec(),
                 ))
             } else {

@@ -103,7 +103,7 @@ impl Decode<'_> for DrdynvcClientPdu {
             Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
             Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
             Cmd::Capability => Ok(Self::Capabilities(CapabilitiesResponsePdu::decode(header, src)?)),
-            _ => Err(unsupported_value_err!("Cmd", header.cmd.into(), at: 0)),
+            _ => Err(unsupported_value_err!("Cmd", header.cmd.into(), in: src)),
         }
     }
 }
@@ -157,7 +157,7 @@ impl Decode<'_> for DrdynvcServerPdu {
             Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
             Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
             Cmd::Capability => Ok(Self::Capabilities(CapabilitiesRequestPdu::decode(header, src)?)),
-            _ => Err(unsupported_value_err!("Cmd", header.cmd.into(), at: 0)),
+            _ => Err(unsupported_value_err!("Cmd", header.cmd.into(), in: src)),
         }
     }
 }
@@ -364,7 +364,7 @@ impl DataFirstPdu {
         self.header.cb_id.encode_val(self.channel_id, dst)?;
         self.header
             .sp
-            .encode_val(cast_length!("DataFirstPdu::Length", self.length)?, dst)?;
+            .encode_val(cast_length!("DataFirstPdu::Length", self.length, in: dst)?, dst)?;
         dst.write_slice(&self.data);
         Ok(())
     }
@@ -394,10 +394,10 @@ impl FieldType {
     fn encode_val(&self, value: u32, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size_of_val());
         match *self {
-            FieldType::U8 => dst.write_u8(cast_length!("FieldType::encode", value)?),
-            FieldType::U16 => dst.write_u16(cast_length!("FieldType::encode", value)?),
+            FieldType::U8 => dst.write_u8(cast_length!("FieldType::encode", value, in: dst)?),
+            FieldType::U16 => dst.write_u16(cast_length!("FieldType::encode", value, in: dst)?),
             FieldType::U32 => dst.write_u32(value),
-            _ => return Err(invalid_field_err!("FieldType", "invalid field type", at: 0)),
+            _ => return Err(invalid_field_err!("FieldType", "invalid field type", in: dst)),
         };
         Ok(())
     }
@@ -408,7 +408,7 @@ impl FieldType {
             FieldType::U8 => Ok(u32::from(src.read_u8())),
             FieldType::U16 => Ok(u32::from(src.read_u16())),
             FieldType::U32 => Ok(src.read_u32()),
-            _ => Err(invalid_field_err!("FieldType", "invalid field type", at: 0)),
+            _ => Err(invalid_field_err!("FieldType", "invalid field type", in: src)),
         }
     }
 

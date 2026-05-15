@@ -123,14 +123,14 @@ impl<'de> Decode<'de> for Block<'de> {
                 CHANNEL_ID_FOR_OTHER_VALUES
             };
             if channel.channel_id != expected_id {
-                return Err(invalid_field_err!("channelId", "Invalid channel ID", at: 0));
+                return Err(invalid_field_err!("channelId", "Invalid channel ID", in: src));
             }
             len += channel.size();
         }
         let data_len = header
             .data_length
             .checked_sub(len)
-            .ok_or_else(|| invalid_field_err!("blockLen", "Invalid block length", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("blockLen", "Invalid block length", in: src))?;
         ensure_size!(in: src, size: data_len);
         let src = &mut ReadCursor::new(src.read_slice(data_len));
         match header.ty {
@@ -192,7 +192,7 @@ impl Encode for BlockHeader {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.ty.as_u16());
-        dst.write_u32(cast_length!("data len", self.data_length)?);
+        dst.write_u32(cast_length!("data len", self.data_length, in: dst)?);
 
         Ok(())
     }
@@ -211,11 +211,12 @@ impl<'de> Decode<'de> for BlockHeader {
         ensure_fixed_part_size!(in: src);
 
         let ty = src.read_u16();
-        let ty = BlockType::from_u16(ty).ok_or_else(|| invalid_field_err!("blockType", "Invalid block type", at: 0))?;
-        let data_length: usize = cast_length!("block length", src.read_u32())?;
+        let ty =
+            BlockType::from_u16(ty).ok_or_else(|| invalid_field_err!("blockType", "Invalid block type", in: src))?;
+        let data_length: usize = cast_length!("block length", src.read_u32(), in: src)?;
         data_length
             .checked_sub(Self::FIXED_PART_SIZE)
-            .ok_or_else(|| invalid_field_err!("blockLen", "Invalid block length", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("blockLen", "Invalid block length", in: src))?;
 
         Ok(Self { ty, data_length })
     }
@@ -261,7 +262,7 @@ impl Decode<'_> for CodecChannelHeader {
 
         let codec_id = src.read_u8();
         if codec_id != CODEC_ID {
-            return Err(invalid_field_err!("codecId", "Invalid codec ID", at: 0));
+            return Err(invalid_field_err!("codecId", "Invalid codec ID", in: src));
         }
 
         let channel_id = src.read_u8();

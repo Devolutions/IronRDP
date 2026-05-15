@@ -78,7 +78,7 @@ impl<'de> Decode<'de> for SaveSessionInfoPdu {
         ensure_fixed_part_size!(in: src);
 
         let info_type = InfoType::from_u32(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("infoType", "invalid save session info type", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("infoType", "invalid save session info type", in: src))?;
 
         let info_data = match info_type {
             InfoType::Logon => InfoData::LogonInfoV1(LogonInfoVersion1::decode(src)?),

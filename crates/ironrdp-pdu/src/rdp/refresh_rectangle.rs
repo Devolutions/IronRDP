@@ -30,7 +30,7 @@ impl Encode for RefreshRectanglePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let n_areas = cast_length!("nAreas", self.areas_to_refresh.len())?;
+        let n_areas = cast_length!("nAreas", self.areas_to_refresh.len(), in: dst)?;
 
         dst.write_u8(n_areas);
         write_padding!(dst, 3);

@@ -109,7 +109,8 @@ impl<'a> Decode<'a> for PktHdr {
         ensure_fixed_part_size!(in: src);
 
         let ty = src.read_u16();
-        let mty = PktTy::try_from(ty).map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{ty:x}"), 0))?;
+        let mty = PktTy::try_from(ty)
+            .map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{ty:x}"), src.pos()))?;
 
         Ok(PktHdr {
             ty: mty,
@@ -181,8 +182,9 @@ impl Decode<'_> for HandshakeRespPkt {
             server_version: src.read_u16(),
             _extended_auth: {
                 let raw = src.read_u16();
-                HttpExtendedAuth::from_bits(raw)
-                    .ok_or_else(|| unsupported_value_err("HandshakeResp", "extended_auth", format!("0x{raw:x}"), 0))?
+                HttpExtendedAuth::from_bits(raw).ok_or_else(|| {
+                    unsupported_value_err("HandshakeResp", "extended_auth", format!("0x{raw:x}"), src.pos())
+                })?
             },
         })
     }
@@ -337,13 +339,13 @@ impl Encode for ExtendedAuthPkt {
 
         let hdr = PktHdr {
             ty: PktTy::ExtendedAuth,
-            length: cast_int!("packet length", self.size())?,
+            length: cast_int!("packet length", self.size(), in: dst)?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
         dst.write_u32(self.error_code);
-        let blob_len: u16 = cast_int!("blob length", self.blob.len())?;
+        let blob_len: u16 = cast_int!("blob length", self.blob.len(), in: dst)?;
         dst.write_u16(blob_len);
         dst.write_slice(&self.blob);
 
@@ -385,7 +387,7 @@ impl Encode for TunnelAuthPkt {
 
         let hdr = PktHdr {
             ty: PktTy::TunnelAuth,
-            length: cast_int!("packet length", self.size())?,
+            length: cast_int!("packet length", self.size(), in: dst)?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
@@ -393,7 +395,7 @@ impl Encode for TunnelAuthPkt {
         dst.write_u16(self.fields_present);
 
         let client_name_len = self.client_name.encode_utf16().count() * 2 + 2; // Add 2 to account for a null terminator (0x0000).
-        let client_name_len: u16 = cast_int!("client name length", client_name_len)?;
+        let client_name_len: u16 = cast_int!("client name length", client_name_len, in: dst)?;
         dst.write_u16(client_name_len);
 
         for c in self.client_name.encode_utf16() {
@@ -455,12 +457,12 @@ impl Encode for ChannelPkt {
 
         let hdr = PktHdr {
             ty: PktTy::ChannelCreate,
-            length: cast_int!("packet length", self.size())?,
+            length: cast_int!("packet length", self.size(), in: dst)?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
-        let resources_count: u8 = cast_length!("resources count", self.resources.len())?;
+        let resources_count: u8 = cast_length!("resources count", self.resources.len(), in: dst)?;
         dst.write_u8(resources_count);
         dst.write_u8(0); // alt_names
         dst.write_u16(self.port);
@@ -469,7 +471,7 @@ impl Encode for ChannelPkt {
         // 2.2.10.3 HTTP_CHANNEL_PACKET_VARIABLE
         for res in &self.resources {
             let res_utf16_len = res.encode_utf16().count() * 2 + 2; // Add 2 to account for a null terminator (0x0000).
-            let res_len: u16 = cast_int!("resource name UTF-16 length", res_utf16_len)?;
+            let res_len: u16 = cast_int!("resource name UTF-16 length", res_utf16_len, in: dst)?;
             dst.write_u16(res_len);
             for b in res.encode_utf16() {
                 dst.write_u16(b);
@@ -549,11 +551,11 @@ impl Encode for DataPkt<'_> {
 
         let hdr = PktHdr {
             ty: PktTy::Data,
-            length: cast_int!("packet length", self.size())?,
+            length: cast_int!("packet length", self.size(), in: dst)?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
-        let data_len: u16 = cast_int!("data payload length", self.data.len())?;
+        let data_len: u16 = cast_int!("data payload length", self.data.len(), in: dst)?;
         dst.write_u16(data_len);
         dst.write_slice(self.data);
         Ok(())

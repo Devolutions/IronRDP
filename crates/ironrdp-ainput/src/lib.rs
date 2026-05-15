@@ -160,7 +160,7 @@ impl<'de> Decode<'de> for ServerPdu {
         ensure_fixed_part_size!(in: src);
 
         let pdu_type = ServerPduType::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("pduType", "invalid pdu type", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("pduType", "invalid pdu type", in: src))?;
 
         let server_pdu = match pdu_type {
             ServerPduType::Version => ServerPdu::Version(VersionPdu::decode(src)?),
@@ -257,7 +257,7 @@ impl<'de> Decode<'de> for ClientPdu {
         ensure_fixed_part_size!(in: src);
 
         let pdu_type = ClientPduType::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("pduType", "invalid pdu type", at: 0))?;
+            .ok_or_else(|| invalid_field_err!("pduType", "invalid pdu type", in: src))?;
 
         let client_pdu = match pdu_type {
             ClientPduType::Mouse => ClientPdu::Mouse(MousePdu::decode(src)?),

@@ -105,7 +105,7 @@ pub(crate) fn read_sequence_tag(stream: &mut ReadCursor<'_>) -> DecodeResult<u16
     let identifier = stream.read_u8();
 
     if identifier != Class::Universal.as_u8() | Pc::Construct.as_u8() | (TAG_MASK & Tag::Sequence.as_u8()) {
-        Err(invalid_field_err!("identifier", "invalid sequence tag identifier", at: 0))
+        Err(invalid_field_err!("identifier", "invalid sequence tag identifier", in: stream))
     } else {
         read_length(stream)
     }
@@ -132,14 +132,14 @@ pub(crate) fn read_application_tag(stream: &mut ReadCursor<'_>, tagnum: u8) -> D
 
     if tagnum > 0x1E {
         if identifier != Class::Application.as_u8() | Pc::Construct.as_u8() | TAG_MASK {
-            return Err(invalid_field_err!("identifier", "invalid application tag identifier", at: 0));
+            return Err(invalid_field_err!("identifier", "invalid application tag identifier", in: stream));
         }
         ensure_size!(in: stream, size: 1);
         if stream.read_u8() != tagnum {
-            return Err(invalid_field_err!("tagnum", "invalid application tag identifier", at: 0));
+            return Err(invalid_field_err!("tagnum", "invalid application tag identifier", in: stream));
         }
     } else if identifier != Class::Application.as_u8() | Pc::Construct.as_u8() | (TAG_MASK & tagnum) {
-        return Err(invalid_field_err!("identifier", "invalid application tag identifier", at: 0));
+        return Err(invalid_field_err!("identifier", "invalid application tag identifier", in: stream));
     }
 
     read_length(stream)
@@ -161,13 +161,13 @@ pub(crate) fn read_enumerated(stream: &mut ReadCursor<'_>, count: u8) -> DecodeR
 
     let length = read_length(stream)?;
     if length != 1 {
-        return Err(invalid_field_err!("len", "invalid enumerated len", at: 0));
+        return Err(invalid_field_err!("len", "invalid enumerated len", in: stream));
     }
 
     ensure_size!(in: stream, size: 1);
     let enumerated = stream.read_u8();
     if enumerated == u8::MAX || enumerated + 1 > count {
-        return Err(invalid_field_err!("enumerated", "invalid enumerated value", at: 0));
+        return Err(invalid_field_err!("enumerated", "invalid enumerated value", in: stream));
     }
 
     Ok(enumerated)
@@ -229,7 +229,7 @@ pub(crate) fn read_integer(stream: &mut ReadCursor<'_>) -> DecodeResult<u64> {
         ensure_size!(in: stream, size: 8);
         Ok(stream.read_u64_be())
     } else {
-        Err(invalid_field_err!("len", "invalid integer len", at: 0))
+        Err(invalid_field_err!("len", "invalid integer len", in: stream))
     }
 }
 
@@ -250,7 +250,7 @@ pub(crate) fn read_bool(stream: &mut ReadCursor<'_>) -> DecodeResult<bool> {
     let length = read_length(stream)?;
 
     if length != 1 {
-        return Err(invalid_field_err!("len", "invalid integer len", at: 0));
+        return Err(invalid_field_err!("len", "invalid integer len", in: stream));
     }
 
     ensure_size!(in: stream, size: 1);
@@ -258,7 +258,7 @@ pub(crate) fn read_bool(stream: &mut ReadCursor<'_>) -> DecodeResult<bool> {
 }
 
 pub(crate) fn write_octet_string(stream: &mut WriteCursor<'_>, value: &[u8]) -> EncodeResult<usize> {
-    let tag_size = write_octet_string_tag(stream, cast_length!("len", value.len())?)?;
+    let tag_size = write_octet_string_tag(stream, cast_length!("len", value.len(), in: stream)?)?;
     ensure_size!(in: stream, size: value.len());
     stream.write_slice(value);
     Ok(tag_size + value.len())
@@ -270,7 +270,7 @@ pub(crate) fn write_octet_string_tag(stream: &mut WriteCursor<'_>, length: u16) 
 }
 
 pub(crate) fn read_octet_string(stream: &mut ReadCursor<'_>) -> DecodeResult<Vec<u8>> {
-    let length = cast_length!("len", read_octet_string_tag(stream)?)?;
+    let length = cast_length!("len", read_octet_string_tag(stream)?, in: stream)?;
 
     ensure_size!(in: stream, size: length);
     let buffer = stream.read_slice(length);
@@ -298,7 +298,7 @@ fn read_universal_tag(stream: &mut ReadCursor<'_>, tag: Tag, pc: Pc) -> DecodeRe
     let identifier = stream.read_u8();
 
     if identifier != Class::Universal.as_u8() | pc.as_u8() | (TAG_MASK & tag.as_u8()) {
-        Err(invalid_field_err!("identifier", "invalid universal tag identifier", at: 0))
+        Err(invalid_field_err!("identifier", "invalid universal tag identifier", in: stream))
     } else {
         Ok(())
     }
@@ -338,7 +338,7 @@ fn read_length(stream: &mut ReadCursor<'_>) -> DecodeResult<u16> {
             ensure_size!(in: stream, size: 2);
             Ok(stream.read_u16_be())
         } else {
-            Err(invalid_field_err!("len", "invalid length of the length", at: 0))
+            Err(invalid_field_err!("len", "invalid length of the length", in: stream))
         }
     } else {
         Ok(u16::from(byte))
