@@ -215,7 +215,13 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
             })
         } else {
             #[expect(clippy::as_conversions, reason = "30-bit value fits in usize")]
-            let (mut stream1, mut stream2) = src.split_at(stream_len as usize);
+            let stream_len = stream_len as usize;
+            // Validate that the declared stream length fits in the remaining
+            // buffer; src.split_at panics on overflow, so a malformed
+            // streamLen field would otherwise crash the decoder. Surfaced
+            // by the pdu_decode fuzz target.
+            ensure_size!(ctx: Self::NAME, in: src, size: stream_len);
+            let (mut stream1, mut stream2) = src.split_at(stream_len);
             let stream1 = Avc420BitmapStream::decode(&mut stream1)?;
             let stream2 = if encoding == Encoding::LUMA_AND_CHROMA {
                 Some(Avc420BitmapStream::decode(&mut stream2)?)
