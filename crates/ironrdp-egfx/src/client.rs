@@ -58,7 +58,7 @@ use std::collections::BTreeMap;
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_graphics::zgfx;
-use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
+use ironrdp_pdu::geometry::{ExclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::{PduResult, decode_cursor, decode_err, pdu_other_err};
 use tracing::{debug, trace, warn};
 
@@ -186,8 +186,8 @@ impl CodecCapabilities {
 pub struct BitmapUpdate {
     /// Surface this update applies to
     pub surface_id: u16,
-    /// Destination rectangle within the surface
-    pub destination_rectangle: InclusiveRectangle,
+    /// Destination rectangle within the surface (exclusive `right`/`bottom`)
+    pub destination_rectangle: ExclusiveRectangle,
     /// Codec that produced this update
     pub codec_id: Codec1Type,
     /// RGBA pixel data (4 bytes per pixel), row-major
@@ -674,8 +674,10 @@ impl GraphicsPipelineClient {
             return Err(pdu_other_err!("invalid destination rectangle ordering"));
         }
 
-        // Validate destination rectangle against surface bounds
-        if rect.right >= surface.width || rect.bottom >= surface.height {
+        // Validate destination rectangle against surface bounds. The rectangle
+        // uses exclusive `right`/`bottom`, so a full-surface update has
+        // `right == surface.width` and `bottom == surface.height`, which is valid.
+        if rect.right > surface.width || rect.bottom > surface.height {
             warn!(
                 surface_id = pdu.surface_id,
                 rect_right = rect.right,
@@ -706,7 +708,7 @@ impl GraphicsPipelineClient {
         Ok(())
     }
 
-    fn decode_avc420(&mut self, surface_id: u16, dest_rect: &InclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
+    fn decode_avc420(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc420BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
 
