@@ -33,8 +33,8 @@ pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
 pub use server::{
-    ConnectionHandler, Credentials, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent,
-    ServerEventSender,
+    ConnectionHandler, CredentialValidator, Credentials, PostConnectionAction, RdpServer, RdpServerOptions,
+    RdpServerSecurity, ServerEvent, ServerEventSender,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 
