@@ -25,6 +25,7 @@ const BLOCK_HEADER_SIZE_U32: u32 = 6;
 
 /// Progressive block type discriminator.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u16)]
 pub enum ProgressiveBlockType {
     Sync = 0xCCC0,
@@ -63,6 +64,7 @@ impl ProgressiveBlockType {
 
 /// 6-byte block header shared by all progressive blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProgressiveBlockHeader {
     pub block_type: ProgressiveBlockType,
     pub block_len: u32,
@@ -112,6 +114,7 @@ impl Decode<'_> for ProgressiveBlockHeader {
 /// Classic:      LL3, LH3, HL3, HH3, LH2, HL2, HH2, LH1, HL1, HH1
 /// Progressive:  LL3, HL3, LH3, HH3, HL2, LH2, HH2, HL1, LH1, HH1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ComponentCodecQuant {
     pub ll3: u8,
     pub hl3: u8,
@@ -212,6 +215,7 @@ impl Decode<'_> for ComponentCodecQuant {
 ///
 /// `quality` ranges from 0 (minimum) to 0xFF (full quality / no extra quantization).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProgressiveCodecQuant {
     pub quality: u8,
     pub y_quant: ComponentCodecQuant,
@@ -268,6 +272,7 @@ impl Decode<'_> for ProgressiveCodecQuant {
 
 /// RFX_PROGRESSIVE_SYNC: magic 0xCACCACCA + version 0x0100.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProgressiveSyncPdu;
 
 impl ProgressiveSyncPdu {
@@ -309,6 +314,7 @@ impl Decode<'_> for ProgressiveSyncPdu {
 
 /// RFX_PROGRESSIVE_FRAME_BEGIN.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProgressiveFrameBeginPdu {
     pub frame_index: u32,
     pub region_count: u16,
@@ -350,6 +356,7 @@ impl Decode<'_> for ProgressiveFrameBeginPdu {
 
 /// RFX_PROGRESSIVE_FRAME_END (empty body).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProgressiveFrameEndPdu;
 
 impl ProgressiveFrameEndPdu {
@@ -379,6 +386,7 @@ impl Decode<'_> for ProgressiveFrameEndPdu {
 
 /// RFX_PROGRESSIVE_CONTEXT.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProgressiveContextPdu {
     pub context_id: u8,
     pub tile_size: u16,
@@ -439,6 +447,7 @@ impl Decode<'_> for ProgressiveContextPdu {
 
 /// TILE_SIMPLE: non-progressive full-quality tile (single pass).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TileSimple<'a> {
     pub quant_idx_y: u8,
     pub quant_idx_cb: u8,
@@ -526,6 +535,7 @@ impl<'de> Decode<'de> for TileSimple<'de> {
 
 /// TILE_FIRST: first progressive pass (coarse quality).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TileFirst<'a> {
     pub quant_idx_y: u8,
     pub quant_idx_cb: u8,
@@ -619,6 +629,7 @@ impl<'de> Decode<'de> for TileFirst<'de> {
 ///
 /// Each component has separate SRL and raw data streams.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TileUpgrade<'a> {
     pub quant_idx_y: u8,
     pub quant_idx_cb: u8,
@@ -728,6 +739,7 @@ impl<'de> Decode<'de> for TileUpgrade<'de> {
 
 /// A progressive tile: one of the three tile block types.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ProgressiveTile<'a> {
     Simple(TileSimple<'a>),
     First(TileFirst<'a>),
@@ -754,6 +766,7 @@ impl ProgressiveTile<'_> {
 
 /// RFX_PROGRESSIVE_REGION: the main container holding rects, quant tables, and tiles.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProgressiveRegion<'a> {
     pub tile_size: u8,
     pub rects: Vec<RfxRectangle>,
@@ -952,6 +965,7 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
 
 /// A progressive block in the bitmap stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ProgressiveBlock<'a> {
     Sync(ProgressiveSyncPdu),
     FrameBegin(ProgressiveFrameBeginPdu),

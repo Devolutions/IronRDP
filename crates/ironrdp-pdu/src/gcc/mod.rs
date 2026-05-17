@@ -1,14 +1,9 @@
-use std::io;
-
 use ironrdp_core::{
     Decode, DecodeErrorKind, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode,
     ensure_fixed_part_size, ensure_size, invalid_field_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-use thiserror::Error;
-
-use crate::PduError;
 
 pub mod conference_create;
 
@@ -21,26 +16,22 @@ mod multi_transport_channel_data;
 mod network_data;
 mod security_data;
 
-pub use self::cluster_data::{ClientClusterData, ClusterDataError, RedirectionFlags, RedirectionVersion};
+pub use self::cluster_data::{ClientClusterData, RedirectionFlags, RedirectionVersion};
 pub use self::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
+pub use self::core_data::RdpVersion;
 pub use self::core_data::client::{
     ClientColorDepth, ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ColorDepth, ConnectionType,
     HighColorDepth, IME_FILE_NAME_SIZE, KeyboardType, SecureAccessSequence, SupportedColorDepths,
 };
 pub use self::core_data::server::{ServerCoreData, ServerCoreOptionalData, ServerEarlyCapabilityFlags};
-pub use self::core_data::{CoreDataError, RdpVersion};
 pub use self::message_channel_data::{ClientMessageChannelData, ServerMessageChannelData};
 pub use self::monitor_data::{
     ClientMonitorData, MONITOR_COUNT_SIZE, MONITOR_FLAGS_SIZE, MONITOR_SIZE, Monitor, MonitorFlags,
 };
 pub use self::monitor_extended_data::{ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorOrientation};
 pub use self::multi_transport_channel_data::{MultiTransportChannelData, MultiTransportFlags};
-pub use self::network_data::{
-    ChannelDef, ChannelName, ChannelOptions, ClientNetworkData, NetworkDataError, ServerNetworkData,
-};
-pub use self::security_data::{
-    ClientSecurityData, EncryptionLevel, EncryptionMethod, SecurityDataError, ServerSecurityData,
-};
+pub use self::network_data::{ChannelDef, ChannelName, ChannelOptions, ClientNetworkData, ServerNetworkData};
+pub use self::security_data::{ClientSecurityData, EncryptionLevel, EncryptionMethod, ServerSecurityData};
 
 macro_rules! user_header_try {
     ($e:expr) => {
@@ -58,6 +49,7 @@ const USER_DATA_HEADER_SIZE: usize = 4;
 ///
 /// [2.2.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/db6713ee-1c0e-4064-a3b3-0fac30b4037b
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientGccBlocks {
     pub core: ClientCoreData,
     pub security: ClientSecurityData,
@@ -185,6 +177,7 @@ impl<'de> Decode<'de> for ClientGccBlocks {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerGccBlocks {
     pub core: ServerCoreData,
     pub network: ServerNetworkData,
@@ -274,6 +267,7 @@ impl<'de> Decode<'de> for ServerGccBlocks {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ClientGccType {
     CoreData = 0xC001,
     SecurityData = 0xC002,
@@ -297,6 +291,7 @@ impl ClientGccType {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ServerGccType {
     CoreData = 0x0C01,
     SecurityData = 0x0C02,
@@ -316,6 +311,7 @@ impl ServerGccType {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct UserDataHeader;
 
 impl UserDataHeader {
@@ -353,37 +349,5 @@ impl UserDataHeader {
         ensure_size!(in: src, size: len);
 
         Ok((block_type, src.read_slice(len)))
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum GccError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("core data block error")]
-    CoreError(#[from] CoreDataError),
-    #[error("security data block error")]
-    SecurityError(#[from] SecurityDataError),
-    #[error("network data block error")]
-    NetworkError(#[from] NetworkDataError),
-    #[error("cluster data block error")]
-    ClusterError(#[from] ClusterDataError),
-    #[error("invalid GCC block type")]
-    InvalidGccType,
-    #[error("invalid conference create request: {0}")]
-    InvalidConferenceCreateRequest(String),
-    #[error("invalid Conference create response: {0}")]
-    InvalidConferenceCreateResponse(String),
-    #[error("a server did not send the required GCC data block: {0:?}")]
-    RequiredClientDataBlockIsAbsent(ClientGccType),
-    #[error("a client did not send the required GCC data block: {0:?}")]
-    RequiredServerDataBlockIsAbsent(ServerGccType),
-    #[error("PDU error: {0}")]
-    Pdu(PduError),
-}
-
-impl From<PduError> for GccError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
     }
 }

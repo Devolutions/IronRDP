@@ -3,18 +3,14 @@ pub mod dvc;
 #[cfg(test)]
 mod tests;
 
-use std::{io, str};
-
 use bitflags::bitflags;
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size};
-use thiserror::Error;
-
-use crate::PduError;
 
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 
 /// Channel PDU Header (CHANNEL_PDU_HEADER)
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ChannelPduHeader {
     /// The total length in bytes of the uncompressed channel data, excluding this header
     ///
@@ -63,6 +59,7 @@ impl<'de> Decode<'de> for ChannelPduHeader {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct ChannelControlFlags: u32 {
         const FLAG_FIRST = 0x0000_0001;
         const FLAG_LAST = 0x0000_0002;
@@ -76,43 +73,5 @@ bitflags! {
         const COMPRESSION_TYPE_MASK = 0x000F_0000;
 
         const _ = !0;
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum ChannelError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("from UTF-8 error")]
-    FromUtf8Error(#[from] std::string::FromUtf8Error),
-    #[error("invalid channel PDU header")]
-    InvalidChannelPduHeader,
-    #[error("invalid channel total data length")]
-    InvalidChannelTotalDataLength,
-    #[error("invalid DVC PDU type")]
-    InvalidDvcPduType,
-    #[error("invalid DVC id length value")]
-    InvalidDVChannelIdLength,
-    #[error("invalid DVC data length value")]
-    InvalidDvcDataLength,
-    #[error("invalid DVC capabilities version")]
-    InvalidDvcCapabilitiesVersion,
-    #[error("invalid DVC message size")]
-    InvalidDvcMessageSize,
-    #[error("invalid DVC total message size: actual ({actual}) > expected ({expected})")]
-    InvalidDvcTotalMessageSize { actual: usize, expected: usize },
-    #[error("PDU error: {0}")]
-    Pdu(PduError),
-}
-
-impl From<PduError> for ChannelError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
-    }
-}
-
-impl From<ChannelError> for io::Error {
-    fn from(e: ChannelError) -> io::Error {
-        io::Error::other(format!("Virtual channel error: {e}"))
     }
 }

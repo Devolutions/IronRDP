@@ -18,7 +18,6 @@ use crate::{
 };
 
 #[derive(Debug)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectionResult {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
@@ -34,7 +33,6 @@ pub struct ConnectionResult {
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ClientConnectorState {
     #[default]
     Consumed,
@@ -122,7 +120,6 @@ impl State for ClientConnectorState {
 }
 
 #[derive(Debug)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientConnector {
     pub config: Config,
     pub state: ClientConnectorState,

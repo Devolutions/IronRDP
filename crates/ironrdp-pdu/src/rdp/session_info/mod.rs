@@ -1,14 +1,9 @@
-use std::io;
-
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
     invalid_field_err, read_padding, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
-
-use crate::PduError;
 
 #[cfg(test)]
 mod tests;
@@ -26,6 +21,7 @@ const INFO_TYPE_FIELD_SIZE: usize = 4;
 const PLAIN_NOTIFY_PADDING_SIZE: usize = 576;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SaveSessionInfoPdu {
     pub info_type: InfoType,
     pub info_data: InfoData,
@@ -102,6 +98,7 @@ impl<'de> Decode<'de> for SaveSessionInfoPdu {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum InfoType {
     Logon = 0x0000_0000,
     LogonLong = 0x0000_0001,
@@ -120,41 +117,10 @@ impl InfoType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum InfoData {
     LogonInfoV1(LogonInfoVersion1),
     LogonInfoV2(LogonInfoVersion2),
     PlainNotify,
     LogonExtended(LogonInfoExtended),
-}
-
-#[derive(Debug, Error)]
-pub enum SessionError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid save session info type value")]
-    InvalidSaveSessionInfoType,
-    #[error("invalid domain name size value")]
-    InvalidDomainNameSize,
-    #[error("invalid user name size value")]
-    InvalidUserNameSize,
-    #[error("invalid logon version value")]
-    InvalidLogonVersion2,
-    #[error("invalid logon info version2 size value")]
-    InvalidLogonVersion2Size,
-    #[error("invalid server auto-reconnect packet size value")]
-    InvalidAutoReconnectPacketSize,
-    #[error("invalid server auto-reconnect version")]
-    InvalidAutoReconnectVersion,
-    #[error("invalid logon error type value")]
-    InvalidLogonErrorType,
-    #[error("invalid logon error data value")]
-    InvalidLogonErrorData,
-    #[error("PDU error: {0}")]
-    Pdu(PduError),
-}
-
-impl From<PduError> for SessionError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
-    }
 }

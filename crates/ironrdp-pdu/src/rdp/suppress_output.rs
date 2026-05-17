@@ -7,6 +7,7 @@ use crate::geometry::InclusiveRectangle;
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum AllowDisplayUpdatesType {
     SuppressDisplayUpdates = 0x00,
     AllowDisplayUpdates = 0x01,
@@ -40,6 +41,7 @@ impl AllowDisplayUpdatesType {
 ///
 /// [2.2.11.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/0be71491-0b01-402c-947d-080706ccf91b
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SuppressOutputPdu {
     pub desktop_rect: Option<InclusiveRectangle>,
 }

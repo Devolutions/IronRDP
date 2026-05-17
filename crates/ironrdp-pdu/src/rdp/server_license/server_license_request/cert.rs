@@ -19,6 +19,7 @@ const MAX_CERTIFICATE_AMOUNT: usize = 200;
 const MAX_CERTIFICATE_LEN: usize = 4096;
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CertificateType {
     Proprietary(ProprietaryCertificate),
     X509(X509CertificateChain),
@@ -28,6 +29,7 @@ pub enum CertificateType {
 ///
 /// [2.2.1.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/bf2cc9cc-2b01-442e-a288-6ddfa3b80d59
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct X509CertificateChain {
     pub certificate_array: Vec<Vec<u8>>,
 }
@@ -103,6 +105,7 @@ impl<'de> Decode<'de> for X509CertificateChain {
 ///
 /// [2.2.1.4.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a37d449a-73ac-4f00-9b9d-56cefc954634
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProprietaryCertificate {
     pub public_key: RsaPublicKey,
     pub signature: Vec<u8>,
@@ -171,6 +174,7 @@ impl<'de> Decode<'de> for ProprietaryCertificate {
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RsaPublicKey {
     pub public_exponent: u32,
     pub modulus: Vec<u8>,

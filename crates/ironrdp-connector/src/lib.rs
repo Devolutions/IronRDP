@@ -82,14 +82,12 @@ impl fmt::Display for NegotiationFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct DesktopSize {
     pub width: u16,
     pub height: u16,
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapConfig {
     pub lossy_compression: bool,
     pub color_depth: u32,
@@ -139,7 +137,6 @@ impl Credentials {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Config {
     /// The initial desktop size to request
     pub desktop_size: DesktopSize,

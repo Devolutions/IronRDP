@@ -19,6 +19,7 @@ const MAX_RESET_GRAPHICS_WIDTH_HEIGHT: u32 = 32_766;
 const MONITOR_COUNT_MAX: usize = 16;
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct WireToSurface1Pdu {
     pub surface_id: u16,
     pub codec_id: Codec1Type,
@@ -93,6 +94,7 @@ impl<'a> Decode<'a> for WireToSurface1Pdu {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct WireToSurface2Pdu {
     pub surface_id: u16,
     pub codec_id: Codec2Type,
@@ -168,6 +170,7 @@ impl<'a> Decode<'a> for WireToSurface2Pdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct DeleteEncodingContextPdu {
     pub surface_id: u16,
     pub codec_context_id: u32,
@@ -213,6 +216,7 @@ impl<'a> Decode<'a> for DeleteEncodingContextPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SolidFillPdu {
     pub surface_id: u16,
     pub fill_pixel: Color,
@@ -271,6 +275,7 @@ impl<'a> Decode<'a> for SolidFillPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SurfaceToSurfacePdu {
     pub source_surface_id: u16,
     pub destination_surface_id: u16,
@@ -332,6 +337,7 @@ impl<'a> Decode<'a> for SurfaceToSurfacePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SurfaceToCachePdu {
     pub surface_id: u16,
     pub cache_key: u64,
@@ -385,6 +391,7 @@ impl<'a> Decode<'a> for SurfaceToCachePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CacheToSurfacePdu {
     pub cache_slot: u16,
     pub surface_id: u16,
@@ -441,6 +448,7 @@ impl<'de> Decode<'de> for CacheToSurfacePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CreateSurfacePdu {
     pub surface_id: u16,
     pub width: u16,
@@ -495,6 +503,7 @@ impl<'a> Decode<'a> for CreateSurfacePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct DeleteSurfacePdu {
     pub surface_id: u16,
 }
@@ -534,6 +543,7 @@ impl<'a> Decode<'a> for DeleteSurfacePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ResetGraphicsPdu {
     pub width: u32,
     pub height: u32,
@@ -612,6 +622,7 @@ impl<'a> Decode<'a> for ResetGraphicsPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MapSurfaceToOutputPdu {
     pub surface_id: u16,
     pub output_origin_x: u32,
@@ -663,6 +674,7 @@ impl<'a> Decode<'a> for MapSurfaceToOutputPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MapSurfaceToScaledOutputPdu {
     pub surface_id: u16,
     pub output_origin_x: u32,
@@ -722,6 +734,7 @@ impl<'a> Decode<'a> for MapSurfaceToScaledOutputPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MapSurfaceToScaledWindowPdu {
     pub surface_id: u16,
     pub window_id: u64,
@@ -781,6 +794,7 @@ impl<'a> Decode<'a> for MapSurfaceToScaledWindowPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct EvictCacheEntryPdu {
     pub cache_slot: u16,
 }
@@ -820,6 +834,7 @@ impl<'a> Decode<'a> for EvictCacheEntryPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct StartFramePdu {
     pub timestamp: Timestamp,
     pub frame_id: u32,
@@ -862,6 +877,7 @@ impl<'a> Decode<'a> for StartFramePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct EndFramePdu {
     pub frame_id: u32,
 }
@@ -901,6 +917,7 @@ impl<'a> Decode<'a> for EndFramePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CapabilitiesConfirmPdu(pub CapabilitySet);
 
 impl CapabilitiesConfirmPdu {
@@ -931,6 +948,7 @@ impl<'a> Decode<'a> for CapabilitiesConfirmPdu {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Codec1Type {
     Uncompressed = 0x0,
     RemoteFx = 0x3,
@@ -954,6 +972,7 @@ impl Codec1Type {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Codec2Type {
     RemoteFxProgressive = 0x9,
 }
@@ -970,6 +989,7 @@ impl Codec2Type {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum PixelFormat {
     XRgb = 0x20,
     ARgb = 0x21,
@@ -986,6 +1006,7 @@ impl PixelFormat {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Timestamp {
     pub milliseconds: u16,
     pub seconds: u8,

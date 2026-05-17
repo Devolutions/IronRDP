@@ -1,12 +1,9 @@
-use std::io;
-
 use bitflags::bitflags;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, invalid_field_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
 const REDIRECTION_VERSION_MASK: u32 = 0x0000_003C;
 
@@ -14,6 +11,7 @@ const FLAGS_SIZE: usize = 4;
 const REDIRECTED_SESSION_ID_SIZE: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientClusterData {
     pub flags: RedirectionFlags,
     pub redirection_version: RedirectionVersion,
@@ -69,6 +67,7 @@ impl<'de> Decode<'de> for ClientClusterData {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct RedirectionFlags: u32 {
         const REDIRECTION_SUPPORTED = 0x0000_0001;
         const REDIRECTED_SESSION_FIELD_VALID = 0x0000_0002;
@@ -78,6 +77,7 @@ bitflags! {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum RedirectionVersion {
     V1 = 0,
     V2 = 1,
@@ -95,12 +95,4 @@ impl RedirectionVersion {
     fn as_u32(self) -> u32 {
         self as u32
     }
-}
-
-#[derive(Debug, Error)]
-pub enum ClusterDataError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid redirection flags field")]
-    InvalidRedirectionFlags,
 }

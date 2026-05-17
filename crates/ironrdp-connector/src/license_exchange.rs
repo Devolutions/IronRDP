@@ -15,7 +15,6 @@ use crate::{ConnectorResult, ConnectorResultExt as _, Sequence, State, Written, 
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LicenseExchangeState {
     #[default]
     Consumed,
@@ -56,7 +55,6 @@ impl State for LicenseExchangeState {
 ///
 /// [3.1.5.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/8f9b860a-3687-401d-b3bc-7e9f5d4f7528
 #[derive(Debug)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseExchangeSequence {
     pub state: LicenseExchangeState,
     pub io_channel_id: u16,

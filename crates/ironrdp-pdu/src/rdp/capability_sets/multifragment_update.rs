@@ -1,6 +1,7 @@
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MultifragmentUpdate {
     pub max_request_size: u32,
 }

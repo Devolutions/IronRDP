@@ -5,6 +5,7 @@ use ironrdp_core::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ScanCodePdu {
     pub flags: KeyboardFlags,
     pub key_code: u16,
@@ -50,6 +51,7 @@ impl<'de> Decode<'de> for ScanCodePdu {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct KeyboardFlags: u16 {
         const EXTENDED = 0x0100;
         const EXTENDED_1 = 0x0200;

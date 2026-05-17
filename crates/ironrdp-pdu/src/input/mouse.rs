@@ -2,6 +2,7 @@ use bitflags::bitflags;
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MousePdu {
     pub flags: PointerFlags,
     pub number_of_wheel_rotation_units: i16,
@@ -86,6 +87,7 @@ impl<'de> Decode<'de> for MousePdu {
 }
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct PointerFlags: u16 {
         const WHEEL_NEGATIVE = 0x0100;
         const VERTICAL_WHEEL = 0x0200;

@@ -437,6 +437,9 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+dependencies = [
+ "arbitrary",
+]
 
 [[package]]
 name = "bitvec"
@@ -1078,23 +1081,22 @@ dependencies = [
 
 [[package]]
 name = "cryptoki"
-version = "0.10.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "781357a7779a8e92ea985121bbf379a9adf0777f44ab6392efc6abd5aa9b67db"
+checksum = "ff765b99fc49f3116c9a908484486a2b92fd73c48da45c3a69716471c6cc56c6"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.11.1",
  "cryptoki-sys",
  "libloading",
  "log",
- "paste",
  "secrecy",
 ]
 
 [[package]]
 name = "cryptoki-sys"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "753e27d860277930ae9f394c119c8c70303236aab0ffab1d51f3d207dbb2bc4b"
+checksum = "f1fd850498411e4057f1cba79e6e2bc7cbe960544c1046ab46d4685c403a1121"
 dependencies = [
  "libloading",
 ]
@@ -2528,7 +2530,6 @@ dependencies = [
 name = "ironrdp-connector"
 version = "0.8.0"
 dependencies = [
- "arbitrary",
  "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
@@ -2700,6 +2701,7 @@ dependencies = [
 name = "ironrdp-pdu"
 version = "0.7.0"
 dependencies = [
+ "arbitrary",
  "bit_field",
  "bitflags 2.11.1",
  "byteorder",
@@ -2715,7 +2717,6 @@ dependencies = [
  "pkcs1 0.7.5",
  "sha1 0.10.6",
  "tap",
- "thiserror 2.0.18",
  "x509-cert",
 ]
 
@@ -3402,9 +3403,9 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.31.2"
+version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
 dependencies = [
  "bitflags 2.11.1",
  "cfg-if",
@@ -5101,9 +5102,9 @@ dependencies = [
 
 [[package]]
 name = "secrecy"
-version = "0.8.0"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
 dependencies = [
  "zeroize",
 ]
@@ -5472,9 +5473,9 @@ dependencies = [
 
 [[package]]
 name = "sspi"
-version = "0.19.2"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0484adc2dd72428a01644ddb55fd87c5518ff2c7c663544fb6b1ee39a65d897a"
+checksum = "82d4e729e937757a093b8ebe84933747db961e2f20744f957f5e6fbf6e0e2610"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -5832,9 +5833,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.52.1"
+version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b67dee974fe86fd92cc45b7a95fdd2f99a36a6d7b0d431a231178d3d670bbcc6"
+checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
 dependencies = [
  "bytes",
  "libc",
@@ -7174,9 +7175,9 @@ dependencies = [
 
 [[package]]
 name = "yuv"
-version = "0.8.13"
+version = "0.8.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d3a7e2cda3061858987ee2fb028f61695f5ee13f9490d75be6c3900df9a4ea"
+checksum = "89c90da4fb561f9750984de2c5e7f0ba01035d2eb29d69a7f375b1caef37fdf4"
 dependencies = [
  "num-traits",
 ]

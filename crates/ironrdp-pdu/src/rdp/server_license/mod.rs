@@ -1,3 +1,4 @@
+use core::fmt;
 use std::io;
 
 use bitflags::bitflags;
@@ -8,7 +9,6 @@ use ironrdp_core::{
 use md5::Digest as _;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
 use crate::PduError;
 use crate::rdp::headers::{BASIC_SECURITY_HEADER_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags};
@@ -51,6 +51,7 @@ const KEY_EXCHANGE_ALGORITHM_RSA: u32 = 1;
 const MAC_SIZE: usize = 16;
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseEncryptionData {
     pub premaster_secret: Vec<u8>,
     pub mac_salt_key: Vec<u8>,
@@ -58,6 +59,7 @@ pub struct LicenseEncryptionData {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseHeader {
     pub security_header: BasicSecurityHeader,
     pub preamble_message_type: PreambleType,
@@ -136,6 +138,7 @@ impl<'de> Decode<'de> for LicenseHeader {
 /// [2.2.1.12.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/73170ca2-5f82-4a2d-9d1b-b439f3d8dadc
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum PreambleType {
     LicenseRequest = 0x01,
     PlatformChallenge = 0x02,
@@ -159,6 +162,7 @@ impl PreambleType {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct PreambleFlags: u8 {
         const EXTENDED_ERROR_MSG_SUPPORTED = 0x80;
     }
@@ -166,6 +170,7 @@ bitflags! {
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum PreambleVersion {
     V2 = 2, // RDP 4.0
     V3 = 3, // RDP 5.0, 5.1, 5.2, 6.0, 6.1, 7.0, 7.1, 8.0, 8.1, 10.0, 10.1, 10.2, 10.3, 10.4, and 10.5
@@ -182,6 +187,7 @@ impl PreambleVersion {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BlobType(u16);
 
 impl BlobType {
@@ -199,87 +205,173 @@ impl BlobType {
     pub const CLIENT_MACHINE_NAME_BLOB: Self = Self(0x10);
 }
 
-#[derive(Debug, Error)]
+// FIXME: licensing logic and any code that is not purely about PDU
+// encoding/decoding concerns should be moved out of ironrdp-pdu.
+#[derive(Debug)]
 pub enum ServerLicenseError {
-    #[error("IO error: {0}")]
-    IOError(#[from] io::Error),
-    #[error("UTF-8 error: {0}")]
-    Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("DER error: {0}")]
-    DerError(#[from] pkcs1::der::Error),
-    #[error("invalid `{0}`: out of range integral type conversion")]
+    IOError(io::Error),
+    Utf8Error(std::string::FromUtf8Error),
+    DerError(pkcs1::der::Error),
     InvalidField(&'static str),
-    #[error("invalid preamble field: {0}")]
     InvalidPreamble(String),
-    #[error("invalid preamble message type field")]
     InvalidLicenseType,
-    #[error("invalid error code field")]
     InvalidErrorCode,
-    #[error("invalid state transition field")]
     InvalidStateTransition,
-    #[error("invalid blob type field")]
     InvalidBlobType,
-    #[error("unable to generate random number {0}")]
     RandomNumberGenerationError(String),
-    #[error("unable to retrieve public key from the certificate")]
     UnableToGetPublicKey,
-    #[error("unable to encrypt RSA public key")]
     RsaKeyEncryptionError,
-    #[error("invalid License Request key exchange algorithm value")]
     InvalidKeyExchangeValue,
-    #[error("MAC checksum generated over decrypted data does not match the server's checksum")]
     InvalidMacData,
-    #[error("invalid platform challenge response data version")]
     InvalidChallengeResponseDataVersion,
-    #[error("invalid platform challenge response data client type")]
     InvalidChallengeResponseDataClientType,
-    #[error("invalid platform challenge response data license detail level")]
     InvalidChallengeResponseDataLicenseDetail,
-    #[error("invalid x509 certificate")]
     InvalidX509Certificate {
         source: x509_cert::der::Error,
         cert_der: Vec<u8>,
     },
-    #[error("invalid certificate version")]
     InvalidCertificateVersion,
-    #[error("invalid x509 certificates amount")]
     InvalidX509CertificatesAmount,
-    #[error("invalid proprietary certificate signature algorithm ID")]
     InvalidPropCertSignatureAlgorithmId,
-    #[error("invalid proprietary certificate key algorithm ID")]
     InvalidPropCertKeyAlgorithmId,
-    #[error("invalid RSA public key magic")]
     InvalidRsaPublicKeyMagic,
-    #[error("invalid RSA public key length")]
     InvalidRsaPublicKeyLength,
-    #[error("invalid RSA public key data length")]
     InvalidRsaPublicKeyDataLength,
-    #[error("invalid RSA public key bit length")]
     InvalidRsaPublicKeyBitLength,
-    #[error("invalid License Header security flags")]
     InvalidSecurityFlags,
-    #[error("the server returned unexpected error: {0:?}")]
     UnexpectedError(LicensingErrorMessage),
-    #[error("got unexpected license message")]
     UnexpectedLicenseMessage,
-    #[error("the server has returned an unexpected error")]
     UnexpectedServerError(LicensingErrorMessage),
-    #[error("the server has returned STATUS_VALID_CLIENT (not an error)")]
     ValidClientStatus(LicensingErrorMessage),
-    #[error("invalid Key Exchange List field")]
     InvalidKeyExchangeAlgorithm,
-    #[error("received invalid company name length (Product Information): {0}")]
     InvalidCompanyNameLength(u32),
-    #[error("received invalid product ID length (Product Information): {0}")]
     InvalidProductIdLength(u32),
-    #[error("received invalid scope count field: {0}")]
     InvalidScopeCount(u32),
-    #[error("received invalid certificate length: {0}")]
     InvalidCertificateLength(u32),
-    #[error("blob too small")]
     BlobTooSmall,
-    #[error("PDU error: {0}")]
     Pdu(PduError),
+}
+
+impl fmt::Display for ServerLicenseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::IOError(e) => write!(f, "IO error: {e}"),
+            Self::Utf8Error(e) => write!(f, "UTF-8 error: {e}"),
+            Self::DerError(e) => write!(f, "DER error: {e}"),
+            Self::InvalidField(name) => write!(f, "invalid `{name}`: out of range integral type conversion"),
+            Self::InvalidPreamble(s) => write!(f, "invalid preamble field: {s}"),
+            Self::InvalidLicenseType => f.write_str("invalid preamble message type field"),
+            Self::InvalidErrorCode => f.write_str("invalid error code field"),
+            Self::InvalidStateTransition => f.write_str("invalid state transition field"),
+            Self::InvalidBlobType => f.write_str("invalid blob type field"),
+            Self::RandomNumberGenerationError(s) => write!(f, "unable to generate random number {s}"),
+            Self::UnableToGetPublicKey => f.write_str("unable to retrieve public key from the certificate"),
+            Self::RsaKeyEncryptionError => f.write_str("unable to encrypt RSA public key"),
+            Self::InvalidKeyExchangeValue => f.write_str("invalid License Request key exchange algorithm value"),
+            Self::InvalidMacData => {
+                f.write_str("MAC checksum generated over decrypted data does not match the server's checksum")
+            }
+            Self::InvalidChallengeResponseDataVersion => {
+                f.write_str("invalid platform challenge response data version")
+            }
+            Self::InvalidChallengeResponseDataClientType => {
+                f.write_str("invalid platform challenge response data client type")
+            }
+            Self::InvalidChallengeResponseDataLicenseDetail => {
+                f.write_str("invalid platform challenge response data license detail level")
+            }
+            Self::InvalidX509Certificate { .. } => f.write_str("invalid x509 certificate"),
+            Self::InvalidCertificateVersion => f.write_str("invalid certificate version"),
+            Self::InvalidX509CertificatesAmount => f.write_str("invalid x509 certificates amount"),
+            Self::InvalidPropCertSignatureAlgorithmId => {
+                f.write_str("invalid proprietary certificate signature algorithm ID")
+            }
+            Self::InvalidPropCertKeyAlgorithmId => f.write_str("invalid proprietary certificate key algorithm ID"),
+            Self::InvalidRsaPublicKeyMagic => f.write_str("invalid RSA public key magic"),
+            Self::InvalidRsaPublicKeyLength => f.write_str("invalid RSA public key length"),
+            Self::InvalidRsaPublicKeyDataLength => f.write_str("invalid RSA public key data length"),
+            Self::InvalidRsaPublicKeyBitLength => f.write_str("invalid RSA public key bit length"),
+            Self::InvalidSecurityFlags => f.write_str("invalid License Header security flags"),
+            Self::UnexpectedError(msg) => write!(f, "the server returned unexpected error: {msg:?}"),
+            Self::UnexpectedLicenseMessage => f.write_str("got unexpected license message"),
+            Self::UnexpectedServerError(_) => f.write_str("the server has returned an unexpected error"),
+            Self::ValidClientStatus(_) => f.write_str("the server has returned STATUS_VALID_CLIENT (not an error)"),
+            Self::InvalidKeyExchangeAlgorithm => f.write_str("invalid Key Exchange List field"),
+            Self::InvalidCompanyNameLength(n) => {
+                write!(f, "received invalid company name length (Product Information): {n}")
+            }
+            Self::InvalidProductIdLength(n) => {
+                write!(f, "received invalid product ID length (Product Information): {n}")
+            }
+            Self::InvalidScopeCount(n) => write!(f, "received invalid scope count field: {n}"),
+            Self::InvalidCertificateLength(n) => write!(f, "received invalid certificate length: {n}"),
+            Self::BlobTooSmall => f.write_str("blob too small"),
+            Self::Pdu(e) => write!(f, "PDU error: {e}"),
+        }
+    }
+}
+
+impl core::error::Error for ServerLicenseError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::IOError(e) => Some(e),
+            Self::Utf8Error(e) => Some(e),
+            Self::DerError(e) => Some(e),
+            Self::InvalidX509Certificate { source, .. } => Some(source),
+            Self::InvalidField(_)
+            | Self::InvalidPreamble(_)
+            | Self::InvalidLicenseType
+            | Self::InvalidErrorCode
+            | Self::InvalidStateTransition
+            | Self::InvalidBlobType
+            | Self::RandomNumberGenerationError(_)
+            | Self::UnableToGetPublicKey
+            | Self::RsaKeyEncryptionError
+            | Self::InvalidKeyExchangeValue
+            | Self::InvalidMacData
+            | Self::InvalidChallengeResponseDataVersion
+            | Self::InvalidChallengeResponseDataClientType
+            | Self::InvalidChallengeResponseDataLicenseDetail
+            | Self::InvalidCertificateVersion
+            | Self::InvalidX509CertificatesAmount
+            | Self::InvalidPropCertSignatureAlgorithmId
+            | Self::InvalidPropCertKeyAlgorithmId
+            | Self::InvalidRsaPublicKeyMagic
+            | Self::InvalidRsaPublicKeyLength
+            | Self::InvalidRsaPublicKeyDataLength
+            | Self::InvalidRsaPublicKeyBitLength
+            | Self::InvalidSecurityFlags
+            | Self::UnexpectedError(_)
+            | Self::UnexpectedLicenseMessage
+            | Self::UnexpectedServerError(_)
+            | Self::ValidClientStatus(_)
+            | Self::InvalidKeyExchangeAlgorithm
+            | Self::InvalidCompanyNameLength(_)
+            | Self::InvalidProductIdLength(_)
+            | Self::InvalidScopeCount(_)
+            | Self::InvalidCertificateLength(_)
+            | Self::BlobTooSmall
+            | Self::Pdu(_) => None,
+        }
+    }
+}
+
+impl From<io::Error> for ServerLicenseError {
+    fn from(e: io::Error) -> Self {
+        Self::IOError(e)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for ServerLicenseError {
+    fn from(e: std::string::FromUtf8Error) -> Self {
+        Self::Utf8Error(e)
+    }
+}
+
+impl From<pkcs1::der::Error> for ServerLicenseError {
+    fn from(e: pkcs1::der::Error) -> Self {
+        Self::DerError(e)
+    }
 }
 
 impl From<PduError> for ServerLicenseError {
@@ -295,6 +387,7 @@ impl From<LicensingErrorMessage> for ServerLicenseError {
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BlobHeader {
     pub blob_type: BlobType,
     pub length: usize,
@@ -368,6 +461,7 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Result<Vec<u8>, ServerL
 }
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LicensePdu {
     ClientNewLicenseRequest(ClientNewLicenseRequest),
     ClientLicenseInfo(ClientLicenseInfo),

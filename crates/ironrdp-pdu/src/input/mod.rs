@@ -1,12 +1,9 @@
-use std::io;
-
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
     ensure_size, invalid_field_err, read_padding, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
 pub mod fast_path;
 pub mod mouse;
@@ -26,6 +23,7 @@ pub use self::unicode::UnicodePdu;
 pub use self::unused::UnusedPdu;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct InputEventPdu(pub Vec<InputEvent>);
 
 impl InputEventPdu {
@@ -73,6 +71,7 @@ impl<'de> Decode<'de> for InputEventPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum InputEvent {
     Sync(SyncPdu),
     Unused(UnusedPdu),
@@ -180,22 +179,4 @@ impl From<&InputEvent> for InputEventType {
             InputEvent::MouseRel(_) => Self::MouseRel,
         }
     }
-}
-
-#[derive(Debug, Error)]
-pub enum InputEventError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid Input Event type: {0}")]
-    InvalidInputEventType(u16),
-    #[error("encryption not supported")]
-    EncryptionNotSupported,
-    #[error("event code not supported {0}")]
-    EventCodeUnsupported(u8),
-    #[error("keyboard flags not supported {0}")]
-    KeyboardFlagsUnsupported(u8),
-    #[error("synchronize flags not supported {0}")]
-    SynchronizeFlagsUnsupported(u8),
-    #[error("Fast-Path Input Event PDU is empty")]
-    EmptyFastPathInput,
 }

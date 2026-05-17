@@ -1,14 +1,11 @@
-use std::io;
-
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode, ensure_fixed_part_size,
     ensure_size, invalid_field_err, unsupported_value_err, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
-use crate::{PduError, utils};
+use crate::utils;
 
 mod bitmap;
 mod bitmap_cache;
@@ -67,6 +64,7 @@ const NULL_TERMINATOR: &str = "\0";
 ///
 /// [2.2.1.13.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a07abad1-38bb-4a1a-96c9-253e3d5440df
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerDemandActive {
     pub pdu: DemandActive,
 }
@@ -111,6 +109,7 @@ impl<'de> Decode<'de> for ServerDemandActive {
 ///
 /// [2.2.1.13.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4c3c2710-0bf0-4c54-8e69-aff40ffcde66
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientConfirmActive {
     /// According to [MSDN](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4e9722c3-ad83-43f5-af5a-529f73d88b48),
     /// this field MUST be set to [SERVER_CHANNEL_ID](constant.SERVER_CHANNEL_ID.html).
@@ -161,6 +160,7 @@ impl<'de> Decode<'de> for ClientConfirmActive {
 ///
 /// [2.2.1.13.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/bd612af5-cb54-43a2-9646-438bc3ecf5db
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct DemandActive {
     pub source_descriptor: String,
     pub capability_sets: Vec<CapabilitySet>,
@@ -244,6 +244,7 @@ impl<'de> Decode<'de> for DemandActive {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CapabilitySet {
     // mandatory
     General(General),
@@ -603,71 +604,5 @@ impl CapabilitySetType {
     )]
     fn as_u16(self) -> u16 {
         self as u16
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum CapabilitySetsError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("UTF-8 error")]
-    Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("invalid type field")]
-    InvalidType,
-    #[error("invalid bitmap compression field")]
-    InvalidCompressionFlag,
-    #[error("invalid multiple rectangle support field")]
-    InvalidMultipleRectSupport,
-    #[error("invalid protocol version field")]
-    InvalidProtocolVersion,
-    #[error("invalid compression types field")]
-    InvalidCompressionTypes,
-    #[error("invalid update capability flags field")]
-    InvalidUpdateCapFlag,
-    #[error("invalid remote unshare flag field")]
-    InvalidRemoteUnshareFlag,
-    #[error("invalid compression level field")]
-    InvalidCompressionLevel,
-    #[error("invalid brush support level field")]
-    InvalidBrushSupportLevel,
-    #[error("invalid glyph support level field")]
-    InvalidGlyphSupportLevel,
-    #[error("invalid RemoteFX capability version")]
-    InvalidRfxICapVersion,
-    #[error("invalid RemoteFX capability tile size")]
-    InvalidRfxICapTileSize,
-    #[error("invalid RemoteFXICap color conversion bits")]
-    InvalidRfxICapColorConvBits,
-    #[error("invalid RemoteFXICap transform bits")]
-    InvalidRfxICapTransformBits,
-    #[error("invalid RemoteFXICap entropy bits field")]
-    InvalidRfxICapEntropyBits,
-    #[error("invalid RemoteFX capability set block type")]
-    InvalidRfxCapsetBlockType,
-    #[error("invalid RemoteFX capability set type")]
-    InvalidRfxCapsetType,
-    #[error("invalid RemoteFX capabilities block type")]
-    InvalidRfxCapsBlockType,
-    #[error("invalid RemoteFX capabilities block length")]
-    InvalidRfxCapsBockLength,
-    #[error("invalid number of capability sets in RemoteFX capabilities")]
-    InvalidRfxCapsNumCapsets,
-    #[error("invalid codec property field")]
-    InvalidCodecProperty,
-    #[error("invalid codec ID")]
-    InvalidCodecID,
-    #[error("invalid channel chunk size field")]
-    InvalidChunkSize,
-    #[error("invalid codec property length for the current property ID")]
-    InvalidPropertyLength,
-    #[error("invalid data length")]
-    InvalidLength,
-    #[error("PDU error: {0}")]
-    Pdu(PduError),
-}
-
-impl From<PduError> for CapabilitySetsError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
     }
 }

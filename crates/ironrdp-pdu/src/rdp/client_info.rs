@@ -1,5 +1,4 @@
 use core::fmt;
-use std::io;
 
 use bitflags::bitflags;
 use ironrdp_core::{
@@ -8,10 +7,9 @@ use ironrdp_core::{
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
+use crate::utils;
 use crate::utils::CharacterSet;
-use crate::{PduError, utils};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
@@ -37,6 +35,7 @@ const BIAS_SIZE: usize = 4;
 ///
 /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientInfo {
     pub credentials: Credentials,
     pub code_page: u32,
@@ -192,6 +191,7 @@ impl<'de> Decode<'de> for ClientInfo {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Credentials {
     pub username: String,
     pub password: String,
@@ -209,6 +209,7 @@ impl fmt::Debug for Credentials {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ExtendedClientInfo {
     pub address_family: AddressFamily,
     pub address: String,
@@ -275,6 +276,7 @@ impl ExtendedClientInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ExtendedClientOptionalInfo {
     timezone: Option<TimezoneInfo>,
     session_id: Option<u32>,
@@ -408,6 +410,7 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
 ///
 /// [2.2.1.11.1.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/526ed635-d7a9-4d3c-bbe1-4e3fb17585f4
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TimezoneInfo {
     pub bias: i32,
     pub standard_name: String,
@@ -502,6 +505,7 @@ impl Default for TimezoneInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SystemTime {
     pub month: Month,
     pub day_of_week: DayOfWeek,
@@ -519,6 +523,7 @@ impl SystemTime {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct OptionalSystemTime(pub Option<SystemTime>);
 
 impl Encode for OptionalSystemTime {
@@ -584,6 +589,7 @@ impl<'de> Decode<'de> for OptionalSystemTime {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Month {
     January = 1,
     February = 2,
@@ -611,6 +617,7 @@ impl Month {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum DayOfWeek {
     Sunday = 0,
     Monday = 1,
@@ -633,6 +640,7 @@ impl DayOfWeek {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum DayOfWeekOccurrence {
     First = 1,
     Second = 2,
@@ -653,6 +661,7 @@ impl DayOfWeekOccurrence {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct PerformanceFlags: u32 {
         const DISABLE_WALLPAPER = 0x0000_0001;
         const DISABLE_FULLWINDOWDRAG = 0x0000_0002;
@@ -675,6 +684,7 @@ impl Default for PerformanceFlags {
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct AddressFamily(u16);
 
 impl AddressFamily {
@@ -692,6 +702,7 @@ impl AddressFamily {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct ClientInfoFlags: u32 {
         /// INFO_MOUSE
         const MOUSE = 0x0000_0001;
@@ -740,6 +751,7 @@ bitflags! {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CompressionType {
     K8 = 0,
     K64 = 1,
@@ -754,30 +766,6 @@ impl CompressionType {
     )]
     pub fn as_u8(self) -> u8 {
         self as u8
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum ClientInfoError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("UTF-8 error")]
-    Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("invalid address family field")]
-    InvalidAddressFamily,
-    #[error("invalid flags field")]
-    InvalidClientInfoFlags,
-    #[error("invalid performance flags field")]
-    InvalidPerformanceFlags,
-    #[error("invalid reconnect cookie field")]
-    InvalidReconnectCookie,
-    #[error("PDU error: {0}")]
-    Pdu(PduError),
-}
-
-impl From<PduError> for ClientInfoError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
     }
 }
 

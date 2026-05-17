@@ -12,6 +12,7 @@ const CLIENT_REQUESTED_PROTOCOL_SIZE: usize = 4;
 const EARLY_CAPABILITY_FLAGS_SIZE: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerCoreData {
     pub version: RdpVersion,
     pub optional_data: ServerCoreOptionalData,
@@ -52,6 +53,7 @@ impl<'de> Decode<'de> for ServerCoreData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerCoreOptionalData {
     pub client_requested_protocols: Option<SecurityProtocol>,
     pub early_capability_flags: Option<ServerEarlyCapabilityFlags>,
@@ -123,6 +125,7 @@ impl<'de> Decode<'de> for ServerCoreOptionalData {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct ServerEarlyCapabilityFlags: u32 {
         const EDGE_ACTIONS_SUPPORTED_V1 = 0x0000_0001;
         const DYNAMIC_DST_SUPPORTED = 0x0000_0002;

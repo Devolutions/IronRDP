@@ -9,7 +9,7 @@ use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, Conferenc
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::{X224Pdu, user_data_size};
-use crate::{DecodeResult, EncodeResult, PduError, impl_x224_pdu_borrowing, impl_x224_pdu_pod, per};
+use crate::{DecodeResult, EncodeResult, impl_x224_pdu_borrowing, impl_x224_pdu_pod, per};
 
 // T.125 MCS is defined in:
 //
@@ -264,6 +264,7 @@ fn write_mcspdu_header(dst: &mut WriteCursor<'_>, domain_mcspdu: DomainMcsPdu, o
 
 /// The kind of the RDP header message that may carry additional data.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum McsMessage<'a> {
     ErectDomainRequest(ErectDomainPdu),
     AttachUserRequest(AttachUserRequest),
@@ -371,6 +372,7 @@ impl<'de> McsPdu<'de> for McsMessage<'de> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ErectDomainPdu {
     pub sub_height: u32,
     pub sub_interval: u32,
@@ -408,6 +410,7 @@ impl<'de> McsPdu<'de> for ErectDomainPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct AttachUserRequest;
 
 impl_x224_pdu_pod!(AttachUserRequest);
@@ -433,6 +436,7 @@ impl<'de> McsPdu<'de> for AttachUserRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct AttachUserConfirm {
     pub result: u8,
     pub initiator_id: u16,
@@ -470,6 +474,7 @@ impl<'de> McsPdu<'de> for AttachUserConfirm {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ChannelJoinRequest {
     pub initiator_id: u16,
     pub channel_id: u16,
@@ -507,6 +512,7 @@ impl<'de> McsPdu<'de> for ChannelJoinRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ChannelJoinConfirm {
     pub result: u8,
     pub initiator_id: u16,
@@ -552,6 +558,7 @@ impl<'de> McsPdu<'de> for ChannelJoinConfirm {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SendDataRequest<'a> {
     pub initiator_id: u16,
     pub channel_id: u16,
@@ -629,6 +636,7 @@ impl<'de> McsPdu<'de> for SendDataRequest<'de> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SendDataIndication<'a> {
     pub initiator_id: u16,
     pub channel_id: u16,
@@ -707,6 +715,7 @@ impl<'de> McsPdu<'de> for SendDataIndication<'de> {
 
 /// The reason of `DisconnectProviderUltimatum`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u8)]
 pub enum DisconnectReason {
     DomainDisconnected = 0,
@@ -754,6 +763,7 @@ impl core::fmt::Display for DisconnectReason {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct DisconnectProviderUltimatum {
     pub reason: DisconnectReason,
 }
@@ -834,6 +844,7 @@ impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectInitial {
     pub conference_create_request: ConferenceCreateRequest,
     pub calling_domain_selector: Vec<u8>,
@@ -863,6 +874,7 @@ impl ConnectInitial {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectResponse {
     pub conference_create_response: ConferenceCreateResponse,
     pub called_connect_id: u32,
@@ -880,6 +892,7 @@ impl ConnectResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct DomainParameters {
     pub max_channel_ids: u32,
     pub max_user_ids: u32,
@@ -932,24 +945,19 @@ impl DomainParameters {
     }
 }
 
-pub use legacy::McsError;
-
 mod legacy {
     #![allow(
         clippy::multiple_inherent_impl,
         reason = "Cannot move the implementation from the legacy module"
     )]
 
-    use std::io;
-
     use ironrdp_core::{Decode, DecodeResult, Encode, cast_int};
-    use thiserror::Error;
 
     use super::{
-        ConnectInitial, ConnectResponse, DomainParameters, PduError, RESULT_ENUM_LENGTH, ReadCursor, WriteCursor,
-        cast_length, ensure_size,
+        ConnectInitial, ConnectResponse, DomainParameters, RESULT_ENUM_LENGTH, ReadCursor, WriteCursor, cast_length,
+        ensure_size,
     };
-    use crate::gcc::{ConferenceCreateRequest, ConferenceCreateResponse, GccError};
+    use crate::gcc::{ConferenceCreateRequest, ConferenceCreateResponse};
     use crate::{EncodeResult, ber};
 
     // impl<'de> McsPdu<'de> for ConnectInitial {
@@ -1174,36 +1182,6 @@ mod legacy {
                 max_mcs_pdu_size,
                 protocol_version,
             })
-        }
-    }
-
-    #[derive(Debug, Error)]
-    pub enum McsError {
-        #[error("IO error")]
-        IOError(#[from] io::Error),
-        #[error("GCC block error")]
-        GccError(#[from] GccError),
-        #[error("invalid disconnect provider ultimatum")]
-        InvalidDisconnectProviderUltimatum,
-        #[error("invalid domain MCS PDU")]
-        InvalidDomainMcsPdu,
-        #[error("invalid MCS Connection Sequence PDU")]
-        InvalidPdu(String),
-        #[error("invalid invalid MCS channel id")]
-        UnexpectedChannelId(String),
-        #[error("PDU error: {0}")]
-        Pdu(PduError),
-    }
-
-    impl From<PduError> for McsError {
-        fn from(e: PduError) -> Self {
-            Self::Pdu(e)
-        }
-    }
-
-    impl From<McsError> for io::Error {
-        fn from(e: McsError) -> io::Error {
-            io::Error::other(format!("MCS Connection Sequence error: {e}"))
         }
     }
 }
