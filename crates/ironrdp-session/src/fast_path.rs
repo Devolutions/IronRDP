@@ -197,11 +197,17 @@ impl Processor {
             // update.rectangle.height()). The apply_* methods use the rectangle's
             // width for row stride, so we must use a rectangle whose dimensions
             // match the actual bitmap data to avoid diagonal distortion.
+            //
+            // Per MS-RDPBCGR §2.2.9.1.1.3.1.2.2: "If the size of the bitmap data
+            // exceeds the size of the rectangle, the additional rows and columns
+            // MUST be discarded by the client." Clip to the smaller of the two.
+            let clipped_width = update.width.min(update.rectangle.width());
+            let clipped_height = update.height.min(update.rectangle.height());
             let blit_rect = InclusiveRectangle {
                 left: update.rectangle.left,
                 top: update.rectangle.top,
-                right: update.rectangle.left + update.width.saturating_sub(1),
-                bottom: update.rectangle.top + update.height.saturating_sub(1),
+                right: update.rectangle.left + clipped_width.saturating_sub(1),
+                bottom: update.rectangle.top + clipped_height.saturating_sub(1),
             };
 
             // Bitmap data is either compressed or uncompressed, depending
