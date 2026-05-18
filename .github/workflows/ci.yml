@@ -201,10 +201,64 @@ jobs:
       - name: Build .NET projects
         run: cd ./ffi/dotnet && dotnet build
 
+  feature-matrix-setup:
+    name: feature matrix setup
+    needs: [formatting]
+    runs-on: ubuntu-latest
+    outputs:
+      feature-matrix: ${{ steps.setup-matrix.outputs.feature-matrix }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.7.3
+
+      - name: Setup matrix
+        id: setup-matrix
+        run: |
+          MATRIX="$(cargo xtask check features --list --format github-matrix)"
+          echo "feature-matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  feature-matrix:
+    name: feature matrix [${{ matrix.case }}]
+    needs: [formatting, feature-matrix-setup]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.feature-matrix-setup.outputs.feature-matrix) }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install devel packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get -y install libasound2-dev
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.7.3
+
+      - name: Binary cache
+        uses: actions/cache@v5
+        with:
+          path: ./.cargo/local_root/bin
+          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
+
+      - name: Prepare
+        run: cargo xtask check install -v
+
+      - name: Run feature-matrix case
+        run: cargo xtask check features --case '${{ matrix.case }}' -v
+
+      - name: Lock files
+        run: cargo xtask check locks -v
+
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, typos, checks, fuzz, web, ffi]
+    needs: [formatting, typos, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:

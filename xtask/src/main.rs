@@ -10,6 +10,7 @@ mod check;
 mod clean;
 mod cli;
 mod cov;
+mod features;
 mod ffi;
 mod fuzz;
 mod prelude;
@@ -81,6 +82,19 @@ fn main() -> anyhow::Result<()> {
         Action::CheckTypos => {
             check::typos(&sh)?;
         }
+        Action::CheckFeatures { case, list, format } => {
+            if list {
+                match format.as_deref() {
+                    Some("github-matrix") => features::list_github_matrix()?,
+                    Some("human") | None => features::list_human()?,
+                    Some(other) => anyhow::bail!("unknown --format value: {other}"),
+                }
+            } else if let Some(case_name) = case {
+                features::run_case(&sh, &case_name)?;
+            } else {
+                features::run_all(&sh)?;
+            }
+        }
         Action::CheckInstall => {
             check::install(&sh)?;
         }
@@ -90,6 +104,7 @@ fn main() -> anyhow::Result<()> {
             check::tests_compile(&sh)?;
             check::tests_run(&sh)?;
             check::lints(&sh)?;
+            features::run_all(&sh)?;
             wasm::check(&sh)?;
             fuzz::run(&sh, None, None)?;
             web::install(&sh)?;
