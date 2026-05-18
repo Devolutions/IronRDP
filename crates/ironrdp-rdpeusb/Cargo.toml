@@ -12,7 +12,14 @@ categories.workspace = true
 
 publish = false
 
+[features]
+default = []
+std = []
+
 [dependencies]
+ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.7", features = ["alloc"] } # public
+ironrdp-str = { path = "../ironrdp-str", version = "0.1" }
 
 [lints]
 workspace = true
