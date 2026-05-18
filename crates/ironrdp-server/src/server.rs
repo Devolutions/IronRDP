@@ -11,6 +11,7 @@ use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
+use ironrdp_dvc as dvc;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
@@ -19,6 +20,7 @@ pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
+use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
@@ -28,7 +30,6 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, trace, warn};
-use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
 use crate::autodetect::{AutoDetectManager, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
@@ -512,6 +513,130 @@ impl RdpServer {
                 let (mut tls_stream, _) = framed.into_inner();
                 if let Err(e) = tls_stream.shutdown().await {
                     debug!(?e, "TLS shutdown error");
+                }
+            }
+
+            BeginResult::Continue(framed) => {
+                self.accept_finalize(framed, acceptor).await?;
+            }
+        };
+
+        Ok(())
+    }
+
+    /// Run a single RDP connection over a byte stream that has ALREADY been
+    /// transport-encrypted at a lower layer (typically a WSS terminator in a
+    /// proxy-shaped deployment).
+    ///
+    /// This is the proxy-shaped counterpart to [`run_connection`]: it walks
+    /// the same per-connection state machine but skips the IronRDP-managed
+    /// TLS handshake step, because the caller's `stream` is already past TLS.
+    /// After [`accept_begin`] reaches the security-upgrade gate,
+    /// [`Acceptor::mark_security_upgrade_as_done`] advances the state machine
+    /// without performing TLS, then the standard finalization runs.
+    ///
+    /// # Use case
+    ///
+    /// The motivating use case is the [RDCleanPath] protocol used by
+    /// Devolutions Gateway and Cloudflare's IronRDP-WASM deployment: an
+    /// RDCleanPath-aware client connects via WSS to a proxy (or, in the
+    /// embedded shape supported by this method, to a server that has its
+    /// own WSS terminator). The WSS layer terminates TLS end-to-end with
+    /// the client; the server side sees a post-TLS plaintext byte stream
+    /// and must not re-run TLS on it.
+    ///
+    /// # Preconditions (caller MUST guarantee)
+    ///
+    /// 1. The `stream` is already transport-encrypted by another layer
+    ///    (WSS, in-process, etc.). Calling this method on a plain TCP
+    ///    stream exposes RDP traffic in plaintext on the wire.
+    ///
+    /// 2. The connecting RDP client speaks a proxy protocol that informs
+    ///    it that TLS happened at a lower layer (e.g. RDCleanPath). Vanilla
+    ///    RDP clients (mstsc, xfreerdp) negotiate TLS based on the X.224
+    ///    selectedProtocol and have no concept of "TLS already done at a
+    ///    lower layer": they will hang or fail. Vanilla clients must use
+    ///    [`run_connection`] over the standard TCP+TLS path.
+    ///
+    /// 3. If `self.opts.security` is [`RdpServerSecurity::Hybrid`], the
+    ///    caller is responsible for ensuring the client supports CredSSP
+    ///    over this transport. The CredSSP exchange itself does not require
+    ///    the underlying transport's TLS (CredSSP carries its own crypto
+    ///    via TSRequest), so it works the same as in [`run_connection`].
+    ///
+    /// [RDCleanPath]: https://docs.rs/ironrdp-rdcleanpath
+    ///
+    /// # Wire-level invariant
+    ///
+    /// This method does NOT alter the X.224 negotiation. The acceptor still
+    /// advertises whatever `SecurityProtocol` it was constructed with, and the
+    /// connecting client still negotiates as normal. The only behaviour change
+    /// is that after the negotiation reaches the security-upgrade gate, no
+    /// TLS handshake is performed on the byte stream, because the caller's
+    /// stream is already past TLS at a lower layer (typically WSS).
+    ///
+    /// Earlier attempts to express "TLS already done" via wire-level signalling
+    /// (a new `RdpServerSecurity::PreSecured` variant that advertised
+    /// `PROTOCOL_SSL` while skipping the actual TLS handshake) failed
+    /// interop with vanilla clients: `PROTOCOL_SSL` selected on the X.224
+    /// wire is a mandatory TLS signal per MS-RDPBCGR, with no provision for
+    /// "TLS already happened elsewhere". RDCleanPath sidesteps this at a
+    /// higher layer rather than at the wire layer; that distinction is the
+    /// invariant this method preserves.
+    ///
+    /// # Synchronization with [`run_connection`]
+    ///
+    /// The body of this method mirrors [`run_connection`] except for the
+    /// single `tls_acceptor.accept(stream).await` call. If `run_connection`
+    /// is modified upstream, this method must be updated to match.
+    // NOTE: keep in sync with the ShouldUpgrade arm of run_connection above.
+    pub async fn run_connection_pre_authenticated<S>(&mut self, stream: S) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        let framed = TokioFramed::new(stream);
+
+        let size = self.display.lock().await.size().await;
+        let capabilities = capabilities::capabilities(&self.opts, size);
+        let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
+
+        self.attach_channels(&mut acceptor);
+
+        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
+            .await
+            .context("accept_begin failed")?;
+
+        match res {
+            BeginResult::ShouldUpgrade(inner_stream) => {
+                // The stream is already post-TLS (WSS terminator did the TLS at
+                // a lower layer). Re-wrap the inner stream in a fresh Framed;
+                // we do NOT call tls_acceptor.accept here.
+                let mut framed = TokioFramed::new(inner_stream);
+
+                acceptor.mark_security_upgrade_as_done();
+
+                if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
+                    // Generic streams don't expose peer address. Use a neutral
+                    // placeholder; it's unclear whether CredSSP/NTLM actually
+                    // uses this value in practice.
+                    let client_name = "rdp-client".to_owned();
+
+                    ironrdp_acceptor::accept_credssp(
+                        &mut framed,
+                        &mut acceptor,
+                        &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+                        client_name.into(),
+                        pub_key.clone(),
+                        None,
+                    )
+                    .await?;
+                }
+
+                let framed = self.accept_finalize(framed, acceptor).await?;
+                debug!("Shutting down pre-authenticated stream");
+                let (mut inner, _) = framed.into_inner();
+                if let Err(e) = inner.shutdown().await {
+                    debug!(?e, "pre-authenticated stream shutdown error");
                 }
             }
 
