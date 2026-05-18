@@ -45,6 +45,7 @@ const RESET_GRAPHICS_PDU_SIZE: usize = 340 - GfxPdu::FIXED_PART_SIZE;
 ///
 /// INVARIANTS: size of encoded inner PDU is always less than `u32::MAX - Self::FIXED_PART_SIZE`
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GfxPdu {
     WireToSurface1(WireToSurface1Pdu),
     WireToSurface2(WireToSurface2Pdu),
