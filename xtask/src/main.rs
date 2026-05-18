@@ -40,6 +40,10 @@ pub const FUZZ_TARGETS: &[&str] = &[
     "cliprdr_format",
     "cliprdr_channel_processing",
     "channel_processing",
+    "bulk_mppc",
+    "bulk_ncrush",
+    "bulk_xcrush",
+    "bulk_round_trip",
 ];
 
 fn main() -> anyhow::Result<()> {

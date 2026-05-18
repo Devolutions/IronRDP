@@ -26,3 +26,23 @@ fn check_pdu_decode() {
 fn check_cliprdr_format() {
     check!(cliprdr_format);
 }
+
+#[test]
+fn check_bulk_decompress_mppc() {
+    check!(bulk_decompress_mppc);
+}
+
+#[test]
+fn check_bulk_decompress_ncrush() {
+    check!(bulk_decompress_ncrush);
+}
+
+#[test]
+fn check_bulk_decompress_xcrush() {
+    check!(bulk_decompress_xcrush);
+}
+
+#[test]
+fn check_bulk_round_trip() {
+    check!(bulk_round_trip);
+}

@@ -11,6 +11,7 @@ test = false
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"] }
+ironrdp-bulk.path = "../ironrdp-bulk"
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-pdu.path = "../ironrdp-pdu"
