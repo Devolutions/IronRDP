@@ -57,13 +57,20 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-mod bitstream;
-mod bulk;
 mod error;
+
+#[cfg(feature = "alloc")]
+mod bitstream;
+#[cfg(feature = "alloc")]
+mod bulk;
+#[cfg(feature = "alloc")]
 mod mppc;
+#[cfg(feature = "alloc")]
 mod ncrush;
+#[cfg(feature = "alloc")]
 mod xcrush;
 
+#[cfg(feature = "alloc")]
 pub use self::bulk::BulkCompressor;
 pub use self::error::BulkError;
 
