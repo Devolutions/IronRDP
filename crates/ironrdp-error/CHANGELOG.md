@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- Make fields of Error private ([#1074](https://github.com/Devolutions/IronRDP/issues/1074)) ([e51ed236ce](https://github.com/Devolutions/IronRDP/commit/e51ed236ce5d55dc1a4bc5f5809fd106bdd2e834)) 
+- [**breaking**] Make fields of Error private ([#1074](https://github.com/Devolutions/IronRDP/issues/1074)) ([e51ed236ce](https://github.com/Devolutions/IronRDP/commit/e51ed236ce5d55dc1a4bc5f5809fd106bdd2e834)) 
 
 - Box diagnostic metadata to shrink Error<Kind> size ([#1269](https://github.com/Devolutions/IronRDP/issues/1269)) ([2e2699d2dc](https://github.com/Devolutions/IronRDP/commit/2e2699d2dc6644d5bbc87f41a987a2db90d281a8)) 
 

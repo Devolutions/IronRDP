@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [**breaking**] Update public dependencies (ironrdp-pdu 0.8, ironrdp-svc 0.7, ironrdp-acceptor 0.9, ironrdp-graphics 0.8, ironrdp-rdpsnd 0.8; breaking changes propagated via public API)
 
+- Bump rayon from 1.11.0 to 1.12.0 ([#1235](https://github.com/Devolutions/IronRDP/issues/1235)) ([a5dab356e5](https://github.com/Devolutions/IronRDP/commit/a5dab356e5bc29cde2fdcd71b6d11fdf38a96a9f))
 
 ### <!-- 1 -->Features
 
@@ -131,10 +132,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The MSRV is the oldest stable Rust release that is at least 6 months
   old, bounded by the Rust version available in Debian stable-backports
   and Fedora stable.
-
-### <!-- 7 -->Build
-
-- Bump rayon from 1.11.0 to 1.12.0 ([#1235](https://github.com/Devolutions/IronRDP/issues/1235)) ([a5dab356e5](https://github.com/Devolutions/IronRDP/commit/a5dab356e5bc29cde2fdcd71b6d11fdf38a96a9f)) 
 
 ### <!-- 99 -->Please Sort
 

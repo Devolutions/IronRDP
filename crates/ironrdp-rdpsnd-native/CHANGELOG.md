@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [**breaking**] Update public dependencies (ironrdp-rdpsnd 0.8; breaking changes propagated via public API)
 
+- Bump cpal from 0.16.0 to 0.17.1 ([#1071](https://github.com/Devolutions/IronRDP/issues/1071)) ([71245d58cc](https://github.com/Devolutions/IronRDP/commit/71245d58ccfb35dcc403628000ac2649b4bf9697)) 
+
+- Bump opus2 from 0.3.3 to 0.4.0 ([#1204](https://github.com/Devolutions/IronRDP/issues/1204)) ([1eaf333057](https://github.com/Devolutions/IronRDP/commit/1eaf333057bec13778d78be2b2e71ca429733ee9))
 
 ### <!-- 6 -->Documentation
 
@@ -20,11 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old, bounded by the Rust version available in Debian stable-backports
   and Fedora stable.
 
-### <!-- 7 -->Build
-
-- Bump cpal from 0.16.0 to 0.17.1 ([#1071](https://github.com/Devolutions/IronRDP/issues/1071)) ([71245d58cc](https://github.com/Devolutions/IronRDP/commit/71245d58ccfb35dcc403628000ac2649b4bf9697)) 
-
-- Bump opus2 from 0.3.3 to 0.4.0 ([#1204](https://github.com/Devolutions/IronRDP/issues/1204)) ([1eaf333057](https://github.com/Devolutions/IronRDP/commit/1eaf333057bec13778d78be2b2e71ca429733ee9)) 
 
 ## [[0.4.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.4.0...ironrdp-rdpsnd-native-v0.4.1)] - 2025-09-24
 

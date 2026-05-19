@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [**breaking**] Update public dependencies (ironrdp-pdu 0.8, ironrdp-connector 0.9, ironrdp-session 0.9, ironrdp-svc 0.7, ironrdp-graphics 0.8; breaking changes propagated via public API)
 
+- Bump the patch group across 1 directory with 3 updates ([#1170](https://github.com/Devolutions/IronRDP/issues/1170)) ([ecc0504644](https://github.com/Devolutions/IronRDP/commit/ecc0504644c87b476173eaca5c7f85bda69a6817)) 
+
+- Upgrade sspi to 0.19, picky to rc.22, fix NTLM fallback ([#1188](https://github.com/Devolutions/IronRDP/issues/1188)) ([c70d38a9f1](https://github.com/Devolutions/IronRDP/commit/c70d38a9f190d6ad6c84bd9027a388b5db3296ba)) 
+
+- Bump opus2 from 0.3.3 to 0.4.0 ([#1204](https://github.com/Devolutions/IronRDP/issues/1204)) ([1eaf333057](https://github.com/Devolutions/IronRDP/commit/1eaf333057bec13778d78be2b2e71ca429733ee9)) 
+
+- Bump sspi from 0.19.2 to 0.20.0 ([#1250](https://github.com/Devolutions/IronRDP/issues/1250)) ([a00f51d957](https://github.com/Devolutions/IronRDP/commit/a00f51d95776a48447705f0eb6424ba54e8943a9))
 
 ### <!-- 0 -->Security
 
@@ -49,15 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old, bounded by the Rust version available in Debian stable-backports
   and Fedora stable.
 
-### <!-- 7 -->Build
-
-- Bump the patch group across 1 directory with 3 updates ([#1170](https://github.com/Devolutions/IronRDP/issues/1170)) ([ecc0504644](https://github.com/Devolutions/IronRDP/commit/ecc0504644c87b476173eaca5c7f85bda69a6817)) 
-
-- Upgrade sspi to 0.19, picky to rc.22, fix NTLM fallback ([#1188](https://github.com/Devolutions/IronRDP/issues/1188)) ([c70d38a9f1](https://github.com/Devolutions/IronRDP/commit/c70d38a9f190d6ad6c84bd9027a388b5db3296ba)) 
-
-- Bump opus2 from 0.3.3 to 0.4.0 ([#1204](https://github.com/Devolutions/IronRDP/issues/1204)) ([1eaf333057](https://github.com/Devolutions/IronRDP/commit/1eaf333057bec13778d78be2b2e71ca429733ee9)) 
-
-- Bump sspi from 0.19.2 to 0.20.0 ([#1250](https://github.com/Devolutions/IronRDP/issues/1250)) ([a00f51d957](https://github.com/Devolutions/IronRDP/commit/a00f51d95776a48447705f0eb6424ba54e8943a9)) 
 
 ## [[0.14.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.13.0...ironrdp-v0.14.0)] - 2025-12-18
 

@@ -34,21 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Added Share Data PDU dispatch support for auto-detect PDUs, improving compatibility with Windows servers.
 
-- Complete pixel format support for bitmap updates ([#1134](https://github.com/Devolutions/IronRDP/issues/1134)) ([a6b41093ce](https://github.com/Devolutions/IronRDP/commit/a6b41093ce4ece081d2538c157f6bc547c3b2607)) 
-
-  Wires missing bitmap pixel formats (8/15/24bpp) into the session rendering
-  pipeline so bitmap updates at those depths are rendered instead of being
-  dropped, and adds fast-path palette update parsing to support 8bpp indexed
-  color sessions.
-
 - Add RemoteFX Progressive codec primitives ([#1196](https://github.com/Devolutions/IronRDP/issues/1196)) ([49099f0c31](https://github.com/Devolutions/IronRDP/commit/49099f0c3136c25b67801fb1b07f78542dc796de)) 
 
   Add wire-format types for RemoteFX Progressive Codec (MS-RDPRFX
   Progressive Extension) and the computational primitives required for progressive refinement.
 
-- Handle slow-path graphics and pointer updates ([#1132](https://github.com/Devolutions/IronRDP/issues/1132)) ([9383380292](https://github.com/Devolutions/IronRDP/commit/938338029290f1be82a7f784d544bb77ac797aeb)) 
+- Add SlowPath graphics update PDU types ([#1132](https://github.com/Devolutions/IronRDP/issues/1132)) ([9383380292](https://github.com/Devolutions/IronRDP/commit/938338029290f1be82a7f784d544bb77ac797aeb)) 
 
-  Adds support for slow-path graphics and pointer updates to IronRDP, fixing connectivity issues with servers like XRDP that use slow-path output instead of fast-path. The implementation parses slow-path framing headers and routes the inner payload structures through the existing fast-path processing pipeline by extracting shared bitmap and pointer processing methods.
+  Add the `SlowPathGraphicsUpdate` PDU structure and its inner update types
+  (bitmap, palette, orders) to support slow-path graphics output from
+  servers such as XRDP.
 
 - Add arbitrary feature for structure-aware fuzzing ([#1272](https://github.com/Devolutions/IronRDP/issues/1272)) ([af11df1fd0](https://github.com/Devolutions/IronRDP/commit/af11df1fd0d3c7fdc27f280bea17c3b2296a47fd)) 
 

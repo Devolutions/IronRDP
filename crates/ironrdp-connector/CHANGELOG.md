@@ -51,8 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MultiTransportChannelData GCC block during connection negotiation.
   When None (the default), behavior is unchanged.
 
-- Add arbitrary feature for structure-aware fuzzing ([#1272](https://github.com/Devolutions/IronRDP/issues/1272)) ([af11df1fd0](https://github.com/Devolutions/IronRDP/commit/af11df1fd0d3c7fdc27f280bea17c3b2296a47fd)) 
-
 ### <!-- 4 -->Bug Fixes
 
 - Make fields of Error private ([#1074](https://github.com/Devolutions/IronRDP/issues/1074)) ([e51ed236ce](https://github.com/Devolutions/IronRDP/commit/e51ed236ce5d55dc1a4bc5f5809fd106bdd2e834)) 
