@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
 
     let client = RdpClient {
         config,
-        event_loop_proxy,
+        output_event_sender: Box::new(event_loop_proxy),
         input_event_receiver,
         cliprdr_factory,
         dvc_pipe_proxy_factory,
