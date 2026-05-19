@@ -90,18 +90,22 @@ pub fn bulk_round_trip(data: &[u8]) {
     let Ok((compressed_size, compress_flags)) = sender.compress(src) else {
         return;
     };
-    if compress_flags & flags::PACKET_COMPRESSED == 0 {
-        // Source was returned unchanged (too small or too large to compress);
-        // round-trip is vacuously true.
-        return;
-    }
-    let compressed = sender.compressed_data(compressed_size).to_vec();
+    // Per `BulkCompressor::compress`'s contract, when `PACKET_COMPRESSED` is
+    // cleared the caller transmits `src` unchanged; the output buffer holds
+    // no meaningful data in that case. Selecting the wire payload here
+    // exercises both the real compressed path and the decompressor's
+    // pass-through branch on uncompressible inputs.
+    let payload = if compress_flags & flags::PACKET_COMPRESSED == 0 {
+        src
+    } else {
+        sender.compressed_data(compressed_size)
+    };
 
     let Ok(mut receiver) = BulkCompressor::new(algo) else {
         return;
     };
     let decompressed = receiver
-        .decompress(&compressed, compress_flags)
+        .decompress(payload, compress_flags)
         .unwrap_or_else(|e| panic!("bulk round-trip decompress failed for {algo:?}: {e:?}"));
     assert_eq!(decompressed, src, "bulk round-trip byte-equality failed for {algo:?}",);
 }
