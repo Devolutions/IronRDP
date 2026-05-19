@@ -15,6 +15,11 @@ TASKS:
   check locks             Check for dirty or staged lock files not yet committed
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
   check typos             Check for typos in the codebase
+  check features          Run every feature-matrix case sequentially
+  check features --case <NAME>
+                          Run a single feature-matrix case
+  check features --list [--format <FMT>]
+                          List feature-matrix cases (fmt: human (default) | github-matrix)
   check install           Install all requirements for check tasks
   ci                      Run all checks required on CI
   clean                   Clean workspace
@@ -62,6 +67,11 @@ pub enum Action {
         no_run: bool,
     },
     CheckTypos,
+    CheckFeatures {
+        case: Option<String>,
+        list: bool,
+        format: Option<String>,
+    },
     CheckInstall,
     Ci,
     Clean,
@@ -116,6 +126,11 @@ pub fn parse_args() -> anyhow::Result<Args> {
                     no_run: args.contains("--no-run"),
                 },
                 Some("typos") => Action::CheckTypos,
+                Some("features") => Action::CheckFeatures {
+                    case: args.opt_value_from_str("--case")?,
+                    list: args.contains("--list"),
+                    format: args.opt_value_from_str("--format")?,
+                },
                 Some("install") => Action::CheckInstall,
                 Some(unknown) => anyhow::bail!("unknown check action: {unknown}"),
                 None => Action::ShowHelp,
