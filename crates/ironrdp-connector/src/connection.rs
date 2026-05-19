@@ -96,12 +96,21 @@ pub enum ClientConnectorState {
         /// Multitransport requests received from the server so far.
         requests: Vec<rdp::multitransport::MultitransportRequestPdu>,
     },
-    /// The server sent multitransport request(s) and the connector is paused
-    /// waiting for the application to establish UDP transport or decline.
+    /// State the connector enters after the server has sent multitransport
+    /// request(s) and before resuming with the Demand Active PDU. The
+    /// connector surfaces this as an API yield point so the caller can run
+    /// UDP transport setup and report the outcome.
     ///
     /// Call [`ClientConnector::complete_multitransport()`] or
     /// [`ClientConnector::skip_multitransport()`] to advance. The buffered
-    /// Demand Active PDU is replayed internally — no re-feeding needed.
+    /// Demand Active PDU is replayed internally on resume; the caller does
+    /// not need to re-feed it.
+    ///
+    /// On the wire, TCP and UDP negotiation happen in parallel: the UDP
+    /// transport is established alongside the ongoing TCP handshake, and
+    /// its completion is a signal to the dynamic-channel layer that
+    /// subsequent channels may migrate to UDP. The connector's suspension
+    /// here is a Rust-API affordance, not a spec-mandated TCP pause.
     MultitransportPending {
         io_channel_id: u16,
         user_channel_id: u16,
