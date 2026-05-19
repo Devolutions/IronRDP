@@ -16,14 +16,14 @@ qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
 anyhow = "1"
-async-trait = "0.1.89"
+async-trait = "0.1"
 bytesize = "2.3"
 ironrdp = { path = "../crates/ironrdp", features = [
     "server",
     "pdu",
     "__bench",
 ] }
-pico-args = "0.5.0"
+pico-args = "0.5"
 tokio = { version = "1", features = ["sync", "fs", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = { version = "0.1", features = ["log"] }
