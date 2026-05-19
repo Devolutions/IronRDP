@@ -2353,7 +2353,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp"
-version = "0.14.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2387,7 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-acceptor"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
@@ -2399,7 +2399,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-ainput"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bitflags 2.11.1",
  "ironrdp-core",
@@ -2497,7 +2497,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-cliprdr"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bitflags 2.11.1",
  "ironrdp-core",
@@ -2517,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-cliprdr-native"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-core",
@@ -2551,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -2562,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc-pipe-proxy"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "ironrdp-core",
@@ -2599,7 +2599,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-echo"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -2627,7 +2627,7 @@ version = "0.2.0"
 
 [[package]]
 name = "ironrdp-futures"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "futures-util",
  "ironrdp-async",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "bit_field",
  "bitflags 2.11.1",
@@ -2669,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-input"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bitvec",
  "ironrdp-pdu",
@@ -2739,7 +2739,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bitflags 2.11.1",
  "ironrdp-core",
@@ -2751,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr-native"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -2779,7 +2779,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "bitflags 2.11.1",
  "ironrdp-core",
@@ -2790,7 +2790,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd-native"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-server"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2865,7 +2865,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "bitflags 2.11.1",
  "ironrdp-core",
@@ -2942,7 +2942,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-tokio"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",

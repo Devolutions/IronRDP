@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.8.0...ironrdp-acceptor-v0.8.1)] - 2026-05-19
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.8.0...ironrdp-acceptor-v0.9.0)] - 2026-05-19
+### <!-- 7 -->Build
+
+- [**breaking**] Update public dependencies (ironrdp-pdu 0.8, ironrdp-connector 0.9, ironrdp-async 0.9; breaking changes propagated via public API)
+
 
 ### <!-- 0 -->Security
 
@@ -31,12 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The MSRV is the oldest stable Rust release that is at least 6 months
   old, bounded by the Rust version available in Debian stable-backports
   and Fedora stable.
-
-### <!-- 7 -->Build
-
 - Upgrade sspi to 0.19, picky to rc.22, fix NTLM fallback ([#1188](https://github.com/Devolutions/IronRDP/issues/1188)) ([c70d38a9f1](https://github.com/Devolutions/IronRDP/commit/c70d38a9f190d6ad6c84bd9027a388b5db3296ba)) 
-
-
 
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.7.0...ironrdp-acceptor-v0.8.0)] - 2025-12-18
 

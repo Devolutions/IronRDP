@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [[0.14.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.14.0...ironrdp-v0.14.1)] - 2026-05-19
+## [[0.15.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.14.0...ironrdp-v0.15.0)] - 2026-05-19
+### <!-- 7 -->Build
+
+- [**breaking**] Update public dependencies (ironrdp-pdu 0.8, ironrdp-connector 0.9, ironrdp-session 0.9, ironrdp-svc 0.7, ironrdp-graphics 0.8; breaking changes propagated via public API)
+
 
 ### <!-- 0 -->Security
 
@@ -54,8 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump opus2 from 0.3.3 to 0.4.0 ([#1204](https://github.com/Devolutions/IronRDP/issues/1204)) ([1eaf333057](https://github.com/Devolutions/IronRDP/commit/1eaf333057bec13778d78be2b2e71ca429733ee9)) 
 
 - Bump sspi from 0.19.2 to 0.20.0 ([#1250](https://github.com/Devolutions/IronRDP/issues/1250)) ([a00f51d957](https://github.com/Devolutions/IronRDP/commit/a00f51d95776a48447705f0eb6424ba54e8943a9)) 
-
-
 
 ## [[0.14.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.13.0...ironrdp-v0.14.0)] - 2025-12-18
 

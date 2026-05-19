@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [[0.5.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.5.0...ironrdp-cliprdr-native-v0.5.1)] - 2026-05-19
+## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.5.0...ironrdp-cliprdr-native-v0.6.0)] - 2026-05-19
+### <!-- 7 -->Build
+
+- [**breaking**] Update public dependencies (ironrdp-cliprdr 0.6; breaking changes propagated via public API)
+
 
 ### <!-- 1 -->Features
 
