@@ -94,7 +94,7 @@ pub fn bulk_round_trip(data: &[u8]) {
     // cleared the caller transmits `src` unchanged; the output buffer holds
     // no meaningful data in that case. Selecting the wire payload here
     // exercises both the real compressed path and the decompressor's
-    // pass-through branch on uncompressible inputs.
+    // pass-through branch on incompressible inputs.
     let payload = if compress_flags & flags::PACKET_COMPRESSED == 0 {
         src
     } else {
