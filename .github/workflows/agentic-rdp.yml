@@ -33,35 +33,6 @@ jobs:
       - name: Build ironrdp-agent
         run: cargo build -p ironrdp-agent --release
 
-      - name: Probe test VM RDP endpoint
-        shell: pwsh
-        run: |
-          $artifactsDir = Join-Path $env:GITHUB_WORKSPACE 'artifacts\agentic-rdp'
-          New-Item -Path $artifactsDir -ItemType Directory -Force | Out-Null
-          $hostName = '${{ vars.IRONRDP_AGENT_E2E_HOST }}'
-          if ([string]::IsNullOrWhiteSpace($hostName)) {
-            $hostName = 'IT-HELP-TEST'
-          }
-
-          $addresses = @()
-          try {
-            $addresses = @(Resolve-DnsName -Name $hostName -ErrorAction Stop | Select-Object -ExpandProperty IPAddress -ErrorAction SilentlyContinue)
-          }
-          catch {
-            Write-Warning "DNS lookup failed for ${hostName}: $($_.Exception.Message)"
-          }
-
-          $tcp = Test-NetConnection -ComputerName $hostName -Port 3389 -WarningAction SilentlyContinue
-          [pscustomobject]@{
-            HostName = $hostName
-            Addresses = @($addresses)
-            TcpTestSucceeded = [bool] $tcp.TcpTestSucceeded
-            RemoteAddress = [string] $tcp.RemoteAddress
-            RemotePort = [int] $tcp.RemotePort
-            InterfaceAlias = [string] $tcp.InterfaceAlias
-            SourceAddress = [string] $tcp.SourceAddress
-          } | ConvertTo-Json -Depth 6 | Tee-Object -FilePath (Join-Path $artifactsDir 'test-vm-probe.json')
-
       - name: Run agentic RDP scenario
         shell: pwsh
         run: |
