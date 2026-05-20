@@ -86,6 +86,7 @@ const MAX_DECOMPRESSED_BUFFER_CAPACITY: usize = 16384; // 16 KiB
 ///
 /// [MS-RDPEGFX 3.3.1.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/83cb08ff-c97f-4d08-b834-7aa69cdea6c5
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Surface {
     /// Surface identifier (assigned by server)
     pub id: u16,
@@ -109,6 +110,7 @@ pub struct Surface {
 
 /// Codec capabilities determined from negotiated capability set
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct CodecCapabilities {
     /// AVC420 (H.264 4:2:0) is available
     pub avc420: bool,
@@ -183,6 +185,7 @@ impl CodecCapabilities {
 /// Delivered to [`GraphicsPipelineHandler::on_bitmap_updated`] when
 /// a `WireToSurface1` PDU is processed with decoded pixel data.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct BitmapUpdate {
     /// Surface this update applies to
     pub surface_id: u16,

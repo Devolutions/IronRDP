@@ -120,6 +120,7 @@ impl DvcEncode for ZgfxWrappedBytes {}
 /// Per MS-RDPEGFX, the server maintains an "Offscreen Surfaces ADM element"
 /// which is a list of surfaces created on the client.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Surface {
     /// Surface identifier (unique per session)
     pub id: u16,
@@ -229,6 +230,7 @@ impl Surfaces {
 /// Per MS-RDPEGFX, the server maintains an "Unacknowledged Frames ADM element"
 /// which tracks frames sent but not yet acknowledged.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FrameInfo {
     /// Frame identifier
     pub frame_id: u32,
@@ -242,6 +244,7 @@ pub struct FrameInfo {
 
 /// Quality of Experience metrics from client
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct QoeMetrics {
     /// Frame ID this relates to
     pub frame_id: u32,
@@ -423,6 +426,7 @@ impl Default for QoeCollector {
 ///
 /// Returned by [`GraphicsPipelineServer::qoe_snapshot()`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct QoeSnapshot {
     /// Total QoE reports received from client.
     pub total_qoe_reports: u64,
@@ -607,6 +611,7 @@ impl FrameTracker {
 
 /// Codec capabilities determined from negotiation
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct CodecCapabilities {
     /// AVC420 (H.264 4:2:0) is available
     pub avc420: bool,

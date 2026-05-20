@@ -70,11 +70,7 @@ impl H264Decoder for MockH264Decoder {
             pixel[0] = 255; // R
             pixel[3] = 255; // A
         }
-        Ok(DecodedFrame {
-            data,
-            width: 16,
-            height: 16,
-        })
+        Ok(DecodedFrame::new(data, 16, 16))
     }
 }
 

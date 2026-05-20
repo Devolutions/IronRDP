@@ -27,6 +27,7 @@ use core::fmt;
 /// The pixel data is in RGBA format (4 bytes per pixel),
 /// row-major, top-to-bottom, left-to-right.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct DecodedFrame {
     /// RGBA pixel data (4 bytes per pixel)
     pub data: Vec<u8>,
@@ -34,6 +35,21 @@ pub struct DecodedFrame {
     pub width: u32,
     /// Frame height in pixels
     pub height: u32,
+}
+
+impl DecodedFrame {
+    #[expect(
+        clippy::as_conversions,
+        reason = "usize to u64 is lossless on all supported platforms (32/64-bit)"
+    )]
+    pub fn new(data: Vec<u8>, width: u32, height: u32) -> Self {
+        debug_assert_eq!(
+            data.len() as u64,
+            u64::from(width).saturating_mul(u64::from(height)).saturating_mul(4),
+            "DecodedFrame buffer must be RGBA8888 (width * height * 4 bytes)",
+        );
+        Self { data, width, height }
+    }
 }
 
 impl fmt::Debug for DecodedFrame {
@@ -52,6 +68,7 @@ impl fmt::Debug for DecodedFrame {
 
 /// Error type for decoder operations
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct DecoderError {
     context: String,
     source: Option<Box<dyn core::error::Error + Send + Sync>>,
@@ -149,8 +166,9 @@ pub trait H264Decoder: Send {
 
 #[cfg(feature = "openh264")]
 mod openh264_impl {
-    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
     use tracing::warn;
+
+    use super::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
 
     /// H.264 decoder backed by Cisco's OpenH264 library
     ///
