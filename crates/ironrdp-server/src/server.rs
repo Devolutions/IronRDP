@@ -41,7 +41,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
-use crate::error::{ServerError, ServerErrorExt as _, ServerResult, from_anyhow};
+use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _, from_anyhow};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -400,7 +400,7 @@ pub enum TransportTls {
 /// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay, RdpServerDisplayUpdates};
 ///
 ///# use anyhow::Result;
-///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent};
+///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent, ServerResult};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
 ///# impl RdpServerInputHandler for NoopInputHandler {
@@ -417,7 +417,7 @@ pub enum TransportTls {
 ///#         todo!()
 ///#     }
 ///# }
-///# async fn stub() -> Result<()> {
+///# async fn stub() -> ServerResult<()> {
 /// fn make_tls_acceptor() -> TlsAcceptor {
 ///    /* snip */
 ///#    todo!()
@@ -752,7 +752,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         let pdu = rdp::headers::ShareDataPdu::SaveSessionInfo(rdp::session_info::SaveSessionInfoPdu {
             info_type: rdp::session_info::InfoType::LogonExtended,
             info_data: rdp::session_info::InfoData::LogonExtended(rdp::session_info::LogonInfoExtended {
@@ -762,7 +762,10 @@ impl RdpServer {
             }),
         });
         let data = encode_share_data_pdu(pdu, io_channel_id, user_channel_id)?;
-        writer.write_all(&data).await.context("send auto-reconnect cookie")?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("send auto-reconnect cookie", e))?;
         debug!("Sent Server Auto-Reconnect Cookie (Save Session Info PDU)");
 
         Ok(())
@@ -773,7 +776,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         let Some(cookie) = self.next_auto_reconnect_cookie() else {
             return Ok(());
         };
@@ -789,7 +792,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         if !self.supports_auto_reconnect() {
             return Ok(());
         }
@@ -811,7 +814,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         let Some(cookie) = cookie else {
             self.set_auto_reconnect_cookie(None);
             return Ok(());
@@ -1655,7 +1658,7 @@ impl RdpServer {
             if !self.verify_auto_reconnect_cookie(reconnect) {
                 warn!("Auto-reconnect cookie validation rejected");
                 send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                bail!("auto-reconnect cookie validation rejected");
+                return Err(ServerError::reason("auto-reconnect validation", "cookie rejected"));
             }
 
             debug!("Auto-reconnect cookie validation accepted");
@@ -1806,11 +1809,7 @@ impl RdpServer {
 
         let desktop_size = self.display.lock().await.size().await;
         let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs, self.opts.max_request_size)
-            .map_err(|e| {
-                let mut e = e;
-                e.set_context("failed to initialize update encoder");
-                e
-            })?;
+            .with_context("failed to initialize update encoder")?;
 
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
             .await?;
@@ -1825,11 +1824,7 @@ impl RdpServer {
                 encoder,
             )
             .await
-            .map_err(|e| {
-                let mut e = e;
-                e.set_context("client loop failure");
-                e
-            })?;
+            .with_context("client loop failure")?;
 
         Ok(state)
     }
