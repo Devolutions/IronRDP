@@ -1,7 +1,7 @@
 use core::fmt;
 use core::num::NonZeroU16;
 
-use crate::error::{ServerError, ServerErrorExt as _, ServerResult};
+use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{Rect, find_different_rects_sub};
 use ironrdp_pdu::encode_vec;
@@ -119,9 +119,9 @@ impl UpdateEncoder {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             match codecs {
                 #[cfg(feature = "qoiz")]
-                UpdateEncoderCodecs { qoiz: Some(id), .. } => BitmapUpdater::Qoiz(
-                    QoizHandler::new(id).map_err(|e| ServerError::custom("failed to initialize qoiz handler", e))?,
-                ),
+                UpdateEncoderCodecs { qoiz: Some(id), .. } => {
+                    BitmapUpdater::Qoiz(QoizHandler::new(id).with_context("failed to initialize qoiz handler")?)
+                }
                 #[cfg(feature = "qoi")]
                 UpdateEncoderCodecs { qoi: Some(id), .. } => BitmapUpdater::Qoi(QoiHandler::new(id)),
                 UpdateEncoderCodecs {
