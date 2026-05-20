@@ -55,3 +55,31 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "bulk_mppc"
+path = "fuzz_targets/bulk_mppc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bulk_ncrush"
+path = "fuzz_targets/bulk_ncrush.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bulk_xcrush"
+path = "fuzz_targets/bulk_xcrush.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bulk_round_trip"
+path = "fuzz_targets/bulk_round_trip.rs"
+test = false
+doc = false
+bench = false
+

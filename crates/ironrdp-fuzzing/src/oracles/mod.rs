@@ -12,6 +12,104 @@
 
 use crate::generators::BitmapInput;
 
+// Bulk decompression oracles. Each target is algorithm-pinned so libFuzzer
+// can build a per-algorithm corpus. The `flags` byte uses the bit layout
+// from `ironrdp-bulk::flags`: low nibble selects the algorithm (per
+// `CompressionType::from_flags`), `PACKET_COMPRESSED (0x20)` gates whether
+// the decompressor will actually run (otherwise it returns the source slice
+// unchanged).
+
+pub fn bulk_decompress_mppc(data: &[u8]) {
+    use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
+
+    // First byte selects RDP4 (low bit clear) vs RDP5 (low bit set) so a
+    // single corpus exercises both MPPC modes via libFuzzer mutation across
+    // the byte boundary.
+    let Some((mode_byte, payload)) = data.split_first() else {
+        return;
+    };
+    let (comp_type, algo_bits) = if mode_byte & 0x01 == 0 {
+        (CompressionType::Rdp4, 0x00)
+    } else {
+        (CompressionType::Rdp5, 0x01)
+    };
+    let Ok(mut bulk) = BulkCompressor::new(comp_type) else {
+        return;
+    };
+    let _ = bulk.decompress(payload, flags::PACKET_COMPRESSED | algo_bits);
+}
+
+pub fn bulk_decompress_ncrush(data: &[u8]) {
+    use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
+
+    let Ok(mut bulk) = BulkCompressor::new(CompressionType::Rdp6) else {
+        return;
+    };
+    let _ = bulk.decompress(data, flags::PACKET_COMPRESSED | 0x02);
+}
+
+pub fn bulk_decompress_xcrush(data: &[u8]) {
+    use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
+
+    let Ok(mut bulk) = BulkCompressor::new(CompressionType::Rdp61) else {
+        return;
+    };
+    let _ = bulk.decompress(data, flags::PACKET_COMPRESSED | 0x03);
+}
+
+/// Round-trip oracle: compress uncompressed input then decompress the result,
+/// assert byte-equality with the original. `BulkCompressor` holds both halves;
+/// a fresh compressor and decompressor are constructed per call to avoid
+/// sliding-window state leaking between fuzz iterations.
+///
+/// # Panics
+///
+/// Panics (reporting the bug to libFuzzer) when:
+/// - `decompress` returns `Err` on input that `compress` just produced
+///   (asymmetric compress/decompress bug), or
+/// - the decompressed output does not equal the original input
+///   (silent corruption bug in either half).
+#[expect(clippy::panic, reason = "panic is the libFuzzer bug-reporting mechanism")]
+pub fn bulk_round_trip(data: &[u8]) {
+    use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
+
+    // First byte selects algorithm; remaining bytes are the uncompressed input.
+    let Some((algo_byte, src)) = data.split_first() else {
+        return;
+    };
+    let algo = match algo_byte & 0x03 {
+        0x00 => CompressionType::Rdp4,
+        0x01 => CompressionType::Rdp5,
+        0x02 => CompressionType::Rdp6,
+        _ => CompressionType::Rdp61,
+    };
+
+    let Ok(mut sender) = BulkCompressor::new(algo) else {
+        return;
+    };
+    let Ok((compressed_size, compress_flags)) = sender.compress(src) else {
+        return;
+    };
+    // Per `BulkCompressor::compress`'s contract, when `PACKET_COMPRESSED` is
+    // cleared the caller transmits `src` unchanged; the output buffer holds
+    // no meaningful data in that case. Selecting the wire payload here
+    // exercises both the real compressed path and the decompressor's
+    // pass-through branch on incompressible inputs.
+    let payload = if compress_flags & flags::PACKET_COMPRESSED == 0 {
+        src
+    } else {
+        sender.compressed_data(compressed_size)
+    };
+
+    let Ok(mut receiver) = BulkCompressor::new(algo) else {
+        return;
+    };
+    let decompressed = receiver
+        .decompress(payload, compress_flags)
+        .unwrap_or_else(|e| panic!("bulk round-trip decompress failed for {algo:?}: {e:?}"));
+    assert_eq!(decompressed, src, "bulk round-trip byte-equality failed for {algo:?}",);
+}
+
 pub fn pdu_decode(data: &[u8]) {
     use ironrdp_core::decode;
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};

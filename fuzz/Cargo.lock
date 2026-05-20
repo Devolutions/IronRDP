@@ -286,6 +286,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-bulk"
+version = "0.1.0"
+
+[[package]]
 name = "ironrdp-cliprdr"
 version = "0.5.0"
 dependencies = [
@@ -350,6 +354,7 @@ name = "ironrdp-fuzzing"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "ironrdp-bulk",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
  "ironrdp-core",

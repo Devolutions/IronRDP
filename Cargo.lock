@@ -2639,6 +2639,7 @@ name = "ironrdp-fuzzing"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "ironrdp-bulk",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
  "ironrdp-core",

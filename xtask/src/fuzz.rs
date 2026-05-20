@@ -83,7 +83,7 @@ pub fn run(sh: &Shell, duration: Option<u32>, target: Option<String>) -> anyhow:
     for target in targets {
         cmd!(
             sh,
-            "rustup run {NIGHTLY_TOOLCHAIN} cargo fuzz run {target} -- -max_total_time={duration}"
+            "rustup run {NIGHTLY_TOOLCHAIN} cargo fuzz run {target} -- -max_total_time={duration} -timeout=10"
         )
         .run()?;
     }
