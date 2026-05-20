@@ -7,6 +7,11 @@
 //! These are pure algorithmic functions operating on coefficient buffers.
 //! Tile state management and EGFX integration belong in a higher layer.
 
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
+use alloc::collections::btree_map::Entry;
+
 use ironrdp_pdu::codecs::rfx::EntropyAlgorithm;
 use ironrdp_pdu::codecs::rfx::progressive::ComponentCodecQuant;
 
@@ -366,6 +371,15 @@ fn clamp_i16(value: i32) -> i16 {
 // ---------------------------------------------------------------------------
 
 /// Reads raw magnitude bits MSB-first from a byte stream.
+///
+/// Past-end-of-stream reads return zero bits rather than an error: a
+/// truncated `raw_data` produces zero coefficient magnitudes (no-op upgrade)
+/// for the missing positions, matching the FreeRDP reference implementation's
+/// tolerance for short truncation in this exact upgrade path.
+///
+/// Callers are expected to pass `count <= 32` to [`read_bits`](Self::read_bits);
+/// the upgrade-pass call site bounds `count` by `prev_bit_pos - curr_bit_pos`
+/// which is at most a few bits in practice.
 struct RawBitReader<'a> {
     data: &'a [u8],
     byte_idx: usize,
@@ -381,6 +395,8 @@ impl<'a> RawBitReader<'a> {
         }
     }
 
+    /// Read `count` bits MSB-first into a `u32`. Bits past the end of the
+    /// underlying stream read as zero.
     fn read_bits(&mut self, count: u32) -> u32 {
         let mut value = 0u32;
         for _ in 0..count {
@@ -389,6 +405,8 @@ impl<'a> RawBitReader<'a> {
         value
     }
 
+    /// Read one bit. Returns `false` past end-of-stream by design (see
+    /// type-level docs).
     fn read_bit(&mut self) -> bool {
         if self.byte_idx >= self.data.len() {
             return false;
@@ -526,7 +544,7 @@ impl TileState {
 
         self.prog_quant = prog_quants;
         self.quality = quality;
-        self.pass += 1;
+        self.pass = self.pass.saturating_add(1);
     }
 
     /// Reconstruct the tile to spatial domain and write RGBA pixels.
@@ -608,17 +626,33 @@ pub struct SurfaceTiles {
 
 impl SurfaceTiles {
     /// Create a new tile grid for the given surface dimensions.
-    pub fn new(width_pixels: u16, height_pixels: u16, use_reduce_extrapolate: bool) -> Self {
+    ///
+    /// Returns [`ProgressiveDecodeError::SurfaceTooLarge`] if either axis
+    /// exceeds [`MAX_SURFACE_DIM`]. The check rejects only inputs that exceed
+    /// the MS-RDPEGFX 2.2.2.14 normative ceiling (32766 px), so every
+    /// spec-conformant surface is accepted.
+    pub fn new(
+        width_pixels: u16,
+        height_pixels: u16,
+        use_reduce_extrapolate: bool,
+    ) -> Result<Self, ProgressiveDecodeError> {
+        if width_pixels > MAX_SURFACE_DIM || height_pixels > MAX_SURFACE_DIM {
+            return Err(ProgressiveDecodeError::SurfaceTooLarge {
+                width: width_pixels,
+                height: height_pixels,
+            });
+        }
+
         let tiles_wide = width_pixels.div_ceil(64);
         let tiles_high = height_pixels.div_ceil(64);
         let count = usize::from(tiles_wide) * usize::from(tiles_high);
 
-        Self {
+        Ok(Self {
             tiles_wide,
             tiles_high,
             use_reduce_extrapolate,
             tiles: core::iter::repeat_with(|| None).take(count).collect(),
-        }
+        })
     }
 
     /// Get or create the tile at the given grid position.
@@ -669,6 +703,16 @@ pub struct DecodedTile {
     pub pixels: Vec<u8>,
 }
 
+/// Per-axis cap on surface dimensions, in pixels.
+///
+/// Per MS-RDPEGFX 2.2.2.14 RDPGFX_RESET_GRAPHICS_PDU, the normative maximum
+/// allowed width and height are 32766 pixels. We round up to 32768 so that
+/// the cap accepts every spec-conformant surface while bounding the
+/// per-surface tile-grid allocation: at the cap the backing
+/// `Vec<Option<Box<TileState>>>` is 512 * 512 = 262144 slots * 8 bytes per
+/// slot = 2 MiB of pointer storage per surface before any tile is populated.
+pub const MAX_SURFACE_DIM: u16 = 32768;
+
 /// Error type for progressive decoding operations.
 #[derive(Debug)]
 pub enum ProgressiveDecodeError {
@@ -682,6 +726,8 @@ pub enum ProgressiveDecodeError {
     TileOutOfBounds { x_idx: u16, y_idx: u16 },
     /// Region references a quant index beyond the table.
     InvalidQuantIndex { index: usize, table_len: usize },
+    /// Surface dimensions exceed [`MAX_SURFACE_DIM`] per axis.
+    SurfaceTooLarge { width: u16, height: u16 },
 }
 
 impl core::fmt::Display for ProgressiveDecodeError {
@@ -695,6 +741,13 @@ impl core::fmt::Display for ProgressiveDecodeError {
             }
             Self::InvalidQuantIndex { index, table_len } => {
                 write!(f, "quant index {index} exceeds table length {table_len}")
+            }
+            Self::SurfaceTooLarge { width, height } => {
+                write!(
+                    f,
+                    "surface dimensions {width}x{height} exceed per-axis cap of {MAX_SURFACE_DIM} \
+                     (MS-RDPEGFX 2.2.2.14 normative ceiling: 32766)"
+                )
             }
         }
     }
@@ -740,16 +793,14 @@ struct ProgressiveContext {
 /// }
 /// ```
 pub struct ProgressiveDecoder {
-    contexts: alloc::collections::BTreeMap<u32, ProgressiveContext>,
+    contexts: BTreeMap<u32, ProgressiveContext>,
 }
-
-extern crate alloc;
 
 impl ProgressiveDecoder {
     /// Create a new progressive decoder with no context state.
     pub fn new() -> Self {
         Self {
-            contexts: alloc::collections::BTreeMap::new(),
+            contexts: BTreeMap::new(),
         }
     }
 
@@ -774,28 +825,31 @@ impl ProgressiveDecoder {
 
         let blocks = decode_progressive_stream(bitmap_data)?;
 
-        // Extract context flags from the CONTEXT block
-        let mut use_reduce_extrapolate = false;
-        for block in &blocks {
-            if let ProgressiveBlock::Context(ctx) = block {
-                use_reduce_extrapolate = ctx.uses_reduce_extrapolate();
-                break;
-            }
-        }
+        // Extract context flags from the CONTEXT block. Per MS-RDPEGFX 2.2.4.2
+        // a Progressive stream MUST begin with SYNC + CONTEXT; treat absence as
+        // a malformed stream rather than silently defaulting band layout.
+        let use_reduce_extrapolate = blocks
+            .iter()
+            .find_map(|block| match block {
+                ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
+                _ => None,
+            })
+            .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?;
 
         // Get or create the context for this codec_context_id
-        let context = self
-            .contexts
-            .entry(codec_context_id)
-            .or_insert_with(|| ProgressiveContext {
-                surface: SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate),
-            });
+        let context = match self.contexts.entry(codec_context_id) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let surface = SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate)?;
+                e.insert(ProgressiveContext { surface })
+            }
+        };
 
         // If surface dimensions changed, reallocate
         let expected_wide = surface_width.div_ceil(64);
         let expected_high = surface_height.div_ceil(64);
         if context.surface.tiles_wide != expected_wide || context.surface.tiles_high != expected_high {
-            context.surface = SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate);
+            context.surface = SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate)?;
         }
         context.surface.use_reduce_extrapolate = use_reduce_extrapolate;
 
@@ -984,6 +1038,32 @@ impl Default for ProgressiveDecoder {
 #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_tiles_rejects_over_cap_dimensions() {
+        // At-cap accepted on both axes
+        assert!(SurfaceTiles::new(MAX_SURFACE_DIM, MAX_SURFACE_DIM, false).is_ok());
+
+        // One axis over the cap is rejected with SurfaceTooLarge carrying both inputs
+        let over_w = MAX_SURFACE_DIM.checked_add(1).unwrap();
+        match SurfaceTiles::new(over_w, 1024, false) {
+            Err(ProgressiveDecodeError::SurfaceTooLarge { width, height }) => {
+                assert_eq!(width, over_w);
+                assert_eq!(height, 1024);
+            }
+            Err(other) => panic!("expected SurfaceTooLarge, got Err({other})"),
+            Ok(_) => panic!("expected SurfaceTooLarge, got Ok"),
+        }
+
+        match SurfaceTiles::new(1024, over_w, false) {
+            Err(ProgressiveDecodeError::SurfaceTooLarge { width, height }) => {
+                assert_eq!(width, 1024);
+                assert_eq!(height, over_w);
+            }
+            Err(other) => panic!("expected SurfaceTooLarge, got Err({other})"),
+            Ok(_) => panic!("expected SurfaceTooLarge, got Ok"),
+        }
+    }
 
     #[test]
     fn standard_band_layout_totals_4096() {
@@ -1202,7 +1282,7 @@ mod tests {
 
     #[test]
     fn surface_tiles_dimensions() {
-        let surface = SurfaceTiles::new(1920, 1080, true);
+        let surface = SurfaceTiles::new(1920, 1080, true).unwrap();
         assert_eq!(surface.tiles_wide, 30);
         assert_eq!(surface.tiles_high, 17);
         assert!(surface.use_reduce_extrapolate);
@@ -1211,14 +1291,14 @@ mod tests {
     #[test]
     fn surface_tiles_exact_multiple() {
         // 1280 / 64 = 20, 768 / 64 = 12 (exact, no rounding)
-        let surface = SurfaceTiles::new(1280, 768, false);
+        let surface = SurfaceTiles::new(1280, 768, false).unwrap();
         assert_eq!(surface.tiles_wide, 20);
         assert_eq!(surface.tiles_high, 12);
     }
 
     #[test]
     fn surface_tiles_lazy_allocation() {
-        let mut surface = SurfaceTiles::new(128, 128, false);
+        let mut surface = SurfaceTiles::new(128, 128, false).unwrap();
         // No tiles allocated yet
         assert!(surface.get(0, 0).is_none());
 
@@ -1236,7 +1316,7 @@ mod tests {
 
     #[test]
     fn surface_tiles_reset() {
-        let mut surface = SurfaceTiles::new(128, 128, false);
+        let mut surface = SurfaceTiles::new(128, 128, false).unwrap();
         surface.get_or_create(0, 0);
         assert!(surface.get(0, 0).is_some());
 
