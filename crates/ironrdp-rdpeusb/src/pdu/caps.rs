@@ -51,7 +51,7 @@ impl RimExchangeCapabilityRequest {
         }
     }
 
-    pub fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
         if src.read_u32() != 1 {
             return Err(invalid_field_err!(
@@ -114,7 +114,7 @@ impl RimExchangeCapabilityResponse {
         }
     }
 
-    pub fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
         if src.read_u32() != 1 {
             return Err(invalid_field_err!(

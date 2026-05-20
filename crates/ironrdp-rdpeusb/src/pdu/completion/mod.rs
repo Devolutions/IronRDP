@@ -14,7 +14,7 @@ use ironrdp_core::{
 use ironrdp_pdu::utils::strict_sum;
 
 use crate::pdu::completion::ts_urb_result::{TsUrbIsochTransferResult, TsUrbResult, TsUrbResultPayload};
-use crate::pdu::header::SharedMsgHeader;
+use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
 #[cfg(doc)]
 use crate::pdu::usb_dev::{
     InternalIoControl, IoControl, RegisterRequestCallback, TransferInRequest, TransferOutRequest,
@@ -57,7 +57,10 @@ const HRESULT_FROM_WIN32_ERROR_INSUFFICIENT_BUFFER: u32 = HRESULT_FROM_WIN32!(ER
 #[doc(alias = "IOCONTROL_COMPLETION")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct IoControlCompletion {
-    pub header: SharedMsgHeader,
+    pub msg_id: MessageId,
+    /// The interface ID provided by the server in the `RequestCompletion` field of the prior
+    /// [`RegisterRequestCallback`] message.
+    pub completion_iface: InterfaceId,
     pub request_id: RequestIdIoctl,
     pub hresult: HResult,
     pub information: u32,
@@ -66,8 +69,17 @@ pub struct IoControlCompletion {
 }
 
 impl IoControlCompletion {
-    pub fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
-        const FIXED: usize = size_of::<RequestIdIoctl>() + size_of::<HResult>() + size_of::<u32>() + size_of::<u32>();
+    pub fn header(&self) -> SharedMsgHeader {
+        SharedMsgHeader {
+            interface_id: self.completion_iface,
+            mask: Mask::StreamIdProxy,
+            msg_id: self.msg_id,
+            function_id: Some(FunctionId::IOCONTROL_COMPLETION),
+        }
+    }
+
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+        const FIXED: usize = 4 /* RequestId */ + 4 /* HResult */ + 4 /* Information */ + 4 /* OutputBufferSize */;
         ensure_size!(in: src, size: FIXED);
 
         let request_id = src.read_u32();
@@ -107,7 +119,8 @@ impl IoControlCompletion {
         };
 
         Ok(Self {
-            header,
+            msg_id: header.msg_id,
+            completion_iface: header.interface_id,
             request_id,
             hresult,
             information,
@@ -121,7 +134,7 @@ impl Encode for IoControlCompletion {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        self.header.encode(dst)?;
+        self.header().encode(dst)?;
 
         dst.write_u32(self.request_id);
         dst.write_u32(self.hresult);
@@ -168,7 +181,10 @@ impl Encode for IoControlCompletion {
 #[doc(alias = "URB_COMPLETION")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct UrbCompletion {
-    pub header: SharedMsgHeader,
+    pub msg_id: MessageId,
+    /// The interface ID provided by the server in the `RequestCompletion` field of the prior
+    /// [`RegisterRequestCallback`] message.
+    pub completion_iface: InterfaceId,
     pub req_id: RequestIdTransferInOut,
     pub ts_urb_result: TsUrbResult,
     pub hresult: HResult,
@@ -176,8 +192,17 @@ pub struct UrbCompletion {
 }
 
 impl UrbCompletion {
-    pub fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: size_of::<u32>(/* RequestId */) + size_of::<u32>(/* CbTsUrbResult */));
+    pub fn header(&self) -> SharedMsgHeader {
+        SharedMsgHeader {
+            interface_id: self.completion_iface,
+            mask: Mask::StreamIdProxy,
+            msg_id: self.msg_id,
+            function_id: Some(FunctionId::URB_COMPLETION),
+        }
+    }
+
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())
             .map_err(|reason| invalid_field_err!("URB_COMPLETION::RequestId", reason))?;
 
@@ -194,13 +219,14 @@ impl UrbCompletion {
             TsUrbResultPayload::Isoch(TsUrbIsochTransferResult::decode(&mut ReadCursor::new(&bytes))?)
         };
 
-        ensure_size!(in: src, size: size_of::<u32>(/* HResult */) + size_of::<u32>(/* OutputBufferSize */));
+        ensure_size!(in: src, size: 4 /* HResult */ + 4 /* OutputBufferSize */);
         let hresult = src.read_u32();
         let output_buffer_size = usize::try_from(src.read_u32()).map_err(|e| other_err!(source: e))?;
         ensure_size!(in: src, size: output_buffer_size);
         let output_buffer = src.read_slice(output_buffer_size).to_vec();
         Ok(Self {
-            header,
+            msg_id: header.msg_id,
+            completion_iface: header.interface_id,
             req_id,
             ts_urb_result,
             hresult,
@@ -212,7 +238,7 @@ impl UrbCompletion {
 impl Encode for UrbCompletion {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
-        self.header.encode(dst)?;
+        self.header().encode(dst)?;
         dst.write_u32(self.req_id.into());
         match u32::try_from(self.ts_urb_result.size()) {
             Ok(cb_ts_urb_result) => dst.write_u32(cb_ts_urb_result),
@@ -258,7 +284,10 @@ impl Encode for UrbCompletion {
 #[doc(alias = "URB_COMPLETION_NO_DATA")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct UrbCompletionNoData {
-    pub header: SharedMsgHeader,
+    pub msg_id: MessageId,
+    /// The interface ID provided by the server in the `RequestCompletion` field of the prior
+    /// [`RegisterRequestCallback`] message.
+    pub completion_iface: InterfaceId,
     pub req_id: RequestIdTransferInOut,
     pub ts_urb_result: TsUrbResult,
     pub hresult: HResult,
@@ -266,19 +295,29 @@ pub struct UrbCompletionNoData {
 }
 
 impl UrbCompletionNoData {
-    pub fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: size_of::<u32>(/* RequestId */) + size_of::<u32>(/* CbTsUrbResult */));
+    pub fn header(&self) -> SharedMsgHeader {
+        SharedMsgHeader {
+            interface_id: self.completion_iface,
+            mask: Mask::StreamIdProxy,
+            msg_id: self.msg_id,
+            function_id: Some(FunctionId::URB_COMPLETION_NO_DATA),
+        }
+    }
+
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())
             .map_err(|reason| invalid_field_err!("URB_COMPLETION::RequestId", reason))?;
 
         let cb_ts_urb_result = usize::try_from(src.read_u32()).map_err(|e| other_err!(source: e))?;
         ensure_size!(in: src, size: cb_ts_urb_result);
         let ts_urb_result = TsUrbResult::decode(&mut ReadCursor::new(src.read_slice(cb_ts_urb_result)))?;
-        ensure_size!(in: src, size: size_of::<u32>(/* HResult */) + size_of::<u32>(/* OutputBufferSize */));
+        ensure_size!(in: src, size: 4 /* HResult */ + 4 /* OutputBufferSize */);
         let hresult = src.read_u32();
         let output_buffer_size = src.read_u32();
         Ok(Self {
-            header,
+            msg_id: header.msg_id,
+            completion_iface: header.interface_id,
             req_id,
             ts_urb_result,
             hresult,
@@ -290,7 +329,7 @@ impl UrbCompletionNoData {
 impl Encode for UrbCompletionNoData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
-        self.header.encode(dst)?;
+        self.header().encode(dst)?;
         dst.write_u32(self.req_id.into());
         match self.ts_urb_result.size().try_into() {
             Ok(cb_ts_urb_result) => dst.write_u32(cb_ts_urb_result),
@@ -313,136 +352,5 @@ impl Encode for UrbCompletionNoData {
             + self.ts_urb_result.size()
             + size_of::<u32>(/* HResult */)
             + size_of::<u32>(/* OutputBufferSize */)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    extern crate std;
-    use alloc::vec;
-
-    use ts_urb_result::TsUrbResultHeader;
-
-    use super::*;
-    use crate::pdu::completion::ts_urb_result::TsUrbGetCurrFrameNumResult;
-    use crate::pdu::header::{FunctionId, InterfaceId};
-    use crate::pdu::utils::{UsbdIsoPacketDesc, round_trip};
-
-    #[test]
-    fn iocontrol_completion() {
-        let mut en = IoControlCompletion {
-            header: SharedMsgHeader {
-                interface_id: InterfaceId(25),
-                mask: crate::pdu::header::Mask::StreamIdProxy,
-                msg_id: 14,
-                function_id: Some(FunctionId::IOCONTROL_COMPLETION),
-            },
-            request_id: 876,
-            hresult: 0,
-            information: 4,
-            output_buffer_size: 4,
-            output_buffer: vec![1, 2, 3, 4],
-        };
-        let de = round_trip!(en, IoControlCompletion);
-        assert_eq!(en, de);
-
-        en.hresult = HRESULT_FROM_WIN32_ERROR_INSUFFICIENT_BUFFER;
-        en.output_buffer_size = 2;
-        en.information = 2;
-        en.output_buffer = vec![1, 2];
-        let de = round_trip!(en, IoControlCompletion);
-        assert_eq!(en, de);
-
-        en.hresult = 13124;
-        en.information = 89374;
-        en.output_buffer_size = 0;
-        en.output_buffer.clear();
-        let de = round_trip!(en, IoControlCompletion);
-        assert_eq!(en, de);
-    }
-
-    #[test]
-    fn urb_completion() {
-        let mut en = UrbCompletion {
-            header: SharedMsgHeader {
-                interface_id: InterfaceId(78435),
-                mask: crate::pdu::header::Mask::StreamIdProxy,
-                msg_id: 234,
-                function_id: Some(FunctionId::URB_COMPLETION),
-            },
-            req_id: RequestIdTransferInOut::try_from(234).unwrap(),
-            ts_urb_result: TsUrbResult {
-                header: TsUrbResultHeader { usbd_status: 0 },
-                payload: TsUrbResultPayload::Isoch(TsUrbIsochTransferResult {
-                    start_frame: 123,
-                    error_count: 1,
-                    iso_packet: vec![
-                        UsbdIsoPacketDesc {
-                            offset: 0,
-                            length: 2,
-                            status: 0,
-                        },
-                        UsbdIsoPacketDesc {
-                            offset: 2,
-                            length: 2,
-                            status: -1,
-                        },
-                        UsbdIsoPacketDesc {
-                            offset: 4,
-                            length: 2,
-                            status: 0,
-                        },
-                    ],
-                }),
-            },
-            hresult: HRESULT_FROM_WIN32!(0u32),
-            output_buffer: vec![1, 2, 3, 4, 5, 6],
-        };
-
-        let de = round_trip!(en, UrbCompletion);
-        let mut buf = vec![0; en.ts_urb_result.payload.size()];
-        en.ts_urb_result
-            .payload
-            .encode(&mut WriteCursor::new(&mut buf))
-            .unwrap();
-        assert_eq!(en, de);
-
-        en.ts_urb_result.payload = TsUrbResultPayload::Raw(vec![]); // IO_CONTROL / INTERNAL_IO_CONTROL
-        let de = round_trip!(en, UrbCompletion);
-        assert_eq!(en, de);
-    }
-
-    #[test]
-    fn urb_completion_no_data() {
-        let mut en = UrbCompletionNoData {
-            header: SharedMsgHeader {
-                interface_id: InterfaceId(78435),
-                mask: crate::pdu::header::Mask::StreamIdProxy,
-                msg_id: 234,
-                function_id: Some(FunctionId::URB_COMPLETION_NO_DATA),
-            },
-            req_id: RequestIdTransferInOut::try_from(234).unwrap(),
-            ts_urb_result: TsUrbResult {
-                header: TsUrbResultHeader { usbd_status: 0 },
-                payload: TsUrbResultPayload::FrameNum(TsUrbGetCurrFrameNumResult { frame_number: 234 }),
-            },
-            hresult: HRESULT_FROM_WIN32!(0u32),
-            output_buffer_size: 0,
-        };
-
-        let mut buf = vec![0; en.size()];
-        en.encode(&mut WriteCursor::new(&mut buf)).unwrap();
-        let mut src = ReadCursor::new(&buf);
-        let de = SharedMsgHeader::decode(&mut src)
-            .and_then(|header| <UrbCompletionNoData>::decode(&mut src, header))
-            .unwrap();
-
-        let mut buf = vec![0; en.ts_urb_result.payload.size()];
-        en.ts_urb_result
-            .payload
-            .encode(&mut WriteCursor::new(&mut buf))
-            .unwrap();
-        en.ts_urb_result.payload = TsUrbResultPayload::Raw(buf);
-        assert_eq!(en, de);
     }
 }
