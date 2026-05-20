@@ -20,9 +20,13 @@ pub fn discover_targets() -> anyhow::Result<Vec<String>> {
 
     let mut targets: Vec<String> = std::fs::read_dir(&dir)
         .with_context(|| format!("read fuzz targets directory: {}", dir.display()))?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
+        .map(|entry| {
+            let entry = entry.with_context(|| format!("read entry in {}", dir.display()))?;
+            Ok(entry.path())
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .filter_map(|path| {
             if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
                 return None;
             }
@@ -128,9 +132,15 @@ pub fn list_human() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Emit a `matrix.include`-compatible JSON array on stdout. CI consumes this
-/// via `fromJson(steps.setup.outputs.fuzz-matrix)` to fan out one job per
-/// fuzz target without hardcoding the list in the workflow.
+/// Emit a `matrix.include`-compatible JSON array on stdout, one entry per
+/// discovered fuzz target. Suitable for piping into a GitHub Actions matrix:
+///
+/// ```yaml
+/// - id: setup
+///   run: echo "fuzz-matrix=$(cargo xtask fuzz list --format github-matrix)" >> "$GITHUB_OUTPUT"
+/// ```
+///
+/// Each entry has the shape `{ "target": "<name>" }`.
 pub fn list_github_matrix() -> anyhow::Result<()> {
     let items: Vec<JsonValue> = discover_targets()?
         .into_iter()
