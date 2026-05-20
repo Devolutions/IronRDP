@@ -1,3 +1,4 @@
+use core::fmt;
 use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
@@ -89,6 +90,55 @@ pub trait ConnectionHandler: Send {
     }
 }
 
+/// Outcome of a successful [`CredentialValidator::validate`] call.
+///
+/// A rejection from a working validator is not an error: the validator did
+/// its job and decided the credentials do not authenticate. Backend failures
+/// (LDAP unreachable, PAM transport broken, database connection lost) are
+/// reported via [`CredentialValidationError`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialDecision {
+    /// Credentials accepted; the connection proceeds.
+    Accept,
+    /// Credentials rejected; the connection is closed.
+    Reject,
+}
+
+/// Error returned by a [`CredentialValidator`] when the validator backend
+/// itself fails (rather than the credentials being invalid).
+///
+/// Wraps any [`core::error::Error`] from the backend (LDAP/PAM/DB/etc.) so
+/// the trait does not require a particular error library in implementors or
+/// consumers.
+#[derive(Debug)]
+pub struct CredentialValidationError {
+    source: Box<dyn core::error::Error + Send + Sync>,
+}
+
+impl CredentialValidationError {
+    /// Wrap a backend error as a credential-validation failure.
+    pub fn new<E>(source: E) -> Self
+    where
+        E: core::error::Error + Send + Sync + 'static,
+    {
+        Self {
+            source: Box::new(source),
+        }
+    }
+}
+
+impl fmt::Display for CredentialValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("credential validator backend failure")
+    }
+}
+
+impl core::error::Error for CredentialValidationError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
 /// Server-side credential validator for TLS-mode connections.
 ///
 /// Called during connection setup when the server receives client credentials
@@ -98,10 +148,41 @@ pub trait ConnectionHandler: Send {
 /// Implement this trait to validate credentials against external systems
 /// (PAM, LDAP, database, etc.). For blocking backends, wrap the call in
 /// `tokio::task::spawn_blocking` to avoid stalling the async runtime.
+///
+/// # Example
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use ironrdp_server::{
+///     CredentialDecision, CredentialValidationError, CredentialValidator, Credentials,
+/// };
+///
+/// struct StaticValidator {
+///     expected_user: String,
+///     expected_password: String,
+/// }
+///
+/// impl CredentialValidator for StaticValidator {
+///     fn validate(
+///         &self,
+///         creds: &Credentials,
+///     ) -> Result<CredentialDecision, CredentialValidationError> {
+///         if creds.username == self.expected_user && creds.password == self.expected_password {
+///             Ok(CredentialDecision::Accept)
+///         } else {
+///             Ok(CredentialDecision::Reject)
+///         }
+///     }
+/// }
+/// ```
 pub trait CredentialValidator: Send + Sync {
     /// Validate credentials received from the client.
-    /// Return `Ok(true)` to accept, `Ok(false)` to reject.
-    fn validate(&self, credentials: &Credentials) -> Result<bool>;
+    ///
+    /// Return `Ok(CredentialDecision::Accept)` to permit the connection,
+    /// `Ok(CredentialDecision::Reject)` to refuse it. Return
+    /// `Err(CredentialValidationError::new(_))` only when the validator
+    /// itself could not produce a decision (backend system error).
+    fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
 }
 
 #[derive(Clone)]
@@ -412,15 +493,23 @@ impl RdpServer {
         builder::RdpServerBuilder::new()
     }
 
-    /// Set a credential validator for TLS-mode connections.
+    /// Set or clear the credential validator for TLS-mode connections.
     ///
-    /// When set, credentials received from the client during `SecureSettingsExchange`
-    /// are validated through this callback before the session is established.
-    /// If validation fails, the connection is rejected.
+    /// When set, credentials received from the client during
+    /// `SecureSettingsExchange` are validated through this callback before
+    /// the session is established. If the validator returns
+    /// [`CredentialDecision::Reject`] (or a [`CredentialValidationError`]),
+    /// the connection is rejected. Passing `None` clears any previously
+    /// configured validator.
+    ///
+    /// Most callers should configure the validator at construction time via
+    /// the builder's `with_credential_validator` method
+    /// ([`RdpServer::builder`]); this setter exists for dynamic
+    /// post-construction reconfiguration.
     ///
     /// Not used for CredSSP/Hybrid connections (those use pre-loaded credentials).
-    pub fn set_credential_validator(&mut self, validator: Arc<dyn CredentialValidator>) {
-        self.credential_validator = Some(validator);
+    pub fn set_credential_validator(&mut self, validator: Option<Arc<dyn CredentialValidator>>) {
+        self.credential_validator = validator;
     }
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
@@ -1058,16 +1147,16 @@ impl RdpServer {
         if let Some(validator) = &self.credential_validator {
             if let Some(creds) = &result.credentials {
                 match validator.validate(creds) {
-                    Ok(true) => {
-                        debug!("Credential validation succeeded");
+                    Ok(CredentialDecision::Accept) => {
+                        debug!("Credential validation accepted");
                     }
-                    Ok(false) => {
-                        warn!("Credential validation failed");
-                        bail!("credential validation failed");
+                    Ok(CredentialDecision::Reject) => {
+                        warn!("Credential validation rejected");
+                        bail!("credential validation rejected");
                     }
                     Err(e) => {
-                        error!(error = %e, "Credential validator error");
-                        bail!("credential validation error");
+                        error!(error = %e, "Credential validator backend error");
+                        bail!("credential validation backend error");
                     }
                 }
             } else {
