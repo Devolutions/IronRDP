@@ -2,11 +2,8 @@
 //!
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a1004d0e-99e9-4968-894b-0b924ef2f125
 
-use alloc::format;
-
 use ironrdp_core::{
-    Decode, DecodeError, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size,
-    unsupported_value_err,
+    Decode, DecodeError, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
 
 #[cfg(doc)]
@@ -43,32 +40,17 @@ impl From<Mask> for u32 {
 }
 
 impl TryFrom<u8> for Mask {
-    type Error = MaskErr;
+    type Error = DecodeError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0x0 => Ok(Self::StreamIdNone),
             0x1 => Ok(Self::StreamIdProxy),
             0x2 => Ok(Self::StreamIdStub),
-            _ => Err(MaskErr(value)),
+            _ => Err(invalid_field_err!("try_from", "Mask", "invalid mask")),
         }
     }
 }
-
-#[derive(Debug)]
-pub struct MaskErr(u8);
-
-impl core::fmt::Display for MaskErr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "is: {:#X}, should be one of: 0x2 (STREAM_ID_STUB), 0x1 (STREAM_ID_PROXY), 0x0 (STREAM_ID_NONE)",
-            self.0
-        )
-    }
-}
-
-impl core::error::Error for MaskErr {}
 
 /// Groups similar kinds of messages together.
 ///
@@ -121,13 +103,17 @@ impl InterfaceId {
 }
 
 impl TryFrom<u32> for InterfaceId {
-    type Error = InterfaceIdErr;
+    type Error = DecodeError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         if value <= 0x3F_FF_FF_FF {
             Ok(InterfaceId(value))
         } else {
-            Err(InterfaceIdErr(value))
+            Err(invalid_field_err!(
+                "try_from",
+                "InterfaceId",
+                "InterfaceId greater than 30 bits"
+            ))
         }
     }
 }
@@ -143,17 +129,6 @@ impl core::fmt::Display for InterfaceId {
         write!(f, "{}", self.0)
     }
 }
-
-#[derive(Debug)]
-pub struct InterfaceIdErr(u32);
-
-impl core::fmt::Display for InterfaceIdErr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "InterfaceId greater than 30 bits: {}", self.0)
-    }
-}
-
-impl core::error::Error for InterfaceIdErr {}
 
 /// Indicates a task/function to perform.
 ///
@@ -194,8 +169,8 @@ impl FunctionId {
     // // Needed for QI_REQ and QI_RSP
     //
     // /// Release the given interface ID.
-    // pub const RIMCALL_RELEASE: Self = Self(0x00000001);
-    // pub const RIMCALL_QUERYINTERFACE: Self = Self(0x00000002);
+    pub const RIMCALL_RELEASE: Self = Self(0x00000001);
+    pub const RIMCALL_QUERYINTERFACE: Self = Self(0x00000002);
 
     // -------------------- Exchange Capabilities Interface ---------------------------------------
 
@@ -235,14 +210,13 @@ impl FunctionId {
 }
 
 impl TryFrom<u32> for FunctionId {
-    type Error = FunctionIdErr;
+    type Error = DecodeError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
-        // if matches!(value, 0x001 | 0x002 | 0x100..=0x107) {
-        if matches!(value, 0x100..=0x107) {
+        if matches!(value, 0x001 | 0x002 | 0x100..=0x107) {
             Ok(Self(value))
         } else {
-            Err(FunctionIdErr::NotInRange(value))
+            Err(invalid_field_err!("FunctionId", "invalid FunctionId"))
         }
     }
 }
@@ -252,34 +226,6 @@ impl core::fmt::Display for FunctionId {
         write!(f, "{:#X}", self.0)
     }
 }
-
-#[derive(Debug)]
-pub enum FunctionIdErr {
-    NotInRange(u32),
-    InvalidForInterface(InterfaceId, FunctionId),
-    Missing,
-    NotAbsent,
-}
-
-impl core::fmt::Display for FunctionIdErr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            FunctionIdErr::NotInRange(value) => {
-                write!(
-                    f,
-                    "is: {value:#X}, should be one of: [0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x107]"
-                )
-            }
-            FunctionIdErr::InvalidForInterface(i, value) => {
-                write!(f, "FunctionId {:#X} is invalid for the interface {i}", value.0)
-            }
-            FunctionIdErr::Missing => write!(f, "FunctionId is absent when it should be present"),
-            FunctionIdErr::NotAbsent => write!(f, "FunctionId is present when it should be absent"),
-        }
-    }
-}
-
-impl core::error::Error for FunctionIdErr {}
 
 /// [\[MS-RDPEUSB\] 2.2.1 Shared Message Header (SHARED_MSG_HEADER)][1].
 ///
@@ -329,13 +275,12 @@ impl Encode for SharedMsgHeader {
 
 impl Decode<'_> for SharedMsgHeader {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: const { size_of::<u32>(/* InterfaceId, Mask */) + size_of::<MessageId>()} );
+        ensure_size!(in: src, size: Self::SIZE_RSP );
 
         let first32 = src.read_u32();
-        let interface_id = InterfaceId::try_from(first32 & 0x3F_FF_FF_FF).expect("value clamped");
+        let interface_id = InterfaceId::try_from(first32 & 0x3F_FF_FF_FF)?;
         #[expect(clippy::as_conversions)]
-        let mask = Mask::try_from((first32 >> 30) as u8)
-            .map_err(|source| unsupported_value_err!("Mask", format!("{}", source.0)))?;
+        let mask = Mask::try_from((first32 >> 30) as u8)?;
 
         let msg_id = src.read_u32();
 
@@ -343,14 +288,7 @@ impl Decode<'_> for SharedMsgHeader {
             Mask::StreamIdStub => None,
             Mask::StreamIdProxy => {
                 ensure_size!(in: src, size: FunctionId::FIXED_PART_SIZE);
-                let id = FunctionId::try_from(src.read_u32()).map_err(|source| {
-                    let value = match &source {
-                        FunctionIdErr::NotInRange(value) => value,
-                        _ => unreachable!("FunctionId::try_from only returns NotInRange error"),
-                    };
-                    let e: DecodeError = unsupported_value_err!("FunctionId", format!("{value}"));
-                    e.with_source(source)
-                })?;
+                let id = FunctionId::try_from(src.read_u32())?;
                 Some(id)
             }
             Mask::StreamIdNone => {

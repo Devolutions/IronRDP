@@ -10,7 +10,7 @@ use alloc::format;
 
 use ironrdp_core::{
     DecodeError, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
-    unsupported_value_err,
+    invalid_field_err, unsupported_value_err,
 };
 
 use crate::pdu::header::{FunctionId, InterfaceId, MessageId, SharedMsgHeader};
