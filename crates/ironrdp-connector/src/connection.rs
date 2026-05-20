@@ -17,6 +17,11 @@ use crate::{
     NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
 };
 
+/// Maximum number of `Initiate Multitransport Request` PDUs the server is
+/// permitted to send during bootstrapping, per MS-RDPBCGR 2.2.15.1 (one per
+/// transport protocol: reliable + lossy UDP).
+const MAX_MULTITRANSPORT_REQUESTS: usize = 2;
+
 /// Outcome of a single multitransport bootstrapping request, passed to
 /// [`ClientConnector::complete_multitransport()`].
 ///
@@ -702,7 +707,7 @@ impl Sequence for ClientConnector {
                     ClientConnectorState::MultitransportBootstrapping {
                         io_channel_id,
                         user_channel_id,
-                        requests: Vec::new(),
+                        requests: Vec::with_capacity(MAX_MULTITRANSPORT_REQUESTS),
                     }
                 } else {
                     ClientConnectorState::LicensingExchange {
@@ -718,10 +723,10 @@ impl Sequence for ClientConnector {
             //== Optional Multitransport Bootstrapping ==//
             //
             // The server may send 0, 1, or 2 Initiate Multitransport Request PDUs
-            // after licensing. We distinguish them from the Demand Active PDU by
-            // attempting to decode as MultitransportRequestPdu first — it has a
-            // distinctive structure (SEC_TRANSPORT_REQ flag + request_id + protocol
-            // + cookie). If decode fails, this is the Demand Active.
+            // after licensing (MS-RDPBCGR 2.2.15.1). We distinguish them from the
+            // Demand Active PDU by attempting to decode as MultitransportRequestPdu
+            // first; the decoder validates SEC_TRANSPORT_REQ internally, so a Demand
+            // Active PDU fails cleanly without false positives.
             ClientConnectorState::MultitransportBootstrapping {
                 io_channel_id,
                 user_channel_id,
@@ -729,11 +734,17 @@ impl Sequence for ClientConnector {
             } => {
                 let ctx = crate::legacy::decode_send_data_indication(input)?;
 
-                // Try decoding as a multitransport request. The decoder validates
-                // the SEC_TRANSPORT_REQ flag, so a Demand Active PDU will fail
-                // cleanly without false positives.
                 match decode::<rdp::multitransport::MultitransportRequestPdu>(ctx.user_data) {
                     Ok(pdu) => {
+                        if requests.len() >= MAX_MULTITRANSPORT_REQUESTS {
+                            return Err(reason_err!(
+                                "MultitransportBootstrapping",
+                                "server sent more than {} multitransport requests (MS-RDPBCGR 2.2.15.1 caps the count at {})",
+                                MAX_MULTITRANSPORT_REQUESTS,
+                                MAX_MULTITRANSPORT_REQUESTS,
+                            ));
+                        }
+
                         debug!(
                             request_id = pdu.request_id,
                             protocol = ?pdu.requested_protocol,
