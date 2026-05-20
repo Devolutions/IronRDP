@@ -155,9 +155,7 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("features") => Action::CheckFeatures {
                     case: args.opt_value_from_str("--case")?,
                     list: args.contains("--list"),
-                    format: args
-                        .opt_value_from_str("--format")?
-                        .unwrap_or(ListFormat::DEFAULT),
+                    format: args.opt_value_from_str("--format")?.unwrap_or(ListFormat::DEFAULT),
                 },
                 Some("install") => Action::CheckInstall,
                 Some(unknown) => anyhow::bail!("unknown check action: {unknown}"),
@@ -186,9 +184,7 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("corpus-push") => Action::FuzzCorpusPush,
                 Some("install") => Action::FuzzInstall,
                 Some("list") => Action::FuzzList {
-                    format: args
-                        .opt_value_from_str("--format")?
-                        .unwrap_or(ListFormat::DEFAULT),
+                    format: args.opt_value_from_str("--format")?.unwrap_or(ListFormat::DEFAULT),
                 },
                 Some("run") => Action::FuzzRun {
                     duration: args.opt_value_from_str("--duration")?,
