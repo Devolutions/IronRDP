@@ -874,6 +874,11 @@ pub struct GraphicsPipelineServer {
 /// Each variant corresponds to a different EGFX codec. Used with
 /// [`GraphicsPipelineServer::send_mixed_frame()`] to pack multiple codec
 /// types into a single `StartFrame`/`EndFrame` pair.
+///
+/// Marked `#[non_exhaustive]` so future EGFX codec additions (for example,
+/// Avc444 or hardware-accelerated paths) can land without a SemVer break
+/// for downstream consumers that pattern-match on this enum.
+#[non_exhaustive]
 pub enum MixedTilePayload {
     /// Lossless ClearCodec tile (text, UI elements, icons).
     /// `bitmap_data` is a pre-encoded ClearCodec bitmap stream.

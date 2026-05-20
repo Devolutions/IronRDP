@@ -350,6 +350,22 @@ fn quantize_component_ccq(coefficients: &mut [i16], quant: &ComponentCodecQuant,
 ///
 /// # Returns
 /// A tuple of `(srl_data, raw_data)` byte vectors.
+///
+/// # Wire-format invariants (MS-RDPRFX 3.1.8.1.7.2)
+///
+/// The non-zero-DAS raw-magnitude path uses `saturating_sub` to compute
+/// `raw_mag = curr_q - prev_q`. Upgrade passes are *monotonic refinements*:
+/// the encoder only adds magnitude bits, never subtracts. The decoder's
+/// counterpart accumulates raw_mag onto the previously-decoded coefficient
+/// with the DAS-determined sign (`+=` for SIGN_POSITIVE / LL3, `-=` for
+/// SIGN_NEGATIVE), so a hypothetical signed delta would have no place in
+/// the wire format. Switching this to a signed-delta encoding would break
+/// wire compatibility with mstsc/FreeRDP — do not "fix" the saturating_sub.
+///
+/// The zero-DAS SRL path uses `clamp_i16(curr_shifted - prev_shifted)`. SRL
+/// stream values are i16 by wire-format definition, so wider precision is
+/// not available without a spec extension. The clamp is the wire-format
+/// boundary, not a precision compromise.
 pub fn encode_upgrade_pass(
     coefficients: &[i16],
     prev_coefficients: &[i16],
@@ -556,6 +572,12 @@ fn clamp_i16(value: i32) -> i16 {
 // ---------------------------------------------------------------------------
 
 /// Writes raw magnitude bits MSB-first to a byte stream.
+///
+/// Symmetric counterpart of [`RawBitReader`]. Callers are expected to pass
+/// `count <= 32` to [`write_bits`](Self::write_bits); the upgrade-pass call
+/// site bounds `count` by `prev_bit_pos - curr_bit_pos` which is at most a
+/// few bits in practice. `count > 32` reads beyond `u32` width in the shift
+/// expression, which is wrap-on-release / panic-on-debug — caller responsibility.
 struct RawBitWriter {
     bytes: Vec<u8>,
     current: u8,
@@ -581,7 +603,10 @@ impl RawBitWriter {
         }
     }
 
+    /// Write the low `count` bits of `value`, MSB-first. Caller must ensure
+    /// `count <= 32` (see type-level docs).
     fn write_bits(&mut self, value: u32, count: u32) {
+        debug_assert!(count <= 32, "RawBitWriter::write_bits count must be <= 32");
         for i in (0..count).rev() {
             self.write_bit((value >> i) & 1 != 0);
         }
