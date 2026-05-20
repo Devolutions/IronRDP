@@ -2012,9 +2012,11 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::similar_names, reason = "y/cb/cr are standard YCbCr component names")]
     fn rgba_ycbcr_reconstruct_round_trip() {
-        // Test the color conversion path: RGB -> YCbCr -> DWT -> IDWT -> RGB
-        // should produce approximately the same pixel values
+        // RGB -> YCbCr -> RGB. ITU-R BT.601 fixed-point round-trip carries a
+        // few units of integer-rounding error per channel. We assert a bounded
+        // per-channel max and verify Y/Cb/Cr stay in [-128, 127] in between.
         let mut pixels = vec![0u8; 64 * 64 * 4];
         for i in 0..64 * 64 {
             // Smooth gradient
@@ -2038,6 +2040,127 @@ mod tests {
             assert!(cb[i] >= -128 && cb[i] <= 127, "Cb[{i}] = {} out of range", cb[i]);
             assert!(cr[i] >= -128 && cr[i] <= 127, "Cr[{i}] = {} out of range", cr[i]);
         }
+
+        // Inverse YCbCr -> RGB using the same BT.601 matrix as
+        // TileState::reconstruct_to_rgba (the decode-side counterpart).
+        let mut max_err = 0i32;
+        for i in 0..64 * 64 {
+            let y_val = i32::from(y[i]) + 128;
+            let cb_val = i32::from(cb[i]);
+            let cr_val = i32::from(cr[i]);
+
+            let r_rec = (y_val + ((cr_val * 91881 + 32768) >> 16)).clamp(0, 255);
+            let g_rec = (y_val - ((cb_val * 22554 + cr_val * 46802 + 32768) >> 16)).clamp(0, 255);
+            let b_rec = (y_val + ((cb_val * 116130 + 32768) >> 16)).clamp(0, 255);
+
+            let off = i * 4;
+            let r_orig = i32::from(pixels[off]);
+            let g_orig = i32::from(pixels[off + 1]);
+            let b_orig = i32::from(pixels[off + 2]);
+
+            max_err = max_err.max((r_rec - r_orig).abs());
+            max_err = max_err.max((g_rec - g_orig).abs());
+            max_err = max_err.max((b_rec - b_orig).abs());
+        }
+        assert!(
+            max_err <= 2,
+            "RGB -> YCbCr -> RGB max per-channel error {max_err} exceeds 2"
+        );
+    }
+
+    #[test]
+    fn upgrade_pass_encode_decode_round_trip() {
+        // Two-pass refinement round-trip on the upgrade-pass wire format. Uses
+        // synthetic post-DWT post-quant coefficients to isolate the upgrade-pass
+        // mechanism from forward/inverse DWT and RLGR1 framing.
+        //
+        // The contract under test: encode_upgrade_pass(refined, prev, ...)
+        // followed by decode_upgrade_pass applied to prev must not increase the
+        // L1 distance to refined. The wire format is monotonic (encoder writes
+        // additive magnitude deltas with DAS-determined sign per MS-RDPRFX
+        // 3.1.8.1.7.2), so the post-decode distance cannot exceed pre-decode.
+        let prev_prog_quant = ComponentCodecQuant {
+            ll3: 0,
+            hl3: 0,
+            lh3: 0,
+            hh3: 0,
+            hl2: 0,
+            lh2: 0,
+            hh2: 0,
+            hl1: 4,
+            lh1: 0,
+            hh1: 0,
+        };
+        let curr_prog_quant = ComponentCodecQuant {
+            ll3: 0,
+            hl3: 0,
+            lh3: 0,
+            hh3: 0,
+            hl2: 0,
+            lh2: 0,
+            hh2: 0,
+            hl1: 2,
+            lh1: 0,
+            hh1: 0,
+        };
+
+        // Populate HL1 band (band index 0, offset 0, count 1024) with paired
+        // values: prev is coarser (low 4 bits zeroed), refined adds those bits.
+        let mut prev_coeffs = vec![0i16; COEFFICIENTS_PER_COMPONENT];
+        let mut refined_coeffs = vec![0i16; COEFFICIENTS_PER_COMPONENT];
+        let mut sign = vec![SIGN_ZERO; COEFFICIENTS_PER_COMPONENT];
+
+        for i in 0..1024 {
+            let base = ((i as i32) * 5) % 256 - 128;
+            let coarse = base & !0x0F;
+            let refined = base;
+            prev_coeffs[i] = coarse as i16;
+            refined_coeffs[i] = refined as i16;
+            sign[i] = match prev_coeffs[i].cmp(&0) {
+                core::cmp::Ordering::Greater => SIGN_POSITIVE,
+                core::cmp::Ordering::Less => SIGN_NEGATIVE,
+                core::cmp::Ordering::Equal => SIGN_ZERO,
+            };
+        }
+
+        let prev_dist: u32 = prev_coeffs
+            .iter()
+            .zip(refined_coeffs.iter())
+            .map(|(p, r)| (i32::from(*p) - i32::from(*r)).unsigned_abs())
+            .sum();
+
+        let (srl_data, raw_data) = encode_upgrade_pass(
+            &refined_coeffs,
+            &prev_coeffs,
+            &prev_prog_quant,
+            &curr_prog_quant,
+            &sign,
+            false,
+        );
+
+        let mut decoded = prev_coeffs.clone();
+        let mut decoded_sign = sign.clone();
+        decode_upgrade_pass(
+            &srl_data,
+            &raw_data,
+            &prev_prog_quant,
+            &curr_prog_quant,
+            false,
+            &mut decoded,
+            &mut decoded_sign,
+        );
+
+        let post_dist: u32 = decoded
+            .iter()
+            .zip(refined_coeffs.iter())
+            .map(|(d, r)| (i32::from(*d) - i32::from(*r)).unsigned_abs())
+            .sum();
+
+        // Upgrade pass must not move further from the refined target.
+        assert!(
+            post_dist <= prev_dist,
+            "upgrade pass must not increase distance to refined: prev_dist={prev_dist} post_dist={post_dist}"
+        );
     }
 
     #[test]
