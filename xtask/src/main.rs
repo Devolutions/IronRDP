@@ -34,19 +34,6 @@ pub const CARGO: &str = env!("CARGO");
 
 pub const WASM_PACKAGES: &[&str] = &["ironrdp-web"];
 
-pub const FUZZ_TARGETS: &[&str] = &[
-    "pdu_decoding",
-    "rle_decompression",
-    "bitmap_stream",
-    "cliprdr_format",
-    "cliprdr_channel_processing",
-    "channel_processing",
-    "bulk_mppc",
-    "bulk_ncrush",
-    "bulk_xcrush",
-    "bulk_round_trip",
-];
-
 fn main() -> anyhow::Result<()> {
     let args = match cli::parse_args() {
         Ok(args) => args,
@@ -125,6 +112,11 @@ fn main() -> anyhow::Result<()> {
         Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
         Action::FuzzInstall => fuzz::install(&sh)?,
+        Action::FuzzList { format } => match format.as_deref() {
+            Some("github-matrix") => fuzz::list_github_matrix()?,
+            Some("human") | None => fuzz::list_human()?,
+            Some(other) => anyhow::bail!("unknown --format value: {other}"),
+        },
         Action::FuzzRun { duration, target } => fuzz::run(&sh, duration, target)?,
         Action::WasmCheck => wasm::check(&sh)?,
         Action::WasmInstall => wasm::install(&sh)?,

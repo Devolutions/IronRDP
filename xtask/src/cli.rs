@@ -34,6 +34,8 @@ TASKS:
                           Minify fuzzing corpus for a specific target (or all if unspecified)
   fuzz corpus-push        Push fuzzing corpus to Azure storage
   fuzz install            Install dependencies required for fuzzing
+  fuzz list [--format <FMT>]
+                          List fuzz targets (fmt: human (default) | github-matrix)
   fuzz run [--duration <SECONDS>] [--target <NAME>]
                           Fuzz a specific target if any or all targets for a limited duration (default is 5s)
   wasm check              Ensure WASM module is compatible for the web
@@ -91,6 +93,9 @@ pub enum Action {
     },
     FuzzCorpusPush,
     FuzzInstall,
+    FuzzList {
+        format: Option<String>,
+    },
     FuzzRun {
         duration: Option<u32>,
         target: Option<String>,
@@ -157,6 +162,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 },
                 Some("corpus-push") => Action::FuzzCorpusPush,
                 Some("install") => Action::FuzzInstall,
+                Some("list") => Action::FuzzList {
+                    format: args.opt_value_from_str("--format")?,
+                },
                 Some("run") => Action::FuzzRun {
                     duration: args.opt_value_from_str("--duration")?,
                     target: args.opt_value_from_str("--target")?,
