@@ -34,19 +34,6 @@ pub const CARGO: &str = env!("CARGO");
 
 pub const WASM_PACKAGES: &[&str] = &["ironrdp-web"];
 
-pub const FUZZ_TARGETS: &[&str] = &[
-    "pdu_decoding",
-    "rle_decompression",
-    "bitmap_stream",
-    "cliprdr_format",
-    "cliprdr_channel_processing",
-    "channel_processing",
-    "bulk_mppc",
-    "bulk_ncrush",
-    "bulk_xcrush",
-    "bulk_round_trip",
-];
-
 fn main() -> anyhow::Result<()> {
     let args = match cli::parse_args() {
         Ok(args) => args,
@@ -88,10 +75,9 @@ fn main() -> anyhow::Result<()> {
         }
         Action::CheckFeatures { case, list, format } => {
             if list {
-                match format.as_deref() {
-                    Some("github-matrix") => features::list_github_matrix()?,
-                    Some("human") | None => features::list_human()?,
-                    Some(other) => anyhow::bail!("unknown --format value: {other}"),
+                match format {
+                    cli::ListFormat::Human => features::list_human()?,
+                    cli::ListFormat::GithubMatrix => features::list_github_matrix()?,
                 }
             } else if let Some(case_name) = case {
                 features::run_case(&sh, &case_name)?;
@@ -125,6 +111,10 @@ fn main() -> anyhow::Result<()> {
         Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
         Action::FuzzInstall => fuzz::install(&sh)?,
+        Action::FuzzList { format } => match format {
+            cli::ListFormat::Human => fuzz::list_human()?,
+            cli::ListFormat::GithubMatrix => fuzz::list_github_matrix()?,
+        },
         Action::FuzzRun { duration, target } => fuzz::run(&sh, duration, target)?,
         Action::WasmCheck => wasm::check(&sh)?,
         Action::WasmInstall => wasm::install(&sh)?,

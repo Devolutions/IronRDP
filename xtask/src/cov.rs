@@ -184,7 +184,7 @@ pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
 
         cmd!(sh, "{CARGO} clean").run()?;
 
-        for target in FUZZ_TARGETS {
+        for target in crate::fuzz::discover_targets()? {
             cmd!(sh, "rustup run {NIGHTLY_TOOLCHAIN} cargo fuzz coverage {target}").run()?;
         }
 
