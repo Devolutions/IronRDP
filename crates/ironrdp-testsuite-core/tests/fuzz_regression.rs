@@ -46,3 +46,8 @@ fn check_bulk_decompress_xcrush() {
 fn check_bulk_round_trip() {
     check!(bulk_round_trip);
 }
+
+#[test]
+fn check_pdu_round_trip() {
+    check!(pdu_round_trip);
+}
