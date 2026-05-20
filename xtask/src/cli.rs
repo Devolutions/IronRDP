@@ -59,6 +59,27 @@ pub struct Args {
     pub action: Action,
 }
 
+pub enum ListFormat {
+    Human,
+    GithubMatrix,
+}
+
+impl ListFormat {
+    pub const DEFAULT: Self = Self::Human;
+}
+
+impl core::str::FromStr for ListFormat {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "human" => Ok(Self::Human),
+            "github-matrix" => Ok(Self::GithubMatrix),
+            other => anyhow::bail!("unknown --format value: {other}"),
+        }
+    }
+}
+
 pub enum Action {
     ShowHelp,
     Bootstrap,
@@ -72,7 +93,7 @@ pub enum Action {
     CheckFeatures {
         case: Option<String>,
         list: bool,
-        format: Option<String>,
+        format: ListFormat,
     },
     CheckInstall,
     Ci,
@@ -94,7 +115,7 @@ pub enum Action {
     FuzzCorpusPush,
     FuzzInstall,
     FuzzList {
-        format: Option<String>,
+        format: ListFormat,
     },
     FuzzRun {
         duration: Option<u32>,
@@ -134,7 +155,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("features") => Action::CheckFeatures {
                     case: args.opt_value_from_str("--case")?,
                     list: args.contains("--list"),
-                    format: args.opt_value_from_str("--format")?,
+                    format: args
+                        .opt_value_from_str("--format")?
+                        .unwrap_or(ListFormat::DEFAULT),
                 },
                 Some("install") => Action::CheckInstall,
                 Some(unknown) => anyhow::bail!("unknown check action: {unknown}"),
@@ -163,7 +186,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("corpus-push") => Action::FuzzCorpusPush,
                 Some("install") => Action::FuzzInstall,
                 Some("list") => Action::FuzzList {
-                    format: args.opt_value_from_str("--format")?,
+                    format: args
+                        .opt_value_from_str("--format")?
+                        .unwrap_or(ListFormat::DEFAULT),
                 },
                 Some("run") => Action::FuzzRun {
                     duration: args.opt_value_from_str("--duration")?,
