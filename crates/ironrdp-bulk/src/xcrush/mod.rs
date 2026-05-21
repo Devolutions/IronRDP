@@ -835,8 +835,10 @@ impl XCrushContext {
         }
 
         // Slow path: byte-by-byte for remaining bytes.
+        // Use `>= buf_end` (not `> buf_end`) so we never read the byte
+        // just past the current block boundary.
         loop {
-            if fm > buf_end {
+            if fm >= buf_end {
                 break;
             }
             if buf[fm] != buf[fc] {
@@ -1125,6 +1127,19 @@ impl XCrushContext {
         }
 
         // Copy trailing literals
+        // INVARIANT: current_offset <= self.history_offset; match lengths must not
+        // exceed the current block boundary (enforced by find_match_length using
+        // `fm >= buf_end`). A violation here indicates a bug in match generation.
+        debug_assert!(
+            current_offset <= self.history_offset,
+            "XCRUSH: current_offset ({current_offset}) exceeds history_offset ({})",
+            self.history_offset,
+        );
+        if current_offset > self.history_offset {
+            return Err(BulkError::InvalidCompressedData(
+                "XCRUSH: match extends past block boundary",
+            ));
+        }
         let trailing_len = self.history_offset - current_offset;
         if literals_pos + trailing_len >= output_size {
             return Err(BulkError::InvalidCompressedData(
