@@ -8,6 +8,7 @@ pub mod dwt;
 pub mod dwt_extrapolate;
 pub mod image_processing;
 pub mod pointer;
+pub mod progressive;
 pub mod quantization;
 pub mod rdp6;
 pub mod rectangle_processing;
