@@ -67,6 +67,10 @@ impl Decode<'_> for UrbdrcServerPdu {
                     ))
                 }
             }
+            InterfaceId::NOTIFY_SERVER | InterfaceId::DEVICE_SINK => Err(invalid_field_err!(
+                "SHARED_MSG_HEADER",
+                "reserved interface ID is not valid for server-to-client messages"
+            )),
             _udev_iface => {
                 if header.mask != Mask::StreamIdProxy {
                     return Err(invalid_field_err!(
@@ -173,6 +177,10 @@ impl Decode<'_> for UrbdrcClientPdu {
                     ))
                 }
             }
+            InterfaceId::NOTIFY_CLIENT => Err(invalid_field_err!(
+                "SHARED_MSG_HEADER",
+                "reserved interface ID is not valid for client-to-server messages"
+            )),
             _id => match (header.function_id, header.mask) {
                 (None, Mask::StreamIdStub) => QueryDeviceTextRsp::decode(src, header).map(Self::DevTextRsp),
                 (Some(FunctionId::IOCONTROL_COMPLETION), Mask::StreamIdProxy) => {
