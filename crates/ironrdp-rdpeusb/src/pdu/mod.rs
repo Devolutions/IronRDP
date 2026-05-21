@@ -86,8 +86,8 @@ impl Decode<'_> for UrbdrcServerPdu {
                     FunctionId::TRANSFER_OUT_REQUEST => TransferOutRequest::decode(src, header).map(Self::TransferOut),
                     FunctionId::RETRACT_DEVICE => RetractDevice::decode(src, header).map(Self::Retract),
                     _ => Err(invalid_field_err!(
-                        "SHARED_MSG_HEADER::InterfaceId",
-                        "unknown interface id"
+                        "SHARED_MSG_HEADER::FunctionId",
+                        "unsupported function id for USB device interface"
                     )),
                 }
             }
