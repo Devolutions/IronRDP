@@ -34,15 +34,6 @@ pub type RequestIdIoctl = u32;
 /// Is set to request data from a device. To transfer data to a device, this flag **MUST** be clear.
 pub(crate) const USBD_TRANSFER_DIRECTION_IN: u32 = 0x1;
 
-#[cfg(test)]
-pub(crate) const USBD_TRANSFER_DIRECTION_OUT: u32 = 0x0;
-
-#[cfg(test)]
-pub(crate) const USBD_DEFAULT_PIPE_TRANSFER: u32 = 0x8;
-
-#[cfg(test)]
-pub(crate) const USBD_START_ISO_TRANSFER_ASAP: u32 = 0x4;
-
 /// The maximum number of endpoints EP 1-15 (IN + OUT) excluding EP 0, in a USB device.
 /// (see USB2.0 Spec 9.6.6 Endpoint).
 pub const MAX_NON_DEFAULT_EP_COUNT: usize = 30;
@@ -114,18 +105,3 @@ impl Decode<'_> for UsbdIsoPacketDesc {
         Ok(Self { offset, length, status })
     }
 }
-
-#[cfg(test)]
-macro_rules! round_trip {
-    ($en:expr, $de:ty) => {{
-        let mut buf = alloc::vec![0; $en.size()];
-        $en.encode(&mut ironrdp_core::WriteCursor::new(&mut buf)).unwrap();
-        let mut src = ironrdp_core::ReadCursor::new(&buf);
-        $crate::pdu::header::SharedMsgHeader::decode(&mut src)
-            .and_then(|header| <$de>::decode(&mut src, header))
-            .unwrap()
-    }};
-}
-
-#[cfg(test)]
-pub(crate) use round_trip;

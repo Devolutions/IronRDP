@@ -12,6 +12,10 @@ categories.workspace = true
 
 publish = false
 
+[lib]
+doctest = false
+test = false
+
 [features]
 default = []
 std = []
