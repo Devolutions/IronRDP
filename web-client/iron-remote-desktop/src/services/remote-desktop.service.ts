@@ -117,10 +117,28 @@ export class RemoteDesktopService {
     }
 
     mouseIn(event: MouseEvent) {
+        if (!this.session) return;
         this.syncModifier(event);
+        // Release any button the session thinks is held but the browser no longer reports,
+        // clearing stale state from buttons released outside the canvas (e.g. off-canvas mouseup).
+        const buttonsMap: [number, number][] = [
+            [1, 0], // left button
+            [2, 2], // right button
+            [4, 1], // middle button
+        ];
+        const releases = buttonsMap
+            .filter(([mask]) => (event.buttons & mask) === 0)
+            .map(([, buttonId]) => this.module.DeviceEvent.mouseButtonReleased(buttonId));
+        if (releases.length > 0) {
+            this.doTransactionFromDeviceEvents(releases);
+        }
     }
 
     mouseOut(_event: MouseEvent) {
+        this.releaseAllInputs();
+    }
+
+    focusLost() {
         this.releaseAllInputs();
     }
 
