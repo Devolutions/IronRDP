@@ -167,6 +167,11 @@ impl DrdynvcClient {
         self.cap_handshake_done = true;
         SvcMessage::from(caps_response)
     }
+
+    pub fn close_channel(&mut self, channel_id: u32) -> SvcMessage {
+        self.dynamic_channels.remove_by_channel_id(channel_id);
+        SvcMessage::from(DrdynvcClientPdu::Close(ClosePdu::new(channel_id)))
+    }
 }
 
 impl_as_any!(DrdynvcClient);
