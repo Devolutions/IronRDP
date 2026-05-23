@@ -619,6 +619,7 @@ impl<R: Role> Cliprdr<R> {
                         info!("Remote accepted format list");
                     }
                 }
+                self.backend.on_format_list_response(true);
             }
             FormatListResponse::Fail => {
                 // [MS-RDPECLIP] 3.1.5.2.4 - The remote rejected our FormatList but the
@@ -645,6 +646,7 @@ impl<R: Role> Cliprdr<R> {
 
                     self.sent_file_contents_requests.clear();
                 }
+                self.backend.on_format_list_response(false);
             }
         }
 
