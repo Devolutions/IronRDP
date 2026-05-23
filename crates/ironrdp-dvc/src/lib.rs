@@ -109,6 +109,14 @@ pub struct DynamicVirtualChannel {
     channel_id: Option<DynamicChannelId>,
 }
 
+impl Drop for DynamicVirtualChannel {
+    fn drop(&mut self) {
+        if let Some(id) = self.channel_id {
+            self.channel_processor.close(id);
+        }
+    }
+}
+
 impl DynamicVirtualChannel {
     fn from_boxed(processor: Box<dyn DvcProcessor + Send>) -> Self {
         Self {

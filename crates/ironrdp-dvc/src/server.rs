@@ -201,14 +201,15 @@ impl SvcProcessor for DrdynvcServer {
                 let msg = c.processor.start(create_resp.channel_id())?;
                 resp.extend(encode_dvc_messages(id, msg, ChannelFlags::SHOW_PROTOCOL).map_err(|e| encode_err!(e))?);
             }
-            DrdynvcClientPdu::Close(close_resp) => {
-                debug!("Got DVC Close Response PDU: {close_resp:?}");
-                let c = self
-                    .channel_by_id(close_resp.channel_id())
-                    .map_err(|e| decode_err!(e))?;
+            DrdynvcClientPdu::Close(close) => {
+                debug!("Got DVC Close PDU: {close:?}");
+                let channel_id = close.channel_id();
+                let c = self.channel_by_id(channel_id).map_err(|e| decode_err!(e))?;
                 if c.state != ChannelState::Opened {
-                    return Err(pdu_other_err!("invalid channel state"));
+                    debug!(?channel_id, ?c.state, "Ignoring close for channel not in Opened state");
+                    return Ok(resp);
                 }
+                c.processor.close(channel_id);
                 c.state = ChannelState::Closed;
             }
             DrdynvcClientPdu::Data(data) => {

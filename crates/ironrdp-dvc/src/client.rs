@@ -227,14 +227,14 @@ impl SvcProcessor for DrdynvcClient {
                     );
                 }
             }
-            DrdynvcServerPdu::Close(close_request) => {
-                debug!("Got DVC Close Request PDU: {close_request:?}");
-                self.dynamic_channels.remove_by_channel_id(close_request.channel_id());
-
-                let close_response = DrdynvcClientPdu::Close(ClosePdu::new(close_request.channel_id()));
-
-                debug!("Send DVC Close Response PDU: {close_response:?}");
-                responses.push(SvcMessage::from(close_response));
+            DrdynvcServerPdu::Close(close) => {
+                debug!("Got DVC Close PDU: {close:?}");
+                let channel_id = close.channel_id();
+                if self.dynamic_channels.remove_by_channel_id(channel_id).is_some() {
+                    let close_response = DrdynvcClientPdu::Close(ClosePdu::new(channel_id));
+                    debug!("Send DVC Close Response PDU: {close_response:?}");
+                    responses.push(SvcMessage::from(close_response));
+                }
             }
             DrdynvcServerPdu::Data(data) => {
                 let channel_id = data.channel_id();
@@ -337,8 +337,8 @@ impl DynamicChannelSet {
         self.active_channels.get_mut(&id)
     }
 
-    fn remove_by_channel_id(&mut self, id: DynamicChannelId) {
-        if let Some(dvc) = self.active_channels.remove(&id) {
+    fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> Option<DynamicVirtualChannel> {
+        self.active_channels.remove(&id).inspect(|dvc| {
             let type_id = dvc.processor_type_id();
 
             // Only matters for pre-registered channels
@@ -347,7 +347,7 @@ impl DynamicChannelSet {
             {
                 entry.remove();
             }
-        }
+        })
     }
 
     #[inline]
