@@ -387,6 +387,13 @@ pub struct Cliprdr<R: Role> {
     /// Tracked so we can recognize FormatDataRequest for our file list.
     local_file_list_format_id: Option<ClipboardFormatId>,
 
+    /// Format ID used for the local "Preferred DropEffect" entry in the
+    /// FormatList sent alongside FileGroupDescriptorW from
+    /// [`Cliprdr::initiate_file_copy`]. Tracked so we can recognize a
+    /// FormatDataRequest for it and respond inline with `DROPEFFECT_COPY`
+    /// (0x00000001) — backends don't have to know about the format.
+    local_drop_effect_format_id: Option<ClipboardFormatId>,
+
     /// Stores the remote file list after receiving it via FormatDataResponse.
     /// Used for validating FileContentsRequest.lindex bounds.
     remote_file_list: Option<PackedFileList>,
@@ -528,6 +535,7 @@ impl<R: Role> Cliprdr<R> {
             pending_format_data_request: None,
             local_file_list: None,
             local_file_list_format_id: None,
+            local_drop_effect_format_id: None,
             remote_file_list: None,
             remote_file_list_format_id: None,
             sent_file_contents_requests: HashMap::new(),
@@ -628,6 +636,7 @@ impl<R: Role> Cliprdr<R> {
 
                 self.local_file_list = None;
                 self.local_file_list_format_id = None;
+                self.local_drop_effect_format_id = None;
 
                 if !self.sent_file_contents_requests.is_empty() {
                     info!(
@@ -808,6 +817,7 @@ impl<R: Role> Cliprdr<R> {
         // in-progress file download - acceptable since the user explicitly chose new content.
         self.local_file_list = None;
         self.local_file_list_format_id = None;
+        self.local_drop_effect_format_id = None;
 
         let mut pdus = Vec::new();
 
@@ -1500,11 +1510,27 @@ impl<R: Role> Cliprdr<R> {
         // FormatDataRequest, they will use our ID (0xC0FE), which we use to recognize the request
         // in handle_format_data_request.
         const FILE_LIST_FORMAT_ID: u32 = 0xC0FE;
+        // Distinct private-range ID for the companion "Preferred DropEffect"
+        // entry. The value doesn't matter on the wire (the remote keys off
+        // the format *name*); it just has to be locally unique so we can
+        // tell which FormatDataRequest is which.
+        const DROP_EFFECT_FORMAT_ID: u32 = 0xC0FD;
         let format_id = ClipboardFormatId::new(FILE_LIST_FORMAT_ID);
-        let formats = vec![ClipboardFormat::new(format_id).with_name(ClipboardFormatName::FILE_LIST)];
+        let drop_effect_id = ClipboardFormatId::new(DROP_EFFECT_FORMAT_ID);
+        // Advertise both FileGroupDescriptorW AND Preferred DropEffect.
+        // Windows Explorer pairs these locally and uses the latter to engage
+        // its shell file-copy machinery (with the native progress dialog)
+        // on paste — without it, Explorer falls back to a plain synchronous
+        // IStream read with no progress UI.
+        let formats = vec![
+            ClipboardFormat::new(format_id).with_name(ClipboardFormatName::FILE_LIST),
+            ClipboardFormat::new(drop_effect_id).with_name(ClipboardFormatName::PREFERRED_DROP_EFFECT),
+        ];
 
-        // Track the format ID we're using for this file list
+        // Track the format IDs we're using for the file list and drop effect
+        // so handle_format_data_request can recognize and answer them inline.
         self.local_file_list_format_id = Some(format_id);
+        self.local_drop_effect_format_id = Some(drop_effect_id);
 
         let format_list = self.build_format_list(&formats).map_err(|e| encode_err!(e))?;
         let pdu = ClipboardPdu::FormatList(format_list);
@@ -1588,6 +1614,18 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 Ok(Vec::new())
             }
             ClipboardPdu::FormatDataRequest(request) => {
+                // Short-circuit: if the remote is asking for our Preferred
+                // DropEffect, answer inline with DROPEFFECT_COPY (0x00000001,
+                // 4-byte little-endian). This is what we always mean by an
+                // outbound file copy (`initiate_file_copy` is named for
+                // exactly this), so answering inline keeps backends from
+                // having to know about the format.
+                if Some(request.format) == self.local_drop_effect_format_id {
+                    const DROPEFFECT_COPY: u32 = 0x0000_0001;
+                    let response = OwnedFormatDataResponse::new_data(DROPEFFECT_COPY.to_le_bytes().to_vec());
+                    let pdu = ClipboardPdu::FormatDataResponse(response);
+                    return Ok(vec![into_cliprdr_message(pdu)]);
+                }
                 // Check if this is a request for our stored file list by comparing format IDs
                 if Some(request.format) == self.local_file_list_format_id {
                     if let Some(ref file_list) = self.local_file_list {
