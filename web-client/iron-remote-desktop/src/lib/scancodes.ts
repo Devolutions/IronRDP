@@ -157,7 +157,7 @@ const scanCodeToKeyCode = {
     '0xE06D': 'MediaSelect',
 };
 
-const codeToScanCodeBlinkOverride = {
+const scanCodeToKeyCodeExtras = {
     '0x0077': 'Lang4',
     '0x0078': 'Lang3',
     '0xE008': 'Undo',
@@ -175,7 +175,7 @@ const codeToScanCodeBlinkOverride = {
     '0xE063': 'WakeUp',
 };
 
-const scanCodeToKeyCodeGeckoOverride = {
+const scanCodeToKeyCodeGeckoExtras = {
     '0x0054': 'PrintScreen',
     '0xE020': 'VolumeMute', // The documentation says it's 'AudioVolumeMute', but the actual test shows that it's 'VolumeMute'.
     '0xE02E': 'VolumeDown',
@@ -185,9 +185,9 @@ const scanCodeToKeyCodeGeckoOverride = {
 };
 
 const KeyCodeToScanCode = {
-    blink: invertCodesMapping({ ...scanCodeToKeyCode, ...codeToScanCodeBlinkOverride }),
-    gecko: invertCodesMapping({ ...scanCodeToKeyCode, ...scanCodeToKeyCodeGeckoOverride }),
-    webkit: invertCodesMapping(scanCodeToKeyCode),
+    blink: invertCodesMapping({ ...scanCodeToKeyCode, ...scanCodeToKeyCodeExtras }),
+    gecko: invertCodesMapping({ ...scanCodeToKeyCode, ...scanCodeToKeyCodeGeckoExtras }),
+    webkit: invertCodesMapping({ ...scanCodeToKeyCode, ...scanCodeToKeyCodeExtras }),
 };
 
 function invertCodesMapping(obj: CodeMap) {
