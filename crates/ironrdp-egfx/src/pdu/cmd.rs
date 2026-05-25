@@ -1593,11 +1593,24 @@ impl<'de> Decode<'de> for CapabilitySet {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let version = CapabilityVersion::try_from(src.read_u32())?;
+        let version_raw = src.read_u32();
         let data_length: usize = cast_length!("dataLength", src.read_u32())?;
 
         ensure_size!(in: src, size: data_length);
         let data = src.read_slice(data_length);
+
+        // Tolerate capability versions this build doesn't recognize instead of
+        // failing the whole PDU. A strict error here aborts decoding of the
+        // entire CapabilitiesAdvertise during EGFX negotiation, which can
+        // prevent a connection from being established at all when a client
+        // advertises a capset version outside the set enumerated below
+        // (observed with the macOS "Windows App" / Microsoft Remote Desktop
+        // client). Preserving the raw bytes as `Unknown` lets negotiation
+        // complete so the server can still select a mutually supported version.
+        let Ok(version) = CapabilityVersion::try_from(version_raw) else {
+            return Ok(CapabilitySet::Unknown(data.to_vec()));
+        };
+
         let mut cur = ReadCursor::new(data);
 
         let size = match version {
