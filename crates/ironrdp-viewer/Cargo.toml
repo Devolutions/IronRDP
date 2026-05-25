@@ -1,0 +1,68 @@
+[package]
+name = "ironrdp-viewer"
+version = "0.1.0"
+readme = "README.md"
+description = "Portable RDP viewer (GUI binary) without GPU acceleration"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+default-run = "ironrdp-viewer"
+
+# Not publishing for now.
+publish = false
+
+[lib]
+doctest = false
+test = false
+
+[[bin]]
+name = "ironrdp-viewer"
+test = false
+
+[features]
+default = ["rustls"]
+rustls = ["ironrdp-client/rustls"]
+native-tls = ["ironrdp-client/native-tls"]
+qoi = ["ironrdp-client/qoi"]
+qoiz = ["ironrdp-client/qoiz"]
+
+[dependencies]
+ironrdp = { path = "../ironrdp", version = "0.14", features = ["input", "pdu"] }
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", default-features = false }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.5" }
+ironrdp-cfg = { path = "../ironrdp-cfg" }
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
+ironrdp-propertyset = { path = "../ironrdp-propertyset" }
+ironrdp-rdpfile = { path = "../ironrdp-rdpfile" }
+
+# Windowing and rendering
+winit = { version = "0.30", features = ["rwh_06"] }
+softbuffer = "0.4"
+
+# CLI
+clap = { version = "4.6", features = ["derive", "cargo"] }
+inquire = "0.9"
+proc-exit = "2"
+
+# Logging
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async, futures
+tokio = { version = "1", features = ["full"] }
+
+# Utils
+whoami = "2.1"
+anyhow = "1"
+smallvec = "1.15"
+tap = "1"
+semver = "1"
+raw-window-handle = "0.6"
+url = "2"
+
+[lints]
+workspace = true

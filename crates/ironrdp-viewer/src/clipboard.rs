@@ -1,8 +1,7 @@
 use ironrdp::cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
+use ironrdp_client::rdp::RdpInputEvent;
 use tokio::sync::mpsc;
 use tracing::error;
-
-use crate::rdp::RdpInputEvent;
 
 /// Shim for sending and receiving CLIPRDR events as `RdpInputEvent`
 #[derive(Clone, Debug)]

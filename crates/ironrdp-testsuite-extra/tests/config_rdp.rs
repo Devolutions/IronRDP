@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use ironrdp_client::config::{ClipboardType, Config};
+use ironrdp_viewer::config::PartialConfig;
 use uuid::Uuid;
 
 struct TempRdpFile {
@@ -37,7 +38,10 @@ fn parse_config_from_rdp(content: &str, extra_args: &[&str]) -> Config {
 
     args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
 
-    Config::parse_from(args).expect("failed to parse client config")
+    PartialConfig::parse_from(args)
+        .expect("failed to parse client config")
+        .into_config()
+        .expect("failed to build client config")
 }
 
 #[test]
