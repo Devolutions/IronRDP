@@ -117,8 +117,15 @@ impl<'de> Decode<'de> for Avc420BitmapStream<'de> {
         let num_regions = src.read_u32();
         #[expect(clippy::as_conversions, reason = "num_regions bounded by practical limits")]
         let num_regions_usize = num_regions as usize;
-        let mut rectangles = Vec::with_capacity(num_regions_usize);
-        let mut quant_qual_vals = Vec::with_capacity(num_regions_usize);
+        // Cap pre-allocation against the remaining buffer to avoid OOM from a
+        // malicious num_regions: each region needs at least one rectangle
+        // (8 bytes) plus one QuantQuality entry (2 bytes). The actual read
+        // loop will fail with NotEnoughBytes if num_regions is bogus.
+        let per_region = InclusiveRectangle::FIXED_PART_SIZE + QuantQuality::FIXED_PART_SIZE;
+        let max_possible = src.len() / per_region;
+        let bounded_capacity = num_regions_usize.min(max_possible);
+        let mut rectangles = Vec::with_capacity(bounded_capacity);
+        let mut quant_qual_vals = Vec::with_capacity(bounded_capacity);
         for _ in 0..num_regions {
             rectangles.push(InclusiveRectangle::decode(src)?);
         }
@@ -215,7 +222,13 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
             })
         } else {
             #[expect(clippy::as_conversions, reason = "30-bit value fits in usize")]
-            let (mut stream1, mut stream2) = src.split_at(stream_len as usize);
+            let stream_len = stream_len as usize;
+            // Validate that the declared stream length fits in the remaining
+            // buffer; src.split_at panics on overflow, so a malformed
+            // streamLen field would otherwise crash the decoder. Surfaced
+            // by the pdu_decode fuzz target.
+            ensure_size!(ctx: Self::NAME, in: src, size: stream_len);
+            let (mut stream1, mut stream2) = src.split_at(stream_len);
             let stream1 = Avc420BitmapStream::decode(&mut stream1)?;
             let stream2 = if encoding == Encoding::LUMA_AND_CHROMA {
                 Some(Avc420BitmapStream::decode(&mut stream2)?)
