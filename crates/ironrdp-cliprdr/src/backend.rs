@@ -96,8 +96,6 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// advertised) and, equally important, to **stop** re-advertising once an
     /// `Ok` is seen — a later blind re-advertise that gets rejected would wipe
     /// already-accepted state and silently break a paste that was about to work.
-    ///
-    /// Default impl is a no-op, so this is non-breaking for existing backends.
     fn on_format_list_response(&mut self, ok: bool) {
         let _ = ok;
     }
