@@ -180,6 +180,127 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
 }
 
+/// Helper for [`pdu_round_trip`].
+///
+/// Exercises `decode` → `encode_vec` → re-`decode`, silently dropping `Err`
+/// results from any stage. The oracle's value is in detecting INTERNAL
+/// panics from inside the encoder/decoder (e.g., `unreachable!()` reached
+/// on a valid decoded state), not in asserting Err-result symmetry. Many
+/// `ironrdp-pdu` types have known asymmetric `Encode` impls that return
+/// `"Encoding not implemented"` for variants the decoder still accepts;
+/// those are tracked separately and not in scope for this oracle.
+macro_rules! pdu_round_trip_one {
+    ($data:expr, $ty:ty) => {{
+        if let Ok(pdu) = ironrdp_core::decode::<$ty>($data) {
+            if let Ok(encoded) = ironrdp_core::encode_vec(&pdu) {
+                let _ = ironrdp_core::decode::<$ty>(&encoded);
+            }
+        }
+    }};
+}
+
+/// Round-trip oracle: for each PDU type, exercise the
+/// `decode` → `encode_vec` → re-`decode` pipeline.
+///
+/// The property tested is *no internal panic from inside the encoder or
+/// decoder when fed a decoder-accepted input through both directions of the
+/// round-trip*. Asymmetric `Err` returns (decoder accepts something the
+/// encoder reports as `"Encoding not implemented"`, or vice-versa) are not
+/// in scope: those are tolerated incomplete-impl cases tracked separately.
+///
+/// What this catches:
+///
+/// - `unreachable!()` reached during encoding of a valid decoded state (i.e.
+///   the encoder's match arms are missing a variant the decoder produces).
+/// - Integer overflow / index-out-of-bounds inside the encoder on
+///   decoder-accepted inputs.
+/// - Panics in the decoder when fed encoder-produced bytes (re-decode path).
+///
+/// What this does NOT catch:
+///
+/// - Encode returning `Err`. Many PDU types intentionally return errors for
+///   partially-implemented variants; exercising them is the encoder
+///   developer's responsibility, not this oracle's.
+/// - Re-decode returning `Err`. Surfaces an asymmetry but not a memory-safety
+///   bug; tracked via filed follow-up issues, not this oracle.
+///
+/// Initial type coverage mirrors `pdu_decode` so the same corpus feeds both
+/// oracles. As new PDU types gain `Encode` impls, they auto-extend coverage
+/// here when added to the macro list below.
+pub fn pdu_round_trip(data: &[u8]) {
+    use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
+    use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
+    use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, vc};
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
+
+    // Connection-time PDUs
+    pdu_round_trip_one!(data, X224<ConnectionRequest>);
+    pdu_round_trip_one!(data, X224<ConnectionConfirm>);
+    pdu_round_trip_one!(data, X224<McsMessage<'_>>);
+    pdu_round_trip_one!(data, ConnectInitial);
+    pdu_round_trip_one!(data, ConnectResponse);
+    pdu_round_trip_one!(data, ClientInfoPdu);
+    // `capability_sets::CapabilitySet` AND `headers::ShareControlHeader` both
+    // transit through `CapabilitySet`'s encoder, which reaches `unreachable!()`
+    // (crates/ironrdp-pdu/src/rdp/capability_sets/mod.rs:447) on variants the
+    // decoder accepts but the encoder match doesn't cover. Internal-panic bugs;
+    // can't be silently dropped at the oracle layer. Smoke-fuzz reproducer:
+    // `[6, 0, 4, 0]`. To be filed as a follow-up.
+    pdu_round_trip_one!(data, pcb::PreconnectionBlob);
+    pdu_round_trip_one!(data, server_error_info::ServerSetErrorInfoPdu);
+
+    // GCC blocks and conference creation
+    pdu_round_trip_one!(data, gcc::ClientGccBlocks);
+    pdu_round_trip_one!(data, gcc::ServerGccBlocks);
+    pdu_round_trip_one!(data, gcc::ClientClusterData);
+    pdu_round_trip_one!(data, gcc::ConferenceCreateRequest);
+    pdu_round_trip_one!(data, gcc::ConferenceCreateResponse);
+
+    // Licensing
+    pdu_round_trip_one!(data, server_license::LicensePdu);
+
+    // Virtual channel header
+    pdu_round_trip_one!(data, vc::ChannelPduHeader);
+
+    // Fast-path framing
+    pdu_round_trip_one!(data, fast_path::FastPathHeader);
+    pdu_round_trip_one!(data, fast_path::FastPathUpdatePdu<'_>);
+
+    // Surface commands
+    pdu_round_trip_one!(data, surface_commands::SurfaceCommand<'_>);
+    pdu_round_trip_one!(data, surface_commands::SurfaceBitsPdu<'_>);
+    pdu_round_trip_one!(data, surface_commands::FrameMarkerPdu);
+    pdu_round_trip_one!(data, surface_commands::ExtendedBitmapDataPdu<'_>);
+    pdu_round_trip_one!(data, surface_commands::BitmapDataHeader);
+
+    // Codecs
+    pdu_round_trip_one!(data, codecs::rfx::Block<'_>);
+
+    // Input
+    pdu_round_trip_one!(data, input::InputEventPdu);
+    pdu_round_trip_one!(data, input::InputEvent);
+
+    // Bitmap RDP6
+    pdu_round_trip_one!(data, bitmap::rdp6::BitmapStream<'_>);
+
+    // Clipboard
+    pdu_round_trip_one!(data, ironrdp_cliprdr::pdu::ClipboardPdu<'_>);
+    pdu_round_trip_one!(data, ironrdp_cliprdr::pdu::PackedFileList);
+    pdu_round_trip_one!(data, ironrdp_cliprdr::pdu::FileContentsRequest);
+    pdu_round_trip_one!(data, ironrdp_cliprdr::pdu::FileContentsResponse<'_>);
+
+    // RDPDR
+    pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::RdpdrPdu);
+
+    // Display control
+    pdu_round_trip_one!(data, ironrdp_displaycontrol::pdu::DisplayControlPdu);
+
+    // RDPSND
+    pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>);
+    pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ClientAudioOutputPdu);
+}
+
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {
     let mut out = Vec::new();
 
