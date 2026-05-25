@@ -42,7 +42,11 @@ fn initiate_file_copy_advertises_drop_effect_alongside_file_group_descriptor() {
     ];
     let messages: Vec<SvcMessage> = cliprdr.initiate_file_copy(files).unwrap().into();
 
-    assert_eq!(messages.len(), 1, "initiate_file_copy should send a single FormatList PDU");
+    assert_eq!(
+        messages.len(),
+        1,
+        "initiate_file_copy should send a single FormatList PDU"
+    );
 
     decode_pdu!(&messages[0] => bytes, pdu);
     let ClipboardPdu::FormatList(format_list) = pdu else {
@@ -89,8 +93,10 @@ fn format_data_request_for_drop_effect_returns_dropeffect_copy_inline() {
     // re-driving the call would be circular; instead, key off the format
     // *name* by walking the FormatList we just emitted. Easier and
     // wire-faithful since the remote keys off the name too.
-    let initiate_msgs: Vec<SvcMessage> =
-        cliprdr.initiate_file_copy(vec![FileDescriptor::new("d.txt").with_file_size(1)]).unwrap().into();
+    let initiate_msgs: Vec<SvcMessage> = cliprdr
+        .initiate_file_copy(vec![FileDescriptor::new("d.txt").with_file_size(1)])
+        .unwrap()
+        .into();
     decode_pdu!(&initiate_msgs[0] => initiate_bytes, initiate_pdu);
     let ClipboardPdu::FormatList(format_list) = initiate_pdu else {
         panic!("expected FormatList");
@@ -108,9 +114,7 @@ fn format_data_request_for_drop_effect_returns_dropeffect_copy_inline() {
     let drop_effect_id = drop_effect_format.id;
 
     // Simulate the remote asking for the drop-effect format.
-    let request_pdu = ClipboardPdu::FormatDataRequest(FormatDataRequest {
-        format: drop_effect_id,
-    });
+    let request_pdu = ClipboardPdu::FormatDataRequest(FormatDataRequest { format: drop_effect_id });
     let request_bytes = ironrdp_core::encode_vec(&request_pdu).unwrap();
     let responses: Vec<SvcMessage> = cliprdr.process(&request_bytes).unwrap();
 
