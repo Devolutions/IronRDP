@@ -68,8 +68,8 @@ use crate::pdu::{
     Avc420BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesV8Flags,
     CapabilitiesV81Flags, CapabilitiesV107Flags, CapabilitySet, Codec1Type, DeleteEncodingContextPdu,
     EvictCacheEntryPdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToScaledOutputPdu, MapSurfaceToScaledWindowPdu,
-    MapSurfaceToWindowPdu, PixelFormat, QueueDepth, SolidFillPdu, SurfaceToCachePdu, SurfaceToSurfacePdu,
-    WireToSurface2Pdu,
+    MapSurfaceToWindowPdu, PixelFormat, QueueDepth, RawCapabilitySet, SolidFillPdu, SurfaceToCachePdu,
+    SurfaceToSurfacePdu, WireToSurface2Pdu,
 };
 
 /// Max capacity to keep for decompressed buffer when cleared.
@@ -171,7 +171,6 @@ impl CodecCapabilities {
                 small_cache: flags.contains(CapabilitiesV107Flags::SMALL_CACHE),
                 thin_client: flags.contains(CapabilitiesV107Flags::AVC_THIN_CLIENT),
             },
-            CapabilitySet::Unknown(_) => Self::default(),
         }
     }
 }
@@ -581,10 +580,32 @@ impl GraphicsPipelineClient {
         }
     }
 
-    fn handle_capabilities_confirm(&mut self, cap: CapabilitySet) {
+    fn handle_capabilities_confirm(&mut self, cap: RawCapabilitySet) {
+        // Server confirms a single capability set. If we cannot interpret it
+        // (unknown version, or malformed body), we still transition to Active
+        // to avoid hanging the session, but we keep `negotiated_caps` empty
+        // and skip the typed callback so consumers don't observe a confirm
+        // they can't reason about.
+        let cap = match cap.parsed() {
+            Ok(Some(typed)) => typed,
+            Ok(None) => {
+                warn!(
+                    version = cap.version.0,
+                    "Server confirmed an unknown EGFX capability version; proceeding with defaults"
+                );
+                self.state = ClientState::Active;
+                return;
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to parse server's EGFX capabilities confirmation");
+                self.state = ClientState::Active;
+                return;
+            }
+        };
+
         self.codec_caps = CodecCapabilities::from_capability_set(&cap);
-        self.negotiated_caps = Some(cap.clone());
         self.state = ClientState::Active;
+        let cap = self.negotiated_caps.insert(cap);
 
         debug!(
             avc420 = self.codec_caps.avc420,
@@ -592,7 +613,7 @@ impl GraphicsPipelineClient {
             "EGFX capabilities confirmed"
         );
 
-        self.handler.on_capabilities_confirmed(&cap);
+        self.handler.on_capabilities_confirmed(cap);
     }
 
     fn handle_reset_graphics(&mut self, width: u32, height: u32) {
@@ -829,7 +850,7 @@ impl DvcProcessor for GraphicsPipelineClient {
             }
         };
 
-        let pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(caps));
+        let pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&caps));
 
         #[expect(clippy::as_conversions, reason = "Box<GfxPdu> to Box<dyn DvcEncode> coercion")]
         Ok(vec![Box::new(pdu) as DvcMessage])
@@ -972,11 +993,11 @@ mod tests {
         assert_eq!(client.state, ClientState::WaitingForConfirm);
         assert!(!client.is_active());
 
-        let _ = client.handle_pdu(GfxPdu::CapabilitiesConfirm(crate::pdu::CapabilitiesConfirmPdu(
-            CapabilitySet::V8 {
+        let _ = client.handle_pdu(GfxPdu::CapabilitiesConfirm(
+            crate::pdu::CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V8 {
                 flags: CapabilitiesV8Flags::empty(),
-            },
-        )));
+            }),
+        ));
         assert_eq!(client.state, ClientState::Active);
         assert!(client.is_active());
 

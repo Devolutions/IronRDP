@@ -1413,12 +1413,17 @@ impl<'a> Decode<'a> for CacheEntryMetadata {
 ///
 /// [2.2.2.18]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/9cc3cf56-148d-44bf-9dea-5f5e6970c00f>
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilitiesAdvertisePdu(pub Vec<CapabilitySet>);
+pub struct CapabilitiesAdvertisePdu(pub Vec<RawCapabilitySet>);
 
 impl CapabilitiesAdvertisePdu {
     const NAME: &'static str = "CapabilitiesAdvertisePdu";
 
     const FIXED_PART_SIZE: usize  = 2 /* Count */;
+
+    /// Build the PDU from a list of typed capability sets.
+    pub fn from_typed(caps: &[CapabilitySet]) -> Self {
+        Self(caps.iter().map(RawCapabilitySet::from).collect())
+    }
 }
 
 impl Encode for CapabilitiesAdvertisePdu {
@@ -1449,9 +1454,9 @@ impl<'a> Decode<'a> for CapabilitiesAdvertisePdu {
 
         let capabilities_count = cast_length!("Count", src.read_u16())?;
 
-        ensure_size!(in: src, size: capabilities_count * CapabilitySet::FIXED_PART_SIZE);
+        ensure_size!(in: src, size: capabilities_count * RawCapabilitySet::FIXED_PART_SIZE);
 
-        let capabilities = iter::repeat_with(|| CapabilitySet::decode(src))
+        let capabilities = iter::repeat_with(|| RawCapabilitySet::decode(src))
             .take(capabilities_count)
             .collect::<Result<_, _>>()?;
 
@@ -1463,12 +1468,17 @@ impl<'a> Decode<'a> for CapabilitiesAdvertisePdu {
 ///
 /// [2.2.2.19]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/4d1ced69-49ea-47dd-98d6-4b220f30db36>
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilitiesConfirmPdu(pub CapabilitySet);
+pub struct CapabilitiesConfirmPdu(pub RawCapabilitySet);
 
 impl CapabilitiesConfirmPdu {
     const NAME: &'static str = "CapabilitiesConfirmPdu";
 
     const FIXED_PART_SIZE: usize = 0;
+
+    /// Build the PDU from a typed capability set.
+    pub fn from_typed(cap: &CapabilitySet) -> Self {
+        Self(RawCapabilitySet::from(cap))
+    }
 }
 
 impl Encode for CapabilitiesConfirmPdu {
@@ -1493,15 +1503,163 @@ impl<'a> Decode<'a> for CapabilitiesConfirmPdu {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let cap = CapabilitySet::decode(src)?;
+        let cap = RawCapabilitySet::decode(src)?;
 
         Ok(Self(cap))
     }
 }
 
-/// 2.2.1.6 RDPGFX_CAPSET
+/// 2.2.1.6 RDPGFX_CAPSET — lossless wire-level representation.
+///
+/// Stores the original `version` alongside the raw body bytes (`data`). This
+/// is what [`CapabilitiesAdvertisePdu`] and [`CapabilitiesConfirmPdu`] hold on
+/// the wire, ensuring that `m == encode(decode(m))` even when this build does
+/// not recognize the advertised version.
+///
+/// Use [`Self::parsed`] to obtain a typed [`CapabilitySet`] when the version
+/// is known to this build.
 ///
 /// [2.2.1.6]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/82e6dd00-914d-4dcc-bd17-985e1268ffb7>
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawCapabilitySet {
+    pub version: CapabilityVersion,
+    pub data: Vec<u8>,
+}
+
+impl RawCapabilitySet {
+    const NAME: &'static str = "GfxCapabilitySet";
+
+    const FIXED_PART_SIZE: usize = 4 /* version */ + 4 /* capsDataLength */;
+
+    pub fn new(version: CapabilityVersion, data: Vec<u8>) -> Self {
+        Self { version, data }
+    }
+
+    /// Parse the body into a typed [`CapabilitySet`] when the version is one
+    /// this build recognizes. Returns `Ok(None)` for unknown versions, leaving
+    /// the raw bytes available via [`Self::data`].
+    pub fn parsed(&self) -> DecodeResult<Option<CapabilitySet>> {
+        let mut cur = ReadCursor::new(&self.data);
+        let cap = match self.version {
+            CapabilityVersion::V8 => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V8 {
+                    flags: CapabilitiesV8Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            CapabilityVersion::V8_1 => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V8_1 {
+                    flags: CapabilitiesV81Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            CapabilityVersion::V10 => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V10 {
+                    flags: CapabilitiesV10Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            CapabilityVersion::V10_1 => {
+                ensure_size!(in: cur, size: 16);
+                cur.read_u128();
+                CapabilitySet::V10_1
+            }
+            CapabilityVersion::V10_2 => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V10_2 {
+                    flags: CapabilitiesV10Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            CapabilityVersion::V10_3 => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            CapabilityVersion::V10_4 => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            CapabilityVersion::V10_5 => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            CapabilityVersion::V10_6 => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            CapabilityVersion::V10_6_ERR => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            CapabilityVersion::V10_7 => {
+                ensure_size!(in: cur, size: 4);
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::from_bits_retain(cur.read_u32()),
+                }
+            }
+            _ => return Ok(None),
+        };
+
+        Ok(Some(cap))
+    }
+}
+
+impl Encode for RawCapabilitySet {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u32(self.version.into());
+        dst.write_u32(cast_length!("dataLength", self.data.len())?);
+        dst.write_slice(&self.data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.data.len()
+    }
+}
+
+impl<'de> Decode<'de> for RawCapabilitySet {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let version = CapabilityVersion(src.read_u32());
+        let data_length: usize = cast_length!("dataLength", src.read_u32())?;
+
+        ensure_size!(in: src, size: data_length);
+        let data = src.read_slice(data_length).to_vec();
+
+        // Tolerate capability versions this build doesn't recognize instead of
+        // failing the whole PDU. A strict error here would abort decoding of
+        // the entire CapabilitiesAdvertise during EGFX negotiation, which can
+        // prevent a connection from being established at all when a client
+        // advertises a capset version outside the set enumerated in
+        // `CapabilityVersion`. Preserving the raw bytes lets
+        // negotiation complete so the server can still select a mutually
+        // supported version. Use `RawCapabilitySet::parsed` to obtain a typed
+        // view when needed.
+        Ok(Self { version, data })
+    }
+}
+
+/// 2.2.1.6 RDPGFX_CAPSET — typed view of a [`RawCapabilitySet`] body.
+///
+/// Holds only versions this build knows how to interpret. Obtained from
+/// [`RawCapabilitySet::parsed`], which returns `None` for unknown versions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilitySet {
     V8 { flags: CapabilitiesV8Flags },
@@ -1515,15 +1673,11 @@ pub enum CapabilitySet {
     V10_6 { flags: CapabilitiesV104Flags },
     V10_6Err { flags: CapabilitiesV104Flags },
     V10_7 { flags: CapabilitiesV107Flags },
-    Unknown(Vec<u8>),
 }
 
 impl CapabilitySet {
-    const NAME: &'static str = "GfxCapabilitySet";
-
-    const FIXED_PART_SIZE: usize = 4 /* version */ + 4 /* capsDataLength */;
-
-    fn version(&self) -> CapabilityVersion {
+    /// Wire `version` field corresponding to this typed variant.
+    pub fn version(&self) -> CapabilityVersion {
         match self {
             CapabilitySet::V8 { .. } => CapabilityVersion::V8,
             CapabilitySet::V8_1 { .. } => CapabilityVersion::V8_1,
@@ -1534,20 +1688,31 @@ impl CapabilitySet {
             CapabilitySet::V10_4 { .. } => CapabilityVersion::V10_4,
             CapabilitySet::V10_5 { .. } => CapabilityVersion::V10_5,
             CapabilitySet::V10_6 { .. } => CapabilityVersion::V10_6,
-            CapabilitySet::V10_6Err { .. } => CapabilityVersion::V10_6Err,
+            CapabilitySet::V10_6Err { .. } => CapabilityVersion::V10_6_ERR,
             CapabilitySet::V10_7 { .. } => CapabilityVersion::V10_7,
-            CapabilitySet::Unknown { .. } => CapabilityVersion::Unknown,
         }
     }
-}
 
-impl Encode for CapabilitySet {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        ensure_size!(in: dst, size: self.size());
+    /// Size of the body bytes (no version/length header).
+    fn body_size(&self) -> usize {
+        match self {
+            CapabilitySet::V10_1 => 16,
+            CapabilitySet::V8 { .. }
+            | CapabilitySet::V8_1 { .. }
+            | CapabilitySet::V10 { .. }
+            | CapabilitySet::V10_2 { .. }
+            | CapabilitySet::V10_3 { .. }
+            | CapabilitySet::V10_4 { .. }
+            | CapabilitySet::V10_5 { .. }
+            | CapabilitySet::V10_6 { .. }
+            | CapabilitySet::V10_6Err { .. }
+            | CapabilitySet::V10_7 { .. } => 4,
+        }
+    }
 
-        dst.write_u32(self.version().into());
-        dst.write_u32(cast_length!("dataLength", self.size() - Self::FIXED_PART_SIZE)?);
-
+    /// Serialize just the body bytes (no version/length header).
+    fn write_body(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.body_size());
         match self {
             CapabilitySet::V8 { flags } => dst.write_u32(flags.bits()),
             CapabilitySet::V8_1 { flags } => dst.write_u32(flags.bits()),
@@ -1560,161 +1725,66 @@ impl Encode for CapabilitySet {
             CapabilitySet::V10_6 { flags } => dst.write_u32(flags.bits()),
             CapabilitySet::V10_6Err { flags } => dst.write_u32(flags.bits()),
             CapabilitySet::V10_7 { flags } => dst.write_u32(flags.bits()),
-            CapabilitySet::Unknown(data) => dst.write_slice(data),
         }
-
         Ok(())
     }
-
-    fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE
-            + match self {
-                CapabilitySet::V8 { .. }
-                | CapabilitySet::V8_1 { .. }
-                | CapabilitySet::V10 { .. }
-                | CapabilitySet::V10_2 { .. }
-                | CapabilitySet::V10_3 { .. }
-                | CapabilitySet::V10_4 { .. }
-                | CapabilitySet::V10_5 { .. }
-                | CapabilitySet::V10_6 { .. }
-                | CapabilitySet::V10_6Err { .. }
-                | CapabilitySet::V10_7 { .. } => 4,
-                CapabilitySet::V10_1 => 16,
-                CapabilitySet::Unknown(data) => data.len(),
-            }
-    }
 }
 
-impl<'de> Decode<'de> for CapabilitySet {
-    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
-
-        let version_raw = src.read_u32();
-        let data_length: usize = cast_length!("dataLength", src.read_u32())?;
-
-        ensure_size!(in: src, size: data_length);
-        let data = src.read_slice(data_length);
-
-        // Tolerate capability versions this build doesn't recognize instead of
-        // failing the whole PDU. A strict error here aborts decoding of the
-        // entire CapabilitiesAdvertise during EGFX negotiation, which can
-        // prevent a connection from being established at all when a client
-        // advertises a capset version outside the set enumerated below
-        // (observed with the macOS "Windows App" / Microsoft Remote Desktop
-        // client). Preserving the raw bytes as `Unknown` lets negotiation
-        // complete so the server can still select a mutually supported version.
-        let Ok(version) = CapabilityVersion::try_from(version_raw) else {
-            return Ok(CapabilitySet::Unknown(data.to_vec()));
-        };
-
-        let mut cur = ReadCursor::new(data);
-
-        let size = match version {
-            CapabilityVersion::V8
-            | CapabilityVersion::V8_1
-            | CapabilityVersion::V10
-            | CapabilityVersion::V10_2
-            | CapabilityVersion::V10_3
-            | CapabilityVersion::V10_4
-            | CapabilityVersion::V10_5
-            | CapabilityVersion::V10_6
-            | CapabilityVersion::V10_6Err
-            | CapabilityVersion::V10_7 => 4,
-            CapabilityVersion::V10_1 => 16,
-            CapabilityVersion::Unknown => 0,
-        };
-
-        ensure_size!(in: cur, size: size);
-        match version {
-            CapabilityVersion::V8 => Ok(CapabilitySet::V8 {
-                flags: CapabilitiesV8Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::V8_1 => Ok(CapabilitySet::V8_1 {
-                flags: CapabilitiesV81Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::V10 => Ok(CapabilitySet::V10 {
-                flags: CapabilitiesV10Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::V10_1 => {
-                cur.read_u128();
-
-                Ok(CapabilitySet::V10_1)
-            }
-            CapabilityVersion::V10_2 => Ok(CapabilitySet::V10_2 {
-                flags: CapabilitiesV10Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::V10_3 => Ok(CapabilitySet::V10_3 {
-                flags: CapabilitiesV103Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::V10_4 => Ok(CapabilitySet::V10_4 {
-                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::V10_5 => Ok(CapabilitySet::V10_5 {
-                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::V10_6 => Ok(CapabilitySet::V10_6 {
-                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::V10_6Err => Ok(CapabilitySet::V10_6Err {
-                flags: CapabilitiesV104Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::V10_7 => Ok(CapabilitySet::V10_7 {
-                flags: CapabilitiesV107Flags::from_bits_retain(cur.read_u32()),
-            }),
-            CapabilityVersion::Unknown => Ok(CapabilitySet::Unknown(data.to_vec())),
+impl From<&CapabilitySet> for RawCapabilitySet {
+    fn from(cap: &CapabilitySet) -> Self {
+        let mut data = vec![0u8; cap.body_size()];
+        let mut cur = WriteCursor::new(&mut data);
+        cap.write_body(&mut cur)
+            .expect("buffer is sized to body_size; write cannot fail");
+        Self {
+            version: cap.version(),
+            data,
         }
     }
 }
 
-#[repr(u32)]
+/// Capability set version, as advertised in 2.2.1.6 RDPGFX_CAPSET.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum CapabilityVersion {
-    V8 = 0x8_0004,
-    V8_1 = 0x8_0105,
-    V10 = 0xa_0002,
-    V10_1 = 0xa_0100,
-    V10_2 = 0xa_0200,
-    V10_3 = 0xa_0301,
-    V10_4 = 0xa_0400,
-    V10_5 = 0xa_0502,
-    V10_6 = 0xa_0600,    // [MS-RDPEGFX-errata]
-    V10_6Err = 0xa_0601, // defined similar to FreeRDP to maintain best compatibility
-    V10_7 = 0xa_0701,
-    Unknown = 0xa_0702,
-}
+pub struct CapabilityVersion(pub u32);
 
-impl TryFrom<u32> for CapabilityVersion {
-    type Error = DecodeError;
+impl CapabilityVersion {
+    pub const V8: Self = Self(0x8_0004);
+    pub const V8_1: Self = Self(0x8_0105);
+    pub const V10: Self = Self(0xa_0002);
+    pub const V10_1: Self = Self(0xa_0100);
+    pub const V10_2: Self = Self(0xa_0200);
+    pub const V10_3: Self = Self(0xa_0301);
+    pub const V10_4: Self = Self(0xa_0400);
+    pub const V10_5: Self = Self(0xa_0502);
+    pub const V10_6: Self = Self(0xa_0600); // [MS-RDPEGFX-errata]
+    pub const V10_6_ERR: Self = Self(0xa_0601); // defined similar to FreeRDP to maintain best compatibility
+    pub const V10_7: Self = Self(0xa_0701);
 
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        let res = match value {
-            0x8_0004 => CapabilityVersion::V8,
-            0x8_0105 => CapabilityVersion::V8_1,
-            0xa_0002 => CapabilityVersion::V10,
-            0xa_0100 => CapabilityVersion::V10_1,
-            0xa_0200 => CapabilityVersion::V10_2,
-            0xa_0301 => CapabilityVersion::V10_3,
-            0xa_0400 => CapabilityVersion::V10_4,
-            0xa_0502 => CapabilityVersion::V10_5,
-            0xa_0600 => CapabilityVersion::V10_6,
-            0xa_0601 => CapabilityVersion::V10_6Err,
-            0xa_0701 => CapabilityVersion::V10_7,
-            0xa_0702 => CapabilityVersion::Unknown,
-            _ => return Err(invalid_field_err!("version", "invalid capability version")),
-        };
-
-        Ok(res)
+    /// Returns `true` if this version matches one of the constants defined on
+    /// `CapabilityVersion`, i.e. one this build knows how to decode into a
+    /// dedicated `CapabilitySet` variant.
+    #[must_use]
+    pub fn is_known(self) -> bool {
+        matches!(
+            self,
+            Self::V8
+                | Self::V8_1
+                | Self::V10
+                | Self::V10_1
+                | Self::V10_2
+                | Self::V10_3
+                | Self::V10_4
+                | Self::V10_5
+                | Self::V10_6
+                | Self::V10_6_ERR
+                | Self::V10_7
+        )
     }
 }
 
 impl From<CapabilityVersion> for u32 {
-    #[expect(clippy::as_conversions, reason = "repr(u32) enum discriminant")]
     fn from(value: CapabilityVersion) -> Self {
-        value as u32
+        value.0
     }
 }
 

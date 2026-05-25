@@ -113,8 +113,8 @@ pub fn bulk_round_trip(data: &[u8]) {
 pub fn pdu_decode(data: &[u8]) {
     use ironrdp_core::decode;
     use ironrdp_egfx::pdu::{
-        Avc420BitmapStream, Avc444BitmapStream, CacheToSurfacePdu, CapabilitySet as EgfxCapabilitySet, Color, GfxPdu,
-        Point, QuantQuality,
+        Avc420BitmapStream, Avc444BitmapStream, CacheToSurfacePdu, Color, GfxPdu, Point, QuantQuality,
+        RawCapabilitySet as EgfxRawCapabilitySet,
     };
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
@@ -185,7 +185,7 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<GfxPdu>(data);
     let _ = decode::<CacheToSurfacePdu>(data);
-    let _ = decode::<EgfxCapabilitySet>(data);
+    let _ = decode::<EgfxRawCapabilitySet>(data);
     let _ = decode::<Avc420BitmapStream<'_>>(data);
     let _ = decode::<Avc444BitmapStream<'_>>(data);
     let _ = decode::<QuantQuality>(data);

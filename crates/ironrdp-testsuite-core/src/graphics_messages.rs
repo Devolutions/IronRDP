@@ -337,12 +337,12 @@ pub static START_FRAME: LazyLock<StartFramePdu> = LazyLock::new(|| StartFramePdu
 });
 pub static END_FRAME: LazyLock<EndFramePdu> = LazyLock::new(|| EndFramePdu { frame_id: 1 });
 pub static CAPABILITIES_CONFIRM: LazyLock<CapabilitiesConfirmPdu> = LazyLock::new(|| {
-    CapabilitiesConfirmPdu(CapabilitySet::V10_5 {
+    CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_5 {
         flags: CapabilitiesV104Flags::AVC_DISABLED,
     })
 });
 pub static CAPABILITIES_ADVERTISE: LazyLock<CapabilitiesAdvertisePdu> = LazyLock::new(|| {
-    CapabilitiesAdvertisePdu(vec![
+    CapabilitiesAdvertisePdu::from_typed(&[
         CapabilitySet::V8 {
             flags: CapabilitiesV8Flags::THIN_CLIENT,
         },
