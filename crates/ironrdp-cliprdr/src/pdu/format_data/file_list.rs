@@ -151,7 +151,14 @@ impl Encode for FileDescriptor {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        let mut flags = ClipboardFileFlags::empty();
+        // Always advertise FD_PROGRESSUI (SHOW_PROGRESS_UI = 0x4000) so the
+        // remote knows it MAY show a progress indicator for this file. The
+        // flag is benign if the remote doesn't honor it; for clipboard file
+        // paste into Windows Explorer it is the actual trigger that makes
+        // the native "Copying… items" progress dialog appear (otherwise the
+        // paste falls back to a synchronous IStream read with no progress
+        // UI, only a busy cursor — same UX as pasting an Outlook attachment).
+        let mut flags = ClipboardFileFlags::SHOW_PROGRESS_UI;
         if self.attributes.is_some() {
             flags |= ClipboardFileFlags::ATTRIBUTES;
         }
