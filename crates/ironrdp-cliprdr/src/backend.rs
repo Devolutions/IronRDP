@@ -98,7 +98,9 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// already-accepted state and silently break a paste that was about to work.
     ///
     /// Default impl is a no-op, so this is non-breaking for existing backends.
-    fn on_format_list_response(&mut self, _ok: bool) {}
+    fn on_format_list_response(&mut self, ok: bool) {
+        let _ = ok;
+    }
 
     /// Adjusts [crate::Cliprdr] backend capabilities based on capabilities negotiated with a server.
     ///
