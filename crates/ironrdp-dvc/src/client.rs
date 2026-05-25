@@ -215,7 +215,17 @@ impl SvcProcessor for DrdynvcClient {
 
                 let (creation_status, start_messages) =
                     if let Some(dvc) = self.dynamic_channels.try_create_channel(&channel_name, channel_id) {
-                        (CreationStatus::OK, dvc.start()?)
+                        match dvc.start(channel_id) {
+                            Ok(messages) => (CreationStatus::OK, messages),
+                            Err(e) => {
+                                debug!(
+                                    ?channel_id, error = %e,
+                                    "DVC start failed; removing channel and reporting NO_LISTENER"
+                                );
+                                self.dynamic_channels.remove_by_channel_id(channel_id);
+                                (CreationStatus::NO_LISTENER, Vec::new())
+                            }
+                        }
                     } else {
                         (CreationStatus::NO_LISTENER, Vec::new())
                     };
@@ -316,8 +326,9 @@ impl DynamicChannelSet {
             self.type_id_to_channel_id.insert(type_id, channel_id);
         }
 
-        let mut dvc = DynamicVirtualChannel::from_boxed(processor);
-        dvc.channel_id = Some(channel_id);
+        let dvc = DynamicVirtualChannel::from_boxed(processor);
+        // `dvc.channel_id` stays `None` here — it is set by `DynamicVirtualChannel::start`
+        // on success, so `Drop` only invokes `close` for channels that were actually opened.
         let dvc = match self.active_channels.entry(channel_id) {
             alloc::collections::btree_map::Entry::Occupied(mut e) => {
                 e.insert(dvc);
