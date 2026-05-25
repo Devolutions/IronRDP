@@ -1,8 +1,6 @@
 use std::sync::LazyLock;
 
-use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
-use ironrdp_pdu::geometry::InclusiveRectangle;
-use ironrdp_pdu::rdp::vc::dvc::gfx::{
+use ironrdp_egfx::pdu::{
     Avc420BitmapStream, Avc444BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu,
     CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags,
     CapabilitiesV104Flags, CapabilitySet, Codec1Type, Codec2Type, Color, CreateSurfacePdu, DeleteEncodingContextPdu,
@@ -10,6 +8,8 @@ use ironrdp_pdu::rdp::vc::dvc::gfx::{
     PixelFormat, Point, QuantQuality, QueueDepth, ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu,
     SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu, WireToSurface2Pdu,
 };
+use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
+use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
 
 pub const WIRE_TO_SURFACE_1_BUFFER: [u8; 218] = [
     0x00, 0x00, 0x08, 0x00, 0x20, 0xa5, 0x03, 0xde, 0x02, 0xab, 0x03, 0xe7, 0x02, 0xc9, 0x00, 0x00, 0x00, 0x01, 0x0e,
@@ -239,7 +239,7 @@ pub static WIRE_TO_SURFACE_1: LazyLock<WireToSurface1Pdu> = LazyLock::new(|| Wir
     surface_id: 0,
     codec_id: Codec1Type::ClearCodec,
     pixel_format: PixelFormat::XRgb,
-    destination_rectangle: InclusiveRectangle {
+    destination_rectangle: ExclusiveRectangle {
         left: 933,
         top: 734,
         right: 939,
@@ -268,7 +268,7 @@ pub static SOLID_FILL: LazyLock<SolidFillPdu> = LazyLock::new(|| SolidFillPdu {
         r: 0,
         xa: 0,
     },
-    rectangles: vec![InclusiveRectangle {
+    rectangles: vec![ExclusiveRectangle {
         left: 0,
         top: 0,
         right: 64,
@@ -278,7 +278,7 @@ pub static SOLID_FILL: LazyLock<SolidFillPdu> = LazyLock::new(|| SolidFillPdu {
 pub static SURFACE_TO_SURFACE: LazyLock<SurfaceToSurfacePdu> = LazyLock::new(|| SurfaceToSurfacePdu {
     source_surface_id: 0,
     destination_surface_id: 0,
-    source_rectangle: InclusiveRectangle {
+    source_rectangle: ExclusiveRectangle {
         left: 200,
         top: 60,
         right: 676,
@@ -290,7 +290,7 @@ pub static SURFACE_TO_CACHE: LazyLock<SurfaceToCachePdu> = LazyLock::new(|| Surf
     surface_id: 0,
     cache_key: 0x113D_86DA_A6A3_7FB7,
     cache_slot: 14,
-    source_rectangle: InclusiveRectangle {
+    source_rectangle: ExclusiveRectangle {
         left: 640,
         top: 0,
         right: 704,

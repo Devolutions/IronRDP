@@ -30,7 +30,6 @@ pub(crate) mod crypto;
 pub(crate) mod per;
 
 pub use crate::basic_output::{bitmap, fast_path, pointer, slow_path, surface_commands};
-pub use crate::rdp::vc::dvc;
 
 pub type PduResult<T> = Result<T, PduError>;
 

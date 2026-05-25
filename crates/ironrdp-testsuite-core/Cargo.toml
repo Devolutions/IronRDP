@@ -26,6 +26,7 @@ harness = true
 array-concat = "0.5"
 expect-test = "1"
 ironrdp-core.path = "../ironrdp-core"
+ironrdp-egfx.path = "../ironrdp-egfx"
 ironrdp-pdu.path = "../ironrdp-pdu"
 paste = "1"
 openh264 = { version = "0.9", optional = true, default-features = false, features = ["source"] }
@@ -42,7 +43,6 @@ ironrdp-connector.path = "../ironrdp-connector"
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
 ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-echo.path = "../ironrdp-echo"
-ironrdp-egfx = { path = "../ironrdp-egfx" }
 ironrdp-fuzzing.path = "../ironrdp-fuzzing"
 ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-str.path = "../ironrdp-str"
