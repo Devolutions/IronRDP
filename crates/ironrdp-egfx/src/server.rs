@@ -1635,9 +1635,21 @@ impl GraphicsPipelineServer {
         self.handler.capabilities_advertise(&pdu);
         let server_caps = self.handler.preferred_capabilities();
 
-        // Parse client raw caps into typed; silently drop unknown versions for
-        // negotiation purposes (the raw form is still observable in `pdu`).
-        let client_caps: Vec<CapabilitySet> = pdu.0.iter().filter_map(|raw| raw.parsed().ok().flatten()).collect();
+        // Parse client raw caps into typed. Silently skip unknown versions for
+        // negotiation purposes (the raw form is still observable in `pdu`), but
+        // treat parse failures for known versions as malformed input instead of
+        // negotiating as if the client never advertised them.
+        let mut client_caps = Vec::with_capacity(pdu.0.len());
+        for raw in &pdu.0 {
+            match raw.parsed() {
+                Ok(Some(cap)) => client_caps.push(cap),
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(error = ?e, "Received malformed client capability set; aborting capability negotiation");
+                    return;
+                }
+            }
+        }
 
         // When no version overlaps with server preferences, confirm the client's
         // highest-priority capability to avoid confirming a version the client
