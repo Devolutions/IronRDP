@@ -4,13 +4,11 @@
 //!
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a1004d0e-99e9-4968-894b-0b924ef2f125
 
-use ironrdp_core::{
-    Decode as _, DecodeError, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, invalid_field_err,
-};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, invalid_field_err};
 
 use crate::pdu::caps::{RimExchangeCapabilityRequest, RimExchangeCapabilityResponse};
 use crate::pdu::completion::{IoControlCompletion, UrbCompletion, UrbCompletionNoData};
-use crate::pdu::header::{FunctionId, FunctionIdErr, InterfaceId, SharedMsgHeader};
+use crate::pdu::header::{FunctionId, InterfaceId, Mask, SharedMsgHeader};
 use crate::pdu::notify::ChannelCreated;
 use crate::pdu::sink::{AddDevice, AddVirtualChannel};
 use crate::pdu::usb_dev::{
@@ -40,53 +38,63 @@ pub enum UrbdrcServerPdu {
     Retract(RetractDevice),
 }
 
-impl UrbdrcServerPdu {
-    pub fn decode<I>(src: &mut ReadCursor<'_>, usb_device_s: I) -> DecodeResult<Self>
-    where
-        I: IntoIterator<Item: PartialEq<InterfaceId>>,
-    {
+impl Decode<'_> for UrbdrcServerPdu {
+    // TODO: QI_RSP
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = SharedMsgHeader::decode(src)?;
-        let f_id = header.function_id.ok_or_else(|| {
-            let e: DecodeError = invalid_field_err!("SHARED_MSG_HEADER::FunctionId", "is absent");
-            e.with_source(FunctionIdErr::Missing)
-        })?;
+        let f_id = header
+            .function_id
+            .ok_or_else(|| invalid_field_err!("SHARED_MSG_HEADER::FunctionId", "is absent"))?;
 
         match header.interface_id {
-            InterfaceId::CAPABILITIES => RimExchangeCapabilityRequest::decode(src, header).map(Self::Caps),
-            InterfaceId::NOTIFY_CLIENT => {
-                if f_id == FunctionId::CHANNEL_CREATED {
-                    ChannelCreated::decode(src, header).map(Self::ChanCreated)
+            InterfaceId::CAPABILITIES => {
+                if f_id == FunctionId::RIM_EXCHANGE_CAPABILITY_REQUEST && header.mask == Mask::StreamIdNone {
+                    RimExchangeCapabilityRequest::decode(src, header).map(Self::Caps)
                 } else {
-                    let e: DecodeError =
-                        invalid_field_err!("CHANNEL_CREATED::SHARED_MSG_HEADER::FunctionId", "is not: 0x100");
-                    Err(e.with_source(FunctionIdErr::InvalidForInterface(InterfaceId::NOTIFY_CLIENT, f_id)))
+                    Err(invalid_field_err!(
+                        "SHARED_MSG_HEADER",
+                        "invalid RIM_EXCHANGE_CAPABILITY_REQUEST header"
+                    ))
                 }
             }
-            id if usb_device_s.into_iter().any(|iface| iface == id) => match f_id {
-                FunctionId::CANCEL_REQUEST => CancelRequest::decode(src, header).map(Self::CancelReq),
-                FunctionId::REGISTER_REQUEST_CALLBACK => {
-                    RegisterRequestCallback::decode(src, header).map(Self::RegReqCb)
+            InterfaceId::NOTIFY_CLIENT => {
+                if f_id == FunctionId::CHANNEL_CREATED && header.mask == Mask::StreamIdProxy {
+                    ChannelCreated::decode(src, header).map(Self::ChanCreated)
+                } else {
+                    Err(invalid_field_err!(
+                        "SHARED_MSG_HEADER",
+                        "invalid CHANNEL_CREATED header"
+                    ))
                 }
-                FunctionId::IO_CONTROL => IoControl::decode(src, header).map(Self::IoCtl),
-                FunctionId::INTERNAL_IO_CONTROL => InternalIoControl::decode(src, header).map(Self::InternalIoCtl),
-                FunctionId::QUERY_DEVICE_TEXT => QueryDeviceText::decode(src, header).map(Self::DevText),
-                FunctionId::TRANSFER_IN_REQUEST => TransferInRequest::decode(src, header).map(Self::TransferIn),
-                FunctionId::TRANSFER_OUT_REQUEST => TransferOutRequest::decode(src, header).map(Self::TransferOut),
-                FunctionId::RETRACT_DEVICE => RetractDevice::decode(src, header).map(Self::Retract),
-                _ => {
-                    let e: DecodeError = invalid_field_err!(
-                        "SHARED_MSG_HEADER::FunctionId (USB Devices Interface)",
-                        "is not one of: 0x100 (CANCEL_REQUEST), 0x101 (REGISTER_REQUEST_CALLBACK), \
-                            0x102 (IO_CONTROL), 0x103 (INTERNAL_IO_CONTROL), 0x104 (QUERY_DEVICE_TEXT), \
-                            0x105 (TRANSFER_IN_REQUEST), 0x106 (TRANSFER_OUT_REQUEST), 0x107 (RETRACT_DEVICE)"
-                    );
-                    Err(e.with_source(FunctionIdErr::InvalidForInterface(id, f_id)))
-                }
-            },
-            _ => Err(invalid_field_err!(
-                "SHARED_MSG_HEADER::InterfaceId",
-                "server sent message on an interface that is currently closed, or not supposed to be used by the server"
+            }
+            InterfaceId::NOTIFY_SERVER | InterfaceId::DEVICE_SINK => Err(invalid_field_err!(
+                "SHARED_MSG_HEADER",
+                "reserved interface ID is not valid for server-to-client messages"
             )),
+            _udev_iface => {
+                if header.mask != Mask::StreamIdProxy {
+                    return Err(invalid_field_err!(
+                        "SHARED_MSG_HEADER::Mask",
+                        "is not 0x1 (STREAM_ID_PROXY)"
+                    ));
+                }
+                match f_id {
+                    FunctionId::CANCEL_REQUEST => CancelRequest::decode(src, header).map(Self::CancelReq),
+                    FunctionId::REGISTER_REQUEST_CALLBACK => {
+                        RegisterRequestCallback::decode(src, header).map(Self::RegReqCb)
+                    }
+                    FunctionId::IO_CONTROL => IoControl::decode(src, header).map(Self::IoCtl),
+                    FunctionId::INTERNAL_IO_CONTROL => InternalIoControl::decode(src, header).map(Self::InternalIoCtl),
+                    FunctionId::QUERY_DEVICE_TEXT => QueryDeviceText::decode(src, header).map(Self::DevText),
+                    FunctionId::TRANSFER_IN_REQUEST => TransferInRequest::decode(src, header).map(Self::TransferIn),
+                    FunctionId::TRANSFER_OUT_REQUEST => TransferOutRequest::decode(src, header).map(Self::TransferOut),
+                    FunctionId::RETRACT_DEVICE => RetractDevice::decode(src, header).map(Self::Retract),
+                    _ => Err(invalid_field_err!(
+                        "SHARED_MSG_HEADER::FunctionId",
+                        "unsupported function id for USB device interface"
+                    )),
+                }
+            }
         }
     }
 }
@@ -135,74 +143,60 @@ pub enum UrbdrcClientPdu {
     UrbCompNoData(UrbCompletionNoData),
 }
 
-impl UrbdrcClientPdu {
-    pub fn decode<I>(src: &mut ReadCursor<'_>, usb_dev_s: I, completion_s: I) -> DecodeResult<Self>
-    where
-        I: IntoIterator<Item: PartialEq<InterfaceId>>,
-    {
+impl Decode<'_> for UrbdrcClientPdu {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = SharedMsgHeader::decode(src)?;
         match header.interface_id {
-            InterfaceId::CAPABILITIES => RimExchangeCapabilityResponse::decode(src, header).map(Self::Caps),
-            InterfaceId::DEVICE_SINK => match header.function_id {
-                Some(FunctionId::ADD_VIRTUAL_CHANNEL) => AddVirtualChannel::decode(src, header).map(Self::AddChan),
-                Some(FunctionId::ADD_DEVICE) => AddDevice::decode(src, header).map(Self::AddDev),
-                Some(f_id) => {
-                    let e: DecodeError = invalid_field_err!(
-                        "SHARED_MSG_HEADER::FunctionId (Device Sink)",
-                        "is not one of: 0x100 (ADD_VIRTUAL_CHANNEL), 0x101 (ADD_DEVICE)"
-                    );
-                    Err(e.with_source(FunctionIdErr::InvalidForInterface(InterfaceId::DEVICE_SINK, f_id)))
-                }
-                None => {
-                    let e: DecodeError = invalid_field_err!("SHARED_MSG_HEADER::FunctionId (Device Sink)", "is absent");
-                    Err(e.with_source(FunctionIdErr::Missing))
-                }
-            },
-            InterfaceId::NOTIFY_SERVER => {
-                const FIELD: &str = "CHANNEL_CREATED::SHARED_MSG_HEADER::FunctionId (Device Sink)";
-                match header.function_id {
-                    Some(FunctionId::CHANNEL_CREATED) => ChannelCreated::decode(src, header).map(Self::ChanCreated),
-                    Some(f_id) => {
-                        let e: DecodeError = invalid_field_err!(FIELD, "is not: 0x100");
-                        Err(e.with_source(FunctionIdErr::InvalidForInterface(InterfaceId::NOTIFY_SERVER, f_id)))
-                    }
-                    None => {
-                        let e: DecodeError = invalid_field_err!(FIELD, "is absent");
-                        Err(e.with_source(FunctionIdErr::Missing))
-                    }
+            InterfaceId::CAPABILITIES => {
+                if header.function_id.is_none() && header.mask == Mask::StreamIdNone {
+                    RimExchangeCapabilityResponse::decode(src, header).map(Self::Caps)
+                } else {
+                    Err(invalid_field_err!(
+                        "SHARED_MSG_HEADER",
+                        "invalid RIM_EXCHANGE_CAPABILITY_RESPONSE header"
+                    ))
                 }
             }
-            id if usb_dev_s.into_iter().any(|iface| iface == id) => match header.function_id {
-                Some(_) => {
-                    let e: DecodeError =
-                        invalid_field_err!("QUERY_DEVICE_TEXT_RSP::SHARED_MSG_HEADER::FunctionId", "is not absent");
-                    Err(e.with_source(FunctionIdErr::NotAbsent))
+            InterfaceId::DEVICE_SINK => match (header.function_id, header.mask) {
+                (Some(FunctionId::ADD_VIRTUAL_CHANNEL), Mask::StreamIdProxy) => {
+                    AddVirtualChannel::decode(src, header).map(Self::AddChan)
                 }
-                None => QueryDeviceTextRsp::decode(src, header).map(Self::DevTextRsp),
+                (Some(FunctionId::ADD_DEVICE), Mask::StreamIdProxy) => AddDevice::decode(src, header).map(Self::AddDev),
+                _ => Err(invalid_field_err!(
+                    "SHARED_MSG_HEADER",
+                    "invalid Device Sink interface header"
+                )),
             },
-            id if completion_s.into_iter().any(|iface| iface == id) => match header.function_id {
-                Some(FunctionId::IOCONTROL_COMPLETION) => IoControlCompletion::decode(src, header).map(Self::IoctlComp),
-                Some(FunctionId::URB_COMPLETION) => UrbCompletion::decode(src, header).map(Self::UrbComp),
-                Some(FunctionId::URB_COMPLETION_NO_DATA) => {
+            InterfaceId::NOTIFY_SERVER => {
+                if header.function_id == Some(FunctionId::CHANNEL_CREATED) && header.mask == Mask::StreamIdProxy {
+                    ChannelCreated::decode(src, header).map(Self::ChanCreated)
+                } else {
+                    Err(invalid_field_err!(
+                        "SHARED_MSG_HEADER",
+                        "invalid CHANNEL_CREATED header"
+                    ))
+                }
+            }
+            InterfaceId::NOTIFY_CLIENT => Err(invalid_field_err!(
+                "SHARED_MSG_HEADER",
+                "reserved interface ID is not valid for client-to-server messages"
+            )),
+            _id => match (header.function_id, header.mask) {
+                (None, Mask::StreamIdStub) => QueryDeviceTextRsp::decode(src, header).map(Self::DevTextRsp),
+                (Some(FunctionId::IOCONTROL_COMPLETION), Mask::StreamIdProxy) => {
+                    IoControlCompletion::decode(src, header).map(Self::IoctlComp)
+                }
+                (Some(FunctionId::URB_COMPLETION), Mask::StreamIdProxy) => {
+                    UrbCompletion::decode(src, header).map(Self::UrbComp)
+                }
+                (Some(FunctionId::URB_COMPLETION_NO_DATA), Mask::StreamIdProxy) => {
                     UrbCompletionNoData::decode(src, header).map(Self::UrbCompNoData)
                 }
-                Some(f) => {
-                    let e: DecodeError = invalid_field_err!(
-                        "SHARED_MSG_HEADER::FunctionId (Request Completion)",
-                        "is not one of: 0x100 (IOCONTROL_COMPLETION), 0x101 (URB_COMPLETION), 0x102 (URB_COMPLETION_NO_DATA)"
-                    );
-                    Err(e.with_source(FunctionIdErr::InvalidForInterface(id, f)))
-                }
-                None => {
-                    let e: DecodeError =
-                        invalid_field_err!("SHARED_MSG_HEADER::FunctionId (Request Completion)", "is missing");
-                    Err(e.with_source(FunctionIdErr::Missing))
-                }
+                _ => Err(invalid_field_err!(
+                    "SHARED_MSG_HEADER::InterfaceId",
+                    "unknown interface id"
+                )),
             },
-            _ => Err(invalid_field_err!(
-                "SHARED_MSG_HEADER::InterfaceId",
-                "client sent message on an interface that is currently closed, or not supposed to be used by the client"
-            )),
         }
     }
 }

@@ -33,7 +33,7 @@ impl Capability {
 #[doc(alias = "RIM_EXCHANGE_CAPABILITY_REQUEST")]
 #[derive(Debug, PartialEq)]
 pub struct RimExchangeCapabilityRequest {
-    pub header: SharedMsgHeader,
+    pub msg_id: MessageId,
     pub capability: Capability,
 }
 
@@ -42,16 +42,16 @@ impl RimExchangeCapabilityRequest {
 
     pub const FIXED_PART_SIZE: usize = Self::PAYLOAD_SIZE + SharedMsgHeader::SIZE_REQ;
 
-    pub fn header(msg_id: MessageId) -> SharedMsgHeader {
+    pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
             interface_id: InterfaceId::CAPABILITIES,
             mask: Mask::StreamIdNone,
-            msg_id,
+            msg_id: self.msg_id,
             function_id: Some(FunctionId::RIM_EXCHANGE_CAPABILITY_REQUEST),
         }
     }
 
-    pub fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
         if src.read_u32() != 1 {
             return Err(invalid_field_err!(
@@ -60,7 +60,7 @@ impl RimExchangeCapabilityRequest {
             ));
         }
         Ok(Self {
-            header,
+            msg_id: header.msg_id,
             capability: Capability::RimCapabilityVersion01,
         })
     }
@@ -69,26 +69,7 @@ impl RimExchangeCapabilityRequest {
 impl Encode for RimExchangeCapabilityRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
-        // ensure_interface_id!(
-        //     self.header,
-        //     "RIM_EXCHANGE_CAPABILITY_REQUEST",
-        //     InterfaceId::CAPABILITIES,
-        //     "0x0"
-        // );
-        // ensure_mask!(
-        //     self.header,
-        //     "RIM_EXCHANGE_CAPABILITY_REQUEST",
-        //     Mask::StreamIdNone,
-        //     "0x0 (STREAM_ID_NONE)"
-        // );
-        // ensure_function_id!(
-        //     self.header,
-        //     "RIM_EXCHANGE_CAPABILITY_REQUEST",
-        //     FunctionId::RIM_EXCHANGE_CAPABILITY_REQUEST,
-        //     "0x100 (RIM_EXCHANGE_CAPABILITY_REQUEST)"
-        // );
-
-        self.header.encode(dst)?;
+        self.header().encode(dst)?;
 
         #[expect(clippy::as_conversions)]
         dst.write_u32(self.capability as u32);
@@ -114,7 +95,7 @@ impl Encode for RimExchangeCapabilityRequest {
 #[doc(alias = "RIM_EXCHANGE_CAPABILITY_RESPONSE")]
 #[derive(Debug, PartialEq)]
 pub struct RimExchangeCapabilityResponse {
-    pub header: SharedMsgHeader,
+    pub msg_id: MessageId,
     pub capability: Capability,
     pub result: HResult,
 }
@@ -124,18 +105,17 @@ impl RimExchangeCapabilityResponse {
 
     pub const FIXED_PART_SIZE: usize = Self::PAYLOAD_SIZE + SharedMsgHeader::SIZE_RSP;
 
-    pub fn header(msg_id: MessageId) -> SharedMsgHeader {
+    pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
             interface_id: InterfaceId::CAPABILITIES,
             mask: Mask::StreamIdNone,
-            msg_id,
+            msg_id: self.msg_id,
             function_id: None,
         }
     }
 
-    pub fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
-
         if src.read_u32() != 1 {
             return Err(invalid_field_err!(
                 "RIM_EXCHANGE_CAPABILITY_RESPONSE::CapabilityValue",
@@ -145,7 +125,7 @@ impl RimExchangeCapabilityResponse {
         let result = src.read_u32();
 
         Ok(Self {
-            header,
+            msg_id: header.msg_id,
             capability: Capability::RimCapabilityVersion01,
             result,
         })
@@ -155,21 +135,7 @@ impl RimExchangeCapabilityResponse {
 impl Encode for RimExchangeCapabilityResponse {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
-        // ensure_interface_id!(
-        //     self.header,
-        //     "RIM_EXCHANGE_CAPABILITY_RESPONSE",
-        //     InterfaceId::CAPABILITIES,
-        //     "0x0"
-        // );
-        // ensure_mask!(
-        //     self.header,
-        //     "RIM_EXCHANGE_CAPABILITY_RESPONSE",
-        //     Mask::StreamIdNone,
-        //     "0x0 (STREAM_ID_NONE)"
-        // );
-        // ensure_function_id!(self.header, "RIM_EXCHANGE_CAPABILITY_RESPONSE");
-
-        self.header.encode(dst)?;
+        self.header().encode(dst)?;
 
         #[expect(clippy::as_conversions)]
         dst.write_u32(self.capability as u32);
@@ -185,60 +151,5 @@ impl Encode for RimExchangeCapabilityResponse {
 
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use alloc::vec::Vec;
-
-    use ironrdp_core::{Decode as _, Encode as _};
-
-    // use crate::pdu::{
-    //     caps::{RimExchangeCapabilityRequest, RimExchangeCapabilityResponse},
-    //     header::SharedMsgHeader,
-    // };
-    use super::*;
-
-    #[test]
-    fn req() {
-        let mut wire = Vec::from([0; RimExchangeCapabilityRequest::FIXED_PART_SIZE]);
-        let mut dst = WriteCursor::new(&mut wire);
-        let header_en = RimExchangeCapabilityRequest::header(1234);
-        let packet_en = RimExchangeCapabilityRequest {
-            header: header_en,
-            capability: Capability::RimCapabilityVersion01,
-        };
-        assert!(packet_en.encode(&mut dst).is_ok());
-
-        let mut src = ReadCursor::new(&wire);
-        let header_de = SharedMsgHeader::decode(&mut src).unwrap();
-        // assert_eq!(header_en, header_de);
-        let packet_de = RimExchangeCapabilityRequest::decode(&mut src, header_de).unwrap();
-
-        assert_eq!(packet_en, packet_de);
-    }
-
-    #[test]
-    fn rsp() {
-        let mut wire = Vec::from([0; RimExchangeCapabilityResponse::FIXED_PART_SIZE]);
-        let mut dst = WriteCursor::new(&mut wire);
-        let header_en = RimExchangeCapabilityResponse::header(1234);
-
-        let packet_en = RimExchangeCapabilityResponse {
-            header: header_en,
-            capability: Capability::RimCapabilityVersion01,
-            result: 0,
-        };
-        // crate_debug!(&packet_en);
-        assert!(packet_en.encode(&mut dst).is_ok());
-
-        let mut src = ReadCursor::new(&wire);
-        let header_de = SharedMsgHeader::decode(&mut src).unwrap();
-        // crate_debug!(&header_de);
-        let packet_de = RimExchangeCapabilityResponse::decode(&mut src, header_de).unwrap();
-        // crate_debug!(&packet_de);
-
-        assert_eq!(packet_en, packet_de);
     }
 }

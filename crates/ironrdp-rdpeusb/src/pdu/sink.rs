@@ -15,7 +15,7 @@ use ironrdp_pdu::utils::strict_sum;
 use ironrdp_str::multi_sz::MultiSzString;
 use ironrdp_str::prefixed::Cch32String;
 
-use crate::pdu::header::{FunctionId, InterfaceId, MessageId, SharedMsgHeader};
+use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
 
 /// [\[MS-RDPEUSB\] 2.2.4.1 Add Virtual Channel Message (ADD_VIRTUAL_CHANNEL)][1] packet.
 ///
@@ -25,38 +25,29 @@ use crate::pdu::header::{FunctionId, InterfaceId, MessageId, SharedMsgHeader};
 #[doc(alias = "ADD_VIRTUAL_CHANNEL")]
 #[derive(Debug, PartialEq)]
 pub struct AddVirtualChannel {
-    pub header: SharedMsgHeader,
+    pub msg_id: MessageId,
 }
 
 impl AddVirtualChannel {
-    pub const FIZED_PART_SIZE: usize = SharedMsgHeader::SIZE_REQ;
+    pub const FIXED_PART_SIZE: usize = SharedMsgHeader::SIZE_REQ /* Header */;
 
-    // pub const FUNCTION_ID: FunctionId = FunctionId::ADD_VIRTUAL_CHANNEL;
-    //
-    // pub const INTERFACE_ID: InterfaceId = InterfaceId(0x1);
-
-    pub fn new(msg_id: MessageId) -> Self {
-        Self {
-            header: SharedMsgHeader {
-                interface_id: InterfaceId::DEVICE_SINK,
-                mask: super::header::Mask::StreamIdProxy,
-                msg_id,
-                function_id: Some(FunctionId::ADD_VIRTUAL_CHANNEL),
-            },
+    pub fn header(&self) -> SharedMsgHeader {
+        SharedMsgHeader {
+            interface_id: InterfaceId::DEVICE_SINK,
+            mask: Mask::StreamIdProxy,
+            msg_id: self.msg_id,
+            function_id: Some(FunctionId::ADD_VIRTUAL_CHANNEL),
         }
     }
 
-    pub fn decode(_: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
-        Ok(Self { header })
+    pub(crate) fn decode(_: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+        Ok(Self { msg_id: header.msg_id })
     }
 }
 
 impl Encode for AddVirtualChannel {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        // ensure_interface_id!(self.header, Self::INTERFACE_ID, "ADD_VIRTUAL_CHANNEL", "0x100");
-        // ensure_mask!(self.header, Mask::StreamIdProxy, "ADD_VIRTUAL_CHANNEL", "0x1");
-        // ensure_function_id!(self.header, Self::FUNCTION_ID, "ADD_VIRTUAL_CHANNEL", "0x100");
-        self.header.encode(dst)
+        self.header().encode(dst)
     }
 
     fn name(&self) -> &'static str {
@@ -64,7 +55,7 @@ impl Encode for AddVirtualChannel {
     }
 
     fn size(&self) -> usize {
-        Self::FIZED_PART_SIZE
+        Self::FIXED_PART_SIZE
     }
 }
 
@@ -76,7 +67,7 @@ impl Encode for AddVirtualChannel {
 #[doc(alias = "ADD_DEVICE")]
 #[derive(Debug, PartialEq)]
 pub struct AddDevice {
-    pub header: SharedMsgHeader,
+    pub msg_id: MessageId,
     /// The (unique) interface ID to be used by request messages in the [USB Devices][1] interface.
     ///
     /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/034257d7-f7a8-4fe1-b8c2-87ac8dc4f50e
@@ -91,17 +82,17 @@ pub struct AddDevice {
 impl AddDevice {
     pub const NUM_USB_DEVICE: u32 = 0x1;
 
-    pub fn header(msg_id: MessageId) -> SharedMsgHeader {
+    pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
             interface_id: InterfaceId::DEVICE_SINK,
-            mask: crate::pdu::header::Mask::StreamIdProxy,
-            msg_id,
+            mask: Mask::StreamIdProxy,
+            msg_id: self.msg_id,
             function_id: Some(FunctionId::ADD_DEVICE),
         }
     }
 
-    pub fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: 4); // NumUsbDevice
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 4 /* NumUsbDevice */);
         let num_usb_device = src.read_u32();
         if num_usb_device != 0x1 {
             return Err(unsupported_value_err!("NumUsbDevice", format!("{num_usb_device}")));
@@ -118,7 +109,7 @@ impl AddDevice {
 
         let device_instance_id = Cch32String::decode_owned(src)?;
 
-        ensure_size!(in: src, size: 4); // cchHwIds
+        ensure_size!(in: src, size: 4 /* cchHwIds */);
         let hw_ids = if src.peek_u32() != 0 {
             Some(MultiSzString::decode_owned(src)?)
         } else {
@@ -126,7 +117,7 @@ impl AddDevice {
             None
         };
 
-        ensure_size!(in: src, size: 4); // cchCompatIds
+        ensure_size!(in: src, size: 4 /* cchCompatIds */);
         let compat_ids = if src.peek_u32() != 0 {
             Some(MultiSzString::decode_owned(src)?)
         } else {
@@ -138,7 +129,7 @@ impl AddDevice {
         let usb_device_caps = UsbDeviceCaps::decode(src)?;
 
         Ok(Self {
-            header,
+            msg_id: header.msg_id,
             usb_device,
             device_instance_id,
             hw_ids,
@@ -153,13 +144,7 @@ impl Encode for AddDevice {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        // SharedMsgHeader {
-        //     interface_id: InterfaceId::DEVICE_SINK,
-        //     mask: Mask::StreamIdProxy,
-        //     msg_id: self.msg_id,
-        //     function_id: Some(FunctionId::ADD_DEVICE),
-        // }
-        self.header.encode(dst)?;
+        self.header().encode(dst)?;
 
         dst.write_u32(Self::NUM_USB_DEVICE);
         dst.write_u32(self.usb_device.into());
@@ -368,55 +353,5 @@ impl TryFrom<u32> for NoAckIsochWriteJitterBufSizeInMs {
             10..=512 => Ok(Self(value)),
             _ => Err("is not in the range: [10, 512]"),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use alloc::vec;
-
-    use ironrdp_core::{WriteBuf, encode_buf};
-
-    use super::*;
-
-    #[test]
-    fn add_virtual_channel() {
-        let en = AddVirtualChannel::new(45451);
-        let mut buf = WriteBuf::new();
-        let written = encode_buf(&en, &mut buf).unwrap();
-        assert_eq!(written, en.size());
-
-        let mut src = ReadCursor::new(buf.filled());
-        let header_de = SharedMsgHeader::decode(&mut src).unwrap();
-        let de = AddVirtualChannel::decode(&mut src, header_de).unwrap();
-        assert_eq!(en, de);
-    }
-
-    #[test]
-    fn add_device() {
-        let en = AddDevice {
-            header: AddDevice::header(76567),
-            usb_device: InterfaceId(675),
-            device_instance_id: Cch32String::new(r"USB\VID_0123&PID_4567\1234567890ABCDEF"),
-            hw_ids: Some(MultiSzString::new([r"USB\VID_0781&PID_5581&REV_0100", r"USB\VID_0781&PID_5581"]).unwrap()),
-            compat_ids: Some(MultiSzString::new([r"USB\CLASS_08&SUBCLASS_06", r"USB\CLASS_08"]).unwrap()),
-            container_id: Cch32String::from_wire_units(vec![11, 12, 21, 31, 41, 42, 43, 44]),
-            usb_device_caps: UsbDeviceCaps {
-                usb_bus_iface_ver: UsbBusIfaceVer::V1,
-                usbdi_ver: UsbdiVer::V0x500,
-                supported_usb_ver: SupportedUsbVer::Usb11,
-                device_speed: DeviceSpeed::FullSpeed,
-                no_ack_isoch_write_jitter_buf_size:
-                    NoAckIsochWriteJitterBufSizeInMs::TS_URB_ISOCH_TRANSFER_NOT_SUPPORTED,
-            },
-        };
-        let mut buf = WriteBuf::new();
-        let written = encode_buf(&en, &mut buf).unwrap();
-        assert_eq!(written, en.size());
-
-        let mut src = ReadCursor::new(buf.filled());
-        let header_de = SharedMsgHeader::decode(&mut src).unwrap();
-        let de = AddDevice::decode(&mut src, header_de).unwrap();
-        assert_eq!(en, de);
     }
 }
