@@ -1178,7 +1178,12 @@ impl RdpServer {
         let message = decode::<X224<mcs::McsMessage<'_>>>(frame)?;
         match message.0 {
             mcs::McsMessage::SendDataRequest(data) => {
-                debug!(?data, "McsMessage::SendDataRequest");
+                debug!(
+                    initiator_id = data.initiator_id,
+                    channel_id = data.channel_id,
+                    user_data_len = data.user_data.len(),
+                    "McsMessage::SendDataRequest"
+                );
                 if data.channel_id == io_channel_id {
                     return self.handle_io_channel_data(data).await;
                 }
