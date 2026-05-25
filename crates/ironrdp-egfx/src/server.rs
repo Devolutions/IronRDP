@@ -674,7 +674,6 @@ impl CodecCapabilities {
                 small_cache: flags.contains(CapabilitiesV107Flags::SMALL_CACHE),
                 thin_client: flags.contains(CapabilitiesV107Flags::AVC_THIN_CLIENT),
             },
-            CapabilitySet::Unknown(_) => Self::default(),
         }
     }
 }
@@ -693,7 +692,6 @@ fn capability_priority(cap: &CapabilitySet) -> u32 {
         CapabilitySet::V10 { .. } => 4,
         CapabilitySet::V8_1 { .. } => 3,
         CapabilitySet::V8 { .. } => 2,
-        _ => 0,
     }
 }
 
@@ -742,7 +740,7 @@ fn intersect_flags(client: &CapabilitySet, server: &CapabilitySet) -> Capability
         (CapabilitySet::V10_7 { flags: cf }, CapabilitySet::V10_7 { flags: sf }) => {
             CapabilitySet::V10_7 { flags: *cf & *sf }
         }
-        // V10_1 has no flags; Unknown and mismatched variants return server as-is.
+        // V10_1 has no flags; mismatched variants return server as-is.
         _ => server.clone(),
     }
 }
@@ -1637,12 +1635,16 @@ impl GraphicsPipelineServer {
         self.handler.capabilities_advertise(&pdu);
         let server_caps = self.handler.preferred_capabilities();
 
+        // Parse client raw caps into typed; silently drop unknown versions for
+        // negotiation purposes (the raw form is still observable in `pdu`).
+        let client_caps: Vec<CapabilitySet> = pdu.0.iter().filter_map(|raw| raw.parsed().ok().flatten()).collect();
+
         // When no version overlaps with server preferences, confirm the client's
         // highest-priority capability to avoid confirming a version the client
         // did not advertise.
-        let negotiated = negotiate_capabilities(&pdu.0, &server_caps).unwrap_or_else(|| {
+        let negotiated = negotiate_capabilities(&client_caps, &server_caps).unwrap_or_else(|| {
             warn!("No capability match with server preferences, selecting client's highest version");
-            let mut client_sorted = pdu.0.clone();
+            let mut client_sorted = client_caps.clone();
             client_sorted.sort_by_key(|cap| core::cmp::Reverse(capability_priority(cap)));
             client_sorted.into_iter().next().unwrap_or(CapabilitySet::V8 {
                 flags: CapabilitiesV8Flags::empty(),
@@ -1650,13 +1652,15 @@ impl GraphicsPipelineServer {
         });
 
         self.codec_caps = CodecCapabilities::from_capability_set(&negotiated);
-        self.negotiated_caps = Some(negotiated.clone());
+        self.state = ServerState::Ready;
+        let negotiated = self.negotiated_caps.insert(negotiated);
 
         self.output_queue
-            .push_back(GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu(negotiated.clone())));
+            .push_back(GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(
+                negotiated,
+            )));
 
-        self.state = ServerState::Ready;
-        self.handler.on_ready(&negotiated);
+        self.handler.on_ready(negotiated);
     }
 
     fn handle_frame_acknowledge(&mut self, pdu: FrameAcknowledgePdu) {
