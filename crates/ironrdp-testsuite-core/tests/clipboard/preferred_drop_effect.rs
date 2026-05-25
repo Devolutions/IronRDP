@@ -1,17 +1,12 @@
-//! Regression tests for the `Preferred DropEffect` companion format
-//! advertised alongside `FileGroupDescriptorW` by [`Cliprdr::initiate_file_copy`].
-//!
-//! Follows up on [PR #1301]: the merge landed without test coverage and
-//! the Copilot review flagged this. The two behaviors covered here:
+//! Tests for the `Preferred DropEffect` companion format that
+//! [`Cliprdr::initiate_file_copy`] advertises alongside
+//! `FileGroupDescriptorW`:
 //!
 //! 1. `initiate_file_copy` advertises BOTH `FileGroupDescriptorW` and
 //!    `Preferred DropEffect` in the outgoing `FormatList`.
 //! 2. A subsequent `FormatDataRequest` for the drop-effect format id is
 //!    answered inline with the 4-byte little-endian `DROPEFFECT_COPY`
 //!    payload (`0x01 0x00 0x00 0x00`), not forwarded to the backend.
-//!
-//! [PR #1301]: https://github.com/Devolutions/IronRDP/pull/1301
-//! [Copilot review comment]: https://github.com/Devolutions/IronRDP/pull/1301#discussion_r2169280717
 
 use ironrdp_cliprdr::pdu::{ClipboardFormatName, ClipboardPdu, FileDescriptor, FormatDataRequest};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
