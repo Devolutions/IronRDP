@@ -81,6 +81,14 @@ fn apply_cli_args_to_properties(properties: &mut ironrdp_propertyset::PropertySe
         properties.insert("desktopscalefactor", i64::from(scale));
     }
 
+    if let Some(width) = args.desktop_width {
+        properties.insert("desktopwidth", i64::from(width));
+    }
+
+    if let Some(height) = args.desktop_height {
+        properties.insert("desktopheight", i64::from(height));
+    }
+
     if let Some(gw_host) = &args.gw_endpoint {
         properties.insert("gatewayhostname", gw_host.as_str());
         // Ensure the gateway is treated as enabled when a host is provided explicitly.
@@ -336,6 +344,14 @@ struct Args {
     /// Scaling factor for desktop applications, percentage (value between 100 and 500)
     #[clap(long, value_parser = clap::value_parser!(u32).range(100..=500))]
     scale_desktop: Option<u32>,
+
+    /// Desired desktop width for the RDP session
+    #[clap(long, value_parser = clap::value_parser!(u16).range(1..=8192))]
+    desktop_width: Option<u16>,
+
+    /// Desired desktop height for the RDP session
+    #[clap(long, value_parser = clap::value_parser!(u16).range(1..=8192))]
+    desktop_height: Option<u16>,
 
     /// Set required color depth. Currently only 32 and 16 bit color depths are supported
     #[clap(long)]
