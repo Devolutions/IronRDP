@@ -215,10 +215,13 @@ impl DrdynvcServer {
         })
     }
 
-    pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
-        self.remove_by_channel_id(channel_id)?;
-        Some(SvcMessage::from(DrdynvcServerPdu::Close(ClosePdu::new(channel_id))))
-    }
+pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
+    self.remove_by_channel_id(channel_id)?;
+    Some(
+        SvcMessage::from(DrdynvcServerPdu::Close(ClosePdu::new(channel_id)))
+            .with_flags(ChannelFlags::SHOW_PROTOCOL),
+    )
+}
 }
 
 impl_as_any!(DrdynvcServer);
