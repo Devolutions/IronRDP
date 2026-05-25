@@ -16,11 +16,12 @@ use ironrdp::pdu::{PduResult, pdu_other_err};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult, fast_path};
 use ironrdp::svc::SvcMessage;
-use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
+use ironrdp::{cliprdr, connector, rdpdr, session};
 use ironrdp_core::WriteBuf;
 #[cfg(windows)]
 use ironrdp_dvc_com_plugin::load_dvc_plugin;
 use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
+#[cfg(feature = "native-rdpsnd")]
 use ironrdp_rdpsnd_native::cpal;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
@@ -252,8 +253,12 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
         .with_static_channel(drdynvc)
-        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
+
+    #[cfg(feature = "native-rdpsnd")]
+    connector.attach_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new(Box::new(
+        cpal::RdpsndBackend::new(),
+    )));
 
     if let Some(builder) = cliprdr_factory {
         let backend = builder.build_cliprdr_backend();
@@ -376,8 +381,12 @@ async fn connect_ws(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
         .with_static_channel(drdynvc)
-        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
+
+    #[cfg(feature = "native-rdpsnd")]
+    connector.attach_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new(Box::new(
+        cpal::RdpsndBackend::new(),
+    )));
 
     if let Some(builder) = cliprdr_factory {
         let backend = builder.build_cliprdr_backend();
