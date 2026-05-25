@@ -1,0 +1,16 @@
+useTabs: false
+tabWidth: 4
+singleQuote: true
+semi: true
+trailingComma: all
+printWidth: 120
+
+overrides:
+  - files:
+      - '*.yml'
+      - '*.yaml'
+      - '*.json'
+      - '*.html'
+      - '*.md'
+    options:
+      tabWidth: 2

@@ -1,0 +1,41 @@
+[package]
+name = "ironrdp-web-replay"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+ironrdp-session = { path = "../ironrdp-session" }
+ironrdp-graphics = { path = "../ironrdp-graphics" }
+ironrdp-pdu = { path = "../ironrdp-pdu" }
+ironrdp-core = { path = "../ironrdp-core" }
+ironrdp-error = { path = "../ironrdp-error" }
+wasm-bindgen = "0.2"
+getrandom2 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom4 = { package = "getrandom", version = "0.4.0-rc.0", features = ["wasm_js"] }
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "console",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+]
+
+[lib]
+doctest = false
+test = false
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true

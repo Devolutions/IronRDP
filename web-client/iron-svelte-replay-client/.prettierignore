@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+/.svelte-kit
+/build
+/static/iron-replay-player
+/static/iron-replay-player-wasm
+/dist
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
