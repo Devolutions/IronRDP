@@ -2568,7 +2568,6 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
- "slab",
  "tracing",
 ]
 
