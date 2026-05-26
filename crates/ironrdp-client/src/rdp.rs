@@ -16,11 +16,12 @@ use ironrdp::pdu::{PduResult, pdu_other_err};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult, fast_path};
 use ironrdp::svc::SvcMessage;
-use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
+use ironrdp::{cliprdr, connector, rdpdr, session};
 use ironrdp_core::WriteBuf;
 #[cfg(windows)]
 use ironrdp_dvc_com_plugin::load_dvc_plugin;
 use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
+#[cfg(feature = "native-rdpsnd")]
 use ironrdp_rdpsnd_native::cpal;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
@@ -76,6 +77,22 @@ impl RdpInputEvent {
     }
 }
 
+pub trait RdpOutputEventSender: Send + Sync {
+    fn send_event(&self, event: RdpOutputEvent) -> SessionResult<()>;
+}
+
+impl RdpOutputEventSender for EventLoopProxy<RdpOutputEvent> {
+    fn send_event(&self, event: RdpOutputEvent) -> SessionResult<()> {
+        EventLoopProxy::send_event(self, event).map_err(|_| session::general_err!("output event receiver is closed"))
+    }
+}
+
+impl RdpOutputEventSender for mpsc::UnboundedSender<RdpOutputEvent> {
+    fn send_event(&self, event: RdpOutputEvent) -> SessionResult<()> {
+        mpsc::UnboundedSender::send(self, event).map_err(|_| session::general_err!("output event receiver is closed"))
+    }
+}
+
 pub struct DvcPipeProxyFactory {
     rdp_input_sender: mpsc::UnboundedSender<RdpInputEvent>,
 }
@@ -107,7 +124,7 @@ pub type WriteDvcMessageFn = Box<dyn Fn(u32, SvcMessage) -> PduResult<()> + Send
 
 pub struct RdpClient {
     pub config: Config,
-    pub event_loop_proxy: EventLoopProxy<RdpOutputEvent>,
+    pub output_event_sender: Box<dyn RdpOutputEventSender>,
     pub input_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
     pub cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     pub dvc_pipe_proxy_factory: DvcPipeProxyFactory,
@@ -127,7 +144,9 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
+                        let _ = self
+                            .output_event_sender
+                            .send_event(RdpOutputEvent::ConnectionFailure(e));
                         break;
                     }
                 }
@@ -141,7 +160,9 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
+                        let _ = self
+                            .output_event_sender
+                            .send_event(RdpOutputEvent::ConnectionFailure(e));
                         break;
                     }
                 }
@@ -150,7 +171,7 @@ impl RdpClient {
             match active_session(
                 framed,
                 connection_result,
-                &self.event_loop_proxy,
+                self.output_event_sender.as_ref(),
                 &mut self.input_event_receiver,
             )
             .await
@@ -160,11 +181,13 @@ impl RdpClient {
                     self.config.connector.desktop_size.height = height;
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
-                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Ok(reason)));
+                    let _ = self
+                        .output_event_sender
+                        .send_event(RdpOutputEvent::Terminated(Ok(reason)));
                     break;
                 }
                 Err(e) => {
-                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Err(e)));
+                    let _ = self.output_event_sender.send_event(RdpOutputEvent::Terminated(Err(e)));
                     break;
                 }
             }
@@ -252,8 +275,13 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
         .with_static_channel(drdynvc)
-        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
+    #[cfg(feature = "native-rdpsnd")]
+    {
+        connector.attach_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new(Box::new(
+            cpal::RdpsndBackend::new(),
+        )));
+    }
 
     if let Some(builder) = cliprdr_factory {
         let backend = builder.build_cliprdr_backend();
@@ -376,8 +404,13 @@ async fn connect_ws(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
         .with_static_channel(drdynvc)
-        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
+    #[cfg(feature = "native-rdpsnd")]
+    {
+        connector.attach_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new(Box::new(
+            cpal::RdpsndBackend::new(),
+        )));
+    }
 
     if let Some(builder) = cliprdr_factory {
         let backend = builder.build_cliprdr_backend();
@@ -572,7 +605,7 @@ where
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
-    event_loop_proxy: &EventLoopProxy<RdpOutputEvent>,
+    output_event_sender: &dyn RdpOutputEventSender,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
@@ -714,35 +747,24 @@ async fn active_session(
                         })
                         .collect();
 
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::Image {
-                            buffer,
-                            width: NonZeroU16::new(image.width())
-                                .ok_or_else(|| session::general_err!("width is zero"))?,
-                            height: NonZeroU16::new(image.height())
-                                .ok_or_else(|| session::general_err!("height is zero"))?,
-                        })
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    output_event_sender.send_event(RdpOutputEvent::Image {
+                        buffer,
+                        width: NonZeroU16::new(image.width()).ok_or_else(|| session::general_err!("width is zero"))?,
+                        height: NonZeroU16::new(image.height())
+                            .ok_or_else(|| session::general_err!("height is zero"))?,
+                    })?;
                 }
                 ActiveStageOutput::PointerDefault => {
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::PointerDefault)
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    output_event_sender.send_event(RdpOutputEvent::PointerDefault)?;
                 }
                 ActiveStageOutput::PointerHidden => {
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::PointerHidden)
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    output_event_sender.send_event(RdpOutputEvent::PointerHidden)?;
                 }
                 ActiveStageOutput::PointerPosition { x, y } => {
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::PointerPosition { x, y })
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    output_event_sender.send_event(RdpOutputEvent::PointerPosition { x, y })?;
                 }
                 ActiveStageOutput::PointerBitmap(pointer) => {
-                    event_loop_proxy
-                        .send_event(RdpOutputEvent::PointerBitmap(pointer))
-                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                    output_event_sender.send_event(RdpOutputEvent::PointerBitmap(pointer))?;
                 }
                 ActiveStageOutput::DeactivateAll(mut connection_activation) => {
                     // Execute the Deactivation-Reactivation Sequence:
