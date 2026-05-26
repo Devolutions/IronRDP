@@ -672,6 +672,14 @@ pub fn parse_config() -> anyhow::Result<Config> {
     PartialConfig::parse_args()?.into_config()
 }
 
+pub fn parse_config_from<I, T>(args: I) -> anyhow::Result<Config>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    PartialConfig::parse_from(args)?.into_config()
+}
+
 fn normalize_kdc_proxy_url_from_name(name: &str) -> String {
     if name.starts_with("http://") || name.starts_with("https://") {
         name.to_owned()
