@@ -243,6 +243,8 @@ macro_rules! pdu_round_trip_one {
 pub fn pdu_round_trip(data: &[u8]) {
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
+    use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
     use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, vc};
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
@@ -254,14 +256,12 @@ pub fn pdu_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, ConnectInitial);
     pdu_round_trip_one!(data, ConnectResponse);
     pdu_round_trip_one!(data, ClientInfoPdu);
-    // `capability_sets::CapabilitySet` AND `headers::ShareControlHeader` both
-    // transit through `CapabilitySet`'s encoder, which reaches `unreachable!()`
-    // (crates/ironrdp-pdu/src/rdp/capability_sets/mod.rs:447) on variants the
-    // decoder accepts but the encoder match doesn't cover. Internal-panic bugs;
-    // can't be silently dropped at the oracle layer. Smoke-fuzz reproducer:
-    // `[6, 0, 4, 0]`. To be filed as a follow-up.
     pdu_round_trip_one!(data, pcb::PreconnectionBlob);
     pdu_round_trip_one!(data, server_error_info::ServerSetErrorInfoPdu);
+
+    // Capability sharing
+    pdu_round_trip_one!(data, CapabilitySet);
+    pdu_round_trip_one!(data, ShareControlHeader);
 
     // GCC blocks and conference creation
     pdu_round_trip_one!(data, gcc::ClientGccBlocks);
