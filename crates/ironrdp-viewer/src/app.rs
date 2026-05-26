@@ -6,8 +6,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context as _;
+use ironrdp::pdu::input::MousePdu;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
-use ironrdp::pdu::input::{MousePdu, mouse::PointerFlags};
+use ironrdp::pdu::input::mouse::PointerFlags;
+use ironrdp_client::rdp::{RdpInputEvent, RdpOutputEvent};
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
@@ -18,8 +20,6 @@ use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
-
-use crate::rdp::{RdpInputEvent, RdpOutputEvent};
 
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 

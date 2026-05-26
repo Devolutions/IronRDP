@@ -2459,39 +2459,23 @@ name = "ironrdp-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "futures-util",
- "inquire",
  "ironrdp",
- "ironrdp-cfg",
- "ironrdp-cliprdr-native",
  "ironrdp-core",
  "ironrdp-dvc-com-plugin",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-mstsgu",
- "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
- "ironrdp-rdpfile",
  "ironrdp-rdpsnd-native",
  "ironrdp-tls",
  "ironrdp-tokio",
- "proc-exit",
- "raw-window-handle",
- "semver",
  "smallvec",
- "softbuffer",
- "tap",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "transport",
  "url",
- "uuid",
- "whoami",
- "windows",
- "winit",
  "x509-cert",
 ]
 
@@ -2924,6 +2908,7 @@ dependencies = [
  "ironrdp-client",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-viewer",
  "semver",
  "tokio",
  "tracing",
@@ -2950,6 +2935,34 @@ dependencies = [
  "reqwest",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "ironrdp-viewer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "inquire",
+ "ironrdp",
+ "ironrdp-cfg",
+ "ironrdp-client",
+ "ironrdp-cliprdr-native",
+ "ironrdp-mstsgu",
+ "ironrdp-propertyset",
+ "ironrdp-rdpfile",
+ "proc-exit",
+ "raw-window-handle",
+ "semver",
+ "smallvec",
+ "softbuffer",
+ "tap",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "whoami",
+ "winit",
 ]
 
 [[package]]

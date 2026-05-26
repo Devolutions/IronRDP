@@ -1,10 +1,12 @@
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
 
 use anyhow::Context as _;
-use ironrdp_client::app::App;
-use ironrdp_client::config::{ClipboardType, PartialConfig};
+use ironrdp_client::config::ClipboardType;
 use ironrdp_client::rdp::{DvcPipeProxyFactory, RdpClient, RdpInputEvent, RdpOutputEvent};
+use ironrdp_viewer::app::App;
+use ironrdp_viewer::config::PartialConfig;
 use tokio::runtime;
+use tokio::sync::mpsc;
 use tracing::debug;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
@@ -26,6 +28,7 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
+    let (output_event_sender, mut output_event_receiver) = mpsc::channel::<RdpOutputEvent>(64);
     let initial_window_size = PhysicalSize::new(
         u32::from(config.connector.desktop_size.width),
         u32::from(config.connector.desktop_size.height),
@@ -56,29 +59,53 @@ fn main() -> anyhow::Result<()> {
             let factory = cliprdr.backend_factory();
             Some(factory)
         }
-        #[cfg(windows)]
-        ClipboardType::Windows => {
-            use ironrdp_client::clipboard::ClientClipboardMessageProxy;
-            use ironrdp_cliprdr_native::WinClipboard;
+        ClipboardType::Enable => {
+            #[cfg(windows)]
+            {
+                use ironrdp_cliprdr_native::WinClipboard;
+                use ironrdp_viewer::clipboard::ClientClipboardMessageProxy;
 
-            let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender.clone()))?;
+                let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender.clone()))?;
 
-            let factory = cliprdr.backend_factory();
-            _win_clipboard = cliprdr;
-            Some(factory)
+                let factory = cliprdr.backend_factory();
+                _win_clipboard = cliprdr;
+                Some(factory)
+            }
+            #[cfg(not(windows))]
+            {
+                // No native clipboard backend available on this platform; fall back to stub.
+                use ironrdp_cliprdr_native::StubClipboard;
+
+                let cliprdr = StubClipboard::new();
+                let factory = cliprdr.backend_factory();
+                Some(factory)
+            }
         }
-        _ => None,
+        ClipboardType::Disable => None,
     };
 
     let dvc_pipe_proxy_factory = DvcPipeProxyFactory::new(input_event_sender);
 
     let client = RdpClient {
         config,
-        event_loop_proxy,
+        output_event_sender,
         input_event_receiver,
         cliprdr_factory,
         dvc_pipe_proxy_factory,
     };
+
+    // Forward output events from the library's mpsc channel to winit's `EventLoopProxy`.
+    //
+    // The library is winit-agnostic: it just emits `RdpOutputEvent`s on a plain
+    // `tokio::sync::mpsc` channel. Bridging onto the GUI event loop is the binary's job.
+    rt.spawn(async move {
+        while let Some(event) = output_event_receiver.recv().await {
+            if event_loop_proxy.send_event(event).is_err() {
+                // The event loop is gone; nothing left to forward.
+                break;
+            }
+        }
+    });
 
     debug!("Start RDP thread");
     std::thread::spawn(move || {
