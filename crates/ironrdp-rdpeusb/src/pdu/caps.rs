@@ -44,7 +44,7 @@ impl RimExchangeCapabilityRequest {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: InterfaceId::CAPABILITIES.with_mask(Mask::None),
+            iface_id: InterfaceId::CAPABILITIES.with_mask(Mask::None),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::RIM_EXCHANGE_CAPABILITY_REQUEST),
         }
@@ -106,7 +106,7 @@ impl RimExchangeCapabilityResponse {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: InterfaceId::CAPABILITIES.with_mask(Mask::None),
+            iface_id: InterfaceId::CAPABILITIES.with_mask(Mask::None),
             msg_id: self.msg_id,
             function_id: None,
         }

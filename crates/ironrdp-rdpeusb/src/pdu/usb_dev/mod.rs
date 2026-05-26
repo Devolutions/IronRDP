@@ -44,7 +44,7 @@ impl CancelRequest {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface.with_mask(Mask::Proxy),
+            iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::CANCEL_REQUEST),
         }
@@ -97,7 +97,7 @@ pub struct RegisterRequestCallback {
 impl RegisterRequestCallback {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface.with_mask(Mask::Proxy),
+            iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::REGISTER_REQUEST_CALLBACK),
         }
@@ -174,7 +174,7 @@ impl IoControl {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface.with_mask(Mask::Proxy),
+            iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::IO_CONTROL),
         }
@@ -417,7 +417,7 @@ impl InternalIoControl {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface.with_mask(Mask::Proxy),
+            iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::INTERNAL_IO_CONTROL),
         }
@@ -511,7 +511,7 @@ impl QueryDeviceText {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface.with_mask(Mask::Proxy),
+            iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::QUERY_DEVICE_TEXT),
         }
@@ -593,7 +593,7 @@ pub struct QueryDeviceTextRsp {
 impl QueryDeviceTextRsp {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface.with_mask(Mask::Stub),
+            iface_id: self.udev_iface.with_mask(Mask::Stub),
             msg_id: self.msg_id,
             function_id: None,
         }
@@ -672,7 +672,7 @@ pub struct TransferInRequest {
 impl TransferInRequest {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface.with_mask(Mask::Proxy),
+            iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::TRANSFER_IN_REQUEST),
         }
@@ -781,7 +781,7 @@ pub struct TransferOutRequest {
 impl TransferOutRequest {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface.with_mask(Mask::Proxy),
+            iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::TRANSFER_OUT_REQUEST),
         }
@@ -858,7 +858,7 @@ impl RetractDevice {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface.with_mask(Mask::Proxy),
+            iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::RETRACT_DEVICE),
         }

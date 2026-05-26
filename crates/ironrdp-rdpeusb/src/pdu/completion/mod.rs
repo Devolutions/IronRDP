@@ -71,7 +71,7 @@ pub struct IoControlCompletion {
 impl IoControlCompletion {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.completion_iface.with_mask(Mask::Proxy),
+            iface_id: self.completion_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::IOCONTROL_COMPLETION),
         }
@@ -193,7 +193,7 @@ pub struct UrbCompletion {
 impl UrbCompletion {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.completion_iface.with_mask(Mask::Proxy),
+            iface_id: self.completion_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::URB_COMPLETION),
         }
@@ -295,7 +295,7 @@ pub struct UrbCompletionNoData {
 impl UrbCompletionNoData {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.completion_iface.with_mask(Mask::Proxy),
+            iface_id: self.completion_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::URB_COMPLETION_NO_DATA),
         }

@@ -54,7 +54,7 @@ impl ChannelCreated {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: if let Direction::ToServer = self.direction {
+            iface_id: if let Direction::ToServer = self.direction {
                 InterfaceId::NOTIFY_SERVER
             } else {
                 InterfaceId::NOTIFY_CLIENT
@@ -83,7 +83,7 @@ impl ChannelCreated {
 
         Ok(Self {
             msg_id: header.msg_id,
-            direction: match unpack(header.interface_id)?.0 {
+            direction: match unpack(header.iface_id)?.0 {
                 InterfaceId::NOTIFY_CLIENT => Direction::ToClient,
                 InterfaceId::NOTIFY_SERVER => Direction::ToServer,
                 _ => unreachable!("dispatcher must filter interface_id to NOTIFY_CLIENT/NOTIFY_SERVER"),

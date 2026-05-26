@@ -242,7 +242,7 @@ impl core::fmt::Display for FunctionId {
 #[doc(alias = "SHARED_MSG_HEADER")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct SharedMsgHeader {
-    pub interface_id: u32,
+    pub iface_id: u32,
     pub msg_id: MessageId,
     pub function_id: Option<FunctionId>,
 }
@@ -255,7 +255,7 @@ impl SharedMsgHeader {
     pub(super) fn decode_with_function_id(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::SIZE_REQ);
         Ok(Self {
-            interface_id: src.read_u32(),
+            iface_id: src.read_u32(),
             msg_id: src.read_u32(),
             function_id: Some(FunctionId(src.read_u32())),
         })
@@ -266,7 +266,7 @@ impl Encode for SharedMsgHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u32(self.interface_id);
+        dst.write_u32(self.iface_id);
         dst.write_u32(self.msg_id);
 
         if let Some(id) = self.function_id {
@@ -293,7 +293,7 @@ impl Decode<'_> for SharedMsgHeader {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::SIZE_RSP );
         Ok(Self {
-            interface_id: src.read_u32(),
+            iface_id: src.read_u32(),
             msg_id: src.read_u32(),
             function_id: None,
         })

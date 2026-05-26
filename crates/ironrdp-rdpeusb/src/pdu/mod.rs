@@ -46,7 +46,7 @@ impl Decode<'_> for UrbdrcServerPdu {
         let header = SharedMsgHeader::decode_with_function_id(src)?;
         let f_id = header.function_id.expect("missing function id");
 
-        match unpack(header.interface_id)? {
+        match unpack(header.iface_id)? {
             (InterfaceId::CAPABILITIES, Mask::None) => {
                 if f_id == FunctionId::RIM_EXCHANGE_CAPABILITY_REQUEST {
                     RimExchangeCapabilityRequest::decode(src, header).map(Self::Caps)
@@ -147,7 +147,7 @@ impl Decode<'_> for UrbdrcClientPdu {
         let header = SharedMsgHeader::decode(src)?;
         ensure_size!(in: src, size: 4 /* function id */);
 
-        match unpack(header.interface_id)? {
+        match unpack(header.iface_id)? {
             (InterfaceId::CAPABILITIES, Mask::None) => {
                 RimExchangeCapabilityResponse::decode(src, header).map(Self::Caps)
             }
