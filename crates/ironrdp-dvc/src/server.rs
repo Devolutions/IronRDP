@@ -4,16 +4,15 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
 
-use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, cast_length, impl_as_any, invalid_field_err};
+use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any, invalid_field_err};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use slab::Slab;
 use tracing::debug;
 
 use crate::pdu::{
-    CapabilitiesRequestPdu, CapsVersion, CreateRequestPdu, CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu,
+    CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu,
 };
 use crate::{CompleteData, DvcProcessor, encode_dvc_messages};
 
@@ -21,7 +20,8 @@ pub trait DvcServerProcessor: DvcProcessor {}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ChannelState {
-    Closed,
+    Pending,
+    /// `Create Request` has been sent; awaiting `Create Response` from the client.
     Creation,
     Opened,
     CreationFailed(u32),
@@ -31,25 +31,97 @@ struct DynamicChannel {
     state: ChannelState,
     processor: Box<dyn DvcProcessor>,
     complete_data: CompleteData,
+    channel_id: u32,
+}
+
+impl Drop for DynamicChannel {
+    fn drop(&mut self) {
+        if self.state == ChannelState::Opened {
+            self.processor.close(self.channel_id);
+        }
+    }
+}
+
+struct DynamicChannelAllocator {
+    dynamic_channels: BTreeMap<u32, DynamicChannel>,
+    next_channel_id: u32,
+}
+
+impl<'a> IntoIterator for &'a DynamicChannelAllocator {
+    type Item = (&'a u32, &'a DynamicChannel);
+
+    type IntoIter = alloc::collections::btree_map::Iter<'a, u32, DynamicChannel>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.dynamic_channels.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut DynamicChannelAllocator {
+    type Item = (&'a u32, &'a mut DynamicChannel);
+    type IntoIter = alloc::collections::btree_map::IterMut<'a, u32, DynamicChannel>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.dynamic_channels.iter_mut()
+    }
+}
+
+impl DynamicChannelAllocator {
+    fn new() -> Self {
+        Self {
+            dynamic_channels: BTreeMap::new(),
+            next_channel_id: 0,
+        }
+    }
+
+    fn insert_channel<T>(&mut self, processor: T, state: ChannelState) -> u32
+    where
+        T: DvcServerProcessor + 'static,
+    {
+        let channel_id = self.next_channel_id;
+        self.dynamic_channels
+            .insert(channel_id, DynamicChannel::new(processor, channel_id, state));
+        self.next_channel_id = self
+            .next_channel_id
+            .checked_add(1)
+            .expect("dynamic channels reaches `u32::MAX`");
+        channel_id
+    }
+
+    fn get(&self, channel_id: u32) -> Option<&DynamicChannel> {
+        self.dynamic_channels.get(&channel_id)
+    }
+
+    fn get_mut(&mut self, channel_id: u32) -> Option<&mut DynamicChannel> {
+        self.dynamic_channels.get_mut(&channel_id)
+    }
+
+    fn remove(&mut self, channel_id: u32) -> Option<DynamicChannel> {
+        self.dynamic_channels.remove(&channel_id)
+    }
 }
 
 impl DynamicChannel {
-    fn new<T>(processor: T) -> Self
+    fn new<T>(processor: T, channel_id: u32, state: ChannelState) -> Self
     where
         T: DvcServerProcessor + 'static,
     {
         Self {
-            state: ChannelState::Closed,
+            state,
             processor: Box::new(processor),
             complete_data: CompleteData::new(),
+            channel_id,
         }
+    }
+
+    fn processor_type_id(&self) -> TypeId {
+        self.processor.as_any().type_id()
     }
 }
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcServer {
-    dynamic_channels: Slab<DynamicChannel>,
+    dynamic_channels: DynamicChannelAllocator,
     type_id_to_channel_id: BTreeMap<TypeId, u32>,
 }
 
@@ -57,7 +129,7 @@ impl fmt::Debug for DrdynvcServer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "DrdynvcServer([")?;
 
-        for (i, (id, channel)) in self.dynamic_channels.iter().enumerate() {
+        for (i, (id, channel)) in self.dynamic_channels.into_iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
@@ -73,7 +145,7 @@ impl DrdynvcServer {
 
     pub fn new() -> Self {
         Self {
-            dynamic_channels: Slab::new(),
+            dynamic_channels: DynamicChannelAllocator::new(),
             type_id_to_channel_id: BTreeMap::new(),
         }
     }
@@ -88,11 +160,8 @@ impl DrdynvcServer {
     /// Returns `true` if the DVC channel with the given ID has completed
     /// its creation handshake and is in the `Opened` state.
     pub fn is_channel_opened(&self, channel_id: u32) -> bool {
-        let Ok(id) = usize::try_from(channel_id) else {
-            return false;
-        };
         self.dynamic_channels
-            .get(id)
+            .get(channel_id)
             .is_some_and(|c| c.state == ChannelState::Opened)
     }
 
@@ -100,21 +169,18 @@ impl DrdynvcServer {
     ///
     /// # Panics
     ///
-    /// Panics if the number of registered dynamic channels exceeds `u32::MAX`.
+    /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
         T: DvcServerProcessor + 'static,
     {
-        let id = self.dynamic_channels.insert(DynamicChannel::new(channel));
-        // The slab index is used as the DVC channel ID (a u32).
-        let channel_id = u32::try_from(id).expect("DVC channel count should not exceed u32::MAX");
+        let channel_id = self.dynamic_channels.insert_channel(channel, ChannelState::Pending);
         self.type_id_to_channel_id.insert(TypeId::of::<T>(), channel_id);
         self
     }
 
     fn channel_by_id(&mut self, id: u32) -> DecodeResult<&mut DynamicChannel> {
-        let id = cast_length!("DRDYNVC", "", id)?;
         self.dynamic_channels
             .get_mut(id)
             .ok_or_else(|| invalid_field_err!("DRDYNVC", "", "invalid channel id"))
@@ -124,21 +190,37 @@ impl DrdynvcServer {
     ///
     /// # Panics
     ///
-    /// Panics if the number of registered dynamic channels exceeds `u32::MAX`.
+    /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
     pub fn create_channel<T>(&mut self, channel: T) -> PduResult<SvcMessage>
     where
         T: DvcServerProcessor + 'static,
     {
         let channel_name = channel.channel_name().into();
-        let mut dvc = DynamicChannel::new(channel);
-        dvc.state = ChannelState::Creation;
 
-        let id = self.dynamic_channels.insert(dvc);
-        // The slab index is used as the DVC channel ID (a u32).
-        let channel_id = u32::try_from(id).expect("DVC channel count should not exceed u32::MAX");
-
+        let channel_id = self.dynamic_channels.insert_channel(channel, ChannelState::Creation);
         let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(channel_id, channel_name));
         as_svc_msg_with_flag(req)
+    }
+
+    fn remove_by_channel_id(&mut self, id: u32) -> Option<DynamicChannel> {
+        self.dynamic_channels.remove(id).inspect(|dvc| {
+            let type_id = dvc.processor_type_id();
+
+            // Only matters for pre-registered channels
+            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
+                && entry.get() == &id
+            {
+                entry.remove();
+            }
+        })
+    }
+
+    pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
+        self.remove_by_channel_id(channel_id)?;
+        Some(
+            SvcMessage::from(DrdynvcServerPdu::Close(ClosePdu::new(channel_id)))
+                .with_flags(ChannelFlags::SHOW_PROTOCOL),
+        )
     }
 }
 
@@ -173,15 +255,11 @@ impl SvcProcessor for DrdynvcServer {
         match pdu {
             DrdynvcClientPdu::Capabilities(caps_resp) => {
                 debug!("Got DVC Capabilities Response PDU: {caps_resp:?}");
-                for (id, c) in self.dynamic_channels.iter_mut() {
-                    if c.state != ChannelState::Closed {
+                for (id, c) in &mut self.dynamic_channels {
+                    if c.state != ChannelState::Pending {
                         continue;
                     }
-                    let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(
-                        id.try_into()
-                            .map_err(|e| pdu_other_err!("invalid channel id", source: e))?,
-                        c.processor.channel_name().into(),
-                    ));
+                    let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(*id, c.processor.channel_name().into()));
                     c.state = ChannelState::Creation;
                     resp.push(as_svc_msg_with_flag(req)?);
                 }
@@ -201,15 +279,10 @@ impl SvcProcessor for DrdynvcServer {
                 let msg = c.processor.start(create_resp.channel_id())?;
                 resp.extend(encode_dvc_messages(id, msg, ChannelFlags::SHOW_PROTOCOL).map_err(|e| encode_err!(e))?);
             }
-            DrdynvcClientPdu::Close(close_resp) => {
-                debug!("Got DVC Close Response PDU: {close_resp:?}");
-                let c = self
-                    .channel_by_id(close_resp.channel_id())
-                    .map_err(|e| decode_err!(e))?;
-                if c.state != ChannelState::Opened {
-                    return Err(pdu_other_err!("invalid channel state"));
-                }
-                c.state = ChannelState::Closed;
+            DrdynvcClientPdu::Close(close) => {
+                debug!("Got DVC Close PDU: {close:?}");
+                let channel_id = close.channel_id();
+                self.remove_by_channel_id(channel_id);
             }
             DrdynvcClientPdu::Data(data) => {
                 let channel_id = data.channel_id();
