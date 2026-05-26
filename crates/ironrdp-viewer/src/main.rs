@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
-    let (output_event_sender, mut output_event_receiver) = mpsc::unbounded_channel::<RdpOutputEvent>();
+    let (output_event_sender, mut output_event_receiver) = mpsc::channel::<RdpOutputEvent>(64);
     let initial_window_size = PhysicalSize::new(
         u32::from(config.connector.desktop_size.width),
         u32::from(config.connector.desktop_size.height),

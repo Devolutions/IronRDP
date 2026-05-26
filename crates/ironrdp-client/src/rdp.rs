@@ -106,7 +106,7 @@ pub type WriteDvcMessageFn = Box<dyn Fn(u32, SvcMessage) -> PduResult<()> + Send
 
 pub struct RdpClient {
     pub config: Config,
-    pub output_event_sender: mpsc::UnboundedSender<RdpOutputEvent>,
+    pub output_event_sender: mpsc::Sender<RdpOutputEvent>,
     pub input_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
     pub cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     pub dvc_pipe_proxy_factory: DvcPipeProxyFactory,
@@ -126,7 +126,7 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.output_event_sender.send(RdpOutputEvent::ConnectionFailure(e));
+                        let _ = self.output_event_sender.send(RdpOutputEvent::ConnectionFailure(e)).await;
                         break;
                     }
                 }
@@ -140,7 +140,7 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.output_event_sender.send(RdpOutputEvent::ConnectionFailure(e));
+                        let _ = self.output_event_sender.send(RdpOutputEvent::ConnectionFailure(e)).await;
                         break;
                     }
                 }
@@ -159,11 +159,11 @@ impl RdpClient {
                     self.config.connector.desktop_size.height = height;
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
-                    let _ = self.output_event_sender.send(RdpOutputEvent::Terminated(Ok(reason)));
+                    let _ = self.output_event_sender.send(RdpOutputEvent::Terminated(Ok(reason))).await;
                     break;
                 }
                 Err(e) => {
-                    let _ = self.output_event_sender.send(RdpOutputEvent::Terminated(Err(e)));
+                    let _ = self.output_event_sender.send(RdpOutputEvent::Terminated(Err(e))).await;
                     break;
                 }
             }
@@ -571,7 +571,7 @@ where
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
-    output_event_sender: &mpsc::UnboundedSender<RdpOutputEvent>,
+    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
@@ -721,26 +721,31 @@ async fn active_session(
                             height: NonZeroU16::new(image.height())
                                 .ok_or_else(|| session::general_err!("height is zero"))?,
                         })
+                        .await
                         .map_err(|e| session::custom_err!("output_event_sender", e))?;
                 }
                 ActiveStageOutput::PointerDefault => {
                     output_event_sender
                         .send(RdpOutputEvent::PointerDefault)
+                        .await
                         .map_err(|e| session::custom_err!("output_event_sender", e))?;
                 }
                 ActiveStageOutput::PointerHidden => {
                     output_event_sender
                         .send(RdpOutputEvent::PointerHidden)
+                        .await
                         .map_err(|e| session::custom_err!("output_event_sender", e))?;
                 }
                 ActiveStageOutput::PointerPosition { x, y } => {
                     output_event_sender
                         .send(RdpOutputEvent::PointerPosition { x, y })
+                        .await
                         .map_err(|e| session::custom_err!("output_event_sender", e))?;
                 }
                 ActiveStageOutput::PointerBitmap(pointer) => {
                     output_event_sender
                         .send(RdpOutputEvent::PointerBitmap(pointer))
+                        .await
                         .map_err(|e| session::custom_err!("output_event_sender", e))?;
                 }
                 ActiveStageOutput::DeactivateAll(mut connection_activation) => {
