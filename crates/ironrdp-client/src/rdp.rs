@@ -126,7 +126,10 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.output_event_sender.send(RdpOutputEvent::ConnectionFailure(e)).await;
+                        let _ = self
+                            .output_event_sender
+                            .send(RdpOutputEvent::ConnectionFailure(e))
+                            .await;
                         break;
                     }
                 }
@@ -140,7 +143,10 @@ impl RdpClient {
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let _ = self.output_event_sender.send(RdpOutputEvent::ConnectionFailure(e)).await;
+                        let _ = self
+                            .output_event_sender
+                            .send(RdpOutputEvent::ConnectionFailure(e))
+                            .await;
                         break;
                     }
                 }
@@ -159,7 +165,10 @@ impl RdpClient {
                     self.config.connector.desktop_size.height = height;
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
-                    let _ = self.output_event_sender.send(RdpOutputEvent::Terminated(Ok(reason))).await;
+                    let _ = self
+                        .output_event_sender
+                        .send(RdpOutputEvent::Terminated(Ok(reason)))
+                        .await;
                     break;
                 }
                 Err(e) => {

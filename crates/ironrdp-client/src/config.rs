@@ -54,7 +54,6 @@ pub enum ClipboardType {
     Stub,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Destination {
     name: String,
@@ -175,4 +174,3 @@ impl FromStr for DvcProxyInfo {
         })
     }
 }
-
