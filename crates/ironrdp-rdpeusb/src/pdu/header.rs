@@ -16,20 +16,20 @@ pub type MessageId = u32;
 #[repr(u8)]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Mask {
+pub(crate) enum Mask {
     /// Indicates that the [`SharedMsgHeader`] is being used in a response message.
     #[doc(alias = "STREAM_ID_STUB")]
-    StreamIdStub = 0x2,
+    Stub = 0x2,
 
     /// Indicates that the [`SharedMsgHeader`] is not being used in a response message.
     #[doc(alias = "STREAM_ID_PROXY")]
-    StreamIdProxy = 0x1,
+    Proxy = 0x1,
 
     /// Indicates that the [`SharedMsgHeader`] is being used in a message for capabilities exchange
     /// ([`RimExchangeCapabilityRequest`], [`RimExchangeCapabilityResponse`]). This value **MUST
     /// NOT** be used for any other messages.
     #[doc(alias = "STREAM_ID_NONE")]
-    StreamIdNone = 0x0,
+    None = 0x0,
 }
 
 impl From<Mask> for u32 {
@@ -44,9 +44,9 @@ impl TryFrom<u8> for Mask {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0x0 => Ok(Self::StreamIdNone),
-            0x1 => Ok(Self::StreamIdProxy),
-            0x2 => Ok(Self::StreamIdStub),
+            0x0 => Ok(Self::None),
+            0x1 => Ok(Self::Proxy),
+            0x2 => Ok(Self::Stub),
             _ => Err(invalid_field_err!("try_from", "Mask", "invalid mask")),
         }
     }
@@ -100,6 +100,15 @@ impl InterfaceId {
     ///
     /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a7ea1b33-80bb-4197-a502-ee62
     pub const NOTIFY_SERVER: Self = Self(0x3);
+
+    #[inline]
+    pub(crate) fn with_mask(self, mask: Mask) -> u32 {
+        self.0 | (u32::from(mask) << 30)
+    }
+
+    const fn from_raw(value: u32) -> Self {
+        Self(value & 0x3F_FF_FF_FF)
+    }
 }
 
 impl TryFrom<u32> for InterfaceId {
@@ -128,6 +137,12 @@ impl core::fmt::Display for InterfaceId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+#[inline]
+pub(crate) fn unpack(id: u32) -> DecodeResult<(InterfaceId, Mask)> {
+    #[expect(clippy::as_conversions)]
+    Ok((InterfaceId::from_raw(id), Mask::try_from((id >> 30) as u8)?))
 }
 
 /// Indicates a task/function to perform.
@@ -166,9 +181,9 @@ pub struct FunctionId(pub(in crate::pdu) u32);
 
 impl FunctionId {
     pub const FIXED_PART_SIZE: usize = size_of::<Self>();
-    // // Needed for QI_REQ and QI_RSP
+    // Needed for QI_REQ and QI_RSP
     //
-    // /// Release the given interface ID.
+    /// Release the given interface ID.
     pub const RIMCALL_RELEASE: Self = Self(0x00000001);
     pub const RIMCALL_QUERYINTERFACE: Self = Self(0x00000002);
 
@@ -209,15 +224,9 @@ impl FunctionId {
     pub const CHANNEL_CREATED: Self = Self(0x100);
 }
 
-impl TryFrom<u32> for FunctionId {
-    type Error = DecodeError;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        if matches!(value, 0x001 | 0x002 | 0x100..=0x107) {
-            Ok(Self(value))
-        } else {
-            Err(invalid_field_err!("FunctionId", "invalid FunctionId"))
-        }
+impl From<u32> for FunctionId {
+    fn from(value: u32) -> Self {
+        Self(value)
     }
 }
 
@@ -233,8 +242,7 @@ impl core::fmt::Display for FunctionId {
 #[doc(alias = "SHARED_MSG_HEADER")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct SharedMsgHeader {
-    pub interface_id: InterfaceId,
-    pub mask: Mask,
+    pub interface_id: u32,
     pub msg_id: MessageId,
     pub function_id: Option<FunctionId>,
 }
@@ -243,14 +251,22 @@ impl SharedMsgHeader {
     pub const SIZE_RSP: usize = size_of::<u32>(/* InterfaceId, Mask */) + size_of::<MessageId>();
 
     pub const SIZE_REQ: usize = Self::SIZE_RSP + FunctionId::FIXED_PART_SIZE;
+
+    pub(super) fn decode_with_function_id(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: Self::SIZE_REQ);
+        Ok(Self {
+            interface_id: src.read_u32(),
+            msg_id: src.read_u32(),
+            function_id: Some(FunctionId(src.read_u32())),
+        })
+    }
 }
 
 impl Encode for SharedMsgHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let first32 = u32::from(self.interface_id) | (u32::from(self.mask) << 30);
-        dst.write_u32(first32);
+        dst.write_u32(self.interface_id);
         dst.write_u32(self.msg_id);
 
         if let Some(id) = self.function_id {
@@ -276,33 +292,10 @@ impl Encode for SharedMsgHeader {
 impl Decode<'_> for SharedMsgHeader {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::SIZE_RSP );
-
-        let first32 = src.read_u32();
-        let interface_id = InterfaceId::try_from(first32 & 0x3F_FF_FF_FF)?;
-        #[expect(clippy::as_conversions)]
-        let mask = Mask::try_from((first32 >> 30) as u8)?;
-
-        let msg_id = src.read_u32();
-
-        let function_id = match mask {
-            Mask::StreamIdStub => None,
-            Mask::StreamIdProxy => {
-                ensure_size!(in: src, size: FunctionId::FIXED_PART_SIZE);
-                let id = FunctionId::try_from(src.read_u32())?;
-                Some(id)
-            }
-            Mask::StreamIdNone => {
-                ensure_size!(in: src, size: FunctionId::FIXED_PART_SIZE);
-                // either 0x100 (FunctionId) or 0x001 (CapabilityValue)
-                (src.peek_u32() == FunctionId::RIM_EXCHANGE_CAPABILITY_REQUEST.0).then(|| FunctionId(src.read_u32()))
-            }
-        };
-
-        Ok(SharedMsgHeader {
-            interface_id,
-            mask,
-            msg_id,
-            function_id,
+        Ok(Self {
+            interface_id: src.read_u32(),
+            msg_id: src.read_u32(),
+            function_id: None,
         })
     }
 }

@@ -71,14 +71,13 @@ pub struct IoControlCompletion {
 impl IoControlCompletion {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.completion_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.completion_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::IOCONTROL_COMPLETION),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         const FIXED: usize = 4 /* RequestId */ + 4 /* HResult */ + 4 /* Information */ + 4 /* OutputBufferSize */;
         ensure_size!(in: src, size: FIXED);
 
@@ -119,8 +118,8 @@ impl IoControlCompletion {
         };
 
         Ok(Self {
-            msg_id: header.msg_id,
-            completion_iface: header.interface_id,
+            msg_id,
+            completion_iface: udev_iface,
             request_id,
             hresult,
             information,
@@ -194,14 +193,13 @@ pub struct UrbCompletion {
 impl UrbCompletion {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.completion_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.completion_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::URB_COMPLETION),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())
             .map_err(|reason| invalid_field_err!("URB_COMPLETION::RequestId", reason))?;
@@ -225,8 +223,8 @@ impl UrbCompletion {
         ensure_size!(in: src, size: output_buffer_size);
         let output_buffer = src.read_slice(output_buffer_size).to_vec();
         Ok(Self {
-            msg_id: header.msg_id,
-            completion_iface: header.interface_id,
+            msg_id,
+            completion_iface: udev_iface,
             req_id,
             ts_urb_result,
             hresult,
@@ -297,14 +295,13 @@ pub struct UrbCompletionNoData {
 impl UrbCompletionNoData {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.completion_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.completion_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::URB_COMPLETION_NO_DATA),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())
             .map_err(|reason| invalid_field_err!("URB_COMPLETION_NO_DATA::RequestId", reason))?;
@@ -316,8 +313,8 @@ impl UrbCompletionNoData {
         let hresult = src.read_u32();
         let output_buffer_size = src.read_u32();
         Ok(Self {
-            msg_id: header.msg_id,
-            completion_iface: header.interface_id,
+            msg_id,
+            completion_iface: udev_iface,
             req_id,
             ts_urb_result,
             hresult,

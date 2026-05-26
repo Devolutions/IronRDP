@@ -33,8 +33,7 @@ impl AddVirtualChannel {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: InterfaceId::DEVICE_SINK,
-            mask: Mask::StreamIdProxy,
+            interface_id: InterfaceId::DEVICE_SINK.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::ADD_VIRTUAL_CHANNEL),
         }
@@ -84,8 +83,7 @@ impl AddDevice {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: InterfaceId::DEVICE_SINK,
-            mask: Mask::StreamIdProxy,
+            interface_id: InterfaceId::DEVICE_SINK.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::ADD_DEVICE),
         }

@@ -44,20 +44,19 @@ impl CancelRequest {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::CANCEL_REQUEST),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
         let req_id = src.read_u32();
 
         Ok(Self {
-            msg_id: header.msg_id,
-            udev_iface: header.interface_id,
+            msg_id,
+            udev_iface,
             req_id,
         })
     }
@@ -98,14 +97,13 @@ pub struct RegisterRequestCallback {
 impl RegisterRequestCallback {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::REGISTER_REQUEST_CALLBACK),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* NumRequestCompletion */);
         let request_completion = match src.read_u32() {
             0x0 => None,
@@ -120,8 +118,8 @@ impl RegisterRequestCallback {
             }
         };
         Ok(Self {
-            msg_id: header.msg_id,
-            udev_iface: header.interface_id,
+            msg_id,
+            udev_iface,
             request_completion,
         })
     }
@@ -176,8 +174,7 @@ impl IoControl {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::IO_CONTROL),
         }
@@ -209,7 +206,7 @@ impl IoControl {
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_MIN_SIZE);
         let ioctl_code = match src.read_u32() {
             0x220_007 => IoctlInternalUsb::ResetPort,
@@ -228,8 +225,8 @@ impl IoControl {
         let output_buffer_size = src.read_u32();
         let req_id = src.read_u32();
         let io_control = Self {
-            msg_id: header.msg_id,
-            udev_iface: header.interface_id,
+            msg_id,
+            udev_iface,
             ioctl_code,
             input_buffer,
             output_buffer_size,
@@ -420,14 +417,13 @@ impl InternalIoControl {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::INTERNAL_IO_CONTROL),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
 
         {
@@ -458,8 +454,8 @@ impl InternalIoControl {
         let req_id = src.read_u32();
 
         Ok(Self {
-            msg_id: header.msg_id,
-            udev_iface: header.interface_id,
+            msg_id,
+            udev_iface,
             ioctl_code: UsbInternalIoctlCode::IoctlTsusbgdIoctlUsbdiQueryBusTime,
             input_buffer: Vec::new(),
             output_buffer_size,
@@ -515,14 +511,13 @@ impl QueryDeviceText {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::QUERY_DEVICE_TEXT),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
 
         let text_type = match src.read_u32() {
@@ -538,8 +533,8 @@ impl QueryDeviceText {
         let locale_id = src.read_u32();
 
         Ok(Self {
-            msg_id: header.msg_id,
-            udev_iface: header.interface_id,
+            msg_id,
+            udev_iface,
             text_type,
             locale_id,
         })
@@ -598,22 +593,21 @@ pub struct QueryDeviceTextRsp {
 impl QueryDeviceTextRsp {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface,
-            mask: Mask::StreamIdStub,
+            interface_id: self.udev_iface.with_mask(Mask::Stub),
             msg_id: self.msg_id,
             function_id: None,
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         let device_description = Cch32String::decode_owned(src)?;
 
         ensure_size!(in: src, size: 4 /* HResult */);
         let hresult = src.read_u32();
 
         Ok(Self {
-            msg_id: header.msg_id,
-            udev_iface: header.interface_id,
+            msg_id,
+            udev_iface,
             device_description,
             hresult,
         })
@@ -678,8 +672,7 @@ pub struct TransferInRequest {
 impl TransferInRequest {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::TRANSFER_IN_REQUEST),
         }
@@ -721,7 +714,7 @@ impl TransferInRequest {
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* CbTsUrb */);
         let cb_ts_urb = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
 
@@ -731,8 +724,8 @@ impl TransferInRequest {
         let output_buffer_size = src.read_u32();
 
         let transfer_in_req = Self {
-            msg_id: header.msg_id,
-            udev_iface: header.interface_id,
+            msg_id,
+            udev_iface,
             ts_urb,
             output_buffer_size,
         };
@@ -788,14 +781,13 @@ pub struct TransferOutRequest {
 impl TransferOutRequest {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::TRANSFER_OUT_REQUEST),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         let ts_urb = {
             ensure_size!(in: src, size: 4 /* CbTsUrb */);
             let cb_ts_urb = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
@@ -808,8 +800,8 @@ impl TransferOutRequest {
         let output_buffer = src.read_slice(output_buffer_size).to_vec();
 
         Ok(Self {
-            msg_id: header.msg_id,
-            udev_iface: header.interface_id,
+            msg_id,
+            udev_iface,
             ts_urb,
             output_buffer,
         })
@@ -866,14 +858,13 @@ impl RetractDevice {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.udev_iface,
-            mask: Mask::StreamIdProxy,
+            interface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::RETRACT_DEVICE),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
 
         let reason = src.read_u32();
@@ -883,8 +874,8 @@ impl RetractDevice {
         }
 
         Ok(Self {
-            msg_id: header.msg_id,
-            udev_iface: header.interface_id,
+            msg_id,
+            udev_iface,
             reason: UsbRetractReason::BlockedByPolicy,
         })
     }

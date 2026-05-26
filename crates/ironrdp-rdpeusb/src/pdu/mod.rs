@@ -4,11 +4,13 @@
 //!
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a1004d0e-99e9-4968-894b-0b924ef2f125
 
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, invalid_field_err};
+use ironrdp_core::{
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
+};
 
 use crate::pdu::caps::{RimExchangeCapabilityRequest, RimExchangeCapabilityResponse};
 use crate::pdu::completion::{IoControlCompletion, UrbCompletion, UrbCompletionNoData};
-use crate::pdu::header::{FunctionId, InterfaceId, Mask, SharedMsgHeader};
+use crate::pdu::header::{FunctionId, InterfaceId, Mask, SharedMsgHeader, unpack};
 use crate::pdu::notify::ChannelCreated;
 use crate::pdu::sink::{AddDevice, AddVirtualChannel};
 use crate::pdu::usb_dev::{
@@ -19,6 +21,7 @@ use crate::pdu::usb_dev::{
 pub mod caps;
 pub mod completion;
 pub mod header;
+pub mod iface_manipulation;
 pub mod notify;
 pub mod sink;
 pub mod usb_dev;
@@ -39,16 +42,13 @@ pub enum UrbdrcServerPdu {
 }
 
 impl Decode<'_> for UrbdrcServerPdu {
-    // TODO: QI_RSP
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        let header = SharedMsgHeader::decode(src)?;
-        let f_id = header
-            .function_id
-            .ok_or_else(|| invalid_field_err!("SHARED_MSG_HEADER::FunctionId", "is absent"))?;
+        let header = SharedMsgHeader::decode_with_function_id(src)?;
+        let f_id = header.function_id.expect("missing function id");
 
-        match header.interface_id {
-            InterfaceId::CAPABILITIES => {
-                if f_id == FunctionId::RIM_EXCHANGE_CAPABILITY_REQUEST && header.mask == Mask::StreamIdNone {
+        match unpack(header.interface_id)? {
+            (InterfaceId::CAPABILITIES, Mask::None) => {
+                if f_id == FunctionId::RIM_EXCHANGE_CAPABILITY_REQUEST {
                     RimExchangeCapabilityRequest::decode(src, header).map(Self::Caps)
                 } else {
                     Err(invalid_field_err!(
@@ -57,8 +57,8 @@ impl Decode<'_> for UrbdrcServerPdu {
                     ))
                 }
             }
-            InterfaceId::NOTIFY_CLIENT => {
-                if f_id == FunctionId::CHANNEL_CREATED && header.mask == Mask::StreamIdProxy {
+            (InterfaceId::NOTIFY_CLIENT, Mask::Proxy) => {
+                if f_id == FunctionId::CHANNEL_CREATED {
                     ChannelCreated::decode(src, header).map(Self::ChanCreated)
                 } else {
                     Err(invalid_field_err!(
@@ -67,34 +67,33 @@ impl Decode<'_> for UrbdrcServerPdu {
                     ))
                 }
             }
-            InterfaceId::NOTIFY_SERVER | InterfaceId::DEVICE_SINK => Err(invalid_field_err!(
-                "SHARED_MSG_HEADER",
-                "reserved interface ID is not valid for server-to-client messages"
-            )),
-            _udev_iface => {
-                if header.mask != Mask::StreamIdProxy {
-                    return Err(invalid_field_err!(
-                        "SHARED_MSG_HEADER::Mask",
-                        "is not 0x1 (STREAM_ID_PROXY)"
-                    ));
+            (udev_iface, Mask::Proxy) => match f_id {
+                FunctionId::CANCEL_REQUEST => {
+                    CancelRequest::decode(src, header.msg_id, udev_iface).map(Self::CancelReq)
                 }
-                match f_id {
-                    FunctionId::CANCEL_REQUEST => CancelRequest::decode(src, header).map(Self::CancelReq),
-                    FunctionId::REGISTER_REQUEST_CALLBACK => {
-                        RegisterRequestCallback::decode(src, header).map(Self::RegReqCb)
-                    }
-                    FunctionId::IO_CONTROL => IoControl::decode(src, header).map(Self::IoCtl),
-                    FunctionId::INTERNAL_IO_CONTROL => InternalIoControl::decode(src, header).map(Self::InternalIoCtl),
-                    FunctionId::QUERY_DEVICE_TEXT => QueryDeviceText::decode(src, header).map(Self::DevText),
-                    FunctionId::TRANSFER_IN_REQUEST => TransferInRequest::decode(src, header).map(Self::TransferIn),
-                    FunctionId::TRANSFER_OUT_REQUEST => TransferOutRequest::decode(src, header).map(Self::TransferOut),
-                    FunctionId::RETRACT_DEVICE => RetractDevice::decode(src, header).map(Self::Retract),
-                    _ => Err(invalid_field_err!(
-                        "SHARED_MSG_HEADER::FunctionId",
-                        "unsupported function id for USB device interface"
-                    )),
+                FunctionId::REGISTER_REQUEST_CALLBACK => {
+                    RegisterRequestCallback::decode(src, header.msg_id, udev_iface).map(Self::RegReqCb)
                 }
-            }
+                FunctionId::IO_CONTROL => IoControl::decode(src, header.msg_id, udev_iface).map(Self::IoCtl),
+                FunctionId::INTERNAL_IO_CONTROL => {
+                    InternalIoControl::decode(src, header.msg_id, udev_iface).map(Self::InternalIoCtl)
+                }
+                FunctionId::QUERY_DEVICE_TEXT => {
+                    QueryDeviceText::decode(src, header.msg_id, udev_iface).map(Self::DevText)
+                }
+                FunctionId::TRANSFER_IN_REQUEST => {
+                    TransferInRequest::decode(src, header.msg_id, udev_iface).map(Self::TransferIn)
+                }
+                FunctionId::TRANSFER_OUT_REQUEST => {
+                    TransferOutRequest::decode(src, header.msg_id, udev_iface).map(Self::TransferOut)
+                }
+                FunctionId::RETRACT_DEVICE => RetractDevice::decode(src, header.msg_id, udev_iface).map(Self::Retract),
+                _ => Err(invalid_field_err!(
+                    "SHARED_MSG_HEADER::FunctionId",
+                    "unsupported function id for USB device interface"
+                )),
+            },
+            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header")),
         }
     }
 }
@@ -146,29 +145,22 @@ pub enum UrbdrcClientPdu {
 impl Decode<'_> for UrbdrcClientPdu {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = SharedMsgHeader::decode(src)?;
-        match header.interface_id {
-            InterfaceId::CAPABILITIES => {
-                if header.function_id.is_none() && header.mask == Mask::StreamIdNone {
-                    RimExchangeCapabilityResponse::decode(src, header).map(Self::Caps)
-                } else {
-                    Err(invalid_field_err!(
-                        "SHARED_MSG_HEADER",
-                        "invalid RIM_EXCHANGE_CAPABILITY_RESPONSE header"
-                    ))
-                }
+        ensure_size!(in: src, size: 4 /* function id */);
+
+        match unpack(header.interface_id)? {
+            (InterfaceId::CAPABILITIES, Mask::None) => {
+                RimExchangeCapabilityResponse::decode(src, header).map(Self::Caps)
             }
-            InterfaceId::DEVICE_SINK => match (header.function_id, header.mask) {
-                (Some(FunctionId::ADD_VIRTUAL_CHANNEL), Mask::StreamIdProxy) => {
-                    AddVirtualChannel::decode(src, header).map(Self::AddChan)
-                }
-                (Some(FunctionId::ADD_DEVICE), Mask::StreamIdProxy) => AddDevice::decode(src, header).map(Self::AddDev),
+            (InterfaceId::DEVICE_SINK, Mask::Proxy) => match FunctionId(src.read_u32()) {
+                FunctionId::ADD_VIRTUAL_CHANNEL => AddVirtualChannel::decode(src, header).map(Self::AddChan),
+                FunctionId::ADD_DEVICE => AddDevice::decode(src, header).map(Self::AddDev),
                 _ => Err(invalid_field_err!(
                     "SHARED_MSG_HEADER",
                     "invalid Device Sink interface header"
                 )),
             },
-            InterfaceId::NOTIFY_SERVER => {
-                if header.function_id == Some(FunctionId::CHANNEL_CREATED) && header.mask == Mask::StreamIdProxy {
+            (InterfaceId::NOTIFY_SERVER, Mask::Proxy) => {
+                if FunctionId(src.read_u32()) == FunctionId::CHANNEL_CREATED {
                     ChannelCreated::decode(src, header).map(Self::ChanCreated)
                 } else {
                     Err(invalid_field_err!(
@@ -177,26 +169,21 @@ impl Decode<'_> for UrbdrcClientPdu {
                     ))
                 }
             }
-            InterfaceId::NOTIFY_CLIENT => Err(invalid_field_err!(
-                "SHARED_MSG_HEADER",
-                "reserved interface ID is not valid for client-to-server messages"
-            )),
-            _id => match (header.function_id, header.mask) {
-                (None, Mask::StreamIdStub) => QueryDeviceTextRsp::decode(src, header).map(Self::DevTextRsp),
-                (Some(FunctionId::IOCONTROL_COMPLETION), Mask::StreamIdProxy) => {
-                    IoControlCompletion::decode(src, header).map(Self::IoctlComp)
+            (udev_iface, Mask::Stub) => QueryDeviceTextRsp::decode(src, header.msg_id, udev_iface).map(Self::DevTextRsp),
+            (udev_iface, Mask::Proxy) => match FunctionId(src.read_u32()) {
+                FunctionId::IOCONTROL_COMPLETION => {
+                    IoControlCompletion::decode(src, header.msg_id, udev_iface).map(Self::IoctlComp)
                 }
-                (Some(FunctionId::URB_COMPLETION), Mask::StreamIdProxy) => {
-                    UrbCompletion::decode(src, header).map(Self::UrbComp)
-                }
-                (Some(FunctionId::URB_COMPLETION_NO_DATA), Mask::StreamIdProxy) => {
-                    UrbCompletionNoData::decode(src, header).map(Self::UrbCompNoData)
+                FunctionId::URB_COMPLETION => UrbCompletion::decode(src, header.msg_id, udev_iface).map(Self::UrbComp),
+                FunctionId::URB_COMPLETION_NO_DATA => {
+                    UrbCompletionNoData::decode(src, header.msg_id, udev_iface).map(Self::UrbCompNoData)
                 }
                 _ => Err(invalid_field_err!(
                     "SHARED_MSG_HEADER::InterfaceId",
                     "unknown interface id"
                 )),
             },
+            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header")),
         }
     }
 }
