@@ -106,7 +106,7 @@ fn redirectclipboard_zero_disables_clipboard_for_default_mode() {
         &[],
     );
 
-    assert!(matches!(config.clipboard_type, ClipboardType::None));
+    assert!(matches!(config.clipboard_type, ClipboardType::Disable));
 }
 
 #[test]

@@ -42,14 +42,16 @@ pub struct Config {
 
 /// Resolved clipboard backend selection.
 ///
-/// The `Default` "use a sensible per-OS choice" variant deliberately does not exist here:
-/// it belongs to the CLI front-end, which resolves it before constructing a [`Config`].
+/// Platform-specific details (e.g., which native clipboard backend to use) are handled
+/// internally by the library when `Enable` is selected.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ClipboardType {
+    /// Enable clipboard redirection (use the best available backend).
+    Enable,
+    /// Disable clipboard redirection entirely.
+    Disable,
+    /// Use a stub clipboard backend (for testing or headless usage).
     Stub,
-    #[cfg(windows)]
-    Windows,
-    None,
 }
 
 

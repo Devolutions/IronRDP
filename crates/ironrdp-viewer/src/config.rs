@@ -22,15 +22,15 @@ const DEFAULT_HEIGHT: u16 = 1080;
 
 /// CLI selection for the clipboard backend.
 ///
-/// `Default` is resolved into one of the other variants (which then map into the library's
-/// [`ResolvedClipboardType`]) when the typed [`Config`] is built.
+/// Maps directly into the library's [`ResolvedClipboardType`] when the typed [`Config`] is built.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum ClipboardType {
-    Default,
+    /// Enable clipboard redirection (use the best available backend).
+    Enable,
+    /// Disable clipboard redirection entirely.
+    Disable,
+    /// Use a stub clipboard backend (for testing or headless usage).
     Stub,
-    #[cfg(windows)]
-    Windows,
-    None,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -257,7 +257,7 @@ struct Args {
     no_credssp: bool,
 
     /// The clipboard type
-    #[clap(long, value_enum, default_value_t = ClipboardType::Default)]
+    #[clap(long, value_enum, default_value_t = ClipboardType::Enable)]
     clipboard_type: ClipboardType,
 
     /// The bitmap codecs to use (remotefx:on, ...)
@@ -657,25 +657,14 @@ impl PartialConfig {
 }
 
 fn resolve_clipboard_type(cli: ClipboardType, redirect_clipboard: bool) -> ResolvedClipboardType {
+    if !redirect_clipboard {
+        return ResolvedClipboardType::Disable;
+    }
+
     match cli {
-        ClipboardType::Default => {
-            if !redirect_clipboard {
-                ResolvedClipboardType::None
-            } else {
-                #[cfg(windows)]
-                {
-                    ResolvedClipboardType::Windows
-                }
-                #[cfg(not(windows))]
-                {
-                    ResolvedClipboardType::None
-                }
-            }
-        }
+        ClipboardType::Enable => ResolvedClipboardType::Enable,
+        ClipboardType::Disable => ResolvedClipboardType::Disable,
         ClipboardType::Stub => ResolvedClipboardType::Stub,
-        #[cfg(windows)]
-        ClipboardType::Windows => ResolvedClipboardType::Windows,
-        ClipboardType::None => ResolvedClipboardType::None,
     }
 }
 

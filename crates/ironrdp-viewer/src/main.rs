@@ -59,18 +59,29 @@ fn main() -> anyhow::Result<()> {
             let factory = cliprdr.backend_factory();
             Some(factory)
         }
-        #[cfg(windows)]
-        ClipboardType::Windows => {
-            use ironrdp_cliprdr_native::WinClipboard;
-            use ironrdp_viewer::clipboard::ClientClipboardMessageProxy;
+        ClipboardType::Enable => {
+            #[cfg(windows)]
+            {
+                use ironrdp_cliprdr_native::WinClipboard;
+                use ironrdp_viewer::clipboard::ClientClipboardMessageProxy;
 
-            let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender.clone()))?;
+                let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender.clone()))?;
 
-            let factory = cliprdr.backend_factory();
-            _win_clipboard = cliprdr;
-            Some(factory)
+                let factory = cliprdr.backend_factory();
+                _win_clipboard = cliprdr;
+                Some(factory)
+            }
+            #[cfg(not(windows))]
+            {
+                // No native clipboard backend available on this platform; fall back to stub.
+                use ironrdp_cliprdr_native::StubClipboard;
+
+                let cliprdr = StubClipboard::new();
+                let factory = cliprdr.backend_factory();
+                Some(factory)
+            }
         }
-        _ => None,
+        ClipboardType::Disable => None,
     };
 
     let dvc_pipe_proxy_factory = DvcPipeProxyFactory::new(input_event_sender);
