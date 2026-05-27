@@ -751,10 +751,10 @@ impl GraphicsPipelineClient {
         // Decoded frame must be at least as large as the destination rectangle.
         // Larger is expected (macroblock alignment) and handled by cropping.
         // Smaller means the server sent mismatched dimensions.
-        if frame.width < u32::from(dest_width) || frame.height < u32::from(dest_height) {
+        if frame.width() < u32::from(dest_width) || frame.height() < u32::from(dest_height) {
             warn!(
-                frame_width = frame.width,
-                frame_height = frame.height,
+                frame_width = frame.width(),
+                frame_height = frame.height(),
                 dest_width,
                 dest_height,
                 "decoded frame smaller than destination rectangle"
@@ -762,7 +762,7 @@ impl GraphicsPipelineClient {
             return Err(pdu_other_err!("decoded frame smaller than destination rectangle"));
         }
 
-        let cropped_data = crop_decoded_frame(&frame.data, frame.width, frame.height, dest_width, dest_height);
+        let cropped_data = crop_decoded_frame(frame.data(), frame.width(), frame.height(), dest_width, dest_height);
 
         let update = BitmapUpdate {
             surface_id,
