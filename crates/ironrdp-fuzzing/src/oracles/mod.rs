@@ -314,6 +314,49 @@ pub fn pdu_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ClientAudioOutputPdu);
 }
 
+/// Round-trip oracle for `ironrdp-egfx` PDU types: `decode` → `encode_vec` → re-`decode`.
+///
+/// Same shape and property as [`pdu_round_trip`] but scoped to `ironrdp-egfx`'s
+/// own encoder surface. This is the egfx-scoped sibling of the `pdu_round_trip`
+/// oracle and the first target under the egfx fuzz-coverage umbrella tracked at
+/// the egfx-fuzz issue.
+///
+/// Coverage:
+///
+/// - `GfxPdu` is the top-level egfx command dispatch and transitively covers
+///   `WireToSurface1Pdu`, `WireToSurface2Pdu`, `SolidFillPdu`,
+///   `SurfaceToSurfacePdu`, `SurfaceToCachePdu`, `CacheToSurfacePdu`,
+///   `EvictCacheEntryPdu`, `CreateSurfacePdu`, `DeleteSurfacePdu`,
+///   `StartFramePdu`, `EndFramePdu`, `ResetGraphicsPdu`,
+///   `MapSurfaceToOutputPdu`, `MapSurfaceToWindowPdu`,
+///   `MapSurfaceToScaledOutputPdu`, `MapSurfaceToScaledWindowPdu`,
+///   `FrameAcknowledgePdu`, `QoeFrameAcknowledgePdu`,
+///   `DeleteEncodingContextPdu`, `CacheImportOfferPdu`, `CacheImportReplyPdu`.
+/// - `CapabilitiesAdvertisePdu` and `CapabilitiesConfirmPdu` exercise the
+///   capability-negotiation encoder surface (with `RawCapabilitySet` payloads
+///   post-#1305's wire/typed split).
+/// - `Avc420BitmapStream` and `Avc444BitmapStream` exercise the H.264 wire
+///   container encoder.
+///
+/// What this catches: same as `pdu_round_trip` — `unreachable!()` reached on
+/// decoder-accepted inputs, integer overflow / OOB in egfx encoders, panics
+/// in the decoder when fed encoder-produced bytes.
+///
+/// What this does NOT catch: the OpenH264 input-construction wrapper, ZGFX
+/// decompression, multi-frame H.264 state. Those are sibling targets in the
+/// egfx fuzz-coverage umbrella.
+pub fn egfx_round_trip(data: &[u8]) {
+    use ironrdp_egfx::pdu::{
+        Avc420BitmapStream, Avc444BitmapStream, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, GfxPdu,
+    };
+
+    pdu_round_trip_one!(data, GfxPdu);
+    pdu_round_trip_one!(data, CapabilitiesAdvertisePdu);
+    pdu_round_trip_one!(data, CapabilitiesConfirmPdu);
+    pdu_round_trip_one!(data, Avc420BitmapStream<'_>);
+    pdu_round_trip_one!(data, Avc444BitmapStream<'_>);
+}
+
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {
     let mut out = Vec::new();
 

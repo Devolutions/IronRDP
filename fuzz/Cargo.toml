@@ -90,3 +90,10 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "egfx_round_trip"
+path = "fuzz_targets/egfx_round_trip.rs"
+test = false
+doc = false
+bench = false
+
