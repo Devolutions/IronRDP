@@ -357,6 +357,88 @@ pub fn egfx_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, Avc444BitmapStream<'_>);
 }
 
+/// Multi-frame oracle for the EGFX graphics pipeline client.
+///
+/// H.264 decoding maintains reference-picture state, SPS/PPS context, and
+/// decoder configuration across frames; surface caching and codec dispatch
+/// state in egfx all carry forward across PDUs. Single-shot fuzzers cannot
+/// reach frame-to-frame state corruption because they construct a fresh
+/// decoder per iteration. This oracle constructs ONE `GraphicsPipelineClient`
+/// at iteration start and drives a sequence of `GfxPdu`s through it, exposing
+/// cross-PDU state to the fuzzer.
+///
+/// Harness shape: `Arbitrary`-derived `Vec<GfxPdu>` (each variant `Arbitrary`
+/// via the cascade in PR #1334). Each PDU is encoded back to wire bytes,
+/// wrapped in a single uncompressed ZGFX segment, and fed to the client's
+/// public `DvcProcessor::process` entry point. This exercises the same path
+/// production traffic takes: ZGFX decompress -> `GfxPdu` decode -> dispatch
+/// to per-variant handler -> state machine + surface cache update.
+///
+/// What this catches: panics or sanitizer reports along the dispatch + state
+/// machine path when fed adversarially-ordered or malformed-payload PDUs;
+/// inconsistent surface-cache state under attacker-controlled
+/// CreateSurface / DeleteSurface / Map* orderings; corrupted frame-id state
+/// from interleaved StartFrame / EndFrame / FrameAcknowledge sequences;
+/// ZGFX-wrapper integration bugs separate from the standalone ZGFX coverage
+/// in `egfx_zgfx_decompress`.
+///
+/// What this does NOT catch: cross-frame H.264 decoder state corruption.
+/// The client is constructed with `h264_decoder: None`, so H264-bearing
+/// PDUs (WireToSurface1 with AVC codecs) don't reach the H.264 decoder.
+/// The standalone `egfx_avc420_decode` and `egfx_avc444_decode` targets
+/// cover the H.264 wrapper. Wiring a real (or mock) H.264 decoder into
+/// this harness can be a follow-up if frame-to-frame H.264 state coverage
+/// surfaces as a gap.
+pub fn egfx_multi_frame(data: &[u8]) {
+    use arbitrary::{Arbitrary as _, Unstructured};
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::pdu::GfxPdu;
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+
+    /// No-op handler. Every callback default-impls in the trait, so the empty
+    /// struct gets all defaults for free. The handler exists to satisfy
+    /// `GraphicsPipelineClient::new`'s API; the fuzz oracle does not inspect
+    /// any of the dispatched events.
+    struct NoOpHandler;
+    impl GraphicsPipelineHandler for NoOpHandler {}
+
+    let mut unstructured = Unstructured::new(data);
+    let Ok(pdus) = Vec::<GfxPdu>::arbitrary(&mut unstructured) else {
+        return;
+    };
+
+    let mut client = GraphicsPipelineClient::new(Box::new(NoOpHandler), None);
+
+    // Initialise the channel state by invoking the DvcProcessor::start entry.
+    // The returned advertise message is discarded; the call's side effect is
+    // putting the client's internal state machine into its post-start state.
+    const FUZZ_CHANNEL_ID: u32 = 0;
+    let _ = client.start(FUZZ_CHANNEL_ID);
+
+    for pdu in pdus {
+        // Encode each PDU back to wire bytes so the client processes through
+        // the same decode + dispatch path real traffic takes. Skip PDUs whose
+        // encoder rejects the Arbitrary-generated values rather than aborting
+        // the iteration; the next PDU may still exercise interesting state.
+        let Ok(pdu_bytes) = encode_vec(&pdu) else {
+            continue;
+        };
+
+        // Wrap the encoded PDU in an uncompressed ZGFX segment so the client's
+        // ZGFX decompressor produces the PDU bytes unmodified. This bypasses
+        // the ZGFX decoder layer (covered separately by egfx_zgfx_decompress)
+        // and concentrates fuzz pressure on the dispatch + state machine.
+        let payload = wrap_uncompressed(&pdu_bytes);
+
+        // Errors and panics propagate to libFuzzer naturally; we discard the
+        // Result since the oracle's job is to surface bugs, not to enforce
+        // dispatcher semantics.
+        let _ = client.process(FUZZ_CHANNEL_ID, &payload);
+    }
+}
+
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {
     let mut out = Vec::new();
 
