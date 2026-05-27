@@ -338,9 +338,15 @@ enum RunState {
 }
 
 impl RdpServer {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "called via the builder; positional parameters are an internal detail"
+    // The lint only fires with the `egfx` feature on (8 args including
+    // `gfx_factory`); without it the parameter count is 7 and the lint
+    // is satisfied. `cfg_attr` keeps `#[expect]` strict in both modes.
+    #[cfg_attr(
+        feature = "egfx",
+        expect(
+            clippy::too_many_arguments,
+            reason = "called via the builder; positional parameters are an internal detail"
+        )
     )]
     pub fn new(
         opts: RdpServerOptions,
