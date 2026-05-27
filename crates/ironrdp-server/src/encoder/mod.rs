@@ -51,6 +51,9 @@ pub(crate) struct UpdateEncoderCodecs {
     qoi: Option<u8>,
     #[cfg(feature = "qoiz")]
     qoiz: Option<u8>,
+    /// `(codec_id, color_loss_level)` from the negotiated NsCodec capability.
+    #[cfg(feature = "nscodec")]
+    nscodec: Option<(u8, u8)>,
 }
 
 impl UpdateEncoderCodecs {
@@ -62,6 +65,8 @@ impl UpdateEncoderCodecs {
             qoi: None,
             #[cfg(feature = "qoiz")]
             qoiz: None,
+            #[cfg(feature = "nscodec")]
+            nscodec: None,
         }
     }
 
@@ -80,6 +85,14 @@ impl UpdateEncoderCodecs {
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn set_qoiz(&mut self, qoiz: Option<u8>) {
         self.qoiz = qoiz
+    }
+
+    /// Record the negotiated NsCodec codec id and color-loss level so the
+    /// encoder selection path can build an `NsCodecHandler` for this session.
+    #[cfg(feature = "nscodec")]
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    pub(crate) fn set_nscodec(&mut self, nscodec: Option<(u8, u8)>) {
+        self.nscodec = nscodec
     }
 }
 
@@ -128,6 +141,17 @@ impl UpdateEncoder {
                     remotefx: Some((algo, id)),
                     ..
                 } => BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size)),
+                // NSCodec is the lowest-priority codec because it predates
+                // RemoteFX and produces larger output. It's relevant mainly
+                // for clients (notably macOS Microsoft Remote Desktop /
+                // Windows App) whose legacy bitmap-codec list advertises
+                // only NSCodec — those clients would otherwise fall through
+                // to raw/RLE BitmapUpdate at much higher bandwidth.
+                #[cfg(feature = "nscodec")]
+                UpdateEncoderCodecs {
+                    nscodec: Some((id, cll)),
+                    ..
+                } => BitmapUpdater::NsCodec(NsCodecHandler::new(id, cll)),
                 _ => BitmapUpdater::None(NoneHandler),
             }
         } else {
@@ -431,6 +455,8 @@ enum BitmapUpdater {
     Qoi(QoiHandler),
     #[cfg(feature = "qoiz")]
     Qoiz(QoizHandler),
+    #[cfg(feature = "nscodec")]
+    NsCodec(NsCodecHandler),
 }
 
 impl BitmapUpdater {
@@ -443,6 +469,8 @@ impl BitmapUpdater {
             Self::Qoi(up) => up.handle(bitmap),
             #[cfg(feature = "qoiz")]
             Self::Qoiz(up) => up.handle(bitmap),
+            #[cfg(feature = "nscodec")]
+            Self::NsCodec(up) => up.handle(bitmap),
         }
     }
 
@@ -645,6 +673,38 @@ impl BitmapUpdateHandler for QoizHandler {
         }
 
         set_surface(bitmap, self.codec_id, outb.as_slice())
+    }
+}
+
+#[cfg(feature = "nscodec")]
+#[derive(Clone, Debug)]
+struct NsCodecHandler {
+    codec_id: u8,
+    color_loss_level: u8,
+}
+
+#[cfg(feature = "nscodec")]
+impl NsCodecHandler {
+    fn new(codec_id: u8, color_loss_level: u8) -> Self {
+        Self {
+            codec_id,
+            color_loss_level,
+        }
+    }
+}
+
+#[cfg(feature = "nscodec")]
+impl BitmapUpdateHandler for NsCodecHandler {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+        let data = ironrdp_nscodec::encoder::encode(
+            &bitmap.data,
+            bitmap.width.get(),
+            bitmap.height.get(),
+            bitmap.stride.get(),
+            bitmap.format,
+            self.color_loss_level,
+        );
+        set_surface(bitmap, self.codec_id, &data)
     }
 }
 

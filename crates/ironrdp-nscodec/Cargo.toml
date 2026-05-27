@@ -24,7 +24,7 @@ default = []
 encoder = ["dep:ironrdp-graphics"]
 
 [dependencies]
-ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.7", optional = true } # public when `encoder` is on
+ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.8", optional = true } # public when `encoder` is on
 
 [lints]
 workspace = true

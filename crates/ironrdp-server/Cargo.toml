@@ -23,6 +23,10 @@ rayon = ["dep:rayon"]
 qoi = ["dep:qoicoubeh", "ironrdp-pdu/qoi"]
 qoiz = ["dep:zstd-safe", "qoi", "ironrdp-pdu/qoiz"]
 egfx = ["dep:ironrdp-egfx"]
+# Opt-in NSCodec encoder. Off by default so consumers that don't need a legacy
+# bitmap codec fallback (e.g., RemoteFX-only or H.264-capable clients) don't
+# pay the extra build cost.
+nscodec = ["dep:ironrdp-nscodec"]
 
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
@@ -37,6 +41,7 @@ ironrdp-async = { path = "../ironrdp-async", version = "0.9" }
 ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.6" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.1", optional = true }
+ironrdp-nscodec = { path = "../ironrdp-nscodec", version = "0.1", optional = true, features = ["encoder"] }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.8" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.7" } # public
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.6" } # public

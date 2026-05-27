@@ -137,6 +137,14 @@ impl RdpServerOptions {
             .iter()
             .any(|codec| matches!(codec.property, CodecProperty::QoiZ))
     }
+
+    #[cfg(feature = "nscodec")]
+    fn has_nscodec(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::NsCodec(_)))
+    }
 }
 
 #[derive(Clone)]
@@ -1110,6 +1118,13 @@ impl RdpServer {
                                 for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
+                            }
+                            #[cfg(feature = "nscodec")]
+                            CodecProperty::NsCodec(client_ns) if self.opts.has_nscodec() => {
+                                // Re-use the client's confirmed color-loss
+                                // level so the server encodes at the same
+                                // shift the client decodes against.
+                                update_codecs.set_nscodec(Some((codec.id, client_ns.color_loss_level)));
                             }
                             CodecProperty::NsCodec(_) => (),
                             #[cfg(feature = "qoi")]
