@@ -44,6 +44,7 @@ const RESET_GRAPHICS_PDU_SIZE: usize = 340 - GfxPdu::FIXED_PART_SIZE;
 /// Display Pipeline Virtual Channel message (PDU prefixed with `RDPGFX_HEADER`)
 ///
 /// INVARIANTS: size of encoded inner PDU is always less than `u32::MAX - Self::FIXED_PART_SIZE`
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum GfxPdu {
@@ -312,6 +313,7 @@ impl<'de> Decode<'de> for GfxPdu {
 /// (one-past-end), matching FreeRDP and the Windows reference clients.
 ///
 /// [2.2.2.1]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/fb919fce-cc97-4d2b-8cf5-a737a00ef1a6>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WireToSurface1Pdu {
     pub surface_id: u16,
@@ -387,6 +389,7 @@ impl<'a> Decode<'a> for WireToSurface1Pdu {
 /// 2.2.2.2 RDPGFX_WIRE_TO_SURFACE_PDU_2
 ///
 /// [2.2.2.2]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/49ccafc7-e025-4293-9650-dcae1b7b9e84>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WireToSurface2Pdu {
     pub surface_id: u16,
@@ -463,6 +466,7 @@ impl<'a> Decode<'a> for WireToSurface2Pdu {
 /// 2.2.2.3 RDPGFX_DELETE_ENCODING_CONTEXT_PDU
 ///
 /// [2.2.2.3]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0dfc9708-847a-4bf0-829a-481e7b826d6d>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteEncodingContextPdu {
     pub surface_id: u16,
@@ -511,6 +515,7 @@ impl<'a> Decode<'a> for DeleteEncodingContextPdu {
 /// 2.2.2.4 RDPGFX_SOLID_FILL_PDU
 ///
 /// [2.2.2.4]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/d696ab07-fd47-42f6-a601-c8b6fae26577>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolidFillPdu {
     pub surface_id: u16,
@@ -574,6 +579,7 @@ impl<'a> Decode<'a> for SolidFillPdu {
 /// 2.2.2.5 RDPGFX_SURFACE_TO_SURFACE_PDU
 ///
 /// [2.2.2.5]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0b19d058-fff0-43e5-8671-8c4186d60529>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceToSurfacePdu {
     pub source_surface_id: u16,
@@ -640,6 +646,7 @@ impl<'a> Decode<'a> for SurfaceToSurfacePdu {
 /// 2.2.2.6 RDPGFX_SURFACE_TO_CACHE_PDU
 ///
 /// [2.2.2.6]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/01108b9f-a888-4e5c-b790-42d5c5985998>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceToCachePdu {
     pub surface_id: u16,
@@ -698,6 +705,7 @@ impl<'a> Decode<'a> for SurfaceToCachePdu {
 /// 2.2.2.7 RDPGFX_CACHE_TO_SURFACE_PDU
 ///
 /// [2.2.2.7]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/78c00bcd-f5cb-4c33-8d6c-f4cd50facfab>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheToSurfacePdu {
     pub cache_slot: u16,
@@ -757,6 +765,7 @@ impl<'de> Decode<'de> for CacheToSurfacePdu {
 /// 2.2.2.8 RDPGFX_EVICT_CACHE_ENTRY_PDU
 ///
 /// [2.2.2.8]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/9dd32c5c-fabc-497b-81be-776fa581a4f6>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvictCacheEntryPdu {
     pub cache_slot: u16,
@@ -799,6 +808,7 @@ impl<'a> Decode<'a> for EvictCacheEntryPdu {
 /// 2.2.2.9 RDPGFX_CREATE_SURFACE_PDU
 ///
 /// [2.2.2.9]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/9dd32c5c-fabc-497b-81be-776fa581a4f6>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateSurfacePdu {
     pub surface_id: u16,
@@ -855,6 +865,7 @@ impl<'a> Decode<'a> for CreateSurfacePdu {
 /// 2.2.2.10 RDPGFX_DELETE_SURFACE_PDU
 ///
 /// [2.2.2.10]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/8079ae0e-8775-4525-aaf5-ebeef913402c>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteSurfacePdu {
     pub surface_id: u16,
@@ -897,6 +908,7 @@ impl<'a> Decode<'a> for DeleteSurfacePdu {
 /// 2.2.2.11 RDPGFX_START_FRAME_PDU
 ///
 /// [2.2.2.11]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/9849fa1a-f896-4abe-9fd4-b7761f56b42c>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartFramePdu {
     pub timestamp: Timestamp,
@@ -945,6 +957,23 @@ pub struct Timestamp {
     pub seconds: u8,
     pub minutes: u8,
     pub hours: u16,
+}
+
+// Manual `Arbitrary` impl: the encoder packs the four fields into a single u32 via
+// `set_bits` (milliseconds: 10 bits, seconds: 6 bits, minutes: 6 bits, hours: 10 bits).
+// `derive(Arbitrary)` would generate the full `u8` / `u16` range, but `set_bits` panics
+// when the value exceeds the requested bit width. Mask each field to its wire-allowed
+// range so fuzz inputs always round-trip through `Encode`.
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for Timestamp {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            milliseconds: u.arbitrary::<u16>()? & 0x03FF, // 10 bits
+            seconds: u.arbitrary::<u8>()? & 0x3F,         // 6 bits
+            minutes: u.arbitrary::<u8>()? & 0x3F,         // 6 bits
+            hours: u.arbitrary::<u16>()? & 0x03FF,        // 10 bits
+        })
+    }
 }
 
 impl Timestamp {
@@ -1007,6 +1036,7 @@ impl<'a> Decode<'a> for Timestamp {
 /// 2.2.2.12 RDPGFX_END_FRAME_PDU
 ///
 /// [2.2.2.12]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/413b5449-efc7-429c-8764-fa8d005800d3>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndFramePdu {
     pub frame_id: u32,
@@ -1049,6 +1079,7 @@ impl<'a> Decode<'a> for EndFramePdu {
 /// 2.2.2.13 RDPGFX_FRAME_ACKNOWLEDGE_PDU
 ///
 /// [2.2.2.13]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0241e258-77ef-4a58-b426-5039ed6296ce>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameAcknowledgePdu {
     pub queue_depth: QueueDepth,
@@ -1099,6 +1130,7 @@ impl<'a> Decode<'a> for FrameAcknowledgePdu {
 }
 
 #[repr(u32)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum QueueDepth {
     Unavailable,
@@ -1127,6 +1159,7 @@ impl QueueDepth {
 /// 2.2.2.14 RDPGFX_RESET_GRAPHICS_PDU
 ///
 /// [2.2.2.14]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/60c8841c-3288-473b-82c3-340e24f51f98>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResetGraphicsPdu {
     pub width: u32,
@@ -1212,6 +1245,7 @@ impl<'a> Decode<'a> for ResetGraphicsPdu {
 /// 2.2.2.15 RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU
 ///
 /// [2.2.2.15]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/a1c6ff83-c385-4ad6-9437-f17697cc001c>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapSurfaceToOutputPdu {
     pub surface_id: u16,
@@ -1266,6 +1300,7 @@ impl<'a> Decode<'a> for MapSurfaceToOutputPdu {
 /// 2.2.2.16 RDPGFX_CACHE_IMPORT_OFFER_PDU
 ///
 /// [2.2.2.16]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/890f0077-dedb-4b22-8b20-ea69b9cfcacd>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheImportOfferPdu {
     pub cache_entries: Vec<CacheEntryMetadata>,
@@ -1316,6 +1351,7 @@ impl<'a> Decode<'a> for CacheImportOfferPdu {
 /// 2.2.2.17 RDPGFX_CACHE_IMPORT_REPLY_PDU
 ///
 /// [2.2.2.17]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0c4d88f8-50dc-465a-ab00-88a3fe0ec3c5>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheImportReplyPdu {
     pub cache_slots: Vec<u16>,
@@ -1367,6 +1403,7 @@ impl<'a> Decode<'a> for CacheImportReplyPdu {
 /// 2.2.2.16.1 RDPGFX_CACHE_ENTRY_METADATA
 ///
 /// [2.2.2.16.1]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/486dc290-96f9-4219-98c2-e371e23fa0d6>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheEntryMetadata {
     pub cache_key: u64,
@@ -1412,6 +1449,7 @@ impl<'a> Decode<'a> for CacheEntryMetadata {
 /// 2.2.2.18 RDPGFX_CAPS_ADVERTISE_PDU
 ///
 /// [2.2.2.18]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/9cc3cf56-148d-44bf-9dea-5f5e6970c00f>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilitiesAdvertisePdu(pub Vec<RawCapabilitySet>);
 
@@ -1467,6 +1505,7 @@ impl<'a> Decode<'a> for CapabilitiesAdvertisePdu {
 /// 2.2.2.19 RDPGFX_CAPS_CONFIRM_PDU
 ///
 /// [2.2.2.19]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/4d1ced69-49ea-47dd-98d6-4b220f30db36>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilitiesConfirmPdu(pub RawCapabilitySet);
 
@@ -1520,6 +1559,7 @@ impl<'a> Decode<'a> for CapabilitiesConfirmPdu {
 /// is known to this build.
 ///
 /// [2.2.1.6]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/82e6dd00-914d-4dcc-bd17-985e1268ffb7>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawCapabilitySet {
     pub version: CapabilityVersion,
@@ -1660,6 +1700,7 @@ impl<'de> Decode<'de> for RawCapabilitySet {
 ///
 /// Holds only versions this build knows how to interpret. Obtained from
 /// [`RawCapabilitySet::parsed`], which returns `None` for unknown versions.
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilitySet {
     V8 { flags: CapabilitiesV8Flags },
@@ -1744,6 +1785,7 @@ impl From<&CapabilitySet> for RawCapabilitySet {
 }
 
 /// Capability set version, as advertised in 2.2.1.6 RDPGFX_CAPSET.
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct CapabilityVersion(pub u32);
 
@@ -1792,6 +1834,7 @@ bitflags! {
     /// 2.2.3.1 RDPGFX_CAPSET_VERSION8
     ///
     /// [2.2.3.1] https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/027dd8eb-a066-42e8-ad65-2e0314c4dce5
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV8Flags: u32  {
         const THIN_CLIENT = 0x1;
@@ -1805,6 +1848,7 @@ bitflags! {
     /// 2.2.3.2 RDPGFX_CAPSET_VERSION81
     ///
     /// [2.2.3.2] https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/487e57cc-cd16-44c4-add8-60b84bf6d9e4
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV81Flags: u32  {
         const THIN_CLIENT = 0x01;
@@ -1819,6 +1863,7 @@ bitflags! {
     /// 2.2.3.3 RDPGFX_CAPSET_VERSION10
     ///
     /// [2.2.3.3] https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/d1899912-2b84-4e0d-9e6d-da0fd25d14bc
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV10Flags: u32 {
         const SMALL_CACHE = 0x02;
@@ -1842,6 +1887,7 @@ bitflags! {
     /// 2.2.3.6 RDPGFX_CAPSET_VERSION103
     ///
     /// [2.2.3.6] https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/a73e87d5-10c3-4d3f-b00c-fd5579570a0b
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV103Flags: u32  {
         const AVC_DISABLED = 0x20;
@@ -1855,6 +1901,7 @@ bitflags! {
     /// 2.2.3.7 RDPGFX_CAPSET_VERSION104
     ///
     /// [2.2.3.7] https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/be5ea8da-44db-478d-b55c-d42d82f11d26
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV104Flags: u32  {
         const SMALL_CACHE = 0x02;
@@ -1879,6 +1926,7 @@ bitflags! {
     /// 2.2.3.10 RDPGFX_CAPSET_VERSION107
     ///
     /// [2.2.3.10] https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/ba94595b-04de-4fbd-8ee4-89d8ff8f5cf1
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV107Flags: u32  {
         const SMALL_CACHE = 0x02;
@@ -1893,6 +1941,7 @@ bitflags! {
 /// 2.2.2.20 RDPGFX_MAP_SURFACE_TO_WINDOW_PDU
 ///
 /// [2.2.2.20]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/2ec1357c-ee65-4d9b-89f3-8fc49348c92a>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapSurfaceToWindowPdu {
     pub surface_id: u16,
@@ -1949,6 +1998,7 @@ impl<'a> Decode<'a> for MapSurfaceToWindowPdu {
 /// 2.2.2.21 RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU
 ///
 /// [2.2.2.21]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/17aaf205-23fe-467f-a629-447f428fdda0>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QoeFrameAcknowledgePdu {
     pub frame_id: u32,
@@ -2005,6 +2055,7 @@ impl<'a> Decode<'a> for QoeFrameAcknowledgePdu {
 /// 2.2.2.22 RDPGFX_MAP_SURFACE_TO_SCALED_OUTPUT_PDU
 ///
 /// [2.2.2.22]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/6fbddd3f-0a87-4e83-9936-eb3a46fdfdea>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapSurfaceToScaledOutputPdu {
     pub surface_id: u16,
@@ -2067,6 +2118,7 @@ impl<'a> Decode<'a> for MapSurfaceToScaledOutputPdu {
 /// 2.2.2.23 RDPGFX_MAP_SURFACE_TO_SCALED_WINDOW_PDU
 ///
 /// [2.2.2.23]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapSurfaceToScaledWindowPdu {
     pub surface_id: u16,
@@ -2129,6 +2181,7 @@ impl<'a> Decode<'a> for MapSurfaceToScaledWindowPdu {
 }
 
 #[repr(u16)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Codec1Type {
     Uncompressed = 0x0,
@@ -2167,6 +2220,7 @@ impl From<Codec1Type> for u16 {
 }
 
 #[repr(u16)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Codec2Type {
     RemoteFxProgressive = 0x9,

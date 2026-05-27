@@ -6,6 +6,7 @@ use ironrdp_pdu::{
 /// 2.2.1.1 RDPGFX_POINT16
 ///
 /// [2.2.1.1]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/dd4f5693-e2d1-470e-b3d1-e760a3134876>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Point {
     pub x: u16,
@@ -51,6 +52,7 @@ impl<'de> Decode<'de> for Point {
 /// 2.2.1.3 RDPGFX_COLOR32
 ///
 /// [2.2.1.3]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/8ea9699d-d511-4e16-b7d3-74d6fc0e0652>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Color {
     pub b: u8,
@@ -102,6 +104,7 @@ impl<'de> Decode<'de> for Color {
 /// 2.2.1.4 RDPGFX_PIXELFORMAT
 ///
 /// [2.2.1.4]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/80afb419-0cd5-49f8-8256-f77cc1787ec9>
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PixelFormat {
