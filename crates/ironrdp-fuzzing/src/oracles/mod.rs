@@ -391,6 +391,50 @@ pub fn egfx_avc420_decode(data: &[u8]) {
     }
 }
 
+/// AVC444 decode-side wrapper fuzz oracle.
+///
+/// Sibling of [`egfx_avc420_decode`]. Fuzzes the IronRDP wrapper layer between
+/// a wire `Avc444BitmapStream` and the consumer's `H264Decoder`. Targets the
+/// AVC-length-prefix to Annex-B conversion that runs on each of the two
+/// underlying `Avc420BitmapStream`s (luma plus optional chroma) per
+/// MS-RDPEGFX 2.2.4.4.
+///
+/// The oracle runs three paths on each input:
+///
+/// - Direct: call `avc_to_annex_b(data)` on the raw fuzz input. This
+///   exercises the wrapper on arbitrary byte distributions, including
+///   inputs that do not parse as `Avc444BitmapStream`.
+/// - Decode-chain path 1: try `Avc444BitmapStream::decode(data)`; on success
+///   call `avc_to_annex_b(stream.stream1.data)`. Stream 1 is the luma stream
+///   (or the combined luma-and-chroma stream when `encoding == LUMA_AND_CHROMA`).
+/// - Decode-chain path 2: when `stream.stream2.is_some()`, also call
+///   `avc_to_annex_b(stream2.data)`. Stream 2 carries the auxiliary chroma
+///   data per the tagged-encoding split.
+///
+/// What this catches: panics in the wrapper, OOM via attacker-controlled
+/// NAL length encoding inside either sub-stream, contract violations on the
+/// produced Annex-B byte stream that downstream H264Decoder callers rely on,
+/// and any framing slip in `Avc444BitmapStream::decode` that misallocates
+/// `stream1` vs `stream2` byte ranges.
+///
+/// What this does NOT catch: OpenH264 itself (covered by OSS-Fuzz), the
+/// post-OpenH264 YUV-to-RGBA conversion path in `OpenH264Decoder::decode`,
+/// the AVC444 luma plus chroma packing on the encoder side, or cross-stream
+/// state correlation (covered by a future multi-frame oracle).
+pub fn egfx_avc444_decode(data: &[u8]) {
+    use ironrdp_egfx::pdu::{Avc444BitmapStream, avc_to_annex_b};
+
+    let _ = avc_to_annex_b(data);
+
+    let mut cursor = ironrdp_core::ReadCursor::new(data);
+    if let Ok(stream) = ironrdp_core::decode_cursor::<Avc444BitmapStream<'_>>(&mut cursor) {
+        let _ = avc_to_annex_b(stream.stream1.data);
+        if let Some(ref stream2) = stream.stream2 {
+            let _ = avc_to_annex_b(stream2.data);
+        }
+    }
+}
+
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {
     let mut out = Vec::new();
 
