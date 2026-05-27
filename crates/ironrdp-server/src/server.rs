@@ -501,6 +501,18 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
+        // Per-connection state must start fresh: if the previous client
+        // disconnected while it had sent `SuppressOutput { None }` (e.g.,
+        // closed the mstsc window while minimized so the matching resume
+        // PDU never arrived), the flag would still read `true` here and
+        // the display backend would silently drop frames for the entire
+        // new session until/unless the new client happens to send a
+        // `RefreshRectangle` or `SuppressOutput { Some(rect) }`. Resetting
+        // here also covers backends that share an externally-created Arc
+        // via `set_display_suppressed_handle()` — they get the same
+        // per-connection clean slate.
+        self.display_suppressed.store(false, Ordering::Relaxed);
+
         let framed = TokioFramed::new(stream);
 
         let size = self.display.lock().await.size().await;
