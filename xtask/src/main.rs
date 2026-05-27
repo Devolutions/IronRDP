@@ -9,7 +9,6 @@ mod bin_version;
 mod check;
 mod clean;
 mod cli;
-mod cov;
 mod features;
 mod ffi;
 mod fuzz;
@@ -51,7 +50,6 @@ fn main() -> anyhow::Result<()> {
         Action::ShowHelp => cli::print_help(),
         Action::Bootstrap => {
             check::install(&sh)?;
-            cov::install(&sh)?;
             fuzz::install(&sh)?;
             wasm::install(&sh)?;
             web::install(&sh)?;
@@ -102,11 +100,6 @@ fn main() -> anyhow::Result<()> {
             check::lock_files(&sh)?;
         }
         Action::Clean => clean::workspace(&sh)?,
-        Action::CovGrcov => cov::grcov(&sh)?,
-        Action::CovInstall => cov::install(&sh)?,
-        Action::CovReportGitHub { repo, pr } => cov::report_github(&sh, &repo, pr)?,
-        Action::CovReport { html_report } => cov::report(&sh, html_report)?,
-        Action::CovUpdate => cov::update(&sh)?,
         Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
         Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
