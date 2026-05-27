@@ -224,45 +224,11 @@ mod openh264_impl {
                 annex_b_buffer: Vec::new(),
             })
         }
-
-        /// Convert AVC format (4-byte BE length prefix) to Annex B (start codes)
-        fn avc_to_annex_b(&mut self, data: &[u8]) {
-            self.annex_b_buffer.clear();
-            let mut offset = 0;
-
-            while offset + 4 <= data.len() {
-                let nal_len = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
-
-                #[expect(clippy::as_conversions, reason = "NAL length from wire format")]
-                let nal_len = nal_len as usize;
-                offset += 4;
-
-                // Use checked addition to prevent overflow on malicious input
-                let Some(end) = offset.checked_add(nal_len) else {
-                    warn!(nal_len, offset, "AVC NAL length overflow, discarding remaining data");
-                    break;
-                };
-                if end > data.len() {
-                    warn!(
-                        nal_len,
-                        offset,
-                        data_len = data.len(),
-                        "AVC NAL extends beyond buffer, discarding remaining data"
-                    );
-                    break;
-                }
-
-                // Annex B start code
-                self.annex_b_buffer.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-                self.annex_b_buffer.extend_from_slice(&data[offset..offset + nal_len]);
-                offset += nal_len;
-            }
-        }
     }
 
     impl H264Decoder for OpenH264Decoder {
         fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
-            self.avc_to_annex_b(data);
+            crate::pdu::avc_to_annex_b_into(data, &mut self.annex_b_buffer);
 
             let yuv = self
                 .decoder
