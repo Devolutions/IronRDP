@@ -338,6 +338,10 @@ enum RunState {
 }
 
 impl RdpServer {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "called via the builder; positional parameters are an internal detail"
+    )]
     pub fn new(
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
@@ -346,6 +350,7 @@ impl RdpServer {
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
+        display_suppressed: Option<Arc<AtomicBool>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -376,7 +381,7 @@ impl RdpServer {
             local_addr: None,
             autodetect: None,
             connection_handler,
-            display_suppressed: Arc::new(AtomicBool::new(false)),
+            display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
         }
     }
 
@@ -409,22 +414,16 @@ impl RdpServer {
     /// debounce transient flaps (some clients pulse this PDU under wire
     /// pressure on heavy CPU/IO loads) — e.g., only engage the gate once
     /// the flag has been steady-`true` for ~1 s.
+    ///
+    /// The display backend typically needs to share this flag with the
+    /// server before any client connects (so the same `Arc` is read by
+    /// the backend's polling thread and written by the per-connection
+    /// PDU handler). To inject the shared instance at construction time,
+    /// use [`RdpServerBuilder::with_display_suppressed_handle`](crate::RdpServerBuilder::with_display_suppressed_handle).
+    ///
+    /// [crate::RdpServerBuilder]: crate::RdpServerBuilder
     pub fn display_suppressed_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.display_suppressed)
-    }
-
-    /// Replace the server's "display suppressed" flag with one the caller
-    /// already shared with the display backend before the server was
-    /// constructed.
-    ///
-    /// Use this when the display backend needs to read the same flag the
-    /// per-connection PDU handler writes to: create one `Arc<AtomicBool>`
-    /// in the application, hand a clone to the display, then call this to
-    /// swap the server's internal default for that shared instance. Must
-    /// be called before any client connects (the flag is read by every
-    /// per-connection task; replacing it mid-session is racy).
-    pub fn set_display_suppressed_handle(&mut self, handle: Arc<AtomicBool>) {
-        self.display_suppressed = handle;
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
