@@ -74,10 +74,9 @@ impl Encode for InterfaceRelease {
 
 /// [\[MS-RDPEXPS\] 2.2.2.1.1 Query Interface Request (QI_REQ)][1] message.
 ///
-/// Asks the receiver whether it supports the interface identified by
-/// [`new_interface_guid`](Self::new_interface_guid). Per [MS-RDPEXPS § 3.1.5.2.1.1] the server
-/// MUST NOT send `QI_REQ`; MS-RDPEUSB inherits this restriction. We decode incoming `QI_REQ` for
-/// ecosystem tolerance and answer with a failure [`QueryInterfaceFailureResponse`].
+/// Request a new interface ID. Per [MS-RDPEXPS § 3.1.5.2.1.1] the server MUST NOT send `QI_REQ`;
+/// MS-RDPEUSB inherits this restriction. We decode incoming `QI_REQ` for ecosystem tolerance and
+/// answer with a failure [`QueryInterfaceFailureResponse`].
 ///
 /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpexps/10757445-d7dd-4602-b75f-772540c01a5d
 #[doc(alias = "QI_REQ")]

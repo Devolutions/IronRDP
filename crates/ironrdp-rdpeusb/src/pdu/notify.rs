@@ -13,7 +13,7 @@ use ironrdp_core::{
     unsupported_value_err,
 };
 
-use crate::pdu::header::{unpack, FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
+use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader, unpack};
 
 /// [\[MS-RDPEUSB\] 2.2.5.1 Channel Created Message (CHANNEL_CREATED)][1] packet.
 ///
