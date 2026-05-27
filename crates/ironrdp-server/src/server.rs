@@ -1,4 +1,5 @@
 use core::net::SocketAddr;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
+use ironrdp_dvc as dvc;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
@@ -19,6 +21,7 @@ pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
+use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
@@ -28,7 +31,6 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, trace, warn};
-use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
 use crate::autodetect::{AutoDetectManager, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
@@ -291,6 +293,17 @@ pub struct RdpServer {
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
+    /// True while the client has sent `SuppressOutput { desktop_rect: None }`
+    /// — the standard RDP "I don't need display updates right now" signal
+    /// (mstsc raises it on window minimize). Cleared on
+    /// `SuppressOutput { Some(rect) }` or `RefreshRectangle` (sent on
+    /// refocus). Exposed via [`Self::display_suppressed_handle`] so display
+    /// backends can hold a clone and skip frame emission while it's set —
+    /// without this, a server keeps streaming high-bitrate
+    /// EGFX/H.264 frames into a minimized client, which accumulates them
+    /// and locks up its input dispatch for seconds on refocus while it
+    /// chews through the backlog.
+    display_suppressed: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -325,6 +338,16 @@ enum RunState {
 }
 
 impl RdpServer {
+    // The lint only fires with the `egfx` feature on (8 args including
+    // `gfx_factory`); without it the parameter count is 7 and the lint
+    // is satisfied. `cfg_attr` keeps `#[expect]` strict in both modes.
+    #[cfg_attr(
+        feature = "egfx",
+        expect(
+            clippy::too_many_arguments,
+            reason = "called via the builder; positional parameters are an internal detail"
+        )
+    )]
     pub fn new(
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
@@ -333,6 +356,7 @@ impl RdpServer {
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
+        display_suppressed: Option<Arc<AtomicBool>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -363,6 +387,7 @@ impl RdpServer {
             local_addr: None,
             autodetect: None,
             connection_handler,
+            display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
         }
     }
 
@@ -372,6 +397,39 @@ impl RdpServer {
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Returns the shared "display suppressed" flag — `true` while the
+    /// connected client has sent `SuppressOutput { desktop_rect: None }`
+    /// (e.g., mstsc minimized).
+    ///
+    /// Display backends should hold a clone of this `Arc` and skip frame
+    /// emission while it's set, so the client doesn't accumulate a backlog
+    /// of frames it can't present until refocus. Cleared by the per-
+    /// connection PDU handler on `SuppressOutput { Some(rect) }` or
+    /// `RefreshRectangle`.
+    ///
+    /// **Caveat:** some clients (notably mstsc) send
+    /// `SuppressOutput { desktop_rect: None }` during their connect
+    /// handshake *before* their display surface is fully initialized; a
+    /// backend that honors the flag blindly will block that first frame
+    /// and leave the client with a half-initialized surface that doesn't
+    /// recover on un-suppress (visible as a frozen desktop on first
+    /// connect). Backends are advised to defer acting on the flag until
+    /// after the first frame has been delivered to the client, and to
+    /// debounce transient flaps (some clients pulse this PDU under wire
+    /// pressure on heavy CPU/IO loads) — e.g., only engage the gate once
+    /// the flag has been steady-`true` for ~1 s.
+    ///
+    /// The display backend typically needs to share this flag with the
+    /// server before any client connects (so the same `Arc` is read by
+    /// the backend's polling thread and written by the per-connection
+    /// PDU handler). To inject the shared instance at construction time,
+    /// use [`RdpServerBuilder::with_display_suppressed_handle`](crate::RdpServerBuilder::with_display_suppressed_handle).
+    ///
+    /// [crate::RdpServerBuilder]: crate::RdpServerBuilder
+    pub fn display_suppressed_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.display_suppressed)
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
@@ -460,6 +518,18 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
+        // Per-connection state must start fresh: if the previous client
+        // disconnected while it had sent `SuppressOutput { None }` (e.g.,
+        // closed the mstsc window while minimized so the matching resume
+        // PDU never arrived), the flag would still read `true` here and
+        // the display backend would silently drop frames for the entire
+        // new session until/unless the new client happens to send a
+        // `RefreshRectangle` or `SuppressOutput { Some(rect) }`. Resetting
+        // here also covers backends that share an externally-created Arc
+        // via `set_display_suppressed_handle()` — they get the same
+        // per-connection clean slate.
+        self.display_suppressed.store(false, Ordering::Relaxed);
+
         let framed = TokioFramed::new(stream);
 
         let size = self.display.lock().await.size().await;
@@ -1152,6 +1222,35 @@ impl RdpServer {
                         } else {
                             trace!(seq = response.sequence_number(), "Unmatched auto-detect response");
                         }
+                    }
+                }
+
+                // Client requests the server stop or resume sending display
+                // updates. mstsc sends `desktop_rect: None` on minimize and
+                // `desktop_rect: Some(rect)` on refocus. Without honoring
+                // this, the server keeps streaming high-bitrate EGFX/H.264
+                // frames into a minimized client; on refocus the client
+                // must chew through the accumulated backlog before it can
+                // present the current frame, locking up its input dispatch
+                // for seconds. Flagging the shared `display_suppressed`
+                // lets the display backend skip frame emission while it's
+                // set.
+                rdp::headers::ShareDataPdu::SuppressOutput(pdu) => {
+                    let suppress = pdu.desktop_rect.is_none();
+                    self.display_suppressed.store(suppress, Ordering::Relaxed);
+                    debug!(suppress, "client suppress-output state changed");
+                }
+
+                // Client asks the server to redraw a rectangle — typical on
+                // refocus after a minimize. Clear the suppress flag so the
+                // backend resumes emission and treat this as "client wants
+                // updates again." (The flag would also be cleared by the
+                // `SuppressOutput { Some(rect) }` that usually accompanies
+                // this; clearing here is belt-and-braces against clients
+                // that send only one of the two.)
+                rdp::headers::ShareDataPdu::RefreshRectangle(_) => {
+                    if self.display_suppressed.swap(false, Ordering::Relaxed) {
+                        debug!("client RefreshRectangle cleared suppress-output state");
                     }
                 }
 

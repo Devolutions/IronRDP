@@ -1,4 +1,6 @@
 use core::net::SocketAddr;
+use core::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use anyhow::Result;
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, server_codecs_capabilities};
@@ -37,6 +39,7 @@ pub struct BuilderDone {
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
+    display_suppressed: Option<Arc<AtomicBool>>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -134,6 +137,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
+                display_suppressed: None,
             },
         }
     }
@@ -152,6 +156,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
+                display_suppressed: None,
             },
         }
     }
@@ -198,6 +203,26 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Share the server's "display suppressed" flag with the display
+    /// backend before construction.
+    ///
+    /// The flag is `true` while the connected client has sent
+    /// `SuppressOutput { desktop_rect: None }` (e.g., mstsc minimized).
+    /// Display backends that want to skip frame emission while the
+    /// client is minimized create one `Arc<AtomicBool>` in the
+    /// application, hand a clone to the display, and pass the same
+    /// `Arc` here so the server's per-connection PDU handler writes to
+    /// the same instance the backend reads.
+    ///
+    /// When this is not called, the server allocates its own internal
+    /// flag (still readable via [`RdpServer::display_suppressed_handle`])
+    /// — useful when the backend can call `display_suppressed_handle()`
+    /// after construction to obtain a handle, rather than sharing one in.
+    pub fn with_display_suppressed_handle(mut self, handle: Arc<AtomicBool>) -> Self {
+        self.state.display_suppressed = Some(handle);
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         RdpServer::new(
             RdpServerOptions {
@@ -213,6 +238,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
+            self.state.display_suppressed,
         )
     }
 }
