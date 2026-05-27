@@ -397,6 +397,18 @@ impl RdpServer {
     /// of frames it can't present until refocus. Cleared by the per-
     /// connection PDU handler on `SuppressOutput { Some(rect) }` or
     /// `RefreshRectangle`.
+    ///
+    /// **Caveat:** some clients (notably mstsc) send
+    /// `SuppressOutput { desktop_rect: None }` during their connect
+    /// handshake *before* their display surface is fully initialized; a
+    /// backend that honors the flag blindly will block that first frame
+    /// and leave the client with a half-initialized surface that doesn't
+    /// recover on un-suppress (visible as a frozen desktop on first
+    /// connect). Backends are advised to defer acting on the flag until
+    /// after the first frame has been delivered to the client, and to
+    /// debounce transient flaps (some clients pulse this PDU under wire
+    /// pressure on heavy CPU/IO loads) — e.g., only engage the gate once
+    /// the flag has been steady-`true` for ~1 s.
     pub fn display_suppressed_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.display_suppressed)
     }
