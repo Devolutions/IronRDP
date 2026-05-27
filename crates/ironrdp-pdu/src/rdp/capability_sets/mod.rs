@@ -444,6 +444,7 @@ impl Encode for CapabilitySet {
                     CapabilitySet::DrawGdiPlus(buffer) => (CapabilitySetType::DrawGdiPlus, buffer),
                     CapabilitySet::Rail(buffer) => (CapabilitySetType::Rail, buffer),
                     CapabilitySet::WindowList(buffer) => (CapabilitySetType::WindowList, buffer),
+                    CapabilitySet::BitmapCacheV3(buffer) => (CapabilitySetType::BitmapCacheV3CodecID, buffer),
                     _ => unreachable!(),
                 };
 
