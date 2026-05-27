@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteBuf, WriteCursor, cast_length, decode,
     ensure_fixed_part_size, ensure_size, invalid_field_err, not_enough_bytes_err, other_err, read_padding,
-    write_padding,
+    unsupported_value_err, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
@@ -154,14 +154,38 @@ pub struct ShareDataCtx {
     pub pdu: ShareDataPdu,
 }
 
+/// Format an unexpected `ShareControlPdu` for error context.
+///
+/// Drills into the `Data` wrapper to surface the inner `ShareDataPdu` variant
+/// name; for `ServerSetErrorInfo` the `ErrorInfo` description is appended so
+/// callers can see *why* the server rejected the session without resorting to
+/// substring matching on the `Reason` string.
+pub fn describe_unexpected_share_control_pdu(pdu: &ShareControlPdu) -> String {
+    let ShareControlPdu::Data(header) = pdu else {
+        return pdu.as_short_name().to_owned();
+    };
+
+    let inner = &header.share_data_pdu;
+    if let ShareDataPdu::ServerSetErrorInfo(payload) = inner {
+        format!(
+            "Data PDU wrapping {} ({})",
+            inner.as_short_name(),
+            payload.0.description(),
+        )
+    } else {
+        format!("Data PDU wrapping {}", inner.as_short_name())
+    }
+}
+
 /// Decodes a [`ShareDataHeader`] from the user data of a Send Data Indication.
 pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<ShareDataCtx> {
     let ctx = decode_share_control(ctx)?;
 
     let ShareControlPdu::Data(share_data_header) = ctx.pdu else {
-        return Err(other_err!(
+        return Err(unsupported_value_err!(
             "decode_share_data",
-            "received unexpected Share Control PDU (expected Data PDU)"
+            "Share Control PDU (expected Data PDU)",
+            describe_unexpected_share_control_pdu(&ctx.pdu)
         ));
     };
 
@@ -225,9 +249,10 @@ pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<IoChann
 
             Ok(IoChannelPdu::Data(share_data_ctx))
         }
-        _ => Err(other_err!(
+        other => Err(unsupported_value_err!(
             "decode_io_channel",
-            "received unexpected Share Control PDU (expected Data PDU or Server Deactivate All PDU)"
+            "Share Control PDU (expected Data PDU or Server Deactivate All PDU)",
+            describe_unexpected_share_control_pdu(&other)
         )),
     }
 }
@@ -852,15 +877,14 @@ impl Encode for ServerDeactivateAll {
 mod tests {
     use std::borrow::Cow;
 
-    use crate::mcs::{McsMessage, SendDataIndication};
-    use crate::x224::X224;
-    use ironrdp_core::{decode, encode_vec};
+    use ironrdp_core::encode_vec;
 
-    use super::{
-        CompressionFlags, PADDING_FIELD_SIZE, PDU_TYPE_FIELD_SIZE, SHARE_CONTROL_HEADER_SIZE, STREAM_ID_FIELD_SIZE,
-        ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, ShareDataPduType, StreamPriority,
-        UNCOMPRESSED_LENGTH_FIELD_SIZE, decode_share_data,
-    };
+    use crate::mcs::{McsMessage, SendDataIndication};
+    use crate::rdp::client_info::CompressionType;
+    use crate::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
+    use crate::x224::X224;
+
+    use super::*;
 
     fn zero_length_empty_data_pdu(pdu_type: u8) -> [u8; 18] {
         [
@@ -930,7 +954,7 @@ mod tests {
                 share_data_pdu: ShareDataPdu::ShutdownRequest,
                 stream_priority: StreamPriority::Medium,
                 compression_flags: CompressionFlags::empty(),
-                compression_type: crate::rdp::client_info::CompressionType::K64,
+                compression_type: CompressionType::K64,
             }),
             pdu_source: 1002,
             share_id: 1,
@@ -943,8 +967,8 @@ mod tests {
             + STREAM_ID_FIELD_SIZE
             + UNCOMPRESSED_LENGTH_FIELD_SIZE
             + PDU_TYPE_FIELD_SIZE;
-        user_data[COMPRESSION_CONTROL_OFFSET] = (CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED).bits()
-            | crate::rdp::client_info::CompressionType::K64.as_u8();
+        user_data[COMPRESSION_CONTROL_OFFSET] =
+            (CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED).bits() | CompressionType::K64.as_u8();
         let frame = encode_vec(&X224(McsMessage::SendDataIndication(SendDataIndication {
             initiator_id: 1002,
             channel_id: 1003,
@@ -959,10 +983,7 @@ mod tests {
             share_data_ctx.compression_flags,
             CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED
         );
-        assert_eq!(
-            share_data_ctx.compression_type,
-            crate::rdp::client_info::CompressionType::K64
-        );
+        assert_eq!(share_data_ctx.compression_type, CompressionType::K64);
         assert!(matches!(
             share_data_ctx.pdu,
             ShareDataPdu::Compressed {
@@ -970,5 +991,45 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn wrap_in_data(inner: ShareDataPdu) -> ShareControlPdu {
+        ShareControlPdu::Data(ShareDataHeader {
+            share_data_pdu: inner,
+            stream_priority: StreamPriority::Medium,
+            compression_flags: CompressionFlags::empty(),
+            compression_type: CompressionType::K8,
+        })
+    }
+
+    #[test]
+    fn non_data_variant_uses_outer_short_name() {
+        let pdu = ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll);
+        assert_eq!(describe_unexpected_share_control_pdu(&pdu), "Server Deactivate All PDU");
+    }
+
+    #[test]
+    fn data_wrapping_non_set_error_info_surfaces_inner_short_name() {
+        let pdu = wrap_in_data(ShareDataPdu::Update(Vec::new()));
+        assert_eq!(
+            describe_unexpected_share_control_pdu(&pdu),
+            "Data PDU wrapping Update PDU"
+        );
+    }
+
+    #[test]
+    fn data_wrapping_set_error_info_surfaces_description() {
+        let error = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerDeniedConnection);
+        let pdu = wrap_in_data(ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error)));
+        let described = describe_unexpected_share_control_pdu(&pdu);
+
+        assert!(
+            described.starts_with("Data PDU wrapping Server Set Error Info PDU ("),
+            "unexpected prefix: {described}",
+        );
+        assert!(
+            described.contains("Protocol independent error"),
+            "missing error category in description: {described}",
+        );
     }
 }
