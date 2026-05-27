@@ -147,7 +147,7 @@ impl Sequence for ConnectionActivationSequence {
                     return Err(reason_err!(
                         "ConnectionActivation::CapabilitiesExchange",
                         "unexpected Share Control PDU during capabilities exchange: got {} (expected Server Demand Active PDU)",
-                        share_control_ctx.pdu.as_short_name(),
+                        legacy::describe_unexpected_share_control_pdu(&share_control_ctx.pdu),
                     ));
                 };
 

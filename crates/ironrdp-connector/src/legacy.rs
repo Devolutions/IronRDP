@@ -145,6 +145,29 @@ pub struct ShareDataCtx {
     pub pdu: rdp::headers::ShareDataPdu,
 }
 
+/// Format an unexpected `ShareControlPdu` for error context.
+///
+/// Drills into the `Data` wrapper to surface the inner `ShareDataPdu` variant
+/// name; for `ServerSetErrorInfo` the `ErrorInfo` description is appended so
+/// callers can see *why* the server rejected the session without resorting to
+/// substring matching on the `Reason` string.
+pub(crate) fn describe_unexpected_share_control_pdu(pdu: &rdp::headers::ShareControlPdu) -> String {
+    let rdp::headers::ShareControlPdu::Data(header) = pdu else {
+        return pdu.as_short_name().to_owned();
+    };
+
+    let inner = &header.share_data_pdu;
+    if let rdp::headers::ShareDataPdu::ServerSetErrorInfo(payload) = inner {
+        format!(
+            "Data PDU wrapping {} ({})",
+            inner.as_short_name(),
+            payload.0.description(),
+        )
+    } else {
+        format!("Data PDU wrapping {}", inner.as_short_name())
+    }
+}
+
 pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<ShareDataCtx> {
     let ctx = decode_share_control(ctx)?;
 
@@ -152,7 +175,7 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<Shar
         return Err(reason_err!(
             "decode_share_data",
             "received unexpected Share Control PDU: got {} (expected Data PDU)",
-            ctx.pdu.as_short_name(),
+            describe_unexpected_share_control_pdu(&ctx.pdu),
         ));
     };
 
@@ -215,7 +238,58 @@ pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<IoCh
         other => Err(reason_err!(
             "decode_io_channel",
             "received unexpected Share Control PDU: got {} (expected Data PDU or Server Deactivate All PDU)",
-            other.as_short_name(),
+            describe_unexpected_share_control_pdu(&other),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_pdu::rdp::client_info::CompressionType;
+    use ironrdp_pdu::rdp::headers::{
+        CompressionFlags, ServerDeactivateAll, ShareControlPdu, ShareDataHeader, ShareDataPdu, StreamPriority,
+    };
+    use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+
+    use super::describe_unexpected_share_control_pdu;
+
+    fn wrap_in_data(inner: ShareDataPdu) -> ShareControlPdu {
+        ShareControlPdu::Data(ShareDataHeader {
+            share_data_pdu: inner,
+            stream_priority: StreamPriority::Medium,
+            compression_flags: CompressionFlags::empty(),
+            compression_type: CompressionType::K8,
+        })
+    }
+
+    #[test]
+    fn non_data_variant_uses_outer_short_name() {
+        let pdu = ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll);
+        assert_eq!(describe_unexpected_share_control_pdu(&pdu), "Server Deactivate All PDU");
+    }
+
+    #[test]
+    fn data_wrapping_non_set_error_info_surfaces_inner_short_name() {
+        let pdu = wrap_in_data(ShareDataPdu::Update(Vec::new()));
+        assert_eq!(
+            describe_unexpected_share_control_pdu(&pdu),
+            "Data PDU wrapping Update PDU"
+        );
+    }
+
+    #[test]
+    fn data_wrapping_set_error_info_surfaces_description() {
+        let error = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerDeniedConnection);
+        let pdu = wrap_in_data(ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error)));
+        let described = describe_unexpected_share_control_pdu(&pdu);
+
+        assert!(
+            described.starts_with("Data PDU wrapping Server Set Error Info PDU ("),
+            "unexpected prefix: {described}",
+        );
+        assert!(
+            described.contains("Protocol independent error"),
+            "missing error category in description: {described}",
+        );
     }
 }
