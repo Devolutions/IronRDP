@@ -7,6 +7,15 @@
   ],
   "description": "RDP backend for iron-remote-desktop",
   "version": "0.7.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Devolutions/IronRDP.git"
+  },
+  "homepage": "https://github.com/Devolutions/IronRDP",
+  "bugs": {
+    "url": "https://github.com/Devolutions/IronRDP/issues"
+  },
+  "license": "MIT OR Apache-2.0",
   "main": "iron-remote-desktop-rdp.js",
   "types": "index.d.ts",
   "files": [
