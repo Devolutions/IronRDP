@@ -8,8 +8,8 @@ use alloc::format;
 use alloc::vec::Vec;
 
 use ironrdp_core::{
-    DecodeError, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size,
-    ensure_size, invalid_field_err, other_err, unsupported_value_err,
+    DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
+    invalid_field_err, other_err, unsupported_value_err,
 };
 use ironrdp_str::prefixed::Cch32String;
 
@@ -109,12 +109,15 @@ impl RegisterRequestCallback {
             0x0 => None,
             _ => {
                 ensure_size!(in: src, size: InterfaceId::FIXED_PART_SIZE);
-                let interface = InterfaceId::try_from(src.read_u32()).map_err(|source| {
-                    let e: DecodeError =
-                        invalid_field_err!("REGISTER_REQUEST_CALLBACK::RequestCompletion", "more than 30 bits");
-                    e.with_source(source)
-                })?;
-                Some(interface)
+                match src.read_u32() {
+                    0x0..=0x3 => {
+                        return Err(invalid_field_err!(
+                            "RequestCompletion",
+                            "conflict with default interfaces"
+                        ));
+                    }
+                    value => Some(InterfaceId::try_from(value)?),
+                }
             }
         };
         Ok(Self {
@@ -221,6 +224,7 @@ impl IoControl {
         let input_buffer_size = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
         ensure_size!(in: src,
             size: input_buffer_size /* InputBuffer */ + 4 /* OutputBufferSize */ + 4 /* RequestId */);
+        // TODO: size limit
         let input_buffer = src.read_slice(input_buffer_size).to_vec();
         let output_buffer_size = src.read_u32();
         let req_id = src.read_u32();
@@ -499,7 +503,7 @@ impl Encode for InternalIoControl {
 pub struct QueryDeviceText {
     pub msg_id: MessageId,
     pub udev_iface: InterfaceId,
-    pub text_type: DeviceTextType,
+    pub text_type: u32,
     // TODO: Find out if MS-LCID and USB language ID's are same
     pub locale_id: u32,
 }
@@ -520,16 +524,7 @@ impl QueryDeviceText {
     pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
 
-        let text_type = match src.read_u32() {
-            0 => DeviceTextType::Description,
-            1 => DeviceTextType::LocationInformation,
-            value => {
-                return Err(unsupported_value_err!(
-                    "QUERY_DEVICE_TEXT::TextType",
-                    format!("{value}")
-                ));
-            }
-        };
+        let text_type = src.read_u32();
         let locale_id = src.read_u32();
 
         Ok(Self {
@@ -546,8 +541,7 @@ impl Encode for QueryDeviceText {
         ensure_fixed_part_size!(in: dst);
 
         self.header().encode(dst)?;
-        #[expect(clippy::as_conversions)]
-        dst.write_u32(self.text_type as u32);
+        dst.write_u32(self.text_type);
         dst.write_u32(self.locale_id);
 
         Ok(())
@@ -560,20 +554,6 @@ impl Encode for QueryDeviceText {
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE
     }
-}
-
-/// Indicates what kind of text/information is to be requested.
-#[repr(u32)]
-#[doc(alias = "DEVICE_TEXT_TYPE")]
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum DeviceTextType {
-    /// Basic description like manufacturer or product name.
-    #[doc(alias = "DeviceTextDescription")]
-    Description = 0x0,
-
-    /// Information such as where/what is the device connected to (bus or device number).
-    #[doc(alias = "DeviceTextLocationInformation")]
-    LocationInformation = 0x1,
 }
 
 /// [\[MS-RDPEUSB\] 2.2.6.6 Query Device Text Response Message (QUERY_DEVICE_TEXT_RSP)][1] message.
@@ -718,6 +698,7 @@ impl TransferInRequest {
         ensure_size!(in: src, size: 4 /* CbTsUrb */);
         let cb_ts_urb = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
 
+        ensure_size!(in: src, size: cb_ts_urb);
         let ts_urb = TsUrb::decode(&mut ReadCursor::new(src.read_slice(cb_ts_urb)), TransferDirection::In)?;
 
         ensure_size!(in: src, size: 4 /* OutputBufferSize */);
@@ -791,12 +772,15 @@ impl TransferOutRequest {
         let ts_urb = {
             ensure_size!(in: src, size: 4 /* CbTsUrb */);
             let cb_ts_urb = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
+            ensure_size!(in: src, size: cb_ts_urb);
             let mut src = ReadCursor::new(src.read_slice(cb_ts_urb));
             TsUrb::decode(&mut src, TransferDirection::Out)?
         };
 
         ensure_size!(in: src, size: 4 /* OutputBufferSize */);
         let output_buffer_size = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
+        // TODO: limit size
+        ensure_size!(in: src, size: output_buffer_size);
         let output_buffer = src.read_slice(output_buffer_size).to_vec();
 
         Ok(Self {
