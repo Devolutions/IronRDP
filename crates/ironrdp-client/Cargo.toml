@@ -19,11 +19,41 @@ doctest = false
 test = false
 
 [features]
-default = ["rustls"]
-rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots", "ironrdp-mstsgu/rustls"]
-native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls", "ironrdp-mstsgu/native-tls"]
+# No defaults. Each consumer enables exactly what it needs.
+#
+# Two-layer opt-out model:
+#   * Cargo features (this section) drop the dependency, native backend,
+#     and channel-construction code from the compiled artifact.
+#   * `ConfigBuilder::with_<feature>(bool)` runtime gates exist
+#     unconditionally; setting `true` for a feature that is not compiled
+#     in is a documented no-op.
+#
+# TLS backends (`rustls` vs `native-tls`) are mutually exclusive at link
+# time and have no runtime gate.
+default = []
+
+rustls = [
+    "ironrdp-tls/rustls",
+    "tokio-tungstenite/rustls-tls-native-roots",
+    "ironrdp-mstsgu?/rustls",
+]
+native-tls = [
+    "ironrdp-tls/native-tls",
+    "tokio-tungstenite/native-tls",
+    "ironrdp-mstsgu?/native-tls",
+]
+
+sound = ["ironrdp/rdpsnd", "dep:ironrdp-rdpsnd-native"]
+clipboard = ["ironrdp/cliprdr"]
+rdpdr = ["ironrdp/rdpdr"]
+smartcard = ["rdpdr"]
+gateway = ["dep:ironrdp-mstsgu", "ironrdp-tokio/reqwest"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
+dvc-pipe-proxy = ["dep:ironrdp-dvc-pipe-proxy"]
+# `dvc-com-plugin` is also `cfg(windows)`; enabling it on a non-Windows
+# target compiles cleanly but contributes no code.
+dvc-com-plugin = []
 
 [dependencies]
 # Protocols
@@ -33,20 +63,26 @@ ironrdp = { path = "../ironrdp", version = "0.14", features = [
     "graphics",
     "dvc",
     "svc",
-    "rdpdr",
-    "rdpsnd",
-    "cliprdr",
     "displaycontrol",
     "connector",
     "echo",
 ] }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
-ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.5" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
-ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
-ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.8", features = ["reqwest"] }
+ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.8" }
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
-ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
+ironrdp-propertyset = { path = "../ironrdp-propertyset" }
+ironrdp-cfg = { path = "../ironrdp-cfg" }
+
+# Optional protocol/native backend crates.
+ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.5", optional = true }
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", optional = true }
+ironrdp-dvc-pipe-proxy = { path = "../ironrdp-dvc-pipe-proxy", optional = true }
+
+# `reqwest` is only pulled in via `ironrdp-tokio/reqwest` (enabled by the
+# `gateway` feature). When the `gateway` feature is disabled, the library
+# uses an internal stub network client (KDC proxy over HTTP is unavailable
+# in that configuration).
 
 # Logging
 tracing = { version = "0.1", features = ["log"] }
@@ -62,9 +98,13 @@ futures-util = { version = "0.3", features = ["sink"] }
 anyhow = "1"
 smallvec = "1.15"
 url = "2"
+whoami = "2.1"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
+# `ironrdp-dvc-com-plugin` is intentionally not marked `optional`: cargo does
+# not allow `dep:` references to target-specific optional deps. The `dvc-com-plugin`
+# Cargo feature gates the code paths only; on Windows the crate is always linked.
 ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin" }
 
 [lints]

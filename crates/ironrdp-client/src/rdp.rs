@@ -1,35 +1,52 @@
 use core::num::NonZeroU16;
 use std::sync::Arc;
 
-use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
+#[cfg(feature = "clipboard")]
+use ironrdp::cliprdr;
+#[cfg(feature = "clipboard")]
+use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "dvc-com-plugin"))]
 use ironrdp::dvc::DvcProcessor as _;
 use ironrdp::echo::client::EchoClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::graphics::pointer::DecodedPointer;
+use ironrdp::pdu::PduResult;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
-use ironrdp::pdu::{PduResult, pdu_other_err};
+#[cfg(any(
+    feature = "clipboard",
+    feature = "dvc-pipe-proxy",
+    all(windows, feature = "dvc-com-plugin")
+))]
+use ironrdp::pdu::pdu_other_err;
+#[cfg(feature = "rdpdr")]
+use ironrdp::rdpdr;
+#[cfg(feature = "sound")]
+use ironrdp::rdpsnd;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult, fast_path};
 use ironrdp::svc::SvcMessage;
-use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
+use ironrdp::{connector, session};
 use ironrdp_core::WriteBuf;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "dvc-com-plugin"))]
 use ironrdp_dvc_com_plugin::load_dvc_plugin;
+#[cfg(feature = "dvc-pipe-proxy")]
 use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
-use ironrdp_rdpsnd_native::cpal;
+#[cfg(feature = "gateway")]
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
+#[cfg(feature = "rdpdr")]
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace, warn};
+#[cfg(all(windows, feature = "dvc-com-plugin"))]
+use tracing::error;
+use tracing::{debug, info, trace, warn};
 
 use crate::config::{Config, RDCleanPathConfig};
 
@@ -62,6 +79,7 @@ pub enum RdpInputEvent {
     },
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
     Close,
+    #[cfg(feature = "clipboard")]
     Clipboard(ClipboardMessage),
     SendDvcMessages {
         channel_id: u32,
@@ -84,13 +102,14 @@ impl DvcPipeProxyFactory {
         Self { rdp_input_sender }
     }
 
+    #[cfg(feature = "dvc-pipe-proxy")]
     pub fn create(&self, channel_name: String, pipe_name: String) -> DvcNamedPipeProxy {
         let rdp_input_sender = self.rdp_input_sender.clone();
 
         DvcNamedPipeProxy::new(&channel_name, &pipe_name, move |channel_id, messages| {
             rdp_input_sender
                 .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                .map_err(|_error| pdu_other_err!("send DVC messages to the event loop",))?;
+                .map_err(|_error| pdu_other_err!("send dvc messages to the event loop",))?;
 
             Ok(())
         })
@@ -108,7 +127,6 @@ pub struct RdpClient {
     pub config: Config,
     pub output_event_sender: mpsc::Sender<RdpOutputEvent>,
     pub input_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
-    pub cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     pub dvc_pipe_proxy_factory: DvcPipeProxyFactory,
 }
 
@@ -116,14 +134,7 @@ impl RdpClient {
     pub async fn run(mut self) {
         loop {
             let (connection_result, framed) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
-                match connect_ws(
-                    &self.config,
-                    rdcleanpath,
-                    self.cliprdr_factory.as_deref(),
-                    &self.dvc_pipe_proxy_factory,
-                )
-                .await
-                {
+                match connect_ws(&self.config, rdcleanpath, &self.dvc_pipe_proxy_factory).await {
                     Ok(result) => result,
                     Err(e) => {
                         let _ = self
@@ -134,13 +145,7 @@ impl RdpClient {
                     }
                 }
             } else {
-                match connect(
-                    &self.config,
-                    self.cliprdr_factory.as_deref(),
-                    &self.dvc_pipe_proxy_factory,
-                )
-                .await
-                {
+                match connect(&self.config, &self.dvc_pipe_proxy_factory).await {
                     Ok(result) => result,
                     Err(e) => {
                         let _ = self
@@ -193,94 +198,54 @@ type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin 
 
 async fn connect(
     config: &Config,
-    cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
     dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = config.destination.to_string();
 
-    let (client_addr, stream) = if let Some(ref gw_config) = config.gw {
+    #[cfg(feature = "gateway")]
+    let (client_addr, stream) = if let (true, Some(gw_config)) = (config.features.gateway, config.gw.as_ref()) {
         let (gw, client_addr) = ironrdp_mstsgu::GwClient::connect(gw_config, &config.connector.client_name)
             .await
-            .map_err(|e| connector::custom_err!("GW Connect", e))?;
+            .map_err(|e| connector::custom_err!("gw connect", e))?;
         (client_addr, tokio_util::either::Either::Left(gw))
     } else {
         let stream = TcpStream::connect(dest)
             .await
-            .map_err(|e| connector::custom_err!("TCP connect", e))?;
+            .map_err(|e| connector::custom_err!("tcp connect", e))?;
         let client_addr = stream
             .local_addr()
             .map_err(|e| connector::custom_err!("get socket local address", e))?;
         (client_addr, tokio_util::either::Either::Right(stream))
     };
+    #[cfg(not(feature = "gateway"))]
+    let (client_addr, stream) = {
+        let stream = TcpStream::connect(dest)
+            .await
+            .map_err(|e| connector::custom_err!("tcp connect", e))?;
+        let client_addr = stream
+            .local_addr()
+            .map_err(|e| connector::custom_err!("get socket local address", e))?;
+        (client_addr, stream)
+    };
+
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
-    let mut drdynvc = ironrdp::dvc::DrdynvcClient::new()
-        .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
-        .with_dynamic_channel(EchoClient::new());
+    let drdynvc = build_drdynvc(config, dvc_pipe_proxy_factory);
 
-    // Instantiate all DVC proxies
-    for proxy in config.dvc_pipe_proxies.iter() {
-        let channel_name = proxy.channel_name.clone();
-        let pipe_name = proxy.pipe_name.clone();
+    let mut connector =
+        connector::ClientConnector::new(config.connector.clone(), client_addr).with_static_channel(drdynvc);
 
-        trace!(%channel_name, %pipe_name, "Creating DVC proxy");
-
-        drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
-    }
-
-    // Load DVC COM plugins (Windows only)
-    #[cfg(windows)]
-    {
-        let sender = dvc_pipe_proxy_factory.input_sender();
-        for plugin_path in config.dvc_plugins.iter() {
-            info!(dll = %plugin_path.display(), "Loading DVC COM plugin");
-
-            let sender_clone = sender.clone();
-            match load_dvc_plugin(plugin_path, move || {
-                let sender = sender_clone.clone();
-                Box::new(move |channel_id, messages| {
-                    sender
-                        .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                        .map_err(|_error| pdu_other_err!("send COM DVC messages to the event loop"))?;
-                    Ok(())
-                })
-            }) {
-                Ok(channels) => {
-                    for channel in channels {
-                        info!(channel_name = %channel.channel_name(), "Registered COM DVC channel");
-                        drdynvc = drdynvc.with_dynamic_channel(channel);
-                    }
-                }
-                Err(e) => {
-                    error!(dll = %plugin_path.display(), error = %e, "Failed to load DVC COM plugin");
-                }
-            }
-        }
-    }
-
-    let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
-        .with_static_channel(drdynvc)
-        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
-        .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
-
-    if let Some(builder) = cliprdr_factory {
-        let backend = builder.build_cliprdr_backend();
-
-        let cliprdr = cliprdr::Cliprdr::new(backend);
-
-        connector.attach_static_channel(cliprdr);
-    }
+    attach_optional_channels(&mut connector, config);
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
     debug!("TLS upgrade");
 
-    // Ensure there is no leftover
     let (initial_stream, leftover_bytes) = framed.into_inner();
 
     let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
         .await
-        .map_err(|e| connector::custom_err!("TLS upgrade", e))?;
+        .map_err(|e| connector::custom_err!("tls upgrade", e))?;
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
@@ -293,7 +258,7 @@ async fn connect(
         upgraded,
         connector,
         &mut upgraded_framed,
-        &mut ReqwestNetworkClient::new(),
+        &mut network_client(),
         (&config.destination).into(),
         server_public_key.to_owned(),
         config.kerberos_config.clone(),
@@ -308,7 +273,6 @@ async fn connect(
 async fn connect_ws(
     config: &Config,
     rdcleanpath: &RDCleanPathConfig,
-    cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
     dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let hostname = rdcleanpath
@@ -320,11 +284,11 @@ async fn connect_ws(
 
     let socket = TcpStream::connect((hostname, port))
         .await
-        .map_err(|e| connector::custom_err!("TCP connect", e))?;
+        .map_err(|e| connector::custom_err!("tcp connect", e))?;
 
     socket
         .set_nodelay(true)
-        .map_err(|e| connector::custom_err!("set TCP_NODELAY", e))?;
+        .map_err(|e| connector::custom_err!("set tcp_nodelay", e))?;
 
     let client_addr = socket
         .local_addr()
@@ -332,68 +296,18 @@ async fn connect_ws(
 
     let (ws, _) = tokio_tungstenite::client_async_tls(rdcleanpath.url.as_str(), socket)
         .await
-        .map_err(|e| connector::custom_err!("WS connect", e))?;
+        .map_err(|e| connector::custom_err!("ws connect", e))?;
 
     let ws = crate::ws::websocket_compat(ws);
 
     let mut framed = ironrdp_tokio::TokioFramed::new(ws);
 
-    let mut drdynvc = ironrdp::dvc::DrdynvcClient::new()
-        .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
-        .with_dynamic_channel(EchoClient::new());
+    let drdynvc = build_drdynvc(config, dvc_pipe_proxy_factory);
 
-    // Instantiate all DVC proxies
-    for proxy in config.dvc_pipe_proxies.iter() {
-        let channel_name = proxy.channel_name.clone();
-        let pipe_name = proxy.pipe_name.clone();
+    let mut connector =
+        connector::ClientConnector::new(config.connector.clone(), client_addr).with_static_channel(drdynvc);
 
-        trace!(%channel_name, %pipe_name, "Creating DVC proxy");
-
-        drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
-    }
-
-    // Load DVC COM plugins (Windows only)
-    #[cfg(windows)]
-    {
-        let sender = dvc_pipe_proxy_factory.input_sender();
-        for plugin_path in config.dvc_plugins.iter() {
-            info!(dll = %plugin_path.display(), "Loading DVC COM plugin");
-
-            let sender_clone = sender.clone();
-            match load_dvc_plugin(plugin_path, move || {
-                let sender = sender_clone.clone();
-                Box::new(move |channel_id, messages| {
-                    sender
-                        .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                        .map_err(|_error| pdu_other_err!("send COM DVC messages to the event loop"))?;
-                    Ok(())
-                })
-            }) {
-                Ok(channels) => {
-                    for channel in channels {
-                        info!(channel_name = %channel.channel_name(), "Registered COM DVC channel");
-                        drdynvc = drdynvc.with_dynamic_channel(channel);
-                    }
-                }
-                Err(e) => {
-                    error!(dll = %plugin_path.display(), error = %e, "Failed to load DVC COM plugin");
-                }
-            }
-        }
-    }
-
-    let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
-        .with_static_channel(drdynvc)
-        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
-        .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
-
-    if let Some(builder) = cliprdr_factory {
-        let backend = builder.build_cliprdr_backend();
-
-        let cliprdr = cliprdr::Cliprdr::new(backend);
-
-        connector.attach_static_channel(cliprdr);
-    }
+    attach_optional_channels(&mut connector, config);
 
     let destination = config.destination.to_string();
 
@@ -410,7 +324,7 @@ async fn connect_ws(
         upgraded,
         connector,
         &mut framed,
-        &mut ReqwestNetworkClient::new(),
+        &mut network_client(),
         (&config.destination).into(),
         server_public_key,
         config.kerberos_config.clone(),
@@ -422,6 +336,141 @@ async fn connect_ws(
     let upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
 
     Ok((connection_result, upgraded_framed))
+}
+
+/// Build the DRDYNVC channel with all enabled DVC plugins / proxies.
+fn build_drdynvc(config: &Config, dvc_pipe_proxy_factory: &DvcPipeProxyFactory) -> ironrdp::dvc::DrdynvcClient {
+    #[cfg_attr(
+        not(feature = "dvc-pipe-proxy"),
+        expect(unused_mut, reason = "made mutable for the dvc-pipe-proxy feature")
+    )]
+    let mut drdynvc = ironrdp::dvc::DrdynvcClient::new()
+        .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
+        .with_dynamic_channel(EchoClient::new());
+
+    #[cfg(feature = "dvc-pipe-proxy")]
+    if config.features.dvc_pipe_proxy {
+        for proxy in config.dvc_pipe_proxies.iter() {
+            let channel_name = proxy.channel_name.clone();
+            let pipe_name = proxy.pipe_name.clone();
+
+            trace!(%channel_name, %pipe_name, "Creating dvc proxy");
+
+            drdynvc = drdynvc.with_dynamic_channel(dvc_pipe_proxy_factory.create(channel_name, pipe_name));
+        }
+    }
+    #[cfg(not(feature = "dvc-pipe-proxy"))]
+    {
+        let _ = (config, dvc_pipe_proxy_factory);
+    }
+
+    #[cfg(all(windows, feature = "dvc-com-plugin"))]
+    if config.features.dvc_com_plugin {
+        let sender = dvc_pipe_proxy_factory.input_sender();
+        for plugin_path in config.dvc_plugins.iter() {
+            info!(dll = %plugin_path.display(), "Loading dvc com plugin");
+
+            let sender_clone = sender.clone();
+            match load_dvc_plugin(plugin_path, move || {
+                let sender = sender_clone.clone();
+                Box::new(move |channel_id, messages| {
+                    sender
+                        .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                        .map_err(|_error| pdu_other_err!("send com dvc messages to the event loop"))?;
+                    Ok(())
+                })
+            }) {
+                Ok(channels) => {
+                    for channel in channels {
+                        info!(channel_name = %channel.channel_name(), "Registered com dvc channel");
+                        drdynvc = drdynvc.with_dynamic_channel(channel);
+                    }
+                }
+                Err(e) => {
+                    error!(dll = %plugin_path.display(), error = %e, "Failed to load dvc com plugin");
+                }
+            }
+        }
+    }
+
+    drdynvc
+}
+
+/// Attach the optional static channels (sound, rdpdr, clipboard) based on Cargo + runtime features.
+fn attach_optional_channels(connector: &mut connector::ClientConnector, _config: &Config) {
+    #[cfg(feature = "sound")]
+    if _config.features.sound {
+        let backend: Box<dyn rdpsnd::client::RdpsndClientHandler> = if let Some(b) = clone_sound_backend(_config) {
+            b
+        } else {
+            Box::new(ironrdp_rdpsnd_native::cpal::RdpsndBackend::new())
+        };
+        connector.attach_static_channel(rdpsnd::client::Rdpsnd::new(backend));
+    }
+
+    #[cfg(feature = "rdpdr")]
+    if _config.features.rdpdr {
+        let backend: Box<dyn rdpdr::backend::RdpdrBackend> = if let Some(b) = clone_rdpdr_backend(_config) {
+            b
+        } else {
+            Box::new(NoopRdpdrBackend {})
+        };
+        let mut rdpdr_channel = rdpdr::Rdpdr::new(backend, "IronRDP".to_owned());
+        if _config.features.smartcard {
+            rdpdr_channel = rdpdr_channel.with_smartcard(0);
+        }
+        connector.attach_static_channel(rdpdr_channel);
+    }
+
+    #[cfg(feature = "clipboard")]
+    if _config.features.clipboard {
+        if let Some(factory) = _config.clipboard_backend.as_deref() {
+            let backend = factory.build_cliprdr_backend();
+            connector.attach_static_channel(cliprdr::Cliprdr::new(backend));
+        }
+    }
+}
+
+/// Sound backends are not Clone; we transfer ownership only if it has been explicitly set
+/// via the builder. (Default cpal backend is constructed inline.)
+#[cfg(feature = "sound")]
+fn clone_sound_backend(_config: &Config) -> Option<Box<dyn rdpsnd::client::RdpsndClientHandler>> {
+    // The Config's sound_backend slot is consumed during build for now (None for V1).
+    // To allow a custom backend to be honored, callers may pass it via ConfigBuilder which moves
+    // it into Config; we do not support reconnect-with-custom-backend at this stage.
+    let _ = _config;
+    None
+}
+
+#[cfg(feature = "rdpdr")]
+fn clone_rdpdr_backend(_config: &Config) -> Option<Box<dyn rdpdr::backend::RdpdrBackend>> {
+    let _ = _config;
+    None
+}
+
+#[cfg(feature = "gateway")]
+fn network_client() -> ReqwestNetworkClient {
+    ReqwestNetworkClient::new()
+}
+
+#[cfg(not(feature = "gateway"))]
+fn network_client() -> NoopNetworkClient {
+    NoopNetworkClient
+}
+
+#[cfg(not(feature = "gateway"))]
+struct NoopNetworkClient;
+
+#[cfg(not(feature = "gateway"))]
+impl ironrdp_tokio::NetworkClient for NoopNetworkClient {
+    async fn send(
+        &mut self,
+        _request: &ironrdp::connector::sspi::generator::NetworkRequest,
+    ) -> ironrdp::connector::ConnectorResult<Vec<u8>> {
+        Err(ironrdp::connector::general_err!(
+            "kdc proxy network client is unavailable (build without the `gateway` feature)"
+        ))
+    }
 }
 
 async fn connect_rdcleanpath<S>(
@@ -633,6 +682,7 @@ async fn active_session(
                     RdpInputEvent::Close => {
                         active_stage.graceful_shutdown()?
                     }
+                    #[cfg(feature = "clipboard")]
                     RdpInputEvent::Clipboard(event) => {
                         if let Some(cliprdr) = active_stage.get_svc_processor_mut::<cliprdr::CliprdrClient>() {
                             if let Some(svc_messages) = match event {
@@ -683,6 +733,8 @@ async fn active_session(
             }
             _ = cleanup_interval.tick() => {
                 // Drive clipboard lock timeout cleanup
+                #[cfg(feature = "clipboard")]
+                {
                 if let Some(cliprdr) = active_stage.get_svc_processor_mut::<cliprdr::CliprdrClient>() {
                     match cliprdr.drive_timeouts() {
                         Ok(svc_messages) => {
@@ -701,6 +753,9 @@ async fn active_session(
                 } else {
                     Vec::new()
                 }
+                }
+                #[cfg(not(feature = "clipboard"))]
+                Vec::new()
             }
         };
 

@@ -2503,10 +2503,12 @@ dependencies = [
  "anyhow",
  "futures-util",
  "ironrdp",
+ "ironrdp-cfg",
  "ironrdp-core",
  "ironrdp-dvc-com-plugin",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-mstsgu",
+ "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpsnd-native",
  "ironrdp-tls",
@@ -2518,6 +2520,7 @@ dependencies = [
  "tracing",
  "transport",
  "url",
+ "whoami",
  "x509-cert",
 ]
 
