@@ -2759,7 +2759,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdcleanpath"
-version = "0.2.2"
+version = "0.2.1"
 dependencies = [
  "der 0.7.10",
 ]

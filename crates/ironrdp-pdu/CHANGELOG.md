@@ -81,18 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Cover BitmapCacheV3 in CapabilitySet encoder ([#1313](https://github.com/Devolutions/IronRDP/issues/1313)) ([a71567e35e](https://github.com/Devolutions/IronRDP/commit/a71567e35e47a6eba8493c00933e0b66e0c63d5b)) 
 
-### <!-- 6 -->Documentation
-
-- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
-
-  The MSRV is the oldest stable Rust release that is at least 6 months
-  old, bounded by the Rust version available in Debian stable-backports
-  and Fedora stable.
-
 ### <!-- 7 -->Build
 
 - Bump the patch group across 1 directory with 2 updates ([#1222](https://github.com/Devolutions/IronRDP/issues/1222)) ([3fe6d157e0](https://github.com/Devolutions/IronRDP/commit/3fe6d157e0b55bddfdac20af290a6cfa6e550576)) 
-
 
 
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.5.0...ironrdp-pdu-v0.6.0)] - 2025-08-29

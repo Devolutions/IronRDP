@@ -35,14 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implement ECHO virtual channel ([#1109](https://github.com/Devolutions/IronRDP/issues/1109)) ([6f6496ad29](https://github.com/Devolutions/IronRDP/commit/6f6496ad29395099563d50417d6dfff623914ee6)) 
 
-### <!-- 6 -->Documentation
-
-- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
-
-  The MSRV is the oldest stable Rust release that is at least 6 months
-  old, bounded by the Rust version available in Debian stable-backports
-  and Fedora stable.
-
 ### <!-- 7 -->Build
 
 - Bump the patch group across 1 directory with 3 updates ([#1170](https://github.com/Devolutions/IronRDP/issues/1170)) ([ecc0504644](https://github.com/Devolutions/IronRDP/commit/ecc0504644c87b476173eaca5c7f85bda69a6817)) 
@@ -54,7 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump sspi from 0.19.2 to 0.20.0 ([#1250](https://github.com/Devolutions/IronRDP/issues/1250)) ([a00f51d957](https://github.com/Devolutions/IronRDP/commit/a00f51d95776a48447705f0eb6424ba54e8943a9)) 
 
 - Bump sspi 0.21 / picky rc.23 for released RustCrypto ([#1296](https://github.com/Devolutions/IronRDP/issues/1296)) ([d5b3fa7db8](https://github.com/Devolutions/IronRDP/commit/d5b3fa7db8a4ce74ac9a9aaff3064faf6cb6c920)) 
-
 
 
 ## [[0.14.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.13.0...ironrdp-v0.14.0)] - 2025-12-18
@@ -121,7 +112,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inline documentation for re-exported items (#619) ([cff5c1a59c](https://github.com/Devolutions/IronRDP/commit/cff5c1a59cdc2da73cabcb675fcf2d85dc81fd68)) 
 
 
-
 ## [[0.7.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.7.1...ironrdp-v0.7.2)] - 2024-12-15
 
 ### <!-- 6 -->Documentation
@@ -131,7 +121,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The rt-multi-thread feature of tokio is not enabled when compiling the
   example alone (without feature unification from other crates of the
   workspace).
-
 
 
 ## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.7.0...ironrdp-v0.7.1)] - 2024-12-14

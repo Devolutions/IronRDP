@@ -16,18 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mutually exclusive integers 0 through 5, not combinable bit flags.
   Modeling them with the bitflags macro causes subtle correctness issues.
 
-### <!-- 6 -->Documentation
-
-- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
-
-  The MSRV is the oldest stable Rust release that is at least 6 months
-  old, bounded by the Rust version available in Debian stable-backports
-  and Fedora stable.
-
 ### <!-- 7 -->Build
 
 - Bump nix from 0.30.1 to 0.31.1 ([#1085](https://github.com/Devolutions/IronRDP/issues/1085)) ([e92135dc0d](https://github.com/Devolutions/IronRDP/commit/e92135dc0d46bb3217ad26fcb82651c29e9c43c4)) 
-
 
 
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.4.0...ironrdp-rdpdr-native-v0.5.0)] - 2025-12-18

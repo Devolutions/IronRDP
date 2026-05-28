@@ -97,14 +97,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Reduce connection latency when Kerberos is disabled ([#1107](https://github.com/Devolutions/IronRDP/issues/1107)) ([b1b0289e00](https://github.com/Devolutions/IronRDP/commit/b1b0289e0067228dbc973d3edb0e27136f7ca52a)) 
 
-### <!-- 6 -->Documentation
-
-- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
-
-  The MSRV is the oldest stable Rust release that is at least 6 months
-  old, bounded by the Rust version available in Debian stable-backports
-  and Fedora stable.
-
 ### <!-- 7 -->Build
 
 - Upgrade sspi to 0.19 and picky to rc.22; fix NTLM fallback ([#1188](https://github.com/Devolutions/IronRDP/issues/1188)) ([c70d38a9f1](https://github.com/Devolutions/IronRDP/commit/c70d38a9f190d6ad6c84bd9027a388b5db3296ba)) 
@@ -112,7 +104,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgrade sspi from 0.19.2 to 0.20.0 ([#1250](https://github.com/Devolutions/IronRDP/issues/1250)) ([a00f51d957](https://github.com/Devolutions/IronRDP/commit/a00f51d95776a48447705f0eb6424ba54e8943a9)) 
 
 - Upgrade to sspi 0.21 and picky rc.23 for released RustCrypto ([#1296](https://github.com/Devolutions/IronRDP/issues/1296)) ([d5b3fa7db8](https://github.com/Devolutions/IronRDP/commit/d5b3fa7db8a4ce74ac9a9aaff3064faf6cb6c920)) 
-
 
 
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.1...ironrdp-connector-v0.8.0)] - 2025-12-18
@@ -192,7 +183,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [**breaking**] Add supported codecs in BitmapConfig ([f03ee393a3](https://github.com/Devolutions/IronRDP/commit/f03ee393a36906114b5bcba0e88ebc6869a99785)) 
 
 
-
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.3.2...ironrdp-connector-v0.4.0)] - 2025-03-12
 
 ### <!-- 7 -->Build
@@ -207,13 +197,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update dependencies
 
 
-
 ## [[0.3.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.3.0...ironrdp-connector-v0.3.1)] - 2025-01-30
 
 ### <!-- 4 -->Bug Fixes
 
 - Decrease log verbosity for license exchange ([#655](https://github.com/Devolutions/IronRDP/issues/655)) ([c8597733fe](https://github.com/Devolutions/IronRDP/commit/c8597733fe9998318764064c3682506bf82026d2)) 
-
 
 
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.2.2...ironrdp-connector-v0.3.0)] - 2025-01-28
@@ -234,7 +222,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### <!-- 7 -->Build
 
 - Bump picky from 7.0.0-rc.11 to 7.0.0-rc.12 ([#639](https://github.com/Devolutions/IronRDP/issues/639)) ([a16a131e43](https://github.com/Devolutions/IronRDP/commit/a16a131e4301e0dfafe8f3b73e1a75a3a06cfdc7)) 
-
 
 
 ## [[0.2.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.2.1...ironrdp-connector-v0.2.2)] - 2024-12-14
