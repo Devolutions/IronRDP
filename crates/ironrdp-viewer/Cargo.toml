@@ -31,8 +31,16 @@ qoi = ["ironrdp-client/qoi"]
 qoiz = ["ironrdp-client/qoiz"]
 
 [dependencies]
-ironrdp = { path = "../ironrdp", version = "0.14", features = ["input", "pdu"] }
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", default-features = false }
+ironrdp = { path = "../ironrdp", version = "0.14", features = ["input", "pdu", "cliprdr"] }
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", default-features = false, features = [
+  "sound",
+  "clipboard",
+  "rdpdr",
+  "smartcard",
+  "gateway",
+  "dvc-pipe-proxy",
+  "dvc-com-plugin",
+] }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.5" }
 ironrdp-cfg = { path = "../ironrdp-cfg" }
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }

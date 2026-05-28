@@ -11,3 +11,5 @@ pub mod config;
 pub mod rdp;
 
 mod ws;
+
+pub use ironrdp_propertyset::PropertySet;
