@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-str"
-version = "0.1.0"
+version = "0.1.1"
 description = "Typed wire-aware string primitives for RDP protocol fields"
 edition.workspace = true
 rust-version = "1.89"
@@ -18,7 +18,7 @@ alloc = ["ironrdp-core/alloc", "bytemuck/extern_crate_alloc"]
 
 [dependencies]
 bytemuck = { version = "1", default-features = false }
-ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 
 [lints]
 workspace = true

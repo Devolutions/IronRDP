@@ -6,6 +6,84 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.7.0...ironrdp-pdu-v0.8.0)] - 2026-05-27
+
+### <!-- 1 -->Features
+
+- Add Initiate Multitransport Request/Response PDU types ([#1091](https://github.com/Devolutions/IronRDP/issues/1091)) ([5a50f4099b](https://github.com/Devolutions/IronRDP/commit/5a50f4099b8f8173c5c067089a0d372402dbb52d)) 
+
+  Add MultitransportRequestPdu and MultitransportResponsePdu types for the
+  sideband UDP transport bootstrapping PDUs defined in MS-RDPBCGR
+  2.2.15.1 and 2.2.15.2. Needed to decode/encode the IO channel messages that
+  initiate UDP transport setup.
+
+- Add Auto-Detect Request and Response PDU types ([#1168](https://github.com/Devolutions/IronRDP/issues/1168)) ([6e5f08a1b9](https://github.com/Devolutions/IronRDP/commit/6e5f08a1b95f69b9d8182a75298b74aaf829ac39)) 
+
+- [**breaking**] Route auto-detect PDUs through ShareDataPdu dispatch ([#1176](https://github.com/Devolutions/IronRDP/issues/1176)) ([e5f2f36e96](https://github.com/Devolutions/IronRDP/commit/e5f2f36e96dfb2036236c99a1ee83c5a36bf281f)) 
+
+  Added Share Data PDU dispatch support for auto-detect PDUs, improving compatibility with Windows servers.
+
+- Complete pixel format support for bitmap updates ([#1134](https://github.com/Devolutions/IronRDP/issues/1134)) ([a6b41093ce](https://github.com/Devolutions/IronRDP/commit/a6b41093ce4ece081d2538c157f6bc547c3b2607)) 
+
+  Wires missing bitmap pixel formats (8/15/24bpp) into the session rendering
+  pipeline so bitmap updates at those depths are rendered instead of being
+  dropped, and adds fast-path palette update parsing to support 8bpp indexed
+  color sessions.
+
+- Add RemoteFX Progressive codec primitives ([#1196](https://github.com/Devolutions/IronRDP/issues/1196)) ([49099f0c31](https://github.com/Devolutions/IronRDP/commit/49099f0c3136c25b67801fb1b07f78542dc796de)) 
+
+  Add wire-format types for RemoteFX Progressive Codec (MS-RDPRFX
+  Progressive Extension) and the computational primitives required for progressive refinement.
+
+- Handle slow-path graphics and pointer updates ([#1132](https://github.com/Devolutions/IronRDP/issues/1132)) ([9383380292](https://github.com/Devolutions/IronRDP/commit/938338029290f1be82a7f784d544bb77ac797aeb)) 
+
+  Adds support for slow-path graphics and pointer updates to IronRDP, fixing connectivity issues with servers like XRDP that use slow-path output instead of fast-path. The implementation parses slow-path framing headers and routes the inner payload structures through the existing fast-path processing pipeline by extracting shared bitmap and pointer processing methods.
+
+- Add progressive RFX decode and EGFX integration ([#1197](https://github.com/Devolutions/IronRDP/issues/1197)) ([a142799d1d](https://github.com/Devolutions/IronRDP/commit/a142799d1dcbdcd6546ec6e75173fbfe66f0ea67)) 
+
+- Add ClearCodec bitmap compression codec ([#1174](https://github.com/Devolutions/IronRDP/issues/1174)) ([059ca902a5](https://github.com/Devolutions/IronRDP/commit/059ca902a5518113163042225bc5d2088869933a)) 
+
+### <!-- 4 -->Bug Fixes
+
+- [**breaking**] Remove unused legacy error types ([#1268](https://github.com/Devolutions/IronRDP/issues/1268)) ([df0bf9c69d](https://github.com/Devolutions/IronRDP/commit/df0bf9c69d88febaf6b82c479fdc7dcafe226567)) 
+
+  Remove GccError, McsError, RdpError, SecurityDataError,
+  ClusterDataError, NetworkDataError, CoreDataError, InputEventError,
+  ClientInfoError, CapabilitySetsError, SessionError, and ChannelError.
+  All encode/decode functions had already been migrated to use
+  DecodeResult/EncodeResult from ironrdp-core, leaving these error types
+  as dead code.
+
+- Accept short Server Deactivate All PDU ([485d6c2f8d](https://github.com/Devolutions/IronRDP/commit/485d6c2f8d6f95bb06ca14cbfa4c56a27abbad0e)) 
+
+  Some servers (XRDP, older Windows) send a Deactivate All PDU without
+  the sourceDescriptor field. The decode previously required at least 3
+  bytes, which caused a hard failure during deactivation-reactivation
+  sequences with these servers.
+  
+  Treat the sourceDescriptor as optional: if the remaining data is
+  shorter than the fixed part size, return successfully without
+  reading the field. FreeRDP handles this the same way.
+
+- Correct ShareDataHeader uncompressedLength calculation ([#1148](https://github.com/Devolutions/IronRDP/issues/1148)) ([c2688f464d](https://github.com/Devolutions/IronRDP/commit/c2688f464d8cbf239d35e5b43538195b1870eed8)) 
+
+- Replace all from_bits_truncate with from_bits_retain ([#1144](https://github.com/Devolutions/IronRDP/issues/1144)) ([353e30ddfd](https://github.com/Devolutions/IronRDP/commit/353e30ddfdaafc897db10b8663e364ef7775a7fd)) 
+
+  from_bits_truncate silently discards unknown bits, which breaks the
+  encode/decode round-trip property. This matters for fuzzing because a
+  PDU that decodes and re-encodes should produce identical bytes.
+  from_bits_retain preserves all bits, including those not yet defined in
+  our bitflags types, so the round-trip property holds.
+
+- [**breaking**] Remove ironrdp-egfx duplicates from ironrdp-pdu ([#1303](https://github.com/Devolutions/IronRDP/issues/1303)) ([491b91fd2f](https://github.com/Devolutions/IronRDP/commit/491b91fd2f33235e4b31dea5c4a215e67f734179)) 
+
+- Cover BitmapCacheV3 in CapabilitySet encoder ([#1313](https://github.com/Devolutions/IronRDP/issues/1313)) ([a71567e35e](https://github.com/Devolutions/IronRDP/commit/a71567e35e47a6eba8493c00933e0b66e0c63d5b)) 
+
+### <!-- 7 -->Build
+
+- Bump the patch group across 1 directory with 2 updates ([#1222](https://github.com/Devolutions/IronRDP/issues/1222)) ([3fe6d157e0](https://github.com/Devolutions/IronRDP/commit/3fe6d157e0b55bddfdac20af290a6cfa6e550576)) 
+
+
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.5.0...ironrdp-pdu-v0.6.0)] - 2025-08-29
 
 ### <!-- 1 -->Features

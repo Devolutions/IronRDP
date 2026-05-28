@@ -27,7 +27,7 @@ qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
 # Protocols
-ironrdp = { path = "../ironrdp", version = "0.14", features = [
+ironrdp = { path = "../ironrdp", version = "0.15", features = [
     "session",
     "input",
     "graphics",
@@ -40,11 +40,11 @@ ironrdp = { path = "../ironrdp", version = "0.14", features = [
     "connector",
     "echo",
 ] }
-ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
-ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.5" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] }
+ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.6" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
-ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.8", features = ["reqwest"] }
+ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.9", features = ["reqwest"] }
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
 
