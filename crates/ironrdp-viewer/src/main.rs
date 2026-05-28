@@ -28,10 +28,15 @@ fn main() -> anyhow::Result<()> {
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
     let (output_event_sender, mut output_event_receiver) = mpsc::channel::<RdpOutputEvent>(64);
 
-    // NOTE: we need to keep `win_clipboard` alive, otherwise it will be dropped before IronRDP
-    // starts and clipboard functionality will not be available.
+    // NOTE: we need to keep `_win_clipboard` alive, otherwise it will be dropped before IronRDP
+    // starts and clipboard functionality will not be available. The binding is intentionally
+    // write-only (we only rely on its `Drop` happening at end of scope).
     #[cfg(windows)]
-    let _win_clipboard;
+    #[expect(
+        clippy::collection_is_never_read,
+        reason = "keeps WinClipboard alive until end of scope"
+    )]
+    let mut _win_clipboard: Option<ironrdp_cliprdr_native::WinClipboard> = None;
 
     let mut config = build_config(parsed).context("configuration")?;
 
@@ -51,7 +56,7 @@ fn main() -> anyhow::Result<()> {
 
                     let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender.clone()))?;
                     let factory = cliprdr.backend_factory();
-                    _win_clipboard = cliprdr;
+                    _win_clipboard = Some(cliprdr);
                     Some(factory)
                 }
                 #[cfg(not(windows))]

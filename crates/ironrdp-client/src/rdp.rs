@@ -44,9 +44,13 @@ use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-#[cfg(all(windows, feature = "dvc-com-plugin"))]
-use tracing::error;
-use tracing::{debug, info, trace, warn};
+// `error` and `warn` are used only by feature-gated code paths (clipboard, dvc-com-plugin); keep
+// the imports unconditional so the macros are always in scope regardless of features.
+#[cfg_attr(
+    not(any(feature = "clipboard", all(windows, feature = "dvc-com-plugin"))),
+    expect(unused_imports, reason = "error/warn used only under feature-gated code paths")
+)]
+use tracing::{debug, error, info, trace, warn};
 
 use crate::config::{Config, RDCleanPathConfig};
 
@@ -133,8 +137,14 @@ pub struct RdpClient {
 impl RdpClient {
     pub async fn run(mut self) {
         loop {
-            let (connection_result, framed) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
-                match connect_ws(&self.config, rdcleanpath, &self.dvc_pipe_proxy_factory).await {
+            // Split the borrow: `connect_ws` needs `&mut self.config` (to consume optional
+            // backends), but we also need to inspect `self.config.rdcleanpath`. Take the
+            // `RDCleanPathConfig` out for the duration of the call and put it back afterwards
+            // so reconnect attempts continue to use the same path.
+            let (connection_result, framed) = if let Some(rdcleanpath) = self.config.rdcleanpath.take() {
+                let result = connect_ws(&mut self.config, &rdcleanpath, &self.dvc_pipe_proxy_factory).await;
+                self.config.rdcleanpath = Some(rdcleanpath);
+                match result {
                     Ok(result) => result,
                     Err(e) => {
                         let _ = self
@@ -145,7 +155,7 @@ impl RdpClient {
                     }
                 }
             } else {
-                match connect(&self.config, &self.dvc_pipe_proxy_factory).await {
+                match connect(&mut self.config, &self.dvc_pipe_proxy_factory).await {
                     Ok(result) => result,
                     Err(e) => {
                         let _ = self
@@ -197,7 +207,7 @@ impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite {}
 type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>;
 
 async fn connect(
-    config: &Config,
+    config: &mut Config,
     dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = config.destination.to_string();
@@ -271,7 +281,7 @@ async fn connect(
 }
 
 async fn connect_ws(
-    config: &Config,
+    config: &mut Config,
     rdcleanpath: &RDCleanPathConfig,
     dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
@@ -397,24 +407,26 @@ fn build_drdynvc(config: &Config, dvc_pipe_proxy_factory: &DvcPipeProxyFactory) 
 }
 
 /// Attach the optional static channels (sound, rdpdr, clipboard) based on Cargo + runtime features.
-fn attach_optional_channels(connector: &mut connector::ClientConnector, _config: &Config) {
+#[cfg_attr(
+    not(any(feature = "sound", feature = "rdpdr", feature = "clipboard")),
+    expect(unused_variables, reason = "no feature-gated channel uses the connector")
+)]
+fn attach_optional_channels(connector: &mut connector::ClientConnector, _config: &mut Config) {
     #[cfg(feature = "sound")]
     if _config.features.sound {
-        let backend: Box<dyn rdpsnd::client::RdpsndClientHandler> = if let Some(b) = clone_sound_backend(_config) {
-            b
-        } else {
-            Box::new(ironrdp_rdpsnd_native::cpal::RdpsndBackend::new())
-        };
+        let backend: Box<dyn rdpsnd::client::RdpsndClientHandler> = _config
+            .sound_backend
+            .take()
+            .unwrap_or_else(|| Box::new(ironrdp_rdpsnd_native::cpal::RdpsndBackend::new()));
         connector.attach_static_channel(rdpsnd::client::Rdpsnd::new(backend));
     }
 
     #[cfg(feature = "rdpdr")]
     if _config.features.rdpdr {
-        let backend: Box<dyn rdpdr::backend::RdpdrBackend> = if let Some(b) = clone_rdpdr_backend(_config) {
-            b
-        } else {
-            Box::new(NoopRdpdrBackend {})
-        };
+        let backend: Box<dyn rdpdr::backend::RdpdrBackend> = _config
+            .rdpdr_backend
+            .take()
+            .unwrap_or_else(|| Box::new(NoopRdpdrBackend {}));
         let mut rdpdr_channel = rdpdr::Rdpdr::new(backend, "IronRDP".to_owned());
         if _config.features.smartcard {
             rdpdr_channel = rdpdr_channel.with_smartcard(0);
@@ -423,29 +435,19 @@ fn attach_optional_channels(connector: &mut connector::ClientConnector, _config:
     }
 
     #[cfg(feature = "clipboard")]
-    if _config.features.clipboard {
+    if _config.features.clipboard && _config.clipboard_type != crate::config::ClipboardType::Disable {
         if let Some(factory) = _config.clipboard_backend.as_deref() {
             let backend = factory.build_cliprdr_backend();
             connector.attach_static_channel(cliprdr::Cliprdr::new(backend));
+        } else {
+            warn!(
+                "Clipboard feature is enabled but no `clipboard_backend` factory was supplied via \
+                 `ConfigBuilder::with_clipboard_backend`; the CLIPRDR static channel will not be attached. \
+                 This is expected when `clipboard_type = Disable`; otherwise embedders must provide a backend \
+                 factory (the library does not pull in a native clipboard backend on its own)."
+            );
         }
     }
-}
-
-/// Sound backends are not Clone; we transfer ownership only if it has been explicitly set
-/// via the builder. (Default cpal backend is constructed inline.)
-#[cfg(feature = "sound")]
-fn clone_sound_backend(_config: &Config) -> Option<Box<dyn rdpsnd::client::RdpsndClientHandler>> {
-    // The Config's sound_backend slot is consumed during build for now (None for V1).
-    // To allow a custom backend to be honored, callers may pass it via ConfigBuilder which moves
-    // it into Config; we do not support reconnect-with-custom-backend at this stage.
-    let _ = _config;
-    None
-}
-
-#[cfg(feature = "rdpdr")]
-fn clone_rdpdr_backend(_config: &Config) -> Option<Box<dyn rdpdr::backend::RdpdrBackend>> {
-    let _ = _config;
-    None
 }
 
 #[cfg(feature = "gateway")]
