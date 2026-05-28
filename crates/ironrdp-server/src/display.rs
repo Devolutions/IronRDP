@@ -1,11 +1,12 @@
 use core::num::{NonZeroU16, NonZeroUsize};
 
-use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_graphics::diff;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 use tracing::{debug, warn};
+
+use crate::error::ServerResult;
 
 #[rustfmt::skip]
 pub use ironrdp_acceptor::DesktopSize;
@@ -246,7 +247,7 @@ pub trait RdpServerDisplayUpdates {
     /// This method MUST be cancellation safe because it is used in a
     /// `tokio::select!` statement. If some other branch completes first, it
     /// MUST be guaranteed that no data is lost.
-    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>>;
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>>;
 }
 
 /// Display for an RDP server
@@ -254,8 +255,7 @@ pub trait RdpServerDisplayUpdates {
 /// # Example
 ///
 /// ```
-///# use anyhow::Result;
-/// use ironrdp_server::{DesktopSize, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
+/// use ironrdp_server::{DesktopSize, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates, ServerResult};
 ///
 /// pub struct DisplayUpdates {
 ///     receiver: tokio::sync::mpsc::Receiver<DisplayUpdate>,
@@ -263,7 +263,7 @@ pub trait RdpServerDisplayUpdates {
 ///
 /// #[async_trait::async_trait]
 /// impl RdpServerDisplayUpdates for DisplayUpdates {
-///     async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+///     async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
 ///         Ok(self.receiver.recv().await)
 ///     }
 /// }
@@ -279,7 +279,7 @@ pub trait RdpServerDisplayUpdates {
 ///         DesktopSize { width: self.width, height: self.height }
 ///     }
 ///
-///     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+///     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///         Ok(Box::new(DisplayUpdates { receiver: todo!() }))
 ///     }
 /// }
@@ -298,7 +298,7 @@ pub trait RdpServerDisplay: Send {
     }
 
     /// Return a display updates receiver
-    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>>;
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>>;
 
     /// Request a new size for the display
     fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
