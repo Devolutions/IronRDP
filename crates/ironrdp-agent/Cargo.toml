@@ -1,0 +1,48 @@
+[package]
+name = "ironrdp-agent"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Agentic IronRDP client daemon and CLI"
+publish = false
+
+[[bin]]
+name = "ironrdp-agent"
+path = "src/main.rs"
+test = false
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[features]
+default = ["rustls"]
+rustls = ["ironrdp-client/rustls"]
+native-tls = ["ironrdp-client/native-tls"]
+
+[dependencies]
+ironrdp = { path = "../ironrdp", version = "0.14", features = ["input", "pdu"] }
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", default-features = false }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-cfg = { path = "../ironrdp-cfg" }
+ironrdp-propertyset = { path = "../ironrdp-propertyset" }
+ironrdp-rdpfile = { path = "../ironrdp-rdpfile" }
+
+anyhow = "1"
+clap = { version = "4.6", features = ["derive", "cargo"] }
+tokio = { version = "1", features = ["full"] }
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+ironrdp-core = { path = "../ironrdp-core" }
+tokio = { version = "1", features = ["full", "test-util"] }
