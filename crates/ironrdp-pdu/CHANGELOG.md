@@ -8,17 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.7.0...ironrdp-pdu-v0.8.0)] - 2026-05-27
 
-### <!-- 4 -->Bug Fixes
-
-- [**breaking**] Remove unused legacy error types ([#1268](https://github.com/Devolutions/IronRDP/issues/1268)) ([df0bf9c69d](https://github.com/Devolutions/IronRDP/commit/df0bf9c69d88febaf6b82c479fdc7dcafe226567)) 
-
-  Remove GccError, McsError, RdpError, SecurityDataError,
-  ClusterDataError, NetworkDataError, CoreDataError, InputEventError,
-  ClientInfoError, CapabilitySetsError, SessionError, and ChannelError.
-  All encode/decode functions had already been migrated to use
-  DecodeResult/EncodeResult from ironrdp-core, leaving these error types
-  as dead code.
-
 ### <!-- 1 -->Features
 
 - Add Initiate Multitransport Request/Response PDU types ([#1091](https://github.com/Devolutions/IronRDP/issues/1091)) ([5a50f4099b](https://github.com/Devolutions/IronRDP/commit/5a50f4099b8f8173c5c067089a0d372402dbb52d)) 
@@ -57,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add ClearCodec bitmap compression codec ([#1174](https://github.com/Devolutions/IronRDP/issues/1174)) ([059ca902a5](https://github.com/Devolutions/IronRDP/commit/059ca902a5518113163042225bc5d2088869933a)) 
 
 ### <!-- 4 -->Bug Fixes
+
+- [**breaking**] Remove unused legacy error types ([#1268](https://github.com/Devolutions/IronRDP/issues/1268)) ([df0bf9c69d](https://github.com/Devolutions/IronRDP/commit/df0bf9c69d88febaf6b82c479fdc7dcafe226567)) 
+
+  Remove GccError, McsError, RdpError, SecurityDataError,
+  ClusterDataError, NetworkDataError, CoreDataError, InputEventError,
+  ClientInfoError, CapabilitySetsError, SessionError, and ChannelError.
+  All encode/decode functions had already been migrated to use
+  DecodeResult/EncodeResult from ironrdp-core, leaving these error types
+  as dead code.
 
 - Accept short Server Deactivate All PDU ([485d6c2f8d](https://github.com/Devolutions/IronRDP/commit/485d6c2f8d6f95bb06ca14cbfa4c56a27abbad0e)) 
 

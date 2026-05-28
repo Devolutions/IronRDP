@@ -33,7 +33,7 @@ qoiz = ["ironrdp-client/qoiz"]
 [dependencies]
 ironrdp = { path = "../ironrdp", version = "0.15", features = ["input", "pdu"] }
 ironrdp-client = { path = "../ironrdp-client", version = "0.1", default-features = false }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.5" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.6" }
 ironrdp-cfg = { path = "../ironrdp-cfg" }
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset" }

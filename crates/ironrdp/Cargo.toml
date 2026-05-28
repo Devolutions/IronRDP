@@ -58,7 +58,7 @@ ironrdp-echo = { path = "../ironrdp-echo", version = "0.2", optional = true } # 
 
 [dev-dependencies]
 ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.9" }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.5" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.6" }
 anyhow = "1"
 async-trait = "0.1"
 image = { version = "0.25", default-features = false, features = ["png"] }

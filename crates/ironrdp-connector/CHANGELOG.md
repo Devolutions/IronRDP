@@ -34,8 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   'ActiveStageOutput` so applications can handle multitransport requests.
   Client and web consumers log the request (no UDP transport yet).
 
-### <!-- 1 -->Features
-
 - Add bulk compression and wire negotiation ([ebf5da5f33](https://github.com/Devolutions/IronRDP/commit/ebf5da5f3380a3355f6c95814d669f8190425ded)) 
 
   Add support for bulk compression negotiation and payload decoding,

@@ -6,49 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
-
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.5.0...ironrdp-cliprdr-v0.6.0)] - 2026-05-27
 
 ### <!-- 1 -->Features
 
-- Add clipboard data locking methods ([#1064](https://github.com/Devolutions/IronRDP/issues/1064)) ([58c3df84bb](https://github.com/Devolutions/IronRDP/commit/58c3df84bb9cafc8669315834cead35a71483c34)) 
+- [**breaking**] Implement clipboard file transfer support ([#1166](https://github.com/Devolutions/IronRDP/issues/1166)) ([c98a8fb774](https://github.com/Devolutions/IronRDP/commit/c98a8fb7741986e9afef00cb5615250c963a7fa9))
+
+  Add end-to-end clipboard file transfer (upload and download) across the
+  CLIPRDR channel per MS-RDPECLIP. Automatic clipboard locking: when
+  `FileGroupDescriptorW` is detected in a FormatList, the processor
+  automatically sends Lock PDUs and manages the lock lifecycle (expiry,
+  cleanup, Unlock PDUs) internally.
+
+  New `CliprdrBackend` methods (with default implementations):
+  `on_remote_file_list()`, `on_file_contents_request()`,
+  `on_outgoing_locks_cleared()`, `on_outgoing_locks_expired()`, and
+  `now_ms()` / `elapsed_ms()` for timeout tracking. New `drive_timeouts()`
+  method for callers to invoke periodically. Comprehensive path
+  sanitization to protect against path traversal attacks.
+
+  Breaking changes folded in: removed `ClipboardMessage::SendLockClipboard`
+  and `SendUnlockClipboard` variants (lock/unlock is now managed
+  internally); renamed `FileContentsFlags::DATA` to `RANGE` (matches
+  MS-RDPECLIP 2.2.5.3 terminology); changed `FileContentsRequest::index`
+  from `u32` to `i32` (per spec); made `FileDescriptor` `#[non_exhaustive]`
+  and added `relative_path: Option<String>` field (use the builder pattern
+  instead of struct literals).
+
+- Add clipboard data locking methods ([#1064](https://github.com/Devolutions/IronRDP/issues/1064)) ([58c3df84bb](https://github.com/Devolutions/IronRDP/commit/58c3df84bb9cafc8669315834cead35a71483c34))
 
   Per [MS-RDPECLIP sections 2.2.4.6 and 2.2.4.7][lock-spec], the local
   clipboard owner can lock shared clipboard data before requesting file
   contents, ensuring data stability during multi-request transfers.
 
-- Add request_file_contents method ([#1065](https://github.com/Devolutions/IronRDP/issues/1065)) ([c30fc35a28](https://github.com/Devolutions/IronRDP/commit/c30fc35a28d6218603c1662e98e8b3053bea3aa5)) 
+- Add request_file_contents method ([#1065](https://github.com/Devolutions/IronRDP/issues/1065)) ([c30fc35a28](https://github.com/Devolutions/IronRDP/commit/c30fc35a28d6218603c1662e98e8b3053bea3aa5))
 
   Per [MS-RDPECLIP section 2.2.5.3][file-contents-spec], this adds support
   for sending File Contents Request PDUs to retrieve remote file data
   during paste operations.
 
-- Add SendFileContentsResponse message variant ([#1066](https://github.com/Devolutions/IronRDP/issues/1066)) ([25f81337aa](https://github.com/Devolutions/IronRDP/commit/25f81337aa494af9a21f55f12ec27fd946465cbe)) 
+- Add SendFileContentsResponse message variant ([#1066](https://github.com/Devolutions/IronRDP/issues/1066)) ([25f81337aa](https://github.com/Devolutions/IronRDP/commit/25f81337aa494af9a21f55f12ec27fd946465cbe))
 
   Adds `SendFileContentsResponse` to `ClipboardMessage`, allowing
   clipboard backends to signal when file data is ready to be sent via
   `submit_file_contents()`.
 
-- Implement clipboard file transfer support ([#1166](https://github.com/Devolutions/IronRDP/issues/1166)) ([c98a8fb774](https://github.com/Devolutions/IronRDP/commit/c98a8fb7741986e9afef00cb5615250c963a7fa9)) 
+- Always set FD_PROGRESSUI in FileDescriptor::encode ([#1299](https://github.com/Devolutions/IronRDP/issues/1299)) ([7e0bfd3c55](https://github.com/Devolutions/IronRDP/commit/7e0bfd3c550135a3c9c85cb66a478ce41c8641d9))
 
-  Add end-to-end clipboard file transfer (upload and download) across the
-  CLIPRDR channel per MS-RDPECLIP.
-
-- Always set FD_PROGRESSUI in FileDescriptor::encode ([#1299](https://github.com/Devolutions/IronRDP/issues/1299)) ([7e0bfd3c55](https://github.com/Devolutions/IronRDP/commit/7e0bfd3c550135a3c9c85cb66a478ce41c8641d9)) 
-
-- Advertise Preferred DropEffect alongside FileGroupDescriptorW ([#1301](https://github.com/Devolutions/IronRDP/issues/1301)) ([5375bbb9dd](https://github.com/Devolutions/IronRDP/commit/5375bbb9ddb8b853973d050fa2efd0ed217ac17b)) 
+- Advertise Preferred DropEffect alongside FileGroupDescriptorW ([#1301](https://github.com/Devolutions/IronRDP/issues/1301)) ([5375bbb9dd](https://github.com/Devolutions/IronRDP/commit/5375bbb9ddb8b853973d050fa2efd0ed217ac17b))
 
   `initiate_file_copy` now advertises **both** `FileGroupDescriptorW` and
   `Preferred DropEffect` (`CFSTR_PREFERREDDROPEFFECT`) in the FormatList,
   and `handle_format_data_request` short-circuits a request for the latter
   with `DROPEFFECT_COPY` (0x00000001 LE).
 
-- Add CliprdrBackend::on_format_list_response(ok) hook ([#1300](https://github.com/Devolutions/IronRDP/issues/1300)) ([a4bc475360](https://github.com/Devolutions/IronRDP/commit/a4bc4753607d87ef0989d9df16a31cd22e7c7fde)) 
+- [**breaking**] Add CliprdrBackend::on_format_list_response(ok) hook ([#1300](https://github.com/Devolutions/IronRDP/issues/1300)) ([a4bc475360](https://github.com/Devolutions/IronRDP/commit/a4bc4753607d87ef0989d9df16a31cd22e7c7fde))
 
 ### <!-- 4 -->Bug Fixes
 
-- Replace all from_bits_truncate with from_bits_retain ([#1144](https://github.com/Devolutions/IronRDP/issues/1144)) ([353e30ddfd](https://github.com/Devolutions/IronRDP/commit/353e30ddfdaafc897db10b8663e364ef7775a7fd)) 
+- Replace all from_bits_truncate with from_bits_retain ([#1144](https://github.com/Devolutions/IronRDP/issues/1144)) ([353e30ddfd](https://github.com/Devolutions/IronRDP/commit/353e30ddfdaafc897db10b8663e364ef7775a7fd))
 
   from_bits_truncate silently discards unknown bits, which breaks the
   encode/decode round-trip property. This matters for fuzzing because a
@@ -58,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 6 -->Documentation
 
-- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419)) 
+- Establish the MSRV policy (current is 1.89) ([#1157](https://github.com/Devolutions/IronRDP/issues/1157)) ([c10e6ff16c](https://github.com/Devolutions/IronRDP/commit/c10e6ff16cc45f094b24e87ed1d46eb88b4a0419))
 
   The MSRV is the oldest stable Rust release that is at least 6 months
   old, bounded by the Rust version available in Debian stable-backports
@@ -66,61 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 7 -->Build
 
-- Bump the patch group across 1 directory with 2 updates ([#1222](https://github.com/Devolutions/IronRDP/issues/1222)) ([3fe6d157e0](https://github.com/Devolutions/IronRDP/commit/3fe6d157e0b55bddfdac20af290a6cfa6e550576)) 
+- Bump the patch group across 1 directory with 2 updates ([#1222](https://github.com/Devolutions/IronRDP/issues/1222)) ([3fe6d157e0](https://github.com/Devolutions/IronRDP/commit/3fe6d157e0b55bddfdac20af290a6cfa6e550576))
 
 
-
-### <!-- 1 -->Features
-
-- [**breaking**] Add clipboard file transfer support per MS-RDPECLIP
-
-  Implements end-to-end clipboard file transfer (upload and download) across the
-  CLIPRDR channel. Key changes:
-
-  - Automatic clipboard locking: when `FileGroupDescriptorW` is detected in a
-    FormatList, the processor automatically sends Lock PDUs and manages the lock
-    lifecycle (expiry, cleanup, Unlock PDUs) internally.
-  - New `CliprdrBackend` methods with default implementations:
-    - `on_remote_file_list()` - called when remote announces files
-    - `on_file_contents_request()` - called when remote requests file data
-    - `on_outgoing_locks_cleared()` - called when locks are released
-    - `on_outgoing_locks_expired()` - called when locks expire
-    - `now_ms()` / `elapsed_ms()` - time source for timeout tracking
-  - New `drive_timeouts()` method for callers to invoke periodically to clean up
-    stale locks and pending requests.
-  - Comprehensive path sanitization to protect against path traversal attacks.
-
-- [**breaking**] Remove `ClipboardMessage::SendLockClipboard` and `SendUnlockClipboard` variants
-
-  Lock/unlock is now managed internally by the `Cliprdr` processor. Backends no
-  longer need to handle these messages. Remove any code that matches on these
-  variants.
-
-- [**breaking**] Rename `FileContentsFlags::DATA` to `FileContentsFlags::RANGE`
-
-  Aligns with MS-RDPECLIP 2.2.5.3 terminology where this flag indicates a
-  "range" request for file data bytes. Replace `FileContentsFlags::DATA` with
-  `FileContentsFlags::RANGE` in your code.
-
-- [**breaking**] Change `FileContentsRequest::index` type from `u32` to `i32`
-
-  Per MS-RDPECLIP 2.2.5.3, the `lindex` field is a signed 32-bit integer.
-  This corrects the spec compliance. Update code to use `i32` for the index field.
-
-- [**breaking**] Make `FileDescriptor` `#[non_exhaustive]` and add `relative_path` field
-
-  The `FileDescriptor` struct is now marked `#[non_exhaustive]` to allow future
-  field additions without breaking changes. A new `relative_path: Option<String>`
-  field has been added to support directory structure in file transfers.
-
-  **Migration:** Use the builder pattern instead of struct literals:
-  ```rust
-  // Before (no longer compiles)
-  let desc = FileDescriptor { name: "file.txt".into(), file_size: Some(1024), ... };
-
-  // After
-  let desc = FileDescriptor::new("file.txt").with_file_size(1024);
-  ```
 
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.4.0...ironrdp-cliprdr-v0.5.0)] - 2025-12-18
 

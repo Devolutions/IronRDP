@@ -2543,7 +2543,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-cliprdr-native"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-core",
@@ -2817,7 +2817,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd-native"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2884,7 +2884,7 @@ version = "0.0.0"
 
 [[package]]
 name = "ironrdp-str"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytemuck",
  "ironrdp-core",
