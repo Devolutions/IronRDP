@@ -552,19 +552,15 @@ fn qoi_apply(
     update_rectangle: &mut Option<InclusiveRectangle>,
 ) -> SessionResult<()> {
     let (header, decoded) = qoi::decode_to_vec(data).map_err(|e| reason_err!("QOI decode", "{}", e))?;
-    match header.channels {
-        qoi::Channels::Rgb => {
-            let rectangle = image.apply_rgb24(&decoded, &destination, false)?;
+    let rectangle = match header.channels {
+        qoi::Channels::Rgb => image.apply_rgb24(&decoded, &destination, false)?,
+        qoi::Channels::Rgba => image.apply_rgba32(&decoded, &destination, false)?,
+    };
 
-            *update_rectangle = update_rectangle
-                .as_ref()
-                .map(|rect: &InclusiveRectangle| rect.union(&rectangle))
-                .or(Some(rectangle));
-        }
-        qoi::Channels::Rgba => {
-            warn!("Unsupported RGBA QOI data");
-        }
-    }
+    *update_rectangle = update_rectangle
+        .as_ref()
+        .map(|rect: &InclusiveRectangle| rect.union(&rectangle))
+        .or(Some(rectangle));
     Ok(())
 }
 
