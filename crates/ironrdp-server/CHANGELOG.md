@@ -12,40 +12,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add clipboard data locking methods ([#1064](https://github.com/Devolutions/IronRDP/issues/1064)) ([58c3df84bb](https://github.com/Devolutions/IronRDP/commit/58c3df84bb9cafc8669315834cead35a71483c34)) 
 
-  Per [MS-RDPECLIP sections 2.2.4.6 and 2.2.4.7][lock-spec], the Local
-  Clipboard
-  Owner may lock the Shared Clipboard Owner's clipboard data before
-  requesting
-  file contents to ensure data stability during multi-request transfers.
+  Per MS-RDPECLIP sections 2.2.4.6 and 2.2.4.7, the Local
+  Clipboard Owner may lock the Shared Clipboard Owner's clipboard data before
+  requesting file contents to ensure data stability during multi-request transfers.
   
   This enables server implementations to safely request file data from
-  clients
-  when handling clipboard paste operations.
-  
-  ---------
+  clients when handling clipboard paste operations.
 
 - Add request_file_contents method ([#1065](https://github.com/Devolutions/IronRDP/issues/1065)) ([c30fc35a28](https://github.com/Devolutions/IronRDP/commit/c30fc35a28d6218603c1662e98e8b3053bea3aa5)) 
 
-  Per [MS-RDPECLIP section 2.2.5.3][file-contents-spec], the Local
-  Clipboard Owner
+  Per MS-RDPECLIP section 2.2.5.3, the Local Clipboard Owner
   sends File Contents Request PDU to retrieve file data from the Shared
-  Clipboard
-  Owner during paste operations.
+  Clipboard Owner during paste operations.
   
   This enables server implementations to request file contents from
-  clients,
-  completing the bidirectional file transfer capability.
+  clients, completing the bidirectional file transfer capability.
 
 - Add SendFileContentsResponse message variant ([#1066](https://github.com/Devolutions/IronRDP/issues/1066)) ([25f81337aa](https://github.com/Devolutions/IronRDP/commit/25f81337aa494af9a21f55f12ec27fd946465cbe)) 
 
   Adds `SendFileContentsResponse` to `ClipboardMessage` enum, enabling
-  clipboard
-  backends to signal when file data is ready to send via
+  clipboard backends to signal when file data is ready to send via
   `submit_file_contents()`.
   
   This provides the message-based interface pattern used consistently by
-  server
-  implementations for clipboard operations.
+  server implementations for clipboard operations.
 
 - Expose client display size to RdpServerDisplay ([#1083](https://github.com/Devolutions/IronRDP/issues/1083)) ([3cf570788d](https://github.com/Devolutions/IronRDP/commit/3cf570788d418ef0d83670c8581ddb61582237fe)) 
 
@@ -78,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CLIPRDR channel per MS-RDPECLIP.
 
 - Handle SuppressOutput / RefreshRectangle and expose state ([#1319](https://github.com/Devolutions/IronRDP/issues/1319)) ([aa7ff679b9](https://github.com/Devolutions/IronRDP/commit/aa7ff679b914dbbc9bfe137d7f4f26bea30d6323)) 
+
+- Add pointer caching support to ironrdp-server ([1a6b4206d5](https://github.com/Devolutions/IronRDP/commit/1a6b4206d5f0fe3333da721adeaea3f7d2aa65cf)) 
 
 ### <!-- 4 -->Bug Fixes
 
@@ -129,10 +121,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### <!-- 7 -->Build
 
 - Bump rayon from 1.11.0 to 1.12.0 ([#1235](https://github.com/Devolutions/IronRDP/issues/1235)) ([a5dab356e5](https://github.com/Devolutions/IronRDP/commit/a5dab356e5bc29cde2fdcd71b6d11fdf38a96a9f)) 
-
-### <!-- 99 -->Please Sort
-
-- Add pointer caching support to ironrdp-server ([1a6b4206d5](https://github.com/Devolutions/IronRDP/commit/1a6b4206d5f0fe3333da721adeaea3f7d2aa65cf)) 
 
 
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.9.0...ironrdp-server-v0.10.0)] - 2025-12-18

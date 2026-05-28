@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dispatch multitransport PDUs on IO channel ([#1096](https://github.com/Devolutions/IronRDP/issues/1096)) ([7853e3cc6f](https://github.com/Devolutions/IronRDP/commit/7853e3cc6f26acaf3da000c6177ca3cef6ef85fd)) 
 
   `decode_io_channel()` assumes all IO channel PDUs begin with
-  a`ShareControlHeader`. Multitransport Request PDUs use a
+  a `ShareControlHeader`. Multitransport Request PDUs use a
   `BasicSecurityHeader` with `SEC_TRANSPORT_REQ` instead ([MS-RDPBCGR]
   2.2.15.1).
   
@@ -46,11 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MultiTransportChannelData GCC block during connection negotiation.
   When None (the default), behavior is unchanged.
 
-- Add arbitrary feature for structure-aware fuzzing ([#1272](https://github.com/Devolutions/IronRDP/issues/1272)) ([af11df1fd0](https://github.com/Devolutions/IronRDP/commit/af11df1fd0d3c7fdc27f280bea17c3b2296a47fd)) 
-
 ### <!-- 4 -->Bug Fixes
-
-- [**breaking**] Make fields of Error private ([#1074](https://github.com/Devolutions/IronRDP/issues/1074)) ([e51ed236ce](https://github.com/Devolutions/IronRDP/commit/e51ed236ce5d55dc1a4bc5f5809fd106bdd2e834)) 
 
 - Propagate negotiated share_id to all outgoing ShareDataPdu ([#1147](https://github.com/Devolutions/IronRDP/issues/1147)) ([2b24e9664d](https://github.com/Devolutions/IronRDP/commit/2b24e9664dd05620ff63a24d092377477fdde863)) 
 
@@ -75,12 +71,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Surface actual PDU type when an unexpected Share Control PDU arrives ([#1236](https://github.com/Devolutions/IronRDP/issues/1236)) ([78effb3f91](https://github.com/Devolutions/IronRDP/commit/78effb3f9144a482395be738b2c9fd4d909b7b89)) 
 
-- [**breaking**] Remove `arbitrary` feature ([#1273](https://github.com/Devolutions/IronRDP/issues/1273)) ([4c5301850b](https://github.com/Devolutions/IronRDP/commit/4c5301850bf326fd8c212f0ff663089a67d09099)) 
-
-  The connector types are unlikely to benefit from random value generation
-  for fuzzing purposes; a more targeted approach would be preferable if
-  the connector is fuzzed in the future. We’ll reevaluate later.
-
 - Handle ServerDeactivateAll during CapabilitiesExchange ([#1254](https://github.com/Devolutions/IronRDP/issues/1254)) ([9cb5439b4a](https://github.com/Devolutions/IronRDP/commit/9cb5439b4a78c4a7facc854464894c7893f6a926)) 
 
   Some RDP servers (notably GNOME Remote Desktop / grd) send a
@@ -99,11 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 7 -->Build
 
-- Upgrade sspi to 0.19 and picky to rc.22; fix NTLM fallback ([#1188](https://github.com/Devolutions/IronRDP/issues/1188)) ([c70d38a9f1](https://github.com/Devolutions/IronRDP/commit/c70d38a9f190d6ad6c84bd9027a388b5db3296ba)) 
-
-- Upgrade sspi from 0.19.2 to 0.20.0 ([#1250](https://github.com/Devolutions/IronRDP/issues/1250)) ([a00f51d957](https://github.com/Devolutions/IronRDP/commit/a00f51d95776a48447705f0eb6424ba54e8943a9)) 
-
-- Upgrade to sspi 0.21 and picky rc.23 for released RustCrypto ([#1296](https://github.com/Devolutions/IronRDP/issues/1296)) ([d5b3fa7db8](https://github.com/Devolutions/IronRDP/commit/d5b3fa7db8a4ce74ac9a9aaff3064faf6cb6c920)) 
+- Upgrade to sspi 0.21 and picky rc.23 ([#1296](https://github.com/Devolutions/IronRDP/issues/1296)) ([d5b3fa7db8](https://github.com/Devolutions/IronRDP/commit/d5b3fa7db8a4ce74ac9a9aaff3064faf6cb6c920)) 
 
 
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.1...ironrdp-connector-v0.8.0)] - 2025-12-18

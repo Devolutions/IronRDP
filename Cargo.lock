@@ -2598,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc-com-plugin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",

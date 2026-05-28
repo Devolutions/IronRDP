@@ -35,13 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add clipboard data locking methods ([#1064](https://github.com/Devolutions/IronRDP/issues/1064)) ([58c3df84bb](https://github.com/Devolutions/IronRDP/commit/58c3df84bb9cafc8669315834cead35a71483c34))
 
-  Per [MS-RDPECLIP sections 2.2.4.6 and 2.2.4.7][lock-spec], the local
+  Per MS-RDPECLIP sections 2.2.4.6 and 2.2.4.7, the local
   clipboard owner can lock shared clipboard data before requesting file
   contents, ensuring data stability during multi-request transfers.
 
 - Add request_file_contents method ([#1065](https://github.com/Devolutions/IronRDP/issues/1065)) ([c30fc35a28](https://github.com/Devolutions/IronRDP/commit/c30fc35a28d6218603c1662e98e8b3053bea3aa5))
 
-  Per [MS-RDPECLIP section 2.2.5.3][file-contents-spec], this adds support
+  Per MS-RDPECLIP section 2.2.5.3, this adds support
   for sending File Contents Request PDUs to retrieve remote file data
   during paste operations.
 

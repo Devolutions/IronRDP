@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Capture caller location with `#[track_caller]` + `core::panic::Location::caller()`
   and include it in `Display` output while keeping `Debug` stable for snapshots.
 
-- Add shared bail! and ensure! macros ([#1263](https://github.com/Devolutions/IronRDP/issues/1263)) ([68b86f2b06](https://github.com/Devolutions/IronRDP/commit/68b86f2b06ba9b09a2f9e007dd5f1783b6979cca)) 
+- Add bail! and ensure! macros ([#1263](https://github.com/Devolutions/IronRDP/issues/1263)) ([68b86f2b06](https://github.com/Devolutions/IronRDP/commit/68b86f2b06ba9b09a2f9e007dd5f1783b6979cca)) 
 
 ### <!-- 4 -->Bug Fixes
 

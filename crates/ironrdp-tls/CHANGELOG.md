@@ -10,10 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 7 -->Build
 
-- Bump tokio from 1.50.0 to 1.51.1 ([#1219](https://github.com/Devolutions/IronRDP/issues/1219)) ([d3e673b455](https://github.com/Devolutions/IronRDP/commit/d3e673b455ec817df7590cef27e598c8517828ae)) 
-
-- Bump tokio from 1.51.1 to 1.52.1 ([#1223](https://github.com/Devolutions/IronRDP/issues/1223)) ([8bf140f49d](https://github.com/Devolutions/IronRDP/commit/8bf140f49d3bee952e395ffeb514a27c4725eb15)) 
-
+- Bump tokio from 1.50.0 to 1.52.1 ([#1219](https://github.com/Devolutions/IronRDP/issues/1219)) ([d3e673b455](https://github.com/Devolutions/IronRDP/commit/d3e673b455ec817df7590cef27e598c8517828ae)) ([#1223](https://github.com/Devolutions/IronRDP/issues/1223)) ([8bf140f49d](https://github.com/Devolutions/IronRDP/commit/8bf140f49d3bee952e395ffeb514a27c4725eb15)) 
 
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.1.4...ironrdp-tls-v0.2.0)] - 2025-12-18
 
