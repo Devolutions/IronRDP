@@ -86,3 +86,8 @@ fn check_egfx_avc444_decode() {
 fn check_egfx_zgfx_decompress() {
     check!(egfx_zgfx_decompress);
 }
+
+#[test]
+fn check_egfx_surface_state() {
+    check!(egfx_surface_state);
+}
