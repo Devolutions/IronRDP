@@ -229,7 +229,7 @@ impl Processor {
                         usize::from(update.width),
                         usize::from(update.height),
                     ) {
-                        Ok(()) => image.apply_rgb24(&buf, &blit_rect, true)?,
+                        Ok(()) => image.apply_rgb24(&buf, &blit_rect, update.width, true)?,
                         Err(err) => {
                             warn!("Invalid RDP6_BITMAP_STREAM: {err}");
                             update.rectangle.clone()
@@ -248,11 +248,11 @@ impl Processor {
                         usize::from(update.height),
                         usize::from(update.bits_per_pixel),
                     ) {
-                        Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &blit_rect)?,
-                        Ok(RlePixelFormat::Rgb15) => image.apply_rgb15_bitmap(&buf, &blit_rect)?,
-                        Ok(RlePixelFormat::Rgb24) => image.apply_bgr24_bitmap(&buf, &blit_rect)?,
+                        Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &blit_rect, clipped_width)?,
+                        Ok(RlePixelFormat::Rgb15) => image.apply_rgb15_bitmap(&buf, &blit_rect, clipped_width)?,
+                        Ok(RlePixelFormat::Rgb24) => image.apply_bgr24_bitmap(&buf, &blit_rect, clipped_width)?,
                         Ok(RlePixelFormat::Rgb8) => {
-                            image.apply_rgb8_with_palette(&buf, &blit_rect, self.palette.colors())?
+                            image.apply_rgb8_with_palette(&buf, &blit_rect, self.palette.colors(), clipped_width)?
                         }
 
                         Err(e) => {
@@ -284,11 +284,11 @@ impl Processor {
                     }
 
                     match update.bits_per_pixel {
-                        8 => image.apply_rgb8_with_palette(&buf, &blit_rect, self.palette.colors())?,
-                        15 => image.apply_rgb15_bitmap(&buf, &blit_rect)?,
-                        16 => image.apply_rgb16_bitmap(&buf, &blit_rect)?,
-                        24 => image.apply_bgr24_bitmap(&buf, &blit_rect)?,
-                        32 => image.apply_rgb32_bitmap(&buf, PixelFormat::BgrX32, &blit_rect)?,
+                        8 => image.apply_rgb8_with_palette(&buf, &blit_rect, self.palette.colors(), clipped_width)?,
+                        15 => image.apply_rgb15_bitmap(&buf, &blit_rect, clipped_width)?,
+                        16 => image.apply_rgb16_bitmap(&buf, &blit_rect, clipped_width)?,
+                        24 => image.apply_bgr24_bitmap(&buf, &blit_rect, clipped_width)?,
+                        32 => image.apply_rgb32_bitmap(&buf, PixelFormat::BgrX32, &blit_rect, clipped_width)?,
                         _ => {
                             warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
                             update.rectangle.clone()
@@ -300,11 +300,17 @@ impl Processor {
                             update.bitmap_data,
                             &blit_rect,
                             self.palette.colors(),
+                            clipped_width,
                         )?,
-                        15 => image.apply_rgb15_bitmap(update.bitmap_data, &blit_rect)?,
-                        16 => image.apply_rgb16_bitmap(update.bitmap_data, &blit_rect)?,
-                        24 => image.apply_bgr24_bitmap(update.bitmap_data, &blit_rect)?,
-                        32 => image.apply_rgb32_bitmap(update.bitmap_data, PixelFormat::BgrX32, &blit_rect)?,
+                        15 => image.apply_rgb15_bitmap(update.bitmap_data, &blit_rect, clipped_width)?,
+                        16 => image.apply_rgb16_bitmap(update.bitmap_data, &blit_rect, clipped_width)?,
+                        24 => image.apply_bgr24_bitmap(update.bitmap_data, &blit_rect, clipped_width)?,
+                        32 => image.apply_rgb32_bitmap(
+                            update.bitmap_data,
+                            PixelFormat::BgrX32,
+                            &blit_rect,
+                            clipped_width,
+                        )?,
                         _ => {
                             warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
                             update.rectangle.clone()
@@ -485,14 +491,23 @@ impl Processor {
                     match codec_id {
                         CODEC_ID_NONE => {
                             let ext_data = bits.extended_bitmap_data;
+                            let dest_width = destination.width();
                             let rectangle = match ext_data.bpp {
-                                8 => {
-                                    image.apply_rgb8_with_palette(ext_data.data, &destination, self.palette.colors())?
-                                }
-                                15 => image.apply_rgb15_bitmap(ext_data.data, &destination)?,
-                                16 => image.apply_rgb16_bitmap(ext_data.data, &destination)?,
-                                24 => image.apply_bgr24_bitmap(ext_data.data, &destination)?,
-                                32 => image.apply_rgb32_bitmap(ext_data.data, PixelFormat::BgrX32, &destination)?,
+                                8 => image.apply_rgb8_with_palette(
+                                    ext_data.data,
+                                    &destination,
+                                    self.palette.colors(),
+                                    dest_width,
+                                )?,
+                                15 => image.apply_rgb15_bitmap(ext_data.data, &destination, dest_width)?,
+                                16 => image.apply_rgb16_bitmap(ext_data.data, &destination, dest_width)?,
+                                24 => image.apply_bgr24_bitmap(ext_data.data, &destination, dest_width)?,
+                                32 => image.apply_rgb32_bitmap(
+                                    ext_data.data,
+                                    PixelFormat::BgrX32,
+                                    &destination,
+                                    dest_width,
+                                )?,
                                 bpp => {
                                     warn!("Unsupported surface CODEC_ID_NONE bpp: {bpp}");
                                     continue;
@@ -572,7 +587,7 @@ fn qoi_apply(
     let (header, decoded) = qoi::decode_to_vec(data).map_err(|e| reason_err!("QOI decode", "{}", e))?;
     match header.channels {
         qoi::Channels::Rgb => {
-            let rectangle = image.apply_rgb24(&decoded, &destination, false)?;
+            let rectangle = image.apply_rgb24(&decoded, &destination, destination.width(), false)?;
 
             *update_rectangle = update_rectangle
                 .as_ref()
