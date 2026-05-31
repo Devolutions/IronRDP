@@ -23,7 +23,7 @@ pub struct InterfaceRelease {
 }
 
 impl InterfaceRelease {
-    pub const FIXED_PART_SIZE: usize = SharedMsgHeader::SIZE_RSP;
+    pub const FIXED_PART_SIZE: usize = SharedMsgHeader::SIZE_REQ;
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
@@ -34,7 +34,6 @@ impl InterfaceRelease {
     }
 
     pub(super) fn from_header(header: SharedMsgHeader) -> Self {
-        debug_assert!(header.function_id == Some(FunctionId::RIMCALL_RELEASE));
         Self {
             iface_id: header.iface_id,
             msg_id: header.msg_id,

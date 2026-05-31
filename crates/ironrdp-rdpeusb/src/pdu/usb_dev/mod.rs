@@ -8,13 +8,13 @@ use alloc::format;
 use alloc::vec::Vec;
 
 use ironrdp_core::{
-    DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
-    invalid_field_err, other_err, unsupported_value_err,
+    Decode as _, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size,
+    ensure_size, invalid_field_err, other_err, unsupported_value_err,
 };
 use ironrdp_str::prefixed::Cch32String;
 
 use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
-use crate::pdu::usb_dev::ts_urb::{TransferDirection, TsUrb};
+use crate::pdu::usb_dev::ts_urb::{TsUrbIn, TsUrbOut};
 use crate::pdu::utils::{HResult, RequestId, RequestIdIoctl};
 #[cfg(doc)]
 use crate::pdu::{
@@ -645,7 +645,7 @@ impl Encode for QueryDeviceTextRsp {
 pub struct TransferInRequest {
     pub msg_id: MessageId,
     pub udev_iface: InterfaceId,
-    pub ts_urb: TsUrb,
+    pub ts_urb: TsUrbIn,
     pub output_buffer_size: u32,
 }
 
@@ -659,7 +659,7 @@ impl TransferInRequest {
     }
 
     pub fn check_output_buffer_size(&self) -> Result<(), &'static str> {
-        use TsUrb::*;
+        use TsUrbIn::*;
 
         match self.ts_urb {
             SelectConfig(_) if self.output_buffer_size != 0 => {
@@ -699,7 +699,7 @@ impl TransferInRequest {
         let cb_ts_urb = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
 
         ensure_size!(in: src, size: cb_ts_urb);
-        let ts_urb = TsUrb::decode(&mut ReadCursor::new(src.read_slice(cb_ts_urb)), TransferDirection::In)?;
+        let ts_urb = TsUrbIn::decode(&mut ReadCursor::new(src.read_slice(cb_ts_urb)))?;
 
         ensure_size!(in: src, size: 4 /* OutputBufferSize */);
         let output_buffer_size = src.read_u32();
@@ -727,7 +727,7 @@ impl Encode for TransferInRequest {
 
         self.header().encode(dst)?;
         dst.write_u32(self.ts_urb.size().try_into().map_err(|e| other_err!(source: e))?);
-        self.ts_urb.encode(dst, TransferDirection::In)?;
+        self.ts_urb.encode(dst)?;
         dst.write_u32(self.output_buffer_size);
 
         Ok(())
@@ -755,7 +755,7 @@ impl Encode for TransferInRequest {
 pub struct TransferOutRequest {
     pub msg_id: MessageId,
     pub udev_iface: InterfaceId,
-    pub ts_urb: TsUrb,
+    pub ts_urb: TsUrbOut,
     pub output_buffer: Vec<u8>,
 }
 
@@ -774,7 +774,7 @@ impl TransferOutRequest {
             let cb_ts_urb = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
             ensure_size!(in: src, size: cb_ts_urb);
             let mut src = ReadCursor::new(src.read_slice(cb_ts_urb));
-            TsUrb::decode(&mut src, TransferDirection::Out)?
+            TsUrbOut::decode(&mut src)?
         };
 
         ensure_size!(in: src, size: 4 /* OutputBufferSize */);
@@ -800,7 +800,7 @@ impl Encode for TransferOutRequest {
 
         dst.write_u32(self.ts_urb.size().try_into().map_err(|e| other_err!(source: e))?);
 
-        self.ts_urb.encode(dst, TransferDirection::Out)?;
+        self.ts_urb.encode(dst)?;
 
         dst.write_u32(self.output_buffer.len().try_into().map_err(|e| other_err!(source: e))?);
 

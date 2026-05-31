@@ -1,5 +1,5 @@
-//! Contains valid URB Functions, the common header [`TsUrbHeader`] for all [`TsUrb`] structures,
-//! and utility data types.
+//! Contains valid URB Functions, the common header [`TsUrbHeader`] for all [`TsUrbIn`] and
+//! [`TsUrbOut`] structures, and utility data types.
 
 use alloc::vec::Vec;
 
@@ -13,10 +13,10 @@ use crate::pdu::utils::RequestIdTransferInOut;
 use crate::pdu::{
     header::SharedMsgHeader,
     usb_dev::ts_urb::{
-        TsUrb, TsUrbBulkOrInterruptTransfer, TsUrbControlDescRequest, TsUrbControlFeatRequest,
-        TsUrbControlGetConfigRequest, TsUrbControlGetInterfaceRequest, TsUrbControlGetStatusRequest,
-        TsUrbControlTransfer, TsUrbControlTransferEx, TsUrbControlVendorClassRequest, TsUrbGetCurrFrameNum,
-        TsUrbIsochTransfer, TsUrbOsFeatDescRequest, TsUrbPipeRequest, TsUrbSelectConfig, TsUrbSelectInterface,
+        TsUrbBulkOrInterruptTransfer, TsUrbControlDescRequest, TsUrbControlFeatRequest, TsUrbControlGetConfigRequest,
+        TsUrbControlGetInterfaceRequest, TsUrbControlGetStatusRequest, TsUrbControlTransfer, TsUrbControlTransferEx,
+        TsUrbControlVendorClassRequest, TsUrbGetCurrFrameNum, TsUrbIn, TsUrbIsochTransfer, TsUrbOsFeatDescRequest,
+        TsUrbOut, TsUrbPipeRequest, TsUrbSelectConfig, TsUrbSelectInterface,
     },
 };
 
@@ -292,13 +292,15 @@ impl From<UrbFunction> for u16 {
 
 /// [\[MS-RDPEUSB\] 2.2.9.1.1 TS_URB_HEADER][1].
 ///
-/// Common header for all of the [`TsUrb`] variants. Analogous to how [`SharedMsgHeader`] is for
-/// all the "top-level" packets defined in the spec.
+/// Common header for all of the [`TsUrbIn`] and [`TsUrbOut`] variants. Analogous to how
+/// [`SharedMsgHeader`] is for all the "top-level" packets defined in the spec.
 ///
 /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/578da9ca-3116-4608-9737-1bf3df4de3d1
 #[doc(alias = "TS_URB_HEADER")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbHeader {
+    /// The size in bytes of the TS_URB structure.
+    pub ts_urb_size: u16,
     /// Indicates what function to perform (see [`UrbFunction`]).
     pub func: UrbFunction,
     // pub(crate) urb_function: u16,
@@ -335,14 +337,28 @@ pub struct TsUrbHeader {
 
 impl TsUrbHeader {
     pub const FIXED_PART_SIZE: usize =
-        /* size_of::<u16>(/* Size */) + */ /* SHOULD BE managed by the outer TS_URB */
-        size_of::<u16>(/* URB Function */) + size_of::<u32>(/* RequestId, NoAck */);
+        2 /* Size */ + 2 /* URB Function */ + 4 /* RequestId, NoAck */;
+
+    pub(super) fn encode_with_size(&self, dst: &mut WriteCursor<'_>, ts_urb_size: usize) -> EncodeResult<()> {
+        let ts_urb_size = ts_urb_size
+            .try_into()
+            .map_err(|_| invalid_field_err!("TS_URB_HEADER::Size", "too large: exceeded 2-byte size field"))?;
+
+        Self {
+            ts_urb_size,
+            func: self.func,
+            req_id: self.req_id,
+            no_ack: self.no_ack,
+        }
+        .encode(dst)
+    }
 }
 
 impl Encode for TsUrbHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
+        dst.write_u16(self.ts_urb_size);
         dst.write_u16(self.func.into());
 
         let no_ack = u32::from(self.no_ack) << 31;
@@ -364,13 +380,33 @@ impl Encode for TsUrbHeader {
 impl Decode<'_> for TsUrbHeader {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
+        let size = src.read_u16();
+        if usize::from(size) < Self::FIXED_PART_SIZE {
+            return Err(invalid_field_err!("TS_URB_HEADER::Size", "is smaller than 8"));
+        }
 
         let func = UrbFunction::from(src.read_u16());
         let last32 = src.read_u32();
         let req_id = RequestIdTransferInOut::try_from(last32 & 0x7F_FF_FF_FF).expect("value clamped");
         let no_ack = (last32 >> 31) != 0;
+        if no_ack
+            && !matches!(
+                func,
+                UrbFunction::URB_FUNCTION_ISOCH_TRANSFER | UrbFunction::URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL
+            )
+        {
+            return Err(invalid_field_err!(
+                "TS_URB_HEADER::NoAck",
+                "this bit can only be set when URB Function is an isochronous transfer"
+            ));
+        }
 
-        Ok(Self { func, req_id, no_ack })
+        Ok(Self {
+            ts_urb_size: size,
+            func,
+            req_id,
+            no_ack,
+        })
     }
 }
 

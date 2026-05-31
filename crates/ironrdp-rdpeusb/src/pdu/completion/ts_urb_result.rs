@@ -1,4 +1,4 @@
-//! Packets sent as responses to [`TsUrb`]s received from the server as part of
+//! Packets sent as responses to [`TsUrbIn`] and [`TsUrbOut`] received from the server as part of
 //! [`TransferInRequest`] and [`TransferOutRequest`] messages.
 //!
 //! The [`TsUrbResult`] packets are sent as part of [`UrbCompletion`] or [`UrbCompletionNoData`].
