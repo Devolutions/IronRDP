@@ -13,7 +13,7 @@ use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, QoeM
 struct TestHandler {
     ready_called: bool,
     negotiated: Option<CapabilitySet>,
-    frame_acks: Vec<(u32, u32)>,
+    frame_acks: Vec<(u32, u32, u32)>,
     surfaces_created: Vec<u16>,
     surfaces_deleted: Vec<u16>,
 }
@@ -38,8 +38,8 @@ impl GraphicsPipelineHandler for TestHandler {
         self.negotiated = Some(negotiated.clone());
     }
 
-    fn on_frame_ack(&mut self, frame_id: u32, queue_depth: u32) {
-        self.frame_acks.push((frame_id, queue_depth));
+    fn on_frame_ack(&mut self, frame_id: u32, queue_depth: u32, total_frames_decoded: u32) {
+        self.frame_acks.push((frame_id, queue_depth, total_frames_decoded));
     }
 
     fn on_qoe_metrics(&mut self, _metrics: QoeMetrics) {}

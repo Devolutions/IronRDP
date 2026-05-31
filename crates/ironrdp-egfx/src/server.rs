@@ -767,7 +767,10 @@ pub trait GraphicsPipelineHandler: Send {
     fn on_ready(&mut self, negotiated: &CapabilitySet);
 
     /// Called when a frame has been acknowledged by the client
-    fn on_frame_ack(&mut self, _frame_id: u32, _queue_depth: u32) {}
+    ///
+    /// `total_frames_decoded` is the client's running decoded-frame count
+    /// (MS-RDPEGFX 2.2.2.13), for decode-backlog flow control.
+    fn on_frame_ack(&mut self, _frame_id: u32, _queue_depth: u32, _total_frames_decoded: u32) {}
 
     /// Called when QoE metrics are received from client (V10+)
     fn on_qoe_metrics(&mut self, _metrics: QoeMetrics) {}
@@ -1685,7 +1688,8 @@ impl GraphicsPipelineServer {
             trace!(frame_id = pdu.frame_id, latency = ?rtt);
         }
 
-        self.handler.on_frame_ack(pdu.frame_id, queue_depth);
+        self.handler
+            .on_frame_ack(pdu.frame_id, queue_depth, pdu.total_frames_decoded);
     }
 
     fn handle_qoe_frame_acknowledge(&mut self, pdu: QoeFrameAcknowledgePdu) {
