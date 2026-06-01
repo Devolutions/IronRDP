@@ -1,0 +1,30 @@
+[package]
+name = "ironrdp-nscodec"
+version = "0.1.0"
+readme = "README.md"
+description = "NSCodec ([MS-RDPNSC]) implementation for IronRDP"
+publish = false # TODO: publish
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+# test = false # FIXME: turn off and keep tests in testsuite crates
+
+[features]
+# Encoder is opt-in. Default-disabled because consumers (notably
+# `ironrdp-server`) hide NSCodec behind their own feature gate too, so it
+# should never be pulled in incidentally.
+default = []
+encoder = ["dep:ironrdp-graphics"]
+
+[dependencies]
+ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.8", optional = true } # public when `encoder` is on
+
+[lints]
+workspace = true

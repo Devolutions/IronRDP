@@ -2724,6 +2724,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-nscodec"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-graphics",
+]
+
+[[package]]
 name = "ironrdp-pdu"
 version = "0.8.0"
 dependencies = [
@@ -2845,6 +2852,7 @@ dependencies = [
  "ironrdp-echo",
  "ironrdp-egfx",
  "ironrdp-graphics",
+ "ironrdp-nscodec",
  "ironrdp-pdu",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
