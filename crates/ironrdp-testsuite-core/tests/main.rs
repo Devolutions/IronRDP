@@ -14,6 +14,7 @@
 
 mod cfg;
 mod clipboard;
+mod connector;
 mod displaycontrol;
 mod dvc;
 mod echo;
