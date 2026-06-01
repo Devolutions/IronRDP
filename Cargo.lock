@@ -2636,6 +2636,7 @@ dependencies = [
 name = "ironrdp-egfx"
 version = "0.1.0"
 dependencies = [
+ "arbitrary",
  "bit_field",
  "bitflags 2.11.1",
  "ironrdp-core",

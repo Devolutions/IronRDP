@@ -90,6 +90,14 @@ const CASES: &[FeatureCheckCase] = &[
             features: &["arbitrary", "alloc"],
         },
     },
+    FeatureCheckCase {
+        name: "ironrdp-egfx/arbitrary",
+        invocation: Invocation::CargoCheck {
+            package: "ironrdp-egfx",
+            no_default_features: false,
+            features: &["arbitrary"],
+        },
+    },
     // Workspace powerset, partitioned by layer so each fan-out worker stays bounded.
     // Adding a new crate to a group means the powerset picks it up on the next run.
     FeatureCheckCase {
