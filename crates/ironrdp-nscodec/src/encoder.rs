@@ -24,20 +24,27 @@ const RLE_LONG_ESCAPE: u8 = 0xFF;
 /// - `width`, `height` — dimensions in pixels (both must be non-zero).
 /// - `stride` — bytes between the start of consecutive rows. Must be at least
 ///   `width * format.bytes_per_pixel()`.
-/// - `format` — one of the eight 32-bpp `PixelFormat` variants.
+/// - `format` — one of the eight 32-bpp `PixelFormat` variants. Note that the
+///   input pixel alpha is **ignored**: the encoder always emits a fully opaque
+///   (`0xFF`) alpha plane regardless of the source alpha byte (desktop captures
+///   are opaque, and a zero/premultiplied source alpha would otherwise blend to
+///   black on the client). Callers must not rely on alpha being preserved.
 /// - `color_loss_level` — must be 1..=7 per MS-RDPNSC. Higher = smaller output
 ///   but more chroma loss. The value passed here MUST match what was advertised
 ///   in the `NsCodec` capability set, or the client will decode against the
 ///   wrong shift and chroma will look wrong. We `debug_assert!` `>= 1`; at
-///   CLL=0 the intermediate Co/Cg values overflow `i8` storage and produce
-///   garbage chroma — callers should either clamp upstream or arrange for the
+///   CLL=0 the un-shifted Co/Cg values exceed the `i8` plane range and are
+///   clamped (see `rgb_to_ycocg`), so the frame still decodes but with severe
+///   chroma clipping — callers should either clamp upstream or arrange for the
 ///   capability advertisement to never send CLL=0.
 ///
 /// # Panics
 ///
-/// Debug-asserts `color_loss_level >= 1` and `color_loss_level <= 7`. In
-/// release builds the function does not panic on bad CLL but the output will
-/// be undecodable (CLL=0) or shifted past zero precision (CLL>7).
+/// Debug-asserts `color_loss_level >= 1` and `color_loss_level <= 7`, and that
+/// `stride`/`data` are large enough for `width`×`height`. In release builds the
+/// function does not panic on a bad CLL: the frame is still emitted, but a
+/// non-conformant CLL decodes with visibly incorrect chroma (CLL=0 → heavy
+/// chroma clipping; CLL>7 → chroma shifted past zero precision).
 pub fn encode(
     data: &[u8],
     width: u16,
@@ -56,6 +63,17 @@ pub fn encode(
     let pixels = w * h;
     let cll = i32::from(color_loss_level);
     let bpp = usize::from(format.bytes_per_pixel());
+
+    debug_assert!(
+        stride >= w * bpp,
+        "stride ({stride}) must be at least width * bytes_per_pixel ({})",
+        w * bpp
+    );
+    debug_assert!(
+        data.len() >= h.saturating_sub(1) * stride + w * bpp,
+        "data ({} bytes) too small for {width}x{height} at stride {stride}",
+        data.len()
+    );
 
     let mut y_plane = Vec::with_capacity(pixels);
     let mut co_plane = Vec::with_capacity(pixels);

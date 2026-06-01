@@ -3,9 +3,9 @@
 NSCodec ([MS-RDPNSC]) implementation for IronRDP.
 
 NSCodec is a legacy bitmap codec used in the RDP "Surface Bits" command path. It
-predates RemoteFX and QOI/QOIZ but remains the only legacy codec advertised by
-the macOS Microsoft Remote Desktop / Windows App client's bitmap codec list, so
-servers wanting non-raw bitmap delivery to that client need it.
+predates RemoteFX but remains the only legacy codec advertised by the macOS
+Microsoft Remote Desktop / Windows App client's bitmap codec list, so servers
+wanting non-raw bitmap delivery to that client need it.
 
 ## Feature Flags
 
