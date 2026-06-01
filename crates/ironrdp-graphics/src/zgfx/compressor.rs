@@ -26,6 +26,10 @@ const MAX_POSITIONS_PER_PREFIX: usize = 32;
 /// Trigger hash table compaction when entry count exceeds this
 const MAX_HASH_TABLE_ENTRIES: usize = 50_000;
 
+/// Compaction evicts down to this low watermark, so it runs at most once per
+/// `MAX_HASH_TABLE_ENTRIES - COMPACT_TARGET_ENTRIES` inserted prefixes
+const COMPACT_TARGET_ENTRIES: usize = MAX_HASH_TABLE_ENTRIES / 2;
+
 /// ZGFX compressor maintaining a 2.5 MB history buffer and prefix hash table.
 pub struct Compressor {
     history: Vec<u8>,
@@ -133,7 +137,15 @@ impl Compressor {
         }
     }
 
-    /// Halve stored positions per prefix to bound memory.
+    /// Halve stored positions per prefix, then evict whole prefixes down to
+    /// `COMPACT_TARGET_ENTRIES` when the table is over the cap.
+    ///
+    /// INVARIANT: the table holds at most `MAX_HASH_TABLE_ENTRIES` prefixes on
+    /// return. Incompressible input yields a near-unique prefix per byte, so
+    /// trimming position lists alone never lowers the prefix count; without
+    /// evicting whole prefixes the table would stay above the threshold and the
+    /// caller would re-run compaction on every literal byte at O(table) cost.
+    /// Evicting to a lower watermark amortizes that cost to O(1) per byte.
     fn compact_hash_table(&mut self) {
         for positions in self.match_table.values_mut() {
             if positions.len() > MAX_POSITIONS_PER_PREFIX / 2 {
@@ -142,6 +154,25 @@ impl Compressor {
             }
         }
         self.match_table.retain(|_, positions| !positions.is_empty());
+
+        if self.match_table.len() <= COMPACT_TARGET_ENTRIES {
+            return;
+        }
+
+        // Keep the most-recently-seen prefixes; older ones point further back
+        // than a fresh match can reach, and distance is capped at
+        // MAX_MATCH_DISTANCE regardless. Each history position belongs to a
+        // single prefix, so these newest positions are distinct and the cutoff
+        // retains exactly COMPACT_TARGET_ENTRIES entries.
+        let mut newest: Vec<usize> = self
+            .match_table
+            .values()
+            .map(|positions| positions.last().copied().unwrap_or(0))
+            .collect();
+        let cutoff_index = newest.len() - COMPACT_TARGET_ENTRIES;
+        let cutoff = *newest.select_nth_unstable(cutoff_index).1;
+        self.match_table
+            .retain(|_, positions| positions.last().is_some_and(|&pos| pos >= cutoff));
     }
 
     /// Search hash table for the longest match at `input[pos..]`.
@@ -458,6 +489,38 @@ mod tests {
         decompressor.decompress_segment(&compressed, &mut output).unwrap();
 
         assert_eq!(output, data);
+    }
+
+    #[test]
+    fn compress_high_entropy_round_trips_and_bounds_table() {
+        use super::super::Decompressor;
+
+        // A near-unique 3-byte prefix per byte is the compactor's worst case:
+        // trimming per-prefix position lists frees nothing, so without evicting
+        // whole prefixes the table grows past MAX_HASH_TABLE_ENTRIES and
+        // compaction re-runs on every literal byte at O(table) cost. A
+        // deterministic LCG makes the stream exceed the entry cap reproducibly.
+        let mut state: u32 = 0x1234_5678;
+        let data: Vec<u8> = core::iter::repeat_with(|| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            u8::try_from(state >> 24).unwrap()
+        })
+        .take(100_000)
+        .collect();
+
+        let mut compressor = Compressor::new();
+        let compressed = compressor.compress(&data).unwrap();
+
+        let mut decompressor = Decompressor::new();
+        let mut output = Vec::new();
+        decompressor.decompress_segment(&compressed, &mut output).unwrap();
+        assert_eq!(output, data);
+
+        assert!(
+            compressor.match_table.len() <= MAX_HASH_TABLE_ENTRIES,
+            "hash table must stay bounded, got {} entries",
+            compressor.match_table.len()
+        );
     }
 
     #[test]
