@@ -667,6 +667,7 @@ impl iron_remote_desktop::Session for Session {
             static_channels: connection_result.static_channels,
             user_channel_id: connection_result.user_channel_id,
             io_channel_id: connection_result.io_channel_id,
+            message_channel_id: connection_result.message_channel_id,
             share_id: connection_result.share_id,
             compression_type: connection_result.compression_type,
             enable_server_pointer: connection_result.enable_server_pointer,

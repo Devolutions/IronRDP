@@ -1,7 +1,7 @@
-use ironrdp_core::WriteBuf;
+use ironrdp_core::{WriteBuf, decode};
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
-use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
+use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
@@ -63,15 +63,23 @@ pub struct Processor {
     static_channels: StaticChannelSet,
     user_channel_id: u16,
     io_channel_id: u16,
+    message_channel_id: Option<u16>,
     share_id: u32,
 }
 
 impl Processor {
-    pub fn new(static_channels: StaticChannelSet, user_channel_id: u16, io_channel_id: u16, share_id: u32) -> Self {
+    pub fn new(
+        static_channels: StaticChannelSet,
+        user_channel_id: u16,
+        io_channel_id: u16,
+        message_channel_id: Option<u16>,
+        share_id: u32,
+    ) -> Self {
         Self {
             static_channels,
             user_channel_id,
             io_channel_id,
+            message_channel_id,
             share_id,
         }
     }
@@ -124,6 +132,8 @@ impl Processor {
 
         if channel_id == self.io_channel_id {
             self.process_io_channel(data_ctx)
+        } else if self.message_channel_id == Some(channel_id) {
+            self.process_message_channel(data_ctx)
         } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
             let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
             process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
@@ -185,28 +195,6 @@ impl Processor {
                             )),
                         ])
                     }
-                    ShareDataPdu::AutoDetectReq(AutoDetectRequest::RttRequest { sequence_number, .. }) => {
-                        let response = AutoDetectResponse::RttResponse { sequence_number };
-                        let mut frame = WriteBuf::new();
-                        ironrdp_pdu::rdp::headers::encode_share_data(
-                            self.user_channel_id,
-                            self.io_channel_id,
-                            self.share_id,
-                            ShareDataPdu::AutoDetectRsp(response),
-                            &mut frame,
-                        )
-                        .map_err(SessionError::encode)?;
-                        debug!(sequence_number, "Responded to auto-detect RTT request");
-                        Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
-                    }
-                    ShareDataPdu::AutoDetectReq(req @ AutoDetectRequest::NetworkCharacteristicsResult { .. }) => {
-                        debug!(?req, "Received network characteristics from server");
-                        Ok(vec![ProcessorOutput::AutoDetect(req)])
-                    }
-                    ShareDataPdu::AutoDetectReq(_) => {
-                        debug!(pdu = %ctx.pdu.as_short_name(), "Auto-detect request not yet implemented");
-                        Ok(Vec::new())
-                    }
                     // TODO: slow-path payloads may be bulk-compressed when
                     // ClientInfoFlags::COMPRESSION is negotiated. Decompression
                     // should happen here before passing data downstream. Currently
@@ -237,6 +225,43 @@ impl Processor {
                 Ok(vec![ProcessorOutput::MultitransportRequest(pdu)])
             }
             ironrdp_pdu::rdp::headers::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
+        }
+    }
+
+    /// Process an auto-detect request received on the MCS message channel.
+    ///
+    /// During continuous auto-detection ([MS-RDPBCGR] 2.2.14) the server sends
+    /// RTT (and bandwidth) requests on the message channel; the client answers
+    /// RTT requests and surfaces the final Network Characteristics Result.
+    fn process_message_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
+        let Some(message_channel_id) = self.message_channel_id else {
+            return Err(reason_err!("message channel", "no message channel negotiated"));
+        };
+
+        let req = decode::<AutoDetectReqPdu>(data_ctx.user_data).map_err(SessionError::decode)?;
+
+        match req.request {
+            AutoDetectRequest::RttRequest { sequence_number, .. } => {
+                let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
+                let mut frame = WriteBuf::new();
+                ironrdp_pdu::mcs::encode_send_data_request(
+                    self.user_channel_id,
+                    message_channel_id,
+                    &response,
+                    &mut frame,
+                )
+                .map_err(SessionError::encode)?;
+                debug!(sequence_number, "Responded to auto-detect RTT request");
+                Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
+            }
+            req @ AutoDetectRequest::NetworkCharacteristicsResult { .. } => {
+                debug!(?req, "Received network characteristics from server");
+                Ok(vec![ProcessorOutput::AutoDetect(req)])
+            }
+            req => {
+                debug!(?req, "Auto-detect request not yet implemented");
+                Ok(Vec::new())
+            }
         }
     }
 

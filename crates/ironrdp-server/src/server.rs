@@ -1013,6 +1013,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
+        message_channel_id: Option<u16>,
     ) -> Result<RunState> {
         match action {
             Action::FastPath => {
@@ -1022,7 +1023,7 @@ impl RdpServer {
 
             Action::X224 => {
                 if self
-                    .handle_x224(writer, io_channel_id, user_channel_id, &bytes)
+                    .handle_x224(writer, io_channel_id, user_channel_id, message_channel_id, &bytes)
                     .await
                     .context("X224 input error")?
                 {
@@ -1076,8 +1077,8 @@ impl RdpServer {
         &mut self,
         events: &mut Vec<ServerEvent>,
         writer: &mut impl FramedWrite,
-        io_channel_id: u16,
         user_channel_id: u16,
+        message_channel_id: Option<u16>,
     ) -> Result<RunState> {
         // Avoid wave messages queuing up and causing extra delay. When a
         // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
@@ -1202,14 +1203,13 @@ impl RdpServer {
                     }
                 },
                 ServerEvent::AutoDetectRttRequest => {
-                    if let Some(ref mut ad) = self.autodetect {
+                    // Auto-detect requests ride the MCS message channel
+                    // ([MS-RDPBCGR] 2.2.14.3). With none negotiated (the client
+                    // did not request it), there is nowhere to send them.
+                    if let (Some(ad), Some(message_channel_id)) = (self.autodetect.as_mut(), message_channel_id) {
                         ad.expire_stale_probes(crate::autodetect::RTT_PROBE_MAX_AGE);
                         let request = ad.send_rtt_request();
-                        let data = encode_share_data_pdu(
-                            rdp::headers::ShareDataPdu::AutoDetectReq(request),
-                            io_channel_id,
-                            user_channel_id,
-                        )?;
+                        let data = encode_autodetect_request(request, message_channel_id, user_channel_id)?;
                         writer.write_all(&data).await?;
                     }
                 }
@@ -1225,6 +1225,7 @@ impl RdpServer {
         writer: &mut Framed<W>,
         io_channel_id: u16,
         user_channel_id: u16,
+        message_channel_id: Option<u16>,
         mut encoder: UpdateEncoder,
     ) -> Result<RunState>
     where
@@ -1245,7 +1246,14 @@ impl RdpServer {
                 let (action, bytes) = reader.read_pdu().await?;
                 let mut this = this.lock().await;
                 match this
-                    .dispatch_pdu(action, bytes, &mut writer, io_channel_id, user_channel_id)
+                    .dispatch_pdu(
+                        action,
+                        bytes,
+                        &mut writer,
+                        io_channel_id,
+                        user_channel_id,
+                        message_channel_id,
+                    )
                     .await?
                 {
                     RunState::Continue => continue,
@@ -1304,7 +1312,7 @@ impl RdpServer {
                 }
                 let mut this = this.lock().await;
                 match this
-                    .dispatch_server_events(&mut events, &mut event_writer, io_channel_id, user_channel_id)
+                    .dispatch_server_events(&mut events, &mut event_writer, user_channel_id, message_channel_id)
                     .await?
                 {
                     RunState::Continue => continue,
@@ -1367,6 +1375,7 @@ impl RdpServer {
                 writer,
                 result.io_channel_id,
                 result.user_channel_id,
+                result.message_channel_id,
                 result.input_events,
             )
             .await?;
@@ -1475,7 +1484,14 @@ impl RdpServer {
             .context("failed to initialize update encoder")?;
 
         let state = self
-            .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)
+            .client_loop(
+                reader,
+                writer,
+                result.io_channel_id,
+                result.user_channel_id,
+                result.message_channel_id,
+                encoder,
+            )
             .await
             .context("client loop failure")?;
 
@@ -1487,6 +1503,7 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
+        message_channel_id: Option<u16>,
         frames: Vec<Vec<u8>>,
     ) -> Result<()> {
         for frame in frames {
@@ -1497,7 +1514,9 @@ impl RdpServer {
                 }
 
                 Ok(Action::X224) => {
-                    let _ = self.handle_x224(writer, io_channel_id, user_channel_id, &frame).await;
+                    let _ = self
+                        .handle_x224(writer, io_channel_id, user_channel_id, message_channel_id, &frame)
+                        .await;
                 }
 
                 // the frame here is always valid, because otherwise it would
@@ -1557,17 +1576,6 @@ impl RdpServer {
                     return Ok(true);
                 }
 
-                rdp::headers::ShareDataPdu::AutoDetectRsp(response) => {
-                    if let Some(ref mut ad) = self.autodetect {
-                        if let Some(rtt_ms) = ad.handle_response(&response) {
-                            self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
-                            debug!(rtt_ms, seq = response.sequence_number(), "RTT measured");
-                        } else {
-                            trace!(seq = response.sequence_number(), "Unmatched auto-detect response");
-                        }
-                    }
-                }
-
                 // Client requests the server stop or resume sending display
                 // updates. mstsc sends `desktop_rect: None` on minimize and
                 // `desktop_rect: Some(rect)` on refocus. Without honoring
@@ -1610,11 +1618,33 @@ impl RdpServer {
         Ok(false)
     }
 
+    fn handle_message_channel_data(&mut self, data: SendDataRequest<'_>) {
+        // The MCS message channel currently carries only the auto-detect
+        // response. It is framed by a Basic Security Header (SEC_AUTODETECT_RSP),
+        // not a Share Control header.
+        match decode::<rdp::autodetect::AutoDetectRspPdu>(data.user_data.as_ref()) {
+            Ok(pdu) => {
+                if let Some(ref mut ad) = self.autodetect {
+                    if let Some(rtt_ms) = ad.handle_response(&pdu.response) {
+                        self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
+                        debug!(rtt_ms, seq = pdu.response.sequence_number(), "RTT measured");
+                    } else {
+                        trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
+                    }
+                }
+            }
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "Unhandled MCS message channel PDU");
+            }
+        }
+    }
+
     async fn handle_x224(
         &mut self,
         writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
+        message_channel_id: Option<u16>,
         frame: &[u8],
     ) -> Result<bool> {
         let message = decode::<X224<mcs::McsMessage<'_>>>(frame)?;
@@ -1628,6 +1658,11 @@ impl RdpServer {
                 );
                 if data.channel_id == io_channel_id {
                     return self.handle_io_channel_data(data).await;
+                }
+
+                if message_channel_id == Some(data.channel_id) {
+                    self.handle_message_channel_data(data);
+                    return Ok(false);
                 }
 
                 if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
@@ -1728,32 +1763,23 @@ impl RdpServer {
     }
 }
 
-/// Encode a server-initiated Share Data PDU for the IO channel.
+/// Encode a server-initiated Auto-Detect Request PDU for the MCS message channel.
 ///
-/// `share_id` is hard-coded to 0, matching the existing convention in
-/// `deactivate_all()`. In practice, RDP clients do not validate `share_id`
-/// on server-initiated PDUs, but a future refactor could thread the
-/// negotiated value from the Demand Active exchange if needed.
-fn encode_share_data_pdu(
-    share_data_pdu: rdp::headers::ShareDataPdu,
-    io_channel_id: u16,
+/// The request is framed by a Basic Security Header (SEC_AUTODETECT_REQ) per
+/// [MS-RDPBCGR] 2.2.14.3 and carried in an MCS Send Data Indication on the
+/// negotiated message channel, not as a Share Data PDU on the I/O channel.
+fn encode_autodetect_request(
+    request: rdp::autodetect::AutoDetectRequest,
+    message_channel_id: u16,
     user_channel_id: u16,
 ) -> Result<Vec<u8>> {
-    let header = rdp::headers::ShareDataHeader {
-        share_data_pdu,
-        stream_priority: rdp::headers::StreamPriority::Medium,
-        compression_flags: rdp::headers::CompressionFlags::empty(),
-        compression_type: rdp::client_info::CompressionType::K8,
-    };
-    let pdu = rdp::headers::ShareControlHeader {
-        share_id: 0,
-        pdu_source: user_channel_id,
-        share_control_pdu: ShareControlPdu::Data(header),
-    };
+    // Auto-detect rides the MCS message channel framed by a Basic Security
+    // Header (SEC_AUTODETECT_REQ), not a Share Control / Share Data header.
+    let pdu = rdp::autodetect::AutoDetectReqPdu::new(request);
     let user_data = encode_vec(&pdu)?.into();
     let mcs_pdu = SendDataIndication {
         initiator_id: user_channel_id,
-        channel_id: io_channel_id,
+        channel_id: message_channel_id,
         user_data,
     };
     Ok(encode_vec(&X224(mcs_pdu))?)

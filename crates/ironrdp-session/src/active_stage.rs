@@ -44,6 +44,7 @@ pub struct ActiveStageBuilder {
     pub static_channels: StaticChannelSet,
     pub user_channel_id: u16,
     pub io_channel_id: u16,
+    pub message_channel_id: Option<u16>,
     pub share_id: u32,
     /// The bulk compression type that was negotiated, if any.
     pub compression_type: Option<PduCompressionType>,
@@ -59,13 +60,20 @@ impl ActiveStageBuilder {
             static_channels,
             user_channel_id,
             io_channel_id,
+            message_channel_id,
             share_id,
             compression_type,
             enable_server_pointer,
             pointer_software_rendering,
         } = self;
 
-        let x224_processor = x224::Processor::new(static_channels, user_channel_id, io_channel_id, share_id);
+        let x224_processor = x224::Processor::new(
+            static_channels,
+            user_channel_id,
+            io_channel_id,
+            message_channel_id,
+            share_id,
+        );
 
         // Create bulk decompressor if compression was negotiated
         let bulk_decompressor = compression_type.and_then(|ct| {
