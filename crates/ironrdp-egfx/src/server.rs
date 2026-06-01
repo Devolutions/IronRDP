@@ -770,7 +770,11 @@ pub trait GraphicsPipelineHandler: Send {
     ///
     /// `total_frames_decoded` is the client's running decoded-frame count
     /// (MS-RDPEGFX 2.2.2.13), for decode-backlog flow control.
-    fn on_frame_ack(&mut self, _frame_id: u32, _queue_depth: u32, _total_frames_decoded: u32) {}
+    fn on_frame_ack(&mut self, frame_id: u32, queue_depth: u32, total_frames_decoded: u32) {
+        let _ = frame_id;
+        let _ = queue_depth;
+        let _ = total_frames_decoded;
+    }
 
     /// Called when QoE metrics are received from client (V10+)
     fn on_qoe_metrics(&mut self, _metrics: QoeMetrics) {}
