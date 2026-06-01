@@ -14,7 +14,6 @@ categories.workspace = true
 
 [lib]
 doctest = false
-test = false
 
 [features]
 default = []

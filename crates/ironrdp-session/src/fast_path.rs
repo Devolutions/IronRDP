@@ -192,6 +192,24 @@ impl Processor {
             trace!("{update:?}");
             buf.clear();
 
+            // The bitmap data dimensions (update.width x update.height) may differ
+            // from the destination rectangle dimensions (update.rectangle.width() x
+            // update.rectangle.height()). The apply_* methods use the rectangle's
+            // width for row stride, so we must use a rectangle whose dimensions
+            // match the actual bitmap data to avoid diagonal distortion.
+            //
+            // Per MS-RDPBCGR §2.2.9.1.1.3.1.2.2: "If the size of the bitmap data
+            // exceeds the size of the rectangle, the additional rows and columns
+            // MUST be discarded by the client." Clip to the smaller of the two.
+            let clipped_width = update.width.min(update.rectangle.width());
+            let clipped_height = update.height.min(update.rectangle.height());
+            let blit_rect = InclusiveRectangle {
+                left: update.rectangle.left,
+                top: update.rectangle.top,
+                right: update.rectangle.left + clipped_width.saturating_sub(1),
+                bottom: update.rectangle.top + clipped_height.saturating_sub(1),
+            };
+
             // Bitmap data is either compressed or uncompressed, depending
             // on whether the BITMAP_COMPRESSION flag is present in the
             // flags field.
@@ -211,7 +229,7 @@ impl Processor {
                         usize::from(update.width),
                         usize::from(update.height),
                     ) {
-                        Ok(()) => image.apply_rgb24(&buf, &update.rectangle, true)?,
+                        Ok(()) => image.apply_rgb24(&buf, &blit_rect, update.width, true)?,
                         Err(err) => {
                             warn!("Invalid RDP6_BITMAP_STREAM: {err}");
                             update.rectangle.clone()
@@ -230,11 +248,11 @@ impl Processor {
                         usize::from(update.height),
                         usize::from(update.bits_per_pixel),
                     ) {
-                        Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
-                        Ok(RlePixelFormat::Rgb15) => image.apply_rgb15_bitmap(&buf, &update.rectangle)?,
-                        Ok(RlePixelFormat::Rgb24) => image.apply_bgr24_bitmap(&buf, &update.rectangle)?,
+                        Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &blit_rect, clipped_width)?,
+                        Ok(RlePixelFormat::Rgb15) => image.apply_rgb15_bitmap(&buf, &blit_rect, clipped_width)?,
+                        Ok(RlePixelFormat::Rgb24) => image.apply_bgr24_bitmap(&buf, &blit_rect, clipped_width)?,
                         Ok(RlePixelFormat::Rgb8) => {
-                            image.apply_rgb8_with_palette(&buf, &update.rectangle, self.palette.colors())?
+                            image.apply_rgb8_with_palette(&buf, &blit_rect, self.palette.colors(), clipped_width)?
                         }
 
                         Err(e) => {
@@ -266,11 +284,11 @@ impl Processor {
                     }
 
                     match update.bits_per_pixel {
-                        8 => image.apply_rgb8_with_palette(&buf, &update.rectangle, self.palette.colors())?,
-                        15 => image.apply_rgb15_bitmap(&buf, &update.rectangle)?,
-                        16 => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
-                        24 => image.apply_bgr24_bitmap(&buf, &update.rectangle)?,
-                        32 => image.apply_rgb32_bitmap(&buf, PixelFormat::BgrX32, &update.rectangle)?,
+                        8 => image.apply_rgb8_with_palette(&buf, &blit_rect, self.palette.colors(), clipped_width)?,
+                        15 => image.apply_rgb15_bitmap(&buf, &blit_rect, clipped_width)?,
+                        16 => image.apply_rgb16_bitmap(&buf, &blit_rect, clipped_width)?,
+                        24 => image.apply_bgr24_bitmap(&buf, &blit_rect, clipped_width)?,
+                        32 => image.apply_rgb32_bitmap(&buf, PixelFormat::BgrX32, &blit_rect, clipped_width)?,
                         _ => {
                             warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
                             update.rectangle.clone()
@@ -280,13 +298,19 @@ impl Processor {
                     match update.bits_per_pixel {
                         8 => image.apply_rgb8_with_palette(
                             update.bitmap_data,
-                            &update.rectangle,
+                            &blit_rect,
                             self.palette.colors(),
+                            clipped_width,
                         )?,
-                        15 => image.apply_rgb15_bitmap(update.bitmap_data, &update.rectangle)?,
-                        16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
-                        24 => image.apply_bgr24_bitmap(update.bitmap_data, &update.rectangle)?,
-                        32 => image.apply_rgb32_bitmap(update.bitmap_data, PixelFormat::BgrX32, &update.rectangle)?,
+                        15 => image.apply_rgb15_bitmap(update.bitmap_data, &blit_rect, clipped_width)?,
+                        16 => image.apply_rgb16_bitmap(update.bitmap_data, &blit_rect, clipped_width)?,
+                        24 => image.apply_bgr24_bitmap(update.bitmap_data, &blit_rect, clipped_width)?,
+                        32 => image.apply_rgb32_bitmap(
+                            update.bitmap_data,
+                            PixelFormat::BgrX32,
+                            &blit_rect,
+                            clipped_width,
+                        )?,
                         _ => {
                             warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
                             update.rectangle.clone()
@@ -467,14 +491,23 @@ impl Processor {
                     match codec_id {
                         CODEC_ID_NONE => {
                             let ext_data = bits.extended_bitmap_data;
+                            let dest_width = destination.width();
                             let rectangle = match ext_data.bpp {
-                                8 => {
-                                    image.apply_rgb8_with_palette(ext_data.data, &destination, self.palette.colors())?
-                                }
-                                15 => image.apply_rgb15_bitmap(ext_data.data, &destination)?,
-                                16 => image.apply_rgb16_bitmap(ext_data.data, &destination)?,
-                                24 => image.apply_bgr24_bitmap(ext_data.data, &destination)?,
-                                32 => image.apply_rgb32_bitmap(ext_data.data, PixelFormat::BgrX32, &destination)?,
+                                8 => image.apply_rgb8_with_palette(
+                                    ext_data.data,
+                                    &destination,
+                                    self.palette.colors(),
+                                    dest_width,
+                                )?,
+                                15 => image.apply_rgb15_bitmap(ext_data.data, &destination, dest_width)?,
+                                16 => image.apply_rgb16_bitmap(ext_data.data, &destination, dest_width)?,
+                                24 => image.apply_bgr24_bitmap(ext_data.data, &destination, dest_width)?,
+                                32 => image.apply_rgb32_bitmap(
+                                    ext_data.data,
+                                    PixelFormat::BgrX32,
+                                    &destination,
+                                    dest_width,
+                                )?,
                                 bpp => {
                                     warn!("Unsupported surface CODEC_ID_NONE bpp: {bpp}");
                                     continue;
@@ -554,7 +587,7 @@ fn qoi_apply(
     let (header, decoded) = qoi::decode_to_vec(data).map_err(|e| reason_err!("QOI decode", "{}", e))?;
     match header.channels {
         qoi::Channels::Rgb => {
-            let rectangle = image.apply_rgb24(&decoded, &destination, false)?;
+            let rectangle = image.apply_rgb24(&decoded, &destination, destination.width(), false)?;
 
             *update_rectangle = update_rectangle
                 .as_ref()
