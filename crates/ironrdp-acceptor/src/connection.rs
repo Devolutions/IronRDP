@@ -29,6 +29,7 @@ pub struct Acceptor {
     security: SecurityProtocol,
     io_channel_id: u16,
     user_channel_id: u16,
+    message_channel_id: Option<u16>,
     desktop_size: DesktopSize,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
@@ -45,6 +46,13 @@ pub struct AcceptorResult {
     pub input_events: Vec<Vec<u8>>,
     pub user_channel_id: u16,
     pub io_channel_id: u16,
+    /// MCS channel ID of the message channel, present when the client requested
+    /// one via Client Message Channel Data (section 2.2.1.3.7).
+    ///
+    /// Server-initiated PDUs that ride the message channel (network auto-detect
+    /// per section 2.2.14, multitransport bootstrap, heartbeat) are sent on this
+    /// channel. `None` when the client did not request it.
+    pub message_channel_id: Option<u16>,
     pub reactivation: bool,
     /// Credentials received from the client during SecureSettingsExchange.
     ///
@@ -69,6 +77,7 @@ impl Acceptor {
             state: AcceptorState::InitiationWaitRequest,
             user_channel_id: USER_CHANNEL_ID,
             io_channel_id: IO_CHANNEL_ID,
+            message_channel_id: None,
             desktop_size,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
@@ -111,6 +120,7 @@ impl Acceptor {
             state,
             user_channel_id: consumed.user_channel_id,
             io_channel_id: consumed.io_channel_id,
+            message_channel_id: consumed.message_channel_id,
             desktop_size,
             server_capabilities: consumed.server_capabilities,
             static_channels,
@@ -170,6 +180,7 @@ impl Acceptor {
                 input_events,
                 user_channel_id: self.user_channel_id,
                 io_channel_id: self.io_channel_id,
+                message_channel_id: self.message_channel_id,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
             }),
@@ -364,7 +375,7 @@ impl Sequence for Acceptor {
                     ));
                 };
                 let connection_confirm = nego::ConnectionConfirm::Response {
-                    flags: nego::ResponseFlags::empty(),
+                    flags: nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED,
                     protocol,
                 };
 
@@ -426,6 +437,7 @@ impl Sequence for Acceptor {
 
                 let gcc_blocks = settings_initial.conference_create_request.into_gcc_blocks();
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
+                let client_wants_message_channel = gcc_blocks.message_channel.is_some();
 
                 let joined: Vec<_> = gcc_blocks
                     .network
@@ -443,7 +455,7 @@ impl Sequence for Acceptor {
                     .unwrap_or_default();
 
                 #[expect(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing.
-                let channels = joined
+                let channels: Vec<_> = joined
                     .into_iter()
                     .enumerate()
                     .map(|(i, channel)| {
@@ -456,6 +468,16 @@ impl Sequence for Acceptor {
                         }
                     })
                     .collect();
+
+                if client_wants_message_channel {
+                    // Allocate the message channel ID after the I/O channel and
+                    // any static virtual channels. It is advertised in Server
+                    // Message Channel Data and joined alongside the others.
+                    #[expect(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing.
+                    let channel_id =
+                        u16::try_from(channels.len()).expect("always in the range") + self.io_channel_id + 1;
+                    self.message_channel_id = Some(channel_id);
+                }
 
                 (
                     Written::Nothing,
@@ -484,6 +506,7 @@ impl Sequence for Acceptor {
                     channel_ids.clone(),
                     requested_protocol,
                     skip_channel_join,
+                    self.message_channel_id,
                 );
 
                 let settings_response = mcs::ConnectResponse {
@@ -507,7 +530,9 @@ impl Sequence for Acceptor {
                         connection: if skip_channel_join {
                             ChannelConnectionSequence::skip_channel_join(self.user_channel_id)
                         } else {
-                            ChannelConnectionSequence::new(self.user_channel_id, self.io_channel_id, channel_ids)
+                            let mut join_channel_ids = channel_ids;
+                            join_channel_ids.extend(self.message_channel_id);
+                            ChannelConnectionSequence::new(self.user_channel_id, self.io_channel_id, join_channel_ids)
                         },
                     },
                 )
@@ -781,6 +806,7 @@ fn create_gcc_blocks(
     channel_ids: Vec<u16>,
     requested: SecurityProtocol,
     skip_channel_join: bool,
+    message_channel_id: Option<u16>,
 ) -> gcc::ServerGccBlocks {
     gcc::ServerGccBlocks {
         core: gcc::ServerCoreData {
@@ -796,7 +822,9 @@ fn create_gcc_blocks(
             channel_ids,
             io_channel,
         },
-        message_channel: None,
+        message_channel: message_channel_id.map(|id| gcc::ServerMessageChannelData {
+            mcs_message_channel_id: id,
+        }),
         multi_transport_channel: None,
     }
 }
