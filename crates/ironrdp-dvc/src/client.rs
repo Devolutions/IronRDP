@@ -25,7 +25,7 @@ pub trait DvcChannelListener: Send {
 
     /// Called for each incoming DYNVC_CREATE_REQ matching this name.
     /// Return `None` to reject (NO_LISTENER).
-    fn create(&mut self) -> Option<Box<dyn DvcProcessor>>;
+    fn create(&mut self, channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>>;
 }
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
@@ -51,7 +51,7 @@ impl DvcChannelListener for OnceListener {
             .channel_name()
     }
 
-    fn create(&mut self) -> Option<Box<dyn DvcProcessor>> {
+    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>> {
         self.inner.take()
     }
 }
@@ -320,7 +320,7 @@ impl DynamicChannelSet {
         channel_id: DynamicChannelId,
     ) -> Option<&mut DynamicVirtualChannel> {
         let entry = self.listeners.get_mut(name)?;
-        let processor = entry.listener.create()?;
+        let processor = entry.listener.create(channel_id)?;
 
         if let Some(type_id) = entry.type_id {
             self.type_id_to_channel_id.insert(type_id, channel_id);
