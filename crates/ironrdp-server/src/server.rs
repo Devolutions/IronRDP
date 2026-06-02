@@ -20,6 +20,7 @@ use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, GeneralExtraFlags};
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
+use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpsnd as rdpsnd;
@@ -152,18 +153,16 @@ impl core::error::Error for CredentialValidationError {
 /// # Example
 ///
 /// ```ignore
-/// use std::sync::Arc;
-/// use ironrdp_server::{
-///     CredentialDecision, CredentialValidationError, CredentialValidator, Credentials,
-/// };
+/// use ironrdp_server::{CredentialDecision, CredentialValidationError, CredentialValidator, Credentials};
 ///
 /// struct StaticValidator {
 ///     expected_user: String,
 ///     expected_password: String,
 /// }
 ///
+/// #[async_trait::async_trait]
 /// impl CredentialValidator for StaticValidator {
-///     fn validate(
+///     async fn validate(
 ///         &self,
 ///         creds: &Credentials,
 ///     ) -> Result<CredentialDecision, CredentialValidationError> {
@@ -175,6 +174,7 @@ impl core::error::Error for CredentialValidationError {
 ///     }
 /// }
 /// ```
+#[async_trait::async_trait]
 pub trait CredentialValidator: Send + Sync {
     /// Validate credentials received from the client.
     ///
@@ -182,7 +182,39 @@ pub trait CredentialValidator: Send + Sync {
     /// `Ok(CredentialDecision::Reject)` to refuse it. Return
     /// `Err(CredentialValidationError::new(_))` only when the validator
     /// itself could not produce a decision (backend system error).
-    fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
+    ///
+    /// Implementors backed by blocking systems (PAM, libldap, a synchronous
+    /// database driver) should offload the work, for example with
+    /// `tokio::task::spawn_blocking`, so the returned future does not stall the
+    /// caller's executor. Native-async backends can simply `.await`.
+    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
+}
+
+/// A built-in [`CredentialValidator`] that accepts exactly one fixed set of credentials.
+///
+/// This is the validation-policy equivalent of the acceptor's pre-loaded
+/// exact-match: it keeps the common "one known account" case a one-liner while
+/// going through the same hook as PAM, LDAP, or database-backed validators.
+pub struct ExactMatchCredentialValidator {
+    expected: Credentials,
+}
+
+impl ExactMatchCredentialValidator {
+    /// Build a validator that accepts only `expected` and rejects everything else.
+    pub fn new(expected: Credentials) -> Self {
+        Self { expected }
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialValidator for ExactMatchCredentialValidator {
+    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError> {
+        if credentials == &self.expected {
+            Ok(CredentialDecision::Accept)
+        } else {
+            Ok(CredentialDecision::Reject)
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1143,19 +1175,24 @@ impl RdpServer {
     {
         debug!("Client accepted");
 
-        // Validate credentials if a validator is configured
-        if let Some(validator) = &self.credential_validator {
+        // Validate credentials if a validator is configured. The validator runs here, in the
+        // async server layer, rather than in the sans-I/O acceptor, because real validators
+        // (PAM/LDAP/DB) are I/O-bound. On rejection, deny with a ServerSetErrorInfoPdu before
+        // closing, matching the acceptor's exact-match denial path.
+        if let Some(validator) = self.credential_validator.clone() {
             if let Some(creds) = &result.credentials {
-                match validator.validate(creds) {
+                match validator.validate(creds).await {
                     Ok(CredentialDecision::Accept) => {
                         debug!("Credential validation accepted");
                     }
                     Ok(CredentialDecision::Reject) => {
                         warn!("Credential validation rejected");
+                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
                         bail!("credential validation rejected");
                     }
                     Err(e) => {
                         error!(error = %e, "Credential validator backend error");
+                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
                         bail!("credential validation backend error");
                     }
                 }
@@ -1566,6 +1603,29 @@ async fn deactivate_all(
         share_control_pdu: pdu,
     };
     let user_data = encode_vec(&pdu)?.into();
+    let pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: io_channel_id,
+        user_data,
+    };
+    let msg = encode_vec(&X224(pdu))?;
+    writer.write_all(&msg).await?;
+    Ok(())
+}
+
+/// Send a `ServerSetErrorInfoPdu(ServerDeniedConnection)` to the client, then return.
+///
+/// Used to deny a connection after credential validation rejects it, mirroring the
+/// acceptor's exact-match denial so both paths refuse the same spec-defined way.
+async fn send_access_denied(
+    io_channel_id: u16,
+    user_channel_id: u16,
+    writer: &mut impl FramedWrite,
+) -> Result<(), anyhow::Error> {
+    let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+        ProtocolIndependentCode::ServerDeniedConnection,
+    ));
+    let user_data = encode_vec(&info)?.into();
     let pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: io_channel_id,

@@ -34,6 +34,7 @@ visibility = { version = "0.1", optional = true }
 
 [dev-dependencies]
 anyhow = "1"
+async-trait = "0.1"
 expect-test.workspace = true
 hex = "0.4"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
@@ -60,6 +61,7 @@ png = "0.18"
 pretty_assertions = "1.4"
 proptest.workspace = true
 rstest.workspace = true
+tokio = { version = "1", features = ["macros", "rt"] }
 
 [lints]
 workspace = true
