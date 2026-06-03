@@ -17,7 +17,7 @@ doctest = false
 test = false
 
 [dependencies]
-der = { version = "0.7", features = ["alloc", "derive"] } # public
+der = { version = "0.8", features = ["alloc", "derive"] } # public
 
 [lints]
 workspace = true
