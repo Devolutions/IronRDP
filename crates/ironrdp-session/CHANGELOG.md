@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.9.0...ironrdp-session-v0.9.1)] - 2026-06-05
+
+### <!-- 4 -->Bug Fixes
+
+- Decode RGBA QOI bitmaps instead of dropping the frame ([#1341](https://github.com/Devolutions/IronRDP/issues/1341)) ([ef20ea4e90](https://github.com/Devolutions/IronRDP/commit/ef20ea4e90455d6c6db0d3521f6522d1e960c0bb)) 
+
+  Fixes the client-side QOI decode path in ironrdp-session so RGBA-channel QOI frames are decoded and applied to the framebuffer instead of being dropped, improving interoperability with third-party RDP servers and older ironrdp-server builds that emit RGBA QOI.
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.8.0...ironrdp-session-v0.9.0)] - 2026-05-27
 
 ### <!-- 1 -->Features

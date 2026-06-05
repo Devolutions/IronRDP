@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp"
-version = "0.15.0"
+version = "0.15.1"
 readme = "README.md"
 description = "A meta crate re-exporting IronRDP crates for convenience"
 edition.workspace = true
@@ -50,7 +50,7 @@ ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.8", optional = t
 ironrdp-input = { path = "../ironrdp-input", version = "0.6", optional = true } # public
 ironrdp-server = { path = "../ironrdp-server", version = "0.11", optional = true, features = ["helper"] } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.7", optional = true } # public
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.6", optional = true } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.7", optional = true } # public
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.6", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.8", optional = true } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.6", optional = true } # public
