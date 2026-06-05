@@ -11,7 +11,7 @@ use super::display::{DesktopSize, RdpServerDisplay};
 #[cfg(feature = "egfx")]
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
-use super::server::{ConnectionHandler, RdpServer, RdpServerOptions, RdpServerSecurity};
+use super::server::{ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity};
 use crate::{DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
 
 pub struct WantsAddr {}
@@ -37,6 +37,7 @@ pub struct BuilderDone {
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
+    credential_validator: Option<Arc<dyn CredentialValidator>>,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     display_suppressed: Option<Arc<AtomicBool>>,
@@ -133,6 +134,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 sound_factory: None,
                 cliprdr_factory: None,
                 connection_handler: None,
+                credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
@@ -152,6 +154,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 sound_factory: None,
                 cliprdr_factory: None,
                 connection_handler: None,
+                credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
@@ -223,8 +226,23 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Set a credential validator for TLS-mode connections.
+    ///
+    /// When set, credentials received from the client during
+    /// `SecureSettingsExchange` (`ClientInfoPdu`) are passed to this
+    /// validator before the session is established. Rejection or a backend
+    /// error closes the connection. Pass `None` (the default) to skip
+    /// validation entirely.
+    ///
+    /// Not used for CredSSP/Hybrid connections (those use pre-loaded
+    /// credentials for NTLM challenge-response).
+    pub fn with_credential_validator(mut self, validator: Option<Arc<dyn CredentialValidator>>) -> Self {
+        self.state.credential_validator = validator;
+        self
+    }
+
     pub fn build(self) -> RdpServer {
-        RdpServer::new(
+        let mut server = RdpServer::new(
             RdpServerOptions {
                 addr: self.state.addr,
                 security: self.state.security,
@@ -239,7 +257,9 @@ impl RdpServerBuilder<BuilderDone> {
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
             self.state.display_suppressed,
-        )
+        );
+        server.set_credential_validator(self.state.credential_validator);
+        server
     }
 }
 

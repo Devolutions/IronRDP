@@ -2914,6 +2914,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "array-concat",
+ "async-trait",
  "expect-test",
  "hex",
  "ironrdp-acceptor",
@@ -2945,6 +2946,7 @@ dependencies = [
  "pretty_assertions",
  "proptest",
  "rstest",
+ "tokio",
  "visibility",
 ]
 

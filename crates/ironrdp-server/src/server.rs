@@ -1,3 +1,4 @@
+use core::fmt;
 use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
@@ -19,6 +20,7 @@ use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, GeneralExtraFlags};
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
+use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpsnd as rdpsnd;
@@ -86,6 +88,132 @@ pub trait ConnectionHandler: Send {
     ) -> PostConnectionAction {
         let _ = (peer, duration, error);
         PostConnectionAction::Continue
+    }
+}
+
+/// Outcome of a successful [`CredentialValidator::validate`] call.
+///
+/// A rejection from a working validator is not an error: the validator did
+/// its job and decided the credentials do not authenticate. Backend failures
+/// (LDAP unreachable, PAM transport broken, database connection lost) are
+/// reported via [`CredentialValidationError`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialDecision {
+    /// Credentials accepted; the connection proceeds.
+    Accept,
+    /// Credentials rejected; the connection is closed.
+    Reject,
+}
+
+/// Error returned by a [`CredentialValidator`] when the validator backend
+/// itself fails (rather than the credentials being invalid).
+///
+/// Wraps any [`core::error::Error`] from the backend (LDAP/PAM/DB/etc.) so
+/// the trait does not require a particular error library in implementors or
+/// consumers.
+#[derive(Debug)]
+pub struct CredentialValidationError {
+    source: Box<dyn core::error::Error + Send + Sync>,
+}
+
+impl CredentialValidationError {
+    /// Wrap a backend error as a credential-validation failure.
+    pub fn new<E>(source: E) -> Self
+    where
+        E: core::error::Error + Send + Sync + 'static,
+    {
+        Self {
+            source: Box::new(source),
+        }
+    }
+}
+
+impl fmt::Display for CredentialValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("credential validator backend failure")
+    }
+}
+
+impl core::error::Error for CredentialValidationError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
+/// Server-side credential validator for TLS-mode connections.
+///
+/// Called during connection setup when the server receives client credentials
+/// via `ClientInfoPdu`. Not used for CredSSP/Hybrid connections (those use
+/// pre-loaded credentials for NTLM challenge-response).
+///
+/// Implement this trait to validate credentials against external systems
+/// (PAM, LDAP, database, etc.). For blocking backends, wrap the call in
+/// `tokio::task::spawn_blocking` to avoid stalling the async runtime.
+///
+/// # Example
+///
+/// ```ignore
+/// use ironrdp_server::{CredentialDecision, CredentialValidationError, CredentialValidator, Credentials};
+///
+/// struct StaticValidator {
+///     expected_user: String,
+///     expected_password: String,
+/// }
+///
+/// #[async_trait::async_trait]
+/// impl CredentialValidator for StaticValidator {
+///     async fn validate(
+///         &self,
+///         creds: &Credentials,
+///     ) -> Result<CredentialDecision, CredentialValidationError> {
+///         if creds.username == self.expected_user && creds.password == self.expected_password {
+///             Ok(CredentialDecision::Accept)
+///         } else {
+///             Ok(CredentialDecision::Reject)
+///         }
+///     }
+/// }
+/// ```
+#[async_trait::async_trait]
+pub trait CredentialValidator: Send + Sync {
+    /// Validate credentials received from the client.
+    ///
+    /// Return `Ok(CredentialDecision::Accept)` to permit the connection,
+    /// `Ok(CredentialDecision::Reject)` to refuse it. Return
+    /// `Err(CredentialValidationError::new(_))` only when the validator
+    /// itself could not produce a decision (backend system error).
+    ///
+    /// Implementors backed by blocking systems (PAM, libldap, a synchronous
+    /// database driver) should offload the work, for example with
+    /// `tokio::task::spawn_blocking`, so the returned future does not stall the
+    /// caller's executor. Native-async backends can simply `.await`.
+    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
+}
+
+/// A built-in [`CredentialValidator`] that accepts exactly one fixed set of credentials.
+///
+/// This is the validation-policy equivalent of the acceptor's pre-loaded
+/// exact-match: it keeps the common "one known account" case a one-liner while
+/// going through the same hook as PAM, LDAP, or database-backed validators.
+pub struct ExactMatchCredentialValidator {
+    expected: Credentials,
+}
+
+impl ExactMatchCredentialValidator {
+    /// Build a validator that accepts only `expected` and rejects everything else.
+    pub fn new(expected: Credentials) -> Self {
+        Self { expected }
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialValidator for ExactMatchCredentialValidator {
+    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError> {
+        if credentials == &self.expected {
+            Ok(CredentialDecision::Accept)
+        } else {
+            Ok(CredentialDecision::Reject)
+        }
     }
 }
 
@@ -298,6 +426,7 @@ pub struct RdpServer {
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
+    credential_validator: Option<Arc<dyn CredentialValidator>>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
@@ -392,6 +521,7 @@ impl RdpServer {
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
+            credential_validator: None,
             local_addr: None,
             autodetect: None,
             connection_handler,
@@ -401,6 +531,25 @@ impl RdpServer {
 
     pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
         builder::RdpServerBuilder::new()
+    }
+
+    /// Set or clear the credential validator for TLS-mode connections.
+    ///
+    /// When set, credentials received from the client during
+    /// `SecureSettingsExchange` are validated through this callback before
+    /// the session is established. If the validator returns
+    /// [`CredentialDecision::Reject`] (or a [`CredentialValidationError`]),
+    /// the connection is rejected. Passing `None` clears any previously
+    /// configured validator.
+    ///
+    /// Most callers should configure the validator at construction time via
+    /// the builder's `with_credential_validator` method
+    /// ([`RdpServer::builder`]); this setter exists for dynamic
+    /// post-construction reconfiguration.
+    ///
+    /// Not used for CredSSP/Hybrid connections (those use pre-loaded credentials).
+    pub fn set_credential_validator(&mut self, validator: Option<Arc<dyn CredentialValidator>>) {
+        self.credential_validator = validator;
     }
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
@@ -1034,6 +1183,32 @@ impl RdpServer {
     {
         debug!("Client accepted");
 
+        // Validate credentials if a validator is configured. The validator runs here, in the
+        // async server layer, rather than in the sans-I/O acceptor, because real validators
+        // (PAM/LDAP/DB) are I/O-bound. On rejection, deny with a ServerSetErrorInfoPdu before
+        // closing, matching the acceptor's exact-match denial path.
+        if let Some(validator) = self.credential_validator.clone() {
+            if let Some(creds) = &result.credentials {
+                match validator.validate(creds).await {
+                    Ok(CredentialDecision::Accept) => {
+                        debug!("Credential validation accepted");
+                    }
+                    Ok(CredentialDecision::Reject) => {
+                        warn!("Credential validation rejected");
+                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                        bail!("credential validation rejected");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Credential validator backend error");
+                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                        bail!("credential validation backend error");
+                    }
+                }
+            } else {
+                debug!("Skipping credential validation (no credentials in AcceptorResult)");
+            }
+        }
+
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
             self.handle_input_backlog(
@@ -1443,6 +1618,29 @@ async fn deactivate_all(
         share_control_pdu: pdu,
     };
     let user_data = encode_vec(&pdu)?.into();
+    let pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: io_channel_id,
+        user_data,
+    };
+    let msg = encode_vec(&X224(pdu))?;
+    writer.write_all(&msg).await?;
+    Ok(())
+}
+
+/// Send a `ServerSetErrorInfoPdu(ServerDeniedConnection)` to the client, then return.
+///
+/// Used to deny a connection after credential validation rejects it, mirroring the
+/// acceptor's exact-match denial so both paths refuse the same spec-defined way.
+async fn send_access_denied(
+    io_channel_id: u16,
+    user_channel_id: u16,
+    writer: &mut impl FramedWrite,
+) -> Result<(), anyhow::Error> {
+    let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+        ProtocolIndependentCode::ServerDeniedConnection,
+    ));
+    let user_data = encode_vec(&info)?.into();
     let pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: io_channel_id,
