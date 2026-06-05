@@ -2395,7 +2395,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2441,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-ainput"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "bitflags 2.12.1",
  "ironrdp-core",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-echo"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -2838,7 +2838,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-server"
-version = "0.11.1"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2871,7 +2871,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-session"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "ironrdp-bulk",
  "ironrdp-connector",
