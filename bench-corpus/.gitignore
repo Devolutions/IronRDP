@@ -1,0 +1,6 @@
+# Local IRDPREC1 capture corpus — never committed.
+#
+# Captures are screen content recorded from real RDP servers (privacy) and are large binaries that
+# are regenerable via `ironrdp-viewer --record-traffic`. See docs/plans/2026-06-03-ironrdp-benchmark-design.md.
+*.irdprec
+*.json

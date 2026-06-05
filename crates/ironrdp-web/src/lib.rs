@@ -15,6 +15,8 @@ extern crate getrandom2 as _;
 extern crate getrandom4 as _;
 extern crate time as _;
 
+#[cfg(feature = "bench")]
+mod bench;
 mod canvas;
 mod clipboard;
 mod error;

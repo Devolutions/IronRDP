@@ -19,6 +19,7 @@ ironrdp-cliprdr-native.path = "../crates/ironrdp-cliprdr-native"
 ironrdp-dvc-pipe-proxy.path = "../crates/ironrdp-dvc-pipe-proxy"
 ironrdp-core = { path = "../crates/ironrdp-core", features = ["alloc"] }
 ironrdp-rdcleanpath.path = "../crates/ironrdp-rdcleanpath"
+ironrdp-replay-core.path = "../crates/ironrdp-replay-core"
 sspi = { version = "0.21", features = ["network_client"] }
 thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }

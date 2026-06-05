@@ -9,5 +9,6 @@
 
 pub mod config;
 pub mod rdp;
+pub mod record;
 
 mod ws;

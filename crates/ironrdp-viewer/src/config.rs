@@ -13,6 +13,7 @@ use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_client::config::{
     ClipboardType as ResolvedClipboardType, Config, Destination, DvcProxyInfo, RDCleanPathConfig,
 };
+use ironrdp_client::record::RecordOptions;
 use ironrdp_mstsgu::GwConnectTarget;
 use tap::prelude::*;
 use url::Url;
@@ -309,6 +310,28 @@ struct Args {
     /// or passed back via `--rdp-file` on the next invocation.
     #[clap(long)]
     dump_rdp: Option<PathBuf>,
+
+    /// Record this session as an `IRDPREC1` benchmark capture at the given path (e.g.
+    /// `capture.irdprec`). Writes the decrypted server->client active-session stream plus
+    /// `*.manifest.json` and `*.checksum.json` sidecars (derived from this path) for deterministic
+    /// replay. Best paired with `--exit-after-secs` for unattended capture.
+    #[clap(long)]
+    record_traffic: Option<PathBuf>,
+
+    /// Gracefully end the session after this many seconds (headless capture runs). Teardown still
+    /// flushes the capture and writes the checksum.
+    #[clap(long, value_parser = parse_exit_after_secs)]
+    exit_after_secs: Option<f64>,
+}
+
+/// Parses `--exit-after-secs`, rejecting non-finite or negative values up front so
+/// `Duration::from_secs_f64` cannot panic downstream.
+fn parse_exit_after_secs(s: &str) -> Result<f64, String> {
+    let value: f64 = s.parse().map_err(|e| format!("invalid number: {e}"))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err("must be a finite, non-negative number of seconds".to_owned());
+    }
+    Ok(value)
 }
 
 /// The result of phase 1 parsing: the merged PropertySet plus CLI-only settings.
@@ -344,6 +367,8 @@ pub struct PartialConfig {
     pub dvc_pipe_proxies: Vec<DvcProxyInfo>,
     #[cfg(windows)]
     pub dvc_plugins: Vec<PathBuf>,
+    pub record_traffic: Option<PathBuf>,
+    pub exit_after_secs: Option<f64>,
 }
 
 impl PartialConfig {
@@ -403,6 +428,8 @@ impl PartialConfig {
             dvc_pipe_proxies: args.dvc_proxy,
             #[cfg(windows)]
             dvc_plugins: args.dvc_plugin,
+            record_traffic: args.record_traffic,
+            exit_after_secs: args.exit_after_secs,
         })
     }
 
@@ -652,6 +679,8 @@ impl PartialConfig {
             dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(windows)]
             dvc_plugins: self.dvc_plugins,
+            record: self.record_traffic.map(RecordOptions::from_traffic_path),
+            exit_after_secs: self.exit_after_secs,
         })
     }
 }

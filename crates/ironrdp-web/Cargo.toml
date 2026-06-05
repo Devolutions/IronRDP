@@ -22,8 +22,11 @@ default = ["panic_hook"]
 panic_hook = ["iron-remote-desktop/panic_hook"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
+# Exports `run_web_bench` for the headless IRDPREC1 replay benchmark harness.
+bench = ["dep:ironrdp-replay-core"]
 
 [dependencies]
+ironrdp-replay-core = { path = "../ironrdp-replay-core", optional = true }
 # Protocols
 ironrdp = { path = "../ironrdp", features = [
     "connector",

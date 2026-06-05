@@ -1,5 +1,6 @@
 pub mod activation;
 pub mod config;
+pub mod replay;
 pub mod result;
 pub mod state;
 

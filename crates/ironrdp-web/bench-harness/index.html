@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>IronRDP web replay bench</title>
+  </head>
+  <body>
+    <canvas id="screen"></canvas>
+    <pre id="result">running…</pre>
+    <script type="module">
+      import init, { run_web_bench } from '../pkg/ironrdp_web.js';
+
+      // The harness driver sets these on the URL: ?capture=/bench-corpus/smoke.irdprec&passes=3
+      const url = new URL(window.location.href);
+      const captureUrl = url.searchParams.get('capture');
+      const passes = parseInt(url.searchParams.get('passes') ?? '3', 10);
+      const manifestUrl = captureUrl.replace(/\.irdprec$/, '.json');
+
+      async function main() {
+        await init();
+
+        const capture = new Uint8Array(await (await fetch(captureUrl)).arrayBuffer());
+        const m = await (await fetch(manifestUrl)).json();
+
+        const canvas = document.getElementById('screen');
+        const names = m.channels.map((c) => c.name);
+        const ids = Uint16Array.from(m.channels.map((c) => c.id));
+
+        const json = await run_web_bench(
+          canvas,
+          capture,
+          m.io_channel_id,
+          m.user_channel_id,
+          m.share_id,
+          m.desktop_width,
+          m.desktop_height,
+          m.enable_server_pointer,
+          m.pointer_software_rendering,
+          m.compression_type ?? '',
+          names,
+          ids,
+          passes,
+        );
+
+        document.getElementById('result').textContent = json;
+        window.__BENCH_RESULT__ = json;
+      }
+
+      main().catch((e) => {
+        const msg = 'ERROR: ' + (e && e.stack ? e.stack : e);
+        document.getElementById('result').textContent = msg;
+        window.__BENCH_ERROR__ = String(e);
+      });
+    </script>
+  </body>
+</html>

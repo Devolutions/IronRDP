@@ -1617,6 +1617,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-rdcleanpath",
+ "ironrdp-replay-core",
  "sspi",
  "thiserror 2.0.18",
  "tracing",
@@ -2501,6 +2502,7 @@ name = "ironrdp-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crc32fast",
  "futures-util",
  "ironrdp",
  "ironrdp-core",
@@ -2511,6 +2513,8 @@ dependencies = [
  "ironrdp-rdpsnd-native",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "serde",
+ "serde_json",
  "smallvec",
  "tokio",
  "tokio-tungstenite",
@@ -2837,6 +2841,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-replay-bench"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ironrdp",
+ "ironrdp-replay-core",
+ "ironrdp-tokio",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "ironrdp-replay-core"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "ironrdp",
+]
+
+[[package]]
 name = "ironrdp-server"
 version = "0.11.0"
 dependencies = [
@@ -3039,6 +3067,7 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpfile",
+ "ironrdp-replay-core",
  "ironrdp-svc",
  "js-sys",
  "png",

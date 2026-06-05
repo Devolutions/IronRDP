@@ -1,0 +1,12 @@
+{
+  "name": "ironrdp-web-bench-harness",
+  "private": true,
+  "type": "module",
+  "description": "Headless Playwright harness that runs the IronRDP web (WASM) replay benchmark and verifies the framebuffer checksum.",
+  "scripts": {
+    "bench": "node run.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}

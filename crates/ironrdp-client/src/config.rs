@@ -38,6 +38,15 @@ pub struct Config {
     /// to obtain DVC plugin COM objects. Example: `C:\Windows\System32\webauthn.dll`.
     #[cfg(windows)]
     pub dvc_plugins: Vec<PathBuf>,
+
+    /// Benchmark capture recording (`--record-traffic`). When set, the session's decrypted
+    /// server->client stream (from the first MCS byte), a session manifest, and a final-framebuffer
+    /// checksum are written for deterministic replay. See [`crate::record`].
+    pub record: Option<crate::record::RecordOptions>,
+
+    /// Gracefully end the session after this many seconds. Intended for headless/scripted capture
+    /// runs so the normal teardown path (flushing the capture, writing the checksum) still runs.
+    pub exit_after_secs: Option<f64>,
 }
 
 /// Resolved clipboard backend selection.

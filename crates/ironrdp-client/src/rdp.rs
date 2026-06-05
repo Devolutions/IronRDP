@@ -1,4 +1,5 @@
 use core::num::NonZeroU16;
+use core::time::Duration;
 use std::sync::Arc;
 
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
@@ -32,6 +33,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::config::{Config, RDCleanPathConfig};
+use crate::record::{RecordContext, RecordGate, RecordingStream, SessionManifest};
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
@@ -115,7 +117,7 @@ pub struct RdpClient {
 impl RdpClient {
     pub async fn run(mut self) {
         loop {
-            let (connection_result, framed) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
+            let (connection_result, framed, record_context) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
                 match connect_ws(
                     &self.config,
                     rdcleanpath,
@@ -155,6 +157,8 @@ impl RdpClient {
             match active_session(
                 framed,
                 connection_result,
+                record_context,
+                self.config.exit_after_secs.map(Duration::from_secs_f64),
                 &self.output_event_sender,
                 &mut self.input_event_receiver,
             )
@@ -195,7 +199,7 @@ async fn connect(
     config: &Config,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
     dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
-) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
+) -> ConnectorResult<(ConnectionResult, UpgradedFramed, Option<RecordContext>)> {
     let dest = config.destination.to_string();
 
     let (client_addr, stream) = if let Some(ref gw_config) = config.gw {
@@ -284,11 +288,29 @@ async fn connect(
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
-    let erased_stream: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(upgraded_stream);
-    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
-
     let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert)
         .ok_or_else(|| connector::general_err!("unable to extract tls server public key"))?;
+
+    // When recording (`--record-traffic`), wrap the decrypted stream so server->client bytes can be
+    // teed to a capture file. Recording stays gated off through the whole connection sequence
+    // (CredSSP, MCS, capability exchange); it is opened right after `connect_finalize` returns, so
+    // the capture contains exactly the active-session byte stream that a replay feeds into a freshly
+    // built `ActiveStage`.
+    let (mut upgraded_framed, recording) = if let Some(record_opts) = config.record.as_ref() {
+        let gate = RecordGate::new_closed();
+        let recording = RecordingStream::new(&record_opts.traffic_path, upgraded_stream, gate.clone())
+            .map_err(|e| connector::custom_err!("create capture file", e))?;
+        let recorded_bytes = recording.recorded_bytes_handle();
+        let capture = recording.capture_handle();
+        let erased: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(recording);
+        let framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased, leftover_bytes);
+        (framed, Some((gate, capture, recorded_bytes)))
+    } else {
+        let erased: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(upgraded_stream);
+        let framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased, leftover_bytes);
+        (framed, None)
+    };
+
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         connector,
@@ -302,7 +324,23 @@ async fn connect(
 
     debug!(?connection_result);
 
-    Ok((connection_result, upgraded_framed))
+    // Start capturing the active session. Any active-session bytes already read into the framed
+    // buffer during capability exchange (`peek`) are prepended so the capture is byte-exact.
+    let record_context = recording.map(|(gate, capture, recorded_bytes)| {
+        capture.write(upgraded_framed.peek());
+        gate.open();
+        RecordContext {
+            options: config
+                .record
+                .as_ref()
+                .expect("recording is Some implies record options are set")
+                .clone(),
+            manifest: SessionManifest::from_connection_result(&connection_result),
+            recorded_bytes,
+        }
+    });
+
+    Ok((connection_result, upgraded_framed, record_context))
 }
 
 async fn connect_ws(
@@ -310,7 +348,7 @@ async fn connect_ws(
     rdcleanpath: &RDCleanPathConfig,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
     dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
-) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
+) -> ConnectorResult<(ConnectionResult, UpgradedFramed, Option<RecordContext>)> {
     let hostname = rdcleanpath
         .url
         .host_str()
@@ -421,7 +459,9 @@ async fn connect_ws(
     let erased_stream: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(ws);
     let upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
 
-    Ok((connection_result, upgraded_framed))
+    // Recording over the RDCleanPath/WebSocket transport is not supported (the CredSSP hook used by
+    // the direct TCP path does not apply here); the benchmark recorder uses the direct path.
+    Ok((connection_result, upgraded_framed, None))
 }
 
 async fn connect_rdcleanpath<S>(
@@ -580,6 +620,8 @@ where
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
+    record_context: Option<RecordContext>,
+    exit_after: Option<Duration>,
     output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
 ) -> SessionResult<RdpControlFlow> {
@@ -595,8 +637,21 @@ async fn active_session(
     // Timer interval for driving clipboard lock timeouts (5 second interval)
     let mut cleanup_interval = tokio::time::interval(core::time::Duration::from_secs(5));
 
+    // Absolute deadline for `--exit-after-secs` (headless capture runs). Recomputed per iteration via
+    // `sleep_until`, which is safe because the deadline is fixed.
+    let exit_deadline = exit_after.map(|d| tokio::time::Instant::now() + d);
+
     let disconnect_reason = 'outer: loop {
         let outputs = tokio::select! {
+            () = async {
+                match exit_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => core::future::pending::<()>().await,
+                }
+            } => {
+                info!("exit-after timer fired; ending session");
+                break 'outer GracefulDisconnectReason::Other("exit-after timer".to_owned());
+            }
             frame = reader.read_pdu() => {
                 let (action, payload) = frame.map_err(|e| session::custom_err!("read frame", e))?;
                 trace!(?action, frame_length = payload.len(), "Frame received");
@@ -817,6 +872,15 @@ async fn active_session(
             }
         }
     };
+
+    // Finalize the benchmark capture: stamp the manifest byte count and write the manifest + the
+    // final-framebuffer checksum (the deterministic replay correctness gate). The traffic file itself
+    // is flushed when the recording stream is dropped (at function exit, with `reader`/`writer`).
+    if let Some(record_context) = record_context
+        && let Err(error) = record_context.finalize(&image)
+    {
+        error!(%error, "Failed to finalize benchmark capture");
+    }
 
     Ok(RdpControlFlow::TerminatedGracefully(disconnect_reason))
 }

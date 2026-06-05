@@ -64,6 +64,11 @@ smallvec = "1.15"
 url = "2"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 
+# Benchmark capture recording (`--record-*` flags)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crc32fast = "1"
+
 [target.'cfg(windows)'.dependencies]
 ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin" }
 

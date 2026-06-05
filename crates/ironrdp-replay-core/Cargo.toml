@@ -1,0 +1,23 @@
+[package]
+name = "ironrdp-replay-core"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Shared logic to rebuild an IronRDP session (ConnectionResult/ActiveStage) for IRDPREC1 replay"
+
+[dependencies]
+ironrdp = { path = "../ironrdp", features = [
+    "session",
+    "connector",
+    "svc",
+    "dvc",
+    "rdpsnd",
+    "rdpdr",
+    "displaycontrol",
+    "echo",
+] }
+crc32fast = "1"
+
+[lints]
+workspace = true
