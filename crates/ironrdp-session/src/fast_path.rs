@@ -104,26 +104,30 @@ impl Processor {
                 let bulk_flags =
                     u32::from(flags.bits()) | u32::from(update_pdu.compression_type.map_or(0, |ct| ct.as_u8()));
 
-                if let Some(ref mut decompressor) = self.bulk_decompressor {
-                    let decompressed = decompressor
-                        .decompress(update_pdu.data, bulk_flags)
-                        .map_err(|e| reason_err!("FastPath", "bulk decompression failed: {}", e))?;
-                    // Copy decompressed data before accessing metrics (releases the mutable borrow).
-                    decompressed_data = decompressed.to_vec();
-                    debug!(
-                        compressed_size = update_pdu.data.len(),
-                        decompressed_size = decompressed_data.len(),
-                        compression_type = ?update_pdu.compression_type,
-                        compression_ratio = format_args!("{:.2}x", decompressor.compression_ratio()),
-                        total_compressed = decompressor.total_compressed_bytes(),
-                        total_uncompressed = decompressor.total_uncompressed_bytes(),
-                        "Decompressed FastPath update"
-                    );
-                    decompressed_data.as_slice()
-                } else {
-                    warn!("Received compressed FastPath data but no decompressor is configured");
-                    update_pdu.data
-                }
+                let Some(ref mut decompressor) = self.bulk_decompressor else {
+                    // Drop the update rather than forwarding compressed bytes downstream:
+                    // the PDU decoder would read length fields out of compressed
+                    // payload and fail with NotEnoughBytes (typically a huge expected
+                    // value), killing the session. A dropped update loses one frame's
+                    // worth of pixels; forwarding compressed bytes corrupts the stream.
+                    warn!("Received compressed FastPath data but no decompressor is configured; dropping update");
+                    return Ok(processor_updates);
+                };
+                let decompressed = decompressor
+                    .decompress(update_pdu.data, bulk_flags)
+                    .map_err(|e| reason_err!("FastPath", "bulk decompression failed: {}", e))?;
+                // Copy decompressed data before accessing metrics (releases the mutable borrow).
+                decompressed_data = decompressed.to_vec();
+                debug!(
+                    compressed_size = update_pdu.data.len(),
+                    decompressed_size = decompressed_data.len(),
+                    compression_type = ?update_pdu.compression_type,
+                    compression_ratio = format_args!("{:.2}x", decompressor.compression_ratio()),
+                    total_compressed = decompressor.total_compressed_bytes(),
+                    total_uncompressed = decompressor.total_uncompressed_bytes(),
+                    "Decompressed FastPath update"
+                );
+                decompressed_data.as_slice()
             } else {
                 // Compression flags present but COMPRESSED bit not set — pass data through.
                 // Still need to inform the decompressor of FLUSHED/AT_FRONT flags even
