@@ -119,7 +119,7 @@ impl TryFrom<u8> for PixelFormat {
         match value {
             0x20 => Ok(PixelFormat::XRgb),
             0x21 => Ok(PixelFormat::ARgb),
-            _ => Err(invalid_field_err!("PixelFormat", "invalid pixel format")),
+            _ => Err(invalid_field_err!("PixelFormat", "invalid pixel format", at: 0)),
         }
     }
 }

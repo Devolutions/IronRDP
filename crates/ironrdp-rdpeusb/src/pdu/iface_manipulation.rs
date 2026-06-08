@@ -50,7 +50,7 @@ impl Decode<'_> for InterfaceRelease {
             return Err(invalid_field_err!(
                 "SHARED_MSG_HEADER::FunctionId",
                 "must be 0x1 (RIMCALL_RELEASE)"
-            ));
+            , in: src));
         }
 
         Ok(Self { iface_id, msg_id })

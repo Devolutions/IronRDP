@@ -143,9 +143,9 @@ impl<'de> Decode<'de> for ClientInfo {
         let flags_with_compression_type = src.read_u32();
 
         let flags = ClientInfoFlags::from_bits(flags_with_compression_type & !COMPRESSION_TYPE_MASK)
-            .ok_or_else(|| invalid_field_err!("flags", "invalid ClientInfoFlags"))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid ClientInfoFlags", at: 0))?;
         let compression_type = CompressionType::from_u32((flags_with_compression_type & COMPRESSION_TYPE_MASK) >> 9)
-            .ok_or_else(|| invalid_field_err!("flags", "invalid CompressionType"))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid CompressionType", at: 0))?;
 
         let character_set = if flags.contains(ClientInfoFlags::UNICODE) {
             CharacterSet::Unicode
@@ -375,7 +375,7 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
         }
         optional_data.performance_flags = Some(
             PerformanceFlags::from_bits(src.read_u32())
-                .ok_or_else(|| invalid_field_err!("performanceFlags", "invalid performance flags"))?,
+                .ok_or_else(|| invalid_field_err!("performanceFlags", "invalid performance flags", at: 0))?,
         );
 
         if src.len() < 2 {
@@ -385,11 +385,11 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
         if reconnect_cookie_size != u16::try_from(RECONNECT_COOKIE_LEN).expect("RECONNECT_COOKIE_LEN fit into u16")
             && reconnect_cookie_size != 0
         {
-            return Err(invalid_field_err!("cbAutoReconnectCookie", "invalid cookie size"));
+            return Err(invalid_field_err!("cbAutoReconnectCookie", "invalid cookie size", at: 0));
         }
         if reconnect_cookie_size != 0 {
             if src.len() < RECONNECT_COOKIE_LEN {
-                return Err(invalid_field_err!("cbAutoReconnectCookie", "missing cookie data"));
+                return Err(invalid_field_err!("cbAutoReconnectCookie", "missing cookie data", at: 0));
             }
             optional_data.reconnect_cookie = Some(src.read_array());
         }

@@ -234,13 +234,13 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
         let encoding_raw: u8 = stream_info.get_bits(30..32).try_into().unwrap();
         // Only 0x00 (LUMA_AND_CHROMA), 0x01 (LUMA), 0x02 (CHROMA) are defined.
         if encoding_raw > 2 {
-            return Err(invalid_field_err!("encoding", "reserved encoding value"));
+            return Err(invalid_field_err!("encoding", "reserved encoding value", at: 0));
         }
         let encoding = Encoding::from_bits_retain(encoding_raw);
 
         if stream_len == 0 {
             if encoding == Encoding::LUMA_AND_CHROMA {
-                return Err(invalid_field_err!("encoding", "invalid encoding"));
+                return Err(invalid_field_err!("encoding", "invalid encoding", at: 0));
             }
 
             let stream1 = Avc420BitmapStream::decode(src)?;

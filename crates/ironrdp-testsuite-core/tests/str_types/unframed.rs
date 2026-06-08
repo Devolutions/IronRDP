@@ -30,6 +30,7 @@ fn rejects_odd_byte_len() {
             kind: InvalidField {
                 field: "byte_len",
                 reason: "odd byte count for utf-16 string field",
+                offset: 0,
             },
             source: None,
         }

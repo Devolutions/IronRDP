@@ -71,18 +71,18 @@ impl LicensingErrorMessage {
 
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::ErrorAlert {
-            return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
+            return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type", at: 0));
         }
 
         ensure_fixed_part_size!(in: src);
         let error_code = LicenseErrorCode::from_u32(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("errorCode", "invalid error code"))?;
+            .ok_or_else(|| invalid_field_err!("errorCode", "invalid error code", at: 0))?;
         let state_transition = LicensingStateTransition::from_u32(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("stateTransition", "invalid state transition"))?;
+            .ok_or_else(|| invalid_field_err!("stateTransition", "invalid state transition", at: 0))?;
 
         let error_info_blob = BlobHeader::decode(src)?;
         if error_info_blob.length != 0 && error_info_blob.blob_type != BlobType::ERROR {
-            return Err(invalid_field_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type", at: 0));
         }
 
         let error_info = vec![0u8; error_info_blob.length];

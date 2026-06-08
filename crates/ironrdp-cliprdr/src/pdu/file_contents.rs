@@ -129,18 +129,15 @@ impl<'a> FileContentsResponse<'a> {
     /// Should not panic - the try_into conversion is guaranteed to succeed after length validation.
     pub fn data_as_size(&self) -> DecodeResult<u64> {
         if self.data.len() != 8 {
-            return Err(invalid_field_err!(
-                "requestedFileContentsData",
-                "SIZE response must be exactly 8 bytes per MS-RDPECLIP 2.2.5.4"
-            ));
+            return Err(invalid_field_err!( "requestedFileContentsData",
+                "SIZE response must be exactly 8 bytes per MS-RDPECLIP 2.2.5.4", at: 0));
         }
 
         // Per length check above, this conversion is infallible.
-        let chunk: [u8; 8] = self
-            .data
-            .as_ref()
-            .try_into()
-            .map_err(|_| invalid_field_err!("requestedFileContentsData", "SIZE response data is not 8 bytes"))?;
+        let chunk: [u8; 8] =
+            self.data.as_ref().try_into().map_err(
+                |_| invalid_field_err!("requestedFileContentsData", "SIZE response data is not 8 bytes", at: 0),
+            )?;
         Ok(u64::from_le_bytes(chunk))
     }
 }
@@ -182,7 +179,7 @@ impl<'de> Decode<'de> for FileContentsResponse<'de> {
         ensure_size!(in: src, size: header.data_length());
 
         if header.data_length() < Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("requestedFileContentsData", "invalid data size"));
+            return Err(invalid_field_err!("requestedFileContentsData", "invalid data size", at: 0));
         };
 
         let data_size = header.data_length() - Self::FIXED_PART_SIZE;
@@ -287,28 +284,22 @@ impl<'de> Decode<'de> for FileContentsRequest {
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate lindex is non-negative
         if index < 0 {
-            return Err(invalid_field_err!(
-                "lindex",
-                "file index must be non-negative per MS-RDPECLIP 2.2.5.3"
-            ));
+            return Err(invalid_field_err!( "lindex",
+                "file index must be non-negative per MS-RDPECLIP 2.2.5.3", at: 0));
         }
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate flags are spec-compliant
-        flags.validate().map_err(|e| invalid_field_err!("dwFlags", e))?;
+        flags.validate().map_err(|e| invalid_field_err!("dwFlags", e, at: 0))?;
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate SIZE request constraints
         if flags.contains(FileContentsFlags::SIZE) {
             if requested_size != 8 {
-                return Err(invalid_field_err!(
-                    "cbRequested",
-                    "SIZE request must have cbRequested=8 per MS-RDPECLIP 2.2.5.3"
-                ));
+                return Err(invalid_field_err!( "cbRequested",
+                    "SIZE request must have cbRequested=8 per MS-RDPECLIP 2.2.5.3", at: 0));
             }
             if position != 0 {
-                return Err(invalid_field_err!(
-                    "position",
-                    "SIZE request must have position=0 per MS-RDPECLIP 2.2.5.3"
-                ));
+                return Err(invalid_field_err!( "position",
+                    "SIZE request must have position=0 per MS-RDPECLIP 2.2.5.3", at: 0));
             }
         }
 

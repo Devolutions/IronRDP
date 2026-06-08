@@ -191,10 +191,8 @@ impl Encode for FileDescriptor {
         // UTF-16 encoding: each code unit is 2 bytes, plus 2 bytes for null terminator.
         let encoded_len = wire_name.encode_utf16().count() * 2 + 2;
         if NAME_LENGTH < encoded_len {
-            return Err(ironrdp_core::invalid_field_err!(
-                "cFileName",
-                "encoded wire name exceeds NAME_LENGTH (520 bytes)"
-            ));
+            return Err(ironrdp_core::invalid_field_err!( "cFileName",
+                "encoded wire name exceeds NAME_LENGTH (520 bytes)", at: 0));
         }
 
         let written = encode_string(dst.remaining_mut(), &wire_name, CharacterSet::Unicode, true)?;
@@ -304,10 +302,8 @@ impl<'de> Decode<'de> for PackedFileList {
         let file_count: usize = cast_length!(Self::NAME, "cItems", src.read_u32())?;
 
         if MAX_FILE_COUNT < file_count {
-            return Err(ironrdp_core::invalid_field_err!(
-                "cItems",
-                "file count exceeds maximum of 100000"
-            ));
+            return Err(ironrdp_core::invalid_field_err!( "cItems",
+                "file count exceeds maximum of 100000", at: 0));
         }
 
         // Cap pre-allocation against remaining bytes to prevent OOM from

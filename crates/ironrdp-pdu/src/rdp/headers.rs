@@ -67,7 +67,7 @@ impl<'de> Decode<'de> for BasicSecurityHeader {
         ensure_fixed_part_size!(in: src);
 
         let flags = BasicSecurityHeaderFlags::from_bits(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("securityHeader", "invalid basic security header"))?;
+            .ok_or_else(|| invalid_field_err!("securityHeader", "invalid basic security header", at: 0))?;
         let _flags_hi = src.read_u16(); // unused
 
         Ok(Self { flags })
@@ -124,10 +124,10 @@ impl<'de> Decode<'de> for ShareControlHeader {
         let share_id = src.read_u32();
 
         let pdu_type = ShareControlPduType::from_u16(pdu_type_with_version & SHARE_CONTROL_HEADER_MASK)
-            .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type"))?;
+            .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type", at: 0))?;
         let pdu_version = pdu_type_with_version & !SHARE_CONTROL_HEADER_MASK;
         if pdu_version != PROTOCOL_VERSION {
-            return Err(invalid_field_err!("pdu_version", "invalid PDU version"));
+            return Err(invalid_field_err!("pdu_version", "invalid PDU version", at: 0));
         }
 
         let share_pdu = ShareControlPdu::from_type(src, pdu_type)?;
@@ -145,7 +145,7 @@ impl<'de> Decode<'de> for ShareControlHeader {
 
             if header_length != total_length {
                 if total_length < header_length {
-                    return Err(not_enough_bytes_err!(total_length, header_length));
+                    return Err(not_enough_bytes_err!(total_length, header_length, at: 0));
                 }
 
                 let padding = total_length - header_length;
@@ -200,7 +200,7 @@ impl ShareControlPdu {
             ShareControlPduType::DeactivateAllPdu => {
                 Ok(ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll::decode(src)?))
             }
-            _ => Err(invalid_field_err!("share_type", "unexpected share control PDU type")),
+            _ => Err(invalid_field_err!("share_type", "unexpected share control PDU type", at: 0)),
         }
     }
 }
@@ -284,17 +284,17 @@ impl<'de> Decode<'de> for ShareDataHeader {
 
         read_padding!(src, 1);
         let stream_priority = StreamPriority::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("streamPriority", "Invalid stream priority"))?;
+            .ok_or_else(|| invalid_field_err!("streamPriority", "Invalid stream priority", at: 0))?;
         let _uncompressed_length = src.read_u16();
         let pdu_type = ShareDataPduType::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("pduType", "Invalid pdu type"))?;
+            .ok_or_else(|| invalid_field_err!("pduType", "Invalid pdu type", at: 0))?;
         let compression_flags_with_type = src.read_u8();
 
         let compression_flags =
             CompressionFlags::from_bits_retain(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
         let compression_type =
             client_info::CompressionType::from_u8(compression_flags_with_type & SHARE_DATA_HEADER_COMPRESSION_MASK)
-                .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type"))?;
+                .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type", at: 0))?;
         let _compressed_length = src.read_u16();
 
         let share_data_pdu = ShareDataPdu::from_type(src, pdu_type)?;

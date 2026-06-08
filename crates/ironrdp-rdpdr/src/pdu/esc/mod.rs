@@ -160,10 +160,8 @@ impl ndr::Decode for ScardContext {
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
             error!(?length, "Unsupported value length in ScardContext");
-            return Err(invalid_field_err!(
-                "decode_ptr",
-                "unsupported value length in ScardContext"
-            ));
+            return Err(invalid_field_err!( "decode_ptr",
+                "unsupported value length in ScardContext", at: 0));
         }
 
         let _ptr = ndr::decode_ptr(src, index)?;
@@ -176,10 +174,8 @@ impl ndr::Decode for ScardContext {
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
             error!(?length, "Unsupported value length in ScardContext");
-            return Err(invalid_field_err!(
-                "decode_value",
-                "unsupported value length in ScardContext"
-            ));
+            return Err(invalid_field_err!( "decode_value",
+                "unsupported value length in ScardContext", at: 0));
         }
         self.value = src.read_u32();
         Ok(())
@@ -371,7 +367,7 @@ impl TryFrom<u32> for ScardIoCtlCode {
             0x0009_0108 => Ok(ScardIoCtlCode::GetDeviceTypeId),
             _ => {
                 error!("Unsupported ScardIoCtlCode: 0x{:08x}", value);
-                Err(invalid_field_err!("try_from", "ScardIoCtlCode", "unsupported value"))
+                Err(invalid_field_err!("try_from", "ScardIoCtlCode", "unsupported value", at: 0))
             }
         }
     }
@@ -634,7 +630,7 @@ impl TryFrom<u32> for Scope {
             0x0000_0002 => Ok(Scope::System),
             _ => {
                 error!("Unsupported Scope: 0x{:08x}", value);
-                Err(invalid_field_err!("try_from", "Scope", "unsupported value"))
+                Err(invalid_field_err!("try_from", "Scope", "unsupported value", at: 0))
             }
         }
     }
@@ -728,10 +724,8 @@ impl rpce::HeaderlessDecode for ListReadersCall {
         ensure_size!(in: src, size: size_of::<u32>());
         let groups_length = src.read_u32();
         if groups_length != groups_ptr_length {
-            return Err(invalid_field_err!(
-                "decode",
-                "mismatched reader groups length in NDR pointer and value"
-            ));
+            return Err(invalid_field_err!( "decode",
+                "mismatched reader groups length in NDR pointer and value", at: 0));
         }
 
         let groups = read_multistring_from_cursor(src, charset)?;
@@ -1063,10 +1057,8 @@ impl ndr::Decode for ScardHandle {
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
             error!(?length, "Unsupported value length in ScardHandle");
-            return Err(invalid_field_err!(
-                "decode_ptr",
-                "unsupported value length in ScardHandle"
-            ));
+            return Err(invalid_field_err!( "decode_ptr",
+                "unsupported value length in ScardHandle", at: 0));
         }
         let _ptr = ndr::decode_ptr(src, index)?;
         Ok(Self { context, value: 0 })
@@ -1079,10 +1071,8 @@ impl ndr::Decode for ScardHandle {
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
             error!(?length, "Unsupported value length in ScardHandle");
-            return Err(invalid_field_err!(
-                "decode_value",
-                "unsupported value length in ScardHandle"
-            ));
+            return Err(invalid_field_err!( "decode_value",
+                "unsupported value length in ScardHandle", at: 0));
         }
         ensure_size!(in: src, size: size_of::<u32>());
         self.value = src.read_u32();

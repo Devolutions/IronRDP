@@ -47,7 +47,7 @@ impl TryFrom<u8> for Mask {
             0x0 => Ok(Self::None),
             0x1 => Ok(Self::Proxy),
             0x2 => Ok(Self::Stub),
-            _ => Err(invalid_field_err!("try_from", "Mask", "invalid mask")),
+            _ => Err(invalid_field_err!("try_from", "Mask", "invalid mask", at: 0)),
         }
     }
 }
@@ -122,7 +122,7 @@ impl TryFrom<u32> for InterfaceId {
                 "try_from",
                 "InterfaceId",
                 "InterfaceId greater than 30 bits"
-            ))
+            , at: 0))
         }
     }
 }

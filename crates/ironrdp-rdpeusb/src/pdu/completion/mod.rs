@@ -94,7 +94,7 @@ impl IoControlCompletion {
                     return Err(invalid_field_err!(
                         "Information != OutputBufferSize",
                         "HResult is: 0x0 (IOCTL success), but Information != OutputBufferSize"
-                    ));
+                    , in: src));
                 }
                 ensure_size!(in: src, size: n);
                 src.read_slice(n).to_vec()
@@ -113,7 +113,7 @@ impl IoControlCompletion {
                         "OutputBufferSize",
                         "HResult is not one of: 0x0 (success), 0x8007007A (insufficient buffer error), \
                     so expected OutputBufferSize: 0x0"
-                    ));
+                    , in: src));
                 }
                 Vec::new()
             }
@@ -194,7 +194,7 @@ impl UrbCompletion {
     pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())
-            .map_err(|reason| invalid_field_err!("URB_COMPLETION::RequestId", reason))?;
+            .map_err(|reason| invalid_field_err!("URB_COMPLETION::RequestId", reason, in: src))?;
 
         let cb_ts_urb_result: usize = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
         ensure_size!(in: src, size: cb_ts_urb_result);
@@ -240,7 +240,7 @@ impl Encode for UrbCompletion {
             return Err(invalid_field_err!(
                 "URB_COMPLETION::TsUrbResult",
                 "has non-empty payload but payload is not TS_URB_ISOCH_TRANSFER_RESULT"
-            ));
+            , in: dst));
         }
 
         self.ts_urb_result.encode(dst)?;
@@ -296,7 +296,7 @@ impl UrbCompletionNoData {
     pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())
-            .map_err(|reason| invalid_field_err!("URB_COMPLETION_NO_DATA::RequestId", reason))?;
+            .map_err(|reason| invalid_field_err!("URB_COMPLETION_NO_DATA::RequestId", reason, in: src))?;
 
         let cb_ts_urb_result = usize::try_from(src.read_u32()).map_err(|e| other_err!(source: e))?;
         ensure_size!(in: src, size: cb_ts_urb_result);

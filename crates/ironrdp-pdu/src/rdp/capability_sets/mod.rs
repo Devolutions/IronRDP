@@ -505,16 +505,14 @@ impl<'de> Decode<'de> for CapabilitySet {
 
         let capability_set_type_raw = src.read_u16();
         let capability_set_type = CapabilitySetType::from_u16(capability_set_type_raw).ok_or_else(|| {
-            unsupported_value_err!(
-                "capabilitySetType",
-                format!("invalid capability set type: {}", capability_set_type_raw)
-            )
+            unsupported_value_err!( "capabilitySetType",
+                format!("invalid capability set type: {}", capability_set_type_raw), at: 0)
         })?;
 
         let length = usize::from(src.read_u16());
 
         if length < CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE {
-            return Err(invalid_field_err!("len", "invalid capability set length"));
+            return Err(invalid_field_err!("len", "invalid capability set length", at: 0));
         }
 
         let buffer_length = length - CAPABILITY_SET_TYPE_FIELD_SIZE - CAPABILITY_SET_LENGTH_FIELD_SIZE;

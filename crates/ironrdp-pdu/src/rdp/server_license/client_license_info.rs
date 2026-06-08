@@ -144,12 +144,12 @@ impl ClientLicenseInfo {
 
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::LicenseInfo {
-            return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
+            return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type", at: 0));
         }
 
         let key_exchange_algorithm = src.read_u32();
         if key_exchange_algorithm != KEY_EXCHANGE_ALGORITHM_RSA {
-            return Err(invalid_field_err!("keyExchangeAlgo", "invalid key exchange algorithm"));
+            return Err(invalid_field_err!("keyExchangeAlgo", "invalid key exchange algorithm", at: 0));
         }
 
         // We can ignore platform ID
@@ -160,21 +160,21 @@ impl ClientLicenseInfo {
 
         let premaster_secret_blob_header = BlobHeader::decode(src)?;
         if premaster_secret_blob_header.blob_type != BlobType::RANDOM {
-            return Err(invalid_field_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type", at: 0));
         }
         ensure_size!(in: src, size: premaster_secret_blob_header.length);
         let encrypted_premaster_secret = src.read_slice(premaster_secret_blob_header.length).into();
 
         let license_info_blob_header = BlobHeader::decode(src)?;
         if license_info_blob_header.blob_type != BlobType::DATA {
-            return Err(invalid_field_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type", at: 0));
         }
         ensure_size!(in: src, size: license_info_blob_header.length);
         let license_info = src.read_slice(license_info_blob_header.length).into();
 
         let encrypted_hwid_blob_header = BlobHeader::decode(src)?;
         if encrypted_hwid_blob_header.blob_type != BlobType::DATA {
-            return Err(invalid_field_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type", at: 0));
         }
         ensure_size!(in: src, size: encrypted_hwid_blob_header.length);
         let encrypted_hwid = src.read_slice(encrypted_hwid_blob_header.length).into();

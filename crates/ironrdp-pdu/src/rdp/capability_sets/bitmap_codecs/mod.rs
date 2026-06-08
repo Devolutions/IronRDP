@@ -271,7 +271,7 @@ impl<'de> Decode<'de> for Codec {
             GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
                 let byte = property_buffer
                     .first()
-                    .ok_or_else(|| invalid_field_err!("remotefx property", "must not be empty"))?;
+                    .ok_or_else(|| invalid_field_err!("remotefx property", "must not be empty", at: 0))?;
                 let property = if *byte == 0 {
                     RemoteFxContainer::ServerContainer(codec_properties_len)
                 } else {
@@ -288,14 +288,14 @@ impl<'de> Decode<'de> for Codec {
             #[cfg(feature = "qoi")]
             GUID_QOI => {
                 if !property_buffer.is_empty() {
-                    return Err(invalid_field_err!("qoi property", "must be empty"));
+                    return Err(invalid_field_err!("qoi property", "must be empty", at: 0));
                 }
                 CodecProperty::Qoi
             }
             #[cfg(feature = "qoiz")]
             GUID_QOIZ => {
                 if !property_buffer.is_empty() {
-                    return Err(invalid_field_err!("qoi property", "must be empty"));
+                    return Err(invalid_field_err!("qoi property", "must be empty", at: 0));
                 }
                 CodecProperty::QoiZ
             }
@@ -478,17 +478,17 @@ impl<'de> Decode<'de> for RfxCaps {
 
         let block_type = src.read_u16();
         if block_type != RFX_CAPS_BLOCK_TYPE {
-            return Err(invalid_field_err!("blockType", "invalid rfx caps block type"));
+            return Err(invalid_field_err!("blockType", "invalid rfx caps block type", at: 0));
         }
 
         let block_len = src.read_u32();
         if block_len != RFX_CAPS_BLOCK_LENGTH {
-            return Err(invalid_field_err!("blockLen", "invalid rfx caps block length"));
+            return Err(invalid_field_err!("blockLen", "invalid rfx caps block length", at: 0));
         }
 
         let num_capsets = src.read_u16();
         if num_capsets != RFX_CAPS_NUM_CAPSETS {
-            return Err(invalid_field_err!("numCapsets", "invalid rfx caps num capsets"));
+            return Err(invalid_field_err!("numCapsets", "invalid rfx caps num capsets", at: 0));
         }
 
         let capsets_data = RfxCapset::decode(src)?;
@@ -543,19 +543,19 @@ impl<'de> Decode<'de> for RfxCapset {
 
         let block_type = src.read_u16();
         if block_type != RFX_CAPSET_BLOCK_TYPE {
-            return Err(invalid_field_err!("blockType", "invalid rfx capset block type"));
+            return Err(invalid_field_err!("blockType", "invalid rfx capset block type", at: 0));
         }
 
         let _block_len = src.read_u32();
 
         let codec_id = src.read_u8();
         if codec_id != 1 {
-            return Err(invalid_field_err!("codecId", "invalid rfx codec ID"));
+            return Err(invalid_field_err!("codecId", "invalid rfx codec ID", at: 0));
         }
 
         let capset_type = src.read_u16();
         if capset_type != RFX_CAPSET_TYPE {
-            return Err(invalid_field_err!("capsetType", "invalid rfx capset type"));
+            return Err(invalid_field_err!("capsetType", "invalid rfx capset type", at: 0));
         }
 
         let num_icaps = src.read_u16();
@@ -612,28 +612,28 @@ impl<'de> Decode<'de> for RfxICap {
 
         let version = src.read_u16();
         if version != RFX_ICAP_VERSION {
-            return Err(invalid_field_err!("version", "invalid rfx icap version"));
+            return Err(invalid_field_err!("version", "invalid rfx icap version", at: 0));
         }
 
         let tile_size = src.read_u16();
         if tile_size != RFX_ICAP_TILE_SIZE {
-            return Err(invalid_field_err!("tileSize", "invalid rfx icap tile size"));
+            return Err(invalid_field_err!("tileSize", "invalid rfx icap tile size", at: 0));
         }
 
         let flags = RfxICapFlags::from_bits_retain(src.read_u8());
 
         let color_conversion = src.read_u8();
         if color_conversion != RFX_ICAP_COLOR_CONVERSION {
-            return Err(invalid_field_err!("colorConv", "invalid rfx color conversion bits"));
+            return Err(invalid_field_err!("colorConv", "invalid rfx color conversion bits", at: 0));
         }
 
         let transform_bits = src.read_u8();
         if transform_bits != RFX_ICAP_TRANSFORM_BITS {
-            return Err(invalid_field_err!("transformBits", "invalid rfx transform bits"));
+            return Err(invalid_field_err!("transformBits", "invalid rfx transform bits", at: 0));
         }
 
         let entropy_bits = EntropyBits::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("entropyBits", "invalid rfx entropy bits"))?;
+            .ok_or_else(|| invalid_field_err!("entropyBits", "invalid rfx entropy bits", at: 0))?;
 
         Ok(RfxICap { flags, entropy_bits })
     }

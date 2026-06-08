@@ -99,7 +99,7 @@ impl Decode<'_> for ProgressiveBlockHeader {
         ensure_fixed_part_size!(in: src);
         let raw = src.read_u16();
         let block_type = ProgressiveBlockType::from_u16(raw)
-            .ok_or_else(|| invalid_field_err!("blockType", "unknown progressive block type"))?;
+            .ok_or_else(|| invalid_field_err!("blockType", "unknown progressive block type", at: 0))?;
         let block_len = src.read_u32();
         Ok(Self { block_type, block_len })
     }
@@ -303,11 +303,11 @@ impl Decode<'_> for ProgressiveSyncPdu {
         ensure_fixed_part_size!(in: src);
         let magic = src.read_u32();
         if magic != SYNC_MAGIC {
-            return Err(invalid_field_err!("magic", "invalid progressive sync magic"));
+            return Err(invalid_field_err!("magic", "invalid progressive sync magic", at: 0));
         }
         let version = src.read_u16();
         if version != SYNC_VERSION {
-            return Err(invalid_field_err!("version", "unsupported progressive version"));
+            return Err(invalid_field_err!("version", "unsupported progressive version", at: 0));
         }
         Ok(Self)
     }
@@ -431,7 +431,7 @@ impl Decode<'_> for ProgressiveContextPdu {
         let context_id = src.read_u8();
         let tile_size = src.read_u16();
         if tile_size != TILE_SIZE {
-            return Err(invalid_field_err!("tileSize", "only 64x64 tiles supported"));
+            return Err(invalid_field_err!("tileSize", "only 64x64 tiles supported", at: 0));
         }
         let flags = src.read_u8();
         Ok(Self {
@@ -875,7 +875,7 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
 
         let tile_size = src.read_u8();
         if tile_size != 0x40 {
-            return Err(invalid_field_err!("tileSize", "only 64x64 tiles supported"));
+            return Err(invalid_field_err!("tileSize", "only 64x64 tiles supported", at: 0));
         }
 
         let num_rects = usize::from(src.read_u16());
@@ -884,13 +884,11 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
         let flags = src.read_u8();
 
         if num_rects == 0 {
-            return Err(invalid_field_err!(
-                "numRects",
-                "region must contain at least one rectangle"
-            ));
+            return Err(invalid_field_err!( "numRects",
+                "region must contain at least one rectangle", at: 0));
         }
         if num_quant > 7 {
-            return Err(invalid_field_err!("numQuant", "quant count exceeds maximum of 7"));
+            return Err(invalid_field_err!("numQuant", "quant count exceeds maximum of 7", at: 0));
         }
         let num_tiles = usize::from(src.read_u16());
         let _tile_data_size = src.read_u32();
@@ -921,7 +919,7 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
             let body_len = header
                 .block_len
                 .checked_sub(BLOCK_HEADER_SIZE_U32)
-                .ok_or_else(|| invalid_field_err!("blockLen", "tile block length too small"))?;
+                .ok_or_else(|| invalid_field_err!("blockLen", "tile block length too small", at: 0))?;
             let body_len: usize = cast_length!("tileBodyLen", body_len)?;
             ensure_size!(ctx: Self::NAME, in: src, size: body_len);
             let tile_src = &mut ReadCursor::new(src.read_slice(body_len));
@@ -931,7 +929,7 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
                 ProgressiveBlockType::TileFirst => ProgressiveTile::First(TileFirst::decode(tile_src)?),
                 ProgressiveBlockType::TileUpgrade => ProgressiveTile::Upgrade(TileUpgrade::decode(tile_src)?),
                 _ => {
-                    return Err(invalid_field_err!("blockType", "expected tile block inside region"));
+                    return Err(invalid_field_err!("blockType", "expected tile block inside region", at: 0));
                 }
             };
             tiles.push(tile);
@@ -945,7 +943,7 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
                 ProgressiveTile::Upgrade(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
             };
             if indices.iter().any(|&i| usize::from(i) >= quant_count) {
-                return Err(invalid_field_err!("quantIdx", "tile quant index out of range"));
+                return Err(invalid_field_err!("quantIdx", "tile quant index out of range", at: 0));
             }
         }
 
@@ -989,7 +987,7 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
         let body_len = header
             .block_len
             .checked_sub(BLOCK_HEADER_SIZE_U32)
-            .ok_or_else(|| invalid_field_err!("blockLen", "block length too small"))?;
+            .ok_or_else(|| invalid_field_err!("blockLen", "block length too small", at: 0))?;
         let body_len: usize = cast_length!("bodyLen", body_len)?;
         ensure_size!(ctx: "ProgressiveStream", in: src, size: body_len);
 
@@ -1003,7 +1001,7 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
         };
         if let Some(expected) = expected_body {
             if body_len != expected {
-                return Err(invalid_field_err!("blockLen", "unexpected size for fixed-size block"));
+                return Err(invalid_field_err!("blockLen", "unexpected size for fixed-size block", at: 0));
             }
         }
 
@@ -1019,7 +1017,7 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
             ProgressiveBlockType::Region => ProgressiveBlock::Region(ProgressiveRegion::decode(body_src)?),
             // Tile blocks should only appear inside regions; skip at top level
             ProgressiveBlockType::TileSimple | ProgressiveBlockType::TileFirst | ProgressiveBlockType::TileUpgrade => {
-                return Err(invalid_field_err!("blockType", "tile block outside of region"));
+                return Err(invalid_field_err!("blockType", "tile block outside of region", at: 0));
             }
         };
         blocks.push(block);
