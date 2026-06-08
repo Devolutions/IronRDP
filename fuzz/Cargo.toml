@@ -97,3 +97,10 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "message_decoding_invariants"
+path = "fuzz_targets/message_decoding_invariants.rs"
+test = false
+doc = false
+bench = false
+
