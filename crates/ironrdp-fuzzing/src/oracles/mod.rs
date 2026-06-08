@@ -357,6 +357,309 @@ pub fn egfx_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, Avc444BitmapStream<'_>);
 }
 
+/// Multi-frame oracle for the EGFX graphics pipeline client.
+///
+/// H.264 decoding maintains reference-picture state, SPS/PPS context, and
+/// decoder configuration across frames; surface caching and codec dispatch
+/// state in egfx all carry forward across PDUs. Single-shot fuzzers cannot
+/// reach frame-to-frame state corruption because they construct a fresh
+/// decoder per iteration. This oracle constructs ONE `GraphicsPipelineClient`
+/// at iteration start and drives a sequence of `GfxPdu`s through it, exposing
+/// cross-PDU state to the fuzzer.
+///
+/// Harness shape: `Arbitrary`-derived `Vec<GfxPdu>` (each variant `Arbitrary`
+/// via the cascade in PR #1334). Each PDU is encoded back to wire bytes,
+/// wrapped in a single uncompressed ZGFX segment, and fed to the client's
+/// public `DvcProcessor::process` entry point. This exercises the same path
+/// production traffic takes: ZGFX decompress -> `GfxPdu` decode -> dispatch
+/// to per-variant handler -> state machine + surface cache update.
+///
+/// What this catches: panics or sanitizer reports along the dispatch + state
+/// machine path when fed adversarially-ordered or malformed-payload PDUs;
+/// inconsistent surface-cache state under attacker-controlled
+/// CreateSurface / DeleteSurface / Map* orderings; corrupted frame-id state
+/// from interleaved StartFrame / EndFrame / FrameAcknowledge sequences;
+/// ZGFX-wrapper integration bugs separate from the standalone ZGFX coverage
+/// in `egfx_zgfx_decompress`.
+///
+/// What this does NOT catch: cross-frame H.264 decoder state corruption.
+/// The client is constructed with `h264_decoder: None`, so H264-bearing
+/// PDUs (WireToSurface1 with AVC codecs) don't reach the H.264 decoder.
+/// The standalone `egfx_avc420_decode` and `egfx_avc444_decode` targets
+/// cover the H.264 wrapper. Wiring a real (or mock) H.264 decoder into
+/// this harness can be a follow-up if frame-to-frame H.264 state coverage
+/// surfaces as a gap.
+pub fn egfx_multi_frame(data: &[u8]) {
+    use arbitrary::{Arbitrary as _, Unstructured};
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::pdu::GfxPdu;
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+
+    /// No-op handler. Every callback default-impls in the trait, so the empty
+    /// struct gets all defaults for free. The handler exists to satisfy
+    /// `GraphicsPipelineClient::new`'s API; the fuzz oracle does not inspect
+    /// any of the dispatched events.
+    struct NoOpHandler;
+    impl GraphicsPipelineHandler for NoOpHandler {}
+
+    let mut unstructured = Unstructured::new(data);
+    let Ok(pdus) = Vec::<GfxPdu>::arbitrary(&mut unstructured) else {
+        return;
+    };
+
+    let mut client = GraphicsPipelineClient::new(Box::new(NoOpHandler), None);
+
+    // Initialise the channel state by invoking the DvcProcessor::start entry.
+    // The returned advertise message is discarded; the call's side effect is
+    // putting the client's internal state machine into its post-start state.
+    const FUZZ_CHANNEL_ID: u32 = 0;
+    let _ = client.start(FUZZ_CHANNEL_ID);
+
+    for pdu in pdus {
+        // Encode each PDU back to wire bytes so the client processes through
+        // the same decode + dispatch path real traffic takes. Skip PDUs whose
+        // encoder rejects the Arbitrary-generated values rather than aborting
+        // the iteration; the next PDU may still exercise interesting state.
+        let Ok(pdu_bytes) = encode_vec(&pdu) else {
+            continue;
+        };
+
+        // Wrap the encoded PDU in an uncompressed ZGFX segment so the client's
+        // ZGFX decompressor produces the PDU bytes unmodified. This bypasses
+        // the ZGFX decoder layer (covered separately by egfx_zgfx_decompress)
+        // and concentrates fuzz pressure on the dispatch + state machine.
+        let payload = wrap_uncompressed(&pdu_bytes);
+
+        // Errors and panics propagate to libFuzzer naturally; we discard the
+        // Result since the oracle's job is to surface bugs, not to enforce
+        // dispatcher semantics.
+        let _ = client.process(FUZZ_CHANNEL_ID, &payload);
+    }
+}
+
+/// Surface-lifecycle state-machine oracle for the EGFX graphics pipeline client.
+///
+/// Sibling of [`egfx_multi_frame`] with two distinct properties:
+///
+/// 1. The PDU stream is narrowed to a `SurfaceLifecyclePdu` enum that contains
+///    only the seven state-affecting variants (`ResetGraphics`, `CreateSurface`,
+///    `DeleteSurface`, `MapSurfaceToOutput`, `StartFrame`, `EndFrame`,
+///    `FrameAcknowledge`). This approximately doubles the per-iteration density
+///    of state-affecting PDUs compared with [`egfx_multi_frame`]'s broad
+///    `Vec<GfxPdu>` shape.
+///
+/// 2. The oracle maintains a parallel `ExpectedState` model alongside the
+///    client. For each PDU, the model is updated to mirror the client's
+///    documented state transition, and after dispatch the client's observable
+///    state (via the public `get_surface` and `total_frames_decoded` getters)
+///    is asserted against the model.
+///
+/// This catches a different bug class from [`egfx_multi_frame`]'s panic /
+/// sanitizer oracle: logic bugs in state transitions that produce wrong but
+/// non-crashing observable state. Examples:
+///
+/// - Client retains a surface after `DeleteSurface` (model removed it, client did not).
+/// - Client clobbers `is_mapped` on a surface that did not receive `MapSurfaceToOutput`.
+/// - Client fails to clear all surfaces on `ResetGraphics`.
+/// - Client increments `total_frames_decoded` on a PDU other than `EndFrame`.
+///
+/// The model encodes the implementation's current documented behavior (e.g.,
+/// `CreateSurface` with `width == 0` or `height == 0` is silently skipped per
+/// `handle_create_surface`), so the oracle catches drift from that behavior.
+///
+/// What this does NOT catch: state transitions that exist only in private
+/// fields without a public getter (e.g., `current_frame_id`, `frames_queued`).
+/// Wiring observable access to those fields is a separate egfx-public-API
+/// change, out of scope here.
+///
+/// # Panics
+///
+/// Panics (reporting the bug to libFuzzer) when:
+/// - the client retains a surface the model removed (assertion on
+///   `client.get_surface` returning `Some` when expected was `None`), or
+/// - any field of a tracked surface diverges from the expected model after
+///   dispatch (id, width, height, pixel_format, is_mapped, origin), or
+/// - `client.total_frames_decoded()` diverges from the expected counter.
+#[expect(clippy::panic, reason = "panic is the libFuzzer bug-reporting mechanism")]
+pub fn egfx_surface_state(data: &[u8]) {
+    use std::collections::BTreeMap;
+
+    use arbitrary::{Arbitrary as _, Unstructured};
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::pdu::{
+        CreateSurfacePdu, DeleteSurfacePdu, EndFramePdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToOutputPdu,
+        PixelFormat, ResetGraphicsPdu, StartFramePdu,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+
+    /// No-op handler. Every callback default-impls in the trait.
+    struct NoOpHandler;
+    impl GraphicsPipelineHandler for NoOpHandler {}
+
+    /// Narrowed PDU set: only the variants that affect observable surface or
+    /// frame-counter state. The encoder rejects out-of-range fields on some of
+    /// these (e.g., u32 dimensions on `ResetGraphics`); the oracle skips PDUs
+    /// the encoder cannot serialize so the expected-state mirror never gets
+    /// out of sync with what the client actually dispatched.
+    #[derive(arbitrary::Arbitrary, Debug)]
+    enum SurfaceLifecyclePdu {
+        ResetGraphics(ResetGraphicsPdu),
+        CreateSurface(CreateSurfacePdu),
+        DeleteSurface(DeleteSurfacePdu),
+        MapSurfaceToOutput(MapSurfaceToOutputPdu),
+        StartFrame(StartFramePdu),
+        EndFrame(EndFramePdu),
+        FrameAcknowledge(FrameAcknowledgePdu),
+    }
+
+    impl SurfaceLifecyclePdu {
+        fn into_gfx_pdu(self) -> GfxPdu {
+            match self {
+                Self::ResetGraphics(p) => GfxPdu::ResetGraphics(p),
+                Self::CreateSurface(p) => GfxPdu::CreateSurface(p),
+                Self::DeleteSurface(p) => GfxPdu::DeleteSurface(p),
+                Self::MapSurfaceToOutput(p) => GfxPdu::MapSurfaceToOutput(p),
+                Self::StartFrame(p) => GfxPdu::StartFrame(p),
+                Self::EndFrame(p) => GfxPdu::EndFrame(p),
+                Self::FrameAcknowledge(p) => GfxPdu::FrameAcknowledge(p),
+            }
+        }
+    }
+
+    /// Mirror of the client's observable per-surface state.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ExpectedSurface {
+        width: u16,
+        height: u16,
+        pixel_format: PixelFormat,
+        is_mapped: bool,
+        output_origin_x: u32,
+        output_origin_y: u32,
+    }
+
+    /// Mirror of the client's full observable state. Only fields with public
+    /// getters on `GraphicsPipelineClient` are tracked.
+    #[derive(Debug, Default)]
+    struct ExpectedState {
+        surfaces: BTreeMap<u16, ExpectedSurface>,
+        total_frames_decoded: u32,
+    }
+
+    impl ExpectedState {
+        /// Apply a successfully-encoded PDU to the model. Mirrors
+        /// `GraphicsPipelineClient`'s `handle_*` methods exactly.
+        fn apply(&mut self, pdu: &GfxPdu) {
+            match pdu {
+                GfxPdu::ResetGraphics(_) => {
+                    // Per `handle_reset_graphics`: implicitly destroys all surfaces.
+                    // `total_frames_decoded` is NOT reset (running counter survives).
+                    self.surfaces.clear();
+                }
+                GfxPdu::CreateSurface(p) => {
+                    // Per `handle_create_surface`: zero-dimension surfaces are silently
+                    // dropped with a warn log. The model mirrors that skip.
+                    if p.width == 0 || p.height == 0 {
+                        return;
+                    }
+                    self.surfaces.insert(
+                        p.surface_id,
+                        ExpectedSurface {
+                            width: p.width,
+                            height: p.height,
+                            pixel_format: p.pixel_format,
+                            is_mapped: false,
+                            output_origin_x: 0,
+                            output_origin_y: 0,
+                        },
+                    );
+                }
+                GfxPdu::DeleteSurface(p) => {
+                    self.surfaces.remove(&p.surface_id);
+                }
+                GfxPdu::MapSurfaceToOutput(p) => {
+                    if let Some(s) = self.surfaces.get_mut(&p.surface_id) {
+                        s.is_mapped = true;
+                        s.output_origin_x = p.output_origin_x;
+                        s.output_origin_y = p.output_origin_y;
+                    }
+                }
+                GfxPdu::EndFrame(_) => {
+                    // Per `handle_end_frame`: increments `total_frames_decoded`
+                    // unconditionally. `wrapping_add` matches the implementation.
+                    self.total_frames_decoded = self.total_frames_decoded.wrapping_add(1);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut unstructured = Unstructured::new(data);
+    let Ok(pdus) = Vec::<SurfaceLifecyclePdu>::arbitrary(&mut unstructured) else {
+        return;
+    };
+
+    let mut client = GraphicsPipelineClient::new(Box::new(NoOpHandler), None);
+    const FUZZ_CHANNEL_ID: u32 = 0;
+    let _ = client.start(FUZZ_CHANNEL_ID);
+
+    let mut expected = ExpectedState::default();
+
+    for shape in pdus {
+        let pdu = shape.into_gfx_pdu();
+
+        // Encode first. If encoding rejects the Arbitrary-generated value the
+        // dispatcher will never see this PDU, so the expected state stays put.
+        let Ok(pdu_bytes) = encode_vec(&pdu) else {
+            continue;
+        };
+
+        // Mirror the expected transition before dispatch so post-dispatch
+        // assertions compare like-to-like.
+        expected.apply(&pdu);
+
+        // Dispatch through the same public path production traffic takes.
+        let payload = wrap_uncompressed(&pdu_bytes);
+        let _ = client.process(FUZZ_CHANNEL_ID, &payload);
+
+        // Assert observable per-surface state matches the model.
+        for (&id, expected_surface) in &expected.surfaces {
+            let actual = client
+                .get_surface(id)
+                .unwrap_or_else(|| panic!("expected surface {id} present after PDU; client has none"));
+            assert_eq!(actual.id, id, "surface id mismatch");
+            assert_eq!(actual.width, expected_surface.width, "surface {id} width mismatch");
+            assert_eq!(actual.height, expected_surface.height, "surface {id} height mismatch");
+            assert_eq!(
+                actual.pixel_format, expected_surface.pixel_format,
+                "surface {id} pixel_format mismatch"
+            );
+            assert_eq!(
+                actual.is_mapped, expected_surface.is_mapped,
+                "surface {id} is_mapped mismatch"
+            );
+            assert_eq!(
+                actual.output_origin_x, expected_surface.output_origin_x,
+                "surface {id} output_origin_x mismatch"
+            );
+            assert_eq!(
+                actual.output_origin_y, expected_surface.output_origin_y,
+                "surface {id} output_origin_y mismatch"
+            );
+        }
+
+        // Assert the running frame counter.
+        assert_eq!(
+            client.total_frames_decoded(),
+            expected.total_frames_decoded,
+            "total_frames_decoded mismatch"
+        );
+    }
+}
+
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {
     let mut out = Vec::new();
 
