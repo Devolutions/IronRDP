@@ -357,6 +357,40 @@ pub fn egfx_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, Avc444BitmapStream<'_>);
 }
 
+/// AVC420 decode-side wrapper fuzz oracle.
+///
+/// Fuzzes the IronRDP wrapper layer between a wire `Avc420BitmapStream` and
+/// the consumer's `H264Decoder`. Specifically targets `avc_to_annex_b`, the
+/// AVC-length-prefix to Annex-B conversion that runs before OpenH264 sees
+/// any bytes.
+///
+/// The oracle runs two paths on each input:
+///
+/// - Direct: call `avc_to_annex_b(data)` on the raw fuzz input. This
+///   exercises the wrapper on arbitrary byte distributions, including
+///   inputs that do not parse as `Avc420BitmapStream`.
+/// - Decode-chain: try `Avc420BitmapStream::decode(data)`; on success, call
+///   `avc_to_annex_b(stream.data)`. This exercises the wrapper on the
+///   realistic post-decode payload distribution.
+///
+/// What this catches: panics in the wrapper, OOM via attacker-controlled
+/// NAL length encoding, contract violations on the produced Annex-B byte
+/// stream that downstream H264Decoder callers rely on.
+///
+/// What this does NOT catch: OpenH264 itself (covered by OSS-Fuzz), the
+/// post-OpenH264 YUV-to-RGBA conversion path in `OpenH264Decoder::decode`,
+/// AVC444 luma plus chroma split (covered by a sibling target).
+pub fn egfx_avc420_decode(data: &[u8]) {
+    use ironrdp_egfx::pdu::{Avc420BitmapStream, avc_to_annex_b};
+
+    let _ = avc_to_annex_b(data);
+
+    let mut cursor = ironrdp_core::ReadCursor::new(data);
+    if let Ok(stream) = ironrdp_core::decode_cursor::<Avc420BitmapStream<'_>>(&mut cursor) {
+        let _ = avc_to_annex_b(stream.data);
+    }
+}
+
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {
     let mut out = Vec::new();
 
