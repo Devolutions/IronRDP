@@ -41,7 +41,7 @@ impl Decode<'_> for TsUrbResult {
         let header = TsUrbResultHeader::decode(src)?;
         const ACTUAL_HEADER_SIZE: usize = size_of::<u16>(/* Size */) + TsUrbResultHeader::FIXED_PART_SIZE;
         if urb_size < ACTUAL_HEADER_SIZE {
-            return Err(invalid_field_err!("TS_URB_RESULT_HEADER::Size", "is smaller than 8"));
+            return Err(invalid_field_err!("TS_URB_RESULT_HEADER::Size", "is smaller than 8", in: src));
         }
         let payload_size = urb_size - ACTUAL_HEADER_SIZE;
         ensure_size!(in: src, size: payload_size);
@@ -221,7 +221,8 @@ impl Encode for TsUrbSelectConfigResult {
         dst.write_u32(self.interface.len().try_into().map_err(|_| {
             invalid_field_err!(
                 "TS_URB_SELECT_CONFIGURATION_RESULT::Interface",
-                "too many interfaces / alternate settings; count exceeded field NumInterfaces (4 bytes)"
+                "too many interfaces / alternate settings; count exceeded field NumInterfaces (4 bytes)",
+                in: dst,
             )
         })?);
         self.interface
@@ -357,13 +358,15 @@ impl Encode for TsUrbIsochTransferResult {
         dst.write_u32(self.iso_packet.len().try_into().map_err(|_| {
             invalid_field_err!(
                 "TS_URB_ISOCH_TRANSFER_RESULT::IsoPacket",
-                "too many packets: count exceeded field NumberOfPackets (4 bytes)"
+                "too many packets: count exceeded field NumberOfPackets (4 bytes)",
+                in: dst,
             )
         })?);
         dst.write_u32(Self::count_error(&self.iso_packet).try_into().map_err(|_| {
             invalid_field_err!(
                 "TS_URB_ISOCH_TRANSFER_RESULT::IsoPacket",
-                "too many failed transfers: count exceeded field ErrorCount (4 bytes)"
+                "too many failed transfers: count exceeded field ErrorCount (4 bytes)",
+                in: dst,
             )
         })?);
         self.iso_packet.iter().try_for_each(|iso| iso.encode(dst))
@@ -425,7 +428,8 @@ impl Decode<'_> for TsUsbdInterfaceInfoResult {
         let length @ 16.. = src.read_u16() else {
             return Err(invalid_field_err!(
                 "TS_USBD_INTERFACE_INFORMATION_RESULT::Length",
-                "is less than min reqd value of 16"
+                "is less than min reqd value of 16",
+                in: src,
             ));
         };
         let remaining_length = usize::from(length) - 2 /* Length */;
@@ -527,7 +531,8 @@ impl Decode<'_> for TsUsbdPipeInfoResult {
                         0x0 (UsbdPipeTypeControl),\
                         0x1 (UsbdPipeTypeIsochronous),\
                         0x2 (UsbdPipeTypeBulk),\
-                        0x3 (UsbdPipeTypeInterrupt)"
+                        0x3 (UsbdPipeTypeInterrupt)",
+                        in: src,
                 ));
             }
         };

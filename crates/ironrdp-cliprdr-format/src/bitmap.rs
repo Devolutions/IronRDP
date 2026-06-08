@@ -243,19 +243,20 @@ impl BitmapInfoHeader {
 
         let width = src.read_i32();
         check_invariant(width != i32::MIN && width.abs() <= 10_000)
-            .ok_or_else(|| invalid_field_err!("biWidth", "width is too big"))?;
+            .ok_or_else(|| invalid_field_err!("biWidth", "width is too big", in: src))?;
 
         let height = src.read_i32();
         check_invariant(height != i32::MIN && height.abs() <= 10_000)
-            .ok_or_else(|| invalid_field_err!("biHeight", "height is too big"))?;
+            .ok_or_else(|| invalid_field_err!("biHeight", "height is too big", in: src))?;
 
         let planes = src.read_u16();
         if planes != 1 {
-            return Err(invalid_field_err!("biPlanes", "invalid planes count"));
+            return Err(invalid_field_err!("biPlanes", "invalid planes count", in: src));
         }
 
         let bit_count = src.read_u16();
-        check_invariant(bit_count <= 32).ok_or_else(|| invalid_field_err!("biBitCount", "invalid bit count"))?;
+        check_invariant(bit_count <= 32)
+            .ok_or_else(|| invalid_field_err!("biBitCount", "invalid bit count", in: src))?;
 
         let compression = BitmapCompression(src.read_u32());
         let size_image = src.read_u32();
@@ -301,7 +302,7 @@ impl BitmapInfoHeader {
 
 impl Encode for BitmapInfoHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        let size = cast_int!("biSize", Self::FIXED_PART_SIZE)?;
+        let size = cast_int!("biSize", Self::FIXED_PART_SIZE, in: dst)?;
         self.encode_with_size(dst, size)
     }
 
@@ -317,10 +318,10 @@ impl Encode for BitmapInfoHeader {
 impl<'a> Decode<'a> for BitmapInfoHeader {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         let (header, size) = Self::decode_with_size(src)?;
-        let size: usize = cast_int!("biSize", size)?;
+        let size: usize = cast_int!("biSize", size, in: src)?;
 
         if size != Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("biSize", "invalid V1 bitmap info header size"));
+            return Err(invalid_field_err!("biSize", "invalid V1 bitmap info header size", in: src));
         }
 
         Ok(header)
@@ -369,7 +370,7 @@ impl Encode for BitmapV5Header {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        let size = cast_int!("biSize", Self::FIXED_PART_SIZE)?;
+        let size = cast_int!("biSize", Self::FIXED_PART_SIZE, in: dst)?;
         self.v1.encode_with_size(dst, size)?;
 
         dst.write_u32(self.red_mask);
@@ -403,10 +404,10 @@ impl<'a> Decode<'a> for BitmapV5Header {
         ensure_fixed_part_size!(in: src);
 
         let (header_v1, size) = BitmapInfoHeader::decode_with_size(src)?;
-        let size: usize = cast_int!("biSize", size)?;
+        let size: usize = cast_int!("biSize", size, in: src)?;
 
         if size != Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("biSize", "invalid V5 bitmap info header size"));
+            return Err(invalid_field_err!("biSize", "invalid V5 bitmap info header size", in: src));
         }
 
         let red_mask = src.read_u32();

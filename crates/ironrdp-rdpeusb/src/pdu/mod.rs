@@ -49,7 +49,7 @@ impl UrbdrcServerControlPdu {
             _ => Err(invalid_field_err!(
                 "SHARED_MSG_HEADER",
                 "invalid RIM_EXCHANGE_CAPABILITY_REQUEST header"
-            )),
+            , in: src)),
         }
     }
 
@@ -61,7 +61,7 @@ impl UrbdrcServerControlPdu {
             _ => Err(invalid_field_err!(
                 "SHARED_MSG_HEADER",
                 "invalid CHANNEL_CREATED header"
-            )),
+            , in: src)),
         }
     }
 }
@@ -89,7 +89,7 @@ impl UrbdrcServerDevicePdu {
             _ => Err(invalid_field_err!(
                 "SHARED_MSG_HEADER",
                 "invalid CHANNEL_CREATED header"
-            )),
+            , in: src)),
         }
     }
 }
@@ -102,7 +102,7 @@ impl Decode<'_> for UrbdrcServerControlPdu {
         match unpack(header.iface_id)? {
             (InterfaceId::CAPABILITIES, Mask::None) => Self::decode_caps(src, f_id, header),
             (InterfaceId::NOTIFY_CLIENT, Mask::Proxy) => Self::decode_notification(src, f_id, header),
-            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header")),
+            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header", in: src)),
         }
     }
 }
@@ -142,9 +142,9 @@ impl Decode<'_> for UrbdrcServerDevicePdu {
                 _ => Err(invalid_field_err!(
                     "SHARED_MSG_HEADER::FunctionId",
                     "unsupported function id for USB device interface"
-                )),
+                , in: src)),
             },
-            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header")),
+            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header", in: src)),
         }
     }
 }
@@ -239,7 +239,7 @@ impl UrbdrcClientControlPdu {
             _ => Err(invalid_field_err!(
                 "SHARED_MSG_HEADER",
                 "invalid function id in DEVICE_SINK"
-            )),
+            , in: src)),
         }
     }
     fn decode_notification(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
@@ -252,7 +252,7 @@ impl UrbdrcClientControlPdu {
             _ => Err(invalid_field_err!(
                 "SHARED_MSG_HEADER",
                 "invalid function id in CHANNEL_CREATED"
-            )),
+            , in: src)),
         }
     }
 }
@@ -267,7 +267,7 @@ impl Decode<'_> for UrbdrcClientControlPdu {
             }
             (InterfaceId::DEVICE_SINK, Mask::Proxy) => Self::decode_sink(src, header),
             (InterfaceId::NOTIFY_SERVER, Mask::Proxy) => Self::decode_notification(src, header),
-            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header")),
+            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header", in: src)),
         }
     }
 }
@@ -283,7 +283,7 @@ impl UrbdrcClientDevicePdu {
             _ => Err(invalid_field_err!(
                 "SHARED_MSG_HEADER",
                 "invalid function id in DEVICE_SINK"
-            )),
+            , in: src)),
         }
     }
     fn decode_notification(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
@@ -296,7 +296,7 @@ impl UrbdrcClientDevicePdu {
             _ => Err(invalid_field_err!(
                 "SHARED_MSG_HEADER",
                 "invalid function id in CHANNEL_CREATED"
-            )),
+            , in: src)),
         }
     }
 }
@@ -330,10 +330,10 @@ impl Decode<'_> for UrbdrcClientDevicePdu {
                     _ => Err(invalid_field_err!(
                         "SHARED_MSG_HEADER::InterfaceId",
                         "unknown interface id"
-                    )),
+                    , in: src)),
                 }
             }
-            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header")),
+            _ => Err(invalid_field_err!("SHARED_MSG_HEADER", "invalid header", in: src)),
         }
     }
 }

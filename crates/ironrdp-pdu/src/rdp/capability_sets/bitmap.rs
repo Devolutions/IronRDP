@@ -84,10 +84,8 @@ impl<'de> Decode<'de> for Bitmap {
 
         let is_bitmap_compress_flag_set = src.read_u16() != 0;
         if !is_bitmap_compress_flag_set {
-            return Err(invalid_field_err!(
-                "isBitmapCompressFlagSet",
-                "invalid compression flag"
-            ));
+            return Err(invalid_field_err!( "isBitmapCompressFlagSet",
+                "invalid compression flag", in: src));
         }
 
         let _high_color_flags = src.read_u8();

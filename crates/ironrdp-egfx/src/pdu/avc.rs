@@ -104,7 +104,7 @@ impl Encode for Avc420BitmapStream<'_> {
         // INVARIANT: rectangles.len() == quant_qual_vals.len()
         debug_assert_eq!(self.rectangles.len(), self.quant_qual_vals.len());
 
-        dst.write_u32(cast_length!("len", self.rectangles.len())?);
+        dst.write_u32(cast_length!("len", self.rectangles.len(), in: dst)?);
         for rectangle in &self.rectangles {
             rectangle.encode(dst)?;
         }
@@ -199,7 +199,7 @@ impl Encode for Avc444BitmapStream<'_> {
         ensure_fixed_part_size!(in: dst);
 
         let mut stream_info = 0u32;
-        stream_info.set_bits(0..30, cast_length!("stream1size", self.stream1.size())?);
+        stream_info.set_bits(0..30, cast_length!("stream1size", self.stream1.size(), in: dst)?);
         stream_info.set_bits(30..32, self.encoding.bits().into());
         dst.write_u32(stream_info);
         self.stream1.encode(dst)?;
@@ -234,13 +234,13 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
         let encoding_raw: u8 = stream_info.get_bits(30..32).try_into().unwrap();
         // Only 0x00 (LUMA_AND_CHROMA), 0x01 (LUMA), 0x02 (CHROMA) are defined.
         if encoding_raw > 2 {
-            return Err(invalid_field_err!("encoding", "reserved encoding value"));
+            return Err(invalid_field_err!("encoding", "reserved encoding value", in: src));
         }
         let encoding = Encoding::from_bits_retain(encoding_raw);
 
         if stream_len == 0 {
             if encoding == Encoding::LUMA_AND_CHROMA {
-                return Err(invalid_field_err!("encoding", "invalid encoding"));
+                return Err(invalid_field_err!("encoding", "invalid encoding", in: src));
             }
 
             let stream1 = Avc420BitmapStream::decode(src)?;

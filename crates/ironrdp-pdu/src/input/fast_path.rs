@@ -38,7 +38,7 @@ impl Encode for FastPathInputHeader {
         header.set_bits(6..8, self.flags.bits());
         dst.write_u8(header);
 
-        per::write_length(dst, cast_length!("len", self.data_length + self.size())?);
+        per::write_length(dst, cast_length!("len", self.data_length + self.size(), in: dst)?);
         if self.num_events > 15 {
             dst.write_u8(self.num_events);
         }
@@ -66,7 +66,7 @@ impl<'de> Decode<'de> for FastPathInputHeader {
         let (length, sizeof_length) = per::read_length(src).map_err(|e| other_err!("perLen", source: e))?;
 
         if !flags.is_empty() {
-            return Err(invalid_field_err!("flags", "encryption not supported"));
+            return Err(invalid_field_err!("flags", "encryption not supported", in: src));
         }
 
         let num_events_length = if num_events == 0 {
@@ -193,13 +193,13 @@ impl<'de> Decode<'de> for FastPathInputEvent {
         let flags = header.get_bits(0..5);
         let code = header.get_bits(5..8);
         let code: FastpathInputEventType = FastpathInputEventType::from_u8(code)
-            .ok_or_else(|| invalid_field_err!("code", "input event code unsupported"))?;
+            .ok_or_else(|| invalid_field_err!("code", "input event code unsupported", in: src))?;
         let event = match code {
             FastpathInputEventType::ScanCode => {
                 ensure_size!(in: src, size: 1);
                 let code = src.read_u8();
                 let flags = KeyboardFlags::from_bits(flags)
-                    .ok_or_else(|| invalid_field_err!("flags", "input keyboard flags unsupported"))?;
+                    .ok_or_else(|| invalid_field_err!("flags", "input keyboard flags unsupported", in: src))?;
                 FastPathInputEvent::KeyboardEvent(flags, code)
             }
             FastpathInputEventType::Mouse => {
@@ -216,14 +216,14 @@ impl<'de> Decode<'de> for FastPathInputEvent {
             }
             FastpathInputEventType::Sync => {
                 let flags = SynchronizeFlags::from_bits(flags)
-                    .ok_or_else(|| invalid_field_err!("flags", "input synchronize flags unsupported"))?;
+                    .ok_or_else(|| invalid_field_err!("flags", "input synchronize flags unsupported", in: src))?;
                 FastPathInputEvent::SyncEvent(flags)
             }
             FastpathInputEventType::Unicode => {
                 ensure_size!(in: src, size: 2);
                 let code = src.read_u16();
                 let flags = KeyboardFlags::from_bits(flags)
-                    .ok_or_else(|| invalid_field_err!("flags", "input keyboard flags unsupported"))?;
+                    .ok_or_else(|| invalid_field_err!("flags", "input keyboard flags unsupported", in: src))?;
                 FastPathInputEvent::UnicodeKeyboardEvent(flags, code)
             }
             FastpathInputEventType::QoeTimestamp => {
@@ -284,7 +284,7 @@ impl FastPathInput {
     pub fn new(input_events: Vec<FastPathInputEvent>) -> DecodeResult<Self> {
         // Ensure the invariant on `input_events.len()` is respected.
         if !(1..=255usize).contains(&input_events.len()) {
-            return Err(invalid_field_err!("nEvents", "invalid number of input events"));
+            return Err(invalid_field_err!("nEvents", "invalid number of input events", at: 0));
         }
 
         Ok(Self(input_events))

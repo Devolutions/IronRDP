@@ -99,7 +99,7 @@ impl Decode<'_> for ProgressiveBlockHeader {
         ensure_fixed_part_size!(in: src);
         let raw = src.read_u16();
         let block_type = ProgressiveBlockType::from_u16(raw)
-            .ok_or_else(|| invalid_field_err!("blockType", "unknown progressive block type"))?;
+            .ok_or_else(|| invalid_field_err!("blockType", "unknown progressive block type", in: src))?;
         let block_len = src.read_u32();
         Ok(Self { block_type, block_len })
     }
@@ -303,11 +303,11 @@ impl Decode<'_> for ProgressiveSyncPdu {
         ensure_fixed_part_size!(in: src);
         let magic = src.read_u32();
         if magic != SYNC_MAGIC {
-            return Err(invalid_field_err!("magic", "invalid progressive sync magic"));
+            return Err(invalid_field_err!("magic", "invalid progressive sync magic", in: src));
         }
         let version = src.read_u16();
         if version != SYNC_VERSION {
-            return Err(invalid_field_err!("version", "unsupported progressive version"));
+            return Err(invalid_field_err!("version", "unsupported progressive version", in: src));
         }
         Ok(Self)
     }
@@ -431,7 +431,7 @@ impl Decode<'_> for ProgressiveContextPdu {
         let context_id = src.read_u8();
         let tile_size = src.read_u16();
         if tile_size != TILE_SIZE {
-            return Err(invalid_field_err!("tileSize", "only 64x64 tiles supported"));
+            return Err(invalid_field_err!("tileSize", "only 64x64 tiles supported", in: src));
         }
         let flags = src.read_u8();
         Ok(Self {
@@ -477,10 +477,10 @@ impl Encode for TileSimple<'_> {
         dst.write_u16(self.x_idx);
         dst.write_u16(self.y_idx);
         dst.write_u8(self.flags);
-        dst.write_u16(cast_length!("yLen", self.y_data.len())?);
-        dst.write_u16(cast_length!("cbLen", self.cb_data.len())?);
-        dst.write_u16(cast_length!("crLen", self.cr_data.len())?);
-        dst.write_u16(cast_length!("tailLen", self.tail_data.len())?);
+        dst.write_u16(cast_length!("yLen", self.y_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("cbLen", self.cb_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("crLen", self.cr_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("tailLen", self.tail_data.len(), in: dst)?);
         dst.write_slice(self.y_data);
         dst.write_slice(self.cb_data);
         dst.write_slice(self.cr_data);
@@ -567,10 +567,10 @@ impl Encode for TileFirst<'_> {
         dst.write_u16(self.y_idx);
         dst.write_u8(self.flags);
         dst.write_u8(self.quality);
-        dst.write_u16(cast_length!("yLen", self.y_data.len())?);
-        dst.write_u16(cast_length!("cbLen", self.cb_data.len())?);
-        dst.write_u16(cast_length!("crLen", self.cr_data.len())?);
-        dst.write_u16(cast_length!("tailLen", self.tail_data.len())?);
+        dst.write_u16(cast_length!("yLen", self.y_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("cbLen", self.cb_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("crLen", self.cr_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("tailLen", self.tail_data.len(), in: dst)?);
         dst.write_slice(self.y_data);
         dst.write_slice(self.cb_data);
         dst.write_slice(self.cr_data);
@@ -661,12 +661,12 @@ impl Encode for TileUpgrade<'_> {
         dst.write_u16(self.x_idx);
         dst.write_u16(self.y_idx);
         dst.write_u8(self.quality);
-        dst.write_u16(cast_length!("ySrlLen", self.y_srl_data.len())?);
-        dst.write_u16(cast_length!("yRawLen", self.y_raw_data.len())?);
-        dst.write_u16(cast_length!("cbSrlLen", self.cb_srl_data.len())?);
-        dst.write_u16(cast_length!("cbRawLen", self.cb_raw_data.len())?);
-        dst.write_u16(cast_length!("crSrlLen", self.cr_srl_data.len())?);
-        dst.write_u16(cast_length!("crRawLen", self.cr_raw_data.len())?);
+        dst.write_u16(cast_length!("ySrlLen", self.y_srl_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("yRawLen", self.y_raw_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("cbSrlLen", self.cb_srl_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("cbRawLen", self.cb_raw_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("crSrlLen", self.cr_srl_data.len(), in: dst)?);
+        dst.write_u16(cast_length!("crRawLen", self.cr_raw_data.len(), in: dst)?);
         dst.write_slice(self.y_srl_data);
         dst.write_slice(self.y_raw_data);
         dst.write_slice(self.cb_srl_data);
@@ -794,11 +794,11 @@ impl Encode for ProgressiveRegion<'_> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u8(self.tile_size);
-        dst.write_u16(cast_length!("numRects", self.rects.len())?);
-        dst.write_u8(cast_length!("numQuant", self.quant_vals.len())?);
-        dst.write_u8(cast_length!("numProgQuant", self.quant_prog_vals.len())?);
+        dst.write_u16(cast_length!("numRects", self.rects.len(), in: dst)?);
+        dst.write_u8(cast_length!("numQuant", self.quant_vals.len(), in: dst)?);
+        dst.write_u8(cast_length!("numProgQuant", self.quant_prog_vals.len(), in: dst)?);
         dst.write_u8(self.flags);
-        dst.write_u16(cast_length!("numTiles", self.tiles.len())?);
+        dst.write_u16(cast_length!("numTiles", self.tiles.len(), in: dst)?);
 
         // Compute tile data size (sum of block header + tile body for each tile)
         let tile_data_size: usize = self
@@ -813,7 +813,7 @@ impl Encode for ProgressiveRegion<'_> {
                     }
             })
             .sum();
-        dst.write_u32(cast_length!("tileDataSize", tile_data_size)?);
+        dst.write_u32(cast_length!("tileDataSize", tile_data_size, in: dst)?);
 
         for rect in &self.rects {
             rect.encode(dst)?;
@@ -832,7 +832,7 @@ impl Encode for ProgressiveRegion<'_> {
                 ProgressiveTile::First(f) => (ProgressiveBlockType::TileFirst, f.size()),
                 ProgressiveTile::Upgrade(u) => (ProgressiveBlockType::TileUpgrade, u.size()),
             };
-            let block_len: u32 = cast_length!("tileBlockLen", ProgressiveBlockHeader::SIZE + body_size)?;
+            let block_len: u32 = cast_length!("tileBlockLen", ProgressiveBlockHeader::SIZE + body_size, in: dst)?;
             let header = ProgressiveBlockHeader { block_type, block_len };
             header.encode(dst)?;
             match tile {
@@ -875,7 +875,7 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
 
         let tile_size = src.read_u8();
         if tile_size != 0x40 {
-            return Err(invalid_field_err!("tileSize", "only 64x64 tiles supported"));
+            return Err(invalid_field_err!("tileSize", "only 64x64 tiles supported", in: src));
         }
 
         let num_rects = usize::from(src.read_u16());
@@ -884,13 +884,11 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
         let flags = src.read_u8();
 
         if num_rects == 0 {
-            return Err(invalid_field_err!(
-                "numRects",
-                "region must contain at least one rectangle"
-            ));
+            return Err(invalid_field_err!( "numRects",
+                "region must contain at least one rectangle", in: src));
         }
         if num_quant > 7 {
-            return Err(invalid_field_err!("numQuant", "quant count exceeds maximum of 7"));
+            return Err(invalid_field_err!("numQuant", "quant count exceeds maximum of 7", in: src));
         }
         let num_tiles = usize::from(src.read_u16());
         let _tile_data_size = src.read_u32();
@@ -921,8 +919,8 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
             let body_len = header
                 .block_len
                 .checked_sub(BLOCK_HEADER_SIZE_U32)
-                .ok_or_else(|| invalid_field_err!("blockLen", "tile block length too small"))?;
-            let body_len: usize = cast_length!("tileBodyLen", body_len)?;
+                .ok_or_else(|| invalid_field_err!("blockLen", "tile block length too small", in: src))?;
+            let body_len: usize = cast_length!("tileBodyLen", body_len, in: src)?;
             ensure_size!(ctx: Self::NAME, in: src, size: body_len);
             let tile_src = &mut ReadCursor::new(src.read_slice(body_len));
 
@@ -931,7 +929,7 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
                 ProgressiveBlockType::TileFirst => ProgressiveTile::First(TileFirst::decode(tile_src)?),
                 ProgressiveBlockType::TileUpgrade => ProgressiveTile::Upgrade(TileUpgrade::decode(tile_src)?),
                 _ => {
-                    return Err(invalid_field_err!("blockType", "expected tile block inside region"));
+                    return Err(invalid_field_err!("blockType", "expected tile block inside region", in: src));
                 }
             };
             tiles.push(tile);
@@ -945,7 +943,7 @@ impl<'de> Decode<'de> for ProgressiveRegion<'de> {
                 ProgressiveTile::Upgrade(t) => [t.quant_idx_y, t.quant_idx_cb, t.quant_idx_cr],
             };
             if indices.iter().any(|&i| usize::from(i) >= quant_count) {
-                return Err(invalid_field_err!("quantIdx", "tile quant index out of range"));
+                return Err(invalid_field_err!("quantIdx", "tile quant index out of range", in: src));
             }
         }
 
@@ -989,8 +987,8 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
         let body_len = header
             .block_len
             .checked_sub(BLOCK_HEADER_SIZE_U32)
-            .ok_or_else(|| invalid_field_err!("blockLen", "block length too small"))?;
-        let body_len: usize = cast_length!("bodyLen", body_len)?;
+            .ok_or_else(|| invalid_field_err!("blockLen", "block length too small", at: 0))?;
+        let body_len: usize = cast_length!("bodyLen", body_len, at: 0)?;
         ensure_size!(ctx: "ProgressiveStream", in: src, size: body_len);
 
         // Fixed-size blocks have normative blockLen values (MS-RDPEGFX 2.2.4.2.1)
@@ -1003,7 +1001,7 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
         };
         if let Some(expected) = expected_body {
             if body_len != expected {
-                return Err(invalid_field_err!("blockLen", "unexpected size for fixed-size block"));
+                return Err(invalid_field_err!("blockLen", "unexpected size for fixed-size block", at: 0));
             }
         }
 
@@ -1019,7 +1017,7 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
             ProgressiveBlockType::Region => ProgressiveBlock::Region(ProgressiveRegion::decode(body_src)?),
             // Tile blocks should only appear inside regions; skip at top level
             ProgressiveBlockType::TileSimple | ProgressiveBlockType::TileFirst | ProgressiveBlockType::TileUpgrade => {
-                return Err(invalid_field_err!("blockType", "tile block outside of region"));
+                return Err(invalid_field_err!("blockType", "tile block outside of region", at: 0));
             }
         };
         blocks.push(block);
@@ -1056,7 +1054,7 @@ pub fn encode_progressive_stream(blocks: &[ProgressiveBlock<'_>]) -> EncodeResul
             ProgressiveBlock::Context(c) => (ProgressiveBlockType::Context, c.size()),
             ProgressiveBlock::Region(r) => (ProgressiveBlockType::Region, r.size()),
         };
-        let block_len: u32 = cast_length!("blockLen", ProgressiveBlockHeader::SIZE + body_size)?;
+        let block_len: u32 = cast_length!("blockLen", ProgressiveBlockHeader::SIZE + body_size, at: 0)?;
         ProgressiveBlockHeader { block_type, block_len }.encode(&mut dst)?;
 
         match block {

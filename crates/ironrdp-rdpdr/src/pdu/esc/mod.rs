@@ -160,10 +160,8 @@ impl ndr::Decode for ScardContext {
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
             error!(?length, "Unsupported value length in ScardContext");
-            return Err(invalid_field_err!(
-                "decode_ptr",
-                "unsupported value length in ScardContext"
-            ));
+            return Err(invalid_field_err!( "decode_ptr",
+                "unsupported value length in ScardContext", in: src));
         }
 
         let _ptr = ndr::decode_ptr(src, index)?;
@@ -176,10 +174,8 @@ impl ndr::Decode for ScardContext {
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
             error!(?length, "Unsupported value length in ScardContext");
-            return Err(invalid_field_err!(
-                "decode_value",
-                "unsupported value length in ScardContext"
-            ));
+            return Err(invalid_field_err!( "decode_value",
+                "unsupported value length in ScardContext", in: src));
         }
         self.value = src.read_u32();
         Ok(())
@@ -371,7 +367,7 @@ impl TryFrom<u32> for ScardIoCtlCode {
             0x0009_0108 => Ok(ScardIoCtlCode::GetDeviceTypeId),
             _ => {
                 error!("Unsupported ScardIoCtlCode: 0x{:08x}", value);
-                Err(invalid_field_err!("try_from", "ScardIoCtlCode", "unsupported value"))
+                Err(invalid_field_err!("try_from", "ScardIoCtlCode", "unsupported value", at: 0))
             }
         }
     }
@@ -634,7 +630,7 @@ impl TryFrom<u32> for Scope {
             0x0000_0002 => Ok(Scope::System),
             _ => {
                 error!("Unsupported Scope: 0x{:08x}", value);
-                Err(invalid_field_err!("try_from", "Scope", "unsupported value"))
+                Err(invalid_field_err!("try_from", "Scope", "unsupported value", at: 0))
             }
         }
     }
@@ -728,10 +724,8 @@ impl rpce::HeaderlessDecode for ListReadersCall {
         ensure_size!(in: src, size: size_of::<u32>());
         let groups_length = src.read_u32();
         if groups_length != groups_ptr_length {
-            return Err(invalid_field_err!(
-                "decode",
-                "mismatched reader groups length in NDR pointer and value"
-            ));
+            return Err(invalid_field_err!( "decode",
+                "mismatched reader groups length in NDR pointer and value", in: src));
         }
 
         let groups = read_multistring_from_cursor(src, charset)?;
@@ -772,8 +766,7 @@ impl rpce::HeaderlessEncode for ListReadersReturn {
         let readers_length: u32 = cast_length!(
             "ListReadersReturn",
             "readers",
-            encoded_multistring_len(&self.readers, CharacterSet::Unicode)
-        )?;
+            encoded_multistring_len(&self.readers, CharacterSet::Unicode), in: dst)?;
         let mut index = 0;
         ndr::encode_ptr(Some(readers_length), &mut index, dst)?;
         dst.write_u32(readers_length);
@@ -934,7 +927,8 @@ impl rpce::HeaderlessEncode for GetStatusChangeReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-        let reader_states_len = cast_length!("GetStatusChangeReturn", "reader_states", self.reader_states.len())?;
+        let reader_states_len =
+            cast_length!("GetStatusChangeReturn", "reader_states", self.reader_states.len(), in: dst)?;
         let mut index = 0;
         ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
         dst.write_u32(reader_states_len);
@@ -1063,10 +1057,8 @@ impl ndr::Decode for ScardHandle {
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
             error!(?length, "Unsupported value length in ScardHandle");
-            return Err(invalid_field_err!(
-                "decode_ptr",
-                "unsupported value length in ScardHandle"
-            ));
+            return Err(invalid_field_err!( "decode_ptr",
+                "unsupported value length in ScardHandle", in: src));
         }
         let _ptr = ndr::decode_ptr(src, index)?;
         Ok(Self { context, value: 0 })
@@ -1079,10 +1071,8 @@ impl ndr::Decode for ScardHandle {
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
             error!(?length, "Unsupported value length in ScardHandle");
-            return Err(invalid_field_err!(
-                "decode_value",
-                "unsupported value length in ScardHandle"
-            ));
+            return Err(invalid_field_err!( "decode_value",
+                "unsupported value length in ScardHandle", in: src));
         }
         ensure_size!(in: src, size: size_of::<u32>());
         self.value = src.read_u32();
@@ -1222,7 +1212,7 @@ impl rpce::HeaderlessDecode for TransmitCall {
 
         ensure_size!(in: src, size: size_of::<u32>());
         let send_length = src.read_u32();
-        let send_length_usize: usize = cast_length!("TransmitCall", "send_length", send_length)?;
+        let send_length_usize: usize = cast_length!("TransmitCall", "send_length", send_length, in: src)?;
         ensure_size!(in: src, size: send_length_usize);
         let send_buffer = src.read_slice(send_length_usize).to_vec();
 
@@ -1263,7 +1253,7 @@ impl ndr::Decode for SCardIORequest {
     {
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let protocol = CardProtocol::from_bits_retain(src.read_u32());
-        let extra_bytes_length = cast_length!("SCardIORequest", "extra_bytes_length", src.read_u32())?;
+        let extra_bytes_length = cast_length!("SCardIORequest", "extra_bytes_length", src.read_u32(), in: src)?;
         let _extra_bytes_ptr = ndr::decode_ptr(src, index)?;
         let extra_bytes = Vec::new();
         Ok(Self {
@@ -1285,7 +1275,8 @@ impl ndr::Encode for SCardIORequest {
     fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size_ptr());
 
-        let extra_bytes_length = cast_length!("SCardIORequest", "extra_bytes_length", self.extra_bytes_length)?;
+        let extra_bytes_length =
+            cast_length!("SCardIORequest", "extra_bytes_length", self.extra_bytes_length, in: dst)?;
 
         dst.write_u32(self.protocol.bits());
         ndr::encode_ptr(Some(extra_bytes_length), index, dst)
@@ -1341,7 +1332,7 @@ impl rpce::HeaderlessEncode for TransmitReturn {
             dst.write_u32(0); // null value
         }
 
-        let recv_buffer_len: u32 = cast_length!("TransmitReturn", "recv_buffer_len", self.recv_buffer.len())?;
+        let recv_buffer_len: u32 = cast_length!("TransmitReturn", "recv_buffer_len", self.recv_buffer.len(), in: dst)?;
         ndr::encode_ptr(Some(recv_buffer_len), &mut index, dst)?;
         dst.write_u32(recv_buffer_len);
         dst.write_slice(&self.recv_buffer);
@@ -1449,8 +1440,7 @@ impl rpce::HeaderlessEncode for StatusReturn {
         let reader_names_length: u32 = cast_length!(
             "StatusReturn",
             "reader_names_length",
-            encoded_multistring_len(&self.reader_names, self.encoding)
-        )?;
+            encoded_multistring_len(&self.reader_names, self.encoding), in: dst)?;
         ndr::encode_ptr(Some(reader_names_length), &mut index, dst)?;
         dst.write_u32(self.state.into());
         dst.write_u32(self.protocol.bits());
@@ -1689,7 +1679,7 @@ impl rpce::HeaderlessEncode for ReadCacheReturn {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
         let mut index = 0;
-        let data_len: u32 = cast_length!("ReadCacheReturn", "data_len", self.data.len())?;
+        let data_len: u32 = cast_length!("ReadCacheReturn", "data_len", self.data.len(), in: dst)?;
         ndr::encode_ptr(Some(data_len), &mut index, dst)?;
         dst.write_u32(data_len);
         dst.write_slice(&self.data);
@@ -1772,7 +1762,7 @@ impl ndr::Decode for WriteCacheCommon {
         ensure_size!(in: src, size: 16);
         self.card_uuid = src.read_slice(16).to_vec();
         ensure_size!(in: src, size: size_of::<u32>());
-        let data_len: usize = cast_length!("WriteCacheCommon", "data_len", src.read_u32())?;
+        let data_len: usize = cast_length!("WriteCacheCommon", "data_len", src.read_u32(), in: src)?;
         ensure_size!(in: src, size: data_len);
         self.data = src.read_slice(data_len).to_vec();
         Ok(())
@@ -1829,7 +1819,7 @@ impl rpce::HeaderlessEncode for GetReaderIconReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-        let data_len: u32 = cast_length!("GetReaderIconReturn", "data_len", self.data.len())?;
+        let data_len: u32 = cast_length!("GetReaderIconReturn", "data_len", self.data.len(), in: dst)?;
         let mut index = 0;
         ndr::encode_ptr(Some(data_len), &mut index, dst)?;
         dst.write_u32(data_len);

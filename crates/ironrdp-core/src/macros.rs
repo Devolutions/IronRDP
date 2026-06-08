@@ -60,8 +60,20 @@ macro_rules! function {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! not_enough_bytes_err {
-    ( $context:expr, $received:expr , $expected:expr $(,)? ) => {{ $crate::not_enough_bytes_err($context, $received, $expected) }};
-    ( $received:expr , $expected:expr $(,)? ) => {{ $crate::not_enough_bytes_err!($crate::function!(), $received, $expected) }};
+    // offset extracted from cursor.pos()
+    ( $context:expr, $received:expr, $expected:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::not_enough_bytes_err($context, $received, $expected, $cursor.pos())
+    }};
+    ( $received:expr, $expected:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::not_enough_bytes_err!($crate::function!(), $received, $expected, in: $cursor)
+    }};
+    // explicit offset (use 0 when the producer has no stream-cursor access)
+    ( $context:expr, $received:expr, $expected:expr, at: $offset:expr $(,)? ) => {{
+        $crate::not_enough_bytes_err($context, $received, $expected, $offset)
+    }};
+    ( $received:expr, $expected:expr, at: $offset:expr $(,)? ) => {{
+        $crate::not_enough_bytes_err!($crate::function!(), $received, $expected, at: $offset)
+    }};
 }
 
 /// Creates an "invalid field" error with context information.
@@ -88,8 +100,18 @@ macro_rules! not_enough_bytes_err {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! invalid_field_err {
-    ( $context:expr, $field:expr , $reason:expr $(,)? ) => {{ $crate::invalid_field_err($context, $field, $reason) }};
-    ( $field:expr , $reason:expr $(,)? ) => {{ $crate::invalid_field_err!($crate::function!(), $field, $reason) }};
+    ( $context:expr, $field:expr, $reason:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::invalid_field_err($context, $field, $reason, $cursor.pos())
+    }};
+    ( $field:expr, $reason:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::invalid_field_err!($crate::function!(), $field, $reason, in: $cursor)
+    }};
+    ( $context:expr, $field:expr, $reason:expr, at: $offset:expr $(,)? ) => {{
+        $crate::invalid_field_err($context, $field, $reason, $offset)
+    }};
+    ( $field:expr, $reason:expr, at: $offset:expr $(,)? ) => {{
+        $crate::invalid_field_err!($crate::function!(), $field, $reason, at: $offset)
+    }};
 }
 
 /// Creates an "unexpected message type" error with context information.
@@ -115,8 +137,18 @@ macro_rules! invalid_field_err {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! unexpected_message_type_err {
-    ( $context:expr, $got:expr $(,)? ) => {{ $crate::unexpected_message_type_err($context, $got) }};
-    ( $got:expr $(,)? ) => {{ $crate::unexpected_message_type_err!($crate::function!(), $got) }};
+    ( $context:expr, $got:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::unexpected_message_type_err($context, $got, $cursor.pos())
+    }};
+    ( $got:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::unexpected_message_type_err!($crate::function!(), $got, in: $cursor)
+    }};
+    ( $context:expr, $got:expr, at: $offset:expr $(,)? ) => {{
+        $crate::unexpected_message_type_err($context, $got, $offset)
+    }};
+    ( $got:expr, at: $offset:expr $(,)? ) => {{
+        $crate::unexpected_message_type_err!($crate::function!(), $got, at: $offset)
+    }};
 }
 
 /// Creates an "unsupported version" error with context information.
@@ -142,8 +174,18 @@ macro_rules! unexpected_message_type_err {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! unsupported_version_err {
-    ( $context:expr, $got:expr $(,)? ) => {{ $crate::unsupported_version_err($context, $got) }};
-    ( $got:expr $(,)? ) => {{ $crate::unsupported_version_err!($crate::function!(), $got) }};
+    ( $context:expr, $got:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::unsupported_version_err($context, $got, $cursor.pos())
+    }};
+    ( $got:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::unsupported_version_err!($crate::function!(), $got, in: $cursor)
+    }};
+    ( $context:expr, $got:expr, at: $offset:expr $(,)? ) => {{
+        $crate::unsupported_version_err($context, $got, $offset)
+    }};
+    ( $got:expr, at: $offset:expr $(,)? ) => {{
+        $crate::unsupported_version_err!($crate::function!(), $got, at: $offset)
+    }};
 }
 
 /// Creates an "unsupported value" error with context information.
@@ -170,8 +212,18 @@ macro_rules! unsupported_version_err {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! unsupported_value_err {
-    ( $context:expr, $name:expr, $value:expr $(,)? ) => {{ $crate::unsupported_value_err($context, $name, $value) }};
-    ( $name:expr, $value:expr $(,)? ) => {{ $crate::unsupported_value_err!($crate::function!(), $name, $value) }};
+    ( $context:expr, $name:expr, $value:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::unsupported_value_err($context, $name, $value, $cursor.pos())
+    }};
+    ( $name:expr, $value:expr, in: $cursor:expr $(,)? ) => {{
+        $crate::unsupported_value_err!($crate::function!(), $name, $value, in: $cursor)
+    }};
+    ( $context:expr, $name:expr, $value:expr, at: $offset:expr $(,)? ) => {{
+        $crate::unsupported_value_err($context, $name, $value, $offset)
+    }};
+    ( $name:expr, $value:expr, at: $offset:expr $(,)? ) => {{
+        $crate::unsupported_value_err!($crate::function!(), $name, $value, at: $offset)
+    }};
 }
 
 /// Creates a generic "other" error with optional context and source information.
@@ -256,7 +308,10 @@ macro_rules! ensure_size {
         let received = $buf.len();
         let expected = $expected;
         if !(received >= expected) {
-            return Err($crate::not_enough_bytes_err($ctx, received, expected));
+            // `$buf` is always a `ReadCursor` or `WriteCursor` in practice;
+            // both expose `.pos()`. The previous `encode_string` slice path
+            // was refactored to take a `WriteCursor` so this invariant holds.
+            return Err($crate::not_enough_bytes_err($ctx, received, expected, $buf.pos()));
         }
     }};
     (in: $buf:ident, size: $expected:expr) => {{
@@ -308,17 +363,17 @@ macro_rules! ensure_fixed_part_size {
 /// * `ctx` - The context for the error message (optional)
 /// * `field` - The name of the field being cast
 /// * `len` - The length value to cast
+/// * `in: $cursor` or `at: $offset` - cursor whose `pos()` to read, or an
+///   explicit byte offset (`0` if the producer has no stream-cursor access)
 ///
 /// # Examples
 ///
-/// ```
-/// use ironrdp_core::cast_length;
+/// ```ignore
+/// // Inside a decode method with a `src: &mut ReadCursor<'_>` parameter:
+/// let len: u16 = cast_length!("data length", data.len(), in: src)?;
 ///
-/// fn process_data(data: &[u8]) -> Result<(), Error> {
-///     let len: u16 = cast_length!("data length", data.len())?;
-///     // ... rest of the processing logic
-///     Ok(())
-/// }
+/// // Outside any decode context (e.g. a getter on a decoded struct):
+/// let len: u16 = cast_length!("data length", data.len(), at: 0)?;
 /// ```
 ///
 /// # Note
@@ -326,11 +381,23 @@ macro_rules! ensure_fixed_part_size {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! cast_length {
-    ($ctx:expr, $field:expr, $len:expr) => {{
+    // offset extracted from cursor.pos()
+    ($ctx:expr, $field:expr, $len:expr, in: $cursor:expr $(,)?) => {{
+        let __offset = $cursor.pos();
         $len.try_into()
-            .map_err(|e| $crate::invalid_field_err_with_source($ctx, $field, "too many elements", e))
+            .map_err(|e| $crate::invalid_field_err_with_source($ctx, $field, "too many elements", __offset, e))
     }};
-    ($field:expr, $len:expr) => {{ $crate::cast_length!($crate::function!(), $field, $len) }};
+    ($field:expr, $len:expr, in: $cursor:expr $(,)?) => {{
+        $crate::cast_length!($crate::function!(), $field, $len, in: $cursor)
+    }};
+    // explicit offset (use 0 only when the producer has no stream-cursor access)
+    ($ctx:expr, $field:expr, $len:expr, at: $offset:expr $(,)?) => {{
+        $len.try_into()
+            .map_err(|e| $crate::invalid_field_err_with_source($ctx, $field, "too many elements", $offset, e))
+    }};
+    ($field:expr, $len:expr, at: $offset:expr $(,)?) => {{
+        $crate::cast_length!($crate::function!(), $field, $len, at: $offset)
+    }};
 }
 
 /// Safely casts an integer to a different integer type.
@@ -343,16 +410,17 @@ macro_rules! cast_length {
 /// * `ctx` - The context for the error message (optional)
 /// * `field` - The name of the field being cast
 /// * `len` - The integer value to cast
+/// * `in: $cursor` or `at: $offset` - cursor whose `pos()` to read, or an
+///   explicit byte offset (`0` if the producer has no stream-cursor access)
 ///
 /// # Examples
 ///
-/// ```
-/// use ironrdp_core::cast_int;
+/// ```ignore
+/// // Inside a decode method with a `src: &mut ReadCursor<'_>` parameter:
+/// let v: i32 = cast_int!("input value", value, in: src)?;
 ///
-/// fn process_value(value: u64) -> Result<i32, Error> {
-///     let casted_value: i32 = cast_int!("input value", value)?;
-///     Ok(casted_value)
-/// }
+/// // Outside any decode context:
+/// let v: i32 = cast_int!("input value", value, at: 0)?;
 /// ```
 ///
 /// # Note
@@ -360,12 +428,25 @@ macro_rules! cast_length {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! cast_int {
-    ($ctx:expr, $field:expr, $len:expr) => {{
+    // offset extracted from cursor.pos()
+    ($ctx:expr, $field:expr, $len:expr, in: $cursor:expr $(,)?) => {{
+        let __offset = $cursor.pos();
         $len.try_into().map_err(|e| {
-            $crate::invalid_field_err_with_source($ctx, $field, "out of range integral type conversion", e)
+            $crate::invalid_field_err_with_source($ctx, $field, "out of range integral type conversion", __offset, e)
         })
     }};
-    ($field:expr, $len:expr) => {{ $crate::cast_int!($crate::function!(), $field, $len) }};
+    ($field:expr, $len:expr, in: $cursor:expr $(,)?) => {{
+        $crate::cast_int!($crate::function!(), $field, $len, in: $cursor)
+    }};
+    // explicit offset (use 0 only when the producer has no stream-cursor access)
+    ($ctx:expr, $field:expr, $len:expr, at: $offset:expr $(,)?) => {{
+        $len.try_into().map_err(|e| {
+            $crate::invalid_field_err_with_source($ctx, $field, "out of range integral type conversion", $offset, e)
+        })
+    }};
+    ($field:expr, $len:expr, at: $offset:expr $(,)?) => {{
+        $crate::cast_int!($crate::function!(), $field, $len, at: $offset)
+    }};
 }
 
 /// Writes zeroes using as few `write_u*` calls as possible.

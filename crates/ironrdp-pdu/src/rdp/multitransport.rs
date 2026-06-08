@@ -116,14 +116,14 @@ impl<'de> Decode<'de> for MultitransportRequestPdu {
         let security_header = BasicSecurityHeader::decode(src)?;
 
         if !security_header.flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ) {
-            return Err(invalid_field_err!("securityHeader", "expected TRANSPORT_REQ flag"));
+            return Err(invalid_field_err!("securityHeader", "expected TRANSPORT_REQ flag", in: src));
         }
 
         let request_id = src.read_u32();
 
         let protocol_raw = src.read_u16();
         let requested_protocol = RequestedProtocol::from_u16(protocol_raw)
-            .ok_or_else(|| invalid_field_err!("requestedProtocol", "unknown protocol value"))?;
+            .ok_or_else(|| invalid_field_err!("requestedProtocol", "unknown protocol value", in: src))?;
 
         read_padding!(src, 2);
 
@@ -230,7 +230,7 @@ impl<'de> Decode<'de> for MultitransportResponsePdu {
         let security_header = BasicSecurityHeader::decode(src)?;
 
         if !security_header.flags.contains(BasicSecurityHeaderFlags::TRANSPORT_RSP) {
-            return Err(invalid_field_err!("securityHeader", "expected TRANSPORT_RSP flag"));
+            return Err(invalid_field_err!("securityHeader", "expected TRANSPORT_RSP flag", in: src));
         }
 
         let request_id = src.read_u32();

@@ -70,15 +70,15 @@ impl ChannelCreated {
 
         let major = src.read_u32();
         if major != Self::MAJOR_VER {
-            return Err(unsupported_value_err!("MajorVersion", format!("{major}")));
+            return Err(unsupported_value_err!("MajorVersion", format!("{major}"), in: src));
         }
         let minor = src.read_u32();
         if minor != Self::MINOR_VER {
-            return Err(unsupported_value_err!("MinorVersion", format!("{minor}")));
+            return Err(unsupported_value_err!("MinorVersion", format!("{minor}"), in: src));
         }
         let capabilities = src.read_u32();
         if capabilities != Self::CAPS {
-            return Err(unsupported_value_err!("Capabilities", format!("{capabilities}")));
+            return Err(unsupported_value_err!("Capabilities", format!("{capabilities}"), in: src));
         }
 
         Ok(Self {

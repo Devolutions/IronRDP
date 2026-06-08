@@ -103,7 +103,7 @@ impl Decode<'_> for DrdynvcClientPdu {
             Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
             Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
             Cmd::Capability => Ok(Self::Capabilities(CapabilitiesResponsePdu::decode(header, src)?)),
-            _ => Err(unsupported_value_err!("Cmd", header.cmd.into())),
+            _ => Err(unsupported_value_err!("Cmd", header.cmd.into(), in: src)),
         }
     }
 }
@@ -157,7 +157,7 @@ impl Decode<'_> for DrdynvcServerPdu {
             Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
             Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
             Cmd::Capability => Ok(Self::Capabilities(CapabilitiesRequestPdu::decode(header, src)?)),
-            _ => Err(unsupported_value_err!("Cmd", header.cmd.into())),
+            _ => Err(unsupported_value_err!("Cmd", header.cmd.into(), in: src)),
         }
     }
 }
@@ -259,7 +259,7 @@ impl TryFrom<u8> for Cmd {
             0x07 => Ok(Self::DataCompressed),
             0x08 => Ok(Self::SoftSyncRequest),
             0x09 => Ok(Self::SoftSyncResponse),
-            _ => Err(invalid_field_err!("Cmd", "invalid cmd")),
+            _ => Err(invalid_field_err!("Cmd", "invalid cmd", at: 0)),
         }
     }
 }
@@ -364,7 +364,7 @@ impl DataFirstPdu {
         self.header.cb_id.encode_val(self.channel_id, dst)?;
         self.header
             .sp
-            .encode_val(cast_length!("DataFirstPdu::Length", self.length)?, dst)?;
+            .encode_val(cast_length!("DataFirstPdu::Length", self.length, in: dst)?, dst)?;
         dst.write_slice(&self.data);
         Ok(())
     }
@@ -394,10 +394,10 @@ impl FieldType {
     fn encode_val(&self, value: u32, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size_of_val());
         match *self {
-            FieldType::U8 => dst.write_u8(cast_length!("FieldType::encode", value)?),
-            FieldType::U16 => dst.write_u16(cast_length!("FieldType::encode", value)?),
+            FieldType::U8 => dst.write_u8(cast_length!("FieldType::encode", value, in: dst)?),
+            FieldType::U16 => dst.write_u16(cast_length!("FieldType::encode", value, in: dst)?),
             FieldType::U32 => dst.write_u32(value),
-            _ => return Err(invalid_field_err!("FieldType", "invalid field type")),
+            _ => return Err(invalid_field_err!("FieldType", "invalid field type", in: dst)),
         };
         Ok(())
     }
@@ -408,7 +408,7 @@ impl FieldType {
             FieldType::U8 => Ok(u32::from(src.read_u8())),
             FieldType::U16 => Ok(u32::from(src.read_u16())),
             FieldType::U32 => Ok(src.read_u32()),
-            _ => Err(invalid_field_err!("FieldType", "invalid field type")),
+            _ => Err(invalid_field_err!("FieldType", "invalid field type", in: src)),
         }
     }
 
@@ -729,7 +729,7 @@ impl TryFrom<u16> for CapsVersion {
             0x0001 => Ok(Self::V1),
             0x0002 => Ok(Self::V2),
             0x0003 => Ok(Self::V3),
-            _ => Err(invalid_field_err!("CapsVersion", "invalid version")),
+            _ => Err(invalid_field_err!("CapsVersion", "invalid version", at: 0)),
         }
     }
 }

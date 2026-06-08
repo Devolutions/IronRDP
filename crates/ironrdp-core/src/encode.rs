@@ -18,7 +18,15 @@ pub type EncodeResult<T> = Result<T, EncodeError>;
 /// An error type specifically for encoding operations, wrapping an [`EncodeErrorKind`].
 pub type EncodeError = ironrdp_error::Error<EncodeErrorKind>;
 
-/// Represents the different kinds of errors that can occur during encoding operations.
+/// Structured encode errors carry the fields needed to describe the failure,
+/// including a byte `offset` when the error can be associated with
+/// a position in the output stream.
+///
+/// The `offset` is the cursor position at, or nearest to, where the error was
+/// detected. Producers without a stream cursor pass `0`.
+///
+/// [`EncodeErrorKind::Other`] is reserved for errors that do not fit one of the
+/// structured variants and therefore does not carry an offset.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum EncodeErrorKind {
@@ -28,6 +36,11 @@ pub enum EncodeErrorKind {
         received: usize,
         /// The number of bytes expected or required.
         expected: usize,
+        /// Byte offset in the output stream where the shortage was detected.
+        ///
+        /// `0` indicates that the producer had no stream cursor in scope
+        /// (a `try_from` on a primitive, a constructor, a validator).
+        offset: usize,
     },
     /// Indicates that a field in the data being encoded is invalid.
     InvalidField {
@@ -35,16 +48,28 @@ pub enum EncodeErrorKind {
         field: &'static str,
         /// The reason why the field is considered invalid.
         reason: &'static str,
+        /// Byte offset in the output stream where the invalid field was being written.
+        ///
+        /// `0` indicates that the producer had no stream cursor in scope.
+        offset: usize,
     },
     /// Indicates that an unexpected message type was encountered during encoding.
     UnexpectedMessageType {
         /// The unexpected message type that was received.
         got: u8,
+        /// Byte offset in the output stream where the unexpected type was written.
+        ///
+        /// `0` indicates that the producer had no stream cursor in scope.
+        offset: usize,
     },
     /// Indicates that an unsupported version was encountered during encoding.
     UnsupportedVersion {
         /// The unsupported version that was received.
         got: u8,
+        /// Byte offset in the output stream where the unsupported version was written.
+        ///
+        /// `0` indicates that the producer had no stream cursor in scope.
+        offset: usize,
     },
     /// Indicates that an unsupported value was encountered during encoding.
     #[cfg(feature = "alloc")]
@@ -53,14 +78,25 @@ pub enum EncodeErrorKind {
         name: &'static str,
         /// The unsupported value that was received.
         value: String,
+        /// Byte offset in the output stream where the unsupported value was written.
+        ///
+        /// `0` indicates that the producer had no stream cursor in scope.
+        offset: usize,
     },
     /// Indicates that an unsupported value was encountered during encoding (no-alloc version).
     #[cfg(not(feature = "alloc"))]
     UnsupportedValue {
         /// The name of the field or parameter with the unsupported value.
         name: &'static str,
+        /// Byte offset in the output stream where the unsupported value was written.
+        ///
+        /// `0` indicates that the producer had no stream cursor in scope.
+        offset: usize,
     },
     /// Represents any other error that doesn't fit into the above categories.
+    ///
+    /// Does not carry an offset: producers of this variant typically do not
+    /// have stream-cursor access.
     Other {
         /// A description of the error.
         description: &'static str,
@@ -73,26 +109,30 @@ impl core::error::Error for EncodeErrorKind {}
 impl fmt::Display for EncodeErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotEnoughBytes { received, expected } => write!(
+            Self::NotEnoughBytes {
+                received,
+                expected,
+                offset,
+            } => write!(
                 f,
-                "not enough bytes provided to decode: received {received} bytes, expected {expected} bytes"
+                "not enough bytes provided to encode at offset {offset}: received {received} bytes, expected {expected} bytes"
             ),
-            Self::InvalidField { field, reason } => {
-                write!(f, "invalid `{field}`: {reason}")
+            Self::InvalidField { field, reason, offset } => {
+                write!(f, "invalid `{field}` at offset {offset}: {reason}")
             }
-            Self::UnexpectedMessageType { got } => {
-                write!(f, "invalid message type ({got})")
+            Self::UnexpectedMessageType { got, offset } => {
+                write!(f, "invalid message type ({got}) at offset {offset}")
             }
-            Self::UnsupportedVersion { got } => {
-                write!(f, "unsupported version ({got})")
+            Self::UnsupportedVersion { got, offset } => {
+                write!(f, "unsupported version ({got}) at offset {offset}")
             }
             #[cfg(feature = "alloc")]
-            Self::UnsupportedValue { name, value } => {
-                write!(f, "unsupported {name} ({value})")
+            Self::UnsupportedValue { name, value, offset } => {
+                write!(f, "unsupported {name} ({value}) at offset {offset}")
             }
             #[cfg(not(feature = "alloc"))]
-            Self::UnsupportedValue { name } => {
-                write!(f, "unsupported {name}")
+            Self::UnsupportedValue { name, offset } => {
+                write!(f, "unsupported {name} at offset {offset}")
             }
             Self::Other { description } => {
                 write!(f, "other ({description})")
@@ -102,37 +142,44 @@ impl fmt::Display for EncodeErrorKind {
 }
 
 impl NotEnoughBytesErr for EncodeError {
-    fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self {
-        Self::new(context, EncodeErrorKind::NotEnoughBytes { received, expected })
+    fn not_enough_bytes(context: &'static str, received: usize, expected: usize, offset: usize) -> Self {
+        Self::new(
+            context,
+            EncodeErrorKind::NotEnoughBytes {
+                received,
+                expected,
+                offset,
+            },
+        )
     }
 }
 
 impl InvalidFieldErr for EncodeError {
-    fn invalid_field(context: &'static str, field: &'static str, reason: &'static str) -> Self {
-        Self::new(context, EncodeErrorKind::InvalidField { field, reason })
+    fn invalid_field(context: &'static str, field: &'static str, reason: &'static str, offset: usize) -> Self {
+        Self::new(context, EncodeErrorKind::InvalidField { field, reason, offset })
     }
 }
 
 impl UnexpectedMessageTypeErr for EncodeError {
-    fn unexpected_message_type(context: &'static str, got: u8) -> Self {
-        Self::new(context, EncodeErrorKind::UnexpectedMessageType { got })
+    fn unexpected_message_type(context: &'static str, got: u8, offset: usize) -> Self {
+        Self::new(context, EncodeErrorKind::UnexpectedMessageType { got, offset })
     }
 }
 
 impl UnsupportedVersionErr for EncodeError {
-    fn unsupported_version(context: &'static str, got: u8) -> Self {
-        Self::new(context, EncodeErrorKind::UnsupportedVersion { got })
+    fn unsupported_version(context: &'static str, got: u8, offset: usize) -> Self {
+        Self::new(context, EncodeErrorKind::UnsupportedVersion { got, offset })
     }
 }
 
 impl UnsupportedValueErr for EncodeError {
     #[cfg(feature = "alloc")]
-    fn unsupported_value(context: &'static str, name: &'static str, value: String) -> Self {
-        Self::new(context, EncodeErrorKind::UnsupportedValue { name, value })
+    fn unsupported_value(context: &'static str, name: &'static str, value: String, offset: usize) -> Self {
+        Self::new(context, EncodeErrorKind::UnsupportedValue { name, value, offset })
     }
     #[cfg(not(feature = "alloc"))]
-    fn unsupported_value(context: &'static str, name: &'static str) -> Self {
-        Self::new(context, EncodeErrorKind::UnsupportedValue { name })
+    fn unsupported_value(context: &'static str, name: &'static str, offset: usize) -> Self {
+        Self::new(context, EncodeErrorKind::UnsupportedValue { name, offset })
     }
 }
 

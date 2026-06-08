@@ -56,7 +56,7 @@ impl ClearCodecDecoder {
         // Validate glyph index range per spec: 0..3999 inclusive
         if let Some(idx) = stream.glyph_index {
             if idx >= GLYPH_CACHE_WRAP {
-                return Err(invalid_field_err!("glyphIndex", "glyph index out of range 0-3999"));
+                return Err(invalid_field_err!("glyphIndex", "glyph index out of range 0-3999", in: src));
             }
         }
 
@@ -64,19 +64,19 @@ impl ClearCodecDecoder {
         let h = usize::from(height);
         let pixel_count = w
             .checked_mul(h)
-            .ok_or_else(|| invalid_field_err!("dimensions", "width * height overflow"))?;
+            .ok_or_else(|| invalid_field_err!("dimensions", "width * height overflow", in: src))?;
 
         // Handle glyph hit: return cached pixel data
         if stream.is_glyph_hit() {
             let glyph_index = stream
                 .glyph_index
-                .ok_or_else(|| invalid_field_err!("flags", "GLYPH_HIT without GLYPH_INDEX"))?;
+                .ok_or_else(|| invalid_field_err!("flags", "GLYPH_HIT without GLYPH_INDEX", in: src))?;
             let entry = self
                 .glyph_cache
                 .get(glyph_index)
-                .ok_or_else(|| invalid_field_err!("glyphIndex", "glyph cache miss on hit"))?;
+                .ok_or_else(|| invalid_field_err!("glyphIndex", "glyph cache miss on hit", in: src))?;
             if entry.width != width || entry.height != height {
-                return Err(invalid_field_err!("glyphIndex", "cached glyph dimensions mismatch"));
+                return Err(invalid_field_err!("glyphIndex", "cached glyph dimensions mismatch", in: src));
             }
             return Ok(entry.pixels.clone());
         }
@@ -96,7 +96,7 @@ impl ClearCodecDecoder {
             return Err(invalid_field_err!(
                 "dimensions",
                 "width or height exceeds 8192-pixel decoder limit"
-            ));
+            , in: src));
         }
 
         // Decode composite payload
@@ -212,14 +212,14 @@ impl ClearCodecDecoder {
                 let cached = self
                     .vbar_cache
                     .get_vbar(*index)
-                    .ok_or_else(|| invalid_field_err!("vbarIndex", "V-bar cache miss on hit"))?;
+                    .ok_or_else(|| invalid_field_err!("vbarIndex", "V-bar cache miss on hit", at: 0))?;
                 Ok(cached.clone())
             }
             VBar::ShortCacheHit { index, y_on } => {
                 let cached_short = self
                     .vbar_cache
                     .get_short_vbar(*index)
-                    .ok_or_else(|| invalid_field_err!("shortVbarIndex", "short V-bar cache miss on hit"))?;
+                    .ok_or_else(|| invalid_field_err!("shortVbarIndex", "short V-bar cache miss on hit", at: 0))?;
                 // Create a modified short vbar with the y_on from this reference
                 let modified = ShortVBar {
                     y_on: *y_on,
@@ -261,7 +261,7 @@ impl ClearCodecDecoder {
         let x_end = usize::from(sub.x_start) + usize::from(sub.width);
         let y_end = usize::from(sub.y_start) + usize::from(sub.height);
         if x_end > sw || y_end > sh {
-            return Err(invalid_field_err!("subcodec", "region exceeds surface bounds"));
+            return Err(invalid_field_err!("subcodec", "region exceeds surface bounds", at: 0));
         }
 
         match sub.codec_id {
@@ -271,9 +271,9 @@ impl ClearCodecDecoder {
                 let expected = w
                     .checked_mul(h)
                     .and_then(|v| v.checked_mul(3))
-                    .ok_or_else(|| invalid_field_err!("bitmapData", "raw subcodec dimensions overflow"))?;
+                    .ok_or_else(|| invalid_field_err!("bitmapData", "raw subcodec dimensions overflow", at: 0))?;
                 if sub.bitmap_data.len() < expected {
-                    return Err(invalid_field_err!("bitmapData", "raw subcodec data too short"));
+                    return Err(invalid_field_err!("bitmapData", "raw subcodec data too short", at: 0));
                 }
                 for row in 0..h {
                     for col in 0..w {
@@ -297,16 +297,16 @@ impl ClearCodecDecoder {
 
                 for seg in &rlex.segments {
                     if usize::from(seg.start_index) >= palette_len {
-                        return Err(invalid_field_err!("rlex", "start_index exceeds palette size"));
+                        return Err(invalid_field_err!("rlex", "start_index exceeds palette size", at: 0));
                     }
                     if usize::from(seg.stop_index) >= palette_len {
-                        return Err(invalid_field_err!("rlex", "stop_index exceeds palette size"));
+                        return Err(invalid_field_err!("rlex", "stop_index exceeds palette size", at: 0));
                     }
 
                     let color = &rlex.palette[usize::from(seg.start_index)];
                     for _ in 0..seg.run_length {
                         if px >= region_pixels {
-                            return Err(invalid_field_err!("rlex", "run exceeds region pixel count"));
+                            return Err(invalid_field_err!("rlex", "run exceeds region pixel count", at: 0));
                         }
                         let x = usize::from(sub.x_start) + px % w;
                         let y = usize::from(sub.y_start) + px / w;
@@ -320,7 +320,7 @@ impl ClearCodecDecoder {
 
                     for palette_idx in seg.start_index..=seg.stop_index {
                         if px >= region_pixels {
-                            return Err(invalid_field_err!("rlex", "suite exceeds region pixel count"));
+                            return Err(invalid_field_err!("rlex", "suite exceeds region pixel count", at: 0));
                         }
                         let color = &rlex.palette[usize::from(palette_idx)];
                         let x = usize::from(sub.x_start) + px % w;

@@ -49,8 +49,8 @@ impl RfxEncoder {
             Block::CodecChannel(CodecChannel::Context(context)).encode(&mut cursor)?;
 
             let channels = ChannelsPdu(vec![RfxChannel {
-                width: cast_length!("width", width)?,
-                height: cast_length!("height", height)?,
+                width: cast_length!("width", width, at: 0)?,
+                height: cast_length!("height", height, at: 0)?,
             }]);
             Block::Channels(channels).encode(&mut cursor)?;
 
@@ -166,8 +166,8 @@ impl<'a> UpdateEncoder<'a> {
                     y_quant_index: 0,
                     cb_quant_index: 0,
                     cr_quant_index: 0,
-                    x: cast_int!("tile_x", tile_x)?,
-                    y: cast_int!("tile_y", tile_y)?,
+                    x: cast_int!("tile_x", tile_x, at: 0)?,
+                    y: cast_int!("tile_y", tile_y, at: 0)?,
                     y_data,
                     cb_data,
                     cr_data,
