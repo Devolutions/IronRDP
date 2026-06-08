@@ -1,11 +1,11 @@
-//! Contains valid URB Functions, the common header [`TsUrbHeader`] for all [`TsUrb`] structures,
-//! and utility data types.
+//! Contains valid URB Functions, the common header [`TsUrbHeader`] for all [`TsUrbIn`] and
+//! [`TsUrbOut`] structures, and utility data types.
 
 use alloc::vec::Vec;
 
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
-    invalid_field_err, other_err, read_padding, unsupported_value_err, write_padding,
+    invalid_field_err, other_err, read_padding, write_padding,
 };
 
 use crate::pdu::utils::RequestIdTransferInOut;
@@ -13,10 +13,10 @@ use crate::pdu::utils::RequestIdTransferInOut;
 use crate::pdu::{
     header::SharedMsgHeader,
     usb_dev::ts_urb::{
-        TsUrb, TsUrbBulkOrInterruptTransfer, TsUrbControlDescRequest, TsUrbControlFeatRequest,
-        TsUrbControlGetConfigRequest, TsUrbControlGetInterfaceRequest, TsUrbControlGetStatusRequest,
-        TsUrbControlTransfer, TsUrbControlTransferEx, TsUrbControlVendorClassRequest, TsUrbGetCurrFrameNum,
-        TsUrbIsochTransfer, TsUrbOsFeatDescRequest, TsUrbPipeRequest, TsUrbSelectConfig, TsUrbSelectInterface,
+        TsUrbBulkOrInterruptTransfer, TsUrbControlDescRequest, TsUrbControlFeatRequest, TsUrbControlGetConfigRequest,
+        TsUrbControlGetInterfaceRequest, TsUrbControlGetStatusRequest, TsUrbControlTransfer, TsUrbControlTransferEx,
+        TsUrbControlVendorClassRequest, TsUrbGetCurrFrameNum, TsUrbIn, TsUrbIsochTransfer, TsUrbOsFeatDescRequest,
+        TsUrbOut, TsUrbPipeRequest, TsUrbSelectConfig, TsUrbSelectInterface,
     },
 };
 
@@ -33,309 +33,274 @@ use crate::pdu::{
 // like it did not receive any of the MDL variants? Cause the client receives the data buffer over
 // the network, so MDL's don't really make a point. [EDIT] Same behavior for MDL and non-MDL
 // variants.
-#[repr(u16)]
-#[non_exhaustive]
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum UrbFunction {
+#[repr(transparent)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct UrbFunction(u16);
+
+impl UrbFunction {
     /// Represents [`URB_FUNCTION_SELECT_CONFIGURATION`][1]. Used with [`TsUrbSelectConfig`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_select_configuration
-    #[doc(alias = "URB_FUNCTION_SELECT_CONFIGURATION")]
-    SelectConfiguration = 0,
+    pub const URB_FUNCTION_SELECT_CONFIGURATION: Self = Self(0);
 
     /// Represents [`URB_FUNCTION_SELECT_INTERFACE`][1]. Used with [`TsUrbSelectInterface`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_select_interface
-    #[doc(alias = "URB_FUNCTION_SELECT_INTERFACE")]
-    SelectInterface = 1,
+    pub const URB_FUNCTION_SELECT_INTERFACE: Self = Self(1);
 
     /// Represents [`URB_FUNCTION_ABORT_PIPE`][1]. Used with [`TsUrbPipeRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_abort_pipe
-    #[doc(alias = "URB_FUNCTION_ABORT_PIPE")]
-    AbortPipe = 2,
+    pub const URB_FUNCTION_ABORT_PIPE: Self = Self(2);
 
     /// Represents [`URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL`][1]. Used with [`TsUrbPipeRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_sync_reset_pipe_and_clear_stall
-    #[doc(alias = "URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL")]
-    SyncResetPipeAndClearStall = 30,
+    pub const URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL: Self = Self(30);
 
     /// Represents [`URB_FUNCTION_SYNC_RESET_PIPE`][1]. Used with [`TsUrbPipeRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_sync_reset_pipe
-    #[doc(alias = "URB_FUNCTION_SYNC_RESET_PIPE")]
-    SyncResetPipe = 48,
+    pub const URB_FUNCTION_SYNC_RESET_PIPE: Self = Self(48);
 
     /// Represents [`URB_FUNCTION_SYNC_CLEAR_STALL`][1]. Used with [`TsUrbPipeRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_sync_clear_stall
-    #[doc(alias = "URB_FUNCTION_SYNC_CLEAR_STALL")]
-    SyncClearStall = 49,
+    pub const URB_FUNCTION_SYNC_CLEAR_STALL: Self = Self(49);
 
     /// Represents [`URB_FUNCTION_CLOSE_STATIC_STREAMS`][1]. Used with [`TsUrbPipeRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_close_static_streams
-    #[doc(alias = "URB_FUNCTION_CLOSE_STATIC_STREAMS")]
-    CloseStaticStreams = 54,
+    pub const URB_FUNCTION_CLOSE_STATIC_STREAMS: Self = Self(54);
 
     /// Represents [`URB_FUNCTION_GET_CURRENT_FRAME_NUMBER`][1]. Used with [`TsUrbGetCurrFrameNum`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_current_frame_number
-    #[doc(alias = "URB_FUNCTION_GET_CURRENT_FRAME_NUMBER")]
-    GetCurrentFrameNumber = 7,
+    pub const URB_FUNCTION_GET_CURRENT_FRAME_NUMBER: Self = Self(7);
 
     /// Represents [`URB_FUNCTION_CONTROL_TRANSFER`][1]. Used with [`TsUrbControlTransfer`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_control_transfer
-    #[doc(alias = "URB_FUNCTION_CONTROL_TRANSFER")]
-    ControlTransfer = 8,
+    pub const URB_FUNCTION_CONTROL_TRANSFER: Self = Self(8);
 
     /// Represents [`URB_FUNCTION_CONTROL_TRANSFER_EX`][1]. Used with [`TsUrbControlTransferEx`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_control_transfer_ex
-    #[doc(alias = "URB_FUNCTION_CONTROL_TRANSFER_EX")]
-    ControlTransferEx = 50,
+    pub const URB_FUNCTION_CONTROL_TRANSFER_EX: Self = Self(50);
 
     /// Represents [`URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER`][1]. Used with
     /// [`TsUrbBulkOrInterruptTransfer`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_bulk_or_interrupt_transfer
-    #[doc(alias = "URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER")]
-    BulkOrInterruptTransfer = 9,
+    pub const URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER: Self = Self(9);
 
     /// Represents [`URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL`][1]. Used with
     /// [`TsUrbBulkOrInterruptTransfer`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_bulk_or_interrupt_transfer_using_chained_mdl
-    #[doc(alias = "URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL")]
-    BulkOrInterruptTransferUsingChainedMdl = 55,
+    pub const URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL: Self = Self(55);
 
     /// Represents [`URB_FUNCTION_ISOCH_TRANSFER`][1]. Used with [`TsUrbIsochTransfer`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_isoch_transfer
-    #[doc(alias = "URB_FUNCTION_ISOCH_TRANSFER")]
-    IsochTransfer = 10,
+    pub const URB_FUNCTION_ISOCH_TRANSFER: Self = Self(10);
 
     /// Represents [`URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL`][1]. Used with
     /// [`TsUrbIsochTransfer`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_isoch_transfer_using_chained_mdl
-    #[doc(alias = "URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL")]
-    IsochTransferUsingChainedMdl = 56,
+    pub const URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL: Self = Self(56);
 
     /// Represents [`URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE`][1]. Used with
     /// [`TsUrbControlDescRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_descriptor_from_device
-    #[doc(alias = "URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE")]
-    GetDescriptorFromDevice = 11,
+    pub const URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE: Self = Self(11);
 
     /// Represents [`URB_FUNCTION_GET_DESCRIPTOR_FROM_ENDPOINT`][1]. Used with
     /// [`TsUrbControlDescRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_descriptor_from_endpoint
-    #[doc(alias = "URB_FUNCTION_GET_DESCRIPTOR_FROM_ENDPOINT")]
-    GetDescriptorFromEndpoint = 36,
+    pub const URB_FUNCTION_GET_DESCRIPTOR_FROM_ENDPOINT: Self = Self(36);
 
     /// Represents [`URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE`][1]. Used with
     /// [`TsUrbControlDescRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_descriptor_from_interface
-    #[doc(alias = "URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE")]
-    GetDescriptorFromInterface = 40,
+    pub const URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE: Self = Self(40);
 
     /// Represents [`URB_FUNCTION_SET_DESCRIPTOR_TO_DEVICE`][1]. Used with
     /// [`TsUrbControlDescRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_set_descriptor_to_device
-    #[doc(alias = "URB_FUNCTION_SET_DESCRIPTOR_TO_DEVICE")]
-    SetDescriptorToDevice = 12,
+    pub const URB_FUNCTION_SET_DESCRIPTOR_TO_DEVICE: Self = Self(12);
 
     /// Represents [`URB_FUNCTION_SET_DESCRIPTOR_TO_ENDPOINT`][1]. Used with
     /// [`TsUrbControlDescRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_set_descriptor_to_endpoint
-    #[doc(alias = "URB_FUNCTION_SET_DESCRIPTOR_TO_ENDPOINT")]
-    SetDescriptorToEndpoint = 37,
+    pub const URB_FUNCTION_SET_DESCRIPTOR_TO_ENDPOINT: Self = Self(37);
 
     /// Represents [`URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE`][1]. Used with
     /// [`TsUrbControlDescRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_set_descriptor_to_interface
-    #[doc(alias = "URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE")]
-    SetDescriptorToInterface = 41,
+    pub const URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE: Self = Self(41);
 
     /// Represents [`URB_FUNCTION_SET_FEATURE_TO_DEVICE`][1]. Used with [`TsUrbControlFeatRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_set_feature_to_device
-    #[doc(alias = "URB_FUNCTION_SET_FEATURE_TO_DEVICE")]
-    SetFeatureToDevice = 13,
+    pub const URB_FUNCTION_SET_FEATURE_TO_DEVICE: Self = Self(13);
 
     /// Represents [`URB_FUNCTION_SET_FEATURE_TO_INTERFACE`][1]. Used with
     /// [`TsUrbControlFeatRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_set_feature_to_interface
-    #[doc(alias = "URB_FUNCTION_SET_FEATURE_TO_INTERFACE")]
-    SetFeatureToInterface = 14,
+    pub const URB_FUNCTION_SET_FEATURE_TO_INTERFACE: Self = Self(14);
 
     /// Represents [`URB_FUNCTION_SET_FEATURE_TO_ENDPOINT`][1]. Used with
     /// [`TsUrbControlFeatRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_set_feature_to_endpoint
-    #[doc(alias = "URB_FUNCTION_SET_FEATURE_TO_ENDPOINT")]
-    SetFeatureToEndpoint = 15,
+    pub const URB_FUNCTION_SET_FEATURE_TO_ENDPOINT: Self = Self(15);
 
     /// Represents [`URB_FUNCTION_SET_FEATURE_TO_OTHER`][1]. Used with [`TsUrbControlFeatRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_set_feature_to_other
-    #[doc(alias = "URB_FUNCTION_SET_FEATURE_TO_OTHER")]
-    SetFeatureToOther = 35,
+    pub const URB_FUNCTION_SET_FEATURE_TO_OTHER: Self = Self(35);
 
     /// Represents [`URB_FUNCTION_CLEAR_FEATURE_TO_DEVICE`][1]. Used with
     /// [`TsUrbControlFeatRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_clear_feature_to_device
-    #[doc(alias = "URB_FUNCTION_CLEAR_FEATURE_TO_DEVICE")]
-    ClearFeatureToDevice = 16,
+    pub const URB_FUNCTION_CLEAR_FEATURE_TO_DEVICE: Self = Self(16);
 
     /// Represents [`URB_FUNCTION_CLEAR_FEATURE_TO_INTERFACE`][1]. Used with
     /// [`TsUrbControlFeatRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_clear_feature_to_interface
-    #[doc(alias = "URB_FUNCTION_CLEAR_FEATURE_TO_INTERFACE")]
-    ClearFeatureToInterface = 17,
+    pub const URB_FUNCTION_CLEAR_FEATURE_TO_INTERFACE: Self = Self(17);
 
     /// Represents [`URB_FUNCTION_CLEAR_FEATURE_TO_ENDPOINT`][1]. Used with
     /// [`TsUrbControlFeatRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_clear_feature_to_endpoint
-    #[doc(alias = "URB_FUNCTION_CLEAR_FEATURE_TO_ENDPOINT")]
-    ClearFeatureToEndpoint = 18,
+    pub const URB_FUNCTION_CLEAR_FEATURE_TO_ENDPOINT: Self = Self(18);
 
     /// Represents [`URB_FUNCTION_CLEAR_FEATURE_TO_OTHER`][1]. Used with
     /// [`TsUrbControlFeatRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_clear_feature_to_other
-    #[doc(alias = "URB_FUNCTION_CLEAR_FEATURE_TO_OTHER")]
-    ClearFeatureToOther = 34,
+    pub const URB_FUNCTION_CLEAR_FEATURE_TO_OTHER: Self = Self(34);
 
     /// Represents [`URB_FUNCTION_GET_STATUS_FROM_DEVICE`][1]. Used with
     /// [`TsUrbControlGetStatusRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_status_from_device
-    #[doc(alias = "URB_FUNCTION_GET_STATUS_FROM_DEVICE")]
-    GetStatusFromDevice = 19,
+    pub const URB_FUNCTION_GET_STATUS_FROM_DEVICE: Self = Self(19);
 
     /// Represents [`URB_FUNCTION_GET_STATUS_FROM_INTERFACE`][1]. Used with
     /// [`TsUrbControlGetStatusRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_status_from_interface
-    #[doc(alias = "URB_FUNCTION_GET_STATUS_FROM_INTERFACE")]
-    GetStatusFromInterface = 20,
+    pub const URB_FUNCTION_GET_STATUS_FROM_INTERFACE: Self = Self(20);
 
     /// Represents [`URB_FUNCTION_GET_STATUS_FROM_ENDPOINT`][1]. Used with
     /// [`TsUrbControlGetStatusRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_status_from_endpoint
-    #[doc(alias = "URB_FUNCTION_GET_STATUS_FROM_ENDPOINT")]
-    GetStatusFromEndpoint = 21,
+    pub const URB_FUNCTION_GET_STATUS_FROM_ENDPOINT: Self = Self(21);
 
     /// Represents [`URB_FUNCTION_GET_STATUS_FROM_OTHER`][1]. Used with
     /// [`TsUrbControlGetStatusRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_status_from_other
-    #[doc(alias = "URB_FUNCTION_GET_STATUS_FROM_OTHER")]
-    GetStatusFromOther = 33,
+    pub const URB_FUNCTION_GET_STATUS_FROM_OTHER: Self = Self(33);
 
     /// Represents [`URB_FUNCTION_VENDOR_DEVICE`][1]. Used with [`TsUrbControlVendorClassRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_vendor_device
-    #[doc(alias = "URB_FUNCTION_VENDOR_DEVICE")]
-    VendorDevice = 23,
+    pub const URB_FUNCTION_VENDOR_DEVICE: Self = Self(23);
 
     /// Represents [`URB_FUNCTION_VENDOR_INTERFACE`][1]. Used with
     /// [`TsUrbControlVendorClassRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_vendor_interface
-    #[doc(alias = "URB_FUNCTION_VENDOR_INTERFACE")]
-    VendorInterface = 24,
+    pub const URB_FUNCTION_VENDOR_INTERFACE: Self = Self(24);
 
     /// Represents [`URB_FUNCTION_VENDOR_ENDPOINT`][1]. Used with
     /// [`TsUrbControlVendorClassRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_vendor_endpoint
-    #[doc(alias = "URB_FUNCTION_VENDOR_ENDPOINT")]
-    VendorEndpoint = 25,
+    pub const URB_FUNCTION_VENDOR_ENDPOINT: Self = Self(25);
 
     /// Represents [`URB_FUNCTION_VENDOR_OTHER`][1]. Used with [`TsUrbControlVendorClassRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_vendor_other
-    #[doc(alias = "URB_FUNCTION_VENDOR_OTHER")]
-    VendorOther = 32,
+    pub const URB_FUNCTION_VENDOR_OTHER: Self = Self(32);
 
     /// Represents [`URB_FUNCTION_CLASS_DEVICE`][1]. Used with [`TsUrbControlVendorClassRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_class_device
-    #[doc(alias = "URB_FUNCTION_CLASS_DEVICE")]
-    ClassDevice = 26,
+    pub const URB_FUNCTION_CLASS_DEVICE: Self = Self(26);
 
     /// Represents [`URB_FUNCTION_CLASS_INTERFACE`][1]. Used with
     /// [`TsUrbControlVendorClassRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_class_interface
-    #[doc(alias = "URB_FUNCTION_CLASS_INTERFACE")]
-    ClassInterface = 27,
+    pub const URB_FUNCTION_CLASS_INTERFACE: Self = Self(27);
 
     /// Represents [`URB_FUNCTION_CLASS_ENDPOINT`][1]. Used with [`TsUrbControlVendorClassRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_class_endpoint
-    #[doc(alias = "URB_FUNCTION_CLASS_ENDPOINT")]
-    ClassEndpoint = 28,
+    pub const URB_FUNCTION_CLASS_ENDPOINT: Self = Self(28);
 
     /// Represents [`URB_FUNCTION_CLASS_OTHER`][1]. Used with [`TsUrbControlVendorClassRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_class_other
-    #[doc(alias = "URB_FUNCTION_CLASS_OTHER")]
-    ClassOther = 31,
+    pub const URB_FUNCTION_CLASS_OTHER: Self = Self(31);
 
     /// Represents [`URB_FUNCTION_GET_CONFIGURATION`][1]. Used with
     /// [`TsUrbControlGetConfigRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_configuration
-    #[doc(alias = "URB_FUNCTION_GET_CONFIGURATION")]
-    GetConfiguration = 38,
+    pub const URB_FUNCTION_GET_CONFIGURATION: Self = Self(38);
 
     /// Represents [`URB_FUNCTION_GET_INTERFACE`][1]. Used with [`TsUrbControlGetInterfaceRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_interface
-    #[doc(alias = "URB_FUNCTION_GET_INTERFACE")]
-    GetInterface = 39,
+    pub const URB_FUNCTION_GET_INTERFACE: Self = Self(39);
 
     /// Represents [`URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR`][1]. Used with
     /// [`TsUrbOsFeatDescRequest`].
     ///
     /// [1]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_header#urb_function_get_ms_feature_descriptor
-    #[doc(alias = "URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR")]
-    GetMsFeatureDescriptor = 42,
+    pub const URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR: Self = Self(42);
+}
+
+impl From<u16> for UrbFunction {
+    fn from(value: u16) -> Self {
+        Self(value)
+    }
 }
 
 impl From<UrbFunction> for u16 {
-    #[expect(clippy::as_conversions)]
     fn from(value: UrbFunction) -> Self {
-        value as Self
+        value.0
     }
 }
 
 /// [\[MS-RDPEUSB\] 2.2.9.1.1 TS_URB_HEADER][1].
 ///
-/// Common header for all of the [`TsUrb`] variants. Analogous to how [`SharedMsgHeader`] is for
-/// all the "top-level" packets defined in the spec.
+/// Common header for all of the [`TsUrbIn`] and [`TsUrbOut`] variants. Analogous to how
+/// [`SharedMsgHeader`] is for all the "top-level" packets defined in the spec.
 ///
 /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/578da9ca-3116-4608-9737-1bf3df4de3d1
 #[doc(alias = "TS_URB_HEADER")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbHeader {
+    /// The size in bytes of the TS_URB structure.
+    pub ts_urb_size: u16,
     /// Indicates what function to perform (see [`UrbFunction`]).
     pub func: UrbFunction,
     // pub(crate) urb_function: u16,
@@ -372,16 +337,29 @@ pub struct TsUrbHeader {
 
 impl TsUrbHeader {
     pub const FIXED_PART_SIZE: usize =
-        /* size_of::<u16>(/* Size */) + */ /* SHOULD BE managed by the outer TS_URB */
-        size_of::<u16>(/* URB Function */) + size_of::<u32>(/* RequestId, NoAck */);
+        2 /* Size */ + 2 /* URB Function */ + 4 /* RequestId, NoAck */;
+
+    pub(super) fn encode_with_size(&self, dst: &mut WriteCursor<'_>, ts_urb_size: usize) -> EncodeResult<()> {
+        let ts_urb_size = ts_urb_size
+            .try_into()
+            .map_err(|_| invalid_field_err!("TS_URB_HEADER::Size", "too large: exceeded 2-byte size field"))?;
+
+        Self {
+            ts_urb_size,
+            func: self.func,
+            req_id: self.req_id,
+            no_ack: self.no_ack,
+        }
+        .encode(dst)
+    }
 }
 
 impl Encode for TsUrbHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        #[expect(clippy::as_conversions)]
-        dst.write_u16(self.func as u16);
+        dst.write_u16(self.ts_urb_size);
+        dst.write_u16(self.func.into());
 
         let no_ack = u32::from(self.no_ack) << 31;
         let last32 = u32::from(self.req_id) | no_ack;
@@ -402,59 +380,33 @@ impl Encode for TsUrbHeader {
 impl Decode<'_> for TsUrbHeader {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
+        let size = src.read_u16();
+        if usize::from(size) < Self::FIXED_PART_SIZE {
+            return Err(invalid_field_err!("TS_URB_HEADER::Size", "is smaller than 8"));
+        }
 
-        let func = match src.read_u16() {
-            0 => UrbFunction::SelectConfiguration,
-            1 => UrbFunction::SelectInterface,
-            2 => UrbFunction::AbortPipe,
-            7 => UrbFunction::GetCurrentFrameNumber,
-            8 => UrbFunction::ControlTransfer,
-            9 => UrbFunction::BulkOrInterruptTransfer,
-            10 => UrbFunction::IsochTransfer,
-            11 => UrbFunction::GetDescriptorFromDevice,
-            12 => UrbFunction::SetDescriptorToDevice,
-            13 => UrbFunction::SetFeatureToDevice,
-            14 => UrbFunction::SetFeatureToInterface,
-            15 => UrbFunction::SetFeatureToEndpoint,
-            16 => UrbFunction::ClearFeatureToDevice,
-            17 => UrbFunction::ClearFeatureToInterface,
-            18 => UrbFunction::ClearFeatureToEndpoint,
-            19 => UrbFunction::GetStatusFromDevice,
-            20 => UrbFunction::GetStatusFromInterface,
-            21 => UrbFunction::GetStatusFromEndpoint,
-            23 => UrbFunction::VendorDevice,
-            24 => UrbFunction::VendorInterface,
-            25 => UrbFunction::VendorEndpoint,
-            26 => UrbFunction::ClassDevice,
-            27 => UrbFunction::ClassInterface,
-            28 => UrbFunction::ClassEndpoint,
-            30 => UrbFunction::SyncResetPipeAndClearStall,
-            31 => UrbFunction::ClassOther,
-            32 => UrbFunction::VendorOther,
-            33 => UrbFunction::GetStatusFromOther,
-            34 => UrbFunction::ClearFeatureToOther,
-            35 => UrbFunction::SetFeatureToOther,
-            36 => UrbFunction::GetDescriptorFromEndpoint,
-            37 => UrbFunction::SetDescriptorToEndpoint,
-            38 => UrbFunction::GetConfiguration,
-            39 => UrbFunction::GetInterface,
-            40 => UrbFunction::GetDescriptorFromInterface,
-            41 => UrbFunction::SetDescriptorToInterface,
-            42 => UrbFunction::GetMsFeatureDescriptor,
-            48 => UrbFunction::SyncResetPipe,
-            49 => UrbFunction::SyncClearStall,
-            50 => UrbFunction::ControlTransferEx,
-            54 => UrbFunction::CloseStaticStreams,
-            55 => UrbFunction::BulkOrInterruptTransferUsingChainedMdl,
-            56 => UrbFunction::IsochTransferUsingChainedMdl,
-            value => return Err(unsupported_value_err!("URB Function", alloc::format!("{value}"))),
-        };
-        // let urb_function = src.read_u16();
+        let func = UrbFunction::from(src.read_u16());
         let last32 = src.read_u32();
         let req_id = RequestIdTransferInOut::try_from(last32 & 0x7F_FF_FF_FF).expect("value clamped");
         let no_ack = (last32 >> 31) != 0;
+        if no_ack
+            && !matches!(
+                func,
+                UrbFunction::URB_FUNCTION_ISOCH_TRANSFER | UrbFunction::URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL
+            )
+        {
+            return Err(invalid_field_err!(
+                "TS_URB_HEADER::NoAck",
+                "this bit can only be set when URB Function is an isochronous transfer"
+            ));
+        }
 
-        Ok(Self { func, req_id, no_ack })
+        Ok(Self {
+            ts_urb_size: size,
+            func,
+            req_id,
+            no_ack,
+        })
     }
 }
 
@@ -604,7 +556,9 @@ impl Decode<'_> for TsUsbdInterfaceInfo {
             ));
         };
 
-        let mut src = ReadCursor::new(src.read_slice(usize::from(length) - 2));
+        let remaining_length = usize::from(length) - 2 /* Length */;
+        ensure_size!(in: src, size: remaining_length);
+        let mut src = ReadCursor::new(src.read_slice(remaining_length));
 
         let number_of_pipes_expected = src.read_u16();
         let interface_number = src.read_u8();

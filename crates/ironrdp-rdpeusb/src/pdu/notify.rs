@@ -13,7 +13,7 @@ use ironrdp_core::{
     unsupported_value_err,
 };
 
-use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
+use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader, unpack};
 
 /// [\[MS-RDPEUSB\] 2.2.5.1 Channel Created Message (CHANNEL_CREATED)][1] packet.
 ///
@@ -54,12 +54,12 @@ impl ChannelCreated {
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: if let Direction::ToServer = self.direction {
+            iface_id: if let Direction::ToServer = self.direction {
                 InterfaceId::NOTIFY_SERVER
             } else {
                 InterfaceId::NOTIFY_CLIENT
-            },
-            mask: Mask::StreamIdProxy,
+            }
+            .with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::CHANNEL_CREATED),
         }
@@ -83,7 +83,7 @@ impl ChannelCreated {
 
         Ok(Self {
             msg_id: header.msg_id,
-            direction: match header.interface_id {
+            direction: match unpack(header.iface_id)?.0 {
                 InterfaceId::NOTIFY_CLIENT => Direction::ToClient,
                 InterfaceId::NOTIFY_SERVER => Direction::ToServer,
                 _ => unreachable!("dispatcher must filter interface_id to NOTIFY_CLIENT/NOTIFY_SERVER"),

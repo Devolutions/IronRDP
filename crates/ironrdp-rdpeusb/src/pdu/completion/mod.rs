@@ -71,14 +71,13 @@ pub struct IoControlCompletion {
 impl IoControlCompletion {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.completion_iface,
-            mask: Mask::StreamIdProxy,
+            iface_id: self.completion_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::IOCONTROL_COMPLETION),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         const FIXED: usize = 4 /* RequestId */ + 4 /* HResult */ + 4 /* Information */ + 4 /* OutputBufferSize */;
         ensure_size!(in: src, size: FIXED);
 
@@ -87,40 +86,42 @@ impl IoControlCompletion {
         let information = src.read_u32();
         let output_buffer_size = src.read_u32();
 
-        // Should this stuff be part of some validate() function?
-        if hresult == 0 {
-            if information != output_buffer_size {
-                return Err(invalid_field_err!(
-                    "Information != OutputBufferSize",
-                    "HResult is: 0x0 (IOCTL success), but Information != OutputBufferSize"
-                ));
-            }
-        } else if hresult != HRESULT_FROM_WIN32_ERROR_INSUFFICIENT_BUFFER && output_buffer_size != 0 {
-            // > If the HResult field is equal to HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER)
-            // > then ... . For any other case `OutputBufferSize` **MUST** be set to 0 ...
-            //
-            // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/b1722374-0658-47ba-8368-87bf9d3db4d4
-            return Err(invalid_field_err!(
-                "OutputBufferSize",
-                "HResult is not one of: 0x0 (success), 0x8007007A (insufficient buffer error), \
-                    so expected OutputBufferSize: 0x0"
-            ));
-        }
+        let n = output_buffer_size.try_into().map_err(|e| other_err!(source: e))?;
 
         let output_buffer = match hresult {
-            // #[expect(clippy::as_conversions)]
-            0 | HRESULT_FROM_WIN32_ERROR_INSUFFICIENT_BUFFER => {
-                let n = information.try_into().map_err(|e| other_err!(source: e))?;
-                Vec::from(src.read_slice(n))
+            0 => {
+                if information != output_buffer_size {
+                    return Err(invalid_field_err!(
+                        "Information != OutputBufferSize",
+                        "HResult is: 0x0 (IOCTL success), but Information != OutputBufferSize"
+                    ));
+                }
+                ensure_size!(in: src, size: n);
+                src.read_slice(n).to_vec()
             }
-            // > For any other case [OutputBufferSize] MUST be set to 0
-            // Which means empty output_buffer
-            _ => Vec::new(),
+            HRESULT_FROM_WIN32_ERROR_INSUFFICIENT_BUFFER => {
+                ensure_size!(in: src, size: n);
+                src.read_slice(n).to_vec()
+            }
+            _ => {
+                if output_buffer_size != 0 {
+                    // > If the HResult field is equal to HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER)
+                    // > then ... . For any other case `OutputBufferSize` **MUST** be set to 0 ...
+                    //
+                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/b1722374-0658-47ba-8368-87bf9d3db4d4
+                    return Err(invalid_field_err!(
+                        "OutputBufferSize",
+                        "HResult is not one of: 0x0 (success), 0x8007007A (insufficient buffer error), \
+                    so expected OutputBufferSize: 0x0"
+                    ));
+                }
+                Vec::new()
+            }
         };
 
         Ok(Self {
-            msg_id: header.msg_id,
-            completion_iface: header.interface_id,
+            msg_id,
+            completion_iface: udev_iface,
             request_id,
             hresult,
             information,
@@ -151,24 +152,14 @@ impl Encode for IoControlCompletion {
     }
 
     fn size(&self) -> usize {
-        #[expect(clippy::as_conversions)]
-        let out_buf = if self.hresult == 0 {
-            assert_eq!(self.information, self.output_buffer_size);
-            self.output_buffer.len()
-        } else if self.hresult == HRESULT_FROM_WIN32_ERROR_INSUFFICIENT_BUFFER {
-            self.information as usize
-        } else {
-            0
-        };
-
         strict_sum(&[SharedMsgHeader::SIZE_REQ
             + const {
                 size_of::<RequestIdIoctl>(/* RequestId */)
                     + size_of::<HResult>()
-                    + size_of::<u32>(/* Information */)
-                    + size_of::<u32>(/* OutputBufferSize */)
+                    + 4 /* Information */
+                    + 4 /* OutputBufferSize */
             }
-            + out_buf])
+            + self.output_buffer.len()])
     }
 }
 
@@ -194,14 +185,13 @@ pub struct UrbCompletion {
 impl UrbCompletion {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.completion_iface,
-            mask: Mask::StreamIdProxy,
+            iface_id: self.completion_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::URB_COMPLETION),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())
             .map_err(|reason| invalid_field_err!("URB_COMPLETION::RequestId", reason))?;
@@ -225,8 +215,8 @@ impl UrbCompletion {
         ensure_size!(in: src, size: output_buffer_size);
         let output_buffer = src.read_slice(output_buffer_size).to_vec();
         Ok(Self {
-            msg_id: header.msg_id,
-            completion_iface: header.interface_id,
+            msg_id,
+            completion_iface: udev_iface,
             req_id,
             ts_urb_result,
             hresult,
@@ -297,14 +287,13 @@ pub struct UrbCompletionNoData {
 impl UrbCompletionNoData {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
-            interface_id: self.completion_iface,
-            mask: Mask::StreamIdProxy,
+            iface_id: self.completion_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::URB_COMPLETION_NO_DATA),
         }
     }
 
-    pub(crate) fn decode(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())
             .map_err(|reason| invalid_field_err!("URB_COMPLETION_NO_DATA::RequestId", reason))?;
@@ -316,8 +305,8 @@ impl UrbCompletionNoData {
         let hresult = src.read_u32();
         let output_buffer_size = src.read_u32();
         Ok(Self {
-            msg_id: header.msg_id,
-            completion_iface: header.interface_id,
+            msg_id,
+            completion_iface: udev_iface,
             req_id,
             ts_urb_result,
             hresult,
