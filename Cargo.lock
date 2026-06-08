@@ -2749,7 +2749,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "pkcs1 0.7.5",
- "sha1 0.10.6",
+ "sha1 0.11.0",
  "tap",
  "x509-cert",
 ]
