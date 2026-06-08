@@ -21,6 +21,8 @@ use crate::{
 pub struct ConnectionResult {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
+    /// MCS channel ID of the message channel, when one was negotiated.
+    pub message_channel_id: Option<u16>,
     pub share_id: u32,
     pub static_channels: StaticChannelSet,
     pub desktop_size: DesktopSize,
@@ -126,6 +128,8 @@ pub struct ClientConnector {
     /// The client address to be used in the Client Info PDU.
     pub client_addr: SocketAddr,
     pub static_channels: StaticChannelSet,
+    /// MCS message channel ID assigned by the server, once negotiated.
+    pub message_channel_id: Option<u16>,
 }
 
 impl ClientConnector {
@@ -135,6 +139,7 @@ impl ClientConnector {
             state: ClientConnectorState::ConnectionInitiationSendRequest,
             client_addr,
             static_channels: StaticChannelSet::new(),
+            message_channel_id: None,
         }
     }
 
@@ -212,7 +217,15 @@ impl Sequence for ClientConnector {
             ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::ChannelConnection { channel_connection, .. } => channel_connection.next_pdu_hint(),
             ClientConnectorState::SecureSettingsExchange { .. } => None,
-            ClientConnectorState::ConnectTimeAutoDetection { .. } => None,
+            ClientConnectorState::ConnectTimeAutoDetection { .. } => {
+                // Wait for input only when a message channel was negotiated, so
+                // we can receive connect-time auto-detect requests there.
+                if self.message_channel_id.is_some() {
+                    Some(&ironrdp_pdu::X224_HINT)
+                } else {
+                    None
+                }
+            }
             ClientConnectorState::LicensingExchange { license_exchange, .. } => license_exchange.next_pdu_hint(),
             ClientConnectorState::MultitransportBootstrapping { .. } => None,
             ClientConnectorState::CapabilitiesExchange {
@@ -382,9 +395,10 @@ impl Sequence for ClientConnector {
                     return Err(general_err!("can't satisfy server security settings"));
                 }
 
-                if server_gcc_blocks.message_channel.is_some() {
-                    warn!("Unexpected ServerMessageChannelData GCC block (not supported)");
-                }
+                self.message_channel_id = server_gcc_blocks
+                    .message_channel
+                    .as_ref()
+                    .map(|data| data.mcs_message_channel_id);
 
                 if server_gcc_blocks.multi_transport_channel.is_some() {
                     warn!("Unexpected MultiTransportChannelData GCC block (not supported)");
@@ -418,7 +432,9 @@ impl Sequence for ClientConnector {
                         channel_connection: if skip_channel_join {
                             ChannelConnectionSequence::skip_channel_join()
                         } else {
-                            ChannelConnectionSequence::new(io_channel_id, static_channel_ids)
+                            let mut join_channel_ids = static_channel_ids;
+                            join_channel_ids.extend(self.message_channel_id);
+                            ChannelConnectionSequence::new(io_channel_id, join_channel_ids)
                         },
                     },
                 )
@@ -485,12 +501,37 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectTimeAutoDetection {
                 io_channel_id,
                 user_channel_id,
-            } => (
-                Written::Nothing,
-                ClientConnectorState::LicensingExchange {
-                    io_channel_id,
-                    user_channel_id,
-                    license_exchange: LicenseExchangeSequence::new(
+            } => {
+                // The server may run Optional Connect-Time Auto-Detection on the
+                // message channel before licensing ([MS-RDPBCGR] 1.3.8). When a
+                // message channel was negotiated we wait for a PDU here: an
+                // auto-detect request is answered (and we stay to receive more),
+                // while any other PDU (the first licensing PDU on the I/O channel)
+                // ends the phase and is forwarded to the licensing sequence.
+                // Without a message channel nothing is read and we go straight to
+                // licensing, as before.
+                let autodetect = self.message_channel_id.and_then(|message_channel_id| {
+                    let mcs = decode::<X224<mcs::McsMessage<'_>>>(input).ok()?;
+                    match mcs.0 {
+                        mcs::McsMessage::SendDataIndication(data) if data.channel_id == message_channel_id => {
+                            decode::<rdp::autodetect::AutoDetectReqPdu>(&data.user_data).ok()
+                        }
+                        _ => None,
+                    }
+                });
+
+                if let (Some(message_channel_id), Some(pdu)) = (self.message_channel_id, autodetect) {
+                    let written =
+                        respond_to_connect_time_autodetect(pdu.request, message_channel_id, user_channel_id, output)?;
+                    (
+                        written,
+                        ClientConnectorState::ConnectTimeAutoDetection {
+                            io_channel_id,
+                            user_channel_id,
+                        },
+                    )
+                } else {
+                    let mut license_exchange = LicenseExchangeSequence::new(
                         io_channel_id,
                         self.config.credentials.username().unwrap_or("").to_owned(),
                         self.config.domain.clone(),
@@ -499,9 +540,39 @@ impl Sequence for ClientConnector {
                             .license_cache
                             .clone()
                             .unwrap_or_else(|| Arc::new(NoopLicenseCache)),
-                    ),
-                },
-            ),
+                    );
+                    // If a PDU was read (message channel present) it is the first
+                    // licensing PDU; process it here and advance the same way the
+                    // LicensingExchange state would, so it is not stepped twice.
+                    // Otherwise nothing was read and the licensing sequence runs
+                    // from its first step as before.
+                    if self.message_channel_id.is_some() {
+                        let written = license_exchange.step(input, output)?;
+                        let next_state = if license_exchange.state.is_terminal() {
+                            ClientConnectorState::MultitransportBootstrapping {
+                                io_channel_id,
+                                user_channel_id,
+                            }
+                        } else {
+                            ClientConnectorState::LicensingExchange {
+                                io_channel_id,
+                                user_channel_id,
+                                license_exchange,
+                            }
+                        };
+                        (written, next_state)
+                    } else {
+                        (
+                            Written::Nothing,
+                            ClientConnectorState::LicensingExchange {
+                                io_channel_id,
+                                user_channel_id,
+                                license_exchange,
+                            },
+                        )
+                    }
+                }
+            }
 
             //== Licensing ==//
             // Server is sending information regarding licensing.
@@ -585,6 +656,7 @@ impl Sequence for ClientConnector {
                             result: ConnectionResult {
                                 io_channel_id,
                                 user_channel_id,
+                                message_channel_id: self.message_channel_id,
                                 share_id,
                                 static_channels: mem::take(&mut self.static_channels),
                                 desktop_size,
@@ -629,6 +701,27 @@ pub fn encode_send_data_request<T: Encode>(
     let written = ironrdp_core::encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
+}
+
+fn respond_to_connect_time_autodetect(
+    request: rdp::autodetect::AutoDetectRequest,
+    message_channel_id: u16,
+    user_channel_id: u16,
+    output: &mut WriteBuf,
+) -> ConnectorResult<Written> {
+    use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
+
+    match request {
+        AutoDetectRequest::RttRequest { sequence_number, .. } => {
+            let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
+            let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
+            Written::from_size(written)
+        }
+        // The Network Characteristics Result is informational, and bandwidth
+        // measurement is driven implicitly by the connect-time payload exchange.
+        // Neither requires an immediate reply.
+        _ => Ok(Written::Nothing),
+    }
 }
 
 #[expect(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable
@@ -695,6 +788,7 @@ fn create_gcc_blocks<'a>(
                     let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
                         | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
                         | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
+                        | ClientEarlyCapabilityFlags::SUPPORT_NET_CHAR_AUTODETECT
                         | ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
 
                     // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
@@ -735,8 +829,10 @@ fn create_gcc_blocks<'a>(
         // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
         cluster: None,
         monitor: None,
-        // TODO(#140): support for Client Message Channel Data (https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f50e791c-de03-4b25-b17e-e914c9020bc3)
-        message_channel: None,
+        // Request the MCS message channel, which carries network auto-detect
+        // ([MS-RDPBCGR] 2.2.14) and the multitransport / heartbeat PDUs. The
+        // server assigns its ID in Server Message Channel Data.
+        message_channel: Some(gcc::ClientMessageChannelData),
         multi_transport_channel: config
             .multitransport_flags
             .map(|flags| gcc::MultiTransportChannelData { flags }),
