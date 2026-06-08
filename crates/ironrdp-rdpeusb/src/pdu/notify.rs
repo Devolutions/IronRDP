@@ -12,6 +12,7 @@ use ironrdp_core::{
     DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
     unsupported_value_err,
 };
+use ironrdp_dvc::DvcEncode;
 
 use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader, unpack};
 
@@ -113,3 +114,5 @@ impl Encode for ChannelCreated {
         Self::FIXED_PART_SIZE
     }
 }
+
+impl DvcEncode for ChannelCreated {}

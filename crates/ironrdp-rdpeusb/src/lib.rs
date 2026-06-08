@@ -3,4 +3,7 @@
 
 extern crate alloc;
 
+pub const CHANNEL_NAME: &str = "URBDRC";
+
+pub mod client;
 pub mod pdu;
