@@ -56,3 +56,8 @@ fn check_pdu_round_trip() {
 fn check_egfx_round_trip() {
     check!(egfx_round_trip);
 }
+
+#[test]
+fn check_egfx_multi_frame() {
+    check!(egfx_multi_frame);
+}

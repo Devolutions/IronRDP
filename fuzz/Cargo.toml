@@ -97,3 +97,10 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "egfx_multi_frame"
+path = "fuzz_targets/egfx_multi_frame.rs"
+test = false
+doc = false
+bench = false
+
