@@ -281,7 +281,12 @@ impl<'de> Decode<'de> for Codec {
                 match guid {
                     GUID_REMOTEFX => CodecProperty::RemoteFx(property),
                     GUID_IMAGE_REMOTEFX => CodecProperty::ImageRemoteFx(property),
-                    _ => unreachable!(),
+                    // `guid` is validated as RemoteFX or ImageRemoteFX by the outer
+                    // match arm, so the `_` branch is genuinely dead. Keep it as a
+                    // redundant correctness check that fires loudly under tests and
+                    // fuzzing if a future change to the outer arm breaks that
+                    // invariant. Not reachable from the wire.
+                    _ => unreachable!("guid validated as RemoteFX or ImageRemoteFX by the outer match"),
                 }
             }
             GUID_IGNORE => CodecProperty::Ignore,
