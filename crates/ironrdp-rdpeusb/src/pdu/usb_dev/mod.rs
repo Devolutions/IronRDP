@@ -16,7 +16,7 @@ use ironrdp_str::prefixed::Cch32String;
 
 use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
 use crate::pdu::usb_dev::ts_urb::{TsUrbIn, TsUrbOut};
-use crate::pdu::utils::{HResult, RequestId, RequestIdIoctl};
+use crate::pdu::utils::{HResult, RequestId, RequestIdIoctl, RequestIdTransferInOut};
 #[cfg(doc)]
 use crate::pdu::{
     completion::{IoControlCompletion, UrbCompletion, UrbCompletionNoData},
@@ -648,6 +648,26 @@ impl TransferInRequest {
             iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::TRANSFER_IN_REQUEST),
+        }
+    }
+
+    pub fn request_id(&self) -> RequestIdTransferInOut {
+        match &self.ts_urb {
+            TsUrbIn::SelectConfig(urb) => urb.header.req_id,
+            TsUrbIn::SelectIface(urb) => urb.header.req_id,
+            TsUrbIn::PipeReq(urb) => urb.header.req_id,
+            TsUrbIn::GetCurFrameNum(urb) => urb.header.req_id,
+            TsUrbIn::CtlTransfer(urb) => urb.header.req_id,
+            TsUrbIn::BulkInterruptTransfer(urb) => urb.header.req_id,
+            TsUrbIn::IsochTransfer(urb) => urb.header.req_id,
+            TsUrbIn::CtlDescReq(urb) => urb.header.req_id,
+            TsUrbIn::CtlFeatReq(urb) => urb.header.req_id,
+            TsUrbIn::CtlGetStatus(urb) => urb.header.req_id,
+            TsUrbIn::VendorClassReq(urb) => urb.header.req_id,
+            TsUrbIn::CtlGetConfig(urb) => urb.header.req_id,
+            TsUrbIn::CtlGetIface(urb) => urb.header.req_id,
+            TsUrbIn::OsFeatDescReq(urb) => urb.header.req_id,
+            TsUrbIn::CtlTransferEx(urb) => urb.header.req_id,
         }
     }
 
