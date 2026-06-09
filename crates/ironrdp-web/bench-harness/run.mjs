@@ -68,6 +68,20 @@ async function main() {
 
     const result = JSON.parse(await page.evaluate(() => window.__BENCH_RESULT__));
     const matches = result.canonicalChecksum === expected.crc32;
+
+    // Hash the rendered canvas pixels (FNV-1a over RGBA). Build-independent: lets two harness runs
+    // (e.g. different render backends) prove byte-identical canvas output, not just framebuffer state.
+    const canvasHash = await page.evaluate(() => {
+      const c = document.getElementById('screen');
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      let h = 0x811c9dc5;
+      for (let i = 0; i < d.length; i++) {
+        h ^= d[i];
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      return h.toString(16).padStart(8, '0');
+    });
+    console.log(`canvas pixels hash (fnv1a): ${canvasHash}`);
     console.log('web bench result:', JSON.stringify(result));
     console.log(
       `checksum: replay=${result.canonicalChecksum} expected=${expected.crc32} -> ${matches ? 'MATCH' : 'MISMATCH'}`,
