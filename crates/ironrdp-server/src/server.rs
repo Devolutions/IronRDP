@@ -1,6 +1,6 @@
 use core::fmt;
 use core::net::SocketAddr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -441,6 +441,14 @@ pub struct RdpServer {
     /// and locks up its input dispatch for seconds on refocus while it
     /// chews through the backlog.
     display_suppressed: Arc<AtomicBool>,
+
+    /// Latest NetworkAutoDetect round-trip time in milliseconds, or `u32::MAX`
+    /// until the first measurement (and while auto-detect is disabled). Updated
+    /// on each RTT Measure Response when auto-detect is enabled (see
+    /// [`Self::enable_autodetect`]). Exposed via [`Self::autodetect_rtt_handle`]
+    /// so display backends can read a fresh, frame-traffic-independent network
+    /// RTT for flow control.
+    autodetect_rtt: Arc<AtomicU32>,
 }
 
 #[derive(Debug)]
@@ -475,15 +483,9 @@ enum RunState {
 }
 
 impl RdpServer {
-    // The lint only fires with the `egfx` feature on (8 args including
-    // `gfx_factory`); without it the parameter count is 7 and the lint
-    // is satisfied. `cfg_attr` keeps `#[expect]` strict in both modes.
-    #[cfg_attr(
-        feature = "egfx",
-        expect(
-            clippy::too_many_arguments,
-            reason = "called via the builder; positional parameters are an internal detail"
-        )
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "called via the builder; positional parameters are an internal detail"
     )]
     pub fn new(
         opts: RdpServerOptions,
@@ -494,6 +496,7 @@ impl RdpServer {
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
+        autodetect_rtt: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -526,6 +529,7 @@ impl RdpServer {
             autodetect: None,
             connection_handler,
             display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+            autodetect_rtt: autodetect_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX))),
         }
     }
 
@@ -587,6 +591,16 @@ impl RdpServer {
     /// [crate::RdpServerBuilder]: crate::RdpServerBuilder
     pub fn display_suppressed_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.display_suppressed)
+    }
+
+    /// Returns a handle to the latest NetworkAutoDetect RTT in milliseconds
+    /// (`u32::MAX` until the first measurement, and while auto-detect is
+    /// disabled). The server updates it on each RTT Measure Response; backends
+    /// clone the handle to read a fresh network RTT for flow control. Inject a
+    /// shared instance at construction with
+    /// [`RdpServerBuilder::with_autodetect_rtt_handle`](crate::RdpServerBuilder::with_autodetect_rtt_handle).
+    pub fn autodetect_rtt_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.autodetect_rtt)
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
@@ -1408,6 +1422,7 @@ impl RdpServer {
                 rdp::headers::ShareDataPdu::AutoDetectRsp(response) => {
                     if let Some(ref mut ad) = self.autodetect {
                         if let Some(rtt_ms) = ad.handle_response(&response) {
+                            self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
                             debug!(rtt_ms, seq = response.sequence_number(), "RTT measured");
                         } else {
                             trace!(seq = response.sequence_number(), "Unmatched auto-detect response");
