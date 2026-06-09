@@ -190,6 +190,8 @@ impl Encode for AddDevice {
     }
 }
 
+impl DvcEncode for AddDevice {}
+
 /// [\[MS-RDPEUSB\] 2.2.11 USB_DEVICE_CAPABILITIES][1] packet.
 ///
 /// Defines the capabilities of a USB device.

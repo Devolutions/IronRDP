@@ -6,6 +6,7 @@ use ironrdp_pdu::{PduResult, decode_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 
 use crate::CHANNEL_NAME;
+use crate::pdu::UrbdrcServerDevicePdu;
 use crate::pdu::header::{InterfaceId, Mask};
 use crate::pdu::iface_manipulation::{InterfaceRelease, QueryInterfaceFailureResponse};
 use crate::pdu::sink::AddVirtualChannel;
@@ -14,6 +15,9 @@ use crate::pdu::{
     caps::{Capability, RimExchangeCapabilityResponse},
     notify::ChannelCreated,
 };
+
+pub mod device;
+pub use device::*;
 
 /// A client for the URBDRC Control Virtual Channel.
 pub struct UrbdrcControlClient {
@@ -120,3 +124,93 @@ impl DvcProcessor for UrbdrcControlClient {
 impl_as_any!(UrbdrcControlClient);
 
 impl DvcClientProcessor for UrbdrcControlClient {}
+
+pub trait UrbdrcDeviceBackend: Send {
+    fn device_info(&self) -> DeviceInfo;
+}
+
+/// A client for the URBDRC Device Virtual Channel.
+pub struct UrbdrcDeviceClient {
+    /// Indicates whether the channel is ready for handling IO request.
+    ready_for_io: bool,
+    /// Per-device USB interface ID allocated by the DVC layer. This is intentionally kept out of
+    /// `DeviceInfo`, which only describes backend USB facts.
+    udev_iface: InterfaceId,
+    backend: Box<dyn UrbdrcDeviceBackend>,
+}
+
+impl UrbdrcDeviceClient {
+    pub fn new(udev_iface: InterfaceId, backend: Box<dyn UrbdrcDeviceBackend>) -> Self {
+        Self {
+            ready_for_io: false,
+            udev_iface,
+            backend,
+        }
+    }
+
+    pub const fn ready_for_io(&self) -> bool {
+        self.ready_for_io
+    }
+
+    pub const fn udev_iface(&self) -> InterfaceId {
+        self.udev_iface
+    }
+}
+
+impl DvcProcessor for UrbdrcDeviceClient {
+    fn channel_name(&self) -> &str {
+        CHANNEL_NAME
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        let pdu = UrbdrcServerDevicePdu::decode(&mut ReadCursor::new(payload)).map_err(|e| decode_err!(e))?;
+
+        use UrbdrcServerDevicePdu::*;
+        match pdu {
+            ChanCreated(chan_created_pdu) => Ok(vec![Box::new(ChannelCreated {
+                msg_id: chan_created_pdu.msg_id,
+                direction: crate::pdu::notify::Direction::ToServer,
+            })]),
+            QueryIfaceReq(query_face_pdu) => Ok(vec![Box::new(QueryInterfaceFailureResponse {
+                iface_id: query_face_pdu.iface_id,
+                msg_id: query_face_pdu.msg_id,
+            })]),
+            IfaceRelease(InterfaceRelease {
+                iface_id,
+                msg_id: _msg_id,
+            }) => {
+                if iface_id == InterfaceId::NOTIFY_CLIENT.with_mask(Mask::Proxy) && !self.ready_for_io {
+                    // SPEC-NOTE: MS-RDPEUSB does not normatively define RIMCALL_RELEASE as a
+                    // server-ready-proceed barrier; the semantic comes from observed Windows
+                    // urbdrc-server behavior. Pattern matches FreeRDP urbdrc_main.c since 2012
+                    // (commit fa4d8fca1be, Atrust contribution). Two sync points: control DVC
+                    // (server -> client ADD_VIRTUAL_CHANNEL); device DVC (server -> client
+                    // ADD_DEVICE).
+                    self.ready_for_io = true;
+                    let device_info = self.backend.device_info();
+                    let add_device = add_device_from_info(self.udev_iface, &device_info)?;
+
+                    Ok(vec![Box::new(add_device)])
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            CancelReq(_) => todo!(),
+            InternalIoCtl(_) => todo!(),
+            IoCtl(_) => todo!(),
+            RegReqCb(_) => todo!(),
+            Retract(_) => todo!(),
+            DevText(_) => todo!(),
+            TransferIn(_) => todo!(),
+            TransferOut(_) => todo!(),
+        }
+    }
+}
+
+impl_as_any!(UrbdrcDeviceClient);
+
+impl DvcClientProcessor for UrbdrcDeviceClient {}
