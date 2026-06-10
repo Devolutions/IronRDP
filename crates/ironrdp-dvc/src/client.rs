@@ -161,6 +161,10 @@ impl DrdynvcClient {
         self.dynamic_channels.get_by_channel_id(channel_id)
     }
 
+    pub fn get_dvc_by_channel_id_mut(&mut self, channel_id: u32) -> Option<&mut DynamicVirtualChannel> {
+        self.dynamic_channels.get_by_channel_id_mut(channel_id)
+    }
+
     fn create_capabilities_response(&mut self, server_version: CapsVersion) -> SvcMessage {
         let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(server_version));
         debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
