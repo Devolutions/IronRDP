@@ -8,6 +8,7 @@
 #![allow(clippy::cast_sign_loss)]
 
 pub mod config;
+pub mod egfx;
 pub mod rdp;
 pub mod record;
 

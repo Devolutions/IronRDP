@@ -117,12 +117,16 @@ pub struct RdpClient {
 impl RdpClient {
     pub async fn run(mut self) {
         loop {
+            // Shared EGFX compositor state for this connection: the EGFX handler (inside the
+            // connector's drdynvc) queues decoded blits into it; `active_session` drains them.
+            let egfx_state = crate::egfx::NativeGfxState::new();
             let (connection_result, framed, record_context) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
                 match connect_ws(
                     &self.config,
                     rdcleanpath,
                     self.cliprdr_factory.as_deref(),
                     &self.dvc_pipe_proxy_factory,
+                    egfx_state.clone(),
                 )
                 .await
                 {
@@ -140,6 +144,7 @@ impl RdpClient {
                     &self.config,
                     self.cliprdr_factory.as_deref(),
                     &self.dvc_pipe_proxy_factory,
+                    egfx_state.clone(),
                 )
                 .await
                 {
@@ -161,6 +166,7 @@ impl RdpClient {
                 self.config.exit_after_secs.map(Duration::from_secs_f64),
                 &self.output_event_sender,
                 &mut self.input_event_receiver,
+                egfx_state,
             )
             .await
             {
@@ -195,11 +201,33 @@ impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite {}
 
 type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>;
 
+/// Builds the EGFX dynamic channel backed by a CPU (openh264) decoder, loaded from the library at
+/// `IRONRDP_OPENH264_PATH`. Returns `None` (EGFX disabled, server stays on RemoteFX) if the path is
+/// unset or the library fails to load.
+#[cfg(feature = "egfx")]
+fn build_native_egfx_channel(
+    egfx_state: &crate::egfx::NativeGfxState,
+) -> Option<ironrdp_egfx::client::GraphicsPipelineClient> {
+    let path = std::env::var_os("IRONRDP_OPENH264_PATH")?;
+    match ironrdp_egfx::decode::OpenH264Decoder::from_library_path(std::path::Path::new(&path)) {
+        Ok(decoder) => Some(ironrdp_egfx::client::GraphicsPipelineClient::new(
+            Box::new(crate::egfx::NativeGfxHandler::new(egfx_state.clone())),
+            Some(Box::new(decoder)),
+        )),
+        Err(e) => {
+            error!(error = %e, "failed to load OpenH264 library; EGFX disabled");
+            None
+        }
+    }
+}
+
 async fn connect(
     config: &Config,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
     dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
+    egfx_state: crate::egfx::NativeGfxState,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed, Option<RecordContext>)> {
+    let _ = &egfx_state; // used only when the `egfx` feature registers the channel below
     let dest = config.destination.to_string();
 
     let (client_addr, stream) = if let Some(ref gw_config) = config.gw {
@@ -221,6 +249,13 @@ async fn connect(
     let mut drdynvc = ironrdp::dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(EchoClient::new());
+
+    // EGFX H.264 graphics pipeline (CPU/openh264 decode), when the `egfx` feature is enabled and an
+    // OpenH264 library is available (path via IRONRDP_OPENH264_PATH).
+    #[cfg(feature = "egfx")]
+    if let Some(channel) = build_native_egfx_channel(&egfx_state) {
+        drdynvc = drdynvc.with_dynamic_channel(channel);
+    }
 
     // Instantiate all DVC proxies
     for proxy in config.dvc_pipe_proxies.iter() {
@@ -348,7 +383,9 @@ async fn connect_ws(
     rdcleanpath: &RDCleanPathConfig,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
     dvc_pipe_proxy_factory: &DvcPipeProxyFactory,
+    egfx_state: crate::egfx::NativeGfxState,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed, Option<RecordContext>)> {
+    let _ = &egfx_state; // used only when the `egfx` feature registers the channel below
     let hostname = rdcleanpath
         .url
         .host_str()
@@ -379,6 +416,13 @@ async fn connect_ws(
     let mut drdynvc = ironrdp::dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(EchoClient::new());
+
+    // EGFX H.264 graphics pipeline (CPU/openh264 decode), when the `egfx` feature is enabled and an
+    // OpenH264 library is available (path via IRONRDP_OPENH264_PATH).
+    #[cfg(feature = "egfx")]
+    if let Some(channel) = build_native_egfx_channel(&egfx_state) {
+        drdynvc = drdynvc.with_dynamic_channel(channel);
+    }
 
     // Instantiate all DVC proxies
     for proxy in config.dvc_pipe_proxies.iter() {
@@ -617,6 +661,25 @@ where
     }
 }
 
+/// Sends the full framebuffer to the GUI as a packed `0RGB` u32 buffer.
+async fn send_image(image: &DecodedImage, output_event_sender: &mpsc::Sender<RdpOutputEvent>) -> SessionResult<()> {
+    let buffer: Vec<u32> = image
+        .data()
+        .chunks_exact(4)
+        .map(|pixel| u32::from_be_bytes([0, pixel[0], pixel[1], pixel[2]]))
+        .collect();
+
+    output_event_sender
+        .send(RdpOutputEvent::Image {
+            buffer,
+            width: NonZeroU16::new(image.width()).ok_or_else(|| session::general_err!("width is zero"))?,
+            height: NonZeroU16::new(image.height()).ok_or_else(|| session::general_err!("height is zero"))?,
+        })
+        .await
+        .map_err(|e| session::custom_err!("output_event_sender", e))?;
+    Ok(())
+}
+
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
@@ -624,6 +687,7 @@ async fn active_session(
     exit_after: Option<Duration>,
     output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
+    egfx_state: crate::egfx::NativeGfxState,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let mut image = DecodedImage::new(
@@ -766,27 +830,7 @@ async fn active_session(
                     .await
                     .map_err(|e| session::custom_err!("write response", e))?,
                 ActiveStageOutput::GraphicsUpdate(_region) => {
-                    let buffer: Vec<u32> = image
-                        .data()
-                        .chunks_exact(4)
-                        .map(|pixel| {
-                            let r = pixel[0];
-                            let g = pixel[1];
-                            let b = pixel[2];
-                            u32::from_be_bytes([0, r, g, b])
-                        })
-                        .collect();
-
-                    output_event_sender
-                        .send(RdpOutputEvent::Image {
-                            buffer,
-                            width: NonZeroU16::new(image.width())
-                                .ok_or_else(|| session::general_err!("width is zero"))?,
-                            height: NonZeroU16::new(image.height())
-                                .ok_or_else(|| session::general_err!("height is zero"))?,
-                        })
-                        .await
-                        .map_err(|e| session::custom_err!("output_event_sender", e))?;
+                    send_image(&image, output_event_sender).await?;
                 }
                 ActiveStageOutput::PointerDefault => {
                     output_event_sender
@@ -840,6 +884,8 @@ async fn active_session(
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
                             // Update image size with the new desktop size.
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+                            // EGFX surface coordinates referred to the old framebuffer.
+                            egfx_state.reset();
                             // Update the active stage with the new channel IDs and pointer settings.
                             active_stage.set_fastpath_processor(
                                 fast_path::ProcessorBuilder {
@@ -870,6 +916,16 @@ async fn active_session(
                 }
                 ActiveStageOutput::Terminate(reason) => break 'outer reason,
             }
+        }
+
+        // Composite any EGFX (H.264/CPU) blits queued during this iteration's processing into the
+        // shared framebuffer, then push the updated image. Empty (cheap) when EGFX is inactive.
+        let egfx_blits = egfx_state.take_blits();
+        if !egfx_blits.is_empty() {
+            for blit in egfx_blits {
+                image.composite_rect(blit.x, blit.y, blit.width, blit.height, &blit.data);
+            }
+            send_image(&image, output_event_sender).await?;
         }
     };
 

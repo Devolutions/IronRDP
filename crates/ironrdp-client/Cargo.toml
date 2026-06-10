@@ -24,8 +24,13 @@ rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots", "ir
 native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls", "ironrdp-mstsgu/native-tls"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
+# EGFX H.264 graphics pipeline with CPU (openh264) decode. Off by default. `openh264-libloading`
+# loads a Cisco OpenH264 binary at runtime (set IRONRDP_OPENH264_PATH), so building this feature
+# needs no C toolchain. (Use a custom feature set for `openh264-bundled` if you want source build.)
+egfx = ["dep:ironrdp-egfx", "ironrdp-egfx/openh264", "ironrdp-egfx/openh264-libloading"]
 
 [dependencies]
+ironrdp-egfx = { path = "../ironrdp-egfx", optional = true }
 # Protocols
 ironrdp = { path = "../ironrdp", version = "0.15", features = [
     "session",
