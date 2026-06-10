@@ -29,7 +29,8 @@ function detectRenderer(): Renderer {
             return 'worker';
         }
     }
-    return 'main';
+    // A dedicated dev server (its own port) can force worker mode via VITE_IRON_RENDERER=worker.
+    return (import.meta.env.VITE_IRON_RENDERER as string | undefined) === 'worker' ? 'worker' : 'main';
 }
 
 export const protocol: Protocol = detectProtocol();

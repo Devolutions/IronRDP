@@ -489,6 +489,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name,
             computer_name: client_name.clone(),
             use_display_control,
+            #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+            egfx_event_tx: input_events_tx.clone(),
         })
         .await?;
 
@@ -535,6 +537,11 @@ pub(crate) enum RdpInputEvent {
         scale_factor: Option<u32>,
         physical_size: Option<(u32, u32)>,
     },
+    /// An EGFX graphics-pipeline event (surface lifecycle, CPU bitmap, or AVC420 bitstream),
+    /// forwarded from the `Send` DVC handler. Decoded video frames travel separately (see
+    /// [`crate::egfx`]). Routed through this channel so it shares the render loop's `select!` arm.
+    #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+    Egfx(crate::egfx::EgfxUpdate),
     TerminateSession,
 }
 
@@ -678,6 +685,15 @@ impl iron_remote_desktop::Session for Session {
         const MAX_PENDING_RECTS: usize = 64;
         let mut pending_rects: Vec<InclusiveRectangle> = Vec::new();
         let mut present_due: Fuse<Pin<Box<dyn Future<Output = ()>>>> = Fuse::terminated();
+
+        // EGFX (H.264 graphics pipeline). The compositor owns the WebCodecs decoder and the surface
+        // registry; decoded `VideoFrame`s land in `pending_videos` (filled by the decoder's output
+        // callback) and are imported into softblit's GPU texture at the present tick.
+        #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+        let pending_videos: crate::egfx::DecodedVideoQueue = std::rc::Rc::new(RefCell::new(Vec::new()));
+        #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+        let mut egfx = crate::egfx::EgfxCompositor::new(std::rc::Rc::clone(&pending_videos))
+            .context("EGFX compositor init")?;
 
         let disconnect_reason = 'outer: loop {
             let outputs = select! {
@@ -855,6 +871,25 @@ impl iron_remote_desktop::Session for Session {
                             }
                             Vec::new()
                         }
+                        #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+                        RdpInputEvent::Egfx(update) => {
+                            // CPU bitmaps composite into `image` and return an output-space dirty
+                            // rect; AVC420 dispatches an async decode (frame arrives in
+                            // `pending_videos`). Either way, arm a present for the next frame.
+                            if let Some(rect) = egfx.apply_update(update, &mut image) {
+                                if pending_rects.len() < MAX_PENDING_RECTS {
+                                    pending_rects.push(rect);
+                                } else {
+                                    let last = pending_rects.last_mut().expect("cap > 0");
+                                    *last = last.union(&rect);
+                                }
+                            }
+                            if present_due.is_terminated() {
+                                let fut: Pin<Box<dyn Future<Output = ()>>> = Box::pin(next_animation_frame());
+                                present_due = fut.fuse();
+                            }
+                            Vec::new()
+                        }
                         RdpInputEvent::TerminateSession => {
                             active_stage.graceful_shutdown()
                                 .context("graceful shutdown")?
@@ -866,6 +901,30 @@ impl iron_remote_desktop::Session for Session {
                     // shot. `image` always holds a fully coherent framebuffer, so presenting
                     // overlapping regions is correct. `present_due` is now terminated; the next
                     // dirty region re-arms it.
+                    //
+                    // Order: import decoded EGFX video frames into softblit's GPU texture first,
+                    // then upload CPU dirty rects into the same texture and blit once — so a frame
+                    // mixing H.264 and CPU updates presents atomically.
+                    #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+                    {
+                        let mut imported_video = false;
+                        for dv in pending_videos.borrow_mut().drain(..) {
+                            let origin = (u32::from(dv.dst.left), u32::from(dv.dst.top));
+                            if let Err(e) = gui.import_video_frame(&dv.frame, origin) {
+                                warn!(error = %e, "EGFX video frame import failed");
+                            } else {
+                                imported_video = true;
+                            }
+                            dv.frame.close();
+                        }
+                        if !pending_rects.is_empty() {
+                            gui.draw(&image, &pending_rects).context("draw coalesced regions")?;
+                            pending_rects.clear();
+                        } else if imported_video {
+                            gui.present_no_dirty().context("present video frame")?;
+                        }
+                    }
+                    #[cfg(not(all(target_arch = "wasm32", web_sys_unstable_apis)))]
                     if !pending_rects.is_empty() {
                         gui.draw(&image, &pending_rects).context("draw coalesced regions")?;
                         pending_rects.clear();
@@ -1055,6 +1114,14 @@ impl iron_remote_desktop::Session for Session {
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                                 // Old accumulated regions refer to the previous framebuffer dimensions.
                                 pending_rects.clear();
+                                // EGFX surface coords / in-flight video also refer to the old buffer.
+                                #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+                                {
+                                    egfx.reset();
+                                    for dv in pending_videos.borrow_mut().drain(..) {
+                                        dv.frame.close();
+                                    }
+                                }
                                 // Create a new [`FastPathProcessor`] with potentially updated
                                 // io/user channel ids.
                                 active_stage.set_fastpath_processor(
@@ -1537,6 +1604,10 @@ struct ConnectParams {
     /// `computer_name` when constructing the `Rdpdr` processor.
     computer_name: String,
     use_display_control: bool,
+    /// Input-event channel sender handed to the EGFX handler so it can forward graphics-pipeline
+    /// events to the render loop (see [`RdpInputEvent::Egfx`]).
+    #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+    egfx_event_tx: mpsc::UnboundedSender<RdpInputEvent>,
 }
 
 fn default_printer_driver_name() -> String {
@@ -1586,6 +1657,8 @@ async fn connect(
         printer_driver_name,
         computer_name,
         use_display_control,
+        #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+        egfx_event_tx,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
@@ -1613,6 +1686,25 @@ async fn connect(
         );
     }
 
+    // Register the dynamic virtual channels. EGFX (the H.264 graphics pipeline) is registered with
+    // `with_external_avc_decode()` so AVC420 frames are handed to the WebCodecs decoder rather than
+    // decoded in-process; DisplayControl is added when enabled. Without the WebCodecs cfg, fall back
+    // to the prior behaviour (DisplayControl only, when enabled).
+    #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+    {
+        let mut drdynvc = DrdynvcClient::new().with_dynamic_channel(
+            ironrdp_egfx::client::GraphicsPipelineClient::new(
+                Box::new(crate::egfx::WebGfxHandler::new(egfx_event_tx)),
+                None,
+            )
+            .with_external_avc_decode(),
+        );
+        if use_display_control {
+            drdynvc = drdynvc.with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+        }
+        connector.attach_static_channel(drdynvc);
+    }
+    #[cfg(not(all(target_arch = "wasm32", web_sys_unstable_apis)))]
     if use_display_control {
         connector.attach_static_channel(
             DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),

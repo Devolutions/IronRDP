@@ -51,12 +51,21 @@ pub fn run(sh: &Shell) -> anyhow::Result<()> {
 
 pub fn build(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
     if wasm_pack_dev {
+        // `web_sys_unstable_apis` unlocks the WebCodecs (`VideoDecoder`/`VideoFrame`) and
+        // `VideoFrame` external-image import APIs used by the EGFX/H.264 render path. The release
+        // branch sets it alongside its other flags; the dev branch sets no RUSTFLAGS otherwise, so
+        // it must opt in here too (plus the getrandom backend) or those APIs are silently absent.
+        let _env_guard = sh.push_env(
+            "RUSTFLAGS",
+            "--cfg=web_sys_unstable_apis --cfg getrandom_backend=\"wasm_js\"",
+        );
         run_cmd_in!(sh, IRONRDP_WEB_PATH, "wasm-pack build --dev --target web")?;
     } else {
         let _env_guard = sh.push_env(
             "RUSTFLAGS",
             "-Ctarget-feature=+simd128,+bulk-memory --cfg getrandom_backend=\"wasm_js\"
-                -Copt-level=s -Ccodegen-units=1 -Cllvm-args=-enable-dfa-jump-thread",
+                -Copt-level=s -Ccodegen-units=1 -Cllvm-args=-enable-dfa-jump-thread
+                --cfg=web_sys_unstable_apis",
         );
         run_cmd_in!(sh, IRONRDP_WEB_PATH, "wasm-pack build --target web")?;
     }

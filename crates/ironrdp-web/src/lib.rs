@@ -19,6 +19,11 @@ extern crate time as _;
 mod bench;
 mod canvas;
 mod clipboard;
+// EGFX (MS-RDPEGFX) H.264 graphics pipeline: WebCodecs decode + GPU present. Requires the
+// `web_sys_unstable_apis` cfg (WebCodecs `VideoDecoder` + softblit's `VideoFrame` import), which the
+// xtask web build always sets.
+#[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+mod egfx;
 mod error;
 mod image;
 mod input;

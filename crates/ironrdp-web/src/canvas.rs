@@ -130,6 +130,34 @@ impl Canvas {
             }
         }
     }
+
+    /// Imports a decoded WebCodecs `VideoFrame` straight into the GPU source texture at `dst_origin`
+    /// (output-space top-left), with no CPU pixel copy. GPU-only: the Canvas2D fallback cannot import
+    /// video frames (EGFX/H.264 is the WebGPU presenter's job).
+    #[cfg(all(target_arch = "wasm32", web_sys_unstable_apis))]
+    pub(crate) fn import_video_frame(
+        &mut self,
+        frame: &web_sys::VideoFrame,
+        dst_origin: (u32, u32),
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::Gpu(gpu) => gpu.import_video_frame(frame, dst_origin),
+            Self::Canvas2d(_) => Err(anyhow::anyhow!(
+                "EGFX video frames require the WebGPU (softblit) presenter"
+            )),
+        }
+    }
+
+    /// Presents the current GPU source texture with no new CPU dirty rects — used after a
+    /// `VideoFrame` import when there are no accompanying CPU updates this frame.
+    pub(crate) fn present_no_dirty(&mut self) -> anyhow::Result<()> {
+        match self {
+            #[cfg(target_arch = "wasm32")]
+            Self::Gpu(gpu) => gpu.present_no_dirty(),
+            // Canvas2D draws are immediate; nothing is buffered to flush.
+            Self::Canvas2d(_) => Ok(()),
+        }
+    }
 }
 
 /// softblit-backed presenter: persistent GPU texture + per-region in-place framebuffer uploads.
@@ -167,6 +195,20 @@ impl GpuCanvas {
             .present_external(image.data(), &rects)
             .map_err(|e| anyhow!("softblit present failed: {e}"))?;
         Ok(())
+    }
+
+    #[cfg(web_sys_unstable_apis)]
+    fn import_video_frame(&mut self, frame: &web_sys::VideoFrame, dst_origin: (u32, u32)) -> anyhow::Result<()> {
+        self.surface
+            .import_video_frame(frame, dst_origin)
+            .map_err(|e| anyhow!("softblit video-frame import failed: {e}"))
+    }
+
+    fn present_no_dirty(&mut self) -> anyhow::Result<()> {
+        self.surface
+            .present()
+            .map(|_stats| ())
+            .map_err(|e| anyhow!("softblit present failed: {e}"))
     }
 
     fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) {
@@ -262,7 +304,13 @@ fn blit(ctx: &CanvasRenderingContext2d, rgba: &[u8], region: &InclusiveRectangle
             u32::from(region.height()),
         )
         .map_err(|err| anyhow!("ImageData::new failed: {err:?}"))?;
-        ctx.put_image_data(&image, f64::from(region.left), f64::from(region.top))
+        // web-sys binds the i32 `put_image_data` overload under `web_sys_unstable_apis` (the cfg the
+        // WebCodecs/EGFX path needs) and the f64 overload otherwise; support both build configs.
+        #[cfg(web_sys_unstable_apis)]
+        let (dx, dy) = (i32::from(region.left), i32::from(region.top));
+        #[cfg(not(web_sys_unstable_apis))]
+        let (dx, dy) = (f64::from(region.left), f64::from(region.top));
+        ctx.put_image_data(&image, dx, dy)
             .map_err(|err| anyhow!("put_image_data failed: {err:?}"))
     }
     #[cfg(not(target_arch = "wasm32"))]
