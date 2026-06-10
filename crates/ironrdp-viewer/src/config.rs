@@ -264,6 +264,10 @@ struct Args {
     #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
 
+    /// The ID of the Hyper-V virtual machine to connect to (VMConnect)
+    #[clap(long)]
+    vmconnect: Option<String>,
+
     /// Enable bulk compression support (default: true).
     ///
     /// When enabled, the client advertises support for bulk compression and the
@@ -339,6 +343,7 @@ pub struct PartialConfig {
     pub no_tls: bool,
     pub clipboard_type: ClipboardType,
     pub codecs: Vec<String>,
+    pub vmconnect: Option<String>,
     pub compression_level: u32,
     pub prevent_session_lock: Option<u32>,
     pub dvc_pipe_proxies: Vec<DvcProxyInfo>,
@@ -398,6 +403,7 @@ impl PartialConfig {
             no_tls: args.no_tls,
             clipboard_type: args.clipboard_type,
             codecs: args.codecs,
+            vmconnect: args.vmconnect,
             compression_level: args.compression_level,
             prevent_session_lock: args.prevent_session_lock,
             dvc_pipe_proxies: args.dvc_proxy,
@@ -638,6 +644,7 @@ impl PartialConfig {
             timezone_info: TimezoneInfo::default(),
             alternate_shell: properties.alternate_shell().unwrap_or_default().to_owned(),
             work_dir: properties.shell_working_directory().unwrap_or_default().to_owned(),
+            vmconnect: self.vmconnect,
         };
 
         Ok(Config {

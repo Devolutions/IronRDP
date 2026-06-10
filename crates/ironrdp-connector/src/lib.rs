@@ -258,6 +258,13 @@ pub struct Config {
     /// [\[MS-RDPBCGR\] 2.2.1.3.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/861f2bbb-6ca2-4c5a-8c44-0714fa901e70
     /// [`MultiTransportChannelData`]: ironrdp_pdu::gcc::MultiTransportChannelData
     pub multitransport_flags: Option<gcc::MultiTransportFlags>,
+
+    /// ID of the Hyper-V virtual machine to connect to (VMConnect).
+    ///
+    /// When set, the connection sequence starts with a preconnection blob containing this ID,
+    /// the security upgrade and CredSSP are performed immediately, and the X.224 connection
+    /// initiation is deferred until the channel is secured, as expected by Hyper-V hosts.
+    pub vmconnect: Option<String>,
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);

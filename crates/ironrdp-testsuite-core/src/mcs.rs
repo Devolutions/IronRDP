@@ -54,7 +54,7 @@ pub const DISCONNECT_PROVIDER_ULTIMATUM_PDU: DisconnectProviderUltimatum = Disco
     reason: DisconnectReason::UserRequested,
 };
 
-pub const SEND_DATA_REQUEST_PDU_BUFFER_PREFIX: [u8; 8] = [0x64, 0x00, 0x06, 0x03, 0xeb, 0x70, 0x81, 0x92];
+pub const SEND_DATA_REQUEST_PDU_BUFFER_PREFIX: [u8; 8] = [0x64, 0x00, 0x06, 0x03, 0xeb, 0x70, 0x81, 0x98];
 
 pub const SEND_DATA_REQUEST_PDU_BUFFER: [u8; concat_arrays_size!(
     SEND_DATA_REQUEST_PDU_BUFFER_PREFIX,

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::x224::X224;
-use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
+use ironrdp_pdu::{PduHint, gcc, mcs, nego, pcb, rdp};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 use tracing::{debug, error, info, warn};
 
@@ -37,6 +37,12 @@ pub enum ClientConnectorState {
     #[default]
     Consumed,
 
+    /// Initial state when connecting to a Hyper-V host (VMConnect).
+    ///
+    /// A preconnection blob identifying the target virtual machine is sent first,
+    /// and the security upgrade is performed right away: the X.224 connection
+    /// initiation only happens after the CredSSP sequence.
+    PreconnectionBlob,
     ConnectionInitiationSendRequest,
     ConnectionInitiationWaitConfirm {
         requested_protocol: nego::SecurityProtocol,
@@ -89,6 +95,7 @@ impl State for ClientConnectorState {
     fn name(&self) -> &'static str {
         match self {
             Self::Consumed => "Consumed",
+            Self::PreconnectionBlob => "PreconnectionBlob",
             Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
             Self::ConnectionInitiationWaitConfirm { .. } => "ConnectionInitiationWaitResponse",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
@@ -130,9 +137,15 @@ pub struct ClientConnector {
 
 impl ClientConnector {
     pub fn new(config: Config, client_addr: SocketAddr) -> Self {
+        let state = if config.vmconnect.is_some() {
+            ClientConnectorState::PreconnectionBlob
+        } else {
+            ClientConnectorState::ConnectionInitiationSendRequest
+        };
+
         Self {
             config,
-            state: ClientConnectorState::ConnectionInitiationSendRequest,
+            state,
             client_addr,
             static_channels: StaticChannelSet::new(),
         }
@@ -172,6 +185,34 @@ impl ClientConnector {
             .and_then(|channel| channel.channel_processor_downcast_mut())
     }
 
+    /// Returns the security protocols to advertise, based on the configuration.
+    fn requested_security_protocol(&self) -> ConnectorResult<nego::SecurityProtocol> {
+        let mut security_protocol = nego::SecurityProtocol::empty();
+
+        if self.config.enable_tls {
+            security_protocol.insert(nego::SecurityProtocol::SSL);
+        }
+
+        if self.config.enable_credssp {
+            // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+            // The spec is stating that `PROTOCOL_SSL` "SHOULD" also be set when using `PROTOCOL_HYBRID`.
+            // > PROTOCOL_HYBRID (0x00000002)
+            // > Credential Security Support Provider protocol (CredSSP) (section 5.4.5.2).
+            // > If this flag is set, then the PROTOCOL_SSL (0x00000001) flag SHOULD also be set
+            // > because Transport Layer Security (TLS) is a subset of CredSSP.
+            // However, crucially, it’s not strictly required (not "MUST").
+            // In fact, we purposefully choose to not set `PROTOCOL_SSL` unless `enable_winlogon` is `true`.
+            // This tells the server that we are not going to accept downgrading NLA to TLS security.
+            security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
+        }
+
+        if security_protocol.is_standard_rdp_security() {
+            return Err(reason_err!("Initiation", "standard RDP security is not supported",));
+        }
+
+        Ok(security_protocol)
+    }
+
     pub fn should_perform_security_upgrade(&self) -> bool {
         matches!(self.state, ClientConnectorState::EnhancedSecurityUpgrade { .. })
     }
@@ -204,6 +245,7 @@ impl Sequence for ClientConnector {
     fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
         match &self.state {
             ClientConnectorState::Consumed => None,
+            ClientConnectorState::PreconnectionBlob => None,
             ClientConnectorState::ConnectionInitiationSendRequest => None,
             ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
@@ -236,41 +278,57 @@ impl Sequence for ClientConnector {
                 return Err(general_err!("connector sequence state is consumed (this is a bug)",));
             }
 
+            //== Preconnection Blob ==//
+            // VMConnect only: identify the target virtual machine and proceed directly
+            // to the security upgrade. The X.224 connection initiation is performed
+            // later, on the secured channel, as expected by Hyper-V hosts.
+            ClientConnectorState::PreconnectionBlob => {
+                let vm_id = self
+                    .config
+                    .vmconnect
+                    .as_deref()
+                    .ok_or_else(|| general_err!("VMConnect ID is missing (this is a bug)"))?;
+
+                let pcb = pcb::PreconnectionBlob {
+                    version: pcb::PcbVersion::V2,
+                    id: 0,
+                    v2_payload: Some(format!("{vm_id};EnhancedMode=1")),
+                };
+
+                debug!(message = ?pcb, "Send");
+
+                let written = ironrdp_core::encode_buf(&pcb, output).map_err(ConnectorError::encode)?;
+
+                (
+                    Written::from_size(written)?,
+                    ClientConnectorState::EnhancedSecurityUpgrade {
+                        selected_protocol: self.requested_security_protocol()?,
+                    },
+                )
+            }
+
             //== Connection Initiation ==//
             // Exchange supported security protocols and a few other connection flags.
             ClientConnectorState::ConnectionInitiationSendRequest => {
                 debug!("Connection Initiation");
 
-                let mut security_protocol = nego::SecurityProtocol::empty();
+                let security_protocol = self.requested_security_protocol()?;
 
-                if self.config.enable_tls {
-                    security_protocol.insert(nego::SecurityProtocol::SSL);
-                }
-
-                if self.config.enable_credssp {
-                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
-                    // The spec is stating that `PROTOCOL_SSL` "SHOULD" also be set when using `PROTOCOL_HYBRID`.
-                    // > PROTOCOL_HYBRID (0x00000002)
-                    // > Credential Security Support Provider protocol (CredSSP) (section 5.4.5.2).
-                    // > If this flag is set, then the PROTOCOL_SSL (0x00000001) flag SHOULD also be set
-                    // > because Transport Layer Security (TLS) is a subset of CredSSP.
-                    // However, crucially, it’s not strictly required (not "MUST").
-                    // In fact, we purposefully choose to not set `PROTOCOL_SSL` unless `enable_winlogon` is `true`.
-                    // This tells the server that we are not going to accept downgrading NLA to TLS security.
-                    security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
-                }
-
-                if security_protocol.is_standard_rdp_security() {
-                    return Err(reason_err!("Initiation", "standard RDP security is not supported",));
-                }
-
-                let connection_request = nego::ConnectionRequest {
-                    nego_data: self.config.request_data.clone().or_else(|| {
+                // In VMConnect mode this request is sent over the already-secured channel,
+                // and the routing cookie is not applicable.
+                let nego_data = if self.config.vmconnect.is_some() {
+                    None
+                } else {
+                    self.config.request_data.clone().or_else(|| {
                         self.config
                             .credentials
                             .username()
                             .map(|username| nego::NegoRequestData::cookie(username.to_owned()))
-                    }),
+                    })
+                };
+
+                let connection_request = nego::ConnectionRequest {
+                    nego_data,
                     flags: nego::RequestFlags::empty(),
                     protocol: security_protocol,
                 };
@@ -314,10 +372,14 @@ impl Sequence for ClientConnector {
                     ));
                 }
 
-                (
-                    Written::Nothing,
-                    ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol },
-                )
+                let next_state = if self.config.vmconnect.is_some() {
+                    // VMConnect: the security upgrade and CredSSP already took place.
+                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
+                } else {
+                    ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol }
+                };
+
+                (Written::Nothing, next_state)
             }
 
             //== Upgrade to Enhanced RDP Security ==//
@@ -338,10 +400,17 @@ impl Sequence for ClientConnector {
             }
 
             //== CredSSP ==//
-            ClientConnectorState::Credssp { selected_protocol } => (
-                Written::Nothing,
-                ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
-            ),
+            ClientConnectorState::Credssp { selected_protocol } => {
+                let next_state = if self.config.vmconnect.is_some() {
+                    // VMConnect: the X.224 connection initiation happens only now,
+                    // on the secured channel.
+                    ClientConnectorState::ConnectionInitiationSendRequest
+                } else {
+                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
+                };
+
+                (Written::Nothing, next_state)
+            }
 
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.

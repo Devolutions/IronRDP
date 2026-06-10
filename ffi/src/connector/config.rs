@@ -52,6 +52,7 @@ pub mod ffi {
         pub performance_flags: Option<ironrdp::pdu::rdp::client_info::PerformanceFlags>,
         pub timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>,
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
+        pub vmconnect: Option<String>,
     }
 
     #[diplomat::enum_convert(ironrdp::pdu::gcc::KeyboardType)]
@@ -170,6 +171,10 @@ pub mod ffi {
             self.dvc_pipe_proxy = Some(dvc_pipe_proxy.clone());
         }
 
+        pub fn set_vmconnect(&mut self, vmconnect: &str) {
+            self.vmconnect = Some(vmconnect.to_owned());
+        }
+
         pub fn build(&self) -> Result<Box<Config>, Box<IronRdpError>> {
             let connector = ironrdp::connector::Config {
                 credentials: self.credentials.clone().ok_or("credentials not set")?,
@@ -216,6 +221,7 @@ pub mod ffi {
                 compression_type: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
                 multitransport_flags: None,
+                vmconnect: self.vmconnect.clone(),
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
                 desktop_scale_factor: 0,
                 hardware_id: None,

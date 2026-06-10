@@ -29,6 +29,8 @@ const CLIENT_DIR_LENGTH_SIZE: usize = 2;
 const SESSION_ID_SIZE: usize = 4;
 const PERFORMANCE_FLAGS_SIZE: usize = 4;
 const RECONNECT_COOKIE_LENGTH_SIZE: usize = 2;
+/// Size of the reserved1 and reserved2 fields of TS_EXTENDED_INFO_PACKET.
+const RESERVED_FIELDS_SIZE: usize = 2 * 2;
 const BIAS_SIZE: usize = 4;
 
 /// [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET)
@@ -323,10 +325,21 @@ impl Encode for ExtendedClientOptionalInfo {
         }
         if let Some(performance_flags) = self.performance_flags {
             dst.write_u32(performance_flags.bits());
-        }
-        if let Some(reconnect_cookie) = self.reconnect_cookie {
-            dst.write_u16(u16::try_from(RECONNECT_COOKIE_LEN).expect("RECONNECT_COOKIE_LEN fit into u16"));
-            dst.write_array(reconnect_cookie);
+
+            // The fields of TS_EXTENDED_INFO_PACKET are positional: a trailing field may only be
+            // encoded when all the fields preceding it are. Once the performance flags are written,
+            // always encode the auto-reconnect cookie (empty when unset) and the two reserved
+            // fields, as some servers (e.g.: Hyper-V hosts in VMConnect mode) expect them.
+            match self.reconnect_cookie {
+                Some(reconnect_cookie) => {
+                    dst.write_u16(u16::try_from(RECONNECT_COOKIE_LEN).expect("RECONNECT_COOKIE_LEN fit into u16"));
+                    dst.write_array(reconnect_cookie);
+                }
+                None => dst.write_u16(0), // cbAutoReconnectLen
+            }
+
+            dst.write_u16(0); // reserved1
+            dst.write_u16(0); // reserved2
         }
 
         Ok(())
@@ -346,10 +359,10 @@ impl Encode for ExtendedClientOptionalInfo {
             size += SESSION_ID_SIZE;
         }
         if self.performance_flags.is_some() {
-            size += PERFORMANCE_FLAGS_SIZE;
-        }
-        if self.reconnect_cookie.is_some() {
-            size += RECONNECT_COOKIE_LENGTH_SIZE + RECONNECT_COOKIE_LEN;
+            size += PERFORMANCE_FLAGS_SIZE + RECONNECT_COOKIE_LENGTH_SIZE + RESERVED_FIELDS_SIZE;
+            if self.reconnect_cookie.is_some() {
+                size += RECONNECT_COOKIE_LEN;
+            }
         }
 
         size

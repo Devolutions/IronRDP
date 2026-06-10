@@ -8,7 +8,7 @@ use ironrdp_pdu::rdp::client_info::{
 
 pub const CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS_LEN: usize = 218;
 
-pub const CLIENT_INFO_BUFFER_UNICODE: [u8; 398] = [
+pub const CLIENT_INFO_BUFFER_UNICODE: [u8; 404] = [
     0x09, 0x04, 0x09, 0x04, // code page
     0xb3, 0x43, 0x00, 0x00, // flags
     0x0a, 0x00, // domain size
@@ -46,9 +46,12 @@ pub const CLIENT_INFO_BUFFER_UNICODE: [u8; 398] = [
     0xff, // TimezoneInfo
     0x00, 0x00, 0x00, 0x00, // session id
     0x01, 0x00, 0x00, 0x00, // performance flags
+    0x00, 0x00, // auto reconnect cookie length
+    0x00, 0x00, // reserved1
+    0x00, 0x00, // reserved2
 ];
 
-pub const CLIENT_INFO_BUFFER_ANSI: [u8; 301] = [
+pub const CLIENT_INFO_BUFFER_ANSI: [u8; 307] = [
     0x09, 0x04, 0x09, 0x04, // code page
     0xa3, 0x43, 0x00, 0x00, // flags
     0x05, 0x00, // domain size
@@ -81,6 +84,9 @@ pub const CLIENT_INFO_BUFFER_ANSI: [u8; 301] = [
     0xff, // TimezoneInfo
     0x00, 0x00, 0x00, 0x00, // session id
     0x01, 0x00, 0x00, 0x00, // performance flags
+    0x00, 0x00, // auto reconnect cookie length
+    0x00, 0x00, // reserved1
+    0x00, 0x00, // reserved2
 ];
 
 pub static CLIENT_INFO_UNICODE: LazyLock<ClientInfo> = LazyLock::new(|| ClientInfo {

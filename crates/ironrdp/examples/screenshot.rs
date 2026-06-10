@@ -265,6 +265,7 @@ fn build_config(
         compression_type,
         pointer_software_rendering: true,
         multitransport_flags: None,
+        vmconnect: None,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
         hardware_id: None,

@@ -9,6 +9,7 @@ pub mod ffi {
 
     pub enum ClientConnectorStateType {
         Consumed,
+        PreconnectionBlob,
         ConnectionInitiationSendRequest,
         ConnectionInitiationWaitConfirm,
         EnhancedSecurityUpgrade,
@@ -33,6 +34,9 @@ pub mod ffi {
                 .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
             {
                 ironrdp::connector::ClientConnectorState::Consumed => ClientConnectorStateType::Consumed,
+                ironrdp::connector::ClientConnectorState::PreconnectionBlob => {
+                    ClientConnectorStateType::PreconnectionBlob
+                }
                 ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest => {
                     ClientConnectorStateType::ConnectionInitiationSendRequest
                 }
