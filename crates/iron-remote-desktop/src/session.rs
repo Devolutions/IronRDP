@@ -1,5 +1,5 @@
 use wasm_bindgen::JsValue;
-use web_sys::{HtmlCanvasElement, js_sys};
+use web_sys::{HtmlCanvasElement, OffscreenCanvas, js_sys};
 
 use crate::clipboard::ClipboardData;
 use crate::error::IronError;
@@ -35,6 +35,19 @@ pub trait SessionBuilder {
 
     #[must_use]
     fn render_canvas(&self, canvas: HtmlCanvasElement) -> Self;
+
+    /// Render to an `OffscreenCanvas` (transferred into a Web Worker via
+    /// `canvas.transferControlToOffscreen()`) instead of a main-thread `<canvas>`.
+    ///
+    /// Default: unsupported. Backends that can present off the main thread override this.
+    #[must_use]
+    fn render_offscreen_canvas(&self, canvas: OffscreenCanvas) -> Self
+    where
+        Self: Sized,
+    {
+        let _ = canvas;
+        unimplemented!("OffscreenCanvas rendering is not supported by this backend")
+    }
 
     #[must_use]
     fn set_cursor_style_callback(&self, callback: js_sys::Function) -> Self;

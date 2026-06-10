@@ -243,6 +243,11 @@ macro_rules! make_bridge {
                 Self($crate::SessionBuilder::render_canvas(&self.0, canvas))
             }
 
+            #[wasm_bindgen(js_name = renderOffscreenCanvas)]
+            pub fn render_offscreen_canvas(&self, canvas: $crate::internal::web_sys::OffscreenCanvas) -> Self {
+                Self($crate::SessionBuilder::render_offscreen_canvas(&self.0, canvas))
+            }
+
             #[wasm_bindgen(js_name = setCursorStyleCallback)]
             pub fn set_cursor_style_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
                 Self($crate::SessionBuilder::set_cursor_style_callback(
