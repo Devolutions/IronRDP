@@ -46,8 +46,27 @@ pub struct Processor {
     bulk_decompressor: Option<BulkCompressor>,
     /// Current 8bpp color palette. Updated by Palette fast-path updates.
     palette: Palette,
+    /// Frame coalescing for surface-command (RemoteFX/surface-bits) graphics — see [`FrameState`].
+    frame: FrameState,
     #[cfg(feature = "qoiz")]
     zdctx: zstd_safe::DCtx<'static>,
+}
+
+/// Whether a surface-command frame (`FrameMarker` Begin…End) is currently being assembled.
+///
+/// The server brackets each frame with `FrameMarker::Begin`/`End`, but a single frame is split
+/// across many fast-path PDUs. Emitting a `Region` update per PDU lets a renderer composite a
+/// half-assembled frame (visible tearing). While [`FrameState::InProgress`], each PDU's dirty region
+/// is buffered instead of emitted, and the whole set is released at `FrameMarker::End` — so a
+/// consumer that draws one `process()` batch atomically only ever presents complete frames. When
+/// [`FrameState::Idle`] (no frame open, e.g. unmarked bitmap updates), regions are emitted at once.
+#[derive(Debug, Default)]
+enum FrameState {
+    #[default]
+    Idle,
+    InProgress {
+        pending: Vec<InclusiveRectangle>,
+    },
 }
 
 impl Processor {
@@ -147,8 +166,8 @@ impl Processor {
         match update {
             Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
                 trace!("Received Surface Commands: {} pieces", surface_commands.len());
-                let update_region = self.process_surface_commands(image, output, surface_commands)?;
-                processor_updates.push(UpdateKind::Region(update_region));
+                let surface_updates = self.process_surface_commands(image, output, surface_commands)?;
+                processor_updates.extend(surface_updates);
             }
             Ok(FastPathUpdate::Bitmap(bitmap_update)) => {
                 trace!("Received bitmap update");
@@ -432,12 +451,25 @@ impl Processor {
         Ok(processor_updates)
     }
 
+    /// Routes a freshly-accumulated dirty region: buffered while a frame is in progress (released
+    /// atomically at `FrameMarker::End`), or emitted immediately when no frame is open.
+    fn stash_region(&mut self, region: Option<InclusiveRectangle>, out: &mut Vec<UpdateKind>) {
+        let Some(region) = region else {
+            return;
+        };
+        match &mut self.frame {
+            FrameState::InProgress { pending } => pending.push(region),
+            FrameState::Idle => out.push(UpdateKind::Region(region)),
+        }
+    }
+
     fn process_surface_commands(
         &mut self,
         image: &mut DecodedImage,
         output: &mut WriteBuf,
         surface_commands: Vec<SurfaceCommand<'_>>,
-    ) -> SessionResult<InclusiveRectangle> {
+    ) -> SessionResult<Vec<UpdateKind>> {
+        let mut updates = Vec::new();
         let mut update_rectangle = None;
 
         for command in surface_commands {
@@ -535,12 +567,30 @@ impl Processor {
                         marker.frame_action,
                         marker.frame_id.unwrap_or(0)
                     );
+
+                    // Flush the region accumulated so far before acting on the marker (preserves
+                    // ordering when bits and the marker share a PDU).
+                    self.stash_region(update_rectangle.take(), &mut updates);
+
                     self.marker_processor.process(&marker, output)?;
+
+                    match marker.frame_action {
+                        FrameAction::Begin => self.frame = FrameState::InProgress { pending: Vec::new() },
+                        FrameAction::End => {
+                            if let FrameState::InProgress { pending } = &mut self.frame {
+                                updates.extend(pending.drain(..).map(UpdateKind::Region));
+                            }
+                            self.frame = FrameState::Idle;
+                        }
+                    }
                 }
             }
         }
 
-        Ok(update_rectangle.unwrap_or_else(InclusiveRectangle::empty))
+        // Any region left over when the PDU ends (e.g. a frame split across PDUs, or unmarked bits).
+        self.stash_region(update_rectangle.take(), &mut updates);
+
+        Ok(updates)
     }
 }
 
@@ -617,6 +667,7 @@ impl ProcessorBuilder {
             pointer_software_rendering: self.pointer_software_rendering,
             bulk_decompressor: self.bulk_decompressor,
             palette: Palette::system_default(),
+            frame: FrameState::Idle,
             #[cfg(feature = "qoiz")]
             zdctx: zstd_safe::DCtx::default(),
         }
