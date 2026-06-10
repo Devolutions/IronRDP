@@ -42,9 +42,9 @@ use tracing::{debug, error, info, trace, warn};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlCanvasElement;
+use web_sys::{HtmlCanvasElement, OffscreenCanvas};
 
-use crate::canvas::Canvas;
+use crate::canvas::{Canvas, RenderTarget};
 use crate::clipboard;
 use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
 use crate::error::IronError;
@@ -70,7 +70,7 @@ struct SessionBuilderInner {
     client_name: String,
     desktop_size: DesktopSize,
 
-    render_canvas: Option<HtmlCanvasElement>,
+    render_target: Option<RenderTarget>,
     set_cursor_style_callback: Option<js_sys::Function>,
     set_cursor_style_callback_context: Option<JsValue>,
     remote_clipboard_changed_callback: Option<js_sys::Function>,
@@ -112,7 +112,7 @@ impl Default for SessionBuilderInner {
                 height: DEFAULT_HEIGHT,
             },
 
-            render_canvas: None,
+            render_target: None,
             set_cursor_style_callback: None,
             set_cursor_style_callback_context: None,
             remote_clipboard_changed_callback: None,
@@ -193,7 +193,13 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
     /// Optional
     fn render_canvas(&self, canvas: HtmlCanvasElement) -> Self {
-        self.0.borrow_mut().render_canvas = Some(canvas);
+        self.0.borrow_mut().render_target = Some(RenderTarget::Html(canvas));
+        self.clone()
+    }
+
+    /// Optional — present into a worker-transferred `OffscreenCanvas` instead of a `<canvas>`.
+    fn render_offscreen_canvas(&self, canvas: OffscreenCanvas) -> Self {
+        self.0.borrow_mut().render_target = Some(RenderTarget::Offscreen(canvas));
         self.clone()
     }
 
@@ -333,7 +339,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             kdc_proxy_url,
             client_name,
             desktop_size,
-            render_canvas,
+            render_target,
             set_cursor_style_callback,
             set_cursor_style_callback_context,
             remote_clipboard_changed_callback,
@@ -366,7 +372,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size;
 
-            render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
+            render_target = inner.render_target.clone().context("render_canvas missing")?;
 
             set_cursor_style_callback = inner
                 .set_cursor_style_callback
@@ -500,7 +506,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             writer_tx,
             input_events_tx,
 
-            render_canvas,
+            render_target,
             set_cursor_style_callback,
             set_cursor_style_callback_context,
 
@@ -548,7 +554,7 @@ pub(crate) struct Session {
     writer_tx: mpsc::UnboundedSender<Vec<u8>>,
     input_events_tx: mpsc::UnboundedSender<RdpInputEvent>,
 
-    render_canvas: HtmlCanvasElement,
+    render_target: RenderTarget,
     set_cursor_style_callback: js_sys::Function,
     set_cursor_style_callback_context: JsValue,
 
@@ -637,7 +643,7 @@ impl iron_remote_desktop::Session for Session {
         let desktop_height =
             NonZeroU32::new(u32::from(connection_result.desktop_size.height)).context("desktop height is zero")?;
 
-        let mut gui = Canvas::new(self.render_canvas.clone(), desktop_width, desktop_height)
+        let mut gui = Canvas::new(self.render_target.clone(), desktop_width, desktop_height)
             .await
             .context("canvas initialization")?;
 
@@ -670,7 +676,6 @@ impl iron_remote_desktop::Session for Session {
         // `present_due` starts terminated and is armed only when a dirty region is accumulated, so an
         // idle session blocks on I/O instead of waking every animation frame.
         const MAX_PENDING_RECTS: usize = 64;
-        let window = web_sys::window().context("failed to access window")?;
         let mut pending_rects: Vec<InclusiveRectangle> = Vec::new();
         let mut present_due: Fuse<Pin<Box<dyn Future<Output = ()>>>> = Fuse::terminated();
 
@@ -908,7 +913,7 @@ impl iron_remote_desktop::Session for Session {
                         }
                         // Arm a present for the next animation frame if one isn't already pending.
                         if present_due.is_terminated() {
-                            let fut: Pin<Box<dyn Future<Output = ()>>> = Box::pin(next_animation_frame(window.clone()));
+                            let fut: Pin<Box<dyn Future<Output = ()>>> = Box::pin(next_animation_frame());
                             present_due = fut.fuse();
                         }
                     }
@@ -1020,8 +1025,7 @@ impl iron_remote_desktop::Session for Session {
                         // We need to perform resize after receiving the Deactivate All PDU, because there may be frames
                         // with the previous dimensions arriving between the resize request and this message.
                         if let Some((width, height)) = requested_resize {
-                            self.render_canvas.set_width(width.get());
-                            self.render_canvas.set_height(height.get());
+                            self.render_target.set_size(width.get(), height.get());
                             gui.resize(width, height);
                             requested_resize = None;
                         }
@@ -1805,10 +1809,13 @@ fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
 }
 
-/// Resolves on the next browser animation frame, so canvas presentation can be throttled to the
-/// display refresh. The `Closure` is kept alive across the await until `requestAnimationFrame`
-/// invokes it once; if the request fails we resolve immediately so the render loop never stalls.
-async fn next_animation_frame(window: web_sys::Window) {
+/// Resolves on the next animation frame, so canvas presentation can be throttled to the display
+/// refresh. `requestAnimationFrame` is resolved off the **global scope** rather than `window`, so
+/// this works both on the main thread (`Window`) and inside a Web Worker driving an `OffscreenCanvas`
+/// (`DedicatedWorkerGlobalScope`) — `web_sys::window()` is `None` in a worker. The `Closure` is kept
+/// alive across the await until rAF fires once; if rAF is unavailable we resolve immediately so the
+/// render loop never stalls.
+async fn next_animation_frame() {
     let (tx, rx) = futures_channel::oneshot::channel::<()>();
     let mut tx = Some(tx);
     let callback = Closure::wrap(Box::new(move |_timestamp: f64| {
@@ -1817,10 +1824,14 @@ async fn next_animation_frame(window: web_sys::Window) {
         }
     }) as Box<dyn FnMut(f64)>);
 
-    if window
-        .request_animation_frame(callback.as_ref().unchecked_ref())
-        .is_ok()
-    {
+    let global = js_sys::global();
+    let armed = js_sys::Reflect::get(&global, &JsValue::from_str("requestAnimationFrame"))
+        .ok()
+        .and_then(|raf| raf.dyn_into::<js_sys::Function>().ok())
+        .map(|raf| raf.call1(&global, callback.as_ref().unchecked_ref()).is_ok())
+        .unwrap_or(false);
+
+    if armed {
         let _ = rx.await;
     }
 

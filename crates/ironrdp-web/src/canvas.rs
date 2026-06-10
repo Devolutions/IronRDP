@@ -12,9 +12,33 @@ use tracing::{debug, warn};
 use wasm_bindgen::{Clamped, JsCast as _};
 #[cfg(target_arch = "wasm32")]
 use web_sys::ImageData;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, OffscreenCanvas};
 
 use crate::image::extract_partial_image;
+
+/// What the session presents into: a main-thread `<canvas>` element, or an `OffscreenCanvas`
+/// transferred into a Web Worker (`canvas.transferControlToOffscreen()`).
+#[derive(Clone)]
+pub(crate) enum RenderTarget {
+    Html(HtmlCanvasElement),
+    Offscreen(OffscreenCanvas),
+}
+
+impl RenderTarget {
+    /// Resets the backing-store size (matches the source framebuffer resolution).
+    pub(crate) fn set_size(&self, width: u32, height: u32) {
+        match self {
+            RenderTarget::Html(c) => {
+                c.set_width(width);
+                c.set_height(height);
+            }
+            RenderTarget::Offscreen(c) => {
+                c.set_width(width);
+                c.set_height(height);
+            }
+        }
+    }
+}
 
 /// Web render surface.
 ///
@@ -32,18 +56,17 @@ pub(crate) enum Canvas {
 }
 
 impl Canvas {
-    pub(crate) async fn new(
-        render_canvas: HtmlCanvasElement,
-        width: NonZeroU32,
-        height: NonZeroU32,
-    ) -> anyhow::Result<Self> {
-        render_canvas.set_width(width.get());
-        render_canvas.set_height(height.get());
+    pub(crate) async fn new(target: RenderTarget, width: NonZeroU32, height: NonZeroU32) -> anyhow::Result<Self> {
+        target.set_size(width.get(), height.get());
 
         #[cfg(target_arch = "wasm32")]
         {
+            let surface_target = match &target {
+                RenderTarget::Html(c) => softblit::SurfaceTarget::Canvas(c.clone()),
+                RenderTarget::Offscreen(c) => softblit::SurfaceTarget::OffscreenCanvas(c.clone()),
+            };
             match softblit::Surface::new(
-                softblit::SurfaceTarget::Canvas(render_canvas.clone()),
+                surface_target,
                 softblit::SurfaceDescriptor {
                     source_size: (width.get(), height.get()),
                     // The session decodes into `PixelFormat::RgbA32` whose alpha is not reliable
@@ -58,19 +81,28 @@ impl Canvas {
             {
                 Ok(surface) => {
                     debug!("softblit WebGPU presenter initialized");
-                    return Ok(Self::Gpu(Box::new(GpuCanvas {
-                        canvas: render_canvas,
-                        surface,
-                    })));
+                    return Ok(Self::Gpu(Box::new(GpuCanvas { target, surface })));
                 }
                 Err(softblit::Error::WebGpuUnavailable { reason }) => {
+                    // The Canvas2D fallback only has a main-thread `<canvas>` codepath; an
+                    // OffscreenCanvas (worker) presenter requires WebGPU.
+                    if matches!(target, RenderTarget::Offscreen(_)) {
+                        return Err(anyhow::anyhow!(
+                            "WebGPU unavailable in worker; no Canvas2D fallback for OffscreenCanvas: {reason}"
+                        ));
+                    }
                     warn!(reason = %reason, "WebGPU unavailable; falling back to Canvas2D presenter");
                 }
                 Err(e) => return Err(anyhow::anyhow!("softblit surface creation failed: {e}")),
             }
         }
 
-        Ok(Self::Canvas2d(Canvas2d::new(render_canvas)?))
+        match target {
+            RenderTarget::Html(canvas) => Ok(Self::Canvas2d(Canvas2d::new(canvas)?)),
+            RenderTarget::Offscreen(_) => Err(anyhow::anyhow!(
+                "OffscreenCanvas rendering requires WebGPU (no Canvas2D fallback)"
+            )),
+        }
     }
 
     /// Setting width/height resets the canvas backing store.
@@ -103,7 +135,7 @@ impl Canvas {
 /// softblit-backed presenter: persistent GPU texture + per-region in-place framebuffer uploads.
 #[cfg(target_arch = "wasm32")]
 pub(crate) struct GpuCanvas {
-    canvas: HtmlCanvasElement,
+    target: RenderTarget,
     surface: softblit::Surface,
 }
 
@@ -138,8 +170,7 @@ impl GpuCanvas {
     }
 
     fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) {
-        self.canvas.set_width(width.get());
-        self.canvas.set_height(height.get());
+        self.target.set_size(width.get(), height.get());
         self.surface.resize_source(width.get(), height.get());
         self.surface.resize_target(width.get(), height.get());
     }
