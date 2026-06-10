@@ -138,8 +138,12 @@ impl DynamicVirtualChannel {
         self.channel_id
     }
 
-    pub fn channel_processor_downcast_ref<T: DvcProcessor>(&self) -> Option<&T> {
+    pub fn channel_processor_downcast_ref<T: DvcClientProcessor>(&self) -> Option<&T> {
         self.channel_processor.as_any().downcast_ref()
+    }
+
+    pub fn channel_processor_downcast_mut<T: DvcClientProcessor>(&mut self) -> Option<&mut T> {
+        self.channel_processor.as_any_mut().downcast_mut()
     }
 
     fn start(&mut self, channel_id: DynamicChannelId) -> PduResult<Vec<DvcMessage>> {

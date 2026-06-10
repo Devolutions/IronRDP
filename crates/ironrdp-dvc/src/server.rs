@@ -27,7 +27,7 @@ enum ChannelState {
     CreationFailed(u32),
 }
 
-struct DynamicChannel {
+pub struct DynamicChannel {
     state: ChannelState,
     processor: Box<dyn DvcProcessor>,
     complete_data: CompleteData,
@@ -116,6 +116,14 @@ impl DynamicChannel {
     fn processor_type_id(&self) -> TypeId {
         self.processor.as_any().type_id()
     }
+
+    pub fn channel_processor_downcast_ref<T: DvcServerProcessor>(&self) -> Option<&T> {
+        self.processor.as_any().downcast_ref()
+    }
+
+    pub fn channel_processor_downcast_mut<T: DvcServerProcessor>(&mut self) -> Option<&mut T> {
+        self.processor.as_any_mut().downcast_mut()
+    }
 }
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
@@ -181,9 +189,16 @@ impl DrdynvcServer {
     }
 
     fn channel_by_id(&mut self, id: u32) -> DecodeResult<&mut DynamicChannel> {
-        self.dynamic_channels
-            .get_mut(id)
+        self.dvc_by_id_mut(id)
             .ok_or_else(|| invalid_field_err!("DRDYNVC", "", "invalid channel id"))
+    }
+
+    pub fn dvc_by_id(&self, id: u32) -> Option<&DynamicChannel> {
+        self.dynamic_channels.get(id)
+    }
+
+    pub fn dvc_by_id_mut(&mut self, id: u32) -> Option<&mut DynamicChannel> {
+        self.dynamic_channels.get_mut(id)
     }
 
     /// Creates a new DVC, returns CreateRequest PDU to send to client.
