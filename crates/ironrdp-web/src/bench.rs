@@ -191,7 +191,9 @@ async fn run_pass(
         acc.frames += 1;
 
         let t_dec = perf.now();
-        let outputs = active_stage.process(&mut image, action, &payload).context("decode frame")?;
+        let outputs = active_stage
+            .process(&mut image, action, &payload)
+            .context("decode frame")?;
         acc.decode_ms += perf.now() - t_dec;
 
         let mut terminate = false;
@@ -201,7 +203,8 @@ async fn run_pass(
                     // The GPU presenter reads the framebuffer in place (no extraction step);
                     // extract_ms stays 0 and any fallback extraction is accounted under draw_ms.
                     let t_draw = perf.now();
-                    gui.draw(&image, region).context("draw region")?;
+                    gui.draw(&image, core::slice::from_ref(&region))
+                        .context("draw region")?;
                     acc.draw_ms += perf.now() - t_draw;
                     acc.rects += 1;
                 }

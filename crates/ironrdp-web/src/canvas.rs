@@ -82,14 +82,19 @@ impl Canvas {
         }
     }
 
-    /// Presents the damaged `region` of `image`.
-    pub(crate) fn draw(&mut self, image: &DecodedImage, region: InclusiveRectangle) -> anyhow::Result<()> {
+    /// Presents the damaged `regions` of `image` in one shot. The GPU path uploads each rect
+    /// individually (softblit coalesces internally), so scattered updates upload far less than
+    /// a single union bounding box would.
+    pub(crate) fn draw(&mut self, image: &DecodedImage, regions: &[InclusiveRectangle]) -> anyhow::Result<()> {
         match self {
             #[cfg(target_arch = "wasm32")]
-            Self::Gpu(gpu) => gpu.draw(image, region),
+            Self::Gpu(gpu) => gpu.draw(image, regions),
             Self::Canvas2d(c2d) => {
-                let (region, buffer) = extract_partial_image(image, region);
-                c2d.draw(&buffer, region)
+                for region in regions {
+                    let (region, buffer) = extract_partial_image(image, region.clone());
+                    c2d.draw(&buffer, region)?;
+                }
+                Ok(())
             }
         }
     }
@@ -104,7 +109,7 @@ pub(crate) struct GpuCanvas {
 
 #[cfg(target_arch = "wasm32")]
 impl GpuCanvas {
-    fn draw(&mut self, image: &DecodedImage, region: InclusiveRectangle) -> anyhow::Result<()> {
+    fn draw(&mut self, image: &DecodedImage, regions: &[InclusiveRectangle]) -> anyhow::Result<()> {
         let format = softblit_format(image.pixel_format())?;
         if self.surface.format() != format {
             self.surface.set_format(format);
@@ -115,14 +120,19 @@ impl GpuCanvas {
             self.surface.resize_source(source_size.0, source_size.1);
         }
 
-        let rect = softblit::Rect::new(
-            u32::from(region.left),
-            u32::from(region.top),
-            u32::from(region.width()),
-            u32::from(region.height()),
-        );
+        let rects: Vec<softblit::Rect> = regions
+            .iter()
+            .map(|region| {
+                softblit::Rect::new(
+                    u32::from(region.left),
+                    u32::from(region.top),
+                    u32::from(region.width()),
+                    u32::from(region.height()),
+                )
+            })
+            .collect();
         self.surface
-            .present_external(image.data(), &[rect])
+            .present_external(image.data(), &rects)
             .map_err(|e| anyhow!("softblit present failed: {e}"))?;
         Ok(())
     }

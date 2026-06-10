@@ -9,8 +9,8 @@ use std::rc::Rc;
 use anyhow::Context as _;
 use base64::Engine as _;
 use futures_channel::mpsc;
-use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::future::{Fuse, FusedFuture as _};
+use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{AsyncWriteExt as _, FutureExt as _, StreamExt as _, select};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
@@ -658,16 +658,20 @@ impl iron_remote_desktop::Session for Session {
         // Timer interval for driving clipboard lock timeouts (5 second interval)
         let mut cleanup_interval = IntervalStream::new(5_000).fuse();
 
-        // Present coalescing: decode accumulates dirty regions here (union of everything changed
-        // since the last paint); a `requestAnimationFrame` tick blits the accumulated region once
-        // per display refresh. This aligns canvas presentation to vsync, so the several separate
-        // server frames that make up one logical update (each its own FrameMarker bracket) are drawn
-        // together instead of leaking onto the screen region-by-region across event-loop turns
-        // (cross-frame tearing).
+        // Present coalescing: decode accumulates dirty regions here (the list of everything
+        // changed since the last paint); a `requestAnimationFrame` tick presents the accumulated
+        // regions once per display refresh. This aligns canvas presentation to vsync, so the
+        // several separate server frames that make up one logical update (each its own
+        // FrameMarker bracket) are drawn together instead of leaking onto the screen
+        // region-by-region across event-loop turns (cross-frame tearing).
+        // Regions are kept as a list rather than one union bounding box: the renderer coalesces
+        // them itself, so scattered updates upload far less. The list is capped; the overflow
+        // tail unions into the last entry.
         // `present_due` starts terminated and is armed only when a dirty region is accumulated, so an
         // idle session blocks on I/O instead of waking every animation frame.
+        const MAX_PENDING_RECTS: usize = 64;
         let window = web_sys::window().context("failed to access window")?;
-        let mut pending_present: Option<InclusiveRectangle> = None;
+        let mut pending_rects: Vec<InclusiveRectangle> = Vec::new();
         let mut present_due: Fuse<Pin<Box<dyn Future<Output = ()>>>> = Fuse::terminated();
 
         let disconnect_reason = 'outer: loop {
@@ -853,12 +857,13 @@ impl iron_remote_desktop::Session for Session {
                     }
                 }
                 _ = present_due => {
-                    // Vsync tick: blit everything accumulated since the last paint in one shot.
-                    // `image` always holds a fully coherent framebuffer, so blitting the union
-                    // bounding box is correct even if it covers some unchanged pixels. `present_due`
-                    // is now terminated; the next dirty region re-arms it.
-                    if let Some(region) = pending_present.take() {
-                        gui.draw(&image, region).context("draw coalesced region")?;
+                    // Vsync tick: present everything accumulated since the last paint in one
+                    // shot. `image` always holds a fully coherent framebuffer, so presenting
+                    // overlapping regions is correct. `present_due` is now terminated; the next
+                    // dirty region re-arms it.
+                    if !pending_rects.is_empty() {
+                        gui.draw(&image, &pending_rects).context("draw coalesced regions")?;
+                        pending_rects.clear();
                     }
                     Vec::new()
                 }
@@ -893,12 +898,14 @@ impl iron_remote_desktop::Session for Session {
                             .context("Send frame to writer task")?;
                     }
                     ActiveStageOutput::GraphicsUpdate(region) => {
-                        // Don't paint yet: accumulate into the pending region and let the next
-                        // animation-frame tick present it (see `pending_present` / `present_due`).
-                        pending_present = Some(match pending_present.take() {
-                            Some(acc) => acc.union(&region),
-                            None => region,
-                        });
+                        // Don't paint yet: accumulate into the pending list and let the next
+                        // animation-frame tick present it (see `pending_rects` / `present_due`).
+                        if pending_rects.len() < MAX_PENDING_RECTS {
+                            pending_rects.push(region);
+                        } else {
+                            let last = pending_rects.last_mut().expect("cap > 0");
+                            *last = last.union(&region);
+                        }
                         // Arm a present for the next animation frame if one isn't already pending.
                         if present_due.is_terminated() {
                             let fut: Pin<Box<dyn Future<Output = ()>>> = Box::pin(next_animation_frame(window.clone()));
@@ -1042,8 +1049,8 @@ impl iron_remote_desktop::Session for Session {
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-                                // Old accumulated region refers to the previous framebuffer dimensions.
-                                pending_present = None;
+                                // Old accumulated regions refer to the previous framebuffer dimensions.
+                                pending_rects.clear();
                                 // Create a new [`FastPathProcessor`] with potentially updated
                                 // io/user channel ids.
                                 active_stage.set_fastpath_processor(
