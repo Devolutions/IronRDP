@@ -209,13 +209,3 @@ opt-level = 3
 # FIXME: We need to catch up with Diplomat upstream again, but this is a significant amount of work.
 # In the meantime, we use this forked version which fixes an undefined behavior in the code expanded by the bridge macro.
 diplomat = { git = "https://github.com/CBenoit/diplomat", rev = "6dc806e80162b6b39509a04a2835744236cd2396" }
-
-# BastionVault `fix-deps` branch — patch sspi to its `main` branch.
-# Released `sspi 0.20.0` pulls `picky 7.0.0-rc.22`, which transitively
-# pins `=crypto-common 0.2.0-rc.4` and `=crypto-bigint 0.7.0-rc.18`.
-# Those exact-equal pins conflict with downstream consumers (and
-# with `picky 7.0.0-rc.23` once this fork bumps to it). Commit
-# 26765bb on `sspi-rs` `main` already bumps to picky rc.23 + the
-# stable RustCrypto chain; pinning to that SHA clears the conflict
-# without waiting for the next sspi release.
-sspi = "0.20.1"

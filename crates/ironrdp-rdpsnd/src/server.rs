@@ -28,11 +28,37 @@ pub enum RdpsndServerMessage {
     Error(Box<dyn RdpsndError>),
 }
 
+/// Handler for the server side of the Audio Output Virtual Channel (`RDPSND`).
+///
+/// Implementations supply the list of audio formats the server offers, decide
+/// which format to use once the client replies, and produce the audio waves to
+/// stream (via [`RdpsndServer::wave`]).
 pub trait RdpsndServerHandler: Send + core::fmt::Debug {
+    /// The audio formats the server advertises in the Server Audio Formats and
+    /// Version PDU (MS-RDPEA 2.2.2.1).
     fn get_formats(&self) -> &[pdu::AudioFormat];
 
+    /// Called once the client has replied with the formats it accepts
+    /// (`client_format`, the Client Audio Formats and Version PDU). Returns the
+    /// `wFormatNo` to stamp on every subsequent Wave/Wave2 PDU, or [`None`] if
+    /// no offered format is acceptable (no audio is then streamed).
+    ///
+    /// **The returned index addresses `client_format.formats` — the formats the
+    /// client just echoed back — NOT the server's own [`get_formats`] list.**
+    /// The client resolves each wave's format as `ClientFormats[wFormatNo]`
+    /// against the list *it* sent, and a compliant client rejects any
+    /// `wFormatNo >= client_format.formats.len()`, silently dropping all audio.
+    /// The client's list is its accepted subset of the server's formats, so the
+    /// two lists generally differ in both length and ordering; an index into
+    /// [`get_formats`] only happens to work when the chosen format sits at the
+    /// same position in both. Pick the format you intend to send, then return
+    /// its position within `client_format.formats`.
+    ///
+    /// [`get_formats`]: RdpsndServerHandler::get_formats
     fn start(&mut self, client_format: &ClientAudioFormatPdu) -> Option<u16>;
 
+    /// Called when the audio stream is torn down (e.g. the client closed the
+    /// channel or the session ended).
     fn stop(&mut self);
 }
 

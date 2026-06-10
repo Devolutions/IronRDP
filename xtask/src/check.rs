@@ -45,9 +45,10 @@ pub fn typos(sh: &Shell) -> anyhow::Result<()> {
 }
 
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
-    let _s = Section::new("TYPOS-CLI-INSTALL");
+    let _s = Section::new("CHECK-INSTALL");
 
     cargo_install(sh, &TYPOS_CLI)?;
+    cargo_install(sh, &CARGO_HACK)?;
 
     Ok(())
 }

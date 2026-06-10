@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.6.0...ironrdp-svc-v0.7.0)] - 2026-05-27
+
+### <!-- 1 -->Features
+
+- Add SvcMessage::encode_unframed_pdu for headerless encoding ([#1093](https://github.com/Devolutions/IronRDP/issues/1093)) ([a21378e16a](https://github.com/Devolutions/IronRDP/commit/a21378e16a3a5af36428ba9a226b08acc5113eb6)) 
+
+### <!-- 7 -->Build
+
+- Bump the patch group across 1 directory with 2 updates ([#1222](https://github.com/Devolutions/IronRDP/issues/1222)) ([3fe6d157e0](https://github.com/Devolutions/IronRDP/commit/3fe6d157e0b55bddfdac20af290a6cfa6e550576)) 
+
+
 ## [[0.4.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.4.0...ironrdp-svc-v0.4.1)] - 2025-06-27
 
 ### <!-- 1 -->Features
@@ -19,13 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump bitflags from 2.9.0 to 2.9.1 in the patch group across 1 directory (#792) ([87ed315bc2](https://github.com/Devolutions/IronRDP/commit/87ed315bc28fdd2dcfea89b052fa620a7e346e5a)) 
 
 
-
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.2.0...ironrdp-svc-v0.3.0)] - 2025-03-12
 
 ### <!-- 7 -->Build
 
 - Bump ironrdp-pdu
-
 
 
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.1.3...ironrdp-svc-v0.2.0)] - 2025-03-12
@@ -39,7 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### <!-- 6 -->Documentation
 
 - Use CDN URLs instead of the blob storage URLs for Devolutions logo (#631) ([dd249909a8](https://github.com/Devolutions/IronRDP/commit/dd249909a894004d4f728d30b3a4aa77a0f8193b)) 
-
 
 
 ## [[0.1.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.1.1...ironrdp-svc-v0.1.2)] - 2024-12-14

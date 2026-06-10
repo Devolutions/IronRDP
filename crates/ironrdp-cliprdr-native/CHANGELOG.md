@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.5.0...ironrdp-cliprdr-native-v0.6.0)] - 2026-05-27
+
+### <!-- 1 -->Features
+
+- Implement clipboard file transfer support ([#1166](https://github.com/Devolutions/IronRDP/issues/1166)) ([c98a8fb774](https://github.com/Devolutions/IronRDP/commit/c98a8fb7741986e9afef00cb5615250c963a7fa9)) 
+
+  Add end-to-end clipboard file transfer (upload and download) across the
+  CLIPRDR channel per MS-RDPECLIP.
+
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.4.0...ironrdp-cliprdr-native-v0.5.0)] - 2025-12-18
 
 ### <!-- 4 -->Bug Fixes

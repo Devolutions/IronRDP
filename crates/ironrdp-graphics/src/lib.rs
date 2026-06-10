@@ -2,12 +2,14 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // FIXME: remove
 
+pub mod clearcodec;
 pub mod color_conversion;
 pub mod diff;
 pub mod dwt;
 pub mod dwt_extrapolate;
 pub mod image_processing;
 pub mod pointer;
+pub mod progressive;
 pub mod quantization;
 pub mod rdp6;
 pub mod rectangle_processing;

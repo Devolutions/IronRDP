@@ -27,6 +27,7 @@ async-trait = "0.1"
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "dvc", "echo"] }
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-client.path = "../ironrdp-client"
+ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 semver = "1.0"

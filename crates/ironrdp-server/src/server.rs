@@ -1,4 +1,6 @@
+use core::fmt;
 use core::net::SocketAddr;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -11,14 +13,17 @@ use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
+use ironrdp_dvc as dvc;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, GeneralExtraFlags};
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
+use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
+use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
@@ -28,7 +33,6 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, trace, warn};
-use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
 use crate::autodetect::{AutoDetectManager, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
@@ -87,6 +91,132 @@ pub trait ConnectionHandler: Send {
     }
 }
 
+/// Outcome of a successful [`CredentialValidator::validate`] call.
+///
+/// A rejection from a working validator is not an error: the validator did
+/// its job and decided the credentials do not authenticate. Backend failures
+/// (LDAP unreachable, PAM transport broken, database connection lost) are
+/// reported via [`CredentialValidationError`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialDecision {
+    /// Credentials accepted; the connection proceeds.
+    Accept,
+    /// Credentials rejected; the connection is closed.
+    Reject,
+}
+
+/// Error returned by a [`CredentialValidator`] when the validator backend
+/// itself fails (rather than the credentials being invalid).
+///
+/// Wraps any [`core::error::Error`] from the backend (LDAP/PAM/DB/etc.) so
+/// the trait does not require a particular error library in implementors or
+/// consumers.
+#[derive(Debug)]
+pub struct CredentialValidationError {
+    source: Box<dyn core::error::Error + Send + Sync>,
+}
+
+impl CredentialValidationError {
+    /// Wrap a backend error as a credential-validation failure.
+    pub fn new<E>(source: E) -> Self
+    where
+        E: core::error::Error + Send + Sync + 'static,
+    {
+        Self {
+            source: Box::new(source),
+        }
+    }
+}
+
+impl fmt::Display for CredentialValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("credential validator backend failure")
+    }
+}
+
+impl core::error::Error for CredentialValidationError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
+/// Server-side credential validator for TLS-mode connections.
+///
+/// Called during connection setup when the server receives client credentials
+/// via `ClientInfoPdu`. Not used for CredSSP/Hybrid connections (those use
+/// pre-loaded credentials for NTLM challenge-response).
+///
+/// Implement this trait to validate credentials against external systems
+/// (PAM, LDAP, database, etc.). For blocking backends, wrap the call in
+/// `tokio::task::spawn_blocking` to avoid stalling the async runtime.
+///
+/// # Example
+///
+/// ```ignore
+/// use ironrdp_server::{CredentialDecision, CredentialValidationError, CredentialValidator, Credentials};
+///
+/// struct StaticValidator {
+///     expected_user: String,
+///     expected_password: String,
+/// }
+///
+/// #[async_trait::async_trait]
+/// impl CredentialValidator for StaticValidator {
+///     async fn validate(
+///         &self,
+///         creds: &Credentials,
+///     ) -> Result<CredentialDecision, CredentialValidationError> {
+///         if creds.username == self.expected_user && creds.password == self.expected_password {
+///             Ok(CredentialDecision::Accept)
+///         } else {
+///             Ok(CredentialDecision::Reject)
+///         }
+///     }
+/// }
+/// ```
+#[async_trait::async_trait]
+pub trait CredentialValidator: Send + Sync {
+    /// Validate credentials received from the client.
+    ///
+    /// Return `Ok(CredentialDecision::Accept)` to permit the connection,
+    /// `Ok(CredentialDecision::Reject)` to refuse it. Return
+    /// `Err(CredentialValidationError::new(_))` only when the validator
+    /// itself could not produce a decision (backend system error).
+    ///
+    /// Implementors backed by blocking systems (PAM, libldap, a synchronous
+    /// database driver) should offload the work, for example with
+    /// `tokio::task::spawn_blocking`, so the returned future does not stall the
+    /// caller's executor. Native-async backends can simply `.await`.
+    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
+}
+
+/// A built-in [`CredentialValidator`] that accepts exactly one fixed set of credentials.
+///
+/// This is the validation-policy equivalent of the acceptor's pre-loaded
+/// exact-match: it keeps the common "one known account" case a one-liner while
+/// going through the same hook as PAM, LDAP, or database-backed validators.
+pub struct ExactMatchCredentialValidator {
+    expected: Credentials,
+}
+
+impl ExactMatchCredentialValidator {
+    /// Build a validator that accepts only `expected` and rejects everything else.
+    pub fn new(expected: Credentials) -> Self {
+        Self { expected }
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialValidator for ExactMatchCredentialValidator {
+    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError> {
+        if credentials == &self.expected {
+            Ok(CredentialDecision::Accept)
+        } else {
+            Ok(CredentialDecision::Reject)
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RdpServerOptions {
     pub addr: SocketAddr,
@@ -134,6 +264,14 @@ impl RdpServerOptions {
             .0
             .iter()
             .any(|codec| matches!(codec.property, CodecProperty::QoiZ))
+    }
+
+    #[cfg(feature = "nscodec")]
+    fn has_nscodec(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::NsCodec(_)))
     }
 }
 
@@ -288,9 +426,21 @@ pub struct RdpServer {
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
+    credential_validator: Option<Arc<dyn CredentialValidator>>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
+    /// True while the client has sent `SuppressOutput { desktop_rect: None }`
+    /// — the standard RDP "I don't need display updates right now" signal
+    /// (mstsc raises it on window minimize). Cleared on
+    /// `SuppressOutput { Some(rect) }` or `RefreshRectangle` (sent on
+    /// refocus). Exposed via [`Self::display_suppressed_handle`] so display
+    /// backends can hold a clone and skip frame emission while it's set —
+    /// without this, a server keeps streaming high-bitrate
+    /// EGFX/H.264 frames into a minimized client, which accumulates them
+    /// and locks up its input dispatch for seconds on refocus while it
+    /// chews through the backlog.
+    display_suppressed: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -325,6 +475,16 @@ enum RunState {
 }
 
 impl RdpServer {
+    // The lint only fires with the `egfx` feature on (8 args including
+    // `gfx_factory`); without it the parameter count is 7 and the lint
+    // is satisfied. `cfg_attr` keeps `#[expect]` strict in both modes.
+    #[cfg_attr(
+        feature = "egfx",
+        expect(
+            clippy::too_many_arguments,
+            reason = "called via the builder; positional parameters are an internal detail"
+        )
+    )]
     pub fn new(
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
@@ -333,6 +493,7 @@ impl RdpServer {
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
+        display_suppressed: Option<Arc<AtomicBool>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -360,9 +521,11 @@ impl RdpServer {
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
+            credential_validator: None,
             local_addr: None,
             autodetect: None,
             connection_handler,
+            display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
         }
     }
 
@@ -370,8 +533,60 @@ impl RdpServer {
         builder::RdpServerBuilder::new()
     }
 
+    /// Set or clear the credential validator for TLS-mode connections.
+    ///
+    /// When set, credentials received from the client during
+    /// `SecureSettingsExchange` are validated through this callback before
+    /// the session is established. If the validator returns
+    /// [`CredentialDecision::Reject`] (or a [`CredentialValidationError`]),
+    /// the connection is rejected. Passing `None` clears any previously
+    /// configured validator.
+    ///
+    /// Most callers should configure the validator at construction time via
+    /// the builder's `with_credential_validator` method
+    /// ([`RdpServer::builder`]); this setter exists for dynamic
+    /// post-construction reconfiguration.
+    ///
+    /// Not used for CredSSP/Hybrid connections (those use pre-loaded credentials).
+    pub fn set_credential_validator(&mut self, validator: Option<Arc<dyn CredentialValidator>>) {
+        self.credential_validator = validator;
+    }
+
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Returns the shared "display suppressed" flag — `true` while the
+    /// connected client has sent `SuppressOutput { desktop_rect: None }`
+    /// (e.g., mstsc minimized).
+    ///
+    /// Display backends should hold a clone of this `Arc` and skip frame
+    /// emission while it's set, so the client doesn't accumulate a backlog
+    /// of frames it can't present until refocus. Cleared by the per-
+    /// connection PDU handler on `SuppressOutput { Some(rect) }` or
+    /// `RefreshRectangle`.
+    ///
+    /// **Caveat:** some clients (notably mstsc) send
+    /// `SuppressOutput { desktop_rect: None }` during their connect
+    /// handshake *before* their display surface is fully initialized; a
+    /// backend that honors the flag blindly will block that first frame
+    /// and leave the client with a half-initialized surface that doesn't
+    /// recover on un-suppress (visible as a frozen desktop on first
+    /// connect). Backends are advised to defer acting on the flag until
+    /// after the first frame has been delivered to the client, and to
+    /// debounce transient flaps (some clients pulse this PDU under wire
+    /// pressure on heavy CPU/IO loads) — e.g., only engage the gate once
+    /// the flag has been steady-`true` for ~1 s.
+    ///
+    /// The display backend typically needs to share this flag with the
+    /// server before any client connects (so the same `Arc` is read by
+    /// the backend's polling thread and written by the per-connection
+    /// PDU handler). To inject the shared instance at construction time,
+    /// use [`RdpServerBuilder::with_display_suppressed_handle`](crate::RdpServerBuilder::with_display_suppressed_handle).
+    ///
+    /// [crate::RdpServerBuilder]: crate::RdpServerBuilder
+    pub fn display_suppressed_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.display_suppressed)
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
@@ -460,6 +675,18 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
+        // Per-connection state must start fresh: if the previous client
+        // disconnected while it had sent `SuppressOutput { None }` (e.g.,
+        // closed the mstsc window while minimized so the matching resume
+        // PDU never arrived), the flag would still read `true` here and
+        // the display backend would silently drop frames for the entire
+        // new session until/unless the new client happens to send a
+        // `RefreshRectangle` or `SuppressOutput { Some(rect) }`. Resetting
+        // here also covers backends that share an externally-created Arc
+        // via `set_display_suppressed_handle()` — they get the same
+        // per-connection clean slate.
+        self.display_suppressed.store(false, Ordering::Relaxed);
+
         let framed = TokioFramed::new(stream);
 
         let size = self.display.lock().await.size().await;
@@ -701,10 +928,22 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
     ) -> Result<RunState> {
-        // Avoid wave message queuing up and causing extra delays.
-        // This is a naive solution, better solutions should compute the actual delay, add IO priority, encode audio, use UDP etc.
-        // 4 frames should roughly corresponds to hundreds of ms in regular setups.
-        let mut wave_limit = 4;
+        // Avoid wave messages queuing up and causing extra delay. When a
+        // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
+        // and keep the most recent — playing stale audio just bakes the
+        // latency in permanently, so a one-time dispatch stall (e.g. a video
+        // encode holding the server lock) would otherwise become a permanent
+        // audio offset.
+        //
+        // This is still a naive solution; better long-term: compute the
+        // actual delay, add IO priority, encode audio, use UDP, etc. 4 frames
+        // is roughly low hundreds of ms in regular setups.
+        const WAVE_KEEP: usize = 4;
+        let wave_total = events
+            .iter()
+            .filter(|e| matches!(e, ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(..))))
+            .count();
+        let mut wave_skip = wave_total.saturating_sub(WAVE_KEEP);
         for event in events.drain(..) {
             trace!(?event, "Dispatching");
             match event {
@@ -725,11 +964,11 @@ impl RdpServer {
                     };
                     let msgs = match s {
                         RdpsndServerMessage::Wave(data, ts) => {
-                            if wave_limit == 0 {
-                                debug!("Dropping wave");
+                            if wave_skip > 0 {
+                                wave_skip -= 1;
+                                debug!("Dropping stale wave");
                                 continue;
                             }
-                            wave_limit -= 1;
                             rdpsnd.wave(data, ts)
                         }
                         RdpsndServerMessage::SetVolume { left, right } => rdpsnd.set_volume(left, right),
@@ -944,6 +1183,32 @@ impl RdpServer {
     {
         debug!("Client accepted");
 
+        // Validate credentials if a validator is configured. The validator runs here, in the
+        // async server layer, rather than in the sans-I/O acceptor, because real validators
+        // (PAM/LDAP/DB) are I/O-bound. On rejection, deny with a ServerSetErrorInfoPdu before
+        // closing, matching the acceptor's exact-match denial path.
+        if let Some(validator) = self.credential_validator.clone() {
+            if let Some(creds) = &result.credentials {
+                match validator.validate(creds).await {
+                    Ok(CredentialDecision::Accept) => {
+                        debug!("Credential validation accepted");
+                    }
+                    Ok(CredentialDecision::Reject) => {
+                        warn!("Credential validation rejected");
+                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                        bail!("credential validation rejected");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Credential validator backend error");
+                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                        bail!("credential validation backend error");
+                    }
+                }
+            } else {
+                debug!("Skipping credential validation (no credentials in AcceptorResult)");
+            }
+        }
+
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
             self.handle_input_backlog(
@@ -1028,6 +1293,13 @@ impl RdpServer {
                                 for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
+                            }
+                            #[cfg(feature = "nscodec")]
+                            CodecProperty::NsCodec(client_ns) if self.opts.has_nscodec() => {
+                                // Re-use the client's confirmed color-loss
+                                // level so the server encodes at the same
+                                // shift the client decodes against.
+                                update_codecs.set_nscodec(Some((codec.id, client_ns.color_loss_level)));
                             }
                             CodecProperty::NsCodec(_) => (),
                             #[cfg(feature = "qoi")]
@@ -1143,6 +1415,35 @@ impl RdpServer {
                     }
                 }
 
+                // Client requests the server stop or resume sending display
+                // updates. mstsc sends `desktop_rect: None` on minimize and
+                // `desktop_rect: Some(rect)` on refocus. Without honoring
+                // this, the server keeps streaming high-bitrate EGFX/H.264
+                // frames into a minimized client; on refocus the client
+                // must chew through the accumulated backlog before it can
+                // present the current frame, locking up its input dispatch
+                // for seconds. Flagging the shared `display_suppressed`
+                // lets the display backend skip frame emission while it's
+                // set.
+                rdp::headers::ShareDataPdu::SuppressOutput(pdu) => {
+                    let suppress = pdu.desktop_rect.is_none();
+                    self.display_suppressed.store(suppress, Ordering::Relaxed);
+                    debug!(suppress, "client suppress-output state changed");
+                }
+
+                // Client asks the server to redraw a rectangle — typical on
+                // refocus after a minimize. Clear the suppress flag so the
+                // backend resumes emission and treat this as "client wants
+                // updates again." (The flag would also be cleared by the
+                // `SuppressOutput { Some(rect) }` that usually accompanies
+                // this; clearing here is belt-and-braces against clients
+                // that send only one of the two.)
+                rdp::headers::ShareDataPdu::RefreshRectangle(_) => {
+                    if self.display_suppressed.swap(false, Ordering::Relaxed) {
+                        debug!("client RefreshRectangle cleared suppress-output state");
+                    }
+                }
+
                 unexpected => {
                     warn!(?unexpected, "Unexpected share data pdu");
                 }
@@ -1166,7 +1467,12 @@ impl RdpServer {
         let message = decode::<X224<mcs::McsMessage<'_>>>(frame)?;
         match message.0 {
             mcs::McsMessage::SendDataRequest(data) => {
-                debug!(?data, "McsMessage::SendDataRequest");
+                debug!(
+                    initiator_id = data.initiator_id,
+                    channel_id = data.channel_id,
+                    user_data_len = data.user_data.len(),
+                    "McsMessage::SendDataRequest"
+                );
                 if data.channel_id == io_channel_id {
                     return self.handle_io_channel_data(data).await;
                 }
@@ -1312,6 +1618,29 @@ async fn deactivate_all(
         share_control_pdu: pdu,
     };
     let user_data = encode_vec(&pdu)?.into();
+    let pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: io_channel_id,
+        user_data,
+    };
+    let msg = encode_vec(&X224(pdu))?;
+    writer.write_all(&msg).await?;
+    Ok(())
+}
+
+/// Send a `ServerSetErrorInfoPdu(ServerDeniedConnection)` to the client, then return.
+///
+/// Used to deny a connection after credential validation rejects it, mirroring the
+/// acceptor's exact-match denial so both paths refuse the same spec-defined way.
+async fn send_access_denied(
+    io_channel_id: u16,
+    user_channel_id: u16,
+    writer: &mut impl FramedWrite,
+) -> Result<(), anyhow::Error> {
+    let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+        ProtocolIndependentCode::ServerDeniedConnection,
+    ));
+    let user_data = encode_vec(&info)?.into();
     let pdu = SendDataIndication {
         initiator_id: user_channel_id,
         channel_id: io_channel_id,

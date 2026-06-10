@@ -6,6 +6,92 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.8.0...ironrdp-connector-v0.9.0)] - 2026-05-27
+
+### <!-- 1 -->Features
+
+- Add alternate_shell and work_dir configuration support ([#1095](https://github.com/Devolutions/IronRDP/issues/1095)) ([a33d27fe67](https://github.com/Devolutions/IronRDP/commit/a33d27fe6771a5a155161ef40a04de88803dd84c)) 
+
+  Add support for configuring `alternate_shell` and `work_dir` fields in
+  ClientInfoPdu, which are used by:
+    - CyberArk PSM (Privileged Session Manager) for session tokens
+    - Remote application scenarios (RemoteApp)
+    - Custom shell configurations
+
+- Dispatch multitransport PDUs on IO channel ([#1096](https://github.com/Devolutions/IronRDP/issues/1096)) ([7853e3cc6f](https://github.com/Devolutions/IronRDP/commit/7853e3cc6f26acaf3da000c6177ca3cef6ef85fd)) 
+
+  `decode_io_channel()` assumes all IO channel PDUs begin with
+  a `ShareControlHeader`. Multitransport Request PDUs use a
+  `BasicSecurityHeader` with `SEC_TRANSPORT_REQ` instead ([MS-RDPBCGR]
+  2.2.15.1).
+  
+  This adds a peek-based dispatch: check the first `u16`
+  for`TRANSPORT_REQ`, decode as `MultitransportRequestPdu` if set,
+  otherwise fall through to the existing `decode_share_control()` path
+  unchanged.
+  
+  The new variant is propagated through `ProcessorOutput` and
+  'ActiveStageOutput` so applications can handle multitransport requests.
+  Client and web consumers log the request (no UDP transport yet).
+
+- Add bulk compression and wire negotiation ([ebf5da5f33](https://github.com/Devolutions/IronRDP/commit/ebf5da5f3380a3355f6c95814d669f8190425ded)) 
+
+  Add support for bulk compression negotiation and payload decoding,
+  including connector plumbing, CLI configuration flags, and integration
+  updates across tests/examples/FFI/web.
+
+- Advertise multitransport channel in GCC blocks ([#1092](https://github.com/Devolutions/IronRDP/issues/1092)) ([4f5fdd3628](https://github.com/Devolutions/IronRDP/commit/4f5fdd3628f4d0d2c2a4116e4e45269d802740f1)) 
+
+  Add multitransport_flags config option to populate the
+  MultiTransportChannelData GCC block during connection negotiation.
+  When None (the default), behavior is unchanged.
+
+### <!-- 4 -->Bug Fixes
+
+- Propagate negotiated share_id to all outgoing ShareDataPdu ([#1147](https://github.com/Devolutions/IronRDP/issues/1147)) ([2b24e9664d](https://github.com/Devolutions/IronRDP/commit/2b24e9664dd05620ff63a24d092377477fdde863)) 
+
+- Advertise all colour depths per FreeRDP pattern ([#1231](https://github.com/Devolutions/IronRDP/issues/1231)) ([2fa7c648cb](https://github.com/Devolutions/IronRDP/commit/2fa7c648cb4a2fc9c75d967ac878f817900dc1b8)) 
+
+  Replace the per-depth supportedColorDepths bitmask with an unconditional
+  BPP32 | BPP24 | BPP16 | BPP15, following FreeRDP's approach of treating
+  the field as a capability set rather than a preferred-depth indicator
+  (libfreerdp/core/settings.c).
+  
+  The preferred depth is expressed via the two dedicated fields:
+  - highColorDepth: now derived from the configured depth (15 →
+  Rgb555Bpp16 / 0x0F, 16 → Rgb565Bpp16 / 0x10, else Bpp24 / 0x18),
+  matching FreeRDP's ColorDepthToHighColor()
+  - WANT_32_BPP_SESSION earlyCapabilityFlag: unchanged, set only for 32bpp
+  
+  Previously, a client configured for 24bpp advertised BPP24 only. Modern
+  Windows hosts (Server 2012+) dropped 24bpp RDP support and reset the
+  connection instead of negotiating down, leaving no usable depth. With
+  all four bits always advertised the server can freely negotiate to the
+  highest depth it supports.
+
+- Surface actual PDU type when an unexpected Share Control PDU arrives ([#1236](https://github.com/Devolutions/IronRDP/issues/1236)) ([78effb3f91](https://github.com/Devolutions/IronRDP/commit/78effb3f9144a482395be738b2c9fd4d909b7b89)) 
+
+- Handle ServerDeactivateAll during CapabilitiesExchange ([#1254](https://github.com/Devolutions/IronRDP/issues/1254)) ([9cb5439b4a](https://github.com/Devolutions/IronRDP/commit/9cb5439b4a78c4a7facc854464894c7893f6a926)) 
+
+  Some RDP servers (notably GNOME Remote Desktop / grd) send a
+  ServerDeactivateAll PDU before ServerDemandActive during the initial
+  Capabilities Exchange phase. This is valid per MS-RDPBCGR §1.3.1.3
+  (Deactivation-Reactivation Sequence).
+  
+  Previously this caused a hard error:
+  "unexpected Share Control Pdu (expected ServerDemandActive)"
+  
+  Now the connector skips the DeactivateAll and waits for the next PDU.
+
+### <!-- 5 -->Performance
+
+- Reduce connection latency when Kerberos is disabled ([#1107](https://github.com/Devolutions/IronRDP/issues/1107)) ([b1b0289e00](https://github.com/Devolutions/IronRDP/commit/b1b0289e0067228dbc973d3edb0e27136f7ca52a)) 
+
+### <!-- 7 -->Build
+
+- Upgrade to sspi 0.21 and picky rc.23 ([#1296](https://github.com/Devolutions/IronRDP/issues/1296)) ([d5b3fa7db8](https://github.com/Devolutions/IronRDP/commit/d5b3fa7db8a4ce74ac9a9aaff3064faf6cb6c920)) 
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.7.1...ironrdp-connector-v0.8.0)] - 2025-12-18
 
 ### <!-- 7 -->Build
@@ -83,7 +169,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [**breaking**] Add supported codecs in BitmapConfig ([f03ee393a3](https://github.com/Devolutions/IronRDP/commit/f03ee393a36906114b5bcba0e88ebc6869a99785)) 
 
 
-
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.3.2...ironrdp-connector-v0.4.0)] - 2025-03-12
 
 ### <!-- 7 -->Build
@@ -98,13 +183,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update dependencies
 
 
-
 ## [[0.3.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.3.0...ironrdp-connector-v0.3.1)] - 2025-01-30
 
 ### <!-- 4 -->Bug Fixes
 
 - Decrease log verbosity for license exchange ([#655](https://github.com/Devolutions/IronRDP/issues/655)) ([c8597733fe](https://github.com/Devolutions/IronRDP/commit/c8597733fe9998318764064c3682506bf82026d2)) 
-
 
 
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.2.2...ironrdp-connector-v0.3.0)] - 2025-01-28
@@ -125,7 +208,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### <!-- 7 -->Build
 
 - Bump picky from 7.0.0-rc.11 to 7.0.0-rc.12 ([#639](https://github.com/Devolutions/IronRDP/issues/639)) ([a16a131e43](https://github.com/Devolutions/IronRDP/commit/a16a131e4301e0dfafe8f3b73e1a75a3a06cfdc7)) 
-
 
 
 ## [[0.2.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.2.1...ironrdp-connector-v0.2.2)] - 2024-12-14

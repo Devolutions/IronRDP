@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.8.0...ironrdp-blocking-v0.9.0)] - 2026-05-27
+
+### <!-- 4 -->Bug Fixes
+
+- [**breaking**] Make Framed::read_exact crate-private ([#1247](https://github.com/Devolutions/IronRDP/issues/1247)) ([d02d24aad4](https://github.com/Devolutions/IronRDP/commit/d02d24aad44039c0425a022f1bd9677800706cea)) 
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.7.0...ironrdp-blocking-v0.8.0)] - 2025-12-18
 
 ### <!-- 4 -->Bug Fixes

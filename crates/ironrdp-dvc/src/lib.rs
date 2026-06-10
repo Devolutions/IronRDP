@@ -16,7 +16,7 @@ use pdu::DrdynvcDataPdu;
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
 use ironrdp_core::{AsAny, Encode, EncodeResult, assert_obj_safe, cast_length, encode_vec, other_err};
-use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
+use ironrdp_pdu::{PduResult, decode_err};
 use ironrdp_svc::SvcMessage;
 
 mod complete_data;
@@ -105,8 +105,16 @@ pub struct DynamicVirtualChannel {
     complete_data: CompleteData,
     /// The channel ID assigned by the server.
     ///
-    /// This field is `None` until the server assigns a channel ID.
+    /// `Some` only after [`DynamicVirtualChannel::start`] has succeeded. This invariant
     channel_id: Option<DynamicChannelId>,
+}
+
+impl Drop for DynamicVirtualChannel {
+    fn drop(&mut self) {
+        if let Some(id) = self.channel_id {
+            self.channel_processor.close(id);
+        }
+    }
 }
 
 impl DynamicVirtualChannel {
@@ -134,12 +142,10 @@ impl DynamicVirtualChannel {
         self.channel_processor.as_any().downcast_ref()
     }
 
-    fn start(&mut self) -> PduResult<Vec<DvcMessage>> {
-        if let Some(channel_id) = self.channel_id {
-            self.channel_processor.start(channel_id)
-        } else {
-            Err(pdu_other_err!("DynamicVirtualChannel::start", "channel ID not set"))
-        }
+    fn start(&mut self, channel_id: DynamicChannelId) -> PduResult<Vec<DvcMessage>> {
+        let messages = self.channel_processor.start(channel_id)?;
+        self.channel_id = Some(channel_id);
+        Ok(messages)
     }
 
     fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {

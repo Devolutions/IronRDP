@@ -168,7 +168,15 @@ NOTE: it’s not yet clear if this crate is an API Boundary or an implementation
 
 #### [`crates/ironrdp-client`](./crates/ironrdp-client)
 
-Portable RDP client without GPU acceleration.
+Reusable client engine library: holds the `Config`/`ConfigBuilder`, the `RdpClient` runtime,
+input/output event types, and the WebSocket transport. Consumed by `ironrdp-viewer` and any
+other embedder (e.g. a headless agent).
+
+#### [`crates/ironrdp-viewer`](./crates/ironrdp-viewer)
+
+Portable RDP client binary without GPU acceleration. A thin wrapper around `ironrdp-client`
+that adds the winit/softbuffer GUI event loop, the clap CLI, the inquire prompts and the
+`.rdp` file / PropertySet plumbing.
 
 #### [`crates/ironrdp-web`](./crates/ironrdp-web)
 

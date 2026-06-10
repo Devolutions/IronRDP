@@ -106,21 +106,6 @@ impl<Kind> Error<Kind> {
         }
     }
 
-    pub fn into_other_kind<OtherKind>(self) -> Error<OtherKind>
-    where
-        Kind: Into<OtherKind>,
-    {
-        Error {
-            kind: self.kind.into(),
-            #[cfg(feature = "alloc")]
-            meta: self.meta,
-            #[cfg(not(feature = "alloc"))]
-            context: self.context,
-            #[cfg(not(feature = "alloc"))]
-            location: self.location,
-        }
-    }
-
     pub fn kind(&self) -> &Kind {
         &self.kind
     }
