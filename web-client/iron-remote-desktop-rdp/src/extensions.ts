@@ -45,6 +45,10 @@ export function locksExpiredCallback(cb: (clipDataIds: Uint32Array) => void): Ex
     return new Extension('locks_expired_callback', cb as unknown);
 }
 
+export function formatListResponseCallback(cb: (ok: boolean) => void): Extension {
+    return new Extension('format_list_response_callback', cb as unknown);
+}
+
 // Virtual printer (RDPDR) extensions
 //
 // Registering `printJobStreamCallbacks` activates the browser-side virtual
