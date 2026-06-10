@@ -80,8 +80,26 @@ interface WasmSession {
 
 let session: WasmSession | undefined;
 let wasmReady: Promise<void> | undefined;
+// The OffscreenCanvas is transferred once (first connect) and retained for reconnects.
+let retainedCanvas: OffscreenCanvas | undefined;
 
 async function connect(config: ToWorker & { type: 'connect' }) {
+    if (config.canvas != null) {
+        retainedCanvas = config.canvas;
+    }
+    if (retainedCanvas == null) {
+        throw new Error('worker connect without a canvas and none retained');
+    }
+    // End any prior session before reusing the canvas for a fresh one.
+    if (session != null) {
+        try {
+            session.shutdown();
+        } catch {
+            /* ignore */
+        }
+        session = undefined;
+    }
+
     if (wasmReady == null) {
         wasmReady = init('INFO');
     }
@@ -95,7 +113,7 @@ async function connect(config: ToWorker & { type: 'connect' }) {
         .authToken(config.config.authToken)
         .username(config.config.username)
         // The worker presents into the transferred OffscreenCanvas (GPU-only path).
-        .renderOffscreenCanvas(config.canvas)
+        .renderOffscreenCanvas(retainedCanvas)
         // Cursor lives in the DOM (main thread); forward the style and re-apply it there.
         .setCursorStyleCallbackContext({})
         .setCursorStyleCallback(

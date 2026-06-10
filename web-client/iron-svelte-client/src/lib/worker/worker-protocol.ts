@@ -34,7 +34,9 @@ export type InputDescriptor =
     | { kind: 'unicodeReleased'; unicode: string };
 
 export type ToWorker =
-    | { type: 'connect'; config: WorkerConnectConfig; canvas: OffscreenCanvas }
+    // `canvas` is transferred only on the first connect for a given <canvas>; the worker retains it
+    // across reconnects (a canvas can only be transferControlToOffscreen'd once).
+    | { type: 'connect'; config: WorkerConnectConfig; canvas?: OffscreenCanvas }
     | { type: 'input'; events: InputDescriptor[] }
     | { type: 'releaseAllInputs' }
     | { type: 'synchronizeLockKeys'; scroll: boolean; num: boolean; caps: boolean; kana: boolean }

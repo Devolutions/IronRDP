@@ -19,6 +19,11 @@ function spawnWorker(): Worker {
     return new Worker(new URL('./rdp.worker.ts', import.meta.url), { type: 'module' });
 }
 
+// A canvas can be `transferControlToOffscreen()`'d only once, but the element reuses the same
+// <canvas> across reconnects. Keep one persistent worker per canvas: transfer on first connect, and
+// reuse the worker (which retains the OffscreenCanvas) on subsequent connects.
+const workerByCanvas = new WeakMap<HTMLCanvasElement, Worker>();
+
 class WorkerDesktopSize {
     constructor(
         public width: number,
@@ -84,13 +89,21 @@ class WorkerSession {
                 break;
             case 'error':
                 console.error('[rdp-worker] session error:', m.message);
-                this.endResolve?.({ reason: () => m.message });
+                this.end(m.message);
                 break;
             case 'ended':
-                this.endResolve?.({ reason: () => m.reason });
+                this.end(m.reason);
                 break;
         }
     };
+
+    // Resolve `run()` and detach from the (reused) worker so reconnects don't stack listeners.
+    private end(reason: string) {
+        this.worker.removeEventListener('message', this.onMessage);
+        const resolve = this.endResolve;
+        this.endResolve = undefined;
+        resolve?.({ reason: () => reason });
+    }
 
     desktopSize(): WorkerDesktopSize {
         return new WorkerDesktopSize(this.desktop.width, this.desktop.height);
@@ -127,8 +140,10 @@ class WorkerSession {
     }
 
     shutdown(): void {
+        // Tell the worker to end the session, but keep the worker alive: it retains the
+        // OffscreenCanvas (which can't be re-transferred) for the next connect.
         this.post({ type: 'shutdown' });
-        this.worker.terminate();
+        this.end('shutdown');
     }
 
     // Clipboard / runtime extensions are not bridged in worker render mode yet.
@@ -222,8 +237,16 @@ class WorkerSessionBuilder {
         if (this.canvas == null) {
             throw new Error('renderCanvas must be called before connect in worker mode');
         }
-        const worker = spawnWorker();
-        const offscreen = this.canvas.transferControlToOffscreen();
+
+        // Reuse the persistent worker for this canvas (transfer only the first time).
+        let existing = workerByCanvas.get(this.canvas);
+        let offscreen: OffscreenCanvas | undefined;
+        if (existing == null) {
+            existing = spawnWorker();
+            workerByCanvas.set(this.canvas, existing);
+            offscreen = this.canvas.transferControlToOffscreen();
+        }
+        const worker = existing;
 
         const connected = new Promise<{ width: number; height: number }>((resolve, reject) => {
             const onMsg = (ev: MessageEvent<FromWorker>) => {
@@ -239,7 +262,11 @@ class WorkerSessionBuilder {
         });
 
         const connectMsg: ToWorker = { type: 'connect', config: this.cfg, canvas: offscreen };
-        worker.postMessage(connectMsg, [offscreen]);
+        if (offscreen != null) {
+            worker.postMessage(connectMsg, [offscreen]);
+        } else {
+            worker.postMessage(connectMsg);
+        }
 
         const desktop = await connected;
         return new WorkerSession(worker, this.cursorCb, this.cursorCtx, desktop);
