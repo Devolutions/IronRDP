@@ -119,8 +119,15 @@
     function serverBridgeListeners() {
         remoteDesktopService.resizeObservable.subscribe((evt: ResizeEvent) => {
             loggingService.info(`Resize canvas to: ${evt.desktopSize.width}x${evt.desktopSize.height}`);
-            canvas.width = evt.desktopSize.width;
-            canvas.height = evt.desktopSize.height;
+            // In worker render mode the canvas has been transferred to an OffscreenCanvas, which owns
+            // its size (the worker resizes it); setting width/height on the placeholder throws
+            // InvalidStateError. The placeholder reflects the offscreen size, so just skip it there.
+            try {
+                canvas.width = evt.desktopSize.width;
+                canvas.height = evt.desktopSize.height;
+            } catch (e) {
+                loggingService.info(`Canvas is offscreen-controlled; skipping main-thread resize (${e})`);
+            }
             scaleSession(scale);
         });
     }

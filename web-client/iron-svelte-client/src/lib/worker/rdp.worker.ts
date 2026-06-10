@@ -152,13 +152,27 @@ function applyInputs(events: InputDescriptor[]) {
     session.applyInputs(transaction);
 }
 
+function errorMessage(e: unknown): string {
+    if (e instanceof Error) {
+        return e.stack ?? e.message;
+    }
+    if (typeof e === 'string') {
+        return e;
+    }
+    try {
+        return JSON.stringify(e);
+    } catch {
+        return Object.prototype.toString.call(e);
+    }
+}
+
 ctx.onmessage = (event: MessageEvent<ToWorker>) => {
     const msg = event.data;
     try {
         switch (msg.type) {
             case 'connect':
                 void connect(msg).catch((e: unknown) => {
-                    post({ type: 'error', message: e instanceof Error ? e.message : String(e) });
+                    post({ type: 'error', message: errorMessage(e) });
                 });
                 break;
             case 'input':
@@ -178,6 +192,6 @@ ctx.onmessage = (event: MessageEvent<ToWorker>) => {
                 break;
         }
     } catch (e: unknown) {
-        post({ type: 'error', message: e instanceof Error ? e.message : String(e) });
+        post({ type: 'error', message: errorMessage(e) });
     }
 };
