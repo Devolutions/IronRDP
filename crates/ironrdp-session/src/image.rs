@@ -200,6 +200,29 @@ impl DecodedImage {
         self.height
     }
 
+    /// Composites externally-decoded pixels into the image at output position `(dst_x, dst_y)`.
+    ///
+    /// `src` is tightly packed `width`×`height` pixels in this image's format (row-major,
+    /// `bytes_per_pixel()` bytes per pixel). Rows and columns that fall outside the image are
+    /// clamped (overflowing pixels are dropped); a `src` shorter than `width`×`height` is rejected.
+    /// Used to composite EGFX surface bitmaps decoded out-of-band into the shared framebuffer.
+    pub fn composite_rect(&mut self, dst_x: u16, dst_y: u16, width: u16, height: u16, src: &[u8]) {
+        let bpp = self.bytes_per_pixel();
+        let src_stride = usize::from(width) * bpp;
+        if src_stride == 0 || src.len() < src_stride * usize::from(height) {
+            return;
+        }
+        let dst_stride = self.stride();
+        let copy_w = usize::from(width).min(usize::from(self.width).saturating_sub(usize::from(dst_x)));
+        let copy_h = usize::from(height).min(usize::from(self.height).saturating_sub(usize::from(dst_y)));
+        let row_bytes = copy_w * bpp;
+        for row in 0..copy_h {
+            let src_off = row * src_stride;
+            let dst_off = (usize::from(dst_y) + row) * dst_stride + usize::from(dst_x) * bpp;
+            self.data[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+        }
+    }
+
     /// Returns `true` if the rectangle fits entirely within the image bounds.
     fn rect_fits(&self, rect: &InclusiveRectangle) -> bool {
         rect.right < self.width && rect.bottom < self.height
