@@ -12,6 +12,9 @@ import {
     submitFileContents,
     initiateFileCopy,
 } from './extensions';
+import type { FileStorageBackend, FileWriteHandle } from './storage';
+import { detectStorageBackend } from './storage';
+import type { StorageBackendPreference } from './storage';
 
 /**
  * Minimal session interface for extension-based file transfer.
@@ -43,6 +46,21 @@ export interface RdpFileTransferProviderOptions {
      * Use this to resume clipboard monitoring after {@link onUploadStarted}.
      */
     onUploadFinished?: () => void;
+
+    /**
+     * Storage backend for downloads.
+     *
+     * Accepts either a preference string or a pre-constructed backend
+     * instance (useful for testing or custom backends):
+     *
+     * - `'auto'` (default): use OPFS when available, fall back to
+     *   in-memory Blob.  OPFS reduces peak RAM from ~2x file size to
+     *   ~chunk size.
+     * - `'blob'`: force in-memory Blob storage.
+     * - `FileStorageBackend`: use the provided backend instance directly,
+     *   bypassing auto-detection.
+     */
+    storageBackend?: StorageBackendPreference | FileStorageBackend;
 }
 
 /**
@@ -142,7 +160,12 @@ interface TransferState {
     streamId: number;
     clipDataId?: number;
     expectedSize?: number;
-    chunks: Uint8Array[];
+    writeHandle?: FileWriteHandle;
+    /** Resolves when `writeHandle` has been assigned.  Always resolves (never
+     *  rejects) so that concurrent `handleDataChunk` callers awaiting this
+     *  promise do not need individual error handling -- failures are detected
+     *  via the `!state.writeHandle` guard after the await. */
+    writeHandleReady?: Promise<void>;
     bytesReceived: number;
     resolve: (blob: Blob) => void;
     reject: (error: Error) => void;
@@ -262,6 +285,8 @@ export class RdpFileTransferProvider {
     private static readonly MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
     /** Timeout for FileReader operations (60 seconds) to prevent stalled uploads */
     private static readonly FILE_READER_TIMEOUT_MS = 60 * 1000;
+    /** Timeout for storage backend write handle initialization (30 seconds). */
+    private static readonly WRITE_HANDLE_INIT_TIMEOUT_MS = 30 * 1000;
     /** Maximum recursion depth when traversing dropped directories. */
     private static readonly MAX_DIRECTORY_DEPTH = 32;
     /** Maximum total entries (files + directories) collected from a single drop. */
@@ -271,9 +296,12 @@ export class RdpFileTransferProvider {
     private readonly chunkSize: number;
     private readonly onUploadStarted?: () => void;
     private readonly onUploadFinished?: () => void;
+    private readonly storagePreference: StorageBackendPreference;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private readonly eventHandlers: Map<keyof EventMap, Set<EventHandler<any>>> = new Map();
 
+    private storageBackend?: FileStorageBackend;
+    private storageBackendReady?: Promise<FileStorageBackend>;
     private activeDownloads: Map<number, TransferState> = new Map();
     private uploadState?: UploadState;
     // DroppedFile metadata retained after upload completes so re-paste works
@@ -292,6 +320,29 @@ export class RdpFileTransferProvider {
         this.chunkSize = options?.chunkSize ?? 65536; // Default: 64KB
         this.onUploadStarted = options?.onUploadStarted;
         this.onUploadFinished = options?.onUploadFinished;
+
+        const sb = options?.storageBackend;
+        if (typeof sb === 'object' && sb !== null) {
+            if (
+                typeof (sb as FileStorageBackend).createWriteHandle !== 'function' ||
+                typeof (sb as FileStorageBackend).dispose !== 'function'
+            ) {
+                throw new Error(
+                    "storageBackend: expected 'auto', 'blob', or a FileStorageBackend " +
+                        'with createWriteHandle() and dispose() methods',
+                );
+            }
+            this.storageBackend = sb;
+            this.storagePreference = 'auto'; // unused when backend is pre-set
+        } else {
+            const pref = sb ?? 'auto';
+            if (pref !== 'auto' && pref !== 'blob') {
+                throw new Error(
+                    `storageBackend: invalid preference '${pref}', expected 'auto', 'blob', or a FileStorageBackend instance`,
+                );
+            }
+            this.storagePreference = pref;
+        }
     }
 
     /**
@@ -307,6 +358,37 @@ export class RdpFileTransferProvider {
             throw new Error('RdpFileTransferProvider: Session not available. Ensure connect() has been called.');
         }
         return this.session;
+    }
+
+    /**
+     * Lazily initialize and return the storage backend.
+     *
+     * Detection is performed once and cached.  Concurrent callers share
+     * the same initialization promise so the probe only runs once.
+     * If detection fails the cached promise is cleared so subsequent
+     * downloads can retry.
+     */
+    private async ensureStorageBackend(): Promise<FileStorageBackend> {
+        if (this.storageBackend) {
+            return this.storageBackend;
+        }
+
+        if (!this.storageBackendReady) {
+            this.storageBackendReady = detectStorageBackend(this.storagePreference)
+                .then((backend) => {
+                    this.storageBackend = backend;
+                    console.debug(`File transfer storage: ${backend.name}`);
+                    return backend;
+                })
+                .catch((error: unknown) => {
+                    // Clear the cached promise so the next download retries
+                    // detection instead of hitting the same failure.
+                    this.storageBackendReady = undefined;
+                    throw error;
+                });
+        }
+
+        return this.storageBackendReady;
     }
 
     // --- Extension-based session method wrappers ---
@@ -453,7 +535,6 @@ export class RdpFileTransferProvider {
                 fileIndex,
                 streamId,
                 clipDataId,
-                chunks: [],
                 bytesReceived: 0,
                 resolve,
                 reject,
@@ -545,7 +626,7 @@ export class RdpFileTransferProvider {
 
         // Execute with concurrency limit.
         // Each task promise catches its own errors so that Promise.race/Promise.all
-        // never reject — errors are collected in the `errors` array above.
+        // never reject - errors are collected in the `errors` array above.
         const executing: Array<Promise<void>> = [];
         for (const task of downloadTasks) {
             const promise = task().finally(() => {
@@ -955,7 +1036,7 @@ export class RdpFileTransferProvider {
 
         // Cancel active downloads (lock cleanup is handled by the Rust layer)
         for (const state of this.activeDownloads.values()) {
-            state.chunks = [];
+            void this.abortWriteHandle(state);
             state.reject(new Error('RdpFileTransferProvider disposed'));
         }
         this.activeDownloads.clear();
@@ -980,6 +1061,16 @@ export class RdpFileTransferProvider {
         // Clear available files and lock reference
         this.availableFiles = [];
         this.clipDataId = undefined;
+
+        // Dispose the storage backend (deletes OPFS session directory, etc.).
+        // Fire-and-forget -- dispose() is synchronous per the FileTransferProvider
+        // interface, but backend cleanup is async.  This is acceptable because
+        // the session is terminating and the OPFS data is expendable.
+        if (this.storageBackend) {
+            void this.storageBackend.dispose();
+            this.storageBackend = undefined;
+            this.storageBackendReady = undefined;
+        }
 
         // Clear event handlers
         this.eventHandlers.clear();
@@ -1085,7 +1176,9 @@ export class RdpFileTransferProvider {
         const fileHandle = files[request.index];
         const dropped = droppedFiles[request.index];
         if (dropped === undefined) {
-            console.error(`File index ${request.index} out of range`);
+            console.error(
+                `File index ${request.index} out of range (stream ${request.streamId}, valid: 0..${droppedFiles.length - 1})`,
+            );
             this.sendSubmitFileContents(request.streamId, true, new Uint8Array());
             return;
         }
@@ -1297,7 +1390,7 @@ export class RdpFileTransferProvider {
 
         if (response.isError) {
             this.activeDownloads.delete(response.streamId);
-            state.chunks = [];
+            void this.abortWriteHandle(state);
             const err: FileTransferError = {
                 message: 'Remote failed to provide file contents',
                 transferId: state.streamId,
@@ -1315,7 +1408,7 @@ export class RdpFileTransferProvider {
             // Validate response data is valid before creating DataView
             if (response.data.length < 8) {
                 this.activeDownloads.delete(response.streamId);
-                state.chunks = [];
+                void this.abortWriteHandle(state);
                 const err: FileTransferError = {
                     message: 'Invalid SIZE response: expected 8 bytes for file size',
                     transferId: state.streamId,
@@ -1334,7 +1427,7 @@ export class RdpFileTransferProvider {
             // Validate file size doesn't exceed browser memory limits
             if (size > RdpFileTransferProvider.MAX_FILE_SIZE) {
                 this.activeDownloads.delete(response.streamId);
-                state.chunks = [];
+                void this.abortWriteHandle(state);
                 const err: FileTransferError = {
                     message: `File size ${(size / (1024 * 1024 * 1024)).toFixed(2)}GB exceeds maximum download limit of 2GB`,
                     transferId: state.streamId,
@@ -1352,40 +1445,160 @@ export class RdpFileTransferProvider {
             // Handle empty files
             if (size === 0) {
                 this.activeDownloads.delete(response.streamId);
+                void this.abortWriteHandle(state);
                 const blob = new Blob([]);
                 this.emit('download-complete', state.fileInfo, blob, state.fileIndex, state.streamId);
                 state.resolve(blob);
                 return;
             }
 
-            // Request data in chunks
-            this.requestNextChunk(state);
+            // Initialize the storage write handle now that we know the file
+            // size, then request the first data chunk.
+            this.initWriteHandleAndRequestFirstChunk(state);
         } else {
-            // This is a DATA response.
-            // TODO: chunks accumulate in memory until the download completes and a
-            // Blob is created. For a 2 GB file this means ~4 GB peak RAM (chunks +
-            // final Blob). Consider incremental Blob construction or the File System
-            // Access API (WritableStream) to reduce peak memory in a future milestone.
-            state.chunks.push(response.data);
-            state.bytesReceived += response.data.length;
+            // This is a DATA response -- write the chunk to the storage backend.
+            void this.handleDataChunk(state, response.data);
+        }
+    }
 
-            // Validate that received data doesn't grossly exceed expected size
-            if (state.bytesReceived > state.expectedSize * 2) {
-                this.activeDownloads.delete(response.streamId);
-                state.chunks = [];
+    /**
+     * Create a write handle for the given transfer and request the first
+     * data chunk.  Runs asynchronously because backend initialization
+     * (especially OPFS) is async.
+     *
+     * The init promise is stored on `state.writeHandleReady` so that
+     * DATA responses arriving before the handle is ready can await it.
+     */
+    private initWriteHandleAndRequestFirstChunk(state: TransferState): void {
+        // The init promise always resolves (never rejects) so that awaiting
+        // callers in handleDataChunk do not need individual error handling.
+        // Failures are signaled by leaving writeHandle undefined; the
+        // !state.writeHandle guard after the await detects this.
+        state.writeHandleReady = (async () => {
+            try {
+                const initPromise = (async () => {
+                    const backend = await this.ensureStorageBackend();
+                    return backend.createWriteHandle(state.fileInfo.name, state.expectedSize ?? 0);
+                })();
+
+                const timeout = RdpFileTransferProvider.WRITE_HANDLE_INIT_TIMEOUT_MS;
+                const handle = await Promise.race([
+                    initPromise,
+                    new Promise<never>((_resolve, reject) =>
+                        setTimeout(() => reject(new Error(`Storage init timed out after ${timeout / 1000}s`)), timeout),
+                    ),
+                ]);
+
+                // Provider may have been disposed while we were awaiting.
+                // Abort the newly created handle to avoid orphaned OPFS files.
+                if (this.disposed || !this.activeDownloads.has(state.streamId)) {
+                    try {
+                        await handle.abort();
+                    } catch {
+                        // Best-effort cleanup.
+                    }
+                    return;
+                }
+
+                state.writeHandle = handle;
+            } catch (error) {
+                this.activeDownloads.delete(state.streamId);
                 const err: FileTransferError = {
-                    message: `Received ${state.bytesReceived} bytes but expected ${state.expectedSize} — aborting`,
+                    message: 'Failed to initialize storage for download',
                     transferId: state.streamId,
                     fileIndex: state.fileIndex,
                     fileName: state.fileInfo.name,
                     direction: 'download',
+                    cause: error,
                 };
                 this.emit('error', err);
-                state.reject(new Error(err.message));
+                state.reject(new Error(err.message, { cause: error }));
+                // Do not rethrow: the promise must resolve (not reject) so
+                // that awaiting callers in handleDataChunk can detect the
+                // failure via the !state.writeHandle guard without needing
+                // per-caller error handling.
                 return;
             }
 
-            // Emit progress (clamp percentage to 100% in case server sends slightly more than expected)
+            this.requestNextChunk(state);
+        })();
+    }
+
+    /**
+     * Write a data chunk to the storage backend and advance the download.
+     *
+     * If the write handle is not yet ready (DATA response arrived before
+     * backend init completed), this method awaits `state.writeHandleReady`
+     * to preserve chunk ordering -- each concurrent caller awaits the same
+     * promise in sequence.
+     */
+    private async handleDataChunk(state: TransferState, data: Uint8Array): Promise<void> {
+        if (!state.writeHandle) {
+            if (!state.writeHandleReady || this.disposed || !this.activeDownloads.has(state.streamId)) {
+                // No init in progress or download already cancelled.
+                return;
+            }
+            // writeHandleReady always resolves (never rejects); init
+            // failures leave writeHandle undefined, caught by the
+            // guard below.
+            await state.writeHandleReady;
+
+            // Re-check: the download may have been cancelled or disposed
+            // while we were waiting for the write handle.
+            if (this.disposed || !this.activeDownloads.has(state.streamId)) {
+                return;
+            }
+        }
+
+        // Guard defensively: writeHandle may still be undefined if init
+        // failed or dispose() cleared it during the await above.
+        const writeHandle = state.writeHandle;
+        if (!writeHandle) {
+            return;
+        }
+
+        try {
+            await writeHandle.write(data);
+        } catch (error) {
+            this.activeDownloads.delete(state.streamId);
+            void this.abortWriteHandle(state);
+            const isQuota = error instanceof DOMException && error.name === 'QuotaExceededError';
+            const message = isQuota
+                ? `Storage quota exceeded while downloading "${state.fileInfo.name}"`
+                : 'Failed to write download chunk to storage';
+            const err: FileTransferError = {
+                message,
+                transferId: state.streamId,
+                fileIndex: state.fileIndex,
+                fileName: state.fileInfo.name,
+                direction: 'download',
+                cause: error,
+            };
+            this.emit('error', err);
+            state.reject(new Error(err.message, { cause: error }));
+            return;
+        }
+
+        state.bytesReceived += data.length;
+
+        // Validate that received data doesn't grossly exceed expected size
+        if (state.expectedSize !== undefined && state.bytesReceived > state.expectedSize * 2) {
+            this.activeDownloads.delete(state.streamId);
+            void this.abortWriteHandle(state);
+            const err: FileTransferError = {
+                message: `Received ${state.bytesReceived} bytes but expected ${state.expectedSize} - aborting`,
+                transferId: state.streamId,
+                fileIndex: state.fileIndex,
+                fileName: state.fileInfo.name,
+                direction: 'download',
+            };
+            this.emit('error', err);
+            state.reject(new Error(err.message));
+            return;
+        }
+
+        // Emit progress (clamp percentage to 100% in case server sends slightly more than expected)
+        if (state.expectedSize !== undefined) {
             const progress: TransferProgress = {
                 transferId: state.streamId,
                 fileIndex: state.fileIndex,
@@ -1395,17 +1608,43 @@ export class RdpFileTransferProvider {
                 percentage: Math.min((state.bytesReceived / state.expectedSize) * 100, 100),
             };
             this.emit('download-progress', progress);
+        }
 
-            // Check if download complete
-            if (state.bytesReceived >= state.expectedSize) {
-                this.activeDownloads.delete(response.streamId);
-                const blob = new Blob(state.chunks as BlobPart[]);
+        // Check if download complete
+        if (state.expectedSize !== undefined && state.bytesReceived >= state.expectedSize) {
+            this.activeDownloads.delete(state.streamId);
+            try {
+                const blob = await writeHandle.finalize();
                 this.emit('download-complete', state.fileInfo, blob, state.fileIndex, state.streamId);
                 state.resolve(blob);
-            } else {
-                // Request next chunk
-                this.requestNextChunk(state);
+            } catch (error) {
+                void this.abortWriteHandle(state);
+                const err: FileTransferError = {
+                    message: 'Failed to finalize downloaded file',
+                    transferId: state.streamId,
+                    fileIndex: state.fileIndex,
+                    fileName: state.fileInfo.name,
+                    direction: 'download',
+                    cause: error,
+                };
+                this.emit('error', err);
+                state.reject(new Error(err.message, { cause: error }));
             }
+        } else {
+            // Request next chunk
+            this.requestNextChunk(state);
+        }
+    }
+
+    /** Abort and clean up a write handle, ignoring errors. */
+    private async abortWriteHandle(state: TransferState): Promise<void> {
+        if (state.writeHandle) {
+            try {
+                await state.writeHandle.abort();
+            } catch {
+                // Best-effort cleanup.
+            }
+            state.writeHandle = undefined;
         }
     }
 
@@ -1429,7 +1668,7 @@ export class RdpFileTransferProvider {
         for (const [streamId, state] of this.activeDownloads) {
             if (state.clipDataId !== undefined && expiredLockSet.has(state.clipDataId)) {
                 this.activeDownloads.delete(streamId);
-                state.chunks = [];
+                void this.abortWriteHandle(state);
 
                 // Build user-friendly error message with timeout info and remediation
                 const errorMessage =
@@ -1473,7 +1712,7 @@ export class RdpFileTransferProvider {
             );
         } catch (error) {
             this.activeDownloads.delete(state.streamId);
-            state.chunks = [];
+            void this.abortWriteHandle(state);
             const err: FileTransferError = {
                 message: 'Failed to request file chunk',
                 transferId: state.streamId,
@@ -1503,6 +1742,6 @@ export class RdpFileTransferProvider {
             }
         }
         // Should never happen: more active downloads than the counter can skip
-        throw new Error('unable to generate unique stream ID');
+        throw new Error('Unable to generate unique stream ID');
     }
 }

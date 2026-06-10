@@ -561,3 +561,657 @@ describe('RdpFileTransferProvider', () => {
         });
     });
 });
+
+// ---------------------------------------------------------------------------
+// Constructor validation for storageBackend option
+// ---------------------------------------------------------------------------
+
+describe('RdpFileTransferProvider storageBackend validation', () => {
+    it('rejects an object missing createWriteHandle', () => {
+        expect(
+            () =>
+                new RdpFileTransferProvider({
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    storageBackend: { dispose: async () => {} } as any,
+                }),
+        ).toThrow(/createWriteHandle\(\) and dispose\(\)/);
+    });
+
+    it('rejects an object missing dispose', () => {
+        expect(
+            () =>
+                new RdpFileTransferProvider({
+                    storageBackend: {
+                        createWriteHandle: async () => ({}),
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    } as any,
+                }),
+        ).toThrow(/createWriteHandle\(\) and dispose\(\)/);
+    });
+
+    it('rejects an invalid preference string', () => {
+        expect(
+            () =>
+                new RdpFileTransferProvider({
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    storageBackend: 'opfs' as any,
+                }),
+        ).toThrow(/invalid preference 'opfs'/);
+    });
+
+    it('accepts a valid FileStorageBackend object', () => {
+        expect(
+            () =>
+                new RdpFileTransferProvider({
+                    storageBackend: {
+                        name: 'test',
+                        createWriteHandle: async () => ({}) as never,
+                        dispose: async () => {},
+                    },
+                }),
+        ).not.toThrow();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Download flow with injected storage backend
+// ---------------------------------------------------------------------------
+
+import type { FileStorageBackend, FileWriteHandle } from './storage';
+
+/**
+ * Helper to build an 8-byte little-endian SIZE response for a given file size.
+ */
+function makeSizeResponse(streamId: number, size: number): { streamId: number; isError: boolean; data: Uint8Array } {
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setBigUint64(0, BigInt(size), true);
+    return { streamId, isError: false, data: new Uint8Array(buf) };
+}
+
+function makeDataResponse(streamId: number, bytes: number[]): { streamId: number; isError: boolean; data: Uint8Array } {
+    return { streamId, isError: false, data: new Uint8Array(bytes) };
+}
+
+function makeErrorResponse(streamId: number): { streamId: number; isError: boolean; data: Uint8Array } {
+    return { streamId, isError: true, data: new Uint8Array(0) };
+}
+
+/**
+ * Create a mock FileStorageBackend that records all operations.
+ */
+function createMockStorageBackend(options?: {
+    createWriteHandleError?: Error;
+    writeError?: Error;
+    finalizeError?: Error;
+}) {
+    const writes: Uint8Array[] = [];
+    let finalized = false;
+    let aborted = false;
+    let bytesWritten = 0;
+
+    const writeHandle: FileWriteHandle = {
+        get bytesWritten() {
+            return bytesWritten;
+        },
+        async write(chunk: Uint8Array) {
+            if (options?.writeError) throw options.writeError;
+            writes.push(new Uint8Array(chunk));
+            bytesWritten += chunk.length;
+        },
+        async finalize() {
+            if (options?.finalizeError) throw options.finalizeError;
+            finalized = true;
+            return new Blob(writes);
+        },
+        async abort() {
+            aborted = true;
+        },
+    };
+
+    const backend: FileStorageBackend = {
+        name: 'mock',
+        async createWriteHandle(_fileName: string, _expectedSize: number) {
+            if (options?.createWriteHandleError) throw options.createWriteHandleError;
+            return writeHandle;
+        },
+        async dispose() {},
+    };
+
+    return {
+        backend,
+        writeHandle,
+        get writes() {
+            return writes;
+        },
+        get finalized() {
+            return finalized;
+        },
+        get aborted() {
+            return aborted;
+        },
+    };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CallbackMap = Record<string, (...args: any[]) => void>;
+
+/**
+ * Set up a provider with an injected storage backend and extract the
+ * protocol callbacks from getBuilderExtensions().
+ */
+function setupDownloadTest(backendOrOptions?: FileStorageBackend | Parameters<typeof createMockStorageBackend>[0]) {
+    let mockStorage: ReturnType<typeof createMockStorageBackend>;
+    let backend: FileStorageBackend;
+
+    if (backendOrOptions !== undefined && 'name' in backendOrOptions) {
+        backend = backendOrOptions;
+        mockStorage = undefined as unknown as ReturnType<typeof createMockStorageBackend>;
+    } else {
+        mockStorage = createMockStorageBackend(backendOrOptions);
+        backend = mockStorage.backend;
+    }
+
+    const provider = new RdpFileTransferProvider({
+        chunkSize: 4, // small chunks for testing
+        storageBackend: backend,
+    });
+
+    const session = new MockSession();
+    provider.setSession(session);
+
+    // Extract callback functions from the mocked extensions
+    const extensions = provider.getBuilderExtensions();
+    const callbacks: CallbackMap = {};
+    for (const ext of extensions) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const e = ext as any;
+        if (typeof e.value === 'function') {
+            callbacks[e.ident] = e.value;
+        }
+    }
+
+    return { provider, session, callbacks, mockStorage };
+}
+
+describe('download flow with storage backend', () => {
+    afterEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('happy path: SIZE + DATA -> write -> finalize -> resolve', async () => {
+        const { provider, session, callbacks, mockStorage } = setupDownloadTest();
+        const fileInfo: FileInfo = { name: 'test.bin', size: 6, lastModified: 0 };
+
+        // Announce files available
+        callbacks['files_available_callback']([fileInfo]);
+
+        // Start download
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+        expect(transferId).toBeGreaterThan(0);
+
+        // Session should have received the SIZE request
+        expect(session.invokeExtension).toHaveBeenCalledTimes(1);
+
+        // Feed SIZE response (6 bytes)
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 6));
+
+        // Wait a tick for the async write handle init to complete
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Session should now have received a RANGE request
+        expect(session.invokeExtension.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+        // Feed DATA responses (chunkSize=4, so two chunks: 4+2)
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [1, 2, 3, 4]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [5, 6]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Download should complete
+        const blob = await completion;
+        expect(blob.size).toBe(6);
+        expect(mockStorage.finalized).toBe(true);
+        expect(mockStorage.writes).toHaveLength(2);
+
+        provider.dispose();
+    });
+
+    it('empty file (size=0) resolves without creating a write handle', async () => {
+        const { provider, callbacks, mockStorage } = setupDownloadTest();
+        const fileInfo: FileInfo = { name: 'empty.bin', size: 0, lastModified: 0 };
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // Feed SIZE response: 0 bytes
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 0));
+
+        const blob = await completion;
+        expect(blob.size).toBe(0);
+        // Write handle should NOT have been created for empty files
+        expect(mockStorage.finalized).toBe(false);
+        expect(mockStorage.writes).toHaveLength(0);
+
+        provider.dispose();
+    });
+
+    it('remote error response rejects the download', async () => {
+        const { provider, callbacks } = setupDownloadTest();
+        const fileInfo: FileInfo = { name: 'fail.bin', size: 100, lastModified: 0 };
+
+        const errorHandler = vi.fn();
+        provider.on('error', errorHandler);
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // Feed error response
+        callbacks['file_contents_response_callback'](makeErrorResponse(transferId));
+
+        await expect(completion).rejects.toThrow('Remote failed to provide file contents');
+        expect(errorHandler).toHaveBeenCalledTimes(1);
+        expect(errorHandler.mock.calls[0][0].direction).toBe('download');
+
+        provider.dispose();
+    });
+
+    it('storage backend init failure emits error', async () => {
+        const { provider, callbacks } = setupDownloadTest({
+            createWriteHandleError: new Error('disk full'),
+        });
+        const fileInfo: FileInfo = { name: 'fail.bin', size: 100, lastModified: 0 };
+
+        const errorHandler = vi.fn();
+        provider.on('error', errorHandler);
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // Feed SIZE response to trigger write handle creation
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 100));
+
+        // Wait for the async init to fail
+        await expect(completion).rejects.toThrow('Failed to initialize storage for download');
+        expect(errorHandler).toHaveBeenCalledTimes(1);
+
+        provider.dispose();
+    });
+
+    it('write failure emits error and aborts', async () => {
+        const { provider, callbacks, mockStorage } = setupDownloadTest({
+            writeError: new Error('I/O error'),
+        });
+        const fileInfo: FileInfo = { name: 'fail.bin', size: 4, lastModified: 0 };
+
+        const errorHandler = vi.fn();
+        provider.on('error', errorHandler);
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // Attach a rejection handler immediately to prevent unhandled rejection
+        const completionResult = completion.catch((e: unknown) => e);
+
+        // Feed SIZE response
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 4));
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Feed DATA response -- the write will fail
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [1, 2, 3, 4]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        const error = await completionResult;
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe('Failed to write download chunk to storage');
+        expect(mockStorage.aborted).toBe(true);
+
+        provider.dispose();
+    });
+
+    it('QuotaExceededError produces a specific error message', async () => {
+        const quotaError = new DOMException('quota exceeded', 'QuotaExceededError');
+        const { provider, callbacks } = setupDownloadTest({
+            writeError: quotaError,
+        });
+        const fileInfo: FileInfo = { name: 'big.bin', size: 4, lastModified: 0 };
+
+        const errorHandler = vi.fn();
+        provider.on('error', errorHandler);
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // Attach a rejection handler immediately to prevent unhandled rejection
+        const completionResult = completion.catch((e: unknown) => e);
+
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 4));
+        await new Promise((r) => setTimeout(r, 10));
+
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [1, 2, 3, 4]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        const error = await completionResult;
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toMatch(/[Ss]torage quota exceeded/);
+        expect(errorHandler).toHaveBeenCalledTimes(1);
+        expect(errorHandler.mock.calls[0][0].message).toMatch(/[Ss]torage quota exceeded/);
+
+        provider.dispose();
+    });
+
+    it('dispose during download aborts write handle', async () => {
+        const { provider, callbacks, mockStorage } = setupDownloadTest();
+        const fileInfo: FileInfo = { name: 'partial.bin', size: 100, lastModified: 0 };
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // Feed SIZE response and wait for write handle init
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 100));
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Feed one chunk
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [1, 2, 3, 4]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Dispose mid-download
+        provider.dispose();
+
+        await expect(completion).rejects.toThrow('disposed');
+        expect(mockStorage.aborted).toBe(true);
+    });
+
+    it('emits download-progress during transfer', async () => {
+        const { provider, callbacks } = setupDownloadTest();
+        const fileInfo: FileInfo = { name: 'progress.bin', size: 8, lastModified: 0 };
+        const progressEvents: Array<{ bytesTransferred: number; percentage: number }> = [];
+
+        provider.on('download-progress', (p) => progressEvents.push(p));
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 8));
+        await new Promise((r) => setTimeout(r, 10));
+
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [1, 2, 3, 4]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [5, 6, 7, 8]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        await completion;
+
+        expect(progressEvents.length).toBeGreaterThanOrEqual(2);
+        expect(progressEvents[0].bytesTransferred).toBe(4);
+        expect(progressEvents[0].percentage).toBe(50);
+        expect(progressEvents[progressEvents.length - 1].percentage).toBe(100);
+
+        provider.dispose();
+    });
+
+    it('emits download-complete on success', async () => {
+        const { provider, callbacks } = setupDownloadTest();
+        const fileInfo: FileInfo = { name: 'done.bin', size: 2, lastModified: 0 };
+        const completeEvents: Array<{ fileInfo: FileInfo; blob: Blob }> = [];
+
+        provider.on('download-complete', (fi, blob) => completeEvents.push({ fileInfo: fi, blob }));
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 2));
+        await new Promise((r) => setTimeout(r, 10));
+
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [0xca, 0xfe]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        await completion;
+
+        expect(completeEvents).toHaveLength(1);
+        expect(completeEvents[0].fileInfo.name).toBe('done.bin');
+        expect(completeEvents[0].blob.size).toBe(2);
+
+        provider.dispose();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Write-handle-ready race path tests
+// ---------------------------------------------------------------------------
+
+describe('download flow with delayed write handle init', () => {
+    afterEach(() => {
+        vi.clearAllMocks();
+    });
+
+    /**
+     * Create a mock backend whose createWriteHandle resolves after an
+     * explicit trigger, simulating slow OPFS init.
+     */
+    function createDelayedBackend() {
+        const writes: Uint8Array[] = [];
+        let finalized = false;
+        let aborted = false;
+        let bytesWritten = 0;
+        let resolveInit!: () => void;
+        let rejectInit!: (err: Error) => void;
+
+        const initPromise = new Promise<void>((resolve, reject) => {
+            resolveInit = resolve;
+            rejectInit = reject;
+        });
+
+        const writeHandle: FileWriteHandle = {
+            get bytesWritten() {
+                return bytesWritten;
+            },
+            async write(chunk: Uint8Array) {
+                writes.push(new Uint8Array(chunk));
+                bytesWritten += chunk.length;
+            },
+            async finalize() {
+                finalized = true;
+                return new Blob(writes);
+            },
+            async abort() {
+                aborted = true;
+            },
+        };
+
+        const backend: FileStorageBackend = {
+            name: 'delayed-mock',
+            async createWriteHandle(_fileName: string, _expectedSize: number) {
+                await initPromise;
+                return writeHandle;
+            },
+            async dispose() {},
+        };
+
+        return {
+            backend,
+            /** Call to let createWriteHandle resolve. */
+            resolveInit,
+            /** Call to make createWriteHandle fail. */
+            rejectInit,
+            get writes() {
+                return writes;
+            },
+            get finalized() {
+                return finalized;
+            },
+            get aborted() {
+                return aborted;
+            },
+        };
+    }
+
+    it('DATA arriving before write handle is ready awaits init then writes', async () => {
+        const delayed = createDelayedBackend();
+        const { provider, callbacks } = setupDownloadTest(delayed.backend);
+        const fileInfo: FileInfo = { name: 'race.bin', size: 4, lastModified: 0 };
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // SIZE response triggers write handle init (which blocks on initPromise)
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 4));
+
+        // DATA arrives while write handle init is still pending
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [1, 2, 3, 4]));
+
+        // Let microtasks settle -- handleDataChunk should be awaiting writeHandleReady
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Writes should NOT have happened yet
+        expect(delayed.writes).toHaveLength(0);
+
+        // Now release the init
+        delayed.resolveInit();
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Download should complete
+        const blob = await completion;
+        expect(blob.size).toBe(4);
+        expect(delayed.writes).toHaveLength(1);
+        expect(delayed.finalized).toBe(true);
+
+        provider.dispose();
+    });
+
+    it('init failure while DATA is waiting does not hang', async () => {
+        const delayed = createDelayedBackend();
+        const { provider, callbacks } = setupDownloadTest(delayed.backend);
+        const fileInfo: FileInfo = { name: 'fail-race.bin', size: 4, lastModified: 0 };
+
+        const errorHandler = vi.fn();
+        provider.on('error', errorHandler);
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // Attach rejection handler early to prevent unhandled rejection warning.
+        const completionResult = completion.catch((e: unknown) => e);
+
+        // SIZE response triggers write handle init
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 4));
+
+        // DATA arrives while init is pending
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [1, 2, 3, 4]));
+
+        // Fail the init
+        delayed.rejectInit(new Error('OPFS broken'));
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Download should reject (not hang)
+        const error = await completionResult;
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe('Failed to initialize storage for download');
+        expect(delayed.writes).toHaveLength(0);
+        expect(errorHandler).toHaveBeenCalledTimes(1);
+
+        provider.dispose();
+    });
+
+    it('dispose during pending write-handle init does not leak', async () => {
+        const delayed = createDelayedBackend();
+        const { provider, callbacks } = setupDownloadTest(delayed.backend);
+        const fileInfo: FileInfo = { name: 'dispose-race.bin', size: 100, lastModified: 0 };
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // SIZE response triggers write handle init (blocked)
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 100));
+        await new Promise((r) => setTimeout(r, 5));
+
+        // Dispose before init completes
+        provider.dispose();
+
+        await expect(completion).rejects.toThrow('disposed');
+
+        // Resolve init after dispose -- should not cause errors
+        delayed.resolveInit();
+        await new Promise((r) => setTimeout(r, 10));
+
+        // No writes should have occurred
+        expect(delayed.writes).toHaveLength(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Edge case error path tests
+// ---------------------------------------------------------------------------
+
+describe('download flow edge cases', () => {
+    afterEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('finalize() failure emits error and rejects', async () => {
+        const { provider, callbacks, mockStorage } = setupDownloadTest({
+            finalizeError: new Error('disk corruption'),
+        });
+        const fileInfo: FileInfo = { name: 'corrupt.bin', size: 4, lastModified: 0 };
+
+        const errorHandler = vi.fn();
+        provider.on('error', errorHandler);
+
+        callbacks['files_available_callback']([fileInfo]);
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // Attach rejection handler early.
+        const completionResult = completion.catch((e: unknown) => e);
+
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 4));
+        await new Promise((r) => setTimeout(r, 10));
+
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [1, 2, 3, 4]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        const error = await completionResult;
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe('Failed to finalize downloaded file');
+        expect(errorHandler).toHaveBeenCalledTimes(1);
+        expect(errorHandler.mock.calls[0][0].message).toBe('Failed to finalize downloaded file');
+        expect(mockStorage.aborted).toBe(true);
+
+        provider.dispose();
+    });
+
+    it('lock expiration aborts affected downloads', async () => {
+        const { provider, callbacks, mockStorage } = setupDownloadTest();
+        const fileInfo: FileInfo = { name: 'locked.bin', size: 100, lastModified: 0 };
+
+        const errorHandler = vi.fn();
+        provider.on('error', errorHandler);
+
+        // Announce files with a clipDataId (lock ID).
+        callbacks['files_available_callback']([fileInfo], 42);
+
+        const { transferId, completion } = provider.downloadFile(fileInfo, 0);
+
+        // Attach rejection handler early.
+        const completionResult = completion.catch((e: unknown) => e);
+
+        // Feed SIZE and first chunk.
+        callbacks['file_contents_response_callback'](makeSizeResponse(transferId, 100));
+        await new Promise((r) => setTimeout(r, 10));
+
+        callbacks['file_contents_response_callback'](makeDataResponse(transferId, [1, 2, 3, 4]));
+        await new Promise((r) => setTimeout(r, 10));
+
+        // Expire the lock.
+        callbacks['locks_expired_callback'](new Uint32Array([42]));
+
+        const error = await completionResult;
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toMatch(/timed out/i);
+        expect(errorHandler).toHaveBeenCalledTimes(1);
+        expect(errorHandler.mock.calls[0][0].message).toMatch(/timed out/i);
+        expect(mockStorage.aborted).toBe(true);
+
+        provider.dispose();
+    });
+});
