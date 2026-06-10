@@ -1,6 +1,7 @@
 use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
 use core::num::NonZeroU32;
+use core::pin::Pin;
 use core::time::Duration;
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -9,6 +10,7 @@ use anyhow::Context as _;
 use base64::Engine as _;
 use futures_channel::mpsc;
 use futures_util::io::{ReadHalf, WriteHalf};
+use futures_util::future::{Fuse, FusedFuture as _};
 use futures_util::{AsyncWriteExt as _, FutureExt as _, StreamExt as _, select};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
@@ -23,6 +25,7 @@ use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
+use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
@@ -36,6 +39,7 @@ use ironrdp_futures::{FramedWrite, single_sequence_step_read};
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use tracing::{debug, error, info, trace, warn};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
@@ -654,6 +658,18 @@ impl iron_remote_desktop::Session for Session {
         // Timer interval for driving clipboard lock timeouts (5 second interval)
         let mut cleanup_interval = IntervalStream::new(5_000).fuse();
 
+        // Present coalescing: decode accumulates dirty regions here (union of everything changed
+        // since the last paint); a `requestAnimationFrame` tick blits the accumulated region once
+        // per display refresh. This aligns canvas presentation to vsync, so the several separate
+        // server frames that make up one logical update (each its own FrameMarker bracket) are drawn
+        // together instead of leaking onto the screen region-by-region across event-loop turns
+        // (cross-frame tearing).
+        // `present_due` starts terminated and is armed only when a dirty region is accumulated, so an
+        // idle session blocks on I/O instead of waking every animation frame.
+        let window = web_sys::window().context("failed to access window")?;
+        let mut pending_present: Option<InclusiveRectangle> = None;
+        let mut present_due: Fuse<Pin<Box<dyn Future<Output = ()>>>> = Fuse::terminated();
+
         let disconnect_reason = 'outer: loop {
             let outputs = select! {
                 frame = framed.read_pdu().fuse() => {
@@ -836,6 +852,17 @@ impl iron_remote_desktop::Session for Session {
                         }
                     }
                 }
+                _ = present_due => {
+                    // Vsync tick: blit everything accumulated since the last paint in one shot.
+                    // `image` always holds a fully coherent framebuffer, so blitting the union
+                    // bounding box is correct even if it covers some unchanged pixels. `present_due`
+                    // is now terminated; the next dirty region re-arms it.
+                    if let Some(region) = pending_present.take() {
+                        let (region, buffer) = extract_partial_image(&image, region);
+                        gui.draw(&buffer, region).context("draw coalesced region")?;
+                    }
+                    Vec::new()
+                }
                 _ = cleanup_interval.next() => {
                     // Drive clipboard lock timeout cleanup
                     if let Some(cliprdr) = active_stage.get_svc_processor_mut::<CliprdrClient>() {
@@ -867,9 +894,17 @@ impl iron_remote_desktop::Session for Session {
                             .context("Send frame to writer task")?;
                     }
                     ActiveStageOutput::GraphicsUpdate(region) => {
-                        // PERF: some copies and conversion could be optimized
-                        let (region, buffer) = extract_partial_image(&image, region);
-                        gui.draw(&buffer, region).context("draw updated region")?;
+                        // Don't paint yet: accumulate into the pending region and let the next
+                        // animation-frame tick present it (see `pending_present` / `present_due`).
+                        pending_present = Some(match pending_present.take() {
+                            Some(acc) => acc.union(&region),
+                            None => region,
+                        });
+                        // Arm a present for the next animation frame if one isn't already pending.
+                        if present_due.is_terminated() {
+                            let fut: Pin<Box<dyn Future<Output = ()>>> = Box::pin(next_animation_frame(window.clone()));
+                            present_due = fut.fuse();
+                        }
                     }
                     ActiveStageOutput::PointerDefault => {
                         self.set_cursor_style(CursorStyle::Default)?;
@@ -1008,6 +1043,8 @@ impl iron_remote_desktop::Session for Session {
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+                                // Old accumulated region refers to the previous framebuffer dimensions.
+                                pending_present = None;
                                 // Create a new [`FastPathProcessor`] with potentially updated
                                 // io/user channel ids.
                                 active_stage.set_fastpath_processor(
@@ -1760,6 +1797,28 @@ where
 #[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
+}
+
+/// Resolves on the next browser animation frame, so canvas presentation can be throttled to the
+/// display refresh. The `Closure` is kept alive across the await until `requestAnimationFrame`
+/// invokes it once; if the request fails we resolve immediately so the render loop never stalls.
+async fn next_animation_frame(window: web_sys::Window) {
+    let (tx, rx) = futures_channel::oneshot::channel::<()>();
+    let mut tx = Some(tx);
+    let callback = Closure::wrap(Box::new(move |_timestamp: f64| {
+        if let Some(tx) = tx.take() {
+            let _ = tx.send(());
+        }
+    }) as Box<dyn FnMut(f64)>);
+
+    if window
+        .request_animation_frame(callback.as_ref().unchecked_ref())
+        .is_ok()
+    {
+        let _ = rx.await;
+    }
+
+    drop(callback);
 }
 
 #[cfg(test)]
