@@ -2,8 +2,7 @@
     import { onMount } from 'svelte';
     import { userInteractionService } from '../../services/session.service';
     import type { UserInteraction } from '../../../static/iron-remote-desktop';
-    import { Backend } from '../../../static/iron-remote-desktop-rdp';
-    import { preConnectionBlob, displayControl, kdcProxyUrl } from '../../../static/iron-remote-desktop-rdp';
+    import { Backend, rdpExtensions } from '../../services/backend.service';
 
     let userInteraction: UserInteraction;
     let cursorOverrideActive = false;
@@ -32,15 +31,18 @@
                 .withProxyAddress(gatewayAddress)
                 .withServerDomain(domain)
                 .withAuthToken(authtoken)
-                .withDesktopSize(desktopSize)
-                .withExtension(displayControl(true));
+                .withDesktopSize(desktopSize);
 
-            if (pcb !== '') {
-                configBuilder.withExtension(preConnectionBlob(pcb));
-            }
+            if (rdpExtensions !== undefined) {
+                configBuilder.withExtension(rdpExtensions.displayControl(true));
 
-            if (kdc_proxy_url !== '') {
-                configBuilder.withExtension(kdcProxyUrl(kdc_proxy_url));
+                if (pcb !== '') {
+                    configBuilder.withExtension(rdpExtensions.preConnectionBlob(pcb));
+                }
+
+                if (kdc_proxy_url !== '') {
+                    configBuilder.withExtension(rdpExtensions.kdcProxyUrl(kdc_proxy_url));
+                }
             }
 
             const config = configBuilder.build();

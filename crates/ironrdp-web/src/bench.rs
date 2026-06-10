@@ -23,7 +23,6 @@ use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, Performance};
 
 use crate::canvas::Canvas;
-use crate::image::extract_partial_image;
 
 /// In-memory replay transport: serves the recorded capture bytes; discards writes.
 struct ReplayStream<'a> {
@@ -172,7 +171,8 @@ async fn run_pass(
         canvas.clone(),
         NonZeroU32::new(u32::from(params.desktop_width)).context("zero width")?,
         NonZeroU32::new(u32::from(params.desktop_height)).context("zero height")?,
-    )?;
+    )
+    .await?;
 
     let mut framed = LocalFuturesFramed::new(ReplayStream { data: capture, pos: 0 });
     let mut acc = Accum::default();
@@ -198,12 +198,10 @@ async fn run_pass(
         for output in outputs {
             match output {
                 ActiveStageOutput::GraphicsUpdate(region) => {
-                    let t_ext = perf.now();
-                    let (region, buffer) = extract_partial_image(&image, region);
-                    acc.extract_ms += perf.now() - t_ext;
-
+                    // The GPU presenter reads the framebuffer in place (no extraction step);
+                    // extract_ms stays 0 and any fallback extraction is accounted under draw_ms.
                     let t_draw = perf.now();
-                    gui.draw(&buffer, region).context("draw region")?;
+                    gui.draw(&image, region).context("draw region")?;
                     acc.draw_ms += perf.now() - t_draw;
                     acc.rects += 1;
                 }

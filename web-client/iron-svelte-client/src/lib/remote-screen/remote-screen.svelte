@@ -3,7 +3,7 @@
     import { userInteractionService } from '../../services/session.service';
     import { showLogin } from '$lib/login/login-store';
     import type { UserInteraction } from '../../../static/iron-remote-desktop';
-    import { Backend } from '../../../static/iron-remote-desktop-rdp';
+    import { Backend } from '../../services/backend.service';
 
     let uiService: UserInteraction;
     let cursorOverrideActive = false;

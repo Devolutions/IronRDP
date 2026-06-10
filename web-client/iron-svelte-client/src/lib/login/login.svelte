@@ -2,15 +2,16 @@
     import { currentSession, setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import type { IronError, UserInteraction } from '../../../static/iron-remote-desktop';
     import type { Session } from '../../models/session';
-    import { preConnectionBlob, displayControl, kdcProxyUrl, init } from '../../../static/iron-remote-desktop-rdp';
+    import { init, protocol, rdpExtensions, vncForwardUrl } from '../../services/backend.service';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
     import { onMount } from 'svelte';
 
-    let username = 'Administrator';
-    let password = 'DevoLabs123!';
-    let gatewayAddress = 'ws://localhost:7171/jet/rdp';
-    let hostname = '10.10.0.3:3389';
+    // VNC demo defaults target the lab TigerVNC box (VeNCrypt needs a non-empty username).
+    let username = protocol === 'vnc' ? 'irving' : 'Administrator';
+    let password = protocol === 'vnc' ? 'vncpass1' : 'DevoLabs123!';
+    let gatewayAddress = protocol === 'vnc' ? 'ws://localhost:7171' : 'ws://localhost:7171/jet/rdp';
+    let hostname = protocol === 'vnc' ? '192.168.100.50:5901' : '10.10.0.3:3389';
     let domain = '';
     let authtoken = '';
     let kdc_proxy_url = '';
@@ -52,7 +53,7 @@
                     },
                     body: JSON.stringify({
                         dst_hst: hostname,
-                        jet_ap: 'rdp',
+                        jet_ap: protocol,
                         jet_ttl: 3600,
                         jet_rec: false,
                     }),
@@ -72,6 +73,17 @@
                     type: 'error',
                     message: 'Error fetching token',
                 });
+            }
+        }
+
+        // The VNC backend connects to `proxyAddress` verbatim; the Gateway generic-TCP forward
+        // endpoint is per-session, derived from the token's jet_aid claim.
+        if (protocol === 'vnc') {
+            try {
+                gatewayAddress = vncForwardUrl(gatewayAddress, authtoken);
+            } catch (error) {
+                toast.set({ type: 'error', message: `${error}` });
+                throw error;
             }
         }
 
@@ -112,15 +124,18 @@
             .withProxyAddress(gatewayAddress)
             .withServerDomain(domain)
             .withAuthToken(authtoken)
-            .withDesktopSize(desktopSize)
-            .withExtension(displayControl(true));
+            .withDesktopSize(desktopSize);
 
-        if (pcb !== '') {
-            configBuilder.withExtension(preConnectionBlob(pcb));
-        }
+        if (rdpExtensions !== undefined) {
+            configBuilder.withExtension(rdpExtensions.displayControl(true));
 
-        if (kdc_proxy_url !== '') {
-            configBuilder.withExtension(kdcProxyUrl(kdc_proxy_url));
+            if (pcb !== '') {
+                configBuilder.withExtension(rdpExtensions.preConnectionBlob(pcb));
+            }
+
+            if (kdc_proxy_url !== '') {
+                configBuilder.withExtension(rdpExtensions.kdcProxyUrl(kdc_proxy_url));
+            }
         }
 
         const config = configBuilder.build();

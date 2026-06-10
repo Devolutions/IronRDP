@@ -27,6 +27,7 @@ bench = ["dep:ironrdp-replay-core"]
 
 [dependencies]
 ironrdp-replay-core = { path = "../ironrdp-replay-core", optional = true }
+softblit = { path = "../../../web-renderer/crates/softblit" }
 # Protocols
 ironrdp = { path = "../ironrdp", features = [
     "connector",

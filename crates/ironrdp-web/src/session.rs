@@ -48,7 +48,6 @@ use crate::canvas::Canvas;
 use crate::clipboard;
 use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
 use crate::error::IronError;
-use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
 use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
@@ -638,8 +637,9 @@ impl iron_remote_desktop::Session for Session {
         let desktop_height =
             NonZeroU32::new(u32::from(connection_result.desktop_size.height)).context("desktop height is zero")?;
 
-        let mut gui =
-            Canvas::new(self.render_canvas.clone(), desktop_width, desktop_height).context("canvas initialization")?;
+        let mut gui = Canvas::new(self.render_canvas.clone(), desktop_width, desktop_height)
+            .await
+            .context("canvas initialization")?;
 
         debug!("Canvas initialized");
 
@@ -858,8 +858,7 @@ impl iron_remote_desktop::Session for Session {
                     // bounding box is correct even if it covers some unchanged pixels. `present_due`
                     // is now terminated; the next dirty region re-arms it.
                     if let Some(region) = pending_present.take() {
-                        let (region, buffer) = extract_partial_image(&image, region);
-                        gui.draw(&buffer, region).context("draw coalesced region")?;
+                        gui.draw(&image, region).context("draw coalesced region")?;
                     }
                     Vec::new()
                 }
