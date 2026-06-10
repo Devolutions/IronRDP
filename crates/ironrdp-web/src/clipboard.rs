@@ -173,6 +173,16 @@ pub(crate) enum WasmClipboardBackendMessage {
     LocksExpired {
         clip_data_ids: Vec<u32>,
     },
+    /// [MS-RDPECLIP] 2.2.3.2 Remote's response to one of our outbound Format Lists.
+    ///
+    /// `ok` is `true` when the remote accepted the advertised formats
+    /// (`CB_RESPONSE_OK`) and `false` when it rejected them (`CB_RESPONSE_FAIL`).
+    /// A rejected advertise is silently discarded by the remote, so a file paste
+    /// cannot proceed; backends use this to detect and recover from a refused
+    /// paste instead of stalling until a lock timeout.
+    FormatListResponse {
+        ok: bool,
+    },
 
     // JS-initiated file transfer operations
     /// JS requests file contents from remote (download).
@@ -235,6 +245,7 @@ pub(crate) struct JsClipboardCallbacks {
     pub(crate) on_lock: Option<js_sys::Function>,
     pub(crate) on_unlock: Option<js_sys::Function>,
     pub(crate) on_locks_expired: Option<js_sys::Function>,
+    pub(crate) on_format_list_response: Option<js_sys::Function>,
 }
 
 impl WasmClipboard {
@@ -841,6 +852,16 @@ impl WasmClipboard {
                     );
                 }
             }
+            WasmClipboardBackendMessage::FormatListResponse { ok } => {
+                if let Some(callback) = self.js_callbacks.on_format_list_response.as_ref() {
+                    if let Err(e) = callback.call1(&JsValue::NULL, &JsValue::from_bool(ok)) {
+                        error!(error = ?e, ok, "Failed to call JS format list response callback");
+                        return Ok(());
+                    }
+                } else {
+                    trace!(ok, "Format list response received but no JS callback registered");
+                }
+            }
             // The following variants are handled directly in the event loop and should never reach here
             WasmClipboardBackendMessage::FileContentsRequestSend { .. }
             | WasmClipboardBackendMessage::FileContentsResponseSend { .. }
@@ -946,6 +967,10 @@ impl CliprdrBackend for WasmClipboardBackend {
 
     fn on_unlock(&mut self, data_id: LockDataId) {
         self.send_event(WasmClipboardBackendMessage::Unlock { data_id });
+    }
+
+    fn on_format_list_response(&mut self, ok: bool) {
+        self.send_event(WasmClipboardBackendMessage::FormatListResponse { ok });
     }
 
     fn on_remote_file_list(&mut self, files: &[ironrdp::cliprdr::pdu::FileDescriptor], clip_data_id: Option<u32>) {
@@ -1227,6 +1252,7 @@ mod tests {
             on_lock: Some(js_sys::Function::new_no_args("")),
             on_unlock: Some(js_sys::Function::new_no_args("")),
             on_locks_expired: Some(js_sys::Function::new_no_args("")),
+            on_format_list_response: Some(js_sys::Function::new_no_args("")),
         }
     }
 
