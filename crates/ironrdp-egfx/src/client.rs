@@ -259,6 +259,15 @@ pub trait GraphicsPipelineHandler: Send {
     /// surface ID, destination rectangle, and RGBA pixel data.
     fn on_bitmap_updated(&mut self, _update: &BitmapUpdate) {}
 
+    /// Called for an AVC420 `WireToSurface1` when the client is in external-AVC-decode mode
+    /// ([`GraphicsPipelineClient::with_external_avc_decode`]) instead of decoding in-process.
+    ///
+    /// `h264_data` is the AVC-format (4-byte BE length-prefixed, not Annex B) H.264 NAL payload
+    /// from the `RFX_AVC420_BITMAP_STREAM`. The consumer decodes it asynchronously (e.g. WebCodecs)
+    /// and composites the result into the surface at `destination_rectangle` itself; the in-process
+    /// surface store is not updated for these frames.
+    fn on_avc420_bitstream(&mut self, _surface_id: u16, _destination_rectangle: &ExclusiveRectangle, _h264_data: &[u8]) {}
+
     /// Called when a logical frame is complete
     ///
     /// All bitmap updates between the corresponding `StartFrame`
@@ -383,6 +392,11 @@ enum ClientState {
 pub struct GraphicsPipelineClient {
     handler: Box<dyn GraphicsPipelineHandler>,
     h264_decoder: Option<Box<dyn H264Decoder>>,
+    /// When set, AVC420 frames are handed to the handler as raw bitstream
+    /// ([`GraphicsPipelineHandler::on_avc420_bitstream`]) for external/async decode (e.g. a browser
+    /// WebCodecs `VideoDecoder`) instead of being decoded in-process. AVC is then advertised as
+    /// supported even without an in-process [`H264Decoder`].
+    external_avc_decode: bool,
 
     decompressor: zgfx::Decompressor,
     decompressed_buffer: Vec<u8>,
@@ -405,6 +419,7 @@ impl GraphicsPipelineClient {
         Self {
             handler,
             h264_decoder,
+            external_avc_decode: false,
             decompressor: zgfx::Decompressor::new(),
             decompressed_buffer: Vec::new(),
             state: ClientState::WaitingForConfirm,
@@ -415,6 +430,17 @@ impl GraphicsPipelineClient {
             frames_queued: 0,
             total_frames_decoded: 0,
         }
+    }
+
+    /// Route AVC420 frames to the handler as raw H.264 bitstream for external/async decode
+    /// (e.g. a browser WebCodecs `VideoDecoder`), rather than decoding in-process with an
+    /// [`H264Decoder`]. With this enabled, AVC capabilities are advertised even when no in-process
+    /// decoder is configured. Intended for the `None` decoder case; an in-process decoder, if also
+    /// present, takes precedence.
+    #[must_use]
+    pub fn with_external_avc_decode(mut self) -> Self {
+        self.external_avc_decode = true;
+        self
     }
 
     // ========================================================================
@@ -737,7 +763,13 @@ impl GraphicsPipelineClient {
         let stream = Avc420BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
 
         let Some(ref mut decoder) = self.h264_decoder else {
-            debug!("No H.264 decoder configured, skipping AVC420 frame");
+            if self.external_avc_decode {
+                // Hand the raw bitstream to the consumer for async/external decode (e.g. WebCodecs).
+                self.handler
+                    .on_avc420_bitstream(surface_id, dest_rect, stream.data);
+            } else {
+                debug!("No H.264 decoder configured, skipping AVC420 frame");
+            }
             return Ok(());
         };
 
@@ -827,7 +859,7 @@ impl DvcProcessor for GraphicsPipelineClient {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        let caps = if self.h264_decoder.is_some() {
+        let caps = if self.h264_decoder.is_some() || self.external_avc_decode {
             self.handler.capabilities()
         } else {
             // No H.264 decoder: filter out capability sets that imply AVC support.
