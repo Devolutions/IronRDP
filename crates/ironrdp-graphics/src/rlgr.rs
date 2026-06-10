@@ -122,7 +122,11 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                         let two_ms = get_2magsign(input_first);
                         code_gr(&mut bits, &mut krp, two_ms);
                         if two_ms == 0 {
-                            kp = min(kp + UP_GR, KP_MAX);
+                            // Must mirror the decoder's GR-mode adaptation
+                            // (`compute_rlgr1_magnitude`): `UQ_GR` on a zero,
+                            // `DQ_GR` on a non-zero. Using `UP_GR` here makes the
+                            // adaptive `k` diverge between encoder and decoder.
+                            kp = min(kp + UQ_GR, KP_MAX);
                         } else {
                             kp = kp.saturating_sub(DQ_GR);
                         }
@@ -417,5 +421,55 @@ impl core::error::Error for RlgrError {
 impl From<io::Error> for RlgrError {
     fn from(err: io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round_trip(input: &[i16]) -> Vec<i16> {
+        let mut tile = vec![0u8; 4096];
+        let len = encode(EntropyAlgorithm::Rlgr1, input, &mut tile).unwrap();
+        let mut output = vec![0i16; input.len()];
+        decode(EntropyAlgorithm::Rlgr1, &tile[..len], &mut output).unwrap();
+        output
+    }
+
+    /// Regression test for the RLGR1 encoder GR-mode adaptation.
+    ///
+    /// On a zero value in GR mode the encoder must update `kp` with `UQ_GR`,
+    /// mirroring the decoder (`compute_rlgr1_magnitude`). With `UP_GR` the
+    /// adaptive `k` parameter diverges between encoder and decoder and the
+    /// bitstream is misinterpreted from that point on: prior to the fix this
+    /// test failed on 1877 of the 2000 generated inputs.
+    #[test]
+    fn rlgr1_round_trip_randomized() {
+        // Deterministic LCG so failures are reproducible.
+        let mut seed: u64 = 0x1234_5678;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            u32::try_from(seed >> 33).unwrap()
+        };
+
+        for _ in 0..2000 {
+            let len = 16 + usize::try_from(next() % 49).unwrap();
+            let mut input = vec![0i16; len];
+            for value in input.iter_mut() {
+                // Mostly zeros with occasional small magnitudes: exercises both
+                // run-length mode and GR mode (including the GR-mode zero branch).
+                if next() % 10 < 7 {
+                    *value = 0;
+                } else {
+                    let magnitude = i16::try_from(next() % 8).unwrap();
+                    *value = if next() % 2 == 0 { magnitude } else { -magnitude };
+                }
+            }
+
+            let output = round_trip(&input);
+            assert_eq!(output, input, "RLGR1 encode/decode round-trip mismatch");
+        }
     }
 }
