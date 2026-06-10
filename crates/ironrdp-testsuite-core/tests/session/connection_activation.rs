@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use ironrdp_connector::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
-use ironrdp_connector::{Credentials, DesktopSize, Sequence as _, Written};
+use ironrdp_connector::{ClientConnector, ClientConnectorState, Credentials, DesktopSize, Sequence as _, Written};
 use ironrdp_core::{WriteBuf, encode_vec};
 use ironrdp_pdu::gcc;
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
@@ -92,6 +92,26 @@ fn deactivate_all_during_capabilities_exchange_stays_in_same_state() {
             ConnectionActivationState::CapabilitiesExchange { .. }
         ),
         "state should remain CapabilitiesExchange after DeactivateAll"
+    );
+}
+
+#[test]
+fn client_connector_stays_in_capabilities_exchange_on_deactivate_all() {
+    let config = test_config();
+    let mut connector = ClientConnector::new(config.clone(), "127.0.0.1:3389".parse().unwrap());
+    connector.state = ClientConnectorState::CapabilitiesExchange {
+        connection_activation: ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID),
+    };
+
+    let frame = encode_server_share_control(ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll));
+    let mut output = WriteBuf::new();
+
+    let written = connector.step(&frame, &mut output).unwrap();
+
+    assert_eq!(written, Written::Nothing);
+    assert!(
+        matches!(connector.state, ClientConnectorState::CapabilitiesExchange { .. }),
+        "outer connector state should remain CapabilitiesExchange after DeactivateAll"
     );
 }
 
