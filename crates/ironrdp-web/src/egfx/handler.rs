@@ -6,7 +6,7 @@ use futures_channel::mpsc::UnboundedSender;
 use ironrdp::pdu::geometry::ExclusiveRectangle;
 use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineHandler, Surface};
 use ironrdp_egfx::pdu::{CapabilitiesV81Flags, CapabilitySet};
-use tracing::trace;
+use tracing::{info, trace};
 
 use super::EgfxUpdate;
 use crate::session::RdpInputEvent;
@@ -42,6 +42,13 @@ impl GraphicsPipelineHandler for WebGfxHandler {
         vec![CapabilitySet::V8_1 {
             flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
         }]
+    }
+
+    fn on_capabilities_confirmed(&mut self, caps: &CapabilitySet) {
+        // If you see this, the server activated the EGFX graphics pipeline (H.264 should follow).
+        // If it never appears, the server is using fast-path RemoteFX, not EGFX — enable H.264/AVC
+        // on the host (e.g. the "Prioritize H.264/AVC 444 Graphics mode" GPO).
+        info!(?caps, "EGFX graphics pipeline active");
     }
 
     fn on_reset_graphics(&mut self, width: u32, height: u32) {

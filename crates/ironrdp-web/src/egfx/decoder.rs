@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use anyhow::anyhow;
 use ironrdp::pdu::geometry::ExclusiveRectangle;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::closure::Closure;
 use web_sys::{
@@ -97,10 +97,13 @@ impl WebCodecsH264Decoder {
                 warn!("AVC420 frame before SPS; waiting for a keyframe");
                 return;
             };
-            let config = VideoDecoderConfig::new(&avc_codec_string(sps));
+            let codec = avc_codec_string(sps);
+            let config = VideoDecoderConfig::new(&codec);
             config.set_optimize_for_latency(true);
             self.decoder.configure(&config);
             self.configured = true;
+            // If you see this, H.264/AVC420 is actually being received and hardware-decoded.
+            info!(%codec, "EGFX H.264 (WebCodecs) decoder configured — hardware video active");
         }
 
         to_annex_b(bitstream, &mut self.annexb);
