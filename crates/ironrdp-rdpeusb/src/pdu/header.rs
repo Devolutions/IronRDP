@@ -64,7 +64,7 @@ impl TryFrom<u8> for Mask {
 /// Max value for interface ID's: `0x3F_FF_FF_FF` (30 bits).
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InterfaceId(pub(in crate::pdu) u32);
+pub struct InterfaceId(pub(crate) u32);
 
 impl InterfaceId {
     pub const FIXED_PART_SIZE: usize = size_of::<Self>();

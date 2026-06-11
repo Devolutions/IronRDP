@@ -1,9 +1,9 @@
-use alloc::collections::btree_map::BTreeMap;
+use alloc::collections::btree_map::{BTreeMap, Entry};
 use alloc::string::String;
 use alloc::vec;
 use alloc::{boxed::Box, vec::Vec};
 use ironrdp_core::{Decode as _, EncodeResult, ReadCursor, impl_as_any, other_err};
-use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
+use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 
@@ -25,6 +25,74 @@ use crate::pdu::{
 
 pub mod device;
 pub use device::*;
+
+pub trait DeviceManagerBackend: Send {
+    /// Called when the first URBDRC DVC is assigned as the control DVC.
+    ///
+    /// This happens from listener.create(channel_id), before the DVC is fully open.
+    fn control_channel_assigned(&mut self, channel_id: u32);
+
+    /// Called for each later URBDRC DVC create request.
+    ///
+    /// The manager should pop the pending device that caused ADD_VIRTUAL_CHANNEL
+    fn take_device_for_channel(&mut self, channel_id: u32) -> Option<Box<dyn UrbdrcDeviceBackend>>;
+}
+
+pub struct UrbdrcListener {
+    ctl_created: bool,
+    on_capability_exchanged: Option<OnCapabilityExchanged>,
+    device_man: Box<dyn DeviceManagerBackend>,
+    iface_man: InterfaceAlloc,
+}
+
+impl UrbdrcListener {
+    pub fn new(callback: OnCapabilityExchanged, device_man: Box<dyn DeviceManagerBackend>) -> Self {
+        Self {
+            ctl_created: false,
+            on_capability_exchanged: Some(callback),
+            device_man,
+            iface_man: InterfaceAlloc::new(),
+        }
+    }
+}
+
+struct InterfaceAlloc {
+    id: u32,
+}
+
+impl InterfaceAlloc {
+    #[inline]
+    const fn new() -> Self {
+        Self { id: 3 }
+    }
+
+    #[inline]
+    const fn alloc(&mut self) -> InterfaceId {
+        self.id = self.id.checked_add(1).expect("USB device amount overflow");
+        InterfaceId(self.id)
+    }
+}
+
+impl DvcChannelListener for UrbdrcListener {
+    fn channel_name(&self) -> &str {
+        CHANNEL_NAME
+    }
+
+    fn create(&mut self, channel_id: u32) -> Option<Box<dyn DvcProcessor>> {
+        #[expect(clippy::as_conversions)]
+        if self.ctl_created {
+            self.device_man.take_device_for_channel(channel_id).map(|backend| {
+                Box::new(UrbdrcDeviceClient::new(self.iface_man.alloc(), backend)) as Box<dyn DvcProcessor>
+            })
+        } else {
+            self.device_man.control_channel_assigned(channel_id);
+            self.on_capability_exchanged.take().map(|callback| {
+                self.ctl_created = true;
+                Box::new(UrbdrcControlClient::new(callback)) as Box<dyn DvcProcessor>
+            })
+        }
+    }
+}
 
 /// A client for the URBDRC Control Virtual Channel.
 pub struct UrbdrcControlClient {
@@ -134,7 +202,7 @@ impl DvcClientProcessor for UrbdrcControlClient {}
 
 pub trait UrbdrcDeviceBackend: Send {
     /// Get the USB device information.
-    fn device_info(&mut self, channel_id: u32) -> DeviceInfo;
+    fn device_info(&mut self, channel_id: u32) -> PduResult<DeviceInfo>;
     /// [Processing a Cancel Request Message][3.3.5.3.1]:
     ///
     /// The client MUST attempt to stop processing the request identified by the RequestId field in
@@ -143,7 +211,7 @@ pub trait UrbdrcDeviceBackend: Send {
     /// message.
     ///
     /// [3.3.5.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/d5315234-d9ba-42dc-bc1b-b421c57a21ae
-    fn cancel_request(&mut self, request_id: RequestId, channel_id: u32);
+    fn cancel_request(&mut self, request_id: RequestId, channel_id: u32) -> PduResult<()>;
     /// [Processing a Query Device Text Message][3.3.5.3.5]:
     ///
     /// After receiving the QUERY_DEVICE_TEXT message, the client forwards the request to the
@@ -152,11 +220,16 @@ pub trait UrbdrcDeviceBackend: Send {
     /// the message MUST match the RequestId in the QUERY_DEVICE_TEXT message.
     ///
     /// [3.3.5.3.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/834f56cc-cfed-4649-8952-0b6486638c28
-    fn query_device_text(&mut self, channel_id: u32, text_type: u32, locale_id: u32) -> Option<DeviceText>;
+    fn query_device_text(&mut self, channel_id: u32, text_type: u32, locale_id: u32) -> PduResult<Option<DeviceText>>;
     /// Process an [`IoControl`] request.
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
-    fn io_control(&mut self, channel_id: u32, request_id: RequestId, request: IoControl) -> Option<IoControlResponse>;
+    fn io_control(
+        &mut self,
+        channel_id: u32,
+        request_id: RequestId,
+        request: IoControl,
+    ) -> PduResult<Option<IoControlResponse>>;
     /// Process an [`InternalIoControl`] request.
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
@@ -165,7 +238,7 @@ pub trait UrbdrcDeviceBackend: Send {
         channel_id: u32,
         request_id: RequestId,
         request: InternalIoControl,
-    ) -> Option<IoControlResponse>;
+    ) -> PduResult<Option<IoControlResponse>>;
     /// Process a [`TransferInRequest`].
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
@@ -174,7 +247,7 @@ pub trait UrbdrcDeviceBackend: Send {
         channel_id: u32,
         request_id: RequestId,
         request: TransferInRequest,
-    ) -> Option<UrbInResponse>;
+    ) -> PduResult<Option<UrbInResponse>>;
     /// Process a [`TransferOutRequest`].
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
@@ -183,14 +256,14 @@ pub trait UrbdrcDeviceBackend: Send {
         channel_id: u32,
         request_id: RequestId,
         request: TransferOutRequest,
-    ) -> Option<UrbOutResponse>;
+    ) -> PduResult<Option<UrbOutResponse>>;
     /// [Processing a Retract Device Message][3.3.5.3.8]:
     ///
     /// After receiving the RETRACT_DEVICE message, the client SHOULD terminate the dynamic channel
     /// and stop redirecting the physical USB device.
     ///
     /// [3.3.5.3.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/77dc8e12-ddd6-4cb8-a3cc-247aacea7d6f
-    fn retract(&mut self, channel_id: u32);
+    fn retract(&mut self, channel_id: u32) -> PduResult<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -255,13 +328,18 @@ impl UrbdrcDeviceClient {
         let Some(completion_iface) = self.request_completion else {
             return Err(pdu_other_err!("request completion uninitialized"));
         };
-        let Some(Pending::IoCtl {
-            msg_id,
-            max_output_buf_size,
-        }) = self.pending_io.remove(&request_id)
-        else {
+        let Entry::Occupied(entry) = self.pending_io.entry(request_id) else {
             return Err(pdu_other_err!("completion mismatch"));
         };
+        let (msg_id, max_output_buf_size) = match entry.get() {
+            Pending::IoCtl {
+                msg_id,
+                max_output_buf_size,
+            } => (*msg_id, *max_output_buf_size),
+            _ => return Err(pdu_other_err!("completion mismatch")),
+        };
+        entry.remove();
+
         let output_buffer_size =
             u32::try_from(response.output_buffer.len()).map_err(|_| pdu_other_err!("convert usize to u32 failed"))?;
         if output_buffer_size > max_output_buf_size {
@@ -286,13 +364,18 @@ impl UrbdrcDeviceClient {
         let Some(completion_iface) = self.request_completion else {
             return Err(pdu_other_err!("request completion uninitialized"));
         };
-        let Some(Pending::InternalIoCtl {
-            msg_id,
-            max_output_buf_size,
-        }) = self.pending_io.remove(&request_id)
-        else {
+        let Entry::Occupied(entry) = self.pending_io.entry(request_id) else {
             return Err(pdu_other_err!("completion mismatch"));
         };
+        let (msg_id, max_output_buf_size) = match entry.get() {
+            Pending::InternalIoCtl {
+                msg_id,
+                max_output_buf_size,
+            } => (*msg_id, *max_output_buf_size),
+            _ => return Err(pdu_other_err!("completion mismatch")),
+        };
+        entry.remove();
+
         let output_buffer_size =
             u32::try_from(response.output_buffer.len()).map_err(|_| pdu_other_err!("convert usize to u32 failed"))?;
         if output_buffer_size > max_output_buf_size {
@@ -313,13 +396,17 @@ impl UrbdrcDeviceClient {
         let Some(completion_iface) = self.request_completion else {
             return Err(pdu_other_err!("request completion uninitialized"));
         };
-        let Some(Pending::TransferIn {
-            msg_id,
-            max_output_buf_size,
-        }) = self.pending_io.remove(&request_id)
-        else {
+        let Entry::Occupied(entry) = self.pending_io.entry(request_id) else {
             return Err(pdu_other_err!("completion mismatch"));
         };
+        let (msg_id, max_output_buf_size) = match entry.get() {
+            Pending::TransferIn {
+                msg_id,
+                max_output_buf_size,
+            } => (*msg_id, *max_output_buf_size),
+            _ => return Err(pdu_other_err!("completion mismatch")),
+        };
+        entry.remove();
         let output_buffer_size =
             u32::try_from(response.output_buffer.len()).map_err(|_| pdu_other_err!("convert usize to u32 failed"))?;
         if output_buffer_size > max_output_buf_size {
@@ -353,24 +440,28 @@ impl UrbdrcDeviceClient {
         request_id: RequestId,
         response: UrbOutResponse,
     ) -> PduResult<DvcMessage> {
-        let Some(Pending::TransferOut {
-            msg_id,
-            request_id,
-            max_output_buf_size,
-        }) = self.pending_io.remove(&request_id)
-        else {
-            return Err(pdu_other_err!("completion mismatch"));
-        };
-        if response.output_buffer_size > max_output_buf_size {
-            return Err(pdu_other_err!("output buffer exceeds maximum amount"));
-        }
         let Some(completion_iface) = self.request_completion else {
             return Err(pdu_other_err!("request completion uninitialized"));
         };
+        let Entry::Occupied(entry) = self.pending_io.entry(request_id) else {
+            return Err(pdu_other_err!("completion mismatch"));
+        };
+        let (msg_id, transfer_request_id, max_output_buf_size) = match entry.get() {
+            Pending::TransferOut {
+                msg_id,
+                request_id,
+                max_output_buf_size,
+            } => (*msg_id, *request_id, *max_output_buf_size),
+            _ => return Err(pdu_other_err!("completion mismatch")),
+        };
+        entry.remove();
+        if response.output_buffer_size > max_output_buf_size {
+            return Err(pdu_other_err!("output buffer exceeds maximum amount"));
+        }
         Ok(Box::new(UrbCompletionNoData {
             msg_id,
             completion_iface,
-            req_id: request_id,
+            req_id: transfer_request_id,
             ts_urb_result: response.ts_urb_result,
             hresult: response.hresult,
             output_buffer_size: response.output_buffer_size,
@@ -409,43 +500,53 @@ impl DvcProcessor for UrbdrcDeviceClient {
                     // (commit fa4d8fca1be, Atrust contribution). Two sync points: control DVC
                     // (server -> client ADD_VIRTUAL_CHANNEL); device DVC (server -> client
                     // ADD_DEVICE).
-                    self.ready_for_io = true;
-                    let device_info = self.backend.device_info(channel_id);
+                    let device_info = self.backend.device_info(channel_id)?;
                     let add_device = add_device_from_info(self.udev_iface, &device_info)?;
+                    self.ready_for_io = true;
 
                     Ok(vec![Box::new(add_device)])
                 } else {
                     Ok(Vec::new())
                 }
             }
+            // SPEC [3.1.5]: Out-of-sequence packets are packets that do not adhere to the rules in
+            // sections 3.2.5 and 3.3.5. Malformed and out-of-sequence packets MUST be ignored by
+            // the server and the client.
+            //
+            // [3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/f31cc9ef-a8c3-4a4d-b64d-f027ed0752b0
             CancelReq(cancel_req_pdu) => {
-                if cancel_req_pdu.udev_iface != self.udev_iface {
-                    return Err(pdu_other_err!("usb device interface mismatch"));
+                if !self.ready_for_io || cancel_req_pdu.udev_iface != self.udev_iface {
+                    return Ok(Vec::new());
                 }
-                self.backend.cancel_request(cancel_req_pdu.req_id, channel_id);
+                if self.pending_io.remove(&cancel_req_pdu.req_id).is_some() {
+                    self.backend.cancel_request(cancel_req_pdu.req_id, channel_id)?;
+                }
                 Ok(Vec::new())
             }
             RegReqCb(register_request_callback_pdu) => {
-                if register_request_callback_pdu.udev_iface != self.udev_iface {
-                    return Err(pdu_other_err!("usb device interface mismatch"));
+                if !self.ready_for_io || register_request_callback_pdu.udev_iface != self.udev_iface {
+                    return Ok(Vec::new());
                 }
                 self.request_completion = register_request_callback_pdu.request_completion;
                 Ok(Vec::new())
             }
             Retract(retract_pdu) => {
-                if retract_pdu.udev_iface != self.udev_iface {
-                    return Err(pdu_other_err!("usb device interface mismatch"));
+                if !self.ready_for_io || retract_pdu.udev_iface != self.udev_iface {
+                    return Ok(Vec::new());
                 }
-                self.backend.retract(channel_id);
+                self.backend.retract(channel_id)?;
+                self.ready_for_io = false;
+                self.request_completion = None;
+                self.pending_io.clear();
                 Ok(Vec::new())
             }
             DevText(dev_text_pdu) => {
-                if dev_text_pdu.udev_iface != self.udev_iface {
-                    return Err(pdu_other_err!("usb device interface mismatch"));
+                if !self.ready_for_io || dev_text_pdu.udev_iface != self.udev_iface {
+                    return Ok(Vec::new());
                 }
                 if let Some(device_text) =
                     self.backend
-                        .query_device_text(channel_id, dev_text_pdu.text_type, dev_text_pdu.locale_id)
+                        .query_device_text(channel_id, dev_text_pdu.text_type, dev_text_pdu.locale_id)?
                 {
                     Ok(vec![Box::new(QueryDeviceTextRsp {
                         msg_id: dev_text_pdu.msg_id,
@@ -458,21 +559,24 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 }
             }
             IoCtl(io_ctl_pdu) => {
-                if io_ctl_pdu.udev_iface != self.udev_iface {
-                    return Err(pdu_other_err!("usb device interface mismatch"));
+                if !self.ready_for_io || io_ctl_pdu.udev_iface != self.udev_iface {
+                    return Ok(Vec::new());
                 }
                 let msg_id = io_ctl_pdu.msg_id;
                 let request_id = io_ctl_pdu.req_id;
                 let max_output_buf_size = io_ctl_pdu.output_buffer_size;
-                if let Some(io_ctl_response) = self.backend.io_control(channel_id, request_id, io_ctl_pdu) {
+                if self.pending_io.contains_key(&request_id) {
+                    return Ok(Vec::new());
+                }
+                let Some(completion_iface) = self.request_completion else {
+                    return Ok(Vec::new());
+                };
+                if let Some(io_ctl_response) = self.backend.io_control(channel_id, request_id, io_ctl_pdu)? {
                     let output_buffer_size = u32::try_from(io_ctl_response.output_buffer.len())
                         .map_err(|_| pdu_other_err!("convert usize to u32 failed"))?;
                     if output_buffer_size > max_output_buf_size {
                         return Err(pdu_other_err!("output buffer exceeds maximum amount"));
                     }
-                    let Some(completion_iface) = self.request_completion else {
-                        return Err(pdu_other_err!("request completion uninitialized"));
-                    };
                     Ok(vec![Box::new(IoControlCompletion {
                         msg_id,
                         completion_iface,
@@ -494,24 +598,27 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 }
             }
             InternalIoCtl(internal_io_ctl_pdu) => {
-                if internal_io_ctl_pdu.udev_iface != self.udev_iface {
-                    return Err(pdu_other_err!("usb device interface mismatch"));
+                if !self.ready_for_io || internal_io_ctl_pdu.udev_iface != self.udev_iface {
+                    return Ok(Vec::new());
                 }
                 let msg_id = internal_io_ctl_pdu.msg_id;
                 let request_id = internal_io_ctl_pdu.req_id;
                 let max_output_buf_size = internal_io_ctl_pdu.output_buffer_size;
+                if self.pending_io.contains_key(&request_id) {
+                    return Ok(Vec::new());
+                }
+                let Some(completion_iface) = self.request_completion else {
+                    return Ok(Vec::new());
+                };
                 if let Some(internal_io_ctl_response) =
                     self.backend
-                        .internal_io_control(channel_id, request_id, internal_io_ctl_pdu)
+                        .internal_io_control(channel_id, request_id, internal_io_ctl_pdu)?
                 {
                     let output_buffer_size = u32::try_from(internal_io_ctl_response.output_buffer.len())
                         .map_err(|_| pdu_other_err!("convert usize to u32 failed"))?;
                     if output_buffer_size > max_output_buf_size {
                         return Err(pdu_other_err!("output buffer exceeds maximum amount"));
                     }
-                    let Some(completion_iface) = self.request_completion else {
-                        return Err(pdu_other_err!("request completion uninitialized"));
-                    };
                     Ok(vec![Box::new(IoControlCompletion {
                         msg_id,
                         completion_iface,
@@ -533,21 +640,27 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 }
             }
             TransferIn(transfer_in_pdu) => {
-                if transfer_in_pdu.udev_iface != self.udev_iface {
-                    return Err(pdu_other_err!("usb device interface mismatch"));
+                if !self.ready_for_io || transfer_in_pdu.udev_iface != self.udev_iface {
+                    return Ok(Vec::new());
                 }
                 let msg_id = transfer_in_pdu.msg_id;
                 let max_output_buf_size = transfer_in_pdu.output_buffer_size;
                 let request_id = transfer_in_pdu.request_id();
-                if let Some(urb_response) = self.backend.transfer_in(channel_id, request_id.into(), transfer_in_pdu) {
+                if self.pending_io.contains_key(&request_id.into()) {
+                    return Ok(Vec::new());
+                }
+                let Some(completion_iface) = self.request_completion else {
+                    return Ok(Vec::new());
+                };
+                if let Some(urb_response) = self
+                    .backend
+                    .transfer_in(channel_id, request_id.into(), transfer_in_pdu)?
+                {
                     let output_buffer_size = u32::try_from(urb_response.output_buffer.len())
                         .map_err(|_| pdu_other_err!("convert usize to u32 failed"))?;
                     if output_buffer_size > max_output_buf_size {
                         return Err(pdu_other_err!("output buffer exceeds maximum amount"));
                     }
-                    let Some(completion_iface) = self.request_completion else {
-                        return Err(pdu_other_err!("request completion uninitialized"));
-                    };
                     if urb_response.output_buffer.is_empty() {
                         Ok(vec![Box::new(UrbCompletionNoData {
                             msg_id,
@@ -579,8 +692,8 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 }
             }
             TransferOut(transfer_out_pdu) => {
-                if transfer_out_pdu.udev_iface != self.udev_iface {
-                    return Err(pdu_other_err!("usb device interface mismatch"));
+                if !self.ready_for_io || transfer_out_pdu.udev_iface != self.udev_iface {
+                    return Ok(Vec::new());
                 }
                 let msg_id = transfer_out_pdu.msg_id;
                 let output_buffer_size = u32::try_from(transfer_out_pdu.output_buffer.len())
@@ -593,39 +706,44 @@ impl DvcProcessor for UrbdrcDeviceClient {
                     TsUrbOut::VendorClassReq(urb) => (urb.header.req_id, urb.header.no_ack),
                     TsUrbOut::CtlTransferEx(urb) => (urb.header.req_id, urb.header.no_ack),
                 };
-                if let Some(urb_response) = self
-                    .backend
-                    .transfer_out(channel_id, request_id.into(), transfer_out_pdu)
-                {
-                    if no_ack {
-                        return Ok(Vec::new());
-                    }
-                    if urb_response.output_buffer_size > output_buffer_size {
-                        return Err(pdu_other_err!("output buffer exceeds maximum amount"));
-                    }
-                    let Some(completion_iface) = self.request_completion else {
-                        return Err(pdu_other_err!("request completion uninitialized"));
-                    };
-                    Ok(vec![Box::new(UrbCompletionNoData {
-                        msg_id,
-                        completion_iface,
-                        req_id: request_id,
-                        ts_urb_result: urb_response.ts_urb_result,
-                        hresult: urb_response.hresult,
-                        output_buffer_size: urb_response.output_buffer_size,
-                    })])
-                } else if no_ack {
+                if self.pending_io.contains_key(&request_id.into()) {
+                    return Ok(Vec::new());
+                }
+
+                if no_ack {
+                    self.backend
+                        .transfer_out(channel_id, request_id.into(), transfer_out_pdu)?;
                     Ok(Vec::new())
                 } else {
-                    self.pending_io.insert(
-                        request_id.into(),
-                        Pending::TransferOut {
+                    let Some(completion_iface) = self.request_completion else {
+                        return Ok(Vec::new());
+                    };
+                    if let Some(urb_response) =
+                        self.backend
+                            .transfer_out(channel_id, request_id.into(), transfer_out_pdu)?
+                    {
+                        if urb_response.output_buffer_size > output_buffer_size {
+                            return Err(pdu_other_err!("output buffer exceeds maximum amount"));
+                        }
+                        Ok(vec![Box::new(UrbCompletionNoData {
                             msg_id,
-                            request_id,
-                            max_output_buf_size: output_buffer_size,
-                        },
-                    );
-                    Ok(Vec::new())
+                            completion_iface,
+                            req_id: request_id,
+                            ts_urb_result: urb_response.ts_urb_result,
+                            hresult: urb_response.hresult,
+                            output_buffer_size: urb_response.output_buffer_size,
+                        })])
+                    } else {
+                        self.pending_io.insert(
+                            request_id.into(),
+                            Pending::TransferOut {
+                                msg_id,
+                                request_id,
+                                max_output_buf_size: output_buffer_size,
+                            },
+                        );
+                        Ok(Vec::new())
+                    }
                 }
             }
         }
