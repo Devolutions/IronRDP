@@ -34,6 +34,10 @@ impl WebGfxHandler {
 
 impl GraphicsPipelineHandler for WebGfxHandler {
     fn capabilities(&self) -> Vec<CapabilitySet> {
+        // Logged when the EGFX DVC channel opens and we advertise. If you see THIS but not
+        // "EGFX graphics pipeline active", the server opened EGFX but declined our AVC420 offer.
+        // If you see neither, the server never opened EGFX (pure fast-path RemoteFX).
+        info!("EGFX channel opened — advertising AVC420 capability");
         // Advertise **only** AVC420 — the one codec we can WebCodecs-decode. Deliberately omit the
         // no-AVC (V8) and AVC444 (V10.x) sets: if the server can't do AVC420 it then won't activate
         // EGFX at all and graphics keep flowing over fast-path RemoteFX, rather than the server
