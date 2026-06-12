@@ -41,6 +41,7 @@ pub struct BuilderDone {
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     display_suppressed: Option<Arc<AtomicBool>>,
+    honor_client_desktop_size: bool,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -140,6 +141,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
                 display_suppressed: None,
+                honor_client_desktop_size: false,
             },
         }
     }
@@ -160,6 +162,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
                 display_suppressed: None,
+                honor_client_desktop_size: false,
             },
         }
     }
@@ -226,6 +229,25 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Negotiate each session at the desktop size the client requests in its
+    /// Client Core Data, rather than the size reported by the display handler.
+    ///
+    /// The client's requested resolution is only carried in the GCC Client
+    /// Core Data of the connection handshake; the size echoed back in the
+    /// client's Confirm Active is the value it copied from the server's Demand
+    /// Active (per [MS-RDPBCGR] 2.2.1.13.2) and so cannot reveal what the
+    /// client asked for. With this enabled the acceptor adopts the requested
+    /// size (when within the protocol-legal range) before Demand Active is
+    /// sent, so the session starts at that size with no Deactivation-
+    /// Reactivation resize. The display handler observes the negotiated size
+    /// through [`RdpServerDisplay::request_initial_size`].
+    ///
+    /// Defaults to `false`, enforcing the size reported by the display handler.
+    pub fn with_honor_client_desktop_size(mut self, honor: bool) -> Self {
+        self.state.honor_client_desktop_size = honor;
+        self
+    }
+
     /// Set a credential validator for TLS-mode connections.
     ///
     /// When set, credentials received from the client during
@@ -248,6 +270,7 @@ impl RdpServerBuilder<BuilderDone> {
                 security: self.state.security,
                 codecs: self.state.codecs,
                 max_request_size: self.state.max_request_size,
+                honor_client_desktop_size: self.state.honor_client_desktop_size,
             },
             self.state.handler,
             self.state.display,

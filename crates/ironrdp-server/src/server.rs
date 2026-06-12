@@ -223,6 +223,12 @@ pub struct RdpServerOptions {
     pub security: RdpServerSecurity,
     pub codecs: BitmapCodecs,
     pub max_request_size: u32,
+    /// When `true`, each connection's acceptor adopts the desktop size the
+    /// client requests in its Client Core Data (instead of the size reported
+    /// by the display handler), negotiating that size from the start without a
+    /// Deactivation-Reactivation resize. Defaults to `false`. Set via
+    /// [`RdpServerBuilder::with_honor_client_desktop_size`](crate::RdpServerBuilder::with_honor_client_desktop_size).
+    pub honor_client_desktop_size: bool,
 }
 
 impl RdpServerOptions {
@@ -692,6 +698,7 @@ impl RdpServer {
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
+        acceptor.set_honor_client_desktop_size(self.opts.honor_client_desktop_size);
 
         self.attach_channels(&mut acceptor);
 
