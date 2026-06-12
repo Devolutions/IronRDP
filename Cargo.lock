@@ -5815,6 +5815,7 @@ dependencies = [
 [[package]]
 name = "softblit"
 version = "1.0.0-alpha.1"
+source = "git+https://github.com/irvingoujAtDevolution/softblit.git?rev=b6051ec6393b7c93eca665dc5149e2319e3948fe#b6051ec6393b7c93eca665dc5149e2319e3948fe"
 dependencies = [
  "web-sys",
  "wgpu",

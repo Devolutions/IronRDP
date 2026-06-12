@@ -27,7 +27,9 @@ bench = ["dep:ironrdp-replay-core"]
 
 [dependencies]
 ironrdp-replay-core = { path = "../ironrdp-replay-core", optional = true }
-softblit = { path = "../../../web-renderer/crates/softblit" }
+# softblit (WebGPU presenter) — experimental, lives in a separate repo. Pinned to a specific commit
+# so this branch builds reproducibly for anyone. See https://github.com/irvingoujAtDevolution/softblit
+softblit = { git = "https://github.com/irvingoujAtDevolution/softblit.git", rev = "b6051ec6393b7c93eca665dc5149e2319e3948fe" }
 # Protocols
 ironrdp = { path = "../ironrdp", features = [
     "connector",

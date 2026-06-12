@@ -65,7 +65,7 @@ use tracing::{debug, trace, warn};
 use crate::CHANNEL_NAME;
 use crate::decode::H264Decoder;
 use crate::pdu::{
-    Avc420BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesV8Flags,
+    Avc420BitmapStream, Avc444BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesV8Flags,
     CapabilitiesV81Flags, CapabilitiesV107Flags, CapabilitySet, Codec1Type, DeleteEncodingContextPdu,
     EvictCacheEntryPdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToScaledOutputPdu, MapSurfaceToScaledWindowPdu,
     MapSurfaceToWindowPdu, PixelFormat, QueueDepth, RawCapabilitySet, SolidFillPdu, SurfaceToCachePdu,
@@ -743,8 +743,7 @@ impl GraphicsPipelineClient {
                 self.decode_avc420(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
             }
             Codec1Type::Avc444 | Codec1Type::Avc444v2 => {
-                debug!("AVC444 codec not yet implemented, forwarding to handler");
-                self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
+                self.decode_avc444(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
             }
             Codec1Type::Uncompressed => {
                 self.handle_uncompressed(pdu);
@@ -761,12 +760,33 @@ impl GraphicsPipelineClient {
     fn decode_avc420(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc420BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
+        self.dispatch_avc420(surface_id, dest_rect, stream.data)
+    }
 
+    /// Decode the main YUV420 view of an AVC444 stream. The optional chroma-upgrade auxiliary
+    /// (`stream2`) is intentionally ignored — dropping it costs chroma resolution (YUV420 vs full
+    /// 444), not correctness — which lets the full-screen AVC444 graphics mode render through the
+    /// same AVC420 decode path. This matters because servers use AVC444 for the *entire* desktop,
+    /// whereas AVC420 is applied selectively (mostly to video regions); without this the static UI
+    /// arrives over a codec we don't render and the screen stays blank.
+    fn decode_avc444(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
+        let mut cursor = ReadCursor::new(bitmap_data);
+        let stream = Avc444BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
+        if stream.stream1.data.is_empty() {
+            // Chroma-only update (no luma view in this frame); nothing to decode.
+            return Ok(());
+        }
+        self.dispatch_avc420(surface_id, dest_rect, stream.stream1.data)
+    }
+
+    /// Shared AVC420 H.264 dispatch: hand the raw bitstream to an external async decoder
+    /// (e.g. WebCodecs) when in external-decode mode, otherwise decode in-process (openh264) and
+    /// composite. `h264_data` is the H.264 payload already stripped of AVC420/AVC444 region metadata.
+    fn dispatch_avc420(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, h264_data: &[u8]) -> PduResult<()> {
         let Some(ref mut decoder) = self.h264_decoder else {
             if self.external_avc_decode {
                 // Hand the raw bitstream to the consumer for async/external decode (e.g. WebCodecs).
-                self.handler
-                    .on_avc420_bitstream(surface_id, dest_rect, stream.data);
+                self.handler.on_avc420_bitstream(surface_id, dest_rect, h264_data);
             } else {
                 debug!("No H.264 decoder configured, skipping AVC420 frame");
             }
@@ -774,7 +794,7 @@ impl GraphicsPipelineClient {
         };
 
         let frame = decoder
-            .decode(stream.data)
+            .decode(h264_data)
             .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
 
         let dest_width = dest_rect.width();

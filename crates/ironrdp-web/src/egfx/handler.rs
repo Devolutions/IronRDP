@@ -5,7 +5,7 @@
 use futures_channel::mpsc::UnboundedSender;
 use ironrdp::pdu::geometry::ExclusiveRectangle;
 use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineHandler, Surface};
-use ironrdp_egfx::pdu::{CapabilitiesV81Flags, CapabilitySet};
+use ironrdp_egfx::pdu::{CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitiesV81Flags, CapabilitySet};
 use tracing::{info, trace};
 
 use super::EgfxUpdate;
@@ -35,17 +35,34 @@ impl WebGfxHandler {
 impl GraphicsPipelineHandler for WebGfxHandler {
     fn capabilities(&self) -> Vec<CapabilitySet> {
         // Logged when the EGFX DVC channel opens and we advertise. If you see THIS but not
-        // "EGFX graphics pipeline active", the server opened EGFX but declined our AVC420 offer.
+        // "EGFX graphics pipeline active", the server opened EGFX but declined our offer.
         // If you see neither, the server never opened EGFX (pure fast-path RemoteFX).
-        info!("EGFX channel opened — advertising AVC420 capability");
-        // Advertise **only** AVC420 — the one codec we can WebCodecs-decode. Deliberately omit the
-        // no-AVC (V8) and AVC444 (V10.x) sets: if the server can't do AVC420 it then won't activate
-        // EGFX at all and graphics keep flowing over fast-path RemoteFX, rather than the server
-        // filling an EGFX surface with a codec we don't render (RFX Progressive / AVC444) and
-        // leaving the screen blank.
-        vec![CapabilitySet::V8_1 {
-            flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
-        }]
+        info!("EGFX channel opened — advertising AVC (V10.7/10.6 + V8.1) capability");
+        // Windows servers only set "AVC available" for clients that advertise the V10.x capsets;
+        // a V8.1-only advertisement is treated as non-AVC and the server falls back to RemoteFX
+        // (confirmed via RdpCoreTS event 162 "AVC available: 0"). The server confirms the *highest*
+        // advertised version it supports, so we offer a descending ladder — V10.7 down to V10.4, then
+        // V8.1 — to land on whatever the host tops out at (Server 2022 negotiates V10.6 / 0xA0600).
+        // AVC is enabled by leaving AVC_DISABLED clear; the server then picks AVC420 vs AVC444 per its
+        // "Prioritize H.264/AVC 444" policy. Our WebCodecs path decodes the AVC420 bitstream
+        // (`on_avc420_bitstream`); AVC444 is not yet rendered, so the host should stay in AVC420 mode.
+        vec![
+            CapabilitySet::V10_7 {
+                flags: CapabilitiesV107Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_6 {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_5 {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_4 {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V8_1 {
+                flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
+            },
+        ]
     }
 
     fn on_capabilities_confirmed(&mut self, caps: &CapabilitySet) {

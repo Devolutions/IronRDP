@@ -7,15 +7,55 @@
     import { showLogin } from '$lib/login/login-store';
     import { onMount } from 'svelte';
 
+    // Optional `.env` overrides (VITE_IRON_*) prefill the form so you don't have to retype each
+    // session; each falls back to the built-in demo default when its variable is unset.
     // VNC demo defaults target the lab TigerVNC box (VeNCrypt needs a non-empty username).
-    let username = protocol === 'vnc' ? 'irving' : 'Administrator';
-    let password = protocol === 'vnc' ? 'vncpass1' : 'DevoLabs123!';
-    let gatewayAddress = protocol === 'vnc' ? 'ws://localhost:7171' : 'ws://localhost:7171/jet/rdp';
-    let hostname = protocol === 'vnc' ? '192.168.100.50:5901' : '10.10.0.3:3389';
-    let domain = '';
+    const env = import.meta.env;
+    let username = (env.VITE_IRON_USERNAME as string) || (protocol === 'vnc' ? 'irving' : 'Administrator');
+    let password = (env.VITE_IRON_PASSWORD as string) || (protocol === 'vnc' ? 'vncpass1' : 'DevoLabs123!');
+    let gatewayAddress =
+        (env.VITE_IRON_GATEWAY_ADDRESS as string) ||
+        (protocol === 'vnc' ? 'ws://localhost:7171' : 'ws://localhost:7171/jet/rdp');
+    let hostname = (env.VITE_IRON_HOSTNAME as string) || (protocol === 'vnc' ? '192.168.100.50:5901' : '10.10.0.3:3389');
+    let domain = (env.VITE_IRON_DOMAIN as string | undefined) ?? '';
     let authtoken = '';
     let kdc_proxy_url = '';
     let desktopSize = { width: 1280, height: 720 };
+    // Common resolutions up to 8K for the desktop-size picker.
+    const resolutions = [
+        { width: 1024, height: 768, label: '1024 × 768 (4:3)' },
+        { width: 1280, height: 720, label: '1280 × 720 (HD)' },
+        { width: 1366, height: 768, label: '1366 × 768' },
+        { width: 1600, height: 900, label: '1600 × 900' },
+        { width: 1920, height: 1080, label: '1920 × 1080 (FHD)' },
+        { width: 2560, height: 1440, label: '2560 × 1440 (QHD)' },
+        { width: 3440, height: 1440, label: '3440 × 1440 (ultrawide)' },
+        { width: 3840, height: 2160, label: '3840 × 2160 (4K UHD)' },
+        { width: 5120, height: 2880, label: '5120 × 2880 (5K)' },
+        { width: 7680, height: 4320, label: '7680 × 4320 (8K UHD)' },
+    ];
+    let selectedResolution = `${desktopSize.width}x${desktopSize.height}`;
+    // Physical resolution of the current display (CSS px × devicePixelRatio) — the "match display"
+    // option uses this so the session starts at native fullscreen size for a 1:1 experience.
+    function displayResolution() {
+        if (typeof window === 'undefined') {
+            return { width: 1920, height: 1080 };
+        }
+        return {
+            width: Math.round(window.screen.width * window.devicePixelRatio),
+            height: Math.round(window.screen.height * window.devicePixelRatio),
+        };
+    }
+    $: {
+        if (selectedResolution === 'screen') {
+            desktopSize = displayResolution();
+        } else {
+            const r = resolutions.find((res) => `${res.width}x${res.height}` === selectedResolution);
+            if (r) {
+                desktopSize = { width: r.width, height: r.height };
+            }
+        }
+    }
     let pcb = '';
     let pop_up = false;
     let enable_clipboard = true;
@@ -228,12 +268,13 @@
                             <label for="pcb">Pre Connection Blob</label>
                         </div>
                         <div class="field label border">
-                            <input id="desktopSizeW" type="text" bind:value={desktopSize.width} />
-                            <label for="desktopSizeW">Desktop Width</label>
-                        </div>
-                        <div class="field label border">
-                            <input id="desktopSizeH" type="text" bind:value={desktopSize.height} />
-                            <label for="desktopSizeH">Desktop Height</label>
+                            <select id="desktopSize" bind:value={selectedResolution}>
+                                <option value="screen">Fullscreen — match my display</option>
+                                {#each resolutions as res}
+                                    <option value={`${res.width}x${res.height}`}>{res.label}</option>
+                                {/each}
+                            </select>
+                            <label for="desktopSize">Resolution</label>
                         </div>
                         <div class="field label border">
                             <input id="kdc_proxy_url" type="text" bind:value={kdc_proxy_url} />

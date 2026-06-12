@@ -45,6 +45,7 @@ pub(crate) struct WebCodecsH264Decoder {
     configured: bool,
     timestamp: i32,
     annexb: Vec<u8>,
+    samples_logged: u8,
 }
 
 impl WebCodecsH264Decoder {
@@ -78,19 +79,35 @@ impl WebCodecsH264Decoder {
             configured: false,
             timestamp: 0,
             annexb: Vec::new(),
+            samples_logged: 0,
         })
     }
 
     /// Submit one AVC420 frame (AVC format: 4-byte BE length-prefixed NALs) destined for `out_dst`
     /// (output-space). Configures lazily on the first SPS; frames before that are dropped.
     pub(crate) fn decode(&mut self, surface_id: u16, out_dst: ExclusiveRectangle, bitstream: &[u8]) {
+        let sampling = self.samples_logged < 4;
         let mut sps: Option<Vec<u8>> = None;
         let mut has_idr = false;
-        for_each_nal(bitstream, |nal| match nal_type(nal) {
-            NAL_SPS => sps = Some(nal.to_vec()),
-            NAL_IDR => has_idr = true,
-            _ => {}
+        let mut nal_types: Vec<u8> = Vec::new();
+        for_each_nal(bitstream, |nal| {
+            let t = nal_type(nal);
+            if sampling {
+                nal_types.push(t);
+            }
+            match t {
+                NAL_SPS => sps = Some(nal.to_vec()),
+                NAL_IDR => has_idr = true,
+                _ => {}
+            }
         });
+        if sampling {
+            // One-shot wire-format diagnostic: confirms Annex-B vs AVC framing and which NAL types
+            // actually arrive (so we can see whether the server ever sends an SPS/IDR keyframe).
+            let head: String = bitstream.iter().take(20).map(|b| format!("{b:02x} ")).collect();
+            info!(len = bitstream.len(), annexb = is_annex_b(bitstream), ?nal_types, head = %head.trim_end(), "AVC420 bitstream sample");
+            self.samples_logged += 1;
+        }
 
         if !self.configured {
             let Some(sps) = sps.as_deref() else {
@@ -140,8 +157,24 @@ fn nal_type(nal: &[u8]) -> u8 {
     nal.first().map(|b| b & 0x1f).unwrap_or(0)
 }
 
-/// Visits each NAL unit of an AVC-format (4-byte BE length-prefixed) buffer.
-fn for_each_nal(data: &[u8], mut f: impl FnMut(&[u8])) {
+/// True if the buffer begins with an Annex-B start code (`00 00 01` or `00 00 00 01`).
+fn is_annex_b(data: &[u8]) -> bool {
+    data.starts_with(&[0, 0, 0, 1]) || data.starts_with(&[0, 0, 1])
+}
+
+/// Visits each NAL unit, auto-detecting framing: Annex-B (start codes) vs AVC (4-byte BE
+/// length-prefixed). MS-RDPEGFX AVC420 framing is not reliably one or the other across servers, so
+/// we detect rather than trust a fixed format.
+fn for_each_nal(data: &[u8], f: impl FnMut(&[u8])) {
+    if is_annex_b(data) {
+        annexb_each_nal(data, f);
+    } else {
+        avc_each_nal(data, f);
+    }
+}
+
+/// Visits each NAL of a 4-byte BE length-prefixed (AVC / `avcC`) buffer.
+fn avc_each_nal(data: &[u8], mut f: impl FnMut(&[u8])) {
     let mut offset = 0;
     while offset + 4 <= data.len() {
         let len = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
@@ -157,11 +190,49 @@ fn for_each_nal(data: &[u8], mut f: impl FnMut(&[u8])) {
     }
 }
 
-/// Converts AVC format (length-prefixed) to Annex B (`00 00 00 01` start codes), which is what a
-/// `VideoDecoder` configured without an `avcC` `description` expects.
+/// Visits each NAL of an Annex-B byte stream (NALs separated by `00 00 01` / `00 00 00 01`).
+fn annexb_each_nal(data: &[u8], mut f: impl FnMut(&[u8])) {
+    let n = data.len();
+    let mut i = 0;
+    // Advance to the first start code.
+    while i + 3 <= n && !(data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+        i += 1;
+    }
+    if i + 3 > n {
+        return;
+    }
+    let mut nal_start = i + 3;
+    i = nal_start;
+    while i + 3 <= n {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            let mut end = i;
+            // A 4-byte start code (`00 00 00 01`) leaves a trailing zero on the previous NAL.
+            if end > nal_start && data[end - 1] == 0 {
+                end -= 1;
+            }
+            if end > nal_start {
+                f(&data[nal_start..end]);
+            }
+            nal_start = i + 3;
+            i = nal_start;
+        } else {
+            i += 1;
+        }
+    }
+    if nal_start < n {
+        f(&data[nal_start..n]);
+    }
+}
+
+/// Produces an Annex-B byte stream (`00 00 00 01` start codes) for `VideoDecoder` (configured without
+/// an `avcC` description). Pass-through if already Annex-B, otherwise convert from length-prefixed.
 fn to_annex_b(data: &[u8], out: &mut Vec<u8>) {
     out.clear();
-    for_each_nal(data, |nal| {
+    if is_annex_b(data) {
+        out.extend_from_slice(data);
+        return;
+    }
+    avc_each_nal(data, |nal| {
         out.extend_from_slice(&[0, 0, 0, 1]);
         out.extend_from_slice(nal);
     });

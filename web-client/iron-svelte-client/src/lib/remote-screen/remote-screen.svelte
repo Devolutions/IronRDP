@@ -8,6 +8,19 @@
     let uiService: UserInteraction;
     let cursorOverrideActive = false;
     let showDebugPanel = false;
+    let rootEl: HTMLDivElement;
+
+    // Put the whole session into real browser fullscreen (no page/browser chrome). The toolbar is
+    // hidden via CSS while fullscreen, so only the remote screen shows — a native-feeling session.
+    // Esc exits. The fit-scaling recomputes on the resize that entering/leaving fullscreen triggers,
+    // and we nudge it explicitly so the canvas fills immediately.
+    function toggleFullscreen() {
+        if (document.fullscreenElement) {
+            void document.exitFullscreen();
+        } else if (rootEl?.requestFullscreen) {
+            void rootEl.requestFullscreen().catch((e) => console.error('fullscreen request failed', e));
+        }
+    }
 
     userInteractionService.subscribe((uis) => {
         if (uis != null) {
@@ -50,13 +63,24 @@
             const event = e as CustomEvent;
             userInteractionService.set(event.detail.irgUserInteraction);
         });
+
+        // Re-fit when entering/leaving fullscreen (toolbar appears/disappears → viewport changes).
+        document.addEventListener('fullscreenchange', () => {
+            setTimeout(() => uiService?.setScale(1), 100);
+        });
     });
 </script>
 
-<div style="display: flex; height: 100%; flex-direction: column; background-color: #2e2e2e;" class:hideall={$showLogin}>
-    <div>
+<div
+    bind:this={rootEl}
+    class="session-root"
+    style="display: flex; height: 100%; flex-direction: column; background-color: #2e2e2e;"
+    class:hideall={$showLogin}
+>
+    <div class="toolbar">
         <div style="text-align: center; padding: 10px; background: black;">
             <button on:click={() => (showDebugPanel = !showDebugPanel)}>Toggle debug panel</button>
+            <button on:click={() => toggleFullscreen()}>Fullscreen</button>
             <button on:click={() => uiService.setScale(1)}>Fit</button>
             <button on:click={() => uiService.setScale(2)}>Full</button>
             <button on:click={() => uiService.setScale(3)}>Real</button>
@@ -99,5 +123,19 @@
 <style>
     .hideall {
         display: none !important;
+    }
+
+    /* Native fullscreen: drop the toolbar/chrome so only the remote screen shows, and let the
+       remote-desktop component grow to fill the whole display. */
+    .session-root:fullscreen {
+        background: black;
+    }
+    .session-root:fullscreen .toolbar {
+        display: none;
+    }
+    .session-root:fullscreen :global(iron-remote-desktop) {
+        flex: 1 1 auto;
+        display: block;
+        min-height: 0;
     }
 </style>

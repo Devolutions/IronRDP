@@ -695,6 +695,13 @@ fn create_gcc_blocks<'a>(
                     let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
                         | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
                         | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
+                        // Advertise RDP 8.0+ dynamic-VC graphics support so the server enables the
+                        // MS-RDPEGFX pipeline (H.264/AVC) instead of classifying us as RDP <=7.1 and
+                        // falling back to legacy RemoteFX. Required for the EGFX handlers to receive
+                        // any AVC420 bitstream. Servers that open the Graphics DVC channel will find a
+                        // GraphicsPipelineClient registered on drdynvc when EGFX is wired; clients
+                        // without one simply decline the channel and the server falls back to RemoteFX.
+                        | ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL
                         | ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
 
                     // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU

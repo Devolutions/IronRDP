@@ -4,6 +4,26 @@
 
 A collection of Rust crates providing an implementation of the Microsoft Remote Desktop Protocol, with a focus on security.
 
+> [!WARNING]
+> ## ⚗️ Experimental branch: `experiment/web-rdp-h264-webgpu`
+>
+> **This branch is a proof-of-concept for experimentation only — not production-ready and not intended to be merged as-is.** It demonstrates a full **MS-RDPEGFX H.264/AVC graphics pipeline running in a browser**, end to end: a plugin-free web page driving a real RDP session with **hardware H.264 decode (WebCodecs)** presented through **WebGPU**.
+>
+> ### What it changes relative to `master`
+> - **`ironrdp-connector`** — advertises `SUPPORT_DYN_VC_GFX_PROTOCOL` in the client core data, so the server enables the RDP 8.0+ EGFX graphics pipeline instead of classifying the client as RDP ≤7.1 and falling back to RemoteFX.
+> - **`ironrdp-egfx`** — implements **AVC444** decode (extracts the AVC420 main view) alongside AVC420, via a shared dispatch path.
+> - **`ironrdp-web`** — new `egfx` module: hardware **H.264 decode via the browser `VideoDecoder` (WebCodecs)**, composited/presented on **WebGPU** through the [`softblit`](https://github.com/irvingoujAtDevolution/softblit) presenter with a **zero-copy GPU path** (`VideoFrame` → `copyExternalImageToTexture`). NAL framing is auto-detected (Annex-B vs length-prefixed). Advertises EGFX capability versions V10.7→V10.4 + V8.1.
+> - **web demo (`iron-svelte-client`)** — `.env`-driven login prefill, a resolution picker including **"match display"**, and a native **Fullscreen** mode.
+>
+> ### What's possible with it
+> A browser tab running a full RDP desktop with hardware-decoded H.264 — smooth full-motion video (no RemoteFX band-fill tearing) and a native-feeling fullscreen session, all from a Rust→WASM RDP stack. This is the same codec family Azure Virtual Desktop / Windows 365 use.
+>
+> ### Requirements & caveats
+> - **Server must emit H.264/AVC**: Windows 10/11 or Server 2016+ with a WDDM graphics path (a GPU-less *Gen1* Hyper-V VM cannot). On the host, enable **"Prioritize H.264/AVC 444 Graphics mode"** and set **"Configure image quality for RemoteFX Adaptive Graphics" = High** (Lossless disables H.264).
+> - **Browser** must support **WebGPU + WebCodecs** (Chromium-based). The web build requires `--cfg=web_sys_unstable_apis` (handled by `cargo xtask web build`).
+> - Depends on the experimental [`softblit`](https://github.com/irvingoujAtDevolution/softblit) WebGPU presenter (pinned git dependency in `crates/ironrdp-web/Cargo.toml`).
+> - Chroma is currently **4:2:0** — we decode only the AVC444 *main* view and drop the chroma-upgrade aux stream. True 4:4:4 is a future step.
+
 ## Demonstration
 
 <https://user-images.githubusercontent.com/3809077/202049929-76f42471-aeb0-41da-9118-0dc6ea491bd2.mp4>
