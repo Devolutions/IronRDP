@@ -1027,6 +1027,47 @@ impl<R: Role> Cliprdr<R> {
         // Backend notification deferred until actual cleanup
     }
 
+    /// Immediately sends `Unlock` PDUs for — and drops — every outgoing clipboard lock.
+    ///
+    /// Outgoing locks are created when we download files from the remote: each asks the
+    /// Shared Clipboard Owner to retain File Stream data so we can keep pulling it even
+    /// after the clipboard changes ([MS-RDPECLIP] 2.2.4.1). They are normally released
+    /// lazily by the inactivity sweep in [`Self::drive_timeouts`], so concurrent downloads
+    /// that outlive a *remote* clipboard change aren't aborted.
+    ///
+    /// When the **local** side takes clipboard ownership itself (initiating a file copy),
+    /// those locks point at data we are replacing. Leaving them held while we advertise a
+    /// fresh `FormatList` makes the server track a lock for a download that will never
+    /// finish; some servers (notably Windows `rdpclip.exe`) react badly to that overlap.
+    /// Releasing them up front keeps the lock/ownership state consistent.
+    ///
+    /// Returns the `Unlock` PDUs to send (these must precede the new `FormatList` on the
+    /// wire); empty when no locks are held.
+    fn release_outgoing_locks(&mut self) -> Vec<SvcMessage> {
+        if self.outgoing_locks.is_empty() {
+            return Vec::new();
+        }
+
+        let cleared: Vec<u32> = self.outgoing_locks.keys().copied().collect();
+        self.outgoing_locks.clear();
+        self.current_lock_id = None;
+
+        info!(
+            count = cleared.len(),
+            "Releasing outgoing locks before taking clipboard ownership"
+        );
+
+        let messages = cleared
+            .iter()
+            .map(|id| into_cliprdr_message(ClipboardPdu::UnlockData(LockDataId(*id))))
+            .collect();
+
+        let lock_ids: Vec<LockDataId> = cleared.iter().map(|id| LockDataId(*id)).collect();
+        self.backend.on_outgoing_locks_cleared(&lock_ids);
+
+        messages
+    }
+
     /// Lazily runs periodic cleanup during normal API activity.
     ///
     /// Cleans up expired locks, stale file contents requests, and inactive
@@ -1537,7 +1578,15 @@ impl<R: Role> Cliprdr<R> {
         let format_list = self.build_format_list(&formats).map_err(|e| encode_err!(e))?;
         let pdu = ClipboardPdu::FormatList(format_list);
 
-        Ok(vec![into_cliprdr_message(pdu)].into())
+        // Release any outgoing download locks BEFORE advertising our file list. By
+        // initiating a file copy we take clipboard ownership, so locks placed for
+        // downloads from the previous owner are now stale; sending a new FormatList while
+        // they're still held desyncs the server's lock state.
+        // The Unlock PDUs must precede the FormatList on the wire.
+        let mut messages = self.release_outgoing_locks();
+        messages.push(into_cliprdr_message(pdu));
+
+        Ok(messages.into())
     }
 }
 
