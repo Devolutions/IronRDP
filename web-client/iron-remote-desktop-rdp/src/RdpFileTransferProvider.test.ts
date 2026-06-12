@@ -11,6 +11,7 @@ vi.mock('./extensions', () => ({
     lockCallback: (cb: unknown) => ({ ident: 'lock_callback', value: cb }),
     unlockCallback: (cb: unknown) => ({ ident: 'unlock_callback', value: cb }),
     locksExpiredCallback: (cb: unknown) => ({ ident: 'locks_expired_callback', value: cb }),
+    formatListResponseCallback: (cb: unknown) => ({ ident: 'format_list_response_callback', value: cb }),
     requestFileContents: (params: unknown) => ({ ident: 'request_file_contents', value: params }),
     submitFileContents: (params: unknown) => ({ ident: 'submit_file_contents', value: params }),
     initiateFileCopy: (files: unknown) => ({ ident: 'initiate_file_copy', value: files }),
@@ -256,7 +257,7 @@ describe('RdpFileTransferProvider', () => {
     });
 
     describe('upload lifecycle callbacks', () => {
-        it('should call onUploadStarted and onUploadFinished around initiateFileCopy', async () => {
+        it('suppresses monitoring on advertise and defers the resume past the wire send', async () => {
             const onUploadStarted = vi.fn();
             const onUploadFinished = vi.fn();
 
@@ -268,19 +269,190 @@ describe('RdpFileTransferProvider', () => {
             const files = [new File(['x'], 'x.txt', { type: 'text/plain' })];
             const { completion: uploadPromise } = p.uploadFiles(files);
 
-            // Both should fire immediately (monitoring suppression is brief)
+            // Monitoring is suppressed before the FormatList goes on the wire...
             expect(onUploadStarted).toHaveBeenCalledTimes(1);
-            expect(onUploadFinished).toHaveBeenCalledTimes(1);
             expect(s.invokeExtension).toHaveBeenCalledTimes(1);
-
-            // Upload started should fire before invokeExtension (initiateFileCopy)
             expect(onUploadStarted.mock.invocationCallOrder[0]).toBeLessThan(
                 s.invokeExtension.mock.invocationCallOrder[0],
             );
+            // ...but the resume is now DEFERRED (held until the paste is pulled or we
+            // give up), so the 100ms monitor poll cannot clobber the file FormatList.
+            expect(onUploadFinished).not.toHaveBeenCalled();
 
-            // Clean up
+            // Dispose resumes monitoring exactly once and rejects the pending upload.
             p.dispose();
+            expect(onUploadFinished).toHaveBeenCalledTimes(1);
             await expect(uploadPromise).rejects.toThrow('RdpFileTransferProvider disposed');
+        });
+
+        it('resumes monitoring on the first FileContentsRequest (remote pulled the files)', async () => {
+            const onUploadFinished = vi.fn();
+            const { provider: p } = setupProvider({ onUploadFinished });
+
+            const files = [new File(['data'], 'x.txt', { type: 'text/plain' })];
+            const { completion } = p.uploadFiles(files);
+            expect(onUploadFinished).not.toHaveBeenCalled();
+
+            // Remote requests file size for index 0 -> paste was pulled -> resume.
+            // @ts-expect-error - exercising the private callback the WASM layer drives
+            p.handleFileContentsRequest({ streamId: 1, index: 0, flags: 1, position: 0, size: 8 });
+            expect(onUploadFinished).toHaveBeenCalledTimes(1);
+
+            p.dispose();
+            // Already resumed on the pull, so dispose does not resume again.
+            expect(onUploadFinished).toHaveBeenCalledTimes(1);
+            await expect(completion).rejects.toThrow('RdpFileTransferProvider disposed');
+        });
+
+        it('fails the upload and resumes monitoring if the remote never pulls (watchdog)', async () => {
+            vi.useFakeTimers();
+            try {
+                const onUploadFinished = vi.fn();
+                const { provider: p } = setupProvider({ onUploadFinished });
+                const errorHandler = vi.fn();
+                p.on('error', errorHandler);
+
+                const files = [new File(['x'], 'x.txt', { type: 'text/plain' })];
+                const { completion } = p.uploadFiles(files);
+                const rejected = expect(completion).rejects.toThrow(/did not request the files/i);
+
+                // No FileContentsRequest ever arrives; after the 60s lock window the
+                // watchdog fires: resume monitoring + fail the upload.
+                await vi.advanceTimersByTimeAsync(60_000);
+                await rejected;
+
+                expect(onUploadFinished).toHaveBeenCalledTimes(1);
+                const err: FileTransferError = errorHandler.mock.calls.at(-1)![0];
+                expect(err.direction).toBe('upload');
+
+                // uploadState was cleared, so a fresh upload starts instead of throwing
+                // "Upload already in progress" -- the wedge is gone, no reload needed.
+                const second = p.uploadFiles(files);
+                p.dispose();
+                await expect(second.completion).rejects.toThrow('RdpFileTransferProvider disposed');
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('does NOT fail a pulled upload that keeps making progress', async () => {
+            // Regression guard for normal uploads: a slow-but-progressing transfer resets
+            // the inactivity watchdog on every request, so it must never be killed even
+            // long past the window.
+            vi.useFakeTimers();
+            try {
+                const { provider: p } = setupProvider();
+                const errorHandler = vi.fn();
+                p.on('error', errorHandler);
+
+                const files = [new File(['data'], 'x.txt', { type: 'text/plain' })];
+                const { completion } = p.uploadFiles(files);
+                let settled = false;
+                void completion.then(
+                    () => {
+                        settled = true;
+                    },
+                    () => {
+                        settled = true;
+                    },
+                );
+
+                // Remote keeps pulling, each request well inside the 60s window: the
+                // watchdog keeps resetting and never fires (total elapsed well past 60s).
+                for (let i = 0; i < 5; i++) {
+                    // @ts-expect-error - private callback the WASM layer drives
+                    p.handleFileContentsRequest({ streamId: 1, index: 0, flags: 1, position: 0, size: 8 });
+                    await vi.advanceTimersByTimeAsync(50_000);
+                }
+
+                expect(errorHandler).not.toHaveBeenCalled();
+                expect(settled).toBe(false);
+
+                p.dispose();
+                await expect(completion).rejects.toThrow('RdpFileTransferProvider disposed');
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('fails a pulled-then-idle upload after the inactivity window, releasing the wedge', async () => {
+            // Once pulling starts, if the remote goes silent (e.g. it grabbed the clipboard
+            // with a text/image copy that never reaches handleFilesAvailable), the
+            // inactivity watchdog releases uploadState so later uploads aren't wedged.
+            vi.useFakeTimers();
+            try {
+                const { provider: p } = setupProvider();
+                const errorHandler = vi.fn();
+                p.on('error', errorHandler);
+
+                const files = [new File(['data'], 'x.txt', { type: 'text/plain' })];
+                const { completion } = p.uploadFiles(files);
+                const rejected = expect(completion).rejects.toThrow(/stopped requesting the files/i);
+
+                // Remote pulls once (arms the inactivity watchdog), then goes silent.
+                // @ts-expect-error - private callback the WASM layer drives
+                p.handleFileContentsRequest({ streamId: 1, index: 0, flags: 1, position: 0, size: 8 });
+                await vi.advanceTimersByTimeAsync(60_000);
+                await rejected;
+
+                expect(errorHandler).toHaveBeenCalled();
+                expect((errorHandler.mock.calls.at(-1)![0] as FileTransferError).direction).toBe('upload');
+
+                // uploadState released -> a fresh upload doesn't throw "Upload already in progress".
+                const second = p.uploadFiles(files);
+                p.dispose();
+                await expect(second.completion).rejects.toThrow('RdpFileTransferProvider disposed');
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('releases the in-flight upload when the remote replaces the clipboard', async () => {
+            // A remote FormatList (the remote copied its own files) supersedes our advertise;
+            // the upload can no longer complete, so uploadState must be released or it wedges
+            // every later upload. Symmetric to the rejected-advertise recovery.
+            const { provider: p } = setupProvider();
+            const errorHandler = vi.fn();
+            p.on('error', errorHandler);
+
+            const files = [new File(['data'], 'x.txt', { type: 'text/plain' })];
+            const { completion } = p.uploadFiles(files);
+            const rejected = expect(completion).rejects.toThrow(/remote clipboard changed/i);
+
+            // Remote copies its own files mid-upload.
+            // @ts-expect-error - accessing private method for testing
+            p.handleFilesAvailable([{ name: 'remote.txt', size: 10, lastModified: 0 }] as FileInfo[]);
+            await rejected;
+
+            expect(errorHandler).toHaveBeenCalled();
+            expect((errorHandler.mock.calls.at(-1)![0] as FileTransferError).direction).toBe('upload');
+
+            // uploadState released -> a fresh upload doesn't throw "Upload already in progress".
+            const second = p.uploadFiles(files);
+            p.dispose();
+            await expect(second.completion).rejects.toThrow('RdpFileTransferProvider disposed');
+        });
+
+        it('does NOT fail an in-flight upload on an Unlock (Unlock is not a paste-failure signal)', async () => {
+            // The peer/cliprdr emit Unlock routinely (snapshot of the FormatList, and the
+            // 60s timeout), often before any FileContentsRequest. Treating that as failure
+            // tore down uploads that would still be pulled, so Unlock must be ignored here.
+            const { provider: p } = setupProvider();
+            const errorHandler = vi.fn();
+            p.on('error', errorHandler);
+
+            const files = [new File(['x'], 'x.txt', { type: 'text/plain' })];
+            const { completion } = p.uploadFiles(files);
+
+            // @ts-expect-error - private callback the WASM layer drives via unlockCallback
+            p.handleUnlock(0);
+
+            // No error, and the upload state is intact (a second attempt still hits the guard).
+            expect(errorHandler).not.toHaveBeenCalled();
+            expect(() => p.uploadFiles(files)).toThrow('Upload already in progress');
+
+            p.dispose();
+            await expect(completion).rejects.toThrow('RdpFileTransferProvider disposed');
         });
 
         it('should call onUploadFinished even on initiateFileCopy failure', async () => {
@@ -300,8 +472,88 @@ describe('RdpFileTransferProvider', () => {
             await expect(completion).rejects.toThrow('Failed to initiate file upload');
 
             expect(onUploadStarted).toHaveBeenCalledTimes(1);
-            // onUploadFinished fires in finally block regardless
+            // The failure path resumes monitoring (resumeUploadMonitoring), so it fires once.
             expect(onUploadFinished).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('format list response (paste accept / reject)', () => {
+        // Pull the registered format_list_response_callback out of the builder
+        // extensions and invoke it, exercising the real wiring + handler together.
+        function fireFormatListResponse(p: RdpFileTransferProviderInstance, ok: boolean): void {
+            const exts = p.getBuilderExtensions() as unknown as Array<{ ident: string; value: (ok: boolean) => void }>;
+            const ext = exts.find((e) => e.ident === 'format_list_response_callback');
+            if (ext === undefined) {
+                throw new Error('format_list_response_callback was not registered');
+            }
+            ext.value(ok);
+        }
+
+        it('registers a format_list_response_callback builder extension', () => {
+            const idents = (provider.getBuilderExtensions() as unknown as Array<{ ident: string }>).map((e) => e.ident);
+            expect(idents).toContain('format_list_response_callback');
+        });
+
+        it('emits a format-list-response event carrying the ok flag', () => {
+            const handler = vi.fn();
+            provider.on('format-list-response', handler);
+
+            fireFormatListResponse(provider, true);
+            fireFormatListResponse(provider, false);
+
+            expect(handler).toHaveBeenNthCalledWith(1, true);
+            expect(handler).toHaveBeenNthCalledWith(2, false);
+        });
+
+        it('fails an in-flight upload cleanly when the remote rejects the advertise', async () => {
+            const { provider: p, session: s } = setupProvider();
+            const errorHandler = vi.fn();
+            p.on('error', errorHandler);
+
+            const files = [new File(['x'], 'x.txt', { type: 'text/plain' })];
+            const { completion } = p.uploadFiles(files);
+
+            // Remote rejects the file list before requesting any contents.
+            fireFormatListResponse(p, false);
+
+            await expect(completion).rejects.toThrow(/rejected the file list/i);
+            const err: FileTransferError = errorHandler.mock.calls.at(-1)![0];
+            expect(err.direction).toBe('upload');
+
+            // uploadState is cleared, so a fresh upload starts instead of throwing
+            // "Upload already in progress" (the wedge this fixes). Reaching a handle
+            // (not a throw) plus the initiateFileCopy call proves it restarted.
+            s.invokeExtension.mockClear();
+            const second = p.uploadFiles(files);
+            expect(s.invokeExtension).toHaveBeenCalledTimes(1);
+
+            p.dispose();
+            await expect(second.completion).rejects.toThrow('RdpFileTransferProvider disposed');
+        });
+
+        it('leaves an accepted advertise (ok=true) untouched', async () => {
+            const { provider: p } = setupProvider();
+            const files = [new File(['x'], 'x.txt', { type: 'text/plain' })];
+            const { completion } = p.uploadFiles(files);
+
+            fireFormatListResponse(p, true);
+
+            // Upload is still in progress: a second attempt still hits the guard.
+            expect(() => p.uploadFiles(files)).toThrow('Upload already in progress');
+
+            p.dispose();
+            await expect(completion).rejects.toThrow('RdpFileTransferProvider disposed');
+        });
+
+        it('surfaces a reject with no upload in progress without erroring', () => {
+            const errorHandler = vi.fn();
+            const eventHandler = vi.fn();
+            provider.on('error', errorHandler);
+            provider.on('format-list-response', eventHandler);
+
+            expect(() => fireFormatListResponse(provider, false)).not.toThrow();
+            expect(eventHandler).toHaveBeenCalledWith(false);
+            expect(errorHandler).not.toHaveBeenCalled();
         });
     });
 
