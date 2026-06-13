@@ -7,6 +7,7 @@
 use ironrdp_core::{
     DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size, invalid_field_err,
 };
+use ironrdp_dvc::DvcEncode;
 
 use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
 use crate::pdu::utils::HResult;
@@ -151,3 +152,6 @@ impl Encode for RimExchangeCapabilityResponse {
         Self::FIXED_PART_SIZE
     }
 }
+
+impl DvcEncode for RimExchangeCapabilityRequest {}
+impl DvcEncode for RimExchangeCapabilityResponse {}

@@ -7,6 +7,7 @@
 //! [2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpexps/ebe401f0-f22e-4de4-9cd3-2a55e5493500
 
 use ironrdp_core::{Decode, Encode, ensure_fixed_part_size, ensure_size, invalid_field_err};
+use ironrdp_dvc::DvcEncode;
 
 use crate::pdu::header::{FunctionId, MessageId, SharedMsgHeader};
 
@@ -177,3 +178,6 @@ impl Encode for QueryInterfaceFailureResponse {
         Self::FIXED_PART_SIZE
     }
 }
+
+impl DvcEncode for QueryInterfaceRequest {}
+impl DvcEncode for QueryInterfaceFailureResponse {}

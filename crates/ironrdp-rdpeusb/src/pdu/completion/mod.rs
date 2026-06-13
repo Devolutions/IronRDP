@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use ironrdp_core::{
     Decode as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err, other_err,
 };
+use ironrdp_dvc::DvcEncode;
 use ironrdp_pdu::utils::strict_sum;
 
 use crate::pdu::completion::ts_urb_result::{TsUrbIsochTransferResult, TsUrbResult, TsUrbResultPayload};
@@ -163,6 +164,8 @@ impl Encode for IoControlCompletion {
     }
 }
 
+impl DvcEncode for IoControlCompletion {}
+
 /// [\[MS-RDPEUSB\] 2.2.7.2 URB Completion (URB_COMPLETION)][1] packet.
 ///
 /// Sent from the client to the server as the final result of a [`TransferInRequest`] that contains
@@ -265,6 +268,8 @@ impl Encode for UrbCompletion {
     }
 }
 
+impl DvcEncode for UrbCompletion {}
+
 /// [\[MS-RDPEUSB\] 2.2.7.3 URB Completion No Data (URB_COMPLETION_NO_DATA)][1] packet.
 ///
 /// Sent from the client to the server as the final result of a [`TransferInRequest`] that contains
@@ -343,3 +348,5 @@ impl Encode for UrbCompletionNoData {
             + size_of::<u32>(/* OutputBufferSize */)
     }
 }
+
+impl DvcEncode for UrbCompletionNoData {}
