@@ -2801,6 +2801,7 @@ name = "ironrdp-rdpeusb"
 version = "0.1.0"
 dependencies = [
  "ironrdp-core",
+ "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-str",
 ]

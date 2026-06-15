@@ -11,11 +11,12 @@ use ironrdp_core::{
     Decode as _, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size,
     ensure_size, invalid_field_err, other_err, unsupported_value_err,
 };
+use ironrdp_dvc::DvcEncode;
 use ironrdp_str::prefixed::Cch32String;
 
 use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
 use crate::pdu::usb_dev::ts_urb::{TsUrbIn, TsUrbOut};
-use crate::pdu::utils::{HResult, RequestId, RequestIdIoctl};
+use crate::pdu::utils::{HResult, RequestId, RequestIdIoctl, RequestIdTransferInOut};
 #[cfg(doc)]
 use crate::pdu::{
     completion::{IoControlCompletion, UrbCompletion, UrbCompletionNoData},
@@ -78,6 +79,8 @@ impl Encode for CancelRequest {
         Self::FIXED_PART_SIZE
     }
 }
+
+impl DvcEncode for CancelRequest {}
 
 /// [\[MS-RDPEUSB\] 2.2.6.2 Register Request Callback Message (REGISTER_REQUEST_CALLBACK)][1] message.
 ///
@@ -151,6 +154,8 @@ impl Encode for RegisterRequestCallback {
         SharedMsgHeader::SIZE_REQ + 4 + request_completion_size
     }
 }
+
+impl DvcEncode for RegisterRequestCallback {}
 
 /// [\[MS-RDPEUSB\] 2.2.6.3 IO Control Message (IO_CONTROL)][1] message.
 ///
@@ -490,6 +495,8 @@ impl Encode for InternalIoControl {
     }
 }
 
+impl DvcEncode for InternalIoControl {}
+
 /// [\[MS-RDPEUSB\] 2.2.6.5 Query Device Text Message (QUERY_DEVICE_TEXT)][1] message.
 ///
 /// Sent from the server to the client in order to query the USB's device text (like description or
@@ -556,6 +563,8 @@ impl Encode for QueryDeviceText {
     }
 }
 
+impl DvcEncode for QueryDeviceText {}
+
 /// [\[MS-RDPEUSB\] 2.2.6.6 Query Device Text Response Message (QUERY_DEVICE_TEXT_RSP)][1] message.
 ///
 /// Sent from the client in response to a [`QueryDeviceText`] message sent by the server.
@@ -617,23 +626,7 @@ impl Encode for QueryDeviceTextRsp {
     }
 }
 
-// macro_rules! check_output_buffer_size {
-//     ($ts_urb:expr, $output_buffer_size:expr) => {{
-//     }};
-// }
-
-// #[derive(Debug)]
-// pub struct TransferInRequestOutputBufferSizeErr {
-//     is: u32,
-//     expected: u32,
-//     ts_urb: &'static str,
-// }
-//
-// impl core::fmt::Display for TransferInRequestOutputBufferSizeErr {
-//     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-//         write!(f, "")
-//     }
-// }
+impl DvcEncode for QueryDeviceTextRsp {}
 
 /// [\[MS-RDPEUSB\] 2.2.6.7 Transfer In Request (TRANSFER_IN_REQUEST)][1] message.
 ///
@@ -655,6 +648,26 @@ impl TransferInRequest {
             iface_id: self.udev_iface.with_mask(Mask::Proxy),
             msg_id: self.msg_id,
             function_id: Some(FunctionId::TRANSFER_IN_REQUEST),
+        }
+    }
+
+    pub fn request_id(&self) -> RequestIdTransferInOut {
+        match &self.ts_urb {
+            TsUrbIn::SelectConfig(urb) => urb.header.req_id,
+            TsUrbIn::SelectIface(urb) => urb.header.req_id,
+            TsUrbIn::PipeReq(urb) => urb.header.req_id,
+            TsUrbIn::GetCurFrameNum(urb) => urb.header.req_id,
+            TsUrbIn::CtlTransfer(urb) => urb.header.req_id,
+            TsUrbIn::BulkInterruptTransfer(urb) => urb.header.req_id,
+            TsUrbIn::IsochTransfer(urb) => urb.header.req_id,
+            TsUrbIn::CtlDescReq(urb) => urb.header.req_id,
+            TsUrbIn::CtlFeatReq(urb) => urb.header.req_id,
+            TsUrbIn::CtlGetStatus(urb) => urb.header.req_id,
+            TsUrbIn::VendorClassReq(urb) => urb.header.req_id,
+            TsUrbIn::CtlGetConfig(urb) => urb.header.req_id,
+            TsUrbIn::CtlGetIface(urb) => urb.header.req_id,
+            TsUrbIn::OsFeatDescReq(urb) => urb.header.req_id,
+            TsUrbIn::CtlTransferEx(urb) => urb.header.req_id,
         }
     }
 
@@ -745,6 +758,8 @@ impl Encode for TransferInRequest {
     }
 }
 
+impl DvcEncode for TransferInRequest {}
+
 /// [\[MS-RDPEUSB\] 2.2.6.8 Transfer Out Request (TRANSFER_OUT_REQUEST)][1] message.
 ///
 /// Sent from the server to the client in order to submit data to the USB device.
@@ -822,6 +837,8 @@ impl Encode for TransferOutRequest {
     }
 }
 
+impl DvcEncode for TransferOutRequest {}
+
 /// [\[MS-RDPEUSB\] 2.2.6.9 Retract Device (RETRACT_DEVICE)][1] message.
 ///
 /// Sent from the server to the client in order to stop redirecting the USB device.
@@ -895,3 +912,5 @@ pub enum UsbRetractReason {
     /// server's (group) policy.
     BlockedByPolicy = 0x1,
 }
+
+impl DvcEncode for RetractDevice {}
