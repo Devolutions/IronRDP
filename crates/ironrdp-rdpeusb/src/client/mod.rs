@@ -12,7 +12,6 @@ use crate::pdu::completion::{IoControlCompletion, UrbCompletion, UrbCompletionNo
 use crate::pdu::header::{InterfaceId, Mask, MessageId};
 use crate::pdu::iface_manipulation::{InterfaceRelease, QueryInterfaceFailureResponse};
 use crate::pdu::sink::AddVirtualChannel;
-use crate::pdu::usb_dev::ts_urb::TsUrbOut;
 use crate::pdu::usb_dev::{InternalIoControl, IoControl, QueryDeviceTextRsp, TransferInRequest, TransferOutRequest};
 use crate::pdu::utils::{HResult, RequestId, RequestIdTransferInOut};
 use crate::pdu::{
@@ -700,14 +699,8 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 let msg_id = transfer_out_pdu.msg_id;
                 let output_buffer_size = u32::try_from(transfer_out_pdu.output_buffer.len())
                     .map_err(|_| pdu_other_err!("convert usize to u32 failed"))?;
-                let (request_id, no_ack) = match &transfer_out_pdu.ts_urb {
-                    TsUrbOut::CtlTransfer(urb) => (urb.header.req_id, urb.header.no_ack),
-                    TsUrbOut::BulkInterruptTransfer(urb) => (urb.header.req_id, urb.header.no_ack),
-                    TsUrbOut::IsochTransfer(urb) => (urb.header.req_id, urb.header.no_ack),
-                    TsUrbOut::CtlDescReq(urb) => (urb.header.req_id, urb.header.no_ack),
-                    TsUrbOut::VendorClassReq(urb) => (urb.header.req_id, urb.header.no_ack),
-                    TsUrbOut::CtlTransferEx(urb) => (urb.header.req_id, urb.header.no_ack),
-                };
+                let request_id = transfer_out_pdu.ts_urb.header.req_id;
+                let no_ack = transfer_out_pdu.ts_urb.header.no_ack;
                 if self.pending_io.contains_key(&request_id.into()) {
                     return Ok(Vec::new());
                 }

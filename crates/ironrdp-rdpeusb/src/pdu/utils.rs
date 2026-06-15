@@ -2,7 +2,10 @@
 //!
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a1004d0e-99e9-4968-894b-0b924ef2f125
 
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size};
+use ironrdp_core::{
+    Decode, DecodeError, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size,
+    invalid_field_err,
+};
 
 #[cfg(doc)]
 use crate::pdu::usb_dev::{InternalIoControl, IoControl, TransferInRequest, TransferOutRequest};
@@ -45,13 +48,16 @@ pub const MAX_NON_DEFAULT_EP_COUNT: usize = 30;
 pub struct RequestIdTransferInOut(u32);
 
 impl TryFrom<u32> for RequestIdTransferInOut {
-    type Error = &'static str;
+    type Error = DecodeError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         if value <= 0x7F_FF_FF_FF {
             Ok(RequestIdTransferInOut(value))
         } else {
-            Err("value greater than 31 bits")
+            Err(invalid_field_err!(
+                "TsUrbHeader::RequestId",
+                "value greater than 31 bits"
+            ))
         }
     }
 }
