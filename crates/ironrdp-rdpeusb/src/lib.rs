@@ -39,6 +39,8 @@ impl<T> core::error::Error for InvalidDeviceInterfaceId<T> {}
 
 impl<T> core::fmt::Display for InvalidDeviceInterfaceId<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("USB device interface id conflicts with RDPEUSB default interfaces; expected id >= 0x00000004")
+        f.write_str(
+            "invalid USB device interface id: conflicts with RDPEUSB default interfaces (expected id >= 0x00000004)",
+        )
     }
 }

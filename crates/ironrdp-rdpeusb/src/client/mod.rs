@@ -24,6 +24,74 @@ use crate::{CHANNEL_NAME, InvalidDeviceInterfaceId};
 
 pub mod device;
 pub use device::*;
+
+pub trait DeviceManagerBackend: Send {
+    /// Called when the first URBDRC DVC is assigned as the control DVC.
+    ///
+    /// This happens from listener.create(channel_id), before the DVC is fully open.
+    fn control_channel_assigned(&mut self, channel_id: u32);
+
+    /// Called for each later URBDRC DVC create request.
+    ///
+    /// The manager should pop the pending device that caused ADD_VIRTUAL_CHANNEL
+    fn take_device_for_channel(&mut self, channel_id: u32) -> Option<Box<dyn UrbdrcDeviceBackend>>;
+}
+
+pub struct UrbdrcListener {
+    on_capability_exchanged: Option<OnCapabilityExchanged>,
+    device_man: Box<dyn DeviceManagerBackend>,
+    iface_man: InterfaceAlloc,
+}
+
+impl UrbdrcListener {
+    pub fn new(callback: OnCapabilityExchanged, device_man: Box<dyn DeviceManagerBackend>) -> Self {
+        Self {
+            on_capability_exchanged: Some(callback),
+            device_man,
+            iface_man: InterfaceAlloc::new(),
+        }
+    }
+}
+
+struct InterfaceAlloc {
+    id: u32,
+}
+
+impl InterfaceAlloc {
+    #[inline]
+    const fn new() -> Self {
+        Self { id: 3 }
+    }
+
+    #[inline]
+    const fn alloc(&mut self) -> InterfaceId {
+        self.id += 1;
+        if self.id > 0x3F_FF_FF_FF {
+            panic!("USB device amount overflow")
+        }
+        InterfaceId::from_raw(self.id)
+    }
+}
+
+impl DvcChannelListener for UrbdrcListener {
+    fn channel_name(&self) -> &str {
+        CHANNEL_NAME
+    }
+
+    fn create(&mut self, channel_id: u32) -> Option<Box<dyn DvcProcessor>> {
+        if let Some(callback) = self.on_capability_exchanged.take() {
+            self.device_man.control_channel_assigned(channel_id);
+            Some(Box::new(UrbdrcControlClient::new(callback)))
+        } else {
+            #[expect(clippy::as_conversions)]
+            self.device_man.take_device_for_channel(channel_id).map(|backend| {
+                Box::new(UrbdrcDeviceClient::new(self.iface_man.alloc(), backend).expect("invalid interface id"))
+                    as Box<dyn DvcProcessor>
+            })
+        }
+    }
+}
+
 /// A client for the URBDRC Control Virtual Channel.
 pub struct UrbdrcControlClient {
     /// Indicates whether the channel is ready for add virtual channel.
