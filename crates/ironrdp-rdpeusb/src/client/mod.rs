@@ -1,19 +1,21 @@
 use alloc::collections::btree_map::{BTreeMap, Entry};
-use alloc::string::String;
 use alloc::vec;
 use alloc::{boxed::Box, vec::Vec};
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 
+use crate::io::{
+    DeviceText, InternalIoControlPacket, IoControlCompletionResult, IoControlPacket, TransferInCompletionResult,
+    TransferInPacket, TransferOutCompletionResult, TransferOutPacket,
+};
 use crate::pdu::UrbdrcServerDevicePdu;
-use crate::pdu::completion::ts_urb_result::TsUrbResult;
 use crate::pdu::completion::{IoControlCompletion, UrbCompletion, UrbCompletionNoData};
 use crate::pdu::header::{InterfaceId, Mask, MessageId};
 use crate::pdu::iface_manipulation::{InterfaceRelease, QueryInterfaceFailureResponse};
 use crate::pdu::sink::AddVirtualChannel;
-use crate::pdu::usb_dev::{InternalIoControl, IoControl, QueryDeviceTextRsp, TransferInRequest, TransferOutRequest};
-use crate::pdu::utils::{HResult, RequestId, RequestIdTransferInOut};
+use crate::pdu::usb_dev::QueryDeviceTextRsp;
+use crate::pdu::utils::{RequestId, RequestIdTransferInOut};
 use crate::pdu::{
     UrbdrcServerControlPdu,
     caps::{Capability, RimExchangeCapabilityResponse},
@@ -221,8 +223,8 @@ pub trait UrbdrcDeviceBackend: Send {
         &mut self,
         channel_id: u32,
         request_id: RequestId,
-        request: IoControl,
-    ) -> PduResult<Option<IoControlResponse>>;
+        request: IoControlPacket,
+    ) -> PduResult<Option<IoControlCompletionResult>>;
     /// Process an [`InternalIoControl`] request.
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
@@ -230,8 +232,8 @@ pub trait UrbdrcDeviceBackend: Send {
         &mut self,
         channel_id: u32,
         request_id: RequestId,
-        request: InternalIoControl,
-    ) -> PduResult<Option<IoControlResponse>>;
+        request: InternalIoControlPacket,
+    ) -> PduResult<Option<IoControlCompletionResult>>;
     /// Process a [`TransferInRequest`].
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
@@ -239,8 +241,8 @@ pub trait UrbdrcDeviceBackend: Send {
         &mut self,
         channel_id: u32,
         request_id: RequestId,
-        request: TransferInRequest,
-    ) -> PduResult<Option<UrbInResponse>>;
+        request: TransferInPacket,
+    ) -> PduResult<Option<TransferInCompletionResult>>;
     /// Process a [`TransferOutRequest`].
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
@@ -248,8 +250,8 @@ pub trait UrbdrcDeviceBackend: Send {
         &mut self,
         channel_id: u32,
         request_id: RequestId,
-        request: TransferOutRequest,
-    ) -> PduResult<Option<UrbOutResponse>>;
+        request: TransferOutPacket,
+    ) -> PduResult<Option<TransferOutCompletionResult>>;
     /// [Processing a Retract Device Message][3.3.5.3.8]:
     ///
     /// After receiving the RETRACT_DEVICE message, the client SHOULD terminate the dynamic channel
@@ -257,33 +259,6 @@ pub trait UrbdrcDeviceBackend: Send {
     ///
     /// [3.3.5.3.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/77dc8e12-ddd6-4cb8-a3cc-247aacea7d6f
     fn retract(&mut self, channel_id: u32) -> PduResult<()>;
-}
-
-#[derive(Debug, Clone)]
-pub struct DeviceText {
-    pub hresult: u32,
-    pub description: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct IoControlResponse {
-    pub hresult: HResult,
-    pub information: u32,
-    pub output_buffer: Vec<u8>,
-}
-
-#[derive(Debug, Clone)]
-pub struct UrbInResponse {
-    pub ts_urb_result: TsUrbResult,
-    pub hresult: HResult,
-    pub output_buffer: Vec<u8>,
-}
-
-#[derive(Debug, Clone)]
-pub struct UrbOutResponse {
-    pub ts_urb_result: TsUrbResult,
-    pub hresult: HResult,
-    pub output_buffer_size: u32,
 }
 
 /// A client for the URBDRC Device Virtual Channel.
@@ -339,7 +314,11 @@ impl UrbdrcDeviceClient {
         Ok((completion_iface, entry))
     }
 
-    pub fn io_ctl_completion(&mut self, request_id: RequestId, response: IoControlResponse) -> PduResult<DvcMessage> {
+    pub fn io_ctl_completion(
+        &mut self,
+        request_id: RequestId,
+        response: IoControlCompletionResult,
+    ) -> PduResult<DvcMessage> {
         let (completion_iface, entry) = self.completion_iface_and_entry(request_id)?;
         let (msg_id, max_output_buf_size) = match entry.get() {
             Pending::IoCtl {
@@ -366,7 +345,7 @@ impl UrbdrcDeviceClient {
     pub fn internal_io_ctl_completion(
         &mut self,
         request_id: RequestId,
-        response: IoControlResponse,
+        response: IoControlCompletionResult,
     ) -> PduResult<DvcMessage> {
         let (completion_iface, entry) = self.completion_iface_and_entry(request_id)?;
         let (msg_id, max_output_buf_size) = match entry.get() {
@@ -391,7 +370,11 @@ impl UrbdrcDeviceClient {
         }))
     }
 
-    pub fn transfer_in_completion(&mut self, request_id: RequestId, response: UrbInResponse) -> PduResult<DvcMessage> {
+    pub fn transfer_in_completion(
+        &mut self,
+        request_id: RequestId,
+        response: TransferInCompletionResult,
+    ) -> PduResult<DvcMessage> {
         let (completion_iface, entry) = self.completion_iface_and_entry(request_id)?;
         let (msg_id, max_output_buf_size) = match entry.get() {
             Pending::TransferIn {
@@ -435,7 +418,7 @@ impl UrbdrcDeviceClient {
     pub fn transfer_out_completion(
         &mut self,
         request_id: RequestId,
-        response: UrbOutResponse,
+        response: TransferOutCompletionResult,
     ) -> PduResult<DvcMessage> {
         let (completion_iface, entry) = self.completion_iface_and_entry(request_id)?;
         let (msg_id, max_output_buf_size) = match entry.get() {
@@ -581,7 +564,9 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 let Some(completion_iface) = self.request_completion else {
                     return Ok(Vec::new());
                 };
-                if let Some(io_ctl_response) = self.backend.io_control(channel_id, request_id, io_ctl_pdu)? {
+
+                let io_ctl_packet = io_ctl_pdu.into();
+                if let Some(io_ctl_response) = self.backend.io_control(channel_id, request_id, io_ctl_packet)? {
                     let output_buffer_size =
                         check_output_buffer_size(io_ctl_response.output_buffer.len(), max_output_buf_size)?;
                     Ok(vec![Box::new(IoControlCompletion {
@@ -617,9 +602,11 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 let Some(completion_iface) = self.request_completion else {
                     return Ok(Vec::new());
                 };
+
+                let internal_io_ctl_packet = internal_io_ctl_pdu.into();
                 if let Some(internal_io_ctl_response) =
                     self.backend
-                        .internal_io_control(channel_id, request_id, internal_io_ctl_pdu)?
+                        .internal_io_control(channel_id, request_id, internal_io_ctl_packet)?
                 {
                     let output_buffer_size =
                         check_output_buffer_size(internal_io_ctl_response.output_buffer.len(), max_output_buf_size)?;
@@ -656,10 +643,13 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 let Some(completion_iface) = self.request_completion else {
                     return Ok(Vec::new());
                 };
-                if let Some(urb_response) = self
-                    .backend
-                    .transfer_in(channel_id, request_id.into(), transfer_in_pdu)?
-                {
+
+                let transfer_in = TransferInPacket {
+                    ts_urb: transfer_in_pdu.ts_urb.into(),
+                    output_buffer_size: transfer_in_pdu.output_buffer_size,
+                };
+
+                if let Some(urb_response) = self.backend.transfer_in(channel_id, request_id.into(), transfer_in)? {
                     let output_buffer_size =
                         check_output_buffer_size(urb_response.output_buffer.len(), max_output_buf_size)?;
                     if urb_response.output_buffer.is_empty() {
@@ -705,17 +695,19 @@ impl DvcProcessor for UrbdrcDeviceClient {
                     return Ok(Vec::new());
                 }
 
+                let transfer_out = TransferOutPacket {
+                    ts_urb: transfer_out_pdu.ts_urb.into(),
+                    output_buffer: transfer_out_pdu.output_buffer,
+                };
                 if no_ack {
-                    self.backend
-                        .transfer_out(channel_id, request_id.into(), transfer_out_pdu)?;
+                    self.backend.transfer_out(channel_id, request_id.into(), transfer_out)?;
                     Ok(Vec::new())
                 } else {
                     let Some(completion_iface) = self.request_completion else {
                         return Ok(Vec::new());
                     };
                     if let Some(urb_response) =
-                        self.backend
-                            .transfer_out(channel_id, request_id.into(), transfer_out_pdu)?
+                        self.backend.transfer_out(channel_id, request_id.into(), transfer_out)?
                     {
                         if urb_response.output_buffer_size > output_buffer_size {
                             return Err(pdu_other_err!("output buffer exceeds maximum amount"));

@@ -8,6 +8,7 @@ pub const CHANNEL_NAME: &str = "URBDRC";
 pub mod client;
 pub mod pdu;
 pub mod server;
+pub mod io;
 
 /// Error returned when a per-device USB interface ID conflicts with an RDPEUSB default interface.
 ///
