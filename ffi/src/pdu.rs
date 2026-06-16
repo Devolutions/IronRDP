@@ -6,7 +6,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::VecU8;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct WriteBuf(pub ironrdp_core::WriteBuf);
 
     impl WriteBuf {
@@ -28,13 +28,13 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct SecurityProtocol(pub ironrdp::pdu::nego::SecurityProtocol);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectInitial(pub ironrdp::pdu::mcs::ConnectInitial);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct InclusiveRectangle(pub ironrdp::pdu::geometry::InclusiveRectangle);
 
     impl InclusiveRectangle {
@@ -63,10 +63,10 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct IronRdpPdu; // A struct representing the ironrdp_pdu crate
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct PduInfo(pub ironrdp::pdu::PduInfo);
 
     impl PduInfo {
@@ -79,7 +79,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct Action(pub ironrdp::pdu::Action);
 
     impl IronRdpPdu {
@@ -92,10 +92,10 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct FastPathInputEvent(pub ironrdp::pdu::input::fast_path::FastPathInputEvent);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct FastPathInputEventIterator(pub Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>);
 }
 

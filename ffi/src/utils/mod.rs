@@ -3,7 +3,7 @@ pub mod ffi {
 
     use crate::error::ffi::IronRdpError;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct VecU8(pub Vec<u8>);
 
     impl VecU8 {
@@ -28,7 +28,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct BytesSlice<'a>(pub &'a [u8]);
 
     impl<'a> BytesSlice<'a> {
@@ -45,7 +45,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct U32Slice<'a>(pub &'a [u32]);
 
     impl<'a> U32Slice<'a> {
@@ -67,7 +67,7 @@ pub mod ffi {
         pub y: u16,
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct OptionalUsize(pub Option<usize>);
 
     impl OptionalUsize {

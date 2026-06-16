@@ -3,7 +3,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::pdu::ffi::FastPathInputEventIterator;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct InputDatabase(pub ironrdp::input::Database);
 
     impl InputDatabase {
@@ -17,7 +17,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct Operation(pub ironrdp::input::Operation);
 
     pub enum OperationType {
@@ -31,7 +31,7 @@ pub mod ffi {
         UnicodeKeyReleased,
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct MousePosition(pub ironrdp::input::MousePosition);
 
     impl MousePosition {
@@ -44,7 +44,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct MouseButton(pub ironrdp::input::MouseButton);
 
     #[diplomat::enum_convert(ironrdp::input::MouseButton)]
@@ -72,7 +72,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct WheelRotations(pub ironrdp::input::WheelRotations);
 
     impl WheelRotations {
@@ -88,7 +88,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct Scancode(pub ironrdp::input::Scancode);
 
     impl Scancode {
@@ -111,7 +111,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct Char(pub char);
 
     impl Char {
