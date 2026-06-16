@@ -10,7 +10,7 @@ const IRONRDP_LOG: &str = "IRONRDP_LOG";
 pub mod ffi {
     use super::{INIT_LOG, IRONRDP_LOG_PATH, setup_logging};
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct Log;
 
     impl Log {
