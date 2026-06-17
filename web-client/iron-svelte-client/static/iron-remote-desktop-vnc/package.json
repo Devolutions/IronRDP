@@ -1,0 +1,15 @@
+{
+  "name": "@devolutions/iron-remote-desktop-vnc",
+  "author": "Alexandr Yusuk",
+  "email": "thepulticula@gmail.com",
+  "contributors": [],
+  "description": "VNC backend for iron-remote-desktop",
+  "version": "0.7.1",
+  "main": "iron-remote-desktop-vnc.js",
+  "types": "index.d.ts",
+  "files": [
+    "iron-remote-desktop-vnc.js",
+    "index.d.ts"
+  ],
+  "dependencies": {}
+}
