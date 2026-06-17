@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.8.0...ironrdp-rdpsnd-v0.8.1)] - 2026-06-05
+
+### <!-- 6 -->Documentation
+
+- Document RdpsndServerHandler::start wFormatNo contract ([#1343](https://github.com/Devolutions/IronRDP/issues/1343)) ([7894d9f093](https://github.com/Devolutions/IronRDP/commit/7894d9f093db3c80f7358af8e0d8beb18964ce45)) 
+
+  Adds Rustdoc documentation to `RdpsndServerHandler`, focusing on the contract for `start()`’s `Option<u16>` return value so implementers correctly compute `wFormatNo` for Wave/Wave2 PDUs.
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.7.0...ironrdp-rdpsnd-v0.8.0)] - 2026-05-27
 
 ### <!-- 4 -->Bug Fixes

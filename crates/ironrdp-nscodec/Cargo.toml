@@ -3,7 +3,6 @@ name = "ironrdp-nscodec"
 version = "0.1.0"
 readme = "README.md"
 description = "NSCodec ([MS-RDPNSC]) implementation for IronRDP"
-publish = false # TODO: publish
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true

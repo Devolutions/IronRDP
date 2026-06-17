@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.8.0...ironrdp-graphics-v0.8.1)] - 2026-06-05
+
+### <!-- 4 -->Bug Fixes
+
+- Bound ZGFX compressor hash table size ([#1344](https://github.com/Devolutions/IronRDP/issues/1344)) ([4e11a17617](https://github.com/Devolutions/IronRDP/commit/4e11a1761750bb706f5c3cef370589d0eb63fc45)) 
+
+  Bounds the ZGFX compressor's hash table to prevent O(n·table_size) per-frame compaction on incompressible payloads (e.g., already-encoded H.264). Previously, `compact_hash_table` only halved per-prefix position lists without reducing prefix count, so high-entropy input kept the table above the cap and triggered compaction on every literal byte. The fix evicts whole least-recently-seen prefixes down to a low watermark (half the cap), amortizing compaction to O(1) per byte while preserving reachable matches (distance is already capped at `MAX_MATCH_DISTANCE`).
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.7.0...ironrdp-graphics-v0.8.0)] - 2026-05-27
 
 ### <!-- 1 -->Features
