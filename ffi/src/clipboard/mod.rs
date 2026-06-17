@@ -9,7 +9,7 @@ pub mod ffi {
 
     use ironrdp::cliprdr::Client;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct CliprdrBackendFactory(pub Box<dyn ironrdp::cliprdr::backend::CliprdrBackendFactory>);
 
     impl CliprdrBackendFactory {
@@ -20,10 +20,10 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct Cliprdr(pub Option<ironrdp::cliprdr::Cliprdr<Client>>);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ClipboardSvcMessage(pub Option<ironrdp::cliprdr::CliprdrSvcMessages<Client>>);
 }
 

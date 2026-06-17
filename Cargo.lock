@@ -1321,8 +1321,8 @@ dependencies = [
 
 [[package]]
 name = "diplomat"
-version = "0.7.0"
-source = "git+https://github.com/CBenoit/diplomat?rev=6dc806e80162b6b39509a04a2835744236cd2396#6dc806e80162b6b39509a04a2835744236cd2396"
+version = "0.15.0"
+source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?branch=dotnet-picky-ironrdp-compat#8c90b03be2ecd1b38592d33c7141f0eb776009fe"
 dependencies = [
  "diplomat_core",
  "proc-macro2",
@@ -1332,21 +1332,19 @@ dependencies = [
 
 [[package]]
 name = "diplomat-runtime"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7b0f23d549a46540e26e5490cd44c64ced0d762959f1ffdec6ab0399634cf3c"
+version = "0.15.1"
+source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?branch=dotnet-picky-ironrdp-compat#8c90b03be2ecd1b38592d33c7141f0eb776009fe"
 
 [[package]]
 name = "diplomat_core"
-version = "0.7.0"
-source = "git+https://github.com/CBenoit/diplomat?rev=6dc806e80162b6b39509a04a2835744236cd2396#6dc806e80162b6b39509a04a2835744236cd2396"
+version = "0.15.0"
+source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?branch=dotnet-picky-ironrdp-compat#8c90b03be2ecd1b38592d33c7141f0eb776009fe"
 dependencies = [
- "lazy_static",
  "proc-macro2",
  "quote",
  "serde",
  "smallvec",
- "strck_ident",
+ "strck",
  "syn 2.0.117",
 ]
 
@@ -5653,17 +5651,10 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "strck"
-version = "0.1.2"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be91090ded9d8f979d9fe921777342d37e769e0b6b7296843a7a38247240e917"
-
-[[package]]
-name = "strck_ident"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1c3802b169b3858a44667f221c9a0b3136e6019936ea926fc97fbad8af77202"
+checksum = "42316e70da376f3d113a68d138a60d8a9883c604fe97942721ec2068dab13a9f"
 dependencies = [
- "strck",
  "unicode-ident",
 ]
 

@@ -23,5 +23,9 @@
 
   <ItemGroup Condition="'$([System.OperatingSystem]::IsWindows())'">
     <PackageReference Include="Avalonia.Win32" Version="11.3.7" />
+    <Content Include="../../../dependencies/runtimes/win-x64/native/DevolutionsIronRdp.dll">
+      <Link>DevolutionsIronRdp.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>
