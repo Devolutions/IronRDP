@@ -5,6 +5,7 @@ use core::any::TypeId;
 use core::fmt;
 
 use crate::alloc::borrow::ToOwned as _;
+use crate::complete_data::CompleteData;
 use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
@@ -14,9 +15,12 @@ use tracing::debug;
 
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
-    DrdynvcServerPdu,
+    DrdynvcDataPdu, DrdynvcServerPdu,
 };
-use crate::{DvcProcessor, DynamicChannelId, DynamicChannelName, DynamicVirtualChannel, encode_dvc_messages};
+use crate::{
+    DvcMessage, DvcProcessor, DynamicChannelId, DynamicChannelMut, DynamicChannelName, DynamicChannelRef,
+    encode_dvc_messages,
+};
 
 pub trait DvcClientProcessor: DvcProcessor {}
 
@@ -53,6 +57,57 @@ impl DvcChannelListener for OnceListener {
 
     fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>> {
         self.inner.take()
+    }
+}
+
+struct DynamicVirtualChannel {
+    channel_processor: Box<dyn DvcProcessor + Send>,
+    complete_data: CompleteData,
+    /// The channel ID assigned by the server.
+    ///
+    /// `Some` only after [`DynamicVirtualChannel::start`] has succeeded. This invariant
+    channel_id: Option<DynamicChannelId>,
+}
+
+impl Drop for DynamicVirtualChannel {
+    fn drop(&mut self) {
+        if let Some(id) = self.channel_id {
+            self.channel_processor.close(id);
+        }
+    }
+}
+
+impl DynamicVirtualChannel {
+    fn from_boxed(processor: Box<dyn DvcProcessor + Send>) -> Self {
+        Self {
+            channel_processor: processor,
+            complete_data: CompleteData::new(),
+            channel_id: None,
+        }
+    }
+
+    fn processor_type_id(&self) -> TypeId {
+        self.channel_processor.as_any().type_id()
+    }
+
+    fn start(&mut self, channel_id: DynamicChannelId) -> PduResult<Vec<DvcMessage>> {
+        let messages = self.channel_processor.start(channel_id)?;
+        self.channel_id = Some(channel_id);
+        Ok(messages)
+    }
+
+    fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {
+        let channel_id = pdu.channel_id();
+        let complete_data = self.complete_data.process_data(pdu).map_err(|e| decode_err!(e))?;
+        if let Some(complete_data) = complete_data {
+            self.channel_processor.process(channel_id, &complete_data)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn channel_name(&self) -> &str {
+        self.channel_processor.channel_name()
     }
 }
 
@@ -124,7 +179,7 @@ impl DrdynvcClient {
     ///
     /// # Note
     ///
-    /// * Doesn't support [TypeId] lookup via [DrdynvcClient::get_dvc_by_type_id].
+    /// * Doesn't support [TypeId] lookup via [DrdynvcClient::get_dvc].
     /// * If a listener or a pre-registered channel with the same name already exists,
     ///   it will be silently overwritten.
     #[must_use]
@@ -140,7 +195,7 @@ impl DrdynvcClient {
     ///
     /// # Note
     ///
-    /// * Doesn't support [TypeId] lookup via [DrdynvcClient::get_dvc_by_type_id].
+    /// * Doesn't support [TypeId] lookup via [DrdynvcClient::get_dvc].
     /// * If a listener or a pre-registered channel with the same name already exists,
     ///   it will be silently overwritten.
     pub fn attach_listener<T>(&mut self, listener: T)
@@ -150,19 +205,50 @@ impl DrdynvcClient {
         self.dynamic_channels.register_listener(listener);
     }
 
-    pub fn get_dvc_by_type_id<T>(&self) -> Option<&DynamicVirtualChannel>
+    /// Returns a typed accessor for a pre-registered client DVC.
+    ///
+    /// Type lookup is available only for channels registered with
+    /// [`DrdynvcClient::with_dynamic_channel`] or [`DrdynvcClient::attach_dynamic_channel`].
+    /// Listener-created channels can be retrieved with [`DrdynvcClient::get_dvc_by_channel_id`].
+    ///
+    /// Returns `None` until the server has created the channel and the processor has started.
+    pub fn get_dvc<T>(&self) -> Option<DynamicChannelRef<'_, T>>
     where
-        T: DvcProcessor,
+        T: DvcClientProcessor,
     {
-        self.dynamic_channels.get_by_type_id(TypeId::of::<T>())
+        let dvc_channel = self.dynamic_channels.get_by_type_id(TypeId::of::<T>())?;
+        let channel_id = dvc_channel.channel_id?;
+        dvc_channel
+            .channel_processor
+            .as_any()
+            .downcast_ref()
+            .map(|p| DynamicChannelRef::new(channel_id, p))
     }
 
-    pub fn get_dvc_by_channel_id(&self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
-        self.dynamic_channels.get_by_channel_id(channel_id)
+    /// Returns a typed accessor for an active client DVC by channel ID.
+    ///
+    /// Returns `None` when the channel ID is unknown or the processor has a different type.
+    pub fn get_dvc_by_channel_id<T>(&self, channel_id: u32) -> Option<DynamicChannelRef<'_, T>>
+    where
+        T: DvcClientProcessor,
+    {
+        self.dynamic_channels
+            .get_by_channel_id(channel_id)
+            .and_then(|dvc| dvc.channel_processor.as_any().downcast_ref())
+            .map(|p| DynamicChannelRef::new(channel_id, p))
     }
 
-    pub fn get_dvc_by_channel_id_mut(&mut self, channel_id: u32) -> Option<&mut DynamicVirtualChannel> {
-        self.dynamic_channels.get_by_channel_id_mut(channel_id)
+    /// Returns a mutable typed accessor for an active client DVC by channel ID.
+    ///
+    /// Returns `None` when the channel ID is unknown or the processor has a different type.
+    pub fn get_dvc_by_channel_id_mut<T>(&mut self, channel_id: u32) -> Option<DynamicChannelMut<'_, T>>
+    where
+        T: DvcClientProcessor,
+    {
+        self.dynamic_channels
+            .get_by_channel_id_mut(channel_id)
+            .and_then(|dvc| dvc.channel_processor.as_any_mut().downcast_mut())
+            .map(|p| DynamicChannelMut::new(channel_id, p))
     }
 
     fn create_capabilities_response(&mut self, server_version: CapsVersion) -> SvcMessage {
