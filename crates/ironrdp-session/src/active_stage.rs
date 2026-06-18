@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
 use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
-use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::geometry::InclusiveRectangle;
@@ -364,11 +364,14 @@ impl ActiveStage {
         self.x224_processor.get_svc_processor_mut()
     }
 
-    pub fn get_dvc<T: DvcProcessor + 'static>(&mut self) -> Option<&DynamicVirtualChannel> {
+    pub fn get_dvc<T: DvcClientProcessor + 'static>(&mut self) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc::<T>()
     }
 
-    pub fn get_dvc_by_channel_id(&mut self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
+    pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(
+        &mut self,
+        channel_id: u32,
+    ) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc_by_channel_id(channel_id)
     }
 
@@ -382,10 +385,7 @@ impl ActiveStage {
                 .get_svc_processor::<DrdynvcClient>()
                 .and_then(|drdynvc| drdynvc.has_registered_dvc::<DisplayControlClient>().then_some(false));
         };
-        let Some(_) = dvc.channel_id() else {
-            return Some(false);
-        };
-        Some(dvc.channel_processor_downcast_ref::<DisplayControlClient>()?.ready())
+        Some(dvc.processor().ready())
     }
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
@@ -429,11 +429,8 @@ impl ActiveStage {
         physical_dims: Option<(u32, u32)>,
     ) -> Option<SessionResult<Vec<u8>>> {
         if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
-            let Some(channel_id) = dvc.channel_id() else {
-                debug!("Could not encode a resize: Display Control Virtual Channel is not yet connected");
-                return None;
-            };
-            let display_control = dvc.channel_processor_downcast_ref::<DisplayControlClient>()?;
+            let channel_id = dvc.channel_id();
+            let display_control = dvc.processor();
             if !display_control.ready() {
                 debug!("Could not encode a resize: Display Control capabilities have not been received");
                 return None;

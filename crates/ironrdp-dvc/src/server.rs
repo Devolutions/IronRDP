@@ -186,6 +186,7 @@ impl DrdynvcServer {
             .ok_or_else(|| invalid_field_err!("DRDYNVC", "", "invalid channel id"))
     }
 
+    /// Returns a typed accessor for an active server DVC by channel ID.
     pub fn dvc_by_id<T: DvcServerProcessor>(&self, id: u32) -> Option<DynamicChannelRef<'_, T>> {
         let channel = self.dynamic_channels.get(id)?;
         if channel.state != ChannelState::Opened {
@@ -198,6 +199,7 @@ impl DrdynvcServer {
             .map(|p| DynamicChannelRef::new(id, p))
     }
 
+    /// Returns a mutable typed accessor for an active server DVC by channel ID.
     pub fn dvc_by_id_mut<T: DvcServerProcessor>(&mut self, id: u32) -> Option<DynamicChannelMut<'_, T>> {
         let channel = self.dynamic_channels.get_mut(id)?;
         if channel.state != ChannelState::Opened {
