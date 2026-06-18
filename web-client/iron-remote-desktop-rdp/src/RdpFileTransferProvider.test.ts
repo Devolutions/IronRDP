@@ -526,12 +526,215 @@ describe('RdpFileTransferProvider', () => {
             // @ts-expect-error - private callback the WASM layer drives via unlockCallback
             p.handleUnlock(0);
 
-            // No error, and the upload state is intact (a second attempt still hits the guard).
+            // No error, and the upload state is intact (Unlock is ignored).
             expect(errorHandler).not.toHaveBeenCalled();
-            expect(() => p.uploadFiles(files)).toThrow('Upload already in progress');
+            expect(p.isUploadInProgress()).toBe(true);
 
             p.dispose();
             await expect(completion).rejects.toThrow('RdpFileTransferProvider disposed');
+        });
+
+        it('completes a 0-byte file from its SIZE request alone (no RANGE follows)', async () => {
+            // A 0-byte file has no bytes, so the remote asks for its size and never
+            // sends a RANGE -- the only path that otherwise marks a file complete.
+            // Without explicit handling the batch never reaches expectedFileCount,
+            // finishUploadBatch never runs, and uploadState wedges every later upload.
+            const { provider: p, session: s } = setupProvider();
+            const errorHandler = vi.fn();
+            const completeHandler = vi.fn();
+            p.on('error', errorHandler);
+            p.on('upload-complete', completeHandler);
+
+            const files = [new File([], 'empty.txt', { type: 'text/plain' })];
+            const { completion } = p.uploadFiles(files);
+
+            // Remote requests only the size (8 bytes) for the lone empty file.
+            // @ts-expect-error - private callback the WASM layer drives
+            p.handleFileContentsRequest({ streamId: 1, index: 0, flags: 1, position: 0, size: 8 });
+
+            await expect(completion).resolves.toBeUndefined();
+            expect(completeHandler).toHaveBeenCalledTimes(1);
+            expect(errorHandler).not.toHaveBeenCalled();
+
+            // finishUploadBatch released uploadState: a fresh upload is not wedged
+            // ("Upload already in progress"). Reaching a handle plus the
+            // initiateFileCopy call proves it restarted.
+            s.invokeExtension.mockClear();
+            const second = p.uploadFiles([new File(['x'], 'y.txt', { type: 'text/plain' })]);
+            expect(s.invokeExtension).toHaveBeenCalledTimes(1);
+            p.dispose();
+            await expect(second.completion).rejects.toThrow('RdpFileTransferProvider disposed');
+        });
+
+        it('lets a 0-byte file finish a mixed batch after the data files are served', async () => {
+            // The realistic case: a folder of tiny files where the empty ones are the
+            // last to "complete". The empty file's SIZE request must finish the batch
+            // once every data file has been fully served.
+            vi.useFakeTimers();
+            try {
+                const { provider: p } = setupProvider();
+                const errorHandler = vi.fn();
+                const completeHandler = vi.fn();
+                p.on('error', errorHandler);
+                p.on('upload-complete', completeHandler);
+
+                const files = [
+                    new File(['data'], 'a.txt', { type: 'text/plain' }),
+                    new File([], 'empty.txt', { type: 'text/plain' }),
+                ];
+                const { completion } = p.uploadFiles(files);
+                let resolved = false;
+                void completion.then(() => {
+                    resolved = true;
+                });
+
+                // Data file: SIZE then RANGE. jsdom runs the FileReader on a timer, so
+                // flush it -- index 0 completes but the batch is not done (1 of 2).
+                // @ts-expect-error - private callback the WASM layer drives
+                p.handleFileContentsRequest({ streamId: 1, index: 0, flags: 1, position: 0, size: 8 });
+                // @ts-expect-error - private callback the WASM layer drives
+                p.handleFileContentsRequest({ streamId: 2, index: 0, flags: 2, position: 0, size: 4 });
+                await vi.advanceTimersByTimeAsync(100);
+                expect(resolved).toBe(false);
+
+                // Empty file: SIZE only. This completes the second (and last) counted
+                // file, so the batch finishes.
+                // @ts-expect-error - private callback the WASM layer drives
+                p.handleFileContentsRequest({ streamId: 3, index: 1, flags: 1, position: 0, size: 8 });
+                await Promise.resolve();
+                expect(resolved).toBe(true);
+
+                expect(completeHandler).toHaveBeenCalledTimes(2);
+                const completedNames = completeHandler.mock.calls.map((c) => (c[0] as File).name);
+                expect(completedNames).toContain('empty.txt');
+                expect(errorHandler).not.toHaveBeenCalled();
+
+                // finishUploadBatch disarmed the inactivity watchdog: no timer lingers.
+                expect(vi.getTimerCount()).toBe(0);
+
+                p.dispose();
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('completes a directory-only batch on paste-ack without waiting for the inactivity watchdog', async () => {
+            // A directory entry carries no data: the remote requests SIZE (answered with 0) but
+            // never a RANGE, so no file is ever marked complete and expectedFileCount is 0. Without
+            // explicit handling, finishUploadBatch never runs, the inactivity watchdog fires after
+            // 60s, and an empty-folder paste that actually succeeded is reported as a failure.
+            vi.useFakeTimers();
+            try {
+                const { provider: p } = setupProvider();
+                const errorHandler = vi.fn();
+                p.on('error', errorHandler);
+
+                const { completion } = p.uploadFiles([
+                    { file: null, name: 'folder', size: 0, lastModified: 0, isDirectory: true },
+                ]);
+                let resolved = false;
+                void completion.then(() => {
+                    resolved = true;
+                });
+                expect(p.isUploadInProgress()).toBe(true);
+
+                // Remote acknowledges the paste by requesting the directory's size.
+                // @ts-expect-error - private callback the WASM layer drives
+                p.handleFileContentsRequest({ streamId: 1, index: 0, flags: 1, position: 0, size: 8 });
+                await Promise.resolve();
+                expect(resolved).toBe(true);
+                expect(errorHandler).not.toHaveBeenCalled();
+
+                // The batch finished on acknowledgment, so the inactivity watchdog never fires:
+                // letting the full window elapse must not surface an error.
+                await vi.advanceTimersByTimeAsync(60_000);
+                expect(errorHandler).not.toHaveBeenCalled();
+
+                p.dispose();
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('reports isUploadInProgress across an upload lifecycle (idle -> advertised -> complete)', async () => {
+            vi.useFakeTimers();
+            try {
+                const { provider: p } = setupProvider();
+                expect(p.isUploadInProgress()).toBe(false);
+
+                const { completion } = p.uploadFiles([new File(['data'], 'x.txt', { type: 'text/plain' })]);
+                expect(p.isUploadInProgress()).toBe(true);
+
+                // Remote pulls the whole file -> batch completes -> upload state released.
+                // @ts-expect-error - private callback the WASM layer drives
+                p.handleFileContentsRequest({ streamId: 1, index: 0, flags: 2, position: 0, size: 4 });
+                await vi.advanceTimersByTimeAsync(100);
+                await completion;
+                expect(p.isUploadInProgress()).toBe(false);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('clears isUploadInProgress once a stalled upload is failed', async () => {
+            vi.useFakeTimers();
+            try {
+                const { provider: p } = setupProvider();
+                const { completion } = p.uploadFiles([new File(['x'], 'x.txt', { type: 'text/plain' })]);
+                const rejected = expect(completion).rejects.toThrow();
+                expect(p.isUploadInProgress()).toBe(true);
+
+                // Remote never pulls -> the watchdog fails the upload and releases the state.
+                await vi.advanceTimersByTimeAsync(60_000);
+                await rejected;
+                expect(p.isUploadInProgress()).toBe(false);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('reports isUploadInProgress again during a remote re-paste', async () => {
+            vi.useFakeTimers();
+            try {
+                const { provider: p } = setupProvider();
+                const { completion } = p.uploadFiles([new File(['data'], 'x.txt', { type: 'text/plain' })]);
+                // @ts-expect-error - private callback the WASM layer drives
+                p.handleFileContentsRequest({ streamId: 1, index: 0, flags: 2, position: 0, size: 4 });
+                await vi.advanceTimersByTimeAsync(100);
+                await completion;
+                expect(p.isUploadInProgress()).toBe(false);
+
+                // The remote re-pastes the retained file: state is rebuilt, so it's in progress again.
+                // @ts-expect-error - private callback the WASM layer drives
+                p.handleFileContentsRequest({ streamId: 2, index: 0, flags: 1, position: 0, size: 8 });
+                expect(p.isUploadInProgress()).toBe(true);
+
+                p.dispose();
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('supersedes an in-flight upload when a new one starts (old completion resolves, new batch advertised)', async () => {
+            const { provider: p, session: s } = setupProvider();
+            const { completion: firstCompletion } = p.uploadFiles([
+                new File(['data'], 'first.txt', { type: 'text/plain' }),
+            ]);
+            expect(p.isUploadInProgress()).toBe(true);
+
+            // A new paste arrives while the first is still advertised. The old completion resolves
+            // cleanly and the new batch is advertised in its place.
+            s.invokeExtension.mockClear();
+            const { completion: secondCompletion } = p.uploadFiles([
+                new File(['more'], 'second.txt', { type: 'text/plain' }),
+            ]);
+
+            await expect(firstCompletion).resolves.toBeUndefined();
+            expect(p.isUploadInProgress()).toBe(true); // now the second batch
+            expect(s.invokeExtension).toHaveBeenCalledTimes(1); // a fresh initiateFileCopy
+
+            p.dispose();
+            await expect(secondCompletion).rejects.toThrow('RdpFileTransferProvider disposed');
         });
 
         it('should call onUploadFinished even on initiateFileCopy failure', async () => {
@@ -617,8 +820,8 @@ describe('RdpFileTransferProvider', () => {
 
             fireFormatListResponse(p, true);
 
-            // Upload is still in progress: a second attempt still hits the guard.
-            expect(() => p.uploadFiles(files)).toThrow('Upload already in progress');
+            // Upload is still in progress.
+            expect(p.isUploadInProgress()).toBe(true);
 
             p.dispose();
             await expect(completion).rejects.toThrow('RdpFileTransferProvider disposed');
