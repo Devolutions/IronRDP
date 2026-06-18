@@ -1012,7 +1012,7 @@ impl ConfigBuilder {
     pub fn with_dvc<P, F>(mut self, factory: F) -> Self
     where
         F: Fn(&PropertySet) -> Option<P> + Send + Sync + 'static,
-        P: ironrdp_dvc::DvcProcessor + 'static,
+        P: ironrdp_dvc::DvcClientProcessor + 'static,
     {
         let cb: DvcChannelFn = Arc::new(move |drdynvc, ps| {
             if let Some(processor) = factory(ps) {
