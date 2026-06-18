@@ -364,12 +364,12 @@ impl ActiveStage {
         self.x224_processor.get_svc_processor_mut()
     }
 
-    pub fn get_dvc<T: DvcClientProcessor + 'static>(&mut self) -> Option<DynamicChannelRef<'_, T>> {
+    pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc::<T>()
     }
 
     pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(
-        &mut self,
+        &self,
         channel_id: u32,
     ) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc_by_channel_id(channel_id)

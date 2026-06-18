@@ -10,7 +10,7 @@ pub mod ffi {
     use diplomat_runtime::DiplomatWriteable;
     use ironrdp::connector::Sequence as _;
     use ironrdp::displaycontrol::client::DisplayControlClient;
-    use ironrdp::dvc::DvcProcessor;
+    use ironrdp::dvc::DvcClientProcessor;
     use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
     use tracing::info;
 
@@ -74,7 +74,7 @@ pub mod ffi {
 
         fn with_dvc<T>(&mut self, processor: T) -> Result<(), Box<IronRdpError>>
         where
-            T: DvcProcessor + 'static,
+            T: DvcClientProcessor + 'static,
         {
             let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());

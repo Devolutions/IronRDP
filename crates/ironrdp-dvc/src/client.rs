@@ -29,7 +29,7 @@ pub trait DvcChannelListener: Send {
 
     /// Called for each incoming DYNVC_CREATE_REQ matching this name.
     /// Return `None` to reject (NO_LISTENER).
-    fn create(&mut self, channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>>;
+    fn create(&mut self, channel_id: DynamicChannelId) -> Option<Box<dyn DvcClientProcessor>>;
 
     /// Returns whether this listener can still create a channel.
     fn is_available(&self) -> bool {
@@ -41,11 +41,11 @@ pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
 
 /// For pre-registered DVC
 struct OnceListener {
-    inner: Option<Box<dyn DvcProcessor>>,
+    inner: Option<Box<dyn DvcClientProcessor>>,
 }
 
 impl OnceListener {
-    fn new(dvc_processor: impl DvcProcessor + 'static) -> Self {
+    fn new(dvc_processor: impl DvcClientProcessor + 'static) -> Self {
         Self {
             inner: Some(Box::new(dvc_processor)),
         }
@@ -60,7 +60,7 @@ impl DvcChannelListener for OnceListener {
             .channel_name()
     }
 
-    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>> {
+    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcClientProcessor>> {
         self.inner.take()
     }
 
@@ -70,11 +70,11 @@ impl DvcChannelListener for OnceListener {
 }
 
 struct DynamicVirtualChannel {
-    channel_processor: Box<dyn DvcProcessor + Send>,
+    channel_processor: Box<dyn DvcClientProcessor + Send>,
     complete_data: CompleteData,
     /// The channel ID assigned by the server.
     ///
-    /// `Some` only after [`DynamicVirtualChannel::start`] has succeeded. This invariant
+    /// `Some` only after [`DynamicVirtualChannel::start`] has succeeded.
     channel_id: Option<DynamicChannelId>,
 }
 
@@ -87,7 +87,7 @@ impl Drop for DynamicVirtualChannel {
 }
 
 impl DynamicVirtualChannel {
-    fn from_boxed(processor: Box<dyn DvcProcessor + Send>) -> Self {
+    fn from_boxed(processor: Box<dyn DvcClientProcessor + Send>) -> Self {
         Self {
             channel_processor: processor,
             complete_data: CompleteData::new(),
@@ -164,7 +164,7 @@ impl DrdynvcClient {
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
-        T: DvcProcessor + 'static,
+        T: DvcClientProcessor + 'static,
     {
         self.dynamic_channels.register_once(channel);
         self
@@ -179,7 +179,7 @@ impl DrdynvcClient {
     /// it will be silently overwritten.
     pub fn attach_dynamic_channel<T>(&mut self, channel: T)
     where
-        T: DvcProcessor + 'static,
+        T: DvcClientProcessor + 'static,
     {
         self.dynamic_channels.register_once(channel);
     }
@@ -410,7 +410,7 @@ impl DynamicChannelSet {
         );
     }
 
-    fn register_once<T: DvcProcessor + 'static>(&mut self, channel: T) {
+    fn register_once<T: DvcClientProcessor + 'static>(&mut self, channel: T) {
         let name = channel.channel_name().to_owned();
         self.listeners.insert(
             name,
@@ -511,6 +511,8 @@ mod tests {
             Ok(Vec::new())
         }
     }
+
+    impl DvcClientProcessor for TestDvc {}
 
     #[test]
     fn consumed_typed_listener_is_not_registered() {

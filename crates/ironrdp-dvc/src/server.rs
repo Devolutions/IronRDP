@@ -29,7 +29,7 @@ enum ChannelState {
 
 struct DynamicChannel {
     state: ChannelState,
-    processor: Box<dyn DvcProcessor>,
+    processor: Box<dyn DvcServerProcessor>,
     complete_data: CompleteData,
     channel_id: u32,
 }
