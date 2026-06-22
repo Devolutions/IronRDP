@@ -11,7 +11,10 @@ namespace Devolutions.IronRdp;
 public partial class ClientConnector: IDisposable
 {
     private unsafe Raw.ClientConnector* _inner;
-
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public DynState DynState
     {
         get
@@ -24,7 +27,7 @@ public partial class ClientConnector: IDisposable
     /// Creates a managed <c>ClientConnector</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
@@ -275,6 +278,10 @@ public partial class ClientConnector: IDisposable
     /// <returns>
     /// A <c>PduHint</c> allocated on Rust side.
     /// </returns>
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public PduHint? NextPduHint()
     {
         unsafe
@@ -295,6 +302,10 @@ public partial class ClientConnector: IDisposable
     /// <returns>
     /// A <c>DynState</c> allocated on Rust side.
     /// </returns>
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public DynState GetDynState()
     {
         unsafe

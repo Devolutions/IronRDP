@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class ConnectionActivationState: IDisposable
 {
     private unsafe Raw.ConnectionActivationState* _inner;
-
     public ConnectionActivationStateCapabilitiesExchange CapabilitiesExchange
     {
         get
@@ -19,7 +18,6 @@ public partial class ConnectionActivationState: IDisposable
             return GetCapabilitiesExchange();
         }
     }
-
     public ConnectionActivationStateConnectionFinalization ConnectionFinalization
     {
         get
@@ -27,7 +25,6 @@ public partial class ConnectionActivationState: IDisposable
             return GetConnectionFinalization();
         }
     }
-
     public ConnectionActivationStateFinalized Finalized
     {
         get
@@ -35,7 +32,6 @@ public partial class ConnectionActivationState: IDisposable
             return GetFinalized();
         }
     }
-
     public ConnectionActivationStateType Type
     {
         get
@@ -48,7 +44,7 @@ public partial class ConnectionActivationState: IDisposable
     /// Creates a managed <c>ConnectionActivationState</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.

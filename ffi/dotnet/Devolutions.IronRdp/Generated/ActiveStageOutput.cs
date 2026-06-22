@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class ActiveStageOutput: IDisposable
 {
     private unsafe Raw.ActiveStageOutput* _inner;
-
     public NetworkCharacteristics AutodetectNetworkCharacteristics
     {
         get
@@ -19,7 +18,6 @@ public partial class ActiveStageOutput: IDisposable
             return GetAutodetectNetworkCharacteristics();
         }
     }
-
     public ConnectionActivationSequence DeactivateAll
     {
         get
@@ -27,7 +25,6 @@ public partial class ActiveStageOutput: IDisposable
             return GetDeactivateAll();
         }
     }
-
     public ActiveStageOutputType EnumType
     {
         get
@@ -35,7 +32,6 @@ public partial class ActiveStageOutput: IDisposable
             return GetEnumType();
         }
     }
-
     public InclusiveRectangle GraphicsUpdate
     {
         get
@@ -43,7 +39,6 @@ public partial class ActiveStageOutput: IDisposable
             return GetGraphicsUpdate();
         }
     }
-
     public MultitransportRequest MultitransportRequest
     {
         get
@@ -51,7 +46,6 @@ public partial class ActiveStageOutput: IDisposable
             return GetMultitransportRequest();
         }
     }
-
     public DecodedPointer PointerBitmap
     {
         get
@@ -59,7 +53,6 @@ public partial class ActiveStageOutput: IDisposable
             return GetPointerBitmap();
         }
     }
-
     public Position PointerPosition
     {
         get
@@ -67,7 +60,10 @@ public partial class ActiveStageOutput: IDisposable
             return GetPointerPosition();
         }
     }
-
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public BytesSlice ResponseFrame
     {
         get
@@ -75,7 +71,6 @@ public partial class ActiveStageOutput: IDisposable
             return GetResponseFrame();
         }
     }
-
     public GracefulDisconnectReason Terminate
     {
         get
@@ -88,7 +83,7 @@ public partial class ActiveStageOutput: IDisposable
     /// Creates a managed <c>ActiveStageOutput</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
@@ -112,6 +107,10 @@ public partial class ActiveStageOutput: IDisposable
     /// <returns>
     /// A <c>BytesSlice</c> allocated on Rust side.
     /// </returns>
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public BytesSlice GetResponseFrame()
     {
         unsafe

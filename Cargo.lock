@@ -1322,7 +1322,7 @@ dependencies = [
 [[package]]
 name = "diplomat"
 version = "0.15.0"
-source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?branch=dotnet-picky-ironrdp-compat#8c90b03be2ecd1b38592d33c7141f0eb776009fe"
+source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?rev=882006b1d35b1a30566e3d6d4b8f0bb5f4dae640#882006b1d35b1a30566e3d6d4b8f0bb5f4dae640"
 dependencies = [
  "diplomat_core",
  "proc-macro2",
@@ -1333,12 +1333,12 @@ dependencies = [
 [[package]]
 name = "diplomat-runtime"
 version = "0.15.1"
-source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?branch=dotnet-picky-ironrdp-compat#8c90b03be2ecd1b38592d33c7141f0eb776009fe"
+source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?rev=882006b1d35b1a30566e3d6d4b8f0bb5f4dae640#882006b1d35b1a30566e3d6d4b8f0bb5f4dae640"
 
 [[package]]
 name = "diplomat_core"
 version = "0.15.0"
-source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?branch=dotnet-picky-ironrdp-compat#8c90b03be2ecd1b38592d33c7141f0eb776009fe"
+source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?rev=882006b1d35b1a30566e3d6d4b8f0bb5f4dae640#882006b1d35b1a30566e3d6d4b8f0bb5f4dae640"
 dependencies = [
  "proc-macro2",
  "quote",

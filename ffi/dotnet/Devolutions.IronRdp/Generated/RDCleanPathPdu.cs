@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class RDCleanPathPdu: IDisposable
 {
     private unsafe Raw.RDCleanPathPdu* _inner;
-
     public ushort ErrorCode
     {
         get
@@ -19,7 +18,6 @@ public partial class RDCleanPathPdu: IDisposable
             return GetErrorCode();
         }
     }
-
     public string ErrorMessage
     {
         get
@@ -27,7 +25,6 @@ public partial class RDCleanPathPdu: IDisposable
             return GetErrorMessage();
         }
     }
-
     public ushort HttpStatusCode
     {
         get
@@ -35,7 +32,6 @@ public partial class RDCleanPathPdu: IDisposable
             return GetHttpStatusCode();
         }
     }
-
     public string ServerAddr
     {
         get
@@ -43,7 +39,6 @@ public partial class RDCleanPathPdu: IDisposable
             return GetServerAddr();
         }
     }
-
     public CertificateChainIterator ServerCertChain
     {
         get
@@ -51,7 +46,6 @@ public partial class RDCleanPathPdu: IDisposable
             return GetServerCertChain();
         }
     }
-
     public RDCleanPathResultType Type
     {
         get
@@ -59,7 +53,6 @@ public partial class RDCleanPathPdu: IDisposable
             return GetType();
         }
     }
-
     public VecU8 X224Response
     {
         get
@@ -72,7 +65,7 @@ public partial class RDCleanPathPdu: IDisposable
     /// Creates a managed <c>RDCleanPathPdu</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.

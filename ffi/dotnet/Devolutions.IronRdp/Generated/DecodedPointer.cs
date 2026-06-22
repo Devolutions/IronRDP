@@ -11,7 +11,10 @@ namespace Devolutions.IronRdp;
 public partial class DecodedPointer: IDisposable
 {
     private unsafe Raw.DecodedPointer* _inner;
-
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public BytesSlice Data
     {
         get
@@ -19,7 +22,6 @@ public partial class DecodedPointer: IDisposable
             return GetData();
         }
     }
-
     public ushort Height
     {
         get
@@ -27,7 +29,6 @@ public partial class DecodedPointer: IDisposable
             return GetHeight();
         }
     }
-
     public ushort HotspotX
     {
         get
@@ -35,7 +36,6 @@ public partial class DecodedPointer: IDisposable
             return GetHotspotX();
         }
     }
-
     public ushort HotspotY
     {
         get
@@ -43,7 +43,6 @@ public partial class DecodedPointer: IDisposable
             return GetHotspotY();
         }
     }
-
     public ushort Width
     {
         get
@@ -56,7 +55,7 @@ public partial class DecodedPointer: IDisposable
     /// Creates a managed <c>DecodedPointer</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
@@ -112,6 +111,10 @@ public partial class DecodedPointer: IDisposable
     /// <returns>
     /// A <c>BytesSlice</c> allocated on Rust side.
     /// </returns>
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public BytesSlice GetData()
     {
         unsafe

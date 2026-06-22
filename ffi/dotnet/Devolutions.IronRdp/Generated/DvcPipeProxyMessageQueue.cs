@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class DvcPipeProxyMessageQueue: IDisposable
 {
     private unsafe Raw.DvcPipeProxyMessageQueue* _inner;
-
     public DvcPipeProxyMessageSink Sink
     {
         get
@@ -24,7 +23,7 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
     /// Creates a managed <c>DvcPipeProxyMessageQueue</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.

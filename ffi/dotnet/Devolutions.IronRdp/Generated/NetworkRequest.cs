@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class NetworkRequest: IDisposable
 {
     private unsafe Raw.NetworkRequest* _inner;
-
     public VecU8 Data
     {
         get
@@ -19,7 +18,6 @@ public partial class NetworkRequest: IDisposable
             return GetData();
         }
     }
-
     public NetworkRequestProtocol Protocol
     {
         get
@@ -27,7 +25,6 @@ public partial class NetworkRequest: IDisposable
             return GetProtocol();
         }
     }
-
     public string Url
     {
         get
@@ -40,7 +37,7 @@ public partial class NetworkRequest: IDisposable
     /// Creates a managed <c>NetworkRequest</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.

@@ -131,6 +131,15 @@ internal struct DiplomatWriteable : IDisposable
             return false;
         }
 
+        // Rust only ever grows the buffer, but guard against a `newCap`
+        // smaller than the bytes we're about to copy: `Buffer.MemoryCopy`
+        // would otherwise read past the new allocation. Refuse the grow
+        // instead of corrupting unmanaged memory.
+        if (newCap < self->len)
+        {
+            return false;
+        }
+
         IntPtr newBuf;
         try
         {

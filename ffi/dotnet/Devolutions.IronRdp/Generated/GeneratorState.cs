@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class GeneratorState: IDisposable
 {
     private unsafe Raw.GeneratorState* _inner;
-
     public ClientState ClientStateIfCompleted
     {
         get
@@ -19,7 +18,10 @@ public partial class GeneratorState: IDisposable
             return GetClientStateIfCompleted();
         }
     }
-
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public NetworkRequest? NetworkRequestIfSuspended
     {
         get
@@ -32,7 +34,7 @@ public partial class GeneratorState: IDisposable
     /// Creates a managed <c>GeneratorState</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
@@ -66,6 +68,10 @@ public partial class GeneratorState: IDisposable
     /// <returns>
     /// A <c>NetworkRequest</c> allocated on Rust side.
     /// </returns>
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public NetworkRequest? GetNetworkRequestIfSuspended()
     {
         unsafe

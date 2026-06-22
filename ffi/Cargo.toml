@@ -12,8 +12,8 @@ test = false
 doctest = false
 
 [dependencies]
-diplomat = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", branch = "dotnet-picky-ironrdp-compat" }
-diplomat-runtime = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", branch = "dotnet-picky-ironrdp-compat" }
+diplomat = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", rev = "882006b1d35b1a30566e3d6d4b8f0bb5f4dae640" }
+diplomat-runtime = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", rev = "882006b1d35b1a30566e3d6d4b8f0bb5f4dae640" }
 ironrdp = { path = "../crates/ironrdp", features = ["session", "connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol"] }
 ironrdp-cliprdr-native.path = "../crates/ironrdp-cliprdr-native"
 ironrdp-dvc-pipe-proxy.path = "../crates/ironrdp-dvc-pipe-proxy"
