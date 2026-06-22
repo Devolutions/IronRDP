@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class InclusiveRectangle: IDisposable
 {
     private unsafe Raw.InclusiveRectangle* _inner;
-
     public ushort Bottom
     {
         get
@@ -19,7 +18,6 @@ public partial class InclusiveRectangle: IDisposable
             return GetBottom();
         }
     }
-
     public ushort Height
     {
         get
@@ -27,7 +25,6 @@ public partial class InclusiveRectangle: IDisposable
             return GetHeight();
         }
     }
-
     public ushort Left
     {
         get
@@ -35,7 +32,6 @@ public partial class InclusiveRectangle: IDisposable
             return GetLeft();
         }
     }
-
     public ushort Right
     {
         get
@@ -43,7 +39,6 @@ public partial class InclusiveRectangle: IDisposable
             return GetRight();
         }
     }
-
     public ushort Top
     {
         get
@@ -51,7 +46,6 @@ public partial class InclusiveRectangle: IDisposable
             return GetTop();
         }
     }
-
     public ushort Width
     {
         get
@@ -64,7 +58,7 @@ public partial class InclusiveRectangle: IDisposable
     /// Creates a managed <c>InclusiveRectangle</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.

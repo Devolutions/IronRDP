@@ -11,7 +11,10 @@ namespace Devolutions.IronRdp;
 public partial class DecodedImage: IDisposable
 {
     private unsafe Raw.DecodedImage* _inner;
-
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public BytesSlice Data
     {
         get
@@ -19,7 +22,6 @@ public partial class DecodedImage: IDisposable
             return GetData();
         }
     }
-
     public ushort Height
     {
         get
@@ -27,7 +29,6 @@ public partial class DecodedImage: IDisposable
             return GetHeight();
         }
     }
-
     public ushort Width
     {
         get
@@ -40,7 +41,7 @@ public partial class DecodedImage: IDisposable
     /// Creates a managed <c>DecodedImage</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
@@ -63,6 +64,10 @@ public partial class DecodedImage: IDisposable
     /// <returns>
     /// A <c>BytesSlice</c> allocated on Rust side.
     /// </returns>
+    /// <remarks>
+    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
+    /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
+    /// </remarks>
     public BytesSlice GetData()
     {
         unsafe

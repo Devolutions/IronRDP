@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class PduInfo: IDisposable
 {
     private unsafe Raw.PduInfo* _inner;
-
     public Action Action
     {
         get
@@ -19,7 +18,6 @@ public partial class PduInfo: IDisposable
             return GetAction();
         }
     }
-
     public nuint Length
     {
         get
@@ -32,7 +30,7 @@ public partial class PduInfo: IDisposable
     /// Creates a managed <c>PduInfo</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.

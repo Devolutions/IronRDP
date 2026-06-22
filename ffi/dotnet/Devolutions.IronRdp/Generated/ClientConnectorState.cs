@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class ClientConnectorState: IDisposable
 {
     private unsafe Raw.ClientConnectorState* _inner;
-
     public SecurityProtocol BasicSettingsExchangeSendInitialSelectedProtocol
     {
         get
@@ -19,7 +18,6 @@ public partial class ClientConnectorState: IDisposable
             return GetBasicSettingsExchangeSendInitialSelectedProtocol();
         }
     }
-
     public ConnectInitial BasicSettingsExchangeWaitResponseConnectInitial
     {
         get
@@ -27,7 +25,6 @@ public partial class ClientConnectorState: IDisposable
             return GetBasicSettingsExchangeWaitResponseConnectInitial();
         }
     }
-
     public ConnectionResult ConnectedResult
     {
         get
@@ -35,7 +32,6 @@ public partial class ClientConnectorState: IDisposable
             return GetConnectedResult();
         }
     }
-
     public ConnectionActivationSequence ConnectionFinalizationResult
     {
         get
@@ -43,7 +39,6 @@ public partial class ClientConnectorState: IDisposable
             return GetConnectionFinalizationResult();
         }
     }
-
     public SecurityProtocol ConnectionInitiationWaitConfirmRequestedProtocol
     {
         get
@@ -51,7 +46,6 @@ public partial class ClientConnectorState: IDisposable
             return GetConnectionInitiationWaitConfirmRequestedProtocol();
         }
     }
-
     public SecurityProtocol CredsspSelectedProtocol
     {
         get
@@ -59,7 +53,6 @@ public partial class ClientConnectorState: IDisposable
             return GetCredsspSelectedProtocol();
         }
     }
-
     public SecurityProtocol EnhancedSecurityUpgradeSelectedProtocol
     {
         get
@@ -67,7 +60,6 @@ public partial class ClientConnectorState: IDisposable
             return GetEnhancedSecurityUpgradeSelectedProtocol();
         }
     }
-
     public ClientConnectorStateType EnumType
     {
         get
@@ -80,7 +72,7 @@ public partial class ClientConnectorState: IDisposable
     /// Creates a managed <c>ClientConnectorState</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.

@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class ClipboardMessage: IDisposable
 {
     private unsafe Raw.ClipboardMessage* _inner;
-
     public IronRdpError? Error
     {
         get
@@ -19,7 +18,6 @@ public partial class ClipboardMessage: IDisposable
             return GetError();
         }
     }
-
     public ClipboardMessageType MessageType
     {
         get
@@ -27,7 +25,6 @@ public partial class ClipboardMessage: IDisposable
             return GetMessageType();
         }
     }
-
     public FfiFileContentsRequest? SendFileContentsRequest
     {
         get
@@ -35,7 +32,6 @@ public partial class ClipboardMessage: IDisposable
             return GetSendFileContentsRequest();
         }
     }
-
     public FfiFileContentsResponse? SendFileContentsResponse
     {
         get
@@ -43,7 +39,6 @@ public partial class ClipboardMessage: IDisposable
             return GetSendFileContentsResponse();
         }
     }
-
     public FormatDataResponse? SendFormatData
     {
         get
@@ -51,7 +46,6 @@ public partial class ClipboardMessage: IDisposable
             return GetSendFormatData();
         }
     }
-
     public ClipboardFormatIterator? SendInitiateCopy
     {
         get
@@ -59,7 +53,6 @@ public partial class ClipboardMessage: IDisposable
             return GetSendInitiateCopy();
         }
     }
-
     public ClipboardFormatId? SendInitiatePaste
     {
         get
@@ -72,7 +65,7 @@ public partial class ClipboardMessage: IDisposable
     /// Creates a managed <c>ClipboardMessage</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.

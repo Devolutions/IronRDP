@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class ConnectionResult: IDisposable
 {
     private unsafe Raw.ConnectionResult* _inner;
-
     public DesktopSize DesktopSize
     {
         get
@@ -19,7 +18,6 @@ public partial class ConnectionResult: IDisposable
             return GetDesktopSize();
         }
     }
-
     public bool EnableServerPointer
     {
         get
@@ -27,7 +25,6 @@ public partial class ConnectionResult: IDisposable
             return GetEnableServerPointer();
         }
     }
-
     public ushort IoChannelId
     {
         get
@@ -35,7 +32,6 @@ public partial class ConnectionResult: IDisposable
             return GetIoChannelId();
         }
     }
-
     public bool PointerSoftwareRendering
     {
         get
@@ -43,7 +39,6 @@ public partial class ConnectionResult: IDisposable
             return GetPointerSoftwareRendering();
         }
     }
-
     public uint ShareId
     {
         get
@@ -51,7 +46,6 @@ public partial class ConnectionResult: IDisposable
             return GetShareId();
         }
     }
-
     public ushort UserChannelId
     {
         get
@@ -64,7 +58,7 @@ public partial class ConnectionResult: IDisposable
     /// Creates a managed <c>ConnectionResult</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.

@@ -11,7 +11,6 @@ namespace Devolutions.IronRdp;
 public partial class DesktopSize: IDisposable
 {
     private unsafe Raw.DesktopSize* _inner;
-
     public ushort Height
     {
         get
@@ -19,7 +18,6 @@ public partial class DesktopSize: IDisposable
             return GetHeight();
         }
     }
-
     public ushort Width
     {
         get
@@ -32,7 +30,7 @@ public partial class DesktopSize: IDisposable
     /// Creates a managed <c>DesktopSize</c> from a raw handle.
     /// </summary>
     /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
+    /// Safety: you should not build two managed objects using the same raw handle (may cause use-after-free and double-free).
     /// <br/>
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
