@@ -40,7 +40,7 @@ pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) {
                     %channel_name,
                     %pipe_name,
                     ?error,
-                    "DVC pipe proxy worker thread initialization failed."
+                    "DVC pipe proxy worker thread initialization failed"
                 );
                 return;
             }
@@ -51,7 +51,7 @@ pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) {
                 %channel_name,
                 %pipe_name,
                 ?error,
-                "DVC pipe proxy worker thread has failed."
+                "DVC pipe proxy worker thread has failed"
             );
         }
     });
@@ -77,11 +77,11 @@ async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWor
 
     let mut pipe = tokio::select! {
         pipe = P::connect(pipe_name) => {
-            debug!(%channel_name, %pipe_name,"DVC proxy worker thread has started.");
+            debug!(%channel_name, %pipe_name, "DVC proxy worker thread has started");
             pipe?
         }
         _ = ctx.abort_event.notified() => {
-            debug!(%channel_name, %pipe_name, "DVC proxy worker thread has been aborted.");
+            debug!(%channel_name, %pipe_name, "DVC proxy worker thread has been aborted");
             return Ok(NextWorkerState::Abort);
         }
     };
@@ -95,7 +95,7 @@ async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWor
 
         tokio::select! {
             () = abort => {
-                debug!(%channel_name, %pipe_name, "Received abort signal for DVC proxy worker thread.");
+                debug!(%channel_name, %pipe_name, "Received abort signal for DVC proxy worker thread");
                 return Ok(NextWorkerState::Abort);
             }
             read_bytes_result = read_pipe => {
@@ -124,7 +124,7 @@ async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWor
                 let data = match dvc_input {
                     Some(data) => data,
                     None => {
-                        debug!(%channel_name, %pipe_name, "DVC mpsc channel returned EOF.");
+                        debug!(%channel_name, %pipe_name, "DVC mpsc channel returned EOF");
                         // Server DVC has been closed, there is no point in
                         // trying to reconnect.
                         return Ok(NextWorkerState::Abort);
@@ -180,7 +180,7 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
                 debug!(
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,
-                    "Aborting DVC proxy worker thread."
+                    "Aborting DVC proxy worker thread"
                 );
                 break;
             }
@@ -188,7 +188,7 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
                 debug!(
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,
-                    "Reconnecting to DVC pipe..."
+                    "Reconnecting to DVC pipe"
                 );
                 continue;
             }
