@@ -180,7 +180,7 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
                 debug!(
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,
-                    "Aborting DVC proxy worker thread"
+                    "Abort DVC proxy worker thread"
                 );
                 break;
             }
@@ -188,7 +188,7 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
                 debug!(
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,
-                    "Reconnecting to DVC pipe"
+                    "Reconnect to DVC pipe"
                 );
                 continue;
             }
