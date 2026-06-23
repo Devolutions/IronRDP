@@ -4,7 +4,7 @@ use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::worker::{OnWriteDvcMessage, WorkerCtx, run_worker};
 
@@ -49,7 +49,7 @@ impl DvcProcessor for DvcNamedPipeProxy {
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        info!(%self.channel_name, %self.named_pipe_name, "Starting DVC named pipe proxy");
+        debug!(%self.channel_name, %self.named_pipe_name, "Starting DVC named pipe proxy");
 
         let on_write_dvc = self
             .dvc_write_callback

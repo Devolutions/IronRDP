@@ -4,7 +4,7 @@ use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tokio::sync::Notify;
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use crate::error::DvcPipeProxyError;
 use crate::message::RawDataDvcMessage;
@@ -77,11 +77,11 @@ async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWor
 
     let mut pipe = tokio::select! {
         pipe = P::connect(pipe_name) => {
-            info!(%channel_name, %pipe_name,"DVC proxy worker thread has started.");
+            debug!(%channel_name, %pipe_name,"DVC proxy worker thread has started.");
             pipe?
         }
         _ = ctx.abort_event.notified() => {
-            info!(%channel_name, %pipe_name, "DVC proxy worker thread has been aborted.");
+            debug!(%channel_name, %pipe_name, "DVC proxy worker thread has been aborted.");
             return Ok(NextWorkerState::Abort);
         }
     };
@@ -95,14 +95,14 @@ async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWor
 
         tokio::select! {
             () = abort => {
-                info!(%channel_name, %pipe_name, "Received abort signal for DVC proxy worker thread.");
+                debug!(%channel_name, %pipe_name, "Received abort signal for DVC proxy worker thread.");
                 return Ok(NextWorkerState::Abort);
             }
             read_bytes_result = read_pipe => {
                 let read_bytes = read_bytes_result?;
 
                 if read_bytes == 0 {
-                    info!(%channel_name, %pipe_name, "DVC proxy pipe returned EOF");
+                    debug!(%channel_name, %pipe_name, "DVC proxy pipe returned EOF");
 
                     // If client unexpectedly closed the connection, we should
                     // still be able to reconnect to same session.
@@ -124,7 +124,7 @@ async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWor
                 let data = match dvc_input {
                     Some(data) => data,
                     None => {
-                        info!(%channel_name, %pipe_name, "DVC mpsc channel returned EOF.");
+                        debug!(%channel_name, %pipe_name, "DVC mpsc channel returned EOF.");
                         // Server DVC has been closed, there is no point in
                         // trying to reconnect.
                         return Ok(NextWorkerState::Abort);
@@ -177,7 +177,7 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
     loop {
         match process_client::<P>(&mut bridged_ctx).await? {
             NextWorkerState::Abort => {
-                info!(
+                debug!(
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,
                     "Aborting DVC proxy worker thread."
@@ -185,7 +185,7 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
                 break;
             }
             NextWorkerState::Reconnect => {
-                info!(
+                debug!(
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,
                     "Reconnecting to DVC pipe..."
