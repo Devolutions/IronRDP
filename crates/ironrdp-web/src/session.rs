@@ -979,8 +979,6 @@ impl iron_remote_desktop::Session for Session {
                         // We need to perform resize after receiving the Deactivate All PDU, because there may be frames
                         // with the previous dimensions arriving between the resize request and this message.
                         if let Some((width, height)) = requested_resize {
-                            self.render_canvas.set_width(width.get());
-                            self.render_canvas.set_height(height.get());
                             gui.resize(width, height);
                             requested_resize = None;
                         }

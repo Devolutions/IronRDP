@@ -39,7 +39,7 @@ impl Canvas {
         })
     }
 
-    /// Setting width/height resets the canvas backing store; the 2D context persists.
+    /// Setting width/height resets the canvas backing store and 2D context state.
     pub(crate) fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) {
         self.canvas.set_width(width.get());
         self.canvas.set_height(height.get());
