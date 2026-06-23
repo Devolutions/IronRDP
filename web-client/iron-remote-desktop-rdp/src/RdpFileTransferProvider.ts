@@ -634,8 +634,10 @@ export class RdpFileTransferProvider {
      * ```
      */
     uploadFiles(files: File[] | DroppedFile[]): UploadHandle {
+        // A new paste supersedes the previous offer (MS-RDPECLIP §3.1.1.1), so tear down any
+        // existing batch instead of throwing.
         if (this.uploadState !== undefined) {
-            throw new Error('Upload already in progress');
+            this.supersedeUpload();
         }
 
         // New upload supersedes any retained files from a previous batch
@@ -722,8 +724,18 @@ export class RdpFileTransferProvider {
         return { transferIds, completion };
     }
 
-    /** Suppress clipboard monitoring for the duration of an upload's paste window. */
+    /** Whether an upload batch is currently advertised or in flight (a fresh upload, or a re-paste
+     *  rebuilt from retained files). */
+    isUploadInProgress(): boolean {
+        return this.uploadState !== undefined;
+    }
+
+    /** Suppress clipboard monitoring for an upload's paste window. Idempotent: a supersede keeps
+     *  monitoring suppressed across the old->new upload, so this must not re-fire `onUploadStarted`. */
     private suppressUploadMonitoring(): void {
+        if (this.uploadMonitoringSuppressed) {
+            return;
+        }
         // Flip the flag before the callback so it holds even if the callback throws.
         this.uploadMonitoringSuppressed = true;
         try {
@@ -812,7 +824,36 @@ export class RdpFileTransferProvider {
             this.clearPasteAckWatchdog();
             this.resumeUploadMonitoring();
         }
+
+        // A directory-only batch (expectedFileCount === 0) gets a SIZE request per directory but
+        // never a RANGE -- the only path that marks a file complete -- so finishUploadBatch would
+        // never run and the inactivity watchdog below would fail an upload that actually succeeded.
+        // The remote acknowledging the paste is the only completion signal a data-less batch can
+        // get, so finish it now. (Mirrors the 0-byte file SIZE-path completion; here there are no
+        // counted files at all.) Re-pastes are left alone, like the watchdog itself.
+        const state = this.uploadState;
+        if (state !== undefined && state.isRePaste !== true && state.expectedFileCount === 0) {
+            this.finishUploadBatch(state);
+            return;
+        }
+
         this.resetUploadInactivityWatchdog();
+    }
+
+    /**
+     * Abort any in-flight chunk reads for a batch and clear their timeouts. Without this, a read
+     * still running when the batch is torn down keeps its FileReader and a 60s reader-timeout
+     * alive. Shared by every upload teardown path (fail, supersede, dispose).
+     */
+    private abortInFlightReads(state: UploadState): void {
+        for (const timeout of state.readerTimeouts.values()) {
+            clearTimeout(timeout);
+        }
+        state.readerTimeouts.clear();
+        for (const reader of state.activeReaders.values()) {
+            reader.abort();
+        }
+        state.activeReaders.clear();
     }
 
     /**
@@ -829,24 +870,32 @@ export class RdpFileTransferProvider {
         if (state === undefined) {
             return;
         }
-        // Abort any in-flight chunk reads and clear their timeouts before releasing the
-        // state (mirrors dispose()). Otherwise a read still running when the paste is torn
-        // down keeps its FileReader and a 60s reader-timeout alive for an upload that has
-        // already been rejected.
-        for (const timeout of state.readerTimeouts.values()) {
-            clearTimeout(timeout);
-        }
-        state.readerTimeouts.clear();
-        for (const reader of state.activeReaders.values()) {
-            reader.abort();
-        }
-        state.activeReaders.clear();
+        this.abortInFlightReads(state);
 
         const err: FileTransferError = { message, direction: 'upload' };
         this.emit('error', err);
         const { reject } = state;
         this.uploadState = undefined;
         reject(new Error(message));
+    }
+
+    /**
+     * Tear down the current upload because a new paste is replacing it. Unlike
+     * {@link failPendingUpload}, this emits no error and leaves monitoring suppressed (a new upload
+     * is starting); it aborts in-flight reads, clears the state, and *resolves* the old completion
+     * (a replacement, not a failure).
+     */
+    private supersedeUpload(): void {
+        this.clearPasteAckWatchdog();
+        this.clearUploadInactivityWatchdog();
+        const state = this.uploadState;
+        if (state === undefined) {
+            return;
+        }
+        this.abortInFlightReads(state);
+        const { resolve } = state;
+        this.uploadState = undefined;
+        resolve();
     }
 
     /**
@@ -1156,16 +1205,7 @@ export class RdpFileTransferProvider {
 
         // Clean up active FileReaders, clear timeouts, and reject upload promise
         if (this.uploadState !== undefined) {
-            for (const timeout of this.uploadState.readerTimeouts.values()) {
-                clearTimeout(timeout);
-            }
-            this.uploadState.readerTimeouts.clear();
-
-            for (const reader of this.uploadState.activeReaders.values()) {
-                reader.abort();
-            }
-            this.uploadState.activeReaders.clear();
-
+            this.abortInFlightReads(this.uploadState);
             this.uploadState.reject(new Error('RdpFileTransferProvider disposed'));
         }
         this.uploadState = undefined;
@@ -1322,6 +1362,13 @@ export class RdpFileTransferProvider {
             const view = new DataView(sizeBytes.buffer);
             view.setBigUint64(0, BigInt(file.size), true);
             this.sendSubmitFileContents(request.streamId, false, sizeBytes);
+
+            // A 0-byte file gets no RANGE request (no bytes to read), so complete it here --
+            // otherwise it never reaches completedFiles and the batch never finishes. Mirrors
+            // the download path's size===0 handling.
+            if (file.size === 0) {
+                this.markUploadFileComplete(request.index, file, state.transferIds.get(request.index) ?? -1);
+            }
         } else if ((request.flags & FileContentsFlags.RANGE) !== 0) {
             // RANGE request: read file chunk
             const chunk = file.slice(request.position, request.position + request.size);
@@ -1395,20 +1442,7 @@ export class RdpFileTransferProvider {
 
                     // Check if all bytes for this file have been served
                     if (served >= file.size) {
-                        const alreadyCompleted = this.uploadState.completedFiles.has(request.index);
-
-                        this.uploadState.completedFiles.add(request.index);
-
-                        if (!alreadyCompleted) {
-                            this.emit('upload-complete', file, request.index, uploadTransferId);
-                        }
-
-                        if (this.uploadState.completedFiles.size === this.uploadState.expectedFileCount) {
-                            // All files uploaded successfully. finishUploadBatch retains the
-                            // DroppedFile metadata so a re-paste from the remote can serve the
-                            // data again, and stops the inactivity watchdog.
-                            this.finishUploadBatch(this.uploadState);
-                        }
+                        this.markUploadFileComplete(request.index, file, uploadTransferId);
                     }
                 }
             };
@@ -1452,6 +1486,23 @@ export class RdpFileTransferProvider {
             };
 
             reader.readAsArrayBuffer(chunk);
+        }
+    }
+
+    /**
+     * Mark a single upload file as fully served: record it, emit upload-complete once, and
+     * finalize the batch once every counted file is accounted for. Shared by the RANGE onload
+     * path (final chunk served) and the SIZE path for 0-byte files (which get no RANGE request).
+     */
+    private markUploadFileComplete(index: number, file: File, transferId: number): void {
+        const state = this.uploadState;
+        if (state === undefined || state.completedFiles.has(index)) {
+            return;
+        }
+        state.completedFiles.add(index);
+        this.emit('upload-complete', file, index, transferId);
+        if (state.completedFiles.size === state.expectedFileCount) {
+            this.finishUploadBatch(state);
         }
     }
 
