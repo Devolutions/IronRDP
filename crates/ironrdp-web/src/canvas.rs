@@ -40,7 +40,7 @@ impl Canvas {
         render_canvas.set_width(width.get());
         render_canvas.set_height(height.get());
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", not(feature = "bench")))]
         {
             match softblit::Surface::new(
                 softblit::SurfaceTarget::Canvas(render_canvas.clone()),
@@ -231,7 +231,7 @@ fn blit(ctx: &CanvasRenderingContext2d, rgba: &[u8], region: &InclusiveRectangle
             u32::from(region.height()),
         )
         .map_err(|err| anyhow!("ImageData::new failed: {err:?}"))?;
-        ctx.put_image_data(&image, f64::from(region.left), f64::from(region.top))
+        ctx.put_image_data(&image, i32::from(region.left), i32::from(region.top))
             .map_err(|err| anyhow!("put_image_data failed: {err:?}"))
     }
     #[cfg(not(target_arch = "wasm32"))]

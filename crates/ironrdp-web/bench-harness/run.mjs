@@ -59,6 +59,9 @@ async function main() {
   let exitCode = 1;
   try {
     const page = await browser.newPage();
+    await page.addInitScript(() => {
+      delete Navigator.prototype.gpu;
+    });
     page.on('console', (msg) => console.log(`[page] ${msg.text()}`));
     await page.goto(pageUrl, { waitUntil: 'load' });
     await page.waitForFunction(() => window.__BENCH_RESULT__ || window.__BENCH_ERROR__, null, { timeout: 120000 });
