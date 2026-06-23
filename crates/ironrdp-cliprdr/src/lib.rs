@@ -20,7 +20,7 @@ use pdu::{
     FileContentsResponse, FileDescriptor, FormatDataRequest, FormatListResponse, LockDataId, OwnedFormatDataResponse,
     PackedFileList,
 };
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 #[rustfmt::skip] // do not reorder
 use crate::pdu::FormatList;
@@ -620,11 +620,11 @@ impl<R: Role> Cliprdr<R> {
             FormatListResponse::Ok => {
                 if !R::is_server() {
                     if self.state == CliprdrState::Initialization {
-                        info!("Clipboard virtual channel initialized");
+                        debug!("Clipboard virtual channel initialized");
                         self.state = CliprdrState::Ready;
                         self.backend.on_ready();
                     } else {
-                        info!("Remote accepted format list");
+                        trace!("Remote accepted format list");
                     }
                 }
                 self.backend.on_format_list_response(true);
@@ -640,7 +640,7 @@ impl<R: Role> Cliprdr<R> {
                 self.local_drop_effect_format_id = None;
 
                 if !self.sent_file_contents_requests.is_empty() {
-                    info!(
+                    debug!(
                         count = self.sent_file_contents_requests.len(),
                         "Clearing pending file contents requests due to FormatListResponse::Fail"
                     );
@@ -664,7 +664,7 @@ impl<R: Role> Cliprdr<R> {
 
     fn handle_format_list(&mut self, format_list: FormatList<'_>) -> PduResult<Vec<SvcMessage>> {
         if R::is_server() && self.state == CliprdrState::Initialization {
-            info!("Clipboard virtual channel initialized");
+            debug!("Clipboard virtual channel initialized");
             self.state = CliprdrState::Ready;
             self.backend.on_ready();
         }
@@ -740,7 +740,7 @@ impl<R: Role> Cliprdr<R> {
         if let Some(format) = file_list_format {
             // Store the format ID for later use when user initiates paste
             self.remote_file_list_format_id = Some(format.id);
-            info!(format_id = ?format.id, "FileGroupDescriptorW format available in FormatList");
+            trace!(format_id = ?format.id, "FileGroupDescriptorW format available in FormatList");
         }
 
         // [MS-RDPECLIP] 3.1.5.2.2 - Acknowledge the FormatList before any
@@ -830,7 +830,7 @@ impl<R: Role> Cliprdr<R> {
         } else {
             match self.state {
                 CliprdrState::Ready => {
-                    info!("User initiated copy, sending format list");
+                    trace!("User initiated copy, sending format list");
                     pdus.push(ClipboardPdu::FormatList(
                         self.build_format_list(available_formats).map_err(|e| encode_err!(e))?,
                     ));
@@ -863,7 +863,7 @@ impl<R: Role> Cliprdr<R> {
         self.pending_format_data_request = Some(requested_format);
 
         if Some(requested_format) == self.remote_file_list_format_id {
-            info!(format_id = ?requested_format, "User initiated paste for FileGroupDescriptorW");
+            trace!(format_id = ?requested_format, "User initiated paste for FileGroupDescriptorW");
         }
 
         let pdu = ClipboardPdu::FormatDataRequest(FormatDataRequest {
@@ -972,7 +972,7 @@ impl<R: Role> Cliprdr<R> {
         self.outgoing_locks.insert(clip_data_id, lock);
         self.current_lock_id = Some(clip_data_id);
 
-        info!(clip_data_id, "Sent clipboard lock");
+        trace!(clip_data_id, "Sent clipboard lock");
 
         let pdu = ClipboardPdu::LockData(LockDataId(clip_data_id));
         Some(vec![into_cliprdr_message(pdu)])
@@ -1015,7 +1015,7 @@ impl<R: Role> Cliprdr<R> {
         self.current_lock_id = None;
 
         if !newly_expired.is_empty() {
-            info!(
+            debug!(
                 count = newly_expired.len(),
                 inactivity_timeout_secs = self.lock_inactivity_timeout.as_secs(),
                 max_lifetime_secs = self.lock_max_lifetime.as_secs(),
@@ -1052,7 +1052,7 @@ impl<R: Role> Cliprdr<R> {
         self.outgoing_locks.clear();
         self.current_lock_id = None;
 
-        info!(
+        debug!(
             count = cleared.len(),
             "Releasing outgoing locks before taking clipboard ownership"
         );
@@ -1159,7 +1159,7 @@ impl<R: Role> Cliprdr<R> {
 
         // Log cleanup summary
         if !expired_ids.is_empty() {
-            info!(
+            debug!(
                 count = expired_ids.len(),
                 clip_data_ids = ?expired_ids,
                 "Automatic lock cleanup completed"
@@ -1202,7 +1202,7 @@ impl<R: Role> Cliprdr<R> {
         }
 
         if !stale_stream_ids.is_empty() {
-            info!(
+            debug!(
                 count = stale_stream_ids.len(),
                 "Stale file contents request cleanup completed"
             );
@@ -1230,7 +1230,7 @@ impl<R: Role> Cliprdr<R> {
         }
 
         if !stale_lock_ids.is_empty() {
-            info!(count = stale_lock_ids.len(), "Upload inactivity cleanup completed");
+            debug!(count = stale_lock_ids.len(), "Upload inactivity cleanup completed");
         }
 
         Ok(messages.into())
@@ -1529,7 +1529,7 @@ impl<R: Role> Cliprdr<R> {
             .collect();
 
         if validated_files.len() < original_count {
-            info!(
+            debug!(
                 total = original_count,
                 valid = validated_files.len(),
                 "File list validation completed with warnings"
@@ -1632,7 +1632,7 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 }
 
                 if let Some(ref file_list) = self.local_file_list {
-                    info!(clip_data_id = id.0, "Locking clipboard with file list snapshot");
+                    debug!(clip_data_id = id.0, "Locking clipboard with file list snapshot");
                     self.locked_file_lists.insert(id.0, file_list.clone());
                     self.locked_file_list_activity.insert(id.0, self.backend.now_ms());
                 } else {
@@ -1652,7 +1652,7 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 // Release the file list snapshot associated with this clipDataId.
                 if self.locked_file_lists.remove(&id.0).is_some() {
                     self.locked_file_list_activity.remove(&id.0);
-                    info!(
+                    debug!(
                         clip_data_id = id.0,
                         "Unlocking clipboard and releasing file list snapshot"
                     );
@@ -1681,7 +1681,7 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 if Some(request.format) == self.local_file_list_format_id {
                     if let Some(ref file_list) = self.local_file_list {
                         // Respond with the stored file list
-                        info!(
+                        debug!(
                             format_id = ?request.format,
                             file_count = file_list.files.len(),
                             "Responding to FileGroupDescriptorW request with stored file list"
@@ -1752,7 +1752,7 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                                     }
                                 }
 
-                                info!(
+                                debug!(
                                     file_count = file_list.files.len(),
                                     "Received FileGroupDescriptorW from remote"
                                 );
