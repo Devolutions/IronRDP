@@ -8,6 +8,7 @@ import {
     lockCallback,
     unlockCallback,
     locksExpiredCallback,
+    formatListResponseCallback,
     requestFileContents,
     submitFileContents,
     initiateFileCopy,
@@ -188,6 +189,11 @@ type EventMap = {
      *  listeners can register all transfers eagerly before progress events arrive. */
     'upload-batch-started': [Map<number, number>, DroppedFile[]];
     'files-available': [FileInfo[]];
+    /** Remote's response to one of our outbound Format Lists: `true` = accepted
+     *  (CB_RESPONSE_OK), `false` = rejected (CB_RESPONSE_FAIL). Fires for every
+     *  outbound advertise, so consumers can drive paste from it (e.g. inject the
+     *  paste keystroke on accept, retry on reject). */
+    'format-list-response': [boolean];
     error: [FileTransferError];
 };
 
@@ -262,6 +268,24 @@ export class RdpFileTransferProvider {
     private static readonly MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
     /** Timeout for FileReader operations (60 seconds) to prevent stalled uploads */
     private static readonly FILE_READER_TIMEOUT_MS = 60 * 1000;
+    /**
+     * How long to keep clipboard monitoring suppressed after advertising an upload
+     * while waiting for the remote to pull the files (first FileContentsRequest),
+     * before giving up. Matches the Rust cliprdr lock inactivity timeout (60s), so
+     * the JS side gives up exactly when the protocol lock does. If the remote never
+     * requests contents (the paste landed in a non-file target, or the advertise was
+     * clobbered), the watchdog resumes monitoring and fails the upload so its state
+     * cannot wedge later uploads.
+     */
+    private static readonly PASTE_ACK_TIMEOUT_MS = 60 * 1000;
+    /**
+     * Upload inactivity window. After the remote starts pulling, each FileContentsRequest
+     * resets this; if pulls then stop for this long -- e.g. the remote grabbed the
+     * clipboard with a text/image copy that never reaches handleFilesAvailable -- the
+     * upload is failed so `uploadState` is released and later uploads aren't wedged. A
+     * slow-but-progressing transfer keeps resetting it, so it is never killed.
+     */
+    private static readonly UPLOAD_INACTIVITY_TIMEOUT_MS = 60 * 1000;
     /** Maximum recursion depth when traversing dropped directories. */
     private static readonly MAX_DIRECTORY_DEPTH = 32;
     /** Maximum total entries (files + directories) collected from a single drop. */
@@ -276,6 +300,23 @@ export class RdpFileTransferProvider {
 
     private activeDownloads: Map<number, TransferState> = new Map();
     private uploadState?: UploadState;
+    // Upload paste-window watchdog. Armed when we advertise an upload, disarmed on the
+    // first FileContentsRequest (the remote pulled the files). Being armed is the single
+    // "advertised but not yet pulled" signal: on timeout it resumes monitoring and fails
+    // the never-pulled upload, and handleFormatListResponse consults it to fail a refused
+    // paste early (handleUnlock is a deliberate no-op: Unlock is not a reliable failure
+    // signal). Upload completion/failure run only after that first request, so they need
+    // not touch it.
+    private pasteAckTimeout?: ReturnType<typeof setTimeout>;
+    // Upload inactivity watchdog. Armed/reset on each FileContentsRequest once the remote
+    // starts pulling; fires if pulls stop for UPLOAD_INACTIVITY_TIMEOUT_MS (a stalled or
+    // clipboard-superseded paste) to release uploadState. Complements the paste-ack
+    // watchdog above, which only covers the "advertised but never pulled" case.
+    private uploadInactivityTimeout?: ReturnType<typeof setTimeout>;
+    // True between onUploadStarted (suppress monitoring) and onUploadFinished
+    // (resume), so resume fires exactly once even though it is now deferred until
+    // the paste is pulled, times out, fails, or the provider is disposed.
+    private uploadMonitoringSuppressed = false;
     // DroppedFile metadata retained after upload completes so re-paste works
     // without re-dropping. Cleared when a new upload starts or the manager is disposed.
     private retainedFiles?: DroppedFile[];
@@ -355,6 +396,7 @@ export class RdpFileTransferProvider {
             lockCallback((id: number) => this.handleLock(id)),
             unlockCallback((id: number) => this.handleUnlock(id)),
             locksExpiredCallback((ids: Uint32Array) => this.handleLocksExpired(ids)),
+            formatListResponseCallback((ok: boolean) => this.handleFormatListResponse(ok)),
         ];
     }
 
@@ -643,19 +685,23 @@ export class RdpFileTransferProvider {
                 reject,
             };
 
-            // Suppress clipboard monitoring briefly so the polling loop does not
-            // clobber our FormatList with a text/image update. Resume immediately
-            // after the FormatList is sent - the suppression window only needs to
-            // cover the race between suppressMonitoring() and the wire send.
-            // Upload state tracking continues independently via this.uploadState.
-            this.onUploadStarted?.();
+            // Suppress clipboard monitoring so the 100ms polling loop cannot clobber our
+            // file FormatList with a stale text/image update during the paste window. It
+            // stays suppressed -- NOT just for the synchronous wire send, which left a
+            // race the monitor could win -- until we leave the advertised-but-not-pulled
+            // window: the remote pulls (first FileContentsRequest), or we give up on it
+            // (watchdog timeout or a rejected advertise).
+            this.suppressUploadMonitoring();
 
             // Initiate file copy (broadcasts file list to remote)
             try {
                 this.sendInitiateFileCopy(fileInfos);
                 this.emit('upload-batch-started', transferIds, dropped);
             } catch (error) {
+                // Immediate failure: resume monitoring now and clear state so the
+                // next upload is not blocked.
                 this.uploadState = undefined;
+                this.resumeUploadMonitoring();
                 const err: FileTransferError = {
                     message: 'Failed to initiate file upload',
                     direction: 'upload',
@@ -663,15 +709,157 @@ export class RdpFileTransferProvider {
                 };
                 this.emit('error', err);
                 reject(new Error(err.message, { cause: error }));
-            } finally {
-                // Resume monitoring regardless of success/failure. The brief
-                // suppression window is intentionally short - just long enough
-                // to prevent the clipboard poll from racing with our FormatList.
-                this.onUploadFinished?.();
+                return;
             }
+
+            // FormatList is on the wire. Wait for the remote to pull the files; if it
+            // never does (paste landed in a non-file target, or the advertise was
+            // clobbered/rejected), the watchdog resumes monitoring and rejects this
+            // upload so its state cannot wedge later uploads ("Upload already in progress").
+            this.armPasteAckWatchdog();
         });
 
         return { transferIds, completion };
+    }
+
+    /** Suppress clipboard monitoring for the duration of an upload's paste window. */
+    private suppressUploadMonitoring(): void {
+        // Flip the flag before the callback so it holds even if the callback throws.
+        this.uploadMonitoringSuppressed = true;
+        try {
+            this.onUploadStarted?.();
+        } catch (error) {
+            console.error('Error in onUploadStarted callback:', error);
+        }
+    }
+
+    /** Resume clipboard monitoring (idempotent: fires onUploadFinished at most once
+     *  per upload, since the resume point is now deferred past the wire send). */
+    private resumeUploadMonitoring(): void {
+        if (!this.uploadMonitoringSuppressed) {
+            return;
+        }
+        // Flip the flag before the callback so it holds even if the callback throws.
+        this.uploadMonitoringSuppressed = false;
+        try {
+            this.onUploadFinished?.();
+        } catch (error) {
+            console.error('Error in onUploadFinished callback:', error);
+        }
+    }
+
+    /** Arm the paste-acknowledgment watchdog for the current upload. */
+    private armPasteAckWatchdog(): void {
+        this.clearPasteAckWatchdog();
+        // A new upload is starting: drop any inactivity watchdog left from a prior upload
+        // so it can't fire mid-way through this one.
+        this.clearUploadInactivityWatchdog();
+        this.pasteAckTimeout = setTimeout(() => {
+            this.pasteAckTimeout = undefined;
+            // The remote never requested the files within the lock window. Resume
+            // monitoring and fail the pending upload so it cannot wedge later ones.
+            const state = this.uploadState;
+            if (state !== undefined && state.isRePaste !== true) {
+                this.failPendingUpload('The remote did not request the files in time, so the paste was not completed');
+            } else {
+                this.resumeUploadMonitoring();
+            }
+        }, RdpFileTransferProvider.PASTE_ACK_TIMEOUT_MS);
+    }
+
+    /** Disarm the paste-acknowledgment watchdog, if armed. */
+    private clearPasteAckWatchdog(): void {
+        if (this.pasteAckTimeout !== undefined) {
+            clearTimeout(this.pasteAckTimeout);
+            this.pasteAckTimeout = undefined;
+        }
+    }
+
+    /**
+     * (Re)arm the upload inactivity watchdog (see {@link UPLOAD_INACTIVITY_TIMEOUT_MS}).
+     * Called on every FileContentsRequest, so continued pulls keep resetting it and a
+     * slow-but-progressing transfer is never killed; if pulls stop for the window the
+     * upload is failed (releasing uploadState). Skipped for re-pastes, matching the
+     * paste-ack watchdog.
+     */
+    private resetUploadInactivityWatchdog(): void {
+        this.clearUploadInactivityWatchdog();
+        this.uploadInactivityTimeout = setTimeout(() => {
+            this.uploadInactivityTimeout = undefined;
+            const state = this.uploadState;
+            if (state !== undefined && state.isRePaste !== true) {
+                this.failPendingUpload('The remote stopped requesting the files, so the paste did not complete');
+            }
+        }, RdpFileTransferProvider.UPLOAD_INACTIVITY_TIMEOUT_MS);
+    }
+
+    /** Disarm the upload inactivity watchdog, if armed. */
+    private clearUploadInactivityWatchdog(): void {
+        if (this.uploadInactivityTimeout !== undefined) {
+            clearTimeout(this.uploadInactivityTimeout);
+            this.uploadInactivityTimeout = undefined;
+        }
+    }
+
+    /**
+     * The remote acknowledged the paste by requesting file contents: the clobber
+     * window is over, so disarm the paste-ack watchdog and resume clipboard monitoring.
+     * Called on every FileContentsRequest; only the first disarms/resumes. Every request
+     * also (re)arms the inactivity watchdog so a stall after pulling began is recovered.
+     */
+    private acknowledgePaste(): void {
+        if (this.pasteAckTimeout !== undefined) {
+            this.clearPasteAckWatchdog();
+            this.resumeUploadMonitoring();
+        }
+        this.resetUploadInactivityWatchdog();
+    }
+
+    /**
+     * Fail the in-flight upload (reject its completion, emit an upload error, clear
+     * uploadState) and resume monitoring. Used when the advertise is rejected or the
+     * paste is never pulled, so `uploadState` is released instead of lingering and
+     * throwing "Upload already in progress" on every later upload.
+     */
+    private failPendingUpload(message: string): void {
+        this.clearPasteAckWatchdog();
+        this.clearUploadInactivityWatchdog();
+        this.resumeUploadMonitoring();
+        const state = this.uploadState;
+        if (state === undefined) {
+            return;
+        }
+        // Abort any in-flight chunk reads and clear their timeouts before releasing the
+        // state (mirrors dispose()). Otherwise a read still running when the paste is torn
+        // down keeps its FileReader and a 60s reader-timeout alive for an upload that has
+        // already been rejected.
+        for (const timeout of state.readerTimeouts.values()) {
+            clearTimeout(timeout);
+        }
+        state.readerTimeouts.clear();
+        for (const reader of state.activeReaders.values()) {
+            reader.abort();
+        }
+        state.activeReaders.clear();
+
+        const err: FileTransferError = { message, direction: 'upload' };
+        this.emit('error', err);
+        const { reject } = state;
+        this.uploadState = undefined;
+        reject(new Error(message));
+    }
+
+    /**
+     * Finalize a fully-accounted upload batch (every counted file either served in full
+     * or permanently failed). Stops the inactivity watchdog so it cannot linger past
+     * completion, retains the DroppedFile metadata so a re-paste from the remote can serve
+     * the data again, clears `uploadState`, and resolves the completion promise.
+     */
+    private finishUploadBatch(state: UploadState): void {
+        this.clearUploadInactivityWatchdog();
+        this.retainedFiles = state.droppedFiles;
+        this.uploadState = undefined;
+        state.resolve();
     }
 
     /**
@@ -953,6 +1141,12 @@ export class RdpFileTransferProvider {
     dispose(): void {
         this.disposed = true;
 
+        // Stop the paste-ack watchdog and resume monitoring if an upload was still
+        // mid-paste-window (we defer the resume, so it may not have fired yet).
+        this.clearPasteAckWatchdog();
+        this.clearUploadInactivityWatchdog();
+        this.resumeUploadMonitoring();
+
         // Cancel active downloads (lock cleanup is handled by the Rust layer)
         for (const state of this.activeDownloads.values()) {
             state.chunks = [];
@@ -988,6 +1182,16 @@ export class RdpFileTransferProvider {
     // ==================== Callback Handlers ====================
 
     private handleFilesAvailable(files: FileInfo[], clipDataId?: number): void {
+        // A remote FormatList means the remote took ownership of the clipboard, which
+        // supersedes any in-flight upload advertise of ours: the remote will not pull our
+        // files, and once the paste has been acknowledged the paste-ack watchdog is
+        // already disarmed, so nothing else would ever release `uploadState`. Left
+        // lingering it wedges every later upload with "Upload already in progress". Release
+        // it here. This is the symmetric counterpart of handleFormatListResponse(false):
+        // that recovers when the remote *rejects* our advertise; this recovers when the
+        // remote *replaces* it. No-op when no upload is in flight.
+        this.failPendingUpload('Upload interrupted: the remote clipboard changed');
+
         // Do NOT cancel active downloads here.
         //
         // Per MS-RDPECLIP 2.2.4.1 and 3.1.5.3.2, clipboard locks ensure that
@@ -1060,6 +1264,10 @@ export class RdpFileTransferProvider {
     }
 
     private handleFileContentsRequest(request: FileContentsRequest): void {
+        // The remote is pulling the files, so the paste was accepted: end the
+        // clobber-protection window (disarm the watchdog, resume monitoring).
+        this.acknowledgePaste();
+
         if (!this.uploadState) {
             if (!this.retainedFiles) {
                 console.warn('Received file contents request but no upload in progress');
@@ -1147,10 +1355,7 @@ export class RdpFileTransferProvider {
                     this.uploadState.failedFiles.add(request.index);
                     this.uploadState.completedFiles.add(request.index);
                     if (this.uploadState.completedFiles.size >= this.uploadState.expectedFileCount) {
-                        const { resolve, droppedFiles: completed } = this.uploadState;
-                        this.retainedFiles = completed;
-                        this.uploadState = undefined;
-                        resolve();
+                        this.finishUploadBatch(this.uploadState);
                     }
                 }
             }, RdpFileTransferProvider.FILE_READER_TIMEOUT_MS);
@@ -1199,12 +1404,10 @@ export class RdpFileTransferProvider {
                         }
 
                         if (this.uploadState.completedFiles.size === this.uploadState.expectedFileCount) {
-                            // All files uploaded successfully. Retain DroppedFile
-                            // metadata so re-paste from the remote can serve data again.
-                            const { resolve, droppedFiles: completed } = this.uploadState;
-                            this.retainedFiles = completed;
-                            this.uploadState = undefined;
-                            resolve();
+                            // All files uploaded successfully. finishUploadBatch retains the
+                            // DroppedFile metadata so a re-paste from the remote can serve the
+                            // data again, and stops the inactivity watchdog.
+                            this.finishUploadBatch(this.uploadState);
                         }
                     }
                 }
@@ -1243,10 +1446,7 @@ export class RdpFileTransferProvider {
                     this.uploadState.failedFiles.add(request.index);
                     this.uploadState.completedFiles.add(request.index);
                     if (this.uploadState.completedFiles.size >= this.uploadState.expectedFileCount) {
-                        const { resolve, droppedFiles: completed } = this.uploadState;
-                        this.retainedFiles = completed;
-                        this.uploadState = undefined;
-                        resolve();
+                        this.finishUploadBatch(this.uploadState);
                     }
                 }
             };
@@ -1406,6 +1606,25 @@ export class RdpFileTransferProvider {
                 // Request next chunk
                 this.requestNextChunk(state);
             }
+        }
+    }
+
+    /**
+     * Handle the remote's response to one of our outbound Format Lists, surfaced via
+     * `on_format_list_response`. Always re-emitted as a `format-list-response` event so
+     * a frontend can drive paste from it (inject on accept, retry on reject).
+     *
+     * On reject (`ok === false`) the remote silently discards the advertised clipboard
+     * (MS-RDPECLIP), so an upload still waiting to be pulled can never complete --
+     * previously this left `uploadState` set and every later upload threw "Upload
+     * already in progress". The watchdog-armed check scopes the release to an upload
+     * that was advertised but not yet pulled, so re-paste and an already-progressing
+     * transfer are left alone.
+     */
+    private handleFormatListResponse(ok: boolean): void {
+        this.emit('format-list-response', ok);
+        if (!ok && this.pasteAckTimeout !== undefined) {
+            this.failPendingUpload('The remote rejected the file list, so the paste was not accepted');
         }
     }
 

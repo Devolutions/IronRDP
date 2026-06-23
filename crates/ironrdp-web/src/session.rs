@@ -79,6 +79,7 @@ struct SessionBuilderInner {
     lock_callback: Option<js_sys::Function>,
     unlock_callback: Option<js_sys::Function>,
     locks_expired_callback: Option<js_sys::Function>,
+    format_list_response_callback: Option<js_sys::Function>,
 
     // Setting printer stream callbacks activates the virtual printer.
     invalid_print_job_stream_callbacks: bool,
@@ -120,6 +121,7 @@ impl Default for SessionBuilderInner {
             lock_callback: None,
             unlock_callback: None,
             locks_expired_callback: None,
+            format_list_response_callback: None,
 
             invalid_print_job_stream_callbacks: false,
             print_job_stream_callbacks: None,
@@ -276,6 +278,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |locks_expired_callback: JsValue| {
                 self.0.borrow_mut().locks_expired_callback = locks_expired_callback.dyn_into::<js_sys::Function>().ok();
             };
+            |format_list_response_callback: JsValue| {
+                self.0.borrow_mut().format_list_response_callback = format_list_response_callback.dyn_into::<js_sys::Function>().ok();
+            };
             |print_job_stream_callbacks: JsValue| {
                 let mut inner = self.0.borrow_mut();
                 match parse_print_job_stream_callbacks(print_job_stream_callbacks) {
@@ -341,6 +346,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback,
             unlock_callback,
             locks_expired_callback,
+            format_list_response_callback,
             invalid_print_job_stream_callbacks,
             print_job_stream_callbacks,
             printer_name,
@@ -381,6 +387,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             lock_callback = inner.lock_callback.clone();
             unlock_callback = inner.unlock_callback.clone();
             locks_expired_callback = inner.locks_expired_callback.clone();
+            format_list_response_callback = inner.format_list_response_callback.clone();
             invalid_print_job_stream_callbacks = inner.invalid_print_job_stream_callbacks;
             print_job_stream_callbacks = inner.print_job_stream_callbacks.clone();
             printer_name = inner.printer_name.clone();
@@ -410,6 +417,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     on_lock: lock_callback,
                     on_unlock: unlock_callback,
                     on_locks_expired: locks_expired_callback,
+                    on_format_list_response: format_list_response_callback,
                 },
             )
         });
