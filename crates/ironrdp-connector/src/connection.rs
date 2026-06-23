@@ -558,6 +558,14 @@ impl Sequence for ClientConnector {
                         written,
                         ClientConnectorState::ConnectionFinalization { connection_activation },
                     ),
+                    // The inner sequence stays in CapabilitiesExchange when it receives a
+                    // Server Deactivate All PDU before the Server Demand Active PDU (sent
+                    // by e.g. Windows Server and gnome-remote-desktop); mirror it here and
+                    // wait for the next input.
+                    ConnectionActivationState::CapabilitiesExchange { .. } => (
+                        written,
+                        ClientConnectorState::CapabilitiesExchange { connection_activation },
+                    ),
                     _ => return Err(general_err!("invalid state (this is a bug)")),
                 }
             }
