@@ -163,5 +163,53 @@ impl DynamicVirtualChannel {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicChannelRef<'a, T> {
+    channel_id: DynamicChannelId,
+    processor: &'a T,
+}
+
+impl<T> DynamicChannelRef<'_, T> {
+    pub fn channel_id(&self) -> DynamicChannelId {
+        self.channel_id
+    }
+}
+
+impl<'a, T: DvcProcessor> DynamicChannelRef<'a, T> {
+    fn new(channel_id: u32, processor: &'a T) -> Self {
+        Self { channel_id, processor }
+    }
+
+    pub fn processor(&self) -> &'a T {
+        self.processor
+    }
+}
+
+#[derive(Debug)]
+pub struct DynamicChannelMut<'a, T> {
+    channel_id: DynamicChannelId,
+    processor: &'a mut T,
+}
+
+impl<T> DynamicChannelMut<'_, T> {
+    pub fn channel_id(&self) -> DynamicChannelId {
+        self.channel_id
+    }
+}
+
+impl<'a, T: DvcProcessor> DynamicChannelMut<'a, T> {
+    fn new(channel_id: u32, processor: &'a mut T) -> Self {
+        Self { channel_id, processor }
+    }
+
+    pub fn processor(&self) -> &T {
+        self.processor
+    }
+
+    pub fn processor_mut(&mut self) -> &mut T {
+        self.processor
+    }
+}
+
 pub type DynamicChannelName = String;
 pub type DynamicChannelId = u32;

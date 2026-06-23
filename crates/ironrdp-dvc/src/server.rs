@@ -14,7 +14,7 @@ use tracing::debug;
 use crate::pdu::{
     CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu,
 };
-use crate::{CompleteData, DvcProcessor, encode_dvc_messages};
+use crate::{CompleteData, DvcProcessor, DynamicChannelMut, DynamicChannelRef, encode_dvc_messages};
 
 pub trait DvcServerProcessor: DvcProcessor {}
 
@@ -184,6 +184,30 @@ impl DrdynvcServer {
         self.dynamic_channels
             .get_mut(id)
             .ok_or_else(|| invalid_field_err!("DRDYNVC", "", "invalid channel id"))
+    }
+
+    pub fn dvc_by_id<T: DvcServerProcessor>(&self, id: u32) -> Option<DynamicChannelRef<'_, T>> {
+        let channel = self.dynamic_channels.get(id)?;
+        if channel.state != ChannelState::Opened {
+            return None;
+        }
+        channel
+            .processor
+            .as_any()
+            .downcast_ref()
+            .map(|p| DynamicChannelRef::new(id, p))
+    }
+
+    pub fn dvc_by_id_mut<T: DvcServerProcessor>(&mut self, id: u32) -> Option<DynamicChannelMut<'_, T>> {
+        let channel = self.dynamic_channels.get_mut(id)?;
+        if channel.state != ChannelState::Opened {
+            return None;
+        }
+        channel
+            .processor
+            .as_any_mut()
+            .downcast_mut()
+            .map(|p| DynamicChannelMut::new(id, p))
     }
 
     /// Creates a new DVC, returns CreateRequest PDU to send to client.
