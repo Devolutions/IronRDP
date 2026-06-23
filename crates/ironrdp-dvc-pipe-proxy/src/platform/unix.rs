@@ -21,7 +21,7 @@ impl OsPipe for UnixPipe {
 
                 debug!(
                     %pipe_name,
-                    "DVC pipe already exists, removing stale file."
+                    "DVC pipe already exists, removing stale file"
                 );
 
                 // Just to be sure, check if it's indeed a socket -
@@ -38,7 +38,7 @@ impl OsPipe for UnixPipe {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 trace!(
                     %pipe_name,
-                    "DVC pipe does not exist, creating it."
+                    "DVC pipe does not exist, creating it"
                 );
             }
             Err(e) => {
