@@ -60,6 +60,15 @@ export type {
 export type { FileInfo, FileContentsRequest, FileContentsResponse } from './FileTransfer';
 export { FileContentsFlags } from './FileContentsFlags';
 
+// --- Storage backends ---
+// Re-export for consumers who want to configure the storageBackend
+// option on RdpFileTransferProviderOptions, implement a custom backend,
+// or construct a specific backend instance directly.
+export type { FileStorageBackend, FileWriteHandle, StorageBackendPreference } from './storage';
+export { BlobStorageBackend } from './storage';
+export { OpfsStorageBackend } from './storage';
+export { detectStorageBackend } from './storage';
+
 // Re-export extension factories for advanced consumers who want to
 // register callbacks or invoke file transfer operations directly.
 export {
