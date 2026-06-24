@@ -141,11 +141,15 @@ impl Encode for FastPathUpdatePdu<'_> {
         let mut header = 0u8;
         header.set_bits(0..4, self.update_code.as_u8());
         header.set_bits(4..6, self.fragmentation.as_u8());
+        if self.compression_flags.is_some() {
+            // The COMPRESSION_USED bit must be set on the header byte before it
+            // is written, so the decoder knows a compression flags byte follows.
+            header.set_bits(6..8, Compression::COMPRESSION_USED.bits());
+        }
 
         dst.write_u8(header);
 
         if self.compression_flags.is_some() {
-            header.set_bits(6..8, Compression::COMPRESSION_USED.bits());
             let compression_flags_with_type =
                 self.compression_flags.map(|f| f.bits()).unwrap_or(0) | self.compression_type.map_or(0, |f| f.as_u8());
             dst.write_u8(compression_flags_with_type);
