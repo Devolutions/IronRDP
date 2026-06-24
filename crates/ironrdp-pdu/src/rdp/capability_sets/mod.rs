@@ -445,7 +445,34 @@ impl Encode for CapabilitySet {
                     CapabilitySet::Rail(buffer) => (CapabilitySetType::Rail, buffer),
                     CapabilitySet::WindowList(buffer) => (CapabilitySetType::WindowList, buffer),
                     CapabilitySet::BitmapCacheV3(buffer) => (CapabilitySetType::BitmapCacheV3CodecID, buffer),
-                    _ => unreachable!(),
+                    // Structured variants are routed through the outer match's
+                    // specific arms above this block and cannot reach this
+                    // inner match. Listing them explicitly (instead of using
+                    // `_ =>`) makes a future addition to `CapabilitySet` a
+                    // compile error here until the new variant is routed in
+                    // this `Encode` impl. PR #1313 (BitmapCacheV3 encoder
+                    // `unreachable!()` reached on decoder-accepted input)
+                    // demonstrated why a runtime catch-all is the wrong shape
+                    // for this match.
+                    CapabilitySet::General(_)
+                    | CapabilitySet::Bitmap(_)
+                    | CapabilitySet::Order(_)
+                    | CapabilitySet::BitmapCache(_)
+                    | CapabilitySet::BitmapCacheRev2(_)
+                    | CapabilitySet::Pointer(_)
+                    | CapabilitySet::Sound(_)
+                    | CapabilitySet::Input(_)
+                    | CapabilitySet::Brush(_)
+                    | CapabilitySet::GlyphCache(_)
+                    | CapabilitySet::OffscreenBitmapCache(_)
+                    | CapabilitySet::VirtualChannel(_)
+                    | CapabilitySet::MultiFragmentUpdate(_)
+                    | CapabilitySet::LargePointer(_)
+                    | CapabilitySet::SurfaceCommands(_)
+                    | CapabilitySet::BitmapCodecs(_)
+                    | CapabilitySet::FrameAcknowledge(_) => {
+                        unreachable!("structured variant routed to raw-buffer encoder arm")
+                    }
                 };
 
                 dst.write_u16(capability_set_type.as_u16());
