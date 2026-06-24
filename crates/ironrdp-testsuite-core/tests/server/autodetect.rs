@@ -78,6 +78,48 @@ fn sequence_number_wraps_at_u16_max() {
 }
 
 #[test]
+fn autodetect_rtt_handle_defaults_to_sentinel() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::Ordering;
+
+    use ironrdp_server::RdpServer;
+
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .build();
+
+    assert_eq!(server.autodetect_rtt_handle().load(Ordering::Relaxed), u32::MAX);
+}
+
+#[test]
+fn with_autodetect_rtt_handle_round_trips_the_same_arc() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use ironrdp_server::RdpServer;
+
+    let handle = Arc::new(AtomicU32::new(42));
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .with_autodetect_rtt_handle(Arc::clone(&handle))
+        .build();
+
+    assert!(Arc::ptr_eq(&handle, &server.autodetect_rtt_handle()));
+    // The server resets an injected handle to the sentinel at construction.
+    assert_eq!(server.autodetect_rtt_handle().load(Ordering::Relaxed), u32::MAX);
+    // The Arc is shared: mutating the original is visible through the server's handle.
+    handle.store(42, Ordering::Relaxed);
+    assert_eq!(server.autodetect_rtt_handle().load(Ordering::Relaxed), 42);
+}
+
+#[test]
 fn stale_probe_expiry() {
     let mut mgr = AutoDetectManager::new();
     let _ = mgr.send_rtt_request();
