@@ -17,9 +17,9 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 ///
 /// This replaced a softbuffer-backed path that converted RGBA -> u32 `0RGB` (our pass) and then let
 /// softbuffer repack u32 -> RGBA per frame into a freshly allocated buffer — two pixel passes over
-/// the whole surface plus a per-frame allocation. The replay benchmark (`src/bench.rs`, feature
-/// `bench`) measures the direct path's present an order of magnitude faster at 4K with byte-identical
-/// canvas output (FNV-1a over the rendered canvas pixels). Mirrors the same fix in IronVNC.
+/// the whole surface plus a per-frame allocation. The direct path drops the u32 round-trip and the
+/// per-frame allocation, measuring an order of magnitude faster present at 4K with byte-identical
+/// canvas output. Mirrors the same fix in IronVNC.
 pub(crate) struct Canvas {
     canvas: HtmlCanvasElement,
     ctx: CanvasRenderingContext2d,
@@ -39,7 +39,9 @@ impl Canvas {
         })
     }
 
-    /// Setting width/height resets the canvas backing store and 2D context state.
+    /// Resizes the canvas backing store to `width` x `height`. Setting width/height clears the
+    /// canvas and resets 2D context state (transform, styles, ...); the cached `ctx` handle stays
+    /// valid. Callers must not rely on prior canvas content or context configuration surviving.
     pub(crate) fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) {
         self.canvas.set_width(width.get());
         self.canvas.set_height(height.get());
@@ -47,24 +49,13 @@ impl Canvas {
 
     /// `buffer` is the region's RGBA sub-image (as produced by `extract_partial_image`).
     pub(crate) fn draw(&mut self, buffer: &[u8], region: InclusiveRectangle) -> anyhow::Result<()> {
-        let len = buffer.len();
-        if self.rgba.len() < len {
-            let initialized_len = self.rgba.len();
-            self.rgba.reserve(len - initialized_len);
-
-            let (initialized, uninitialized) = buffer.split_at(initialized_len);
-            self.rgba.copy_from_slice(initialized);
-            let spare = &mut self.rgba.spare_capacity_mut()[..uninitialized.len()];
-            for (dst, src) in spare.iter_mut().zip(uninitialized.iter().copied()) {
-                dst.write(src);
-            }
-
-            // SAFETY: The prefix was already initialized, and `spare` above initializes exactly
-            // the additional bytes needed to make `self.rgba.len() == len`.
-            unsafe { self.rgba.set_len(len) };
-        }
-        let dst = &mut self.rgba[..len];
-        dst.copy_from_slice(buffer);
+        // Refill the reusable scratch from `buffer` in a single copy. `clear` keeps the existing
+        // capacity, so steady-state frames reuse the allocation and `extend_from_slice` writes the
+        // pixels straight into spare capacity with no zero-fill; only a larger-than-seen region
+        // reallocates.
+        self.rgba.clear();
+        self.rgba.extend_from_slice(buffer);
+        let dst = self.rgba.as_mut_slice();
 
         // Force opaque alpha: most decode paths already write 0xFF, but the QOI path copies source
         // alpha, and `put_image_data` stores alpha verbatim into the canvas.
@@ -76,8 +67,8 @@ impl Canvas {
     }
 }
 
-/// Acquires the canvas 2D context. Only meaningful on wasm; stubbed elsewhere so the crate still
-/// type-checks for host tooling.
+/// Acquires the canvas 2D context. Only meaningful on wasm; on other targets it exists solely so
+/// host tooling type-checks, and panics if called.
 fn context_2d(canvas: &HtmlCanvasElement) -> anyhow::Result<CanvasRenderingContext2d> {
     #[cfg(target_arch = "wasm32")]
     {
