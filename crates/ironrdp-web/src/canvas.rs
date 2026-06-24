@@ -49,7 +49,19 @@ impl Canvas {
     pub(crate) fn draw(&mut self, buffer: &[u8], region: InclusiveRectangle) -> anyhow::Result<()> {
         let len = buffer.len();
         if self.rgba.len() < len {
-            self.rgba.resize(len, 0);
+            let initialized_len = self.rgba.len();
+            self.rgba.reserve(len - initialized_len);
+
+            let (initialized, uninitialized) = buffer.split_at(initialized_len);
+            self.rgba.copy_from_slice(initialized);
+            let spare = &mut self.rgba.spare_capacity_mut()[..uninitialized.len()];
+            for (dst, src) in spare.iter_mut().zip(uninitialized.iter().copied()) {
+                dst.write(src);
+            }
+
+            // SAFETY: The prefix was already initialized, and `spare` above initializes exactly
+            // the additional bytes needed to make `self.rgba.len() == len`.
+            unsafe { self.rgba.set_len(len) };
         }
         let dst = &mut self.rgba[..len];
         dst.copy_from_slice(buffer);
