@@ -5,12 +5,14 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
-use anyhow::{Context as _, bail};
 use cpal::traits::{DeviceTrait as _, HostTrait as _};
 use cpal::{SampleFormat, Stream, StreamConfig};
+use ironrdp_error::bail;
 use ironrdp_rdpsnd::client::RdpsndClientHandler;
 use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
 use tracing::{debug, error, trace, warn};
+
+use crate::error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};
 
 #[derive(Debug)]
 pub struct RdpsndBackend {
@@ -91,7 +93,7 @@ impl RdpsndClientHandler for RdpsndBackend {
                 let stream = match DecodeStream::new(&format, rx) {
                     Ok(stream) => stream,
                     Err(e) => {
-                        error!(error = format!("{e:#}"));
+                        error!(error = %e.report());
                         return;
                     }
                 };
@@ -138,7 +140,7 @@ pub struct DecodeStream {
 }
 
 impl DecodeStream {
-    pub fn new(rx_format: &AudioFormat, mut rx: Receiver<Vec<u8>>) -> anyhow::Result<Self> {
+    pub fn new(rx_format: &AudioFormat, mut rx: Receiver<Vec<u8>>) -> RdpsndNativeResult<Self> {
         let mut dec_thread = None;
         match rx_format.format {
             #[cfg(feature = "opus")]
@@ -146,10 +148,15 @@ impl DecodeStream {
                 let chan = match rx_format.n_channels {
                     1 => opus2::Channels::Mono,
                     2 => opus2::Channels::Stereo,
-                    _ => bail!("unsupported #channels for Opus"),
+                    _ => bail!(
+                        "unsupported channel count for Opus",
+                        RdpsndNativeErrorKind::UnsupportedFormat,
+                    ),
                 };
                 let (dec_tx, dec_rx) = mpsc::channel();
-                let mut dec = opus2::Decoder::new(rx_format.n_samples_per_sec, chan)?;
+                let mut dec = opus2::Decoder::new(rx_format.n_samples_per_sec, chan).map_err(|e| {
+                    RdpsndNativeError::new("creating Opus decoder", RdpsndNativeErrorKind::OpusInit).with_source(e)
+                })?;
                 dec_thread = Some(thread::spawn(move || {
                     while let Ok(pkt) = rx.recv() {
                         let nb_samples = match dec.get_nb_samples(&pkt) {
@@ -189,23 +196,31 @@ impl DecodeStream {
                 rx = dec_rx;
             }
             WaveFormat::PCM => {}
-            _ => bail!("audio format not supported"),
+            _ => bail!(
+                "matching server-requested wave format",
+                RdpsndNativeErrorKind::UnsupportedFormat,
+            ),
         }
 
         let sample_format = match rx_format.bits_per_sample {
             8 => SampleFormat::U8,
             16 => SampleFormat::I16,
-            _ => {
-                bail!("only PCM 8/16 bits formats supported");
-            }
+            _ => bail!(
+                "only PCM 8/16 bit formats supported",
+                RdpsndNativeErrorKind::UnsupportedFormat,
+            ),
         };
 
         let host = cpal::default_host();
-        let device = host.default_output_device().context("no default output device")?;
-        let _supported_configs_range = device
-            .supported_output_configs()
-            .context("no supported output config")?;
-        let default_config = device.default_output_config()?;
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| RdpsndNativeError::new("no default output device", RdpsndNativeErrorKind::AudioDevice))?;
+        let _supported_configs_range = device.supported_output_configs().map_err(|e| {
+            RdpsndNativeError::new("no supported output configs", RdpsndNativeErrorKind::AudioDevice).with_source(e)
+        })?;
+        let default_config = device.default_output_config().map_err(|e| {
+            RdpsndNativeError::new("default output config", RdpsndNativeErrorKind::AudioDevice).with_source(e)
+        })?;
         debug!(?default_config);
 
         let mut rx = RxBuffer::new(rx);
@@ -227,7 +242,9 @@ impl DecodeStream {
                 |error| error!(%error),
                 None,
             )
-            .context("failed to setup output stream")?;
+            .map_err(|e| {
+                RdpsndNativeError::new("building cpal output stream", RdpsndNativeErrorKind::StreamBuild).with_source(e)
+            })?;
 
         Ok(Self {
             _dec_thread: dec_thread,
