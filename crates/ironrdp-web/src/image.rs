@@ -4,10 +4,8 @@ use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::session::image::DecodedImage;
 use ironrdp_core::WriteBuf;
 
-/// Copies the dirty `region`'s RGBA pixels out of `image` into the unfilled part of `buffer`,
-/// returning the rectangle actually written — which may be wider than `region` (the whole-rows
-/// strategy widens it to full image width). `buffer` is filled from its current cursor; `clear` it
-/// first if `buffer.filled()` should contain only this region.
+/// Copies the dirty `region` into `buffer` from its current cursor (clear it between regions).
+/// The returned rect may be wider than `region`: the whole-rows path widens to full image width.
 pub(crate) fn extract_partial_image(
     image: &DecodedImage,
     region: InclusiveRectangle,

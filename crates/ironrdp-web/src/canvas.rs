@@ -11,8 +11,7 @@ use wasm_bindgen::{Clamped, JsCast as _};
 use web_sys::ImageData;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-/// Web render surface: owns the canvas's 2D context and blits each dirty region's RGBA sub-image
-/// directly with `put_image_data` at the region's origin, after forcing alpha opaque (see [`Canvas::draw`]).
+/// Web render surface: blits each dirty region to the canvas with `put_image_data`.
 pub(crate) struct Canvas {
     canvas: HtmlCanvasElement,
     ctx: CanvasRenderingContext2d,
@@ -30,20 +29,15 @@ impl Canvas {
         })
     }
 
-    /// Resizes the canvas backing store to `width` x `height`. Setting width/height clears the
-    /// canvas and resets 2D context state (transform, styles, ...); the cached `ctx` handle stays
-    /// valid. Callers must not rely on prior canvas content or context configuration surviving.
+    /// Resizes the backing store. Note: this also clears the canvas and resets 2D context state;
+    /// the cached `ctx` stays valid.
     pub(crate) fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) {
         self.canvas.set_width(width.get());
         self.canvas.set_height(height.get());
     }
 
-    /// Blits one dirty region's RGBA sub-image to the canvas at the region's origin, after forcing
-    /// alpha opaque.
-    ///
-    /// `put_image_data` stores alpha verbatim, and the decoded framebuffer is not guaranteed opaque:
-    /// a widened whole-rows region can cover not-yet-painted columns (alpha 0), and the QOI-RGBA
-    /// decode path copies source alpha. Forcing here keeps transparent pixels off the canvas.
+    /// Blits a dirty region with `put_image_data`. Forces alpha opaque first: the framebuffer isn't
+    /// guaranteed opaque (zero-init columns, QOI-RGBA) and `put_image_data` stores alpha verbatim.
     pub(crate) fn draw(&self, buffer: &mut [u8], region: InclusiveRectangle) -> anyhow::Result<()> {
         for pixel in buffer.chunks_exact_mut(4) {
             pixel[3] = 0xFF;
@@ -69,8 +63,7 @@ impl Canvas {
     }
 }
 
-/// Acquires the canvas 2D context. Only meaningful on wasm; on other targets it exists solely so
-/// host tooling type-checks, and panics if called.
+/// Acquires the canvas 2D context (wasm only; panics on other targets).
 fn context_2d(canvas: &HtmlCanvasElement) -> anyhow::Result<CanvasRenderingContext2d> {
     #[cfg(target_arch = "wasm32")]
     {
