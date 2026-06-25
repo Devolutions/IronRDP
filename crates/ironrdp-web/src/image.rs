@@ -2,18 +2,31 @@
 
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::session::image::DecodedImage;
+use ironrdp_core::WriteBuf;
 
-pub(crate) fn extract_partial_image(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
+/// Copies the dirty `region`'s RGBA pixels out of `image` into the unfilled part of `buffer`,
+/// returning the rectangle actually written — which may be wider than `region` (the whole-rows
+/// strategy widens it to full image width). `buffer` is filled from its current cursor; `clear` it
+/// first if `buffer.filled()` should contain only this region.
+pub(crate) fn extract_partial_image(
+    image: &DecodedImage,
+    region: InclusiveRectangle,
+    buffer: &mut WriteBuf,
+) -> InclusiveRectangle {
     // PERF: needs actual benchmark to find a better heuristic
     if region.height() > 64 || region.width() > 512 {
-        extract_whole_rows(image, region)
+        extract_whole_rows(image, region, buffer)
     } else {
-        extract_smallest_rectangle(image, region)
+        extract_smallest_rectangle(image, region, buffer)
     }
 }
 
 // Faster for low-height and smaller images
-fn extract_smallest_rectangle(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
+fn extract_smallest_rectangle(
+    image: &DecodedImage,
+    region: InclusiveRectangle,
+    buffer: &mut WriteBuf,
+) -> InclusiveRectangle {
     let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
 
     let image_width = usize::from(image.width());
@@ -26,7 +39,7 @@ fn extract_smallest_rectangle(image: &DecodedImage, region: InclusiveRectangle) 
     let region_stride = region_width * pixel_size;
 
     let dst_buf_size = region_width * region_height * pixel_size;
-    let mut dst = vec![0; dst_buf_size];
+    let dst = buffer.unfilled_to(dst_buf_size);
 
     let src = image.data();
 
@@ -42,11 +55,13 @@ fn extract_smallest_rectangle(image: &DecodedImage, region: InclusiveRectangle) 
         target_slice.copy_from_slice(src_slice);
     }
 
-    (region, dst)
+    buffer.advance(dst_buf_size);
+
+    region
 }
 
 // Faster for high-height and bigger images
-fn extract_whole_rows(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
+fn extract_whole_rows(image: &DecodedImage, region: InclusiveRectangle, buffer: &mut WriteBuf) -> InclusiveRectangle {
     let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
 
     let image_width = usize::from(image.width());
@@ -59,15 +74,15 @@ fn extract_whole_rows(image: &DecodedImage, region: InclusiveRectangle) -> (Incl
 
     let src_begin = region_top * image_stride;
     let src_end = (region_bottom + 1) * image_stride;
+    let len = src_end - src_begin;
 
-    let dst = src[src_begin..src_end].to_vec();
+    buffer.unfilled_to(len).copy_from_slice(&src[src_begin..src_end]);
+    buffer.advance(len);
 
-    let wider_region = InclusiveRectangle {
+    InclusiveRectangle {
         left: 0,
         top: region.top,
         right: image.width() - 1,
         bottom: region.bottom,
-    };
-
-    (wider_region, dst)
+    }
 }
