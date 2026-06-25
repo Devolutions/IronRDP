@@ -22,6 +22,8 @@ use ironrdp_replay_core::{ChannelEntry, ReplayParams, build_connection_result, f
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, Performance};
 
+use ironrdp_core::WriteBuf;
+
 use crate::canvas::Canvas;
 use crate::image::extract_partial_image;
 
@@ -176,6 +178,7 @@ async fn run_pass(
 
     let mut framed = LocalFuturesFramed::new(ReplayStream { data: capture, pos: 0 });
     let mut acc = Accum::default();
+    let mut draw_buffer = WriteBuf::new();
 
     let t_start = perf.now();
     loop {
@@ -199,12 +202,13 @@ async fn run_pass(
             match output {
                 ActiveStageOutput::GraphicsUpdate(region) => {
                     let t_ext = perf.now();
-                    let (region, buffer) = extract_partial_image(&image, region);
+                    let region = extract_partial_image(&image, region, &mut draw_buffer);
                     acc.extract_ms += perf.now() - t_ext;
 
                     let t_draw = perf.now();
-                    gui.draw(&buffer, region).context("draw region")?;
+                    gui.draw(draw_buffer.filled_mut(), region).context("draw region")?;
                     acc.draw_ms += perf.now() - t_draw;
+                    draw_buffer.clear();
                     acc.rects += 1;
                 }
                 ActiveStageOutput::Terminate(_) => terminate = true,

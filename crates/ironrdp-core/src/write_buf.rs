@@ -62,6 +62,12 @@ impl WriteBuf {
         &self.inner[..self.filled]
     }
 
+    /// Returns a mutable reference to the filled portion of the buffer.
+    #[inline]
+    pub fn filled_mut(&mut self) -> &mut [u8] {
+        &mut self.inner[..self.filled]
+    }
+
     /// Ensures initialized and unfilled portion of the buffer is big enough for `additional` more bytes.
     #[inline]
     pub fn initialize(&mut self, additional: usize) {

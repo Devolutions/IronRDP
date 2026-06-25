@@ -649,6 +649,8 @@ impl iron_remote_desktop::Session for Session {
 
         let mut requested_resize = None;
 
+        let mut draw_buffer = WriteBuf::new();
+
         let mut active_stage = ActiveStage::new(connection_result);
 
         // Timer interval for driving clipboard lock timeouts (5 second interval)
@@ -867,9 +869,9 @@ impl iron_remote_desktop::Session for Session {
                             .context("Send frame to writer task")?;
                     }
                     ActiveStageOutput::GraphicsUpdate(region) => {
-                        // PERF: some copies and conversion could be optimized
-                        let (region, buffer) = extract_partial_image(&image, region);
-                        gui.draw(&buffer, region).context("draw updated region")?;
+                        let region = extract_partial_image(&image, region, &mut draw_buffer);
+                        gui.draw(draw_buffer.filled_mut(), region).context("draw updated region")?;
+                        draw_buffer.clear();
                     }
                     ActiveStageOutput::PointerDefault => {
                         self.set_cursor_style(CursorStyle::Default)?;
