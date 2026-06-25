@@ -3049,7 +3049,6 @@ dependencies = [
  "rgb",
  "semver",
  "smallvec",
- "softbuffer",
  "tap",
  "time",
  "tracing",
