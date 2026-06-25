@@ -868,8 +868,8 @@ impl iron_remote_desktop::Session for Session {
                     }
                     ActiveStageOutput::GraphicsUpdate(region) => {
                         // PERF: some copies and conversion could be optimized
-                        let (region, buffer) = extract_partial_image(&image, region);
-                        gui.draw(&buffer, region).context("draw updated region")?;
+                        let (region, mut buffer) = extract_partial_image(&image, region);
+                        gui.draw(&mut buffer, region).context("draw updated region")?;
                     }
                     ActiveStageOutput::PointerDefault => {
                         self.set_cursor_style(CursorStyle::Default)?;

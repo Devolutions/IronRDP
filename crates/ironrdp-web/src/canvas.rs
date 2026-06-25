@@ -11,9 +11,9 @@ use wasm_bindgen::{Clamped, JsCast as _};
 use web_sys::ImageData;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-/// Web render surface. Owns the canvas's 2D context and a reusable RGBA scratch buffer: each dirty
-/// region's pixels are copied once into the scratch (alpha forced opaque), then blitted with
-/// `put_image_data` at the region's origin.
+/// Web render surface. Owns the canvas's 2D context; each dirty region is blitted directly with
+/// `put_image_data` at the region's origin, after forcing its alpha opaque in place. The region
+/// buffer is the caller's throwaway copy, so no scratch buffer is kept here.
 ///
 /// This replaced a softbuffer-backed path that converted RGBA -> u32 `0RGB` (our pass) and then let
 /// softbuffer repack u32 -> RGBA per frame into a freshly allocated buffer — two pixel passes over
@@ -23,7 +23,6 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 pub(crate) struct Canvas {
     canvas: HtmlCanvasElement,
     ctx: CanvasRenderingContext2d,
-    rgba: Vec<u8>,
 }
 
 impl Canvas {
@@ -35,7 +34,6 @@ impl Canvas {
         Ok(Self {
             canvas: render_canvas,
             ctx,
-            rgba: Vec::new(),
         })
     }
 
@@ -47,23 +45,17 @@ impl Canvas {
         self.canvas.set_height(height.get());
     }
 
-    /// `buffer` is the region's RGBA sub-image (as produced by `extract_partial_image`).
-    pub(crate) fn draw(&mut self, buffer: &[u8], region: InclusiveRectangle) -> anyhow::Result<()> {
-        // Refill the reusable scratch from `buffer` in a single copy. `clear` keeps the existing
-        // capacity, so steady-state frames reuse the allocation and `extend_from_slice` writes the
-        // pixels straight into spare capacity with no zero-fill; only a larger-than-seen region
-        // reallocates.
-        self.rgba.clear();
-        self.rgba.extend_from_slice(buffer);
-        let dst = self.rgba.as_mut_slice();
-
-        // Force opaque alpha: most decode paths already write 0xFF, but the QOI path copies source
-        // alpha, and `put_image_data` stores alpha verbatim into the canvas.
-        for pixel in dst.chunks_exact_mut(4) {
+    /// Blits one dirty region. `buffer` is the region's RGBA sub-image — a throwaway copy produced
+    /// by `extract_partial_image` — mutated in place to force opaque alpha before upload.
+    pub(crate) fn draw(&mut self, buffer: &mut [u8], region: InclusiveRectangle) -> anyhow::Result<()> {
+        // Force opaque alpha in place. The decoded framebuffer leaves the alpha channel as
+        // don't-care (it starts at 0 and the decode loop skips it), but `put_image_data` stores
+        // alpha verbatim, so the region would otherwise render transparent on the canvas.
+        for pixel in buffer.chunks_exact_mut(4) {
             pixel[3] = 0xFF;
         }
 
-        blit(&self.ctx, dst, &region)
+        blit(&self.ctx, buffer, &region)
     }
 }
 
