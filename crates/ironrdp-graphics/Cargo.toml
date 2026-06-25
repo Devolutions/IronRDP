@@ -26,6 +26,7 @@ byteorder = "1.5" # TODO: remove
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
 yuv = { version = "0.8", features = ["rdp"] }
+wide = "0.7" # portable SIMD for the inverse DWT (wasm/x86/ARM); `std::simd` is still nightly-only
 
 [dev-dependencies]
 bmp = "0.5"
