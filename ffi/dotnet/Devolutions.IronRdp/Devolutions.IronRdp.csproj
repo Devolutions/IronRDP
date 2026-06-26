@@ -25,10 +25,8 @@
     <NativeLibPath_android_arm>$(RuntimesPath)/android-arm/native/libDevolutionsIronRdp.so</NativeLibPath_android_arm>
     <NativeLibPath_android_x64>$(RuntimesPath)/android-x64/native/libDevolutionsIronRdp.so</NativeLibPath_android_x64>
     <NativeLibPath_android_x86>$(RuntimesPath)/android-x86/native/libDevolutionsIronRdp.so</NativeLibPath_android_x86>
-    <NativeLibPath_ios_x64>$(RuntimesPath)/ios-x64/native/libDevolutionsIronRdp.dylib</NativeLibPath_ios_x64>
-    <NativeLibPath_ios_arm64>$(RuntimesPath)/ios-arm64/native/libDevolutionsIronRdp.dylib</NativeLibPath_ios_arm64>
-    <NativeLibPath_ios_universal>$(RuntimesPath)/ios-universal/native/libDevolutionsIronRdp.dylib</NativeLibPath_ios_universal>
-    <NativeLibPath_ios_framework>$(RuntimesPath)/ios-universal/native/libDevolutionsIronRdp.framework</NativeLibPath_ios_framework>
+    <NativeLibPath_ios_arm64_framework>$(RuntimesPath)/ios-arm64/native/libDevolutionsIronRdp.framework</NativeLibPath_ios_arm64_framework>
+    <NativeLibPath_iossimulator_arm64_framework>$(RuntimesPath)/iossimulator-arm64/native/libDevolutionsIronRdp.framework</NativeLibPath_iossimulator_arm64_framework>
   </PropertyGroup>
 
   <Import Condition="!$(PackageId.EndsWith('iOS'))" Project="Devolutions.IronRdp.Build.props"/>
