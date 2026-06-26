@@ -2,7 +2,7 @@ use alloc::collections::btree_map::{BTreeMap, Entry};
 use alloc::string::String;
 use alloc::vec;
 use alloc::{boxed::Box, vec::Vec};
-use ironrdp_core::{Decode as _, EncodeResult, ReadCursor, impl_as_any, other_err};
+use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 
@@ -24,6 +24,8 @@ use crate::{CHANNEL_NAME, InvalidDeviceInterfaceId};
 
 pub mod device;
 pub use device::*;
+
+const ADD_VIRTUAL_CHANNEL_MSG_ID: u32 = 0;
 
 pub trait DeviceManagerBackend: Send {
     /// Called when the first URBDRC DVC is assigned as the control DVC.
@@ -134,12 +136,14 @@ impl UrbdrcControlClient {
     /// instance of a dynamic virtual channel.
     ///
     /// [3.3.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/c7b1920a-d632-46d2-b62a-5c7e53570628
-    pub fn add_virtual_channel(&self, dev_id: u32) -> EncodeResult<DvcMessage> {
+    pub fn add_virtual_channel(&self) -> PduResult<DvcMessage> {
         if !self.ready {
-            return Err(other_err!("is not ready for ADD_VIRTUAL_CHANNEL"));
+            return Err(pdu_other_err!("is not ready for ADD_VIRTUAL_CHANNEL"));
         }
         // Follow FreeRDP use device id as message id
-        Ok(Box::new(AddVirtualChannel { msg_id: dev_id }))
+        Ok(Box::new(AddVirtualChannel {
+            msg_id: ADD_VIRTUAL_CHANNEL_MSG_ID,
+        }))
     }
 }
 
