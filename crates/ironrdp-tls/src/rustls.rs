@@ -51,6 +51,17 @@ where
     Ok((tls_stream, tls_cert))
 }
 
+/// Report the TLS version and cipher suite negotiated for `stream`.
+pub fn negotiated<S>(stream: &TlsStream<S>) -> crate::NegotiatedTls {
+    let (_, connection) = stream.get_ref();
+    crate::NegotiatedTls {
+        version: connection.protocol_version().map(|version| format!("{version:?}")),
+        cipher_suite: connection
+            .negotiated_cipher_suite()
+            .map(|suite| format!("{:?}", suite.suite())),
+    }
+}
+
 mod danger {
     use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme, pki_types};

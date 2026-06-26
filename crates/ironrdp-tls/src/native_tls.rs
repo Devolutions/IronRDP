@@ -39,3 +39,8 @@ where
 
     Ok((tls_stream, tls_cert))
 }
+
+/// The `native-tls` backend does not expose the negotiated version or cipher.
+pub fn negotiated<S>(_stream: &TlsStream<S>) -> crate::NegotiatedTls {
+    crate::NegotiatedTls::default()
+}
