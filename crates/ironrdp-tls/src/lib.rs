@@ -23,7 +23,21 @@ compile_error!("a TLS backend must be selected by enabling a single feature out 
 
 // The whole public API of this crate.
 #[cfg(any(feature = "stub", feature = "native-tls", feature = "rustls"))]
-pub use impl_::{TlsStream, upgrade};
+pub use impl_::{TlsStream, negotiated, upgrade};
+
+/// TLS parameters negotiated during the handshake, to the extent the active
+/// backend exposes them.
+///
+/// The `rustls` backend reports both fields. The `native-tls` and `stub`
+/// backends cannot introspect the negotiated parameters, so both are `None`
+/// there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NegotiatedTls {
+    /// Negotiated protocol version, e.g. `"TLSv1_3"`.
+    pub version: Option<String>,
+    /// Negotiated cipher suite, e.g. `"TLS13_AES_256_GCM_SHA384"`.
+    pub cipher_suite: Option<String>,
+}
 
 pub fn extract_tls_server_public_key(cert: &x509_cert::Certificate) -> Option<&[u8]> {
     cert.tbs_certificate

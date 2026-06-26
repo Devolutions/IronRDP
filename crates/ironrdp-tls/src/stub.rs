@@ -37,3 +37,8 @@ where
     let _ = (stream, server_name);
     Err(io::Error::other("no TLS backend enabled for this build"))
 }
+
+/// The stub backend performs no handshake and reports nothing.
+pub fn negotiated<S>(_stream: &TlsStream<S>) -> crate::NegotiatedTls {
+    crate::NegotiatedTls::default()
+}
