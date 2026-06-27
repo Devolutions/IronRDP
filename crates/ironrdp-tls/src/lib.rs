@@ -1,7 +1,7 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-#[cfg(feature = "rustls")]
+#[cfg(feature = "rustls-no-provider")]
 #[path = "rustls.rs"]
 mod impl_;
 
@@ -14,15 +14,17 @@ mod impl_;
 mod impl_;
 
 #[cfg(any(
-    not(any(feature = "stub", feature = "native-tls", feature = "rustls")),
+    not(any(feature = "stub", feature = "native-tls", feature = "rustls-no-provider")),
     all(feature = "stub", feature = "native-tls"),
-    all(feature = "stub", feature = "rustls"),
-    all(feature = "rustls", feature = "native-tls"),
+    all(feature = "stub", feature = "rustls-no-provider"),
+    all(feature = "rustls-no-provider", feature = "native-tls"),
 ))]
-compile_error!("a TLS backend must be selected by enabling a single feature out of: `rustls`, `native-tls`, `stub`");
+compile_error!(
+    "a TLS backend must be selected by enabling a single feature out of: `rustls`, `native-tls`, `stub` (the rustls crypto provider is chosen via `rustls`/`rustls-aws-lc-rs`/`rustls-ring`/`rustls-no-provider`)"
+);
 
 // The whole public API of this crate.
-#[cfg(any(feature = "stub", feature = "native-tls", feature = "rustls"))]
+#[cfg(any(feature = "stub", feature = "native-tls", feature = "rustls-no-provider"))]
 pub use impl_::{TlsStream, negotiated, upgrade};
 
 /// TLS parameters negotiated during the handshake, to the extent the active
