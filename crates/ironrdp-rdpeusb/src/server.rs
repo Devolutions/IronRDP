@@ -6,7 +6,7 @@ use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 
 use crate::io::{
-    Device, DeviceText, InternalIoControlPacket, IoControlCompletionResult, IoControlPacket, ServerIoRequest,
+    DeviceAnnounce, DeviceText, InternalIoControlPacket, IoControlCompletionResult, IoControlPacket, ServerIoRequest,
     TransferInCompletionResult, TransferInPacket, TransferOutCompletionResult, TransferOutPacket, UsbRetractReason,
 };
 use crate::pdu::caps::RimExchangeCapabilityRequest;
@@ -155,11 +155,26 @@ impl_as_any!(UrbdrcControlServer);
 impl DvcServerProcessor for UrbdrcControlServer {}
 
 pub trait UrbdrcDeviceServerBackend: Send {
-    // the server makes a new instance of a dynamic virtual channel for USB redirection.
-    fn add_device(&mut self, device: Device) -> PduResult<()>;
+    /// [Add Device Message][2.2.4.2]:
+    ///
+    /// After receiving the ADD_DEVICE message, the server creates a remote device instance that
+    /// represents the client-side physical device.
+    ///
+    /// [2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a26bcb6d-d45d-48a9-b9bd-22e0107d8393
+    fn add_device(&mut self, device: DeviceAnnounce) -> PduResult<()>;
 
+    /// [Query Device Text Response Message][2.2.6.6]:
+    ///
+    /// Delivers the device description returned by the client to the server backend.
+    ///
+    /// [2.2.6.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/acffdcfa-c792-40a4-a8ee-c545ea5b0a38
     fn device_text(&mut self, device_text: DeviceText);
 
+    /// [IO Control Completion Message][2.2.7.1]:
+    ///
+    /// Completes the IO control request identified by `request_id`.
+    ///
+    /// [2.2.7.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/b1722374-0658-47ba-8368-87bf9d3db4d4
     fn io_control_completed(
         &mut self,
         channel_id: u32,
@@ -167,6 +182,11 @@ pub trait UrbdrcDeviceServerBackend: Send {
         completion: IoControlCompletionResult,
     ) -> PduResult<()>;
 
+    /// [IO Control Completion Message][2.2.7.1]:
+    ///
+    /// Completes the internal IO control request identified by `request_id`.
+    ///
+    /// [2.2.7.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/b1722374-0658-47ba-8368-87bf9d3db4d4
     fn internal_io_control_completed(
         &mut self,
         channel_id: u32,
@@ -174,6 +194,12 @@ pub trait UrbdrcDeviceServerBackend: Send {
         completion: IoControlCompletionResult,
     ) -> PduResult<()>;
 
+    /// [URB Completion Message][2.2.7.2] and [URB Completion No Data Message][2.2.7.3]:
+    ///
+    /// Completes the transfer-in request identified by `request_id`.
+    ///
+    /// [2.2.7.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/5bfa9c84-a74b-4942-9d09-e770b21081eb
+    /// [2.2.7.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/994fac8f-d258-47a6-aa35-48783abe49ec
     fn transfer_in_completed(
         &mut self,
         channel_id: u32,
@@ -181,6 +207,11 @@ pub trait UrbdrcDeviceServerBackend: Send {
         completion: TransferInCompletionResult,
     ) -> PduResult<()>;
 
+    /// [URB Completion No Data Message][2.2.7.3]:
+    ///
+    /// Completes the transfer-out request identified by `request_id`.
+    ///
+    /// [2.2.7.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/994fac8f-d258-47a6-aa35-48783abe49ec
     fn transfer_out_completed(
         &mut self,
         channel_id: u32,
@@ -236,6 +267,11 @@ impl UrbdrcDeviceServer {
         }))
     }
 
+    /// [IO Control Message][2.2.6.3]:
+    ///
+    /// Builds an IO control request to be sent to the client-side physical device.
+    ///
+    /// [2.2.6.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/021733cb-8e3b-49ac-b3e3-f7a764b11141
     pub fn io_control(&mut self, io_control_packet: IoControlPacket) -> PduResult<ServerIoRequest> {
         let udev_iface = self.usb_device_iface()?;
         let request_id = self.request_id_alloc.alloc();
@@ -259,6 +295,11 @@ impl UrbdrcDeviceServer {
         })
     }
 
+    /// [Internal IO Control Message][2.2.6.4]:
+    ///
+    /// Builds an internal IO control request to be sent to the client-side physical device.
+    ///
+    /// [2.2.6.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/c3f3e320-336d-4d1b-84c9-51e0ed330ffe
     pub fn internal_io_control(
         &mut self,
         internal_io_ctl_packet: InternalIoControlPacket,
@@ -282,6 +323,11 @@ impl UrbdrcDeviceServer {
         })
     }
 
+    /// [Transfer In Request][2.2.6.7]:
+    ///
+    /// Builds a transfer request that reads data from the client-side physical device.
+    ///
+    /// [2.2.6.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/e40f7738-bdd3-480f-a8bb-e1557a83a151
     pub fn transfer_in(&mut self, request: TransferInPacket) -> PduResult<ServerIoRequest> {
         let udev_iface = self.usb_device_iface()?;
         let request_id = self.request_id_alloc.alloc();
@@ -310,6 +356,11 @@ impl UrbdrcDeviceServer {
         })
     }
 
+    /// [Transfer Out Request][2.2.6.8]:
+    ///
+    /// Builds a transfer request that writes data to the client-side physical device.
+    ///
+    /// [2.2.6.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/6d6c85b2-47bb-4674-975a-dc7d8ed684cd
     pub fn transfer_out(&mut self, request: TransferOutPacket) -> PduResult<ServerIoRequest> {
         let udev_iface = self.usb_device_iface()?;
         let output_buffer_size =

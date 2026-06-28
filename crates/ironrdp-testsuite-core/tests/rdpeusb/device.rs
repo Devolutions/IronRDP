@@ -1,5 +1,5 @@
 use ironrdp_core::encode_vec;
-use ironrdp_rdpeusb::client::{
+use ironrdp_rdpeusb::io::device::{
     DeviceInfo, UsbBcdVersion, UsbClassCodes, UsbConfigInfo, UsbConnectionSpeed, UsbDeviceDescriptorInfo,
     UsbDeviceLocation, UsbInterfaceInfo, add_device_from_info,
 };

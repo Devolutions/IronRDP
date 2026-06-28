@@ -5,9 +5,10 @@ use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 
+use crate::io::device::add_device_from_info;
 use crate::io::{
     DeviceText, InternalIoControlPacket, IoControlCompletionResult, IoControlPacket, TransferInCompletionResult,
-    TransferInPacket, TransferOutCompletionResult, TransferOutPacket,
+    TransferInPacket, TransferOutCompletionResult, TransferOutPacket, device::DeviceInfo,
 };
 use crate::pdu::UrbdrcServerDevicePdu;
 use crate::pdu::completion::{IoControlCompletion, UrbCompletion, UrbCompletionNoData};
@@ -22,9 +23,6 @@ use crate::pdu::{
     notify::ChannelCreated,
 };
 use crate::{CHANNEL_NAME, InvalidDeviceInterfaceId};
-
-pub mod device;
-pub use device::*;
 
 const ADD_VIRTUAL_CHANNEL_MSG_ID: u32 = 0;
 
