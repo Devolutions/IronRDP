@@ -19,41 +19,71 @@ doctest = false
 test = false
 
 [features]
-default = ["rustls"]
-rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots", "ironrdp-mstsgu/rustls"]
-native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls", "ironrdp-mstsgu/native-tls"]
-qoi = ["ironrdp/qoi"]
-qoiz = ["ironrdp/qoiz"]
+default = []
+
+rustls = [
+    "ironrdp-tls/rustls",
+    "tokio-tungstenite/rustls-tls-native-roots",
+    "ironrdp-mstsgu?/rustls",
+]
+
+native-tls = [
+    "ironrdp-tls/native-tls",
+    "tokio-tungstenite/native-tls",
+    "ironrdp-mstsgu?/native-tls",
+]
+
+sound = ["dep:ironrdp-rdpsnd", "dep:ironrdp-rdpsnd-native"]
+clipboard = ["dep:ironrdp-cliprdr", "dep:ironrdp-cliprdr-native"]
+rdpdr = ["dep:ironrdp-rdpdr"]
+smartcard = ["rdpdr"]
+gateway = ["dep:ironrdp-mstsgu"]
+qoi = ["ironrdp-connector/qoi", "ironrdp-session/qoi"]
+qoiz = ["ironrdp-connector/qoiz", "ironrdp-session/qoiz"]
+dvc-pipe-proxy = ["dep:ironrdp-dvc-pipe-proxy"]
+dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
+
+all = [
+    "sound",
+    "clipboard",
+    "rdpdr",
+    "smartcard",
+    "gateway",
+    "dvc-pipe-proxy",
+    "dvc-com-plugin",
+]
 
 [dependencies]
-# Protocols
-ironrdp = { path = "../ironrdp", version = "0.16", features = [
-    "session",
-    "input",
-    "graphics",
-    "dvc",
-    "svc",
-    "rdpdr",
-    "rdpsnd",
-    "cliprdr",
-    "displaycontrol",
-    "connector",
-    "echo",
-] }
+# Protocols (core features always on)
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] }
-ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.6" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.8" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.7" }
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.7" }
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.9" }
+ironrdp-session = { path = "../ironrdp-session", version = "0.10" }
+ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.8" }
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.7" }
+ironrdp-echo = { path = "../ironrdp-echo", version = "0.3" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
-ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.9", features = ["reqwest"] }
-ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
-ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
+ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath" }
+
+# Optional protocol crates (activated by features above)
+ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.6", optional = true }
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.6", optional = true }
+ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.8", optional = true }
+
+# Optional backend crates (activated by features above)
+ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.6", optional = true }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.6", optional = true }
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", optional = true }
+ironrdp-dvc-pipe-proxy = { path = "../ironrdp-dvc-pipe-proxy", optional = true }
 
 # Logging
 tracing = { version = "0.1", features = ["log"] }
 
 # Async, futures
 tokio = { version = "1", features = ["macros", "net", "io-util", "sync", "rt", "time"] }
-tokio-util = { version = "0.7" }
 tokio-tungstenite = "0.29"
 transport = { git = "https://github.com/Devolutions/devolutions-gateway", rev = "06e91dfe82751a6502eaf74b6a99663f06f0236d" }
 futures-util = { version = "0.3", features = ["sink"] }
@@ -65,7 +95,7 @@ url = "2"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin" }
+ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", optional = true }
 
 [lints]
 workspace = true

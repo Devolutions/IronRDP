@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context as _;
+use ironrdp::client::rdp::{RdpInputEvent, RdpOutputEvent};
 use ironrdp::pdu::input::MousePdu;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::input::mouse::PointerFlags;
-use ironrdp_client::rdp::{RdpInputEvent, RdpOutputEvent};
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
 use tokio::sync::mpsc;

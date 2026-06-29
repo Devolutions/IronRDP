@@ -14,12 +14,9 @@ where
             .use_sni(false)
             .build()
             .map(tokio_native_tls::TlsConnector::from)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
-        connector
-            .connect(server_name, stream)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+        connector.connect(server_name, stream).await.map_err(io::Error::other)?
     };
 
     tls_stream.flush().await?;
@@ -30,9 +27,9 @@ where
         let cert = tls_stream
             .get_ref()
             .peer_certificate()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "peer certificate is missing"))?;
-        let cert = cert.to_der().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?
+            .ok_or_else(|| io::Error::other("peer certificate is missing"))?;
+        let cert = cert.to_der().map_err(io::Error::other)?;
 
         x509_cert::Certificate::from_der(&cert).map_err(io::Error::other)?
     };

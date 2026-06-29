@@ -16,6 +16,10 @@ pub use ironrdp_acceptor as acceptor;
 #[doc(inline)]
 pub use ironrdp_cliprdr as cliprdr;
 
+#[cfg(feature = "client")]
+#[doc(inline)]
+pub use ironrdp_client as client;
+
 #[cfg(feature = "connector")]
 #[doc(inline)]
 pub use ironrdp_connector as connector;
@@ -43,6 +47,10 @@ pub use ironrdp_graphics as graphics;
 #[cfg(feature = "input")]
 #[doc(inline)]
 pub use ironrdp_input as input;
+
+#[cfg(feature = "mstsgu")]
+#[doc(inline)]
+pub use ironrdp_mstsgu as mstsgu;
 
 #[cfg(feature = "pdu")]
 #[doc(inline)]

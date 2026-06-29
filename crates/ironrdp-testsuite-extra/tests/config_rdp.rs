@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use ironrdp_client::config::ClipboardType;
+use ironrdp_client::config::{ClipboardType, Transport};
 use ironrdp_viewer::config::parse_config_from;
 use uuid::Uuid;
 
@@ -48,7 +48,7 @@ fn gateway_is_disabled_when_gateway_usage_method_is_zero() {
         &[],
     );
 
-    assert!(config.gw.is_none());
+    assert!(!matches!(config.transport, Transport::Gateway(_)));
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn gateway_is_disabled_when_gateway_usage_method_is_four() {
         &[],
     );
 
-    assert!(config.gw.is_none());
+    assert!(!matches!(config.transport, Transport::Gateway(_)));
 }
 
 #[test]
@@ -68,10 +68,12 @@ fn gateway_is_enabled_with_usage_method_one_and_file_credentials() {
         &[],
     );
 
-    let gw = config.gw.expect("gateway should be configured");
-    assert_eq!(gw.gw_endpoint, "gw.example.com:443");
-    assert_eq!(gw.gw_user, "gw-user");
-    assert_eq!(gw.gw_pass, "gw-pass");
+    let Transport::Gateway(gw) = config.transport else {
+        panic!("gateway should be configured");
+    };
+    assert_eq!(gw.endpoint, "gw.example.com:443");
+    assert_eq!(gw.username, "gw-user");
+    assert_eq!(gw.password, "gw-pass");
 }
 
 #[test]
@@ -103,7 +105,7 @@ fn redirectclipboard_zero_disables_clipboard_for_default_mode() {
         &[],
     );
 
-    assert!(matches!(config.clipboard_type, ClipboardType::Disable));
+    assert!(matches!(config.channels.clipboard, ClipboardType::Disable));
 }
 
 #[test]

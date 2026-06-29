@@ -25,17 +25,14 @@ test = false
 
 [features]
 default = ["rustls"]
-rustls = ["ironrdp-client/rustls"]
-native-tls = ["ironrdp-client/native-tls"]
-qoi = ["ironrdp-client/qoi"]
-qoiz = ["ironrdp-client/qoiz"]
+rustls = ["ironrdp/rustls"]
+native-tls = ["ironrdp/native-tls"]
+qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
-ironrdp = { path = "../ironrdp", version = "0.16", features = ["input", "pdu"] }
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", default-features = false }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.6" }
+ironrdp = { path = "../ironrdp", features = ["connector", "cliprdr", "input", "pdu", "client", "client-all"] }
 ironrdp-cfg = { path = "../ironrdp-cfg" }
-ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile" }
 
