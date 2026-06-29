@@ -221,6 +221,9 @@ impl Processor {
                     // ClientInfoFlags::COMPRESSION is negotiated. Decompression
                     // should happen here before passing data downstream. Currently
                     // IronRDP does not wire bulk decompression into this path.
+                    // FIXME: until this is wired, the client deliberately defaults to the simple,
+                    // stateless-friendly MPPC 64K (RDP5) compression level rather than XCRUSH; a
+                    // stateful codec would risk silent corruption on slow-path updates.
                     ShareDataPdu::Update(data) => {
                         debug!("Got slow-path graphics update ({} bytes)", data.len());
                         Ok(vec![ProcessorOutput::GraphicsUpdate(data)])

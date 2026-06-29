@@ -1,5 +1,6 @@
 use core::net::SocketAddr;
 use core::num::NonZeroU16;
+use core::time::Duration;
 use std::sync::Arc;
 
 use ironrdp_connector::connection_activation::ConnectionActivationState;
@@ -12,7 +13,9 @@ use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_echo::client::EchoClient;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::DecodedPointer;
+use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
+use ironrdp_pdu::input::mouse::PointerFlags;
 #[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_session::image::DecodedImage;
@@ -234,6 +237,7 @@ impl RdpClient {
                 connection_result,
                 &self.output_event_sender,
                 &mut self.input_event_receiver,
+                self.config.fake_events_interval,
             )
             .await
             {
@@ -338,7 +342,7 @@ fn build_connector(
 
     // Attach user-defined DVC channels from the extension registry.
     for attach_dvc in &config.extensions.dvc_channels {
-        attach_dvc(&mut drdynvc);
+        attach_dvc(&mut drdynvc, &config.properties);
     }
 
     // Clone the connector config so we can apply runtime overrides before handing it to the
@@ -411,7 +415,7 @@ fn build_connector(
 
     // Attach user-defined static channels from the extension registry.
     for attach_sc in &config.extensions.static_channels {
-        attach_sc(&mut connector);
+        attach_sc(&mut connector, &config.properties);
     }
 
     connector
@@ -723,17 +727,24 @@ async fn active_session(
     connection_result: ConnectionResult,
     output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
+    fake_events_interval: Option<Duration>,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
-    let mut image = DecodedImage::new(
-        PixelFormat::RgbA32,
-        connection_result.desktop_size.width,
-        connection_result.desktop_size.height,
-    );
+    let desktop_size = connection_result.desktop_size;
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
     let mut active_stage = ActiveStage::new(connection_result);
 
     // Timer interval for driving clipboard lock timeouts.
-    let mut cleanup_interval = tokio::time::interval(core::time::Duration::from_secs(5));
+    let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
+
+    // Anti-idle: track the time of the last real input and the last known mouse position so we can
+    // synthesize a no-op mouse move when the session has been idle for too long. Default to the
+    // middle of the screen so a synthetic move before any real input doesn't snap the pointer to a
+    // corner.
+    let mut last_input = tokio::time::Instant::now();
+    let mut last_mouse_pos = (desktop_size.width / 2, desktop_size.height / 2);
+    let mut fake_events_interval =
+        fake_events_interval.map(|interval| tokio::time::interval(core::cmp::max(interval, Duration::from_secs(1))));
 
     let disconnect_reason = 'outer: loop {
         let outputs = tokio::select! {
@@ -744,6 +755,8 @@ async fn active_session(
             }
             input_event = input_event_receiver.recv() => {
                 let input_event = input_event.ok_or_else(|| ironrdp_session::general_err!("GUI is stopped"))?;
+
+                last_input = tokio::time::Instant::now();
 
                 match input_event {
                     RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
@@ -767,6 +780,11 @@ async fn active_session(
                     }
                     RdpInputEvent::FastPath(events) => {
                         trace!(?events);
+                        for event in &events {
+                            if let FastPathInputEvent::MouseEvent(mouse) = event {
+                                last_mouse_pos = (mouse.x_position, mouse.y_position);
+                            }
+                        }
                         active_stage.process_fastpath_input(&mut image, &events)?
                     }
                     RdpInputEvent::Close => {
@@ -841,6 +859,26 @@ async fn active_session(
                 }
                 #[cfg(not(feature = "clipboard"))]
                 Vec::new()
+            }
+            _ = async { match fake_events_interval.as_mut() {
+                Some(interval) => interval.tick().await,
+                None => core::future::pending().await,
+            }} => {
+                // Anti-idle: synthesize a no-op mouse move if the session has been idle for at least
+                // the configured interval, keeping the connection alive without user interaction.
+                if last_input.elapsed() >= fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) {
+                    last_input = tokio::time::Instant::now();
+                    let mut events = SmallVec::<[FastPathInputEvent; 2]>::new();
+                    events.push(FastPathInputEvent::MouseEvent(MousePdu {
+                        flags: PointerFlags::MOVE,
+                        number_of_wheel_rotation_units: 0,
+                        x_position: last_mouse_pos.0,
+                        y_position: last_mouse_pos.1,
+                    }));
+                    active_stage.process_fastpath_input(&mut image, &events)?
+                } else {
+                    Vec::new()
+                }
             }
         };
 
