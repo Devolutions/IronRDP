@@ -9,7 +9,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::pdu::ffi::WriteBuf;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionActivationSequence(
         pub Box<ironrdp::connector::connection_activation::ConnectionActivationSequence>,
     );
@@ -35,7 +35,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionActivationState(pub ironrdp::connector::connection_activation::ConnectionActivationState);
 
     pub enum ConnectionActivationStateType {
@@ -126,7 +126,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionActivationStateCapabilitiesExchange {
         pub io_channel_id: u16,
         pub user_channel_id: u16,
@@ -142,7 +142,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionActivationStateConnectionFinalization {
         pub io_channel_id: u16,
         pub user_channel_id: u16,
@@ -164,7 +164,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionActivationStateFinalized {
         pub io_channel_id: u16,
         pub user_channel_id: u16,

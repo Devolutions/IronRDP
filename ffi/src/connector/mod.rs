@@ -7,7 +7,7 @@ pub mod state;
 pub mod ffi {
     use core::fmt::Write as _;
 
-    use diplomat_runtime::DiplomatWriteable;
+    use diplomat_runtime::DiplomatWrite;
     use ironrdp::connector::Sequence as _;
     use ironrdp::displaycontrol::client::DisplayControlClient;
     use ironrdp::dvc::DvcProcessor;
@@ -24,7 +24,7 @@ pub mod ffi {
     use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::pdu::ffi::WriteBuf;
 
-    #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
+    #[diplomat::opaque_mut] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
 
     // Basic Impl for ClientConnector
@@ -181,7 +181,7 @@ pub mod ffi {
             Ok(())
         }
 
-        pub fn next_pdu_hint(&self) -> Result<Option<Box<PduHint<'_>>>, Box<IronRdpError>> {
+        pub fn next_pdu_hint<'a>(&'a self) -> Result<Option<Box<PduHint<'a>>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
@@ -189,7 +189,7 @@ pub mod ffi {
             Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
         }
 
-        pub fn get_dyn_state(&self) -> Result<Box<DynState<'_>>, Box<IronRdpError>> {
+        pub fn get_dyn_state<'a>(&'a self) -> Result<Box<DynState<'a>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
@@ -206,7 +206,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct PduHint<'a>(pub &'a dyn ironrdp::pdu::PduHint);
 
     impl<'a> PduHint<'a> {
@@ -218,11 +218,11 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct DynState<'a>(pub &'a dyn ironrdp::connector::State);
 
     impl<'a> DynState<'a> {
-        pub fn get_name(&'a self, writeable: &'a mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+        pub fn get_name(&'a self, writeable: &'a mut DiplomatWrite) -> Result<(), Box<IronRdpError>> {
             let name = self.0.name();
             write!(writeable, "{name}")?;
             Ok(())
@@ -233,9 +233,9 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ChannelConnectionSequence(pub ironrdp::connector::ChannelConnectionSequence);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct LicenseExchangeSequence(pub ironrdp::connector::LicenseExchangeSequence);
 }

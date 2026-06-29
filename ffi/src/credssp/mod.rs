@@ -13,16 +13,16 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::pdu::ffi::WriteBuf;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct KerberosConfig(pub ironrdp::connector::credssp::KerberosConfig);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct CredsspSequence(pub ironrdp::connector::credssp::CredsspSequence);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct TsRequest(pub sspi::credssp::TsRequest);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct CredsspSequenceInitResult {
         pub credssp_sequence: Option<Box<CredsspSequence>>,
         pub ts_request: Option<Box<TsRequest>>,

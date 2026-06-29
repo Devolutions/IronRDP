@@ -10,7 +10,7 @@ pub mod ffi {
     use crate::dvc::ffi::DvcPipeProxyConfig;
     use crate::error::ffi::IronRdpError;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct Config {
         pub connector: ironrdp::connector::Config,
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
@@ -27,7 +27,7 @@ pub mod ffi {
     }
 
     #[derive(Default)]
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConfigBuilder {
         pub credentials: Option<Credentials>,
         pub domain: Option<String>,
@@ -65,7 +65,7 @@ pub mod ffi {
         Japanese,
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct DesktopSize(pub ironrdp::connector::DesktopSize);
 
     impl DesktopSize {
@@ -235,7 +235,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     #[derive(Default)]
     pub struct PerformanceFlags(pub ironrdp::pdu::rdp::client_info::PerformanceFlags);
 
@@ -268,7 +268,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct BitmapConfig(pub ironrdp::connector::BitmapConfig);
 }
 

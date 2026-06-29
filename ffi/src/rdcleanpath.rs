@@ -3,13 +3,13 @@ pub mod ffi {
     use core::fmt::Write as _;
 
     use anyhow::Context as _;
-    use diplomat_runtime::DiplomatWriteable;
+    use diplomat_runtime::DiplomatWrite;
 
     use crate::error::GenericError;
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::VecU8;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct RDCleanPathPdu(pub ironrdp_rdcleanpath::RDCleanPathPdu);
 
     impl RDCleanPathPdu {
@@ -159,7 +159,7 @@ pub mod ffi {
         }
 
         /// Gets the server address string (for Response variant)
-        pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
+        pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWrite) {
             if self.0.server_addr.is_some()
                 && self.0.server_cert_chain.is_some()
                 && self.0.x224_connection_pdu.is_some()
@@ -171,7 +171,7 @@ pub mod ffi {
         }
 
         /// Gets error message (for GeneralError variant)
-        pub fn get_error_message<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
+        pub fn get_error_message<'a>(&'a self, writeable: &'a mut DiplomatWrite) {
             if let Ok(err) = self.general_error() {
                 let _ = write!(writeable, "{err}");
             }
@@ -207,7 +207,7 @@ pub mod ffi {
         }
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq)]
     pub enum RDCleanPathResultType {
         Request,
         Response,
@@ -215,7 +215,7 @@ pub mod ffi {
         NegotiationError,
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct RDCleanPathDetectionResult(pub ironrdp_rdcleanpath::DetectionResult);
 
     impl RDCleanPathDetectionResult {
@@ -240,7 +240,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct CertificateChainIterator {
         certs: Vec<Vec<u8>>,
         index: usize,

@@ -4,7 +4,7 @@ pub mod ffi {
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::pdu::ffi::SecurityProtocol;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ClientConnectorState(pub Option<ironrdp::connector::ClientConnectorState>);
 
     pub enum ClientConnectorStateType {
