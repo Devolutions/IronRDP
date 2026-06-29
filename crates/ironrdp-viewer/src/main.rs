@@ -28,21 +28,15 @@ fn main() -> anyhow::Result<()> {
     let event_loop_proxy = event_loop.create_proxy();
     let (output_event_sender, mut output_event_receiver) = mpsc::channel::<RdpOutputEvent>(64);
     let initial_window_size = PhysicalSize::new(
-        u32::from(config.connector.desktop_size.width),
-        u32::from(config.connector.desktop_size.height),
+        u32::from(config.connector().desktop_size.width),
+        u32::from(config.connector().desktop_size.height),
     );
-    let fake_events_interval = config.fake_events_interval;
 
     let client = RdpClient::new(config, output_event_sender);
     let input_event_sender = client.input_sender();
 
-    let mut app = App::new(
-        &event_loop,
-        &input_event_sender,
-        fake_events_interval,
-        initial_window_size,
-    )
-    .context("unable to initialize App")?;
+    let mut app =
+        App::new(&event_loop, &input_event_sender, initial_window_size).context("unable to initialize App")?;
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()

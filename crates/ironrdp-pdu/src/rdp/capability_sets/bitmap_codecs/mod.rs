@@ -739,6 +739,9 @@ fn parse_codecs_config<'a>(codecs: &'a [&'a str]) -> Result<HashMap<&'a str, boo
     Ok(result)
 }
 
+// FIXME(#api): this is a CLI-shaped API (string slices like "codec:on"/"codec:off", help string,
+// errors as `String`). A programmatic API would be warranted, especially for servers; the
+// `ConfigBuilder::with_codecs` method may also be too low-level and should be revisited.
 /// This function generates a list of client codec capabilities based on the
 /// provided configuration.
 ///
@@ -809,6 +812,8 @@ List of codecs:
     Ok(BitmapCodecs(codecs))
 }
 
+// FIXME(#api): this is a CLI-shaped API (string slices like "codec:on"/"codec:off", help string,
+// errors as `String`). A more programmatic API is warranted for server use cases.
 /// This function generates a list of server codec capabilities based on the
 /// provided configuration.
 ///

@@ -7,9 +7,7 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use ironrdp::client::rdp::{RdpInputEvent, RdpOutputEvent};
-use ironrdp::pdu::input::MousePdu;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
-use ironrdp::pdu::input::mouse::PointerFlags;
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
@@ -33,15 +31,12 @@ pub struct App {
     input_database: ironrdp::input::Database,
     last_size: Option<PhysicalSize<u32>>,
     resize_timeout: Option<Instant>,
-    last_event: Option<Instant>,
-    fake_events_interval: Option<Duration>,
 }
 
 impl App {
     pub fn new(
         event_loop: &EventLoop<RdpOutputEvent>,
         input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
-        fake_events_interval: Option<Duration>,
         initial_window_size: PhysicalSize<u32>,
     ) -> anyhow::Result<Self> {
         // SAFETY: We drop the softbuffer context right before the event loop is stopped, thus making this safe.
@@ -65,8 +60,6 @@ impl App {
             input_database,
             last_size: None,
             resize_timeout: None,
-            last_event: None,
-            fake_events_interval,
         })
     }
 
@@ -106,30 +99,10 @@ impl App {
         sb_buffer.copy_from_slice(self.buffer.as_slice());
         sb_buffer.present().expect("buffer present");
     }
-
-    pub fn fake_mouse_move(&mut self) {
-        let (Some(last_event), Some(fake_events_interval)) = (self.last_event, self.fake_events_interval) else {
-            return;
-        };
-
-        if last_event.elapsed() > fake_events_interval {
-            let mut events = SmallVec::new();
-            let curr_pos = self.input_database.mouse_position();
-            events.push(FastPathInputEvent::MouseEvent(MousePdu {
-                flags: PointerFlags::MOVE,
-                number_of_wheel_rotation_units: 0,
-                x_position: curr_pos.x,
-                y_position: curr_pos.y,
-            }));
-            let _ = self.input_event_sender.send(RdpInputEvent::FastPath(events));
-        }
-    }
 }
 
 impl ApplicationHandler<RdpOutputEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.fake_mouse_move();
-
         if let Some(timeout) = self.resize_timeout {
             if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
                 event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
@@ -216,7 +189,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
                     let input_events = self.input_database.apply(core::iter::once(operation));
 
-                    send_fast_path_events(&self.input_event_sender, input_events, &mut self.last_event);
+                    send_fast_path_events(&self.input_event_sender, input_events);
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -252,7 +225,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
                 let input_events = self.input_database.apply(operations);
 
-                send_fast_path_events(&self.input_event_sender, input_events, &mut self.last_event);
+                send_fast_path_events(&self.input_event_sender, input_events);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let win_size = window.inner_size();
@@ -264,7 +237,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
                 let input_events = self.input_database.apply(core::iter::once(operation));
 
-                send_fast_path_events(&self.input_event_sender, input_events, &mut self.last_event);
+                send_fast_path_events(&self.input_event_sender, input_events);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let mut operations = SmallVec::<[ironrdp::input::Operation; 2]>::new();
@@ -316,7 +289,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
                 let input_events = self.input_database.apply(operations);
 
-                send_fast_path_events(&self.input_event_sender, input_events, &mut self.last_event);
+                send_fast_path_events(&self.input_event_sender, input_events);
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let mouse_button = match button {
@@ -341,7 +314,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
                 let input_events = self.input_database.apply(core::iter::once(operation));
 
-                send_fast_path_events(&self.input_event_sender, input_events, &mut self.last_event);
+                send_fast_path_events(&self.input_event_sender, input_events);
             }
             WindowEvent::RedrawRequested => {
                 self.draw();
@@ -440,10 +413,8 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 fn send_fast_path_events(
     input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
     input_events: SmallVec<[FastPathInputEvent; 2]>,
-    last_event: &mut Option<Instant>,
 ) {
     if !input_events.is_empty() {
         let _ = input_event_sender.send(RdpInputEvent::FastPath(input_events));
     }
-    *last_event = Some(Instant::now());
 }

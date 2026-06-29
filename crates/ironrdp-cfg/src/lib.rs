@@ -224,6 +224,71 @@ pub trait PropertySetExt {
 
     /// Target RDP server password - use for testing only
     fn clear_text_password(&self) -> Option<&str>;
+
+    /// RDCleanPath proxy URL (IronRDP extension).
+    fn rdcleanpath_url(&self) -> Option<&str>;
+
+    /// RDCleanPath authentication token (IronRDP extension) - secret, use for testing only.
+    fn rdcleanpath_token(&self) -> Option<&str>;
+
+    /// DVC pipe proxy specifications (IronRDP extension).
+    ///
+    /// Comma-separated list of `<name>=<pipe>` entries.
+    fn dvc_pipe_proxies(&self) -> Option<&str>;
+
+    /// Idle anti-lock fake events interval in minutes (IronRDP extension).
+    fn fake_events_interval(&self) -> Option<u32>;
+
+    /// Enable RDPDR device redirection (IronRDP extension).
+    fn rdpdr_enabled(&self) -> Option<bool>;
+
+    /// Enable smart-card redirection within RDPDR (IronRDP extension).
+    fn smartcard_enabled(&self) -> Option<bool>;
+
+    /// Enable the QOI bitmap codec (IronRDP extension).
+    fn qoi_enabled(&self) -> Option<bool>;
+
+    /// Enable the QOIZ bitmap codec (IronRDP extension).
+    fn qoiz_enabled(&self) -> Option<bool>;
+
+    /// Enable TLS + graphical login (IronRDP extension; default enabled).
+    fn enable_tls(&self) -> Option<bool>;
+
+    /// Render the server-side pointer (IronRDP extension; default enabled).
+    fn server_pointer(&self) -> Option<bool>;
+
+    /// Automatically log on by passing the INFO_AUTOLOGON flag (IronRDP extension).
+    fn autologon(&self) -> Option<bool>;
+
+    /// Bulk compression level (IronRDP extension): 0=K8, 1=K64, 2=Rdp6, 3=Rdp61.
+    fn compression_level(&self) -> Option<u32>;
+
+    /// Color depth in bits per pixel (IronRDP extension), e.g. 16 or 32.
+    fn color_depth(&self) -> Option<u32>;
+
+    /// DVC client plugin DLL paths (IronRDP extension; Windows only). Comma-separated.
+    fn dvc_plugins(&self) -> Option<&str>;
+
+    // --- Setters (mirror the getters above; write the same keys) ---
+
+    fn set_enable_credssp_support(&mut self, enabled: bool);
+    fn set_compression(&mut self, enabled: bool);
+    fn set_enable_tls(&mut self, enabled: bool);
+    fn set_server_pointer(&mut self, enabled: bool);
+    fn set_autologon(&mut self, enabled: bool);
+    fn set_compression_level(&mut self, level: u32);
+    fn set_color_depth(&mut self, depth: u32);
+    fn set_fake_events_interval(&mut self, minutes: u32);
+    fn set_dvc_plugins(&mut self, value: impl Into<String>);
+    fn set_dvc_pipe_proxies(&mut self, value: impl Into<String>);
+    fn set_rdcleanpath_url(&mut self, value: impl Into<String>);
+    fn set_rdcleanpath_token(&mut self, value: impl Into<String>);
+    fn clear_rdcleanpath(&mut self);
+    fn set_gateway_hostname(&mut self, value: impl Into<String>);
+    fn set_gateway_usage_method(&mut self, method: GatewayUsageMethod);
+    fn set_gateway_credentials(&mut self, username: impl Into<String>, password: impl Into<String>);
+    fn clear_gateway(&mut self);
+    fn set_kdc_proxy_url(&mut self, value: impl Into<String>);
 }
 
 impl PropertySetExt for PropertySet {
@@ -337,5 +402,139 @@ impl PropertySetExt for PropertySet {
 
     fn clear_text_password(&self) -> Option<&str> {
         self.get::<&str>("ClearTextPassword")
+    }
+
+    fn rdcleanpath_url(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_rdcleanpathurl")
+    }
+
+    fn rdcleanpath_token(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_rdcleanpathtoken")
+    }
+
+    fn dvc_pipe_proxies(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_dvcpipeproxy")
+    }
+
+    fn fake_events_interval(&self) -> Option<u32> {
+        self.get::<u32>("ironrdp_fakeeventsinterval")
+    }
+
+    fn rdpdr_enabled(&self) -> Option<bool> {
+        self.get::<bool>("ironrdp_rdpdr")
+    }
+
+    fn smartcard_enabled(&self) -> Option<bool> {
+        self.get::<bool>("ironrdp_smartcard")
+    }
+
+    fn qoi_enabled(&self) -> Option<bool> {
+        self.get::<bool>("ironrdp_qoi")
+    }
+
+    fn qoiz_enabled(&self) -> Option<bool> {
+        self.get::<bool>("ironrdp_qoiz")
+    }
+
+    fn enable_tls(&self) -> Option<bool> {
+        self.get::<bool>("ironrdp_tls")
+    }
+
+    fn server_pointer(&self) -> Option<bool> {
+        self.get::<bool>("ironrdp_serverpointer")
+    }
+
+    fn autologon(&self) -> Option<bool> {
+        self.get::<bool>("ironrdp_autologon")
+    }
+
+    fn compression_level(&self) -> Option<u32> {
+        self.get::<u32>("ironrdp_compressionlevel")
+    }
+
+    fn color_depth(&self) -> Option<u32> {
+        self.get::<u32>("ironrdp_colordepth")
+    }
+
+    fn dvc_plugins(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_dvcplugin")
+    }
+
+    fn set_enable_credssp_support(&mut self, enabled: bool) {
+        self.insert("enablecredsspsupport", i64::from(enabled));
+    }
+
+    fn set_compression(&mut self, enabled: bool) {
+        self.insert("compression", enabled);
+    }
+
+    fn set_enable_tls(&mut self, enabled: bool) {
+        self.insert("ironrdp_tls", enabled);
+    }
+
+    fn set_server_pointer(&mut self, enabled: bool) {
+        self.insert("ironrdp_serverpointer", enabled);
+    }
+
+    fn set_autologon(&mut self, enabled: bool) {
+        self.insert("ironrdp_autologon", enabled);
+    }
+
+    fn set_compression_level(&mut self, level: u32) {
+        self.insert("ironrdp_compressionlevel", i64::from(level));
+    }
+
+    fn set_color_depth(&mut self, depth: u32) {
+        self.insert("ironrdp_colordepth", i64::from(depth));
+    }
+
+    fn set_fake_events_interval(&mut self, minutes: u32) {
+        self.insert("ironrdp_fakeeventsinterval", i64::from(minutes));
+    }
+
+    fn set_dvc_plugins(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_dvcplugin", value.into());
+    }
+
+    fn set_dvc_pipe_proxies(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_dvcpipeproxy", value.into());
+    }
+
+    fn set_rdcleanpath_url(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_rdcleanpathurl", value.into());
+    }
+
+    fn set_rdcleanpath_token(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_rdcleanpathtoken", value.into());
+    }
+
+    fn clear_rdcleanpath(&mut self) {
+        self.remove("ironrdp_rdcleanpathurl");
+        self.remove("ironrdp_rdcleanpathtoken");
+    }
+
+    fn set_gateway_hostname(&mut self, value: impl Into<String>) {
+        self.insert("gatewayhostname", value.into());
+    }
+
+    fn set_gateway_usage_method(&mut self, method: GatewayUsageMethod) {
+        self.insert("gatewayusagemethod", method.as_i64());
+    }
+
+    fn set_gateway_credentials(&mut self, username: impl Into<String>, password: impl Into<String>) {
+        self.insert("gatewayusername", username.into());
+        self.insert("gatewaypassword", password.into());
+    }
+
+    fn clear_gateway(&mut self) {
+        self.remove("gatewayhostname");
+        self.remove("gatewayusagemethod");
+        self.remove("gatewayusername");
+        self.remove("gatewaypassword");
+        self.remove("GatewayPassword");
+    }
+
+    fn set_kdc_proxy_url(&mut self, value: impl Into<String>) {
+        self.insert("kdcproxyurl", value.into());
     }
 }

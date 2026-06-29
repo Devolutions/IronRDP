@@ -55,6 +55,13 @@ impl PropertySet {
     pub fn iter(&self) -> impl Iterator<Item = (&Key, &Value)> {
         self.inner.iter()
     }
+
+    /// Merges all entries from `other` into this set, overwriting existing keys (last writer wins).
+    pub fn merge(&mut self, other: &PropertySet) {
+        for (key, value) in &other.inner {
+            self.inner.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 impl IntoIterator for PropertySet {
