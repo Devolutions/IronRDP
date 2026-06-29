@@ -684,6 +684,10 @@ impl iron_remote_desktop::Session for Session {
                                         cliprdr.initiate_copy(&formats)
                                             .context("cliprdr initiate copy")?
                                     ),
+                                    ClipboardMessage::SendInitiateFileCopy(files) => Some(
+                                        cliprdr.initiate_file_copy(files)
+                                            .context("cliprdr initiate file copy")?
+                                    ),
                                     ClipboardMessage::SendFormatData(response) => Some(
                                         cliprdr.submit_format_data(response)
                                             .context("cliprdr submit format data")?

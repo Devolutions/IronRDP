@@ -798,6 +798,10 @@ async fn active_session(
                                     Some(cliprdr_client.initiate_copy(&formats)
                                         .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?)
                                 }
+                                ClipboardMessage::SendInitiateFileCopy(files) => {
+                                    Some(cliprdr.initiate_file_copy(files)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
+                                }
                                 ClipboardMessage::SendFormatData(response) => {
                                     Some(cliprdr_client.submit_format_data(response)
                                         .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?)

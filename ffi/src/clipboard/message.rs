@@ -13,6 +13,9 @@ pub mod ffi {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendInitiateCopy(_) => {
                     ClipboardMessageType::SendInitiateCopy
                 }
+                ironrdp::cliprdr::backend::ClipboardMessage::SendInitiateFileCopy(_) => {
+                    ClipboardMessageType::SendInitiateFileCopy
+                }
                 ironrdp::cliprdr::backend::ClipboardMessage::SendFormatData(_) => ClipboardMessageType::SendFormatData,
                 ironrdp::cliprdr::backend::ClipboardMessage::SendInitiatePaste(_) => {
                     ClipboardMessageType::SendInitiatePaste
@@ -86,6 +89,7 @@ pub mod ffi {
 
     pub enum ClipboardMessageType {
         SendInitiateCopy,
+        SendInitiateFileCopy,
         SendFormatData,
         SendInitiatePaste,
         SendFileContentsRequest,

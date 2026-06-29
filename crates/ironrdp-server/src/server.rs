@@ -1011,6 +1011,7 @@ impl RdpServer {
                     };
                     let msgs = match c {
                         ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
+                        ClipboardMessage::SendInitiateFileCopy(files) => cliprdr.initiate_file_copy(files),
                         ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
                         ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
                         ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
