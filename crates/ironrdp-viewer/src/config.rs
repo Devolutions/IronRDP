@@ -10,6 +10,7 @@ use ironrdp::client::config::{
     ClipboardType as ResolvedClipboardType, Config, ConfigBuilder, Destination, DvcProxyInfo, MissingField,
 };
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
+use ironrdp_cfg::PropertySetExt as _;
 use tap::prelude::*;
 use url::Url;
 
@@ -104,31 +105,31 @@ fn apply_cli_args_to_properties(properties: &mut ironrdp_propertyset::PropertySe
     }
 
     if args.no_credssp {
-        properties.insert("enablecredsspsupport", 0i64);
+        properties.set_enable_credssp_support(false);
     }
 
     if args.no_tls {
-        properties.insert("ironrdp_tls", false);
+        properties.set_enable_tls(false);
     }
 
     if args.no_server_pointer {
-        properties.insert("ironrdp_serverpointer", false);
+        properties.set_server_pointer(false);
     }
 
     if args.autologon {
-        properties.insert("ironrdp_autologon", true);
+        properties.set_autologon(true);
     }
 
     if let Some(enabled) = args.compression_enabled {
-        properties.insert("compression", enabled);
+        properties.set_compression(enabled);
     }
 
     if let Some(level) = args.compression_level {
-        properties.insert("ironrdp_compressionlevel", i64::from(level));
+        properties.set_compression_level(level);
     }
 
     if let Some(color_depth) = args.color_depth {
-        properties.insert("ironrdp_colordepth", i64::from(color_depth));
+        properties.set_color_depth(color_depth);
     }
 
     #[cfg(windows)]
@@ -139,19 +140,19 @@ fn apply_cli_args_to_properties(properties: &mut ironrdp_propertyset::PropertySe
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
             .join(",");
-        properties.insert("ironrdp_dvcplugin", value);
+        properties.set_dvc_plugins(value);
     }
 
     if let Some(url) = &args.rdcleanpath_url {
-        properties.insert("ironrdp_rdcleanpathurl", url.as_str());
+        properties.set_rdcleanpath_url(url.as_str());
     }
 
     if let Some(token) = &args.rdcleanpath_token {
-        properties.insert("ironrdp_rdcleanpathtoken", token.as_str());
+        properties.set_rdcleanpath_token(token.as_str());
     }
 
     if let Some(minutes) = args.prevent_session_lock {
-        properties.insert("ironrdp_fakeeventsinterval", i64::from(minutes));
+        properties.set_fake_events_interval(minutes);
     }
 
     if !args.dvc_proxy.is_empty() {
@@ -161,7 +162,7 @@ fn apply_cli_args_to_properties(properties: &mut ironrdp_propertyset::PropertySe
             .map(|p| format!("{}={}", p.channel_name, p.pipe_name))
             .collect::<Vec<_>>()
             .join(",");
-        properties.insert("ironrdp_dvcpipeproxy", value);
+        properties.set_dvc_pipe_proxies(value);
     }
 }
 

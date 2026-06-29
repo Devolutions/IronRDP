@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_propertyset::PropertySet;
 use url::Url;
 
@@ -631,9 +632,11 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_color_depth(mut self, depth: u32) -> Self {
         self.color_depth = Some(depth);
+        self.properties.set_color_depth(depth);
         self
     }
 
+    /// Set the bitmap codecs (e.g. `["remotefx:on"]`). Not reflected in the PropertySet.
     #[must_use]
     pub fn with_codecs(mut self, codecs: Vec<String>) -> Self {
         self.codecs = codecs;
@@ -643,35 +646,71 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_autologon(mut self, enabled: bool) -> Self {
         self.autologon = Some(enabled);
+        self.properties.set_autologon(enabled);
         self
     }
 
     #[must_use]
     pub fn with_enable_tls(mut self, enabled: bool) -> Self {
         self.enable_tls = Some(enabled);
+        self.properties.set_enable_tls(enabled);
         self
     }
 
     #[must_use]
     pub fn with_server_pointer(mut self, enabled: bool) -> Self {
         self.enable_server_pointer = Some(enabled);
+        self.properties.set_server_pointer(enabled);
         self
     }
 
+    /// Set the bulk compression type directly. Upserts the `ironrdp_compressionlevel` property.
     #[must_use]
     pub fn with_compression_type(mut self, ty: Option<ironrdp_pdu::rdp::client_info::CompressionType>) -> Self {
         self.compression_type = ty;
+        if let Some(ty) = ty {
+            self.properties.set_compression_level(level_from_compression_type(ty));
+        }
         self
     }
 
+    /// Set the transport. Upserts the corresponding properties (`ironrdp_rdcleanpathurl`/token,
+    /// `gatewayhostname`/usage/credentials), clearing the others so the PropertySet stays consistent.
     #[must_use]
     pub fn with_transport(mut self, transport: Transport) -> Self {
+        match &transport {
+            Transport::Direct => {
+                self.properties.clear_rdcleanpath();
+                #[cfg(feature = "gateway")]
+                self.properties.clear_gateway();
+            }
+            Transport::RDCleanPath(rdcp) => {
+                self.properties.set_rdcleanpath_url(rdcp.url.to_string());
+                self.properties.set_rdcleanpath_token(rdcp.auth_token.clone());
+                #[cfg(feature = "gateway")]
+                self.properties.clear_gateway();
+            }
+            #[cfg(feature = "gateway")]
+            Transport::Gateway(gw) => {
+                self.properties.clear_rdcleanpath();
+                self.properties.set_gateway_hostname(gw.endpoint.clone());
+                self.properties
+                    .set_gateway_usage_method(ironrdp_cfg::GatewayUsageMethod::UseAlways);
+                self.properties
+                    .set_gateway_credentials(gw.username.clone(), gw.password.clone());
+            }
+        }
         self.transport = transport;
         self
     }
 
+    /// Set the kerberos config. Upserts the `kdcproxyurl` property; `hostname` is derived from the
+    /// client name and not stored separately.
     #[must_use]
     pub fn with_kerberos_config(mut self, cfg: ironrdp_connector::credssp::KerberosConfig) -> Self {
+        if let Some(url) = &cfg.kdc_proxy_url {
+            self.properties.set_kdc_proxy_url(url.to_string());
+        }
         self.kerberos_config = Some(cfg);
         self
     }
@@ -679,6 +718,8 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_fake_events_interval(mut self, interval: Duration) -> Self {
         self.fake_events_interval = Some(interval);
+        self.properties
+            .set_fake_events_interval(u32::try_from(interval.as_secs() / 60).unwrap_or(u32::MAX));
         self
     }
 
@@ -800,6 +841,7 @@ impl ConfigBuilder {
         if self.password.is_none() {
             missing.push(MissingField::Password);
         }
+        #[cfg(feature = "gateway")]
         if matches!(self.transport, Transport::Gateway(_)) {
             if self.gateway_username.is_none() {
                 missing.push(MissingField::GatewayUsername);
@@ -854,8 +896,8 @@ impl ConfigBuilder {
             codecs,
         };
 
-        let mut transport = self.transport;
-        if let Transport::Gateway(ref mut gw) = transport {
+        #[cfg(feature = "gateway")]
+        if let Transport::Gateway(gw) = self.transport {
             gw.username = self.gateway_username.unwrap_or_default();
             gw.password = self.gateway_password.unwrap_or_default();
         }
@@ -951,7 +993,9 @@ impl ConfigBuilder {
     /// `full address` beats `alternate full address`, an embedded port beats `server port`, and
     /// transport precedence is RDCleanPath > Gateway > Direct.
     pub fn with_property_set(mut self, ps: &PropertySet) -> anyhow::Result<Self> {
-        use ironrdp_cfg::{AudioMode, GatewayUsageMethod, PropertySetExt as _, TargetHost};
+        #[cfg(feature = "gateway")]
+        use ironrdp_cfg::GatewayUsageMethod;
+        use ironrdp_cfg::{AudioMode, TargetHost};
 
         self.properties.merge(ps);
 
@@ -1122,6 +1166,17 @@ fn compression_type_from_level(level: u32) -> anyhow::Result<ironrdp_pdu::rdp::c
         2 => Ok(CompressionType::Rdp6),
         3 => Ok(CompressionType::Rdp61),
         _ => anyhow::bail!("invalid compression level: valid values are 0, 1, 2, 3"),
+    }
+}
+
+fn level_from_compression_type(ty: ironrdp_pdu::rdp::client_info::CompressionType) -> u32 {
+    use ironrdp_pdu::rdp::client_info::CompressionType;
+
+    match ty {
+        CompressionType::K8 => 0,
+        CompressionType::K64 => 1,
+        CompressionType::Rdp6 => 2,
+        CompressionType::Rdp61 => 3,
     }
 }
 
