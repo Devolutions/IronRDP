@@ -896,8 +896,10 @@ impl ConfigBuilder {
             codecs,
         };
 
+        #[cfg_attr(not(feature = "gateway"), allow(unused_mut))]
+        let mut transport = self.transport;
         #[cfg(feature = "gateway")]
-        if let Transport::Gateway(gw) = self.transport {
+        if let Transport::Gateway(gw) = &mut transport {
             gw.username = self.gateway_username.unwrap_or_default();
             gw.password = self.gateway_password.unwrap_or_default();
         }
