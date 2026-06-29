@@ -66,12 +66,13 @@ impl InterfaceAlloc {
     }
 
     #[inline]
-    const fn alloc(&mut self) -> InterfaceId {
+    const fn alloc(&mut self) -> Option<InterfaceId> {
         self.id += 1;
         if self.id > 0x3F_FF_FF_FF {
-            panic!("USB device amount overflow")
+            None
+        } else {
+            Some(InterfaceId::from_raw(self.id))
         }
-        InterfaceId::from_raw(self.id)
     }
 }
 
@@ -85,9 +86,10 @@ impl DvcChannelListener for UrbdrcListener {
             self.device_man.control_channel_assigned(channel_id);
             Some(Box::new(UrbdrcControlClient::new(callback)))
         } else {
+            let udev_iface = self.iface_man.alloc()?;
             #[expect(clippy::as_conversions)]
             self.device_man.take_device_for_channel(channel_id).map(|backend| {
-                Box::new(UrbdrcDeviceClient::new(self.iface_man.alloc(), backend).expect("invalid interface id"))
+                Box::new(UrbdrcDeviceClient::new(udev_iface, backend).expect("invalid interface id"))
                     as Box<dyn DvcProcessor>
             })
         }
@@ -96,36 +98,30 @@ impl DvcChannelListener for UrbdrcListener {
 
 /// A client for the URBDRC Control Virtual Channel.
 pub struct UrbdrcControlClient {
-    /// Indicates whether the channel is ready for add virtual channel.
-    ready: bool,
-
     /// Spec [3.1]:
     /// Exchange-completed event: Signifies that the capability exchange is completed, that is,
     /// the client has sent a Channel Created message.
     ///
     /// [3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/511b4cd7-1940-4631-90ac-bf2189ba6735
-    on_capability_exchanged: OnCapabilityExchanged,
+    on_capability_exchanged: Option<OnCapabilityExchanged>,
 }
 
-type OnCapabilityExchanged = Box<dyn Fn() -> PduResult<Vec<DvcMessage>> + Send>;
+type OnCapabilityExchanged = Box<dyn FnOnce() -> PduResult<Vec<DvcMessage>> + Send>;
 
 impl UrbdrcControlClient {
     /// Create a new [UrbdrcControlClient] with the given callback.
     ///
     /// The `callback` will be called when the capability exchange is completed and the channel is
     /// ready to redirect new devices.
-    ///
-    /// Please note the `callback` will be called only once.
     pub fn new(callback: OnCapabilityExchanged) -> Self {
         Self {
-            ready: false,
-            on_capability_exchanged: callback,
+            on_capability_exchanged: Some(callback),
         }
     }
 
     /// Whether the channel is ready for add virtual channel.
     pub const fn ready(&self) -> bool {
-        self.ready
+        self.on_capability_exchanged.is_none()
     }
 
     /// Spec [3.3.5.1.1]:
@@ -137,7 +133,7 @@ impl UrbdrcControlClient {
     ///
     /// [3.3.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/c7b1920a-d632-46d2-b62a-5c7e53570628
     pub fn add_virtual_channel(&self) -> PduResult<DvcMessage> {
-        if !self.ready {
+        if !self.ready() {
             return Err(pdu_other_err!("is not ready for ADD_VIRTUAL_CHANNEL"));
         }
         Ok(Box::new(AddVirtualChannel {
@@ -176,15 +172,16 @@ impl DvcProcessor for UrbdrcControlClient {
                 iface_id,
                 msg_id: _msg_id,
             }) => {
-                if iface_id == InterfaceId::NOTIFY_CLIENT.with_mask(Mask::Proxy) && !self.ready {
+                if iface_id == InterfaceId::NOTIFY_CLIENT.with_mask(Mask::Proxy)
+                    && let Some(callback) = self.on_capability_exchanged.take()
+                {
                     // NOTE: MS-RDPEUSB does not normatively define RIMCALL_RELEASE as a
                     // server-ready-proceed barrier; the semantic comes from observed Windows
                     // urbdrc-server behavior. Pattern matches FreeRDP urbdrc_main.c since 2012
                     // (commit fa4d8fca1be, Atrust contribution). Two sync points: control DVC
                     // (server -> client ADD_VIRTUAL_CHANNEL); device DVC (server -> client
                     // ADD_DEVICE).
-                    self.ready = true;
-                    (self.on_capability_exchanged)()
+                    callback()
                 } else {
                     Ok(Vec::new())
                 }
