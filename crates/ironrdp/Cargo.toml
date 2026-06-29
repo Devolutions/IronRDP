@@ -33,8 +33,22 @@ rdpdr = ["dep:ironrdp-rdpdr"]
 rdpsnd = ["dep:ironrdp-rdpsnd"]
 displaycontrol = ["dep:ironrdp-displaycontrol"]
 echo = ["dep:ironrdp-echo"]
-qoi = ["ironrdp-server?/qoi", "ironrdp-pdu?/qoi", "ironrdp-connector?/qoi", "ironrdp-session?/qoi"]
-qoiz = ["ironrdp-server?/qoiz", "ironrdp-pdu?/qoiz", "ironrdp-connector?/qoiz", "ironrdp-session?/qoiz"]
+client = ["dep:ironrdp-client"]
+# TLS backends for the client (exactly one is required when the client is enabled).
+rustls = ["ironrdp-client?/rustls"]
+native-tls = ["ironrdp-client?/native-tls"]
+# Optional client subsystems, forwarded so consumers can opt in without naming `ironrdp-client`.
+client-sound = ["ironrdp-client?/sound"]
+client-clipboard = ["ironrdp-client?/clipboard"]
+client-rdpdr = ["ironrdp-client?/rdpdr"]
+client-smartcard = ["ironrdp-client?/smartcard"]
+client-gateway = ["ironrdp-client?/gateway"]
+client-dvc-pipe-proxy = ["ironrdp-client?/dvc-pipe-proxy"]
+client-dvc-com-plugin = ["ironrdp-client?/dvc-com-plugin"]
+client-all = ["ironrdp-client?/all"]
+qoi = ["ironrdp-server?/qoi", "ironrdp-pdu?/qoi", "ironrdp-connector?/qoi", "ironrdp-session?/qoi", "ironrdp-client?/qoi"]
+qoiz = ["ironrdp-server?/qoiz", "ironrdp-pdu?/qoiz", "ironrdp-connector?/qoiz", "ironrdp-session?/qoiz", "ironrdp-client?/qoiz"]
+
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
 __bench = ["ironrdp-server/__bench"]
@@ -55,6 +69,7 @@ ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.6", optional = true } 
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.8", optional = true } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.7", optional = true } # public
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.3", optional = true } # public
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", optional = true } # public
 
 [dev-dependencies]
 ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.9" }

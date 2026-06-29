@@ -151,17 +151,34 @@ const CASES: &[FeatureCheckCase] = &[
             extra_args: &[],
         },
     },
-    // `ironrdp-tls`, `ironrdp-client`, `ironrdp-mstsgu` are intentionally
-    // outside this initial case set. The `exactly-one-of` TLS-backend
-    // constraint on `ironrdp-tls` needs `--mutually-exclusive-features`,
-    // `--at-least-one-of`, and `--exclude-no-default-features` on the
-    // cargo-hack invocation (cargo-hack does not honor
-    // `package.metadata.cargo-hack`), and the powerset surfaces a latent
-    // bug in `extract_tls_server_public_key` that uses `x509_cert::*`
-    // unconditionally instead of gating on `rustls | native-tls`. Both
-    // are tractable but out of scope for this gate's initial landing.
-    // The regular `Checks` job already exercises all three crates with
-    // their default features.
+    // `ironrdp-client` has a pair of mutually-exclusive, at-least-one-of TLS
+    // backends (`rustls` / `native-tls`). cargo-hack does not honor
+    // `package.metadata.cargo-hack`, so the constraint is expressed inline via
+    // `--mutually-exclusive-features`, `--at-least-one-of`, and
+    // `--exclude-no-default-features` (building with no TLS backend cannot
+    // compile, since `ironrdp-tls` requires one).
+    FeatureCheckCase {
+        name: "workspace/powerset-client",
+        invocation: Invocation::CargoHack {
+            packages: &["ironrdp-client"],
+            depth: 2,
+            extra_args: &[
+                "--mutually-exclusive-features",
+                "rustls,native-tls",
+                "--at-least-one-of",
+                "rustls,native-tls",
+                "--exclude-no-default-features",
+            ],
+        },
+    },
+    // FIXME: `ironrdp-tls` and `ironrdp-mstsgu` are intentionally outside this initial
+    // case set. The `exactly-one-of` TLS-backend constraint on `ironrdp-tls`
+    // also needs the inline cargo-hack flags shown above, and the powerset
+    // surfaces a latent bug in `extract_tls_server_public_key` that uses
+    // `x509_cert::*` unconditionally instead of gating on `rustls | native-tls`.
+    // Both are tractable but out of scope for this gate's initial landing.
+    // The regular `Checks` job already exercises both crates with their default
+    // features.
 ];
 
 /// Run every case sequentially. Mirrors what a contributor gets locally with

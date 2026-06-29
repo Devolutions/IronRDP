@@ -10,4 +10,7 @@
 pub mod config;
 pub mod rdp;
 
+#[cfg(feature = "clipboard")]
+mod clipboard;
+
 mod ws;

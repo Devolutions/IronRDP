@@ -10,5 +10,4 @@
 #![allow(clippy::cast_sign_loss)]
 
 pub mod app;
-pub mod clipboard;
 pub mod config;

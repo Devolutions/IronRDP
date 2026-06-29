@@ -7,13 +7,13 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use clap::Parser;
 use clap::clap_derive::ValueEnum;
+use ironrdp::client::config::{
+    ClipboardType as ResolvedClipboardType, Config, ConfigBuilder, Destination, DvcProxyInfo, GatewayConfig,
+    RDCleanPathConfig, Transport,
+};
 use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
-use ironrdp_client::config::{
-    ClipboardType as ResolvedClipboardType, Config, Destination, DvcProxyInfo, RDCleanPathConfig,
-};
-use ironrdp_mstsgu::GwConnectTarget;
 use tap::prelude::*;
 use url::Url;
 
@@ -239,7 +239,7 @@ struct Args {
     /// Automatically logon to the server by passing the INFO_AUTOLOGON flag
     ///
     /// This flag is ignored if CredSSP authentication is used.
-    /// You can use `--no-credssp` to ensure it’s not.
+    /// You can use `--no-credssp` to ensure it's not.
     #[clap(long)]
     autologon: bool,
 
@@ -252,7 +252,7 @@ struct Args {
     /// Disable TLS + Network Level Authentication (NLA) using CredSSP
     ///
     /// NLA is used to authenticates RDP clients and servers before sending credentials over the network.
-    /// It’s not recommended to disable this.
+    /// It's not recommended to disable this.
     #[clap(long, alias = "no-nla")]
     no_credssp: bool,
 
@@ -420,25 +420,24 @@ impl PartialConfig {
             })
             .map_or(has_gateway_host, ironrdp_cfg::GatewayUsageMethod::is_gateway_required);
 
-        let mut gw: Option<GwConnectTarget> =
+        let mut gw_config: Option<GatewayConfig> =
             use_gateway
                 .then(|| properties.gateway_hostname())
                 .flatten()
-                .map(|gw_addr| GwConnectTarget {
-                    gw_endpoint: gw_addr.to_owned(),
-                    gw_user: String::new(),
-                    gw_pass: String::new(),
-                    server: String::new(), // TODO: non-standard port? also dont use here?
+                .map(|gw_addr| GatewayConfig {
+                    endpoint: gw_addr.to_owned(),
+                    username: String::new(),
+                    password: String::new(),
                 });
 
-        if let Some(ref mut gw) = gw {
+        if let Some(ref mut gw) = gw_config {
             if let Ok(Some(gateway_credentials_source)) = properties.gateway_credentials_source() {
                 // All known credential sources fall through to username/password prompts.
                 // The value is available for future differentiation if needed.
                 let _ = gateway_credentials_source;
             }
 
-            gw.gw_user = if let Some(gw_user) = properties.gateway_username() {
+            gw.username = if let Some(gw_user) = properties.gateway_username() {
                 gw_user.to_owned()
             } else {
                 inquire::Text::new("Gateway username:")
@@ -446,7 +445,7 @@ impl PartialConfig {
                     .context("Username prompt")?
             };
 
-            gw.gw_pass = if let Some(gw_pass) = properties.gateway_password() {
+            gw.password = if let Some(gw_pass) = properties.gateway_password() {
                 gw_pass.to_owned()
             } else {
                 inquire::Password::new("Gateway password:")
@@ -483,10 +482,6 @@ impl PartialConfig {
                 .context("Address prompt")?
                 .pipe(Destination::new)?
         };
-
-        if let Some(ref mut gw) = gw {
-            gw.server = destination.name().to_owned(); // TODO
-        }
 
         let username = if let Some(username) = properties.username() {
             username.to_owned()
@@ -640,31 +635,41 @@ impl PartialConfig {
             work_dir: properties.shell_working_directory().unwrap_or_default().to_owned(),
         };
 
-        Ok(Config {
-            log_file: self.log_file,
-            gw,
-            kerberos_config,
-            destination,
-            connector,
-            clipboard_type,
-            rdcleanpath: self.rdcleanpath,
-            fake_events_interval,
-            dvc_pipe_proxies: self.dvc_pipe_proxies,
-            #[cfg(windows)]
-            dvc_plugins: self.dvc_plugins,
-        })
-    }
-}
+        // Determine the transport. RDCleanPath takes precedence over gateway.
+        let transport = if let Some(rdcp) = self.rdcleanpath {
+            Transport::RDCleanPath(rdcp)
+        } else if let Some(gw) = gw_config {
+            Transport::Gateway(gw)
+        } else {
+            Transport::Direct
+        };
 
-fn resolve_clipboard_type(cli: ClipboardType, redirect_clipboard: bool) -> ResolvedClipboardType {
-    if !redirect_clipboard {
-        return ResolvedClipboardType::Disable;
-    }
+        let mut builder = ConfigBuilder::new(connector, destination)
+            .with_transport(transport)
+            .with_clipboard(clipboard_type);
 
-    match cli {
-        ClipboardType::Enable => ResolvedClipboardType::Enable,
-        ClipboardType::Disable => ResolvedClipboardType::Disable,
-        ClipboardType::Stub => ResolvedClipboardType::Stub,
+        if let Some(kerberos_config) = kerberos_config {
+            builder = builder.with_kerberos_config(kerberos_config);
+        }
+
+        if let Some(log_file) = self.log_file {
+            builder = builder.with_log_file(log_file);
+        }
+
+        if let Some(fake_events_interval) = fake_events_interval {
+            builder = builder.with_fake_events_interval(fake_events_interval);
+        }
+
+        for proxy in self.dvc_pipe_proxies {
+            builder = builder.with_dvc_pipe_proxy(proxy);
+        }
+
+        #[cfg(windows)]
+        for plugin in self.dvc_plugins {
+            builder = builder.with_dvc_plugin(plugin);
+        }
+
+        Ok(builder.build())
     }
 }
 
@@ -678,6 +683,18 @@ where
     T: Into<std::ffi::OsString> + Clone,
 {
     PartialConfig::parse_from(args)?.into_config()
+}
+
+fn resolve_clipboard_type(cli: ClipboardType, redirect_clipboard: bool) -> ResolvedClipboardType {
+    if !redirect_clipboard {
+        return ResolvedClipboardType::Disable;
+    }
+
+    match cli {
+        ClipboardType::Enable => ResolvedClipboardType::Enable,
+        ClipboardType::Disable => ResolvedClipboardType::Disable,
+        ClipboardType::Stub => ResolvedClipboardType::Stub,
+    }
 }
 
 fn normalize_kdc_proxy_url_from_name(name: &str) -> String {
