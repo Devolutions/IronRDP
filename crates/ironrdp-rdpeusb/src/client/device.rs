@@ -119,7 +119,7 @@ impl UsbDeviceLocation {
 pub struct UsbDeviceDescriptorInfo {
     pub vendor_id: u16,
     pub product_id: u16,
-    pub device_version: UsbBcdVersion,
+    pub device_version: u16,
     pub usb_version: UsbBcdVersion,
     pub class_codes: UsbClassCodes,
     pub num_configurations: u8,
@@ -150,45 +150,29 @@ impl UsbClassCodes {
     };
 }
 
+/// Raw `bcdUSB` value from the USB device descriptor.
+///
+/// The value is preserved without BCD validation. RDPEUSB supports only
+/// USB 1.0, 1.1, and 2.0, so newer values are advertised as USB 2.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UsbBcdVersion {
-    pub major: u8,
-    pub minor: u8,
-    pub sub_minor: u8,
-}
-
+pub struct UsbBcdVersion(u16);
 impl UsbBcdVersion {
-    #[expect(clippy::as_conversions)]
     pub const fn from_bcd(value: u16) -> Self {
-        Self {
-            major: ((value >> 8) & 0x0f) as u8,
-            minor: ((value >> 4) & 0x0f) as u8,
-            sub_minor: (value & 0x0f) as u8,
-        }
+        Self(value)
     }
 
-    fn to_bcd(self, invalid_description: &'static str) -> PduResult<u16> {
-        if self.major <= 0x0f && self.minor <= 0x0f && self.sub_minor <= 0x0f {
-            Ok((u16::from(self.major) << 8) | (u16::from(self.minor) << 4) | u16::from(self.sub_minor))
-        } else {
-            Err(pdu_other_err!(invalid_description))
-        }
-    }
-
-    fn to_supported_usb_version(self) -> PduResult<SupportedUsbVer> {
-        let bcd = self.to_bcd("usb_version is not a valid USB BCD version")?;
-
-        Ok(if bcd >= 0x0200 {
+    fn to_supported_usb_version(self) -> SupportedUsbVer {
+        if self.0 >= 0x0200 {
             SupportedUsbVer::Usb20
-        } else if bcd >= 0x0110 {
+        } else if self.0 >= 0x0110 {
             SupportedUsbVer::Usb11
         } else {
             SupportedUsbVer::Usb10
-        })
+        }
     }
 
-    fn is_at_least_usb20(self) -> PduResult<bool> {
-        Ok(self.to_bcd("usb_version is not a valid USB BCD version")? >= 0x0200)
+    fn is_at_least_usb20(self) -> bool {
+        self.0 >= 0x0200
     }
 }
 
@@ -210,10 +194,7 @@ pub enum UsbConnectionSpeed {
 /// The output strings are Windows PnP identifiers. They are opaque to this crate once generated;
 /// the important part is using the standard USB forms and keeping instance/container values stable.
 pub fn add_device_from_info(usb_device: InterfaceId, info: &DeviceInfo) -> PduResult<AddDevice> {
-    let device_version = info
-        .descriptor
-        .device_version
-        .to_bcd("device_version is not a valid USB BCD version")?;
+    let device_version = info.descriptor.device_version;
     let location_path = info.location.path();
 
     Ok(AddDevice {
@@ -298,7 +279,7 @@ fn usb_device_caps(info: &DeviceInfo) -> PduResult<UsbDeviceCaps> {
     Ok(UsbDeviceCaps {
         usb_bus_iface_ver: UsbBusIfaceVer::V2,
         usbdi_ver: UsbdiVer::V0x600,
-        supported_usb_ver: info.descriptor.usb_version.to_supported_usb_version()?,
+        supported_usb_ver: info.descriptor.usb_version.to_supported_usb_version(),
         device_speed: device_speed(info)?,
         no_ack_isoch_write_jitter_buf_size: NoAckIsochWriteJitterBufSizeInMs::try_from(
             DEFAULT_NO_ACK_ISOCH_WRITE_JITTER_MS,
@@ -314,7 +295,7 @@ fn device_speed(info: &DeviceInfo) -> PduResult<DeviceSpeed> {
             Ok(DeviceSpeed::HighSpeed)
         }
         UsbConnectionSpeed::Unknown => {
-            if info.descriptor.usb_version.is_at_least_usb20()? {
+            if info.descriptor.usb_version.is_at_least_usb20() {
                 Ok(DeviceSpeed::HighSpeed)
             } else {
                 Ok(DeviceSpeed::FullSpeed)

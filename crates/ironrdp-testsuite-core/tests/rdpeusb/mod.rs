@@ -13,7 +13,7 @@ fn simple_device_info() -> DeviceInfo {
         descriptor: UsbDeviceDescriptorInfo {
             vendor_id: 0x1234,
             product_id: 0xabcd,
-            device_version: UsbBcdVersion::from_bcd(0x0210),
+            device_version: 0x0210,
             usb_version: UsbBcdVersion::from_bcd(0x0200),
             class_codes: UsbClassCodes::PER_INTERFACE,
             num_configurations: 1,

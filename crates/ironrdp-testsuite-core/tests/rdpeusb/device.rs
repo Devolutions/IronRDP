@@ -106,28 +106,3 @@ fn add_device_from_protocol_agnostic_device_info(#[case] info: DeviceInfo) {
     assert_eq!(add_device.usb_device, udev_iface);
     encode_vec(&add_device).expect("ADD_DEVICE should encode");
 }
-
-#[rstest]
-#[case::invalid_usb_version({
-    let mut info = simple_device_info();
-    info.descriptor.usb_version = UsbBcdVersion {
-        major: 0x10,
-        minor: 0,
-        sub_minor: 0,
-    };
-    info
-})]
-#[case::invalid_device_version({
-    let mut info = simple_device_info();
-    info.descriptor.device_version = UsbBcdVersion {
-        major: 0x10,
-        minor: 0,
-        sub_minor: 0,
-    };
-    info
-})]
-fn add_device_from_info_rejects_invalid_bcd(#[case] info: DeviceInfo) {
-    let udev_iface = InterfaceId::try_from(4).expect("valid device interface id");
-
-    assert!(add_device_from_info(udev_iface, &info).is_err());
-}

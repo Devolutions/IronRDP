@@ -116,10 +116,10 @@ impl UrbdrcControlClient {
     /// ready to redirect new devices.
     ///
     /// Please note the `callback` will be called only once.
-    pub fn new<F: Fn() -> PduResult<Vec<DvcMessage>> + Send + 'static>(callback: F) -> Self {
+    pub fn new(callback: OnCapabilityExchanged) -> Self {
         Self {
             ready: false,
-            on_capability_exchanged: Box::new(callback),
+            on_capability_exchanged: callback,
         }
     }
 
@@ -140,7 +140,6 @@ impl UrbdrcControlClient {
         if !self.ready {
             return Err(pdu_other_err!("is not ready for ADD_VIRTUAL_CHANNEL"));
         }
-        // Follow FreeRDP use device id as message id
         Ok(Box::new(AddVirtualChannel {
             msg_id: ADD_VIRTUAL_CHANNEL_MSG_ID,
         }))
