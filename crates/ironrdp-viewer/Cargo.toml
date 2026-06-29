@@ -27,6 +27,8 @@ test = false
 default = ["rustls"]
 rustls = ["ironrdp/rustls"]
 native-tls = ["ironrdp/native-tls"]
+qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
 ironrdp = { path = "../ironrdp", features = ["connector", "cliprdr", "input", "pdu", "client", "client-all"] }

@@ -48,6 +48,10 @@ pub use ironrdp_graphics as graphics;
 #[doc(inline)]
 pub use ironrdp_input as input;
 
+#[cfg(feature = "mstsgu")]
+#[doc(inline)]
+pub use ironrdp_mstsgu as mstsgu;
+
 #[cfg(feature = "pdu")]
 #[doc(inline)]
 pub use ironrdp_pdu as pdu;

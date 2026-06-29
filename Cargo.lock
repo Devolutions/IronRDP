@@ -2412,6 +2412,7 @@ dependencies = [
  "ironrdp-echo",
  "ironrdp-graphics",
  "ironrdp-input",
+ "ironrdp-mstsgu",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
  "ironrdp-rdpsnd",

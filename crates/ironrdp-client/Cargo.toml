@@ -49,8 +49,6 @@ all = [
     "rdpdr",
     "smartcard",
     "gateway",
-    "qoi",
-    "qoiz",
     "dvc-pipe-proxy",
     "dvc-com-plugin",
 ]
