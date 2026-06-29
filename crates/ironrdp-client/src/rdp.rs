@@ -126,8 +126,6 @@ impl RdpClient {
 
         #[cfg(feature = "clipboard")]
         {
-            use crate::clipboard::ClientClipboardMessageProxy;
-
             match self.config.channels.clipboard {
                 ClipboardType::Disable => {
                     cliprdr_factory = None;
@@ -148,6 +146,7 @@ impl RdpClient {
                 ClipboardType::Enable => {
                     #[cfg(windows)]
                     {
+                        use crate::clipboard::ClientClipboardMessageProxy;
                         use ironrdp_cliprdr_native::WinClipboard;
                         match WinClipboard::new(ClientClipboardMessageProxy::new(self.input_event_sender.clone())) {
                             Ok(win_cb) => {
