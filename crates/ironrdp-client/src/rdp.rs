@@ -640,6 +640,10 @@ async fn active_session(
                                     Some(cliprdr.initiate_copy(&formats)
                                         .map_err(|e| session::custom_err!("CLIPRDR", e))?)
                                 }
+                                ClipboardMessage::SendInitiateFileCopy(files) => {
+                                    Some(cliprdr.initiate_file_copy(files)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
+                                }
                                 ClipboardMessage::SendFormatData(response) => {
                                     Some(cliprdr.submit_format_data(response)
                                     .map_err(|e| session::custom_err!("CLIPRDR", e))?)

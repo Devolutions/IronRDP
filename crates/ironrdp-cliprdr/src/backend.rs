@@ -43,6 +43,13 @@ pub enum ClipboardMessage {
     /// Implementation should send file contents response on `CLIPRDR` SVC when received.
     SendFileContentsResponse(FileContentsResponse<'static>),
 
+    /// Sent by clipboard backend when a local file list is ready to be offered to the remote.
+    ///
+    /// Implementation should initiate a file copy on `CLIPRDR` SVC when this message is
+    /// received. Unlike [`ClipboardMessage::SendInitiateCopy`], this records the file list so
+    /// later `FileContentsRequest`s from the remote can be serviced.
+    SendInitiateFileCopy(Vec<FileDescriptor>),
+
     /// Failure received from the OS clipboard event loop.
     ///
     /// Client implementation should log/display this error.
