@@ -11,6 +11,7 @@ use ironrdp_core::{
     Decode, DecodeOwned as _, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size,
     ensure_size, invalid_field_err, unsupported_value_err,
 };
+use ironrdp_dvc::DvcEncode;
 use ironrdp_pdu::utils::strict_sum;
 use ironrdp_str::multi_sz::MultiSzString;
 use ironrdp_str::prefixed::Cch32String;
@@ -57,6 +58,8 @@ impl Encode for AddVirtualChannel {
         Self::FIXED_PART_SIZE
     }
 }
+
+impl DvcEncode for AddVirtualChannel {}
 
 /// [\[MS-RDPEUSB\] 2.2.4.2 Add Device Message (ADD_DEVICE)][1] packet.
 ///
@@ -186,6 +189,8 @@ impl Encode for AddDevice {
             + UsbDeviceCaps::FIXED_PART_SIZE])
     }
 }
+
+impl DvcEncode for AddDevice {}
 
 /// [\[MS-RDPEUSB\] 2.2.11 USB_DEVICE_CAPABILITIES][1] packet.
 ///

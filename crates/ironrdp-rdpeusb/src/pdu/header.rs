@@ -106,7 +106,7 @@ impl InterfaceId {
         self.0 | (u32::from(mask) << 30)
     }
 
-    const fn from_raw(value: u32) -> Self {
+    pub(crate) const fn from_raw(value: u32) -> Self {
         Self(value & 0x3F_FF_FF_FF)
     }
 }
