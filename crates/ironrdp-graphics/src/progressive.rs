@@ -1076,16 +1076,30 @@ impl ProgressiveDecoder {
 
         let blocks = decode_progressive_stream(bitmap_data)?;
 
-        // Extract context flags from the CONTEXT block. Per MS-RDPEGFX 2.2.4.2
-        // a Progressive stream MUST begin with SYNC + CONTEXT; treat absence as
-        // a malformed stream rather than silently defaulting band layout.
-        let use_reduce_extrapolate = blocks
-            .iter()
-            .find_map(|block| match block {
-                ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
-                _ => None,
-            })
-            .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?;
+        // Extract the band-layout flag from the CONTEXT block when present.
+        // Per MS-RDPEGFX 2.2.4.2 the SYNC + CONTEXT blocks establish a codec
+        // context once (keyed by `codec_context_id`) and are not required to be
+        // repeated on subsequent frames that reference the same context.
+        // Real-world servers (xrdp, GNOME Remote Desktop) omit the CONTEXT
+        // block on every frame after the first one that established the
+        // context. The strict requirement rejected each of those frames with
+        // `MissingBlock("CONTEXT")`, freezing the image on the coarse first
+        // pass.
+        //
+        // Fall back to the value stored when the context was first created.
+        // Only error when neither source is available, i.e. the very first
+        // frame for a context arrived without a CONTEXT block.
+        let use_reduce_extrapolate = match blocks.iter().find_map(|block| match block {
+            ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
+            _ => None,
+        }) {
+            Some(v) => v,
+            None => self
+                .contexts
+                .get(&codec_context_id)
+                .map(|c| c.surface.use_reduce_extrapolate)
+                .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?,
+        };
 
         // Get or create the context for this codec_context_id
         let context = match self.contexts.entry(codec_context_id) {
