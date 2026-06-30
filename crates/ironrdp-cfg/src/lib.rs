@@ -255,7 +255,8 @@ pub struct DvcPipeProxy {
     pub pipe_name: String,
 }
 
-/// Error returned when a desktop dimension or scale factor property value is out of range.
+/// Error returned when a DVC pipe proxy spec is missing the `=` delimiter between the channel
+/// name and the pipe name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DvcPipeSpecMissingDelimiter;
 

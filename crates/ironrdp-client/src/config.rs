@@ -582,10 +582,14 @@ impl ConfigBuilder {
 
     #[must_use]
     pub fn with_destination(mut self, destination: Destination) -> Self {
-        self.properties.set_full_address(&ironrdp_cfg::TargetAddr {
-            host: ironrdp_cfg::TargetHost::Domain(destination.name.clone()),
-            port: None,
-        });
+        // Classify the host so the persisted `full address` follows TargetAddr's formatting rules
+        // (notably, IPv6 addresses must be bracketed). A bare `TargetHost::Domain` would drop the
+        // brackets and desynchronize the PropertySet from its own canonical formatting.
+        let host = match destination.name.parse::<core::net::IpAddr>() {
+            Ok(ip) => ironrdp_cfg::TargetHost::Ip(ip),
+            Err(_) => ironrdp_cfg::TargetHost::Domain(destination.name.clone()),
+        };
+        self.properties.set_full_address(&ironrdp_cfg::TargetAddr { host, port: None });
         self.properties.set_server_port(destination.port);
         self.properties.clear_alternate_full_address();
         self.destination = Some(destination);
