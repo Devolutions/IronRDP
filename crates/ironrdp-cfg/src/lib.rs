@@ -143,19 +143,20 @@ impl core::error::Error for UnknownGatewayUsageMethod {}
 ///
 /// Corresponds to the `gatewaycredentialssource` `.rdp` property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 pub enum GatewayCredentialsSource {
     /// 0: Use the same credentials as the RDP server (pass-through / NTLM).
-    UseServerCredentials,
+    UseServerCredentials = 0,
     /// 1: Use the gateway-specific user credentials.
-    UseUserCredentials,
+    UseUserCredentials = 1,
     /// 2: Use credentials stored in a profile.
-    UseProfile,
+    UseProfile = 2,
     /// 3: Prompt the user for gateway credentials.
-    Prompt,
+    Prompt = 3,
     /// 4: Use a smart card.
-    SmartCard,
+    SmartCard = 4,
     /// 5: Use the logged-on user's credentials.
-    UseLogonCredentials,
+    UseLogonCredentials = 5,
 }
 
 impl TryFrom<i64> for GatewayCredentialsSource {
@@ -176,15 +177,12 @@ impl TryFrom<i64> for GatewayCredentialsSource {
 
 impl GatewayCredentialsSource {
     /// Returns the raw integer value for writing to a `.rdp` property set.
+    #[expect(
+        clippy::as_conversions,
+        reason = "the enum is #[repr(i64)] with explicit discriminants"
+    )]
     pub fn as_i64(self) -> i64 {
-        match self {
-            Self::UseServerCredentials => 0,
-            Self::UseUserCredentials => 1,
-            Self::UseProfile => 2,
-            Self::Prompt => 3,
-            Self::SmartCard => 4,
-            Self::UseLogonCredentials => 5,
-        }
+        self as i64
     }
 }
 
@@ -204,13 +202,14 @@ impl core::error::Error for UnknownGatewayCredentialsSource {}
 ///
 /// Corresponds to the `audiomode` `.rdp` property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 pub enum AudioMode {
     /// 0: Redirect audio to the local (client) machine.
-    RedirectToClient,
+    RedirectToClient = 0,
     /// 1: Play audio on the remote computer.
-    PlayOnServer,
+    PlayOnServer = 1,
     /// 2: Do not play audio.
-    Disabled,
+    Disabled = 2,
 }
 
 impl TryFrom<i64> for AudioMode {
@@ -228,12 +227,12 @@ impl TryFrom<i64> for AudioMode {
 
 impl AudioMode {
     /// Returns the raw integer value for writing to a `.rdp` property set.
+    #[expect(
+        clippy::as_conversions,
+        reason = "the enum is #[repr(i64)] with explicit discriminants"
+    )]
     pub fn as_i64(self) -> i64 {
-        match self {
-            Self::RedirectToClient => 0,
-            Self::PlayOnServer => 1,
-            Self::Disabled => 2,
-        }
+        self as i64
     }
 }
 
