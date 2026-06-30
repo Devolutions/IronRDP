@@ -3,7 +3,7 @@
 use anyhow::Context as _;
 use ironrdp::client::rdp::{RdpClient, RdpOutputEvent};
 use ironrdp_viewer::app::App;
-use ironrdp_viewer::config::PartialConfig;
+use ironrdp_viewer::cli::ViewerConfig;
 use tokio::runtime;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -11,17 +11,19 @@ use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 
 fn main() -> anyhow::Result<()> {
-    let partial = PartialConfig::parse_args().context("CLI arguments parsing")?;
+    let cli = ViewerConfig::parse_args().context("CLI arguments parsing")?;
 
-    if let Some(dump_path) = &partial.dump_rdp {
-        let content = ironrdp_rdpfile::write(&partial.properties);
-        std::fs::write(dump_path, &content).with_context(|| format!("failed to write {}", dump_path.display()))?;
+    setup_logging(cli.log_file()).context("unable to initialize logging")?;
+
+    let dump_rdp = cli.dump_rdp().map(ToOwned::to_owned);
+    let config = cli.into_config().context("configuration")?;
+
+    if let Some(dump_path) = dump_rdp {
+        // Dump the effective, secret-stripped PropertySet observed from the built configuration.
+        let content = ironrdp_rdpfile::write(config.properties());
+        std::fs::write(&dump_path, &content).with_context(|| format!("failed to write {}", dump_path.display()))?;
         return Ok(());
     }
-
-    setup_logging(partial.log_file.as_deref()).context("unable to initialize logging")?;
-
-    let config = partial.into_config().context("configuration")?;
 
     debug!("Initialize App");
     let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;

@@ -3,6 +3,8 @@
 
 mod config_rdp;
 
+// FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
+
 use core::time::Duration;
 use std::path::Path;
 use std::sync::Arc;
@@ -334,7 +336,6 @@ where
         .await;
 }
 
-// Maybe implement Default for Config
 fn default_client_config() -> connector::Config {
     connector::Config {
         desktop_size: DesktopSize {

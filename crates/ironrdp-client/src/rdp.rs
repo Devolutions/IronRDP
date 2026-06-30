@@ -406,7 +406,7 @@ fn build_connector(
         connector = connector.with_static_channel(rdpdr_channel);
     }
 
-    // Attach CLIPRDR (clipboard redirection).  The backend is built fresh per connection.
+    // Attach CLIPRDR (clipboard redirection). The backend is built fresh per connection.
     #[cfg(feature = "clipboard")]
     if let Some(factory) = cliprdr_factory {
         let backend = factory.build_cliprdr_backend();

@@ -77,6 +77,8 @@ pub struct Config {
     pub(crate) dvc_plugins: Vec<PathBuf>,
 
     /// The merged PropertySet that produced this config, shared (read-only) with channel factories.
+    ///
+    /// Well-known secret properties are stripped when calling [`ConfigBuilder::build`].
     pub(crate) properties: PropertySet,
 
     pub(crate) extensions: ExtensionRegistry,
@@ -174,6 +176,8 @@ pub enum ClipboardType {
 ///
 /// Each field is only present when the corresponding Cargo feature is enabled.
 /// The defaults for all optional fields are `true` (enabled) when the feature is on.
+// TODO: Also add flags for all the channels that are not behind Cargo feature flags.
+// Examples: ECHO and Display Control virtual channels.
 #[derive(Clone, Debug)]
 pub struct ChannelConfig {
     /// Enable the RDPSND (audio) virtual channel.
@@ -247,7 +251,12 @@ impl Default for RdpdrConfig {
     }
 }
 
-/// Transport selection for the RDP connection.
+/// Fully-resolved transport selection for an established RDP connection.
+///
+/// This is the form stored in [`Config`] and consumed by the connection code: every variant
+/// carries all the data the transport needs, including any credentials. To *configure* a transport
+/// on a [`ConfigBuilder`], use the granular [`TransportKind`] instead — it carries only the
+/// addressing, leaving secrets to be supplied (or prompted for) separately.
 #[derive(Clone, Debug, Default)]
 pub enum Transport {
     /// Plain TCP → TLS direct connection to the RDP server.
@@ -268,7 +277,47 @@ pub enum Transport {
     RDCleanPath(RDCleanPathConfig),
 }
 
-/// Credentials and endpoint for an RDS gateway connection.
+/// Transport selection used to configure a [`ConfigBuilder`].
+///
+/// Only the *addressing* of the transport is provided here (the gateway endpoint, the RDCleanPath
+/// URL). The associated secrets — gateway username/password and the RDCleanPath authentication
+/// token — are supplied through their own dedicated `with_*` methods
+/// ([`with_gateway_username`](ConfigBuilder::with_gateway_username),
+/// [`with_gateway_password`](ConfigBuilder::with_gateway_password),
+/// [`with_rdcleanpath_token`](ConfigBuilder::with_rdcleanpath_token)).
+///
+/// Decoupling addressing from secrets means the latter can be tracked as [`MissingField`]s and
+/// resolved independently (e.g. prompted interactively) instead of having to be known up-front when
+/// the transport is selected. The builder assembles the resolved [`Transport`] from this selection
+/// and the collected credentials in [`build`](ConfigBuilder::build).
+#[derive(Clone, Debug, Default)]
+pub enum TransportKind {
+    /// Plain TCP → TLS direct connection to the RDP server.
+    #[default]
+    Direct,
+
+    /// Connect via an RDS gateway (MS-TSGU / MSTSGU).
+    ///
+    /// Gateway credentials are supplied separately via
+    /// [`with_gateway_username`](ConfigBuilder::with_gateway_username) /
+    /// [`with_gateway_password`](ConfigBuilder::with_gateway_password).
+    #[cfg(feature = "gateway")]
+    Gateway {
+        /// Gateway endpoint address (e.g., `"rdg.contoso.com:443"`).
+        endpoint: String,
+    },
+
+    /// Connect via an RDCleanPath proxy (WebSocket-based).
+    ///
+    /// The authentication token is supplied separately via
+    /// [`with_rdcleanpath_token`](ConfigBuilder::with_rdcleanpath_token).
+    RDCleanPath {
+        /// RDCleanPath proxy URL.
+        url: Url,
+    },
+}
+
+/// Endpoint and credentials for a fully-resolved RDS gateway connection.
 #[cfg(feature = "gateway")]
 #[derive(Clone, Debug)]
 pub struct GatewayConfig {
@@ -372,9 +421,12 @@ impl From<&Destination> for ironrdp_connector::ServerName {
 
 // ── RDCleanPath & DVC proxy ───────────────────────────────────────────────────
 
+/// URL and authentication token for a fully-resolved RDCleanPath connection.
 #[derive(Clone, Debug)]
 pub struct RDCleanPathConfig {
+    /// RDCleanPath proxy URL.
     pub url: Url,
+    /// RDCleanPath authentication token (secret).
     pub auth_token: String,
 }
 
@@ -389,19 +441,12 @@ impl FromStr for DvcProxyInfo {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.split('=');
-        let channel_name = parts
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("missing DVC channel name"))?
-            .to_owned();
-        let pipe_name = parts
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("missing DVC proxy pipe name"))?
-            .to_owned();
-
+        let (channel_name, pipe_name) = s
+            .split_once('=')
+            .context("missing '=' delimiter in DVC proxy specification")?;
         Ok(Self {
-            channel_name,
-            pipe_name,
+            channel_name: channel_name.to_owned(),
+            pipe_name: pipe_name.to_owned(),
         })
     }
 }
@@ -428,6 +473,8 @@ pub enum MissingField {
     GatewayUsername,
     /// Gateway password (only when a gateway transport is selected).
     GatewayPassword,
+    /// RDCleanPath authentication token (only when an RDCleanPath transport is selected).
+    RDCleanPathToken,
     /// Client build number (frontend-derived).
     ClientBuild,
     /// Client directory path (frontend-derived).
@@ -446,6 +493,7 @@ impl fmt::Display for MissingField {
             Self::Password => "password",
             Self::GatewayUsername => "gateway username",
             Self::GatewayPassword => "gateway password",
+            Self::RDCleanPathToken => "RDCleanPath token",
             Self::ClientBuild => "client build",
             Self::ClientDir => "client dir",
             Self::Platform => "platform",
@@ -514,7 +562,8 @@ pub struct ConfigBuilder {
     alternate_shell: Option<String>,
     work_dir: Option<String>,
 
-    transport: Transport,
+    transport: TransportKind,
+    rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     fake_events_interval: Option<Duration>,
     channels: ChannelConfig,
@@ -533,20 +582,30 @@ impl ConfigBuilder {
 
     #[must_use]
     pub fn with_destination(mut self, destination: Destination) -> Self {
+        self.properties.set_full_address(&ironrdp_cfg::TargetAddr {
+            host: ironrdp_cfg::TargetHost::Domain(destination.name.clone()),
+            port: None,
+        });
+        self.properties.set_server_port(destination.port);
+        self.properties.clear_alternate_full_address();
         self.destination = Some(destination);
         self
     }
 
     #[must_use]
-    pub fn with_credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
-        self.username = Some(username.into());
-        self.password = Some(password.into());
+    pub fn with_username(mut self, username: impl Into<String>) -> Self {
+        let username = username.into();
+        self.username = Some(username.clone());
+        self.properties.set_username(username);
         self
     }
 
+    /// Set the domain used by the RDP account credentials. Upserts the `domain` property.
     #[must_use]
-    pub fn with_username(mut self, username: impl Into<String>) -> Self {
-        self.username = Some(username.into());
+    pub fn with_domain(mut self, domain: impl Into<String>) -> Self {
+        let domain = domain.into();
+        self.properties.set_domain(domain.clone());
+        self.domain = Some(domain);
         self
     }
 
@@ -557,15 +616,10 @@ impl ConfigBuilder {
     }
 
     #[must_use]
-    pub fn with_gateway_credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
-        self.gateway_username = Some(username.into());
-        self.gateway_password = Some(password.into());
-        self
-    }
-
-    #[must_use]
     pub fn with_gateway_username(mut self, username: impl Into<String>) -> Self {
-        self.gateway_username = Some(username.into());
+        let username = username.into();
+        self.gateway_username = Some(username.clone());
+        self.properties.set_gateway_username(username);
         self
     }
 
@@ -636,6 +690,54 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the desktop width (in pixels) to request. Upserts the `desktopwidth` property.
+    ///
+    /// Together with [`with_desktop_height`](Self::with_desktop_height) this becomes the initial
+    /// [`DesktopSize`](ironrdp_connector::DesktopSize) advertised to the server.
+    #[must_use]
+    pub fn with_desktop_width(mut self, width: u16) -> Self {
+        self.desktop_width = Some(width);
+        self.properties.set_desktop_width(width);
+        self
+    }
+
+    /// Set the desktop height (in pixels) to request. Upserts the `desktopheight` property.
+    ///
+    /// Together with [`with_desktop_width`](Self::with_desktop_width) this becomes the initial
+    /// [`DesktopSize`](ironrdp_connector::DesktopSize) advertised to the server.
+    #[must_use]
+    pub fn with_desktop_height(mut self, height: u16) -> Self {
+        self.desktop_height = Some(height);
+        self.properties.set_desktop_height(height);
+        self
+    }
+
+    /// Set the desktop scale factor (percentage, typically 100–500) to request. Upserts the
+    /// `desktopscalefactor` property.
+    ///
+    /// This becomes the `desktop_scale_factor` in the `TS_UD_CS_CORE` GCC structure.
+    #[must_use]
+    pub fn with_desktop_scale_factor(mut self, scale: u32) -> Self {
+        self.desktop_scale_factor = Some(scale);
+        self.properties.set_desktop_scale_factor(scale);
+        self
+    }
+
+    /// Enable or disable TLS + Network Level Authentication (NLA) using CredSSP. Upserts the
+    /// `enablecredsspsupport` property.
+    ///
+    /// NLA allows authentication to be performed before session establishment, considerably
+    /// reducing the attack surface compared to the legacy TLS security protocol. When connecting to
+    /// NLA-capable servers it is recommended to also disable plain TLS via
+    /// [`with_tls(false)`](Self::with_tls).
+    #[doc(alias("with_nla", "with_enable_credssp"))]
+    #[must_use]
+    pub fn with_credssp(mut self, enabled: bool) -> Self {
+        self.enable_credssp = Some(enabled);
+        self.properties.set_enable_credssp_support(enabled);
+        self
+    }
+
     /// Set the bitmap codecs (e.g. `["remotefx:on"]`). Not reflected in the PropertySet.
     #[must_use]
     pub fn with_codecs(mut self, codecs: Vec<String>) -> Self {
@@ -650,8 +752,17 @@ impl ConfigBuilder {
         self
     }
 
+    /// Enable or disable TLS + Graphical login (legacy security protocol; also called SSL). Upserts
+    /// the `ironrdp_tls` property.
+    ///
+    /// When this security protocol is negotiated, the RDP server shows a graphical login screen and
+    /// the full connection sequence is performed with all static channels joined and active. This
+    /// exposes a wide attack surface (MITM, server-side and client-side takeover, file stealing) and
+    /// is being phased out. Set this to `false` to effectively enforce usage of NLA/CredSSP on the
+    /// client side (see [`with_credssp`](Self::with_credssp)).
+    #[doc(alias("with_enable_tls"))]
     #[must_use]
-    pub fn with_enable_tls(mut self, enabled: bool) -> Self {
+    pub fn with_tls(mut self, enabled: bool) -> Self {
         self.enable_tls = Some(enabled);
         self.properties.set_enable_tls(enabled);
         self
@@ -664,52 +775,100 @@ impl ConfigBuilder {
         self
     }
 
-    /// Set the bulk compression type directly. Upserts the `ironrdp_compressionlevel` property.
+    /// Enable or disable bulk compression support. Upserts the `compression` property.
+    #[must_use]
+    pub fn with_compression(mut self, enabled: bool) -> Self {
+        self.compression_enabled = Some(enabled);
+        self.properties.set_compression(enabled);
+        self
+    }
+
+    /// Set the bulk compression type directly. Upserts the `ironrdp_compressionlevel` property,
+    /// or clears it when `ty` is `None`.
+    ///
+    /// When set, the `INFO_COMPRESSION` flag is included in the Client Info PDU and the specified
+    /// compression type is advertised. The server may then send compressed PDUs using any
+    /// compression algorithm up to and including this level:
+    ///
+    /// - `None` — no compression (default)
+    /// - `Some(K8)` — MPPC with 8 KB history (RDP 4.0)
+    /// - `Some(K64)` — MPPC with 64 KB history (RDP 5.0)
+    /// - `Some(Rdp6)` — NCRUSH (RDP 6.0)
+    /// - `Some(Rdp61)` — XCRUSH (RDP 6.1)
     #[must_use]
     pub fn with_compression_type(mut self, ty: Option<ironrdp_pdu::rdp::client_info::CompressionType>) -> Self {
         self.compression_type = ty;
         if let Some(ty) = ty {
             self.properties.set_compression_level(level_from_compression_type(ty));
+        } else {
+            self.properties.clear_compression_level();
         }
         self
     }
 
-    /// Set the transport. Upserts the corresponding properties (`ironrdp_rdcleanpathurl`/token,
-    /// `gatewayhostname`/usage/credentials), clearing the others so the PropertySet stays consistent.
+    /// Set the bulk compression type from a level (0–3). Out-of-range levels are ignored.
+    ///
+    /// The level maps to a [`CompressionType`](ironrdp_pdu::rdp::client_info::CompressionType):
+    /// `0` → `K8`, `1` → `K64`, `2` → `Rdp6`, `3` → `Rdp61`. See
+    /// [`with_compression_type`](Self::with_compression_type) for the semantics of each level.
     #[must_use]
-    pub fn with_transport(mut self, transport: Transport) -> Self {
+    pub fn with_compression_level(self, level: u32) -> Self {
+        match compression_type_from_level(level) {
+            Ok(ty) => self.with_compression_type(Some(ty)),
+            Err(_) => self,
+        }
+    }
+
+    /// Select the transport. Upserts the corresponding addressing properties
+    /// (`ironrdp_rdcleanpathurl`, `gatewayhostname`/`gatewayusagemethod`), clearing the other
+    /// transport's properties so the PropertySet stays consistent.
+    ///
+    /// Secrets are *not* set here: supply gateway credentials via
+    /// [`with_gateway_username`](Self::with_gateway_username) /
+    /// [`with_gateway_password`](Self::with_gateway_password) and the RDCleanPath token via
+    /// [`with_rdcleanpath_token`](Self::with_rdcleanpath_token).
+    #[must_use]
+    pub fn with_transport(mut self, transport: TransportKind) -> Self {
         match &transport {
-            Transport::Direct => {
+            TransportKind::Direct => {
                 self.properties.clear_rdcleanpath();
-                #[cfg(feature = "gateway")]
                 self.properties.clear_gateway();
             }
-            Transport::RDCleanPath(rdcp) => {
-                self.properties.set_rdcleanpath_url(rdcp.url.to_string());
-                self.properties.set_rdcleanpath_token(rdcp.auth_token.clone());
-                #[cfg(feature = "gateway")]
+            TransportKind::RDCleanPath { url } => {
                 self.properties.clear_gateway();
+                self.properties.set_rdcleanpath_url(url.to_string());
             }
             #[cfg(feature = "gateway")]
-            Transport::Gateway(gw) => {
+            TransportKind::Gateway { endpoint } => {
                 self.properties.clear_rdcleanpath();
-                self.properties.set_gateway_hostname(gw.endpoint.clone());
+                self.properties.set_gateway_hostname(endpoint.clone());
                 self.properties
                     .set_gateway_usage_method(ironrdp_cfg::GatewayUsageMethod::UseAlways);
-                self.properties
-                    .set_gateway_credentials(gw.username.clone(), gw.password.clone());
             }
         }
         self.transport = transport;
         self
     }
 
-    /// Set the kerberos config. Upserts the `kdcproxyurl` property; `hostname` is derived from the
-    /// client name and not stored separately.
+    /// Set the RDCleanPath authentication token (only meaningful with an RDCleanPath transport).
+    ///
+    /// The token is a secret: like the gateway password, it is *not* mirrored into the PropertySet,
+    /// and [`build`](Self::build) strips any token loaded from a `.rdp` file before exposing
+    /// [`Config::properties`].
+    #[must_use]
+    pub fn with_rdcleanpath_token(mut self, token: impl Into<String>) -> Self {
+        self.rdcleanpath_token = Some(token.into());
+        self
+    }
+
+    /// Set the kerberos config. Upserts the `kdcproxyurl` property (or clears it when the config
+    /// has no KDC proxy URL); `hostname` is derived from the client name and not stored separately.
     #[must_use]
     pub fn with_kerberos_config(mut self, cfg: ironrdp_connector::credssp::KerberosConfig) -> Self {
         if let Some(url) = &cfg.kdc_proxy_url {
             self.properties.set_kdc_proxy_url(url.to_string());
+        } else {
+            self.properties.clear_kdc_proxy_url();
         }
         self.kerberos_config = Some(cfg);
         self
@@ -728,6 +887,11 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_sound(mut self, enabled: bool) -> Self {
         self.channels.sound = enabled;
+        self.properties.set_audio_mode(if enabled {
+            ironrdp_cfg::AudioMode::RedirectToClient
+        } else {
+            ironrdp_cfg::AudioMode::Disabled
+        });
         self
     }
 
@@ -736,6 +900,8 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_clipboard(mut self, mode: ClipboardType) -> Self {
         self.channels.clipboard = mode;
+        self.properties
+            .set_redirect_clipboard(matches!(mode, ClipboardType::Enable));
         self
     }
 
@@ -744,6 +910,7 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_rdpdr(mut self, enabled: bool) -> Self {
         self.channels.rdpdr.enabled = enabled;
+        self.properties.set_enable_rdpdr(enabled);
         self
     }
 
@@ -752,6 +919,7 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_smartcard(mut self, enabled: bool) -> Self {
         self.channels.rdpdr.smartcard = enabled;
+        self.properties.set_enable_smartcard(enabled);
         self
     }
 
@@ -760,6 +928,7 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_qoi(mut self, enabled: bool) -> Self {
         self.channels.qoi = enabled;
+        self.properties.set_enable_qoi(enabled);
         self
     }
 
@@ -768,14 +937,23 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_qoiz(mut self, enabled: bool) -> Self {
         self.channels.qoiz = enabled;
+        self.properties.set_enable_qoiz(enabled);
         self
     }
+
+    // TODO: It can be useful to have a method for enabling or disabling all the extra channels at once.
+    // Example: in tests, disable all + enable only the required channel.
 
     /// Add a DVC pipe proxy channel.
     #[cfg(feature = "dvc-pipe-proxy")]
     #[must_use]
     pub fn with_dvc_pipe_proxy(mut self, info: DvcProxyInfo) -> Self {
         self.dvc_pipe_proxies.push(info);
+        self.properties
+            .set_dvc_pipe_proxies(self.dvc_pipe_proxies.iter().map(|p| ironrdp_cfg::DvcPipeProxy {
+                channel_name: p.channel_name.clone(),
+                pipe_name: p.pipe_name.clone(),
+            }));
         self
     }
 
@@ -784,6 +962,8 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_dvc_plugin(mut self, path: impl Into<PathBuf>) -> Self {
         self.dvc_plugins.push(path.into());
+        self.properties
+            .set_dvc_plugins(self.dvc_plugins.iter().map(PathBuf::as_path));
         self
     }
 
@@ -842,13 +1022,16 @@ impl ConfigBuilder {
             missing.push(MissingField::Password);
         }
         #[cfg(feature = "gateway")]
-        if matches!(self.transport, Transport::Gateway(_)) {
+        if matches!(self.transport, TransportKind::Gateway { .. }) {
             if self.gateway_username.is_none() {
                 missing.push(MissingField::GatewayUsername);
             }
             if self.gateway_password.is_none() {
                 missing.push(MissingField::GatewayPassword);
             }
+        }
+        if matches!(self.transport, TransportKind::RDCleanPath { .. }) && self.rdcleanpath_token.is_none() {
+            missing.push(MissingField::RDCleanPathToken);
         }
         if self.client_build.is_none() {
             missing.push(MissingField::ClientBuild);
@@ -868,6 +1051,10 @@ impl ConfigBuilder {
     /// Build the [`Config`], filling optional settings with sensible defaults.
     ///
     /// Fails if any required field is unset; inspect [`missing`](Self::missing) beforehand to resolve them.
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "a panic here would be a bug (secrets are guaranteed present by missing()), not documented behavior"
+    )]
     pub fn build(self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
@@ -896,13 +1083,25 @@ impl ConfigBuilder {
             codecs,
         };
 
-        #[cfg_attr(not(feature = "gateway"), allow(unused_mut))]
-        let mut transport = self.transport;
-        #[cfg(feature = "gateway")]
-        if let Transport::Gateway(gw) = &mut transport {
-            gw.username = self.gateway_username.unwrap_or_default();
-            gw.password = self.gateway_password.unwrap_or_default();
-        }
+        // Resolve the granular transport selection into the bundled form, folding in the separately
+        // tracked secrets (gateway credentials, RDCleanPath token).
+        #[expect(
+            clippy::unwrap_used,
+            reason = "the transport secrets are guaranteed present by the missing() check above"
+        )]
+        let transport = match self.transport {
+            TransportKind::Direct => Transport::Direct,
+            #[cfg(feature = "gateway")]
+            TransportKind::Gateway { endpoint } => Transport::Gateway(GatewayConfig {
+                endpoint,
+                username: self.gateway_username.unwrap(),
+                password: self.gateway_password.unwrap(),
+            }),
+            TransportKind::RDCleanPath { url } => Transport::RDCleanPath(RDCleanPathConfig {
+                url,
+                auth_token: self.rdcleanpath_token.unwrap(),
+            }),
+        };
 
         let client_name = self.client_name.unwrap_or_default();
         let kerberos_config = self
@@ -966,6 +1165,17 @@ impl ConfigBuilder {
             work_dir: self.work_dir.unwrap_or_default(),
         };
 
+        // To avoid easily leaking secrets, strip any known secret property before returning the resulting Config.
+        let mut properties = self.properties;
+        let detected_secrets = properties
+            .iter()
+            .filter(|(key, _)| ironrdp_cfg::is_secret_key(key))
+            .map(|(key, _)| key.clone().into_owned())
+            .collect::<Vec<_>>();
+        detected_secrets.into_iter().for_each(|key| {
+            properties.remove(&key);
+        });
+
         Ok(Config {
             connector,
             destination: self.destination.context("server address is required")?,
@@ -977,7 +1187,7 @@ impl ConfigBuilder {
             dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(all(windows, feature = "dvc-com-plugin"))]
             dvc_plugins: self.dvc_plugins,
-            properties: self.properties,
+            properties,
             extensions: self.extensions,
         })
     }
@@ -1073,27 +1283,43 @@ impl ConfigBuilder {
         // Transport: RDCleanPath > Gateway > Direct.
         if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
             let url = Url::parse(url).context("invalid 'ironrdp_rdcleanpathurl'")?;
-            self.transport = Transport::RDCleanPath(RDCleanPathConfig {
-                url,
-                auth_token: token.to_owned(),
-            });
+            self.transport = TransportKind::RDCleanPath { url };
+            self.rdcleanpath_token = Some(token.to_owned());
         } else {
             #[cfg(feature = "gateway")]
             {
-                let use_gateway = ps
+                let gateway_usage = ps
                     .gateway_usage_method()
-                    .ok()
-                    .flatten()
-                    .map_or(ps.gateway_hostname().is_some(), GatewayUsageMethod::is_gateway_required);
-                if let Some(endpoint) = use_gateway.then(|| ps.gateway_hostname()).flatten() {
-                    self.transport = Transport::Gateway(GatewayConfig {
+                    .context("invalid Gateway usage method")?
+                    .unwrap_or_default();
+
+                let gateway_hostname = ps.gateway_hostname();
+
+                let select_gateway_transport = match gateway_usage {
+                    // Explicit gateway use.
+                    GatewayUsageMethod::UseAlways => true,
+
+                    // Approximation of Windows "try direct, then gateway" behavior.
+                    GatewayUsageMethod::Detect => gateway_hostname.is_some(),
+
+                    // IronRDP does not currently resolve MSTSC/client/GPO default gateway policy.
+                    GatewayUsageMethod::UseDefaultSettings => false,
+
+                    // Explicit no-gateway modes.
+                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => false,
+                };
+
+                if select_gateway_transport {
+                    let endpoint = gateway_hostname.context("missing Gateway hostname")?;
+
+                    self.transport = TransportKind::Gateway {
                         endpoint: endpoint.to_owned(),
-                        username: String::new(),
-                        password: String::new(),
-                    });
+                    };
+
                     if let Some(user) = ps.gateway_username() {
                         self.gateway_username = Some(user.to_owned());
                     }
+
                     if let Some(pass) = ps.gateway_password() {
                         self.gateway_password = Some(pass.to_owned());
                     }
@@ -1117,38 +1343,33 @@ impl ConfigBuilder {
             self.channels.sound = false;
         }
         #[cfg(feature = "rdpdr")]
-        if let Some(enabled) = ps.rdpdr_enabled() {
+        if let Some(enabled) = ps.enable_rdpdr() {
             self.channels.rdpdr.enabled = enabled;
         }
         #[cfg(feature = "smartcard")]
-        if let Some(enabled) = ps.smartcard_enabled() {
+        if let Some(enabled) = ps.enable_smartcard() {
             self.channels.rdpdr.smartcard = enabled;
         }
         #[cfg(feature = "qoi")]
-        if let Some(enabled) = ps.qoi_enabled() {
+        if let Some(enabled) = ps.enable_qoi() {
             self.channels.qoi = enabled;
         }
         #[cfg(feature = "qoiz")]
-        if let Some(enabled) = ps.qoiz_enabled() {
+        if let Some(enabled) = ps.enable_qoiz() {
             self.channels.qoiz = enabled;
         }
 
         #[cfg(feature = "dvc-pipe-proxy")]
-        for proxy in ps.dvc_pipe_proxies().into_iter().flat_map(|s| s.split(',')) {
-            let proxy = proxy.trim();
-            if !proxy.is_empty() {
-                self.dvc_pipe_proxies
-                    .push(proxy.parse().context("invalid DVC pipe proxy spec")?);
-            }
+        for (idx, proxy) in ps.dvc_pipe_proxies().enumerate() {
+            let proxy = proxy.with_context(|| format!("invalid DVC pipe proxy spec at idx {idx}"))?;
+            self.dvc_pipe_proxies.push(DvcProxyInfo {
+                channel_name: proxy.channel_name,
+                pipe_name: proxy.pipe_name,
+            });
         }
 
         #[cfg(all(windows, feature = "dvc-com-plugin"))]
-        for plugin in ps.dvc_plugins().into_iter().flat_map(|s| s.split(',')) {
-            let plugin = plugin.trim();
-            if !plugin.is_empty() {
-                self.dvc_plugins.push(PathBuf::from(plugin));
-            }
-        }
+        self.dvc_plugins.extend(ps.dvc_plugins());
 
         Ok(self)
     }

@@ -1,6 +1,6 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use core::num::ParseIntError;
+use core::time::Duration;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
@@ -8,6 +8,7 @@ use clap::Parser;
 use clap::clap_derive::ValueEnum;
 use ironrdp::client::config::{
     ClipboardType as ResolvedClipboardType, Config, ConfigBuilder, Destination, DvcProxyInfo, MissingField,
+    TransportKind,
 };
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp_cfg::PropertySetExt as _;
@@ -52,128 +53,6 @@ impl KeyboardType {
     }
 }
 
-fn apply_cli_args_to_properties(properties: &mut ironrdp_propertyset::PropertySet, args: &Args) {
-    if let Some(dest) = &args.destination {
-        // Format the host in .rdp canonical form: IPv6 gets bracketed ("[::1]"), others are plain.
-        let host = dest
-            .name()
-            .parse::<core::net::IpAddr>()
-            .map(ironrdp_cfg::TargetHost::Ip)
-            .unwrap_or_else(|_| ironrdp_cfg::TargetHost::Domain(dest.name().to_owned()));
-        properties.insert("full address", format!("{host}:{}", dest.port()));
-    }
-
-    if let Some(username) = &args.username {
-        properties.insert("username", username.as_str());
-    }
-
-    if let Some(password) = &args.password {
-        properties.insert("ClearTextPassword", password.as_str());
-    }
-
-    if let Some(domain) = &args.domain {
-        properties.insert("domain", domain.as_str());
-    }
-
-    if let Some(scale) = args.scale_desktop {
-        properties.insert("desktopscalefactor", i64::from(scale));
-    }
-
-    if let Some(width) = args.desktop_width {
-        properties.insert("desktopwidth", i64::from(width));
-    }
-
-    if let Some(height) = args.desktop_height {
-        properties.insert("desktopheight", i64::from(height));
-    }
-
-    if let Some(gw_host) = &args.gw_endpoint {
-        properties.insert("gatewayhostname", gw_host.as_str());
-        // Ensure the gateway is treated as enabled when a host is provided explicitly.
-        properties.insert(
-            "gatewayusagemethod",
-            ironrdp_cfg::GatewayUsageMethod::UseAlways.as_i64(),
-        );
-    }
-
-    if let Some(gw_user) = &args.gw_user {
-        properties.insert("gatewayusername", gw_user.as_str());
-    }
-
-    if let Some(gw_pass) = &args.gw_pass {
-        properties.insert("GatewayPassword", gw_pass.as_str());
-    }
-
-    if args.no_credssp {
-        properties.set_enable_credssp_support(false);
-    }
-
-    if args.no_tls {
-        properties.set_enable_tls(false);
-    }
-
-    if args.no_server_pointer {
-        properties.set_server_pointer(false);
-    }
-
-    if args.autologon {
-        properties.set_autologon(true);
-    }
-
-    if let Some(enabled) = args.compression_enabled {
-        properties.set_compression(enabled);
-    }
-
-    if let Some(level) = args.compression_level {
-        properties.set_compression_level(level);
-    }
-
-    if let Some(color_depth) = args.color_depth {
-        properties.set_color_depth(color_depth);
-    }
-
-    #[cfg(windows)]
-    if !args.dvc_plugin.is_empty() {
-        let value = args
-            .dvc_plugin
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        properties.set_dvc_plugins(value);
-    }
-
-    if let Some(url) = &args.rdcleanpath_url {
-        properties.set_rdcleanpath_url(url.as_str());
-    }
-
-    if let Some(token) = &args.rdcleanpath_token {
-        properties.set_rdcleanpath_token(token.as_str());
-    }
-
-    if let Some(minutes) = args.prevent_session_lock {
-        properties.set_fake_events_interval(minutes);
-    }
-
-    if !args.dvc_proxy.is_empty() {
-        let value = args
-            .dvc_proxy
-            .iter()
-            .map(|p| format!("{}={}", p.channel_name, p.pipe_name))
-            .collect::<Vec<_>>()
-            .join(",");
-        properties.set_dvc_pipe_proxies(value);
-    }
-}
-
-fn parse_hex(input: &str) -> Result<u32, ParseIntError> {
-    if input.starts_with("0x") {
-        u32::from_str_radix(input.get(2..).unwrap_or(""), 16)
-    } else {
-        input.parse::<u32>()
-    }
-}
-
 /// Devolutions IronRDP viewer
 #[derive(Parser, Debug)]
 #[clap(author = "Devolutions", about = "Devolutions-IronRDP viewer")]
@@ -210,7 +89,9 @@ struct Args {
     password: Option<String>,
 
     /// Proxy URL to connect to for the RDCleanPath
-    #[clap(long, requires("rdcleanpath_token"))]
+    ///
+    /// The accompanying token may be supplied via `--rdcleanpath-token` or entered interactively.
+    #[clap(long)]
     rdcleanpath_url: Option<Url>,
 
     /// Authentication token to insert in the RDCleanPath packet
@@ -237,14 +118,6 @@ struct Args {
     #[clap(long, default_value_t = String::from(""))]
     dig_product_id: String,
 
-    /// Enable thin client
-    #[clap(long)]
-    thin_client: bool,
-
-    /// Enable small cache
-    #[clap(long)]
-    small_cache: bool,
-
     /// Scaling factor for desktop applications, percentage (value between 100 and 500)
     #[clap(long, value_parser = clap::value_parser!(u32).range(100..=500))]
     scale_desktop: Option<u32>,
@@ -265,11 +138,6 @@ struct Args {
     /// client could skip costly software rendering of the pointer with alpha blending
     #[clap(long)]
     no_server_pointer: bool,
-
-    /// Enabled capability versions. Each bit represents enabling a capability version
-    /// starting from V8 to V10_7
-    #[clap(long, value_parser = parse_hex, default_value_t = 0)]
-    capabilities: u32,
 
     /// Automatically logon to the server by passing the INFO_AUTOLOGON flag
     ///
@@ -299,14 +167,14 @@ struct Args {
     #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
 
-    /// Enable bulk compression support (default: true).
+    /// Disable bulk compression support.
     ///
-    /// When enabled, the client advertises support for bulk compression and the
-    /// server may send compressed PDUs. Use `--compression-enabled=false` to
-    /// disable. When not specified, the value from the `.rdp` file is used (if
-    /// present), otherwise compression is enabled by default.
-    #[clap(long, action = clap::ArgAction::Set)]
-    compression_enabled: Option<bool>,
+    /// By default the client advertises support for bulk compression and the
+    /// server may send compressed PDUs. Pass `--no-compression` to disable it.
+    /// When not specified, the value from the `.rdp` file is used (if present),
+    /// otherwise compression is enabled by default.
+    #[clap(long)]
+    no_compression: bool,
 
     /// Bulk compression level to negotiate with the server.
     ///
@@ -346,32 +214,20 @@ struct Args {
     dump_rdp: Option<PathBuf>,
 }
 
-/// The result of phase 1 parsing: the merged PropertySet plus CLI-only settings.
+/// Result of parsing CLI args + loading the `.rdp` file: a configured [`ConfigBuilder`] plus the
+/// CLI-only settings that cannot live on the builder.
 ///
-/// After obtaining a `PartialConfig`, callers may inspect or serialise [`PartialConfig::properties`]
-/// (e.g., with the `--dump-rdp` flag) before committing to a full session. Call
-/// [`PartialConfig::into_config`] to complete phase 2 (interactive prompts + strong typing).
-#[derive(Debug)]
-pub struct PartialConfig {
-    /// The merged PropertySet (`.rdp` file + CLI overrides).
-    pub properties: ironrdp_propertyset::PropertySet,
+/// Call [`ViewerConfig::into_config`] to resolve the remaining required fields (interactive prompts
+/// + frontend-derived client identity) and build the strongly-typed [`Config`].
+pub struct ViewerConfig {
+    builder: ConfigBuilder,
 
     // CLI-only settings that are not representable as `.rdp` file properties.
-    pub log_file: Option<String>,
-    pub dump_rdp: Option<PathBuf>,
-    pub keyboard_type: KeyboardType,
-    pub keyboard_subtype: u32,
-    pub keyboard_functional_keys_count: u32,
-    pub ime_file_name: String,
-    pub dig_product_id: String,
-    pub thin_client: bool,
-    pub small_cache: bool,
-    pub capabilities: u32,
-    pub clipboard_type: ClipboardType,
-    pub codecs: Vec<String>,
+    log_file: Option<String>,
+    dump_rdp: Option<PathBuf>,
 }
 
-impl PartialConfig {
+impl ViewerConfig {
     pub fn parse_args() -> anyhow::Result<Self> {
         Self::parse_from(std::env::args_os())
     }
@@ -396,59 +252,156 @@ impl PartialConfig {
             }
         }
 
-        // CLI arguments take precedence: upsert them after the .rdp file is loaded.
-        apply_cli_args_to_properties(&mut properties, &args);
+        let log_file = args.log_file.clone();
+        let dump_rdp = args.dump_rdp.clone();
+
+        // The library overlays everything expressible as a `.rdp` property: destination, credentials,
+        // transport, channels, desktop size, audio, DVC proxies, etc.
+        let builder = ConfigBuilder::from_property_set(&properties)?;
+
+        // Whether the `.rdp` file requested clipboard redirection; the CLI `--clipboard-type` is
+        // resolved against this when applied below.
+        let redirect_clipboard = properties.redirect_clipboard().unwrap_or(true);
+
+        // CLI arguments take precedence: apply them on top of the `.rdp`-derived builder.
+        let builder = apply_cli_to_builder(builder, args, redirect_clipboard);
 
         Ok(Self {
-            properties,
-            log_file: args.log_file,
-            dump_rdp: args.dump_rdp,
-            keyboard_type: args.keyboard_type,
-            keyboard_subtype: args.keyboard_subtype,
-            keyboard_functional_keys_count: args.keyboard_functional_keys_count,
-            ime_file_name: args.ime_file_name,
-            dig_product_id: args.dig_product_id,
-            thin_client: args.thin_client,
-            small_cache: args.small_cache,
-            capabilities: args.capabilities,
-            clipboard_type: args.clipboard_type,
-            codecs: args.codecs,
+            builder,
+            log_file,
+            dump_rdp,
         })
     }
 
     pub fn into_config(self) -> anyhow::Result<Config> {
-        use ironrdp_cfg::PropertySetExt as _;
+        // When dumping, the built config is only used to observe the effective, secret-stripped
+        // PropertySet; we never start a session. Secrets are stripped on `build()` anyway, so there
+        // is no point prompting for them: fill a placeholder instead.
+        let dump = self.dump_rdp.is_some();
+        prompt_missing(self.builder, dump)
+    }
 
-        // The library overlays everything expressible as a `.rdp` property: destination, credentials,
-        // transport, channels, desktop size, audio, DVC proxies, etc.
-        let mut builder = ConfigBuilder::from_property_set(&self.properties)?;
+    /// Path to the log file requested on the CLI, if any.
+    pub fn log_file(&self) -> Option<&str> {
+        self.log_file.as_deref()
+    }
 
-        // CLI-only knobs that are not representable as `.rdp` properties.
-        builder = builder
-            .with_keyboard_type(self.keyboard_type.into_pdu())
-            .with_keyboard_subtype(self.keyboard_subtype)
-            .with_keyboard_functional_keys_count(self.keyboard_functional_keys_count)
-            .with_ime_file_name(self.ime_file_name)
-            .with_dig_product_id(self.dig_product_id)
-            .with_codecs(self.codecs.clone());
+    /// Path to dump the effective `.rdp` PropertySet to, if `--dump-rdp` was given.
+    pub fn dump_rdp(&self) -> Option<&std::path::Path> {
+        self.dump_rdp.as_deref()
+    }
+}
 
-        // Validate the codecs early to surface help text before connecting.
-        let codecs: Vec<_> = self.codecs.iter().map(String::as_str).collect();
+/// Apply CLI overrides on top of a builder that already reflects the `.rdp` file. Every flag that is
+/// present overwrites the corresponding builder (and mirrored property) value.
+fn apply_cli_to_builder(mut builder: ConfigBuilder, args: Args, redirect_clipboard: bool) -> ConfigBuilder {
+    // Validate the codecs early to surface help text before connecting.
+    {
+        let codecs: Vec<_> = args.codecs.iter().map(String::as_str).collect();
         if let Err(help) = client_codecs_capabilities(&codecs) {
             print!("{help}");
             std::process::exit(0);
         }
-
-        let redirect_clipboard = self.properties.redirect_clipboard().unwrap_or(true);
-        builder = builder.with_clipboard(resolve_clipboard_type(self.clipboard_type, redirect_clipboard));
-
-        prompt_missing(builder)
     }
+
+    if let Some(destination) = args.destination {
+        builder = builder.with_destination(destination);
+    }
+    if let Some(username) = args.username {
+        builder = builder.with_username(username);
+    }
+    if let Some(password) = args.password {
+        builder = builder.with_password(password);
+    }
+    if let Some(domain) = args.domain {
+        builder = builder.with_domain(domain);
+    }
+    if let Some(scale) = args.scale_desktop {
+        builder = builder.with_desktop_scale_factor(scale);
+    }
+    if let Some(width) = args.desktop_width {
+        builder = builder.with_desktop_width(width);
+    }
+    if let Some(height) = args.desktop_height {
+        builder = builder.with_desktop_height(height);
+    }
+    if let Some(color_depth) = args.color_depth {
+        builder = builder.with_color_depth(color_depth);
+    }
+    if args.no_credssp {
+        builder = builder.with_credssp(false);
+    }
+    if args.no_tls {
+        builder = builder.with_tls(false);
+    }
+    if args.no_server_pointer {
+        builder = builder.with_server_pointer(false);
+    }
+    if args.autologon {
+        builder = builder.with_autologon(true);
+    }
+    if args.no_compression {
+        builder = builder.with_compression(false);
+    }
+    if let Some(level) = args.compression_level {
+        builder = builder.with_compression_level(level);
+    }
+    if let Some(minutes) = args.prevent_session_lock {
+        builder = builder.with_fake_events_interval(Duration::from_secs(u64::from(minutes) * 60));
+    }
+
+    // Transport overrides: RDCleanPath takes precedence over Gateway.
+    if let Some(url) = args.rdcleanpath_url {
+        builder = builder.with_transport(TransportKind::RDCleanPath { url });
+
+        if let Some(token) = args.rdcleanpath_token {
+            builder = builder.with_rdcleanpath_token(token);
+        }
+    } else if let Some(endpoint) = args.gw_endpoint {
+        builder = builder.with_transport(TransportKind::Gateway { endpoint });
+
+        if let Some(username) = args.gw_user {
+            builder = builder.with_gateway_username(username);
+        }
+        if let Some(password) = args.gw_pass {
+            builder = builder.with_gateway_password(password);
+        }
+    }
+
+    builder = builder.with_clipboard(resolve_clipboard_type(args.clipboard_type, redirect_clipboard));
+
+    // CLI-only knobs that are not representable as `.rdp` properties.
+    // TODO/FIXME: Some of these, we may want to add support for storing in .rdp files (e.g.: IME file name can be reasonably seen as a connection option)
+    builder = builder
+        .with_keyboard_type(args.keyboard_type.into_pdu())
+        .with_keyboard_subtype(args.keyboard_subtype)
+        .with_keyboard_functional_keys_count(args.keyboard_functional_keys_count)
+        .with_ime_file_name(args.ime_file_name)
+        .with_dig_product_id(args.dig_product_id)
+        .with_codecs(args.codecs);
+
+    for proxy in args.dvc_proxy {
+        builder = builder.with_dvc_pipe_proxy(proxy);
+    }
+
+    #[cfg(windows)]
+    for plugin in args.dvc_plugin {
+        builder = builder.with_dvc_plugin(plugin);
+    }
+
+    builder
 }
 
 /// Resolve the remaining [`MissingField`]s by prompting for credentials/addresses and deriving the
 /// frontend-specific client identity, then build the [`Config`].
-fn prompt_missing(mut builder: ConfigBuilder) -> anyhow::Result<Config> {
+///
+/// When `dump` is set, the resulting config is only used to observe the effective, secret-stripped
+/// PropertySet (no session is started). Secret fields are stripped on `build()` regardless, so they
+/// are filled with a placeholder instead of being prompted for.
+fn prompt_missing(mut builder: ConfigBuilder, dump: bool) -> anyhow::Result<Config> {
+    // Stripped on `build()`, so any value works when only dumping the PropertySet.
+    const DUMP_SECRET_PLACEHOLDER: &str = "<stripped>";
+
     for field in builder.missing() {
         builder = match field {
             MissingField::ServerAddress => {
@@ -462,6 +415,7 @@ fn prompt_missing(mut builder: ConfigBuilder) -> anyhow::Result<Config> {
                 let username = inquire::Text::new("Username:").prompt().context("Username prompt")?;
                 builder.with_username(username)
             }
+            MissingField::Password if dump => builder.with_password(DUMP_SECRET_PLACEHOLDER),
             MissingField::Password => {
                 let password = inquire::Password::new("Password:")
                     .without_confirmation()
@@ -475,12 +429,20 @@ fn prompt_missing(mut builder: ConfigBuilder) -> anyhow::Result<Config> {
                     .context("Gateway username prompt")?;
                 builder.with_gateway_username(username)
             }
+            MissingField::GatewayPassword if dump => builder.with_gateway_password(DUMP_SECRET_PLACEHOLDER),
             MissingField::GatewayPassword => {
                 let password = inquire::Password::new("Gateway password:")
                     .without_confirmation()
                     .prompt()
                     .context("Gateway password prompt")?;
                 builder.with_gateway_password(password)
+            }
+            MissingField::RDCleanPathToken if dump => builder.with_rdcleanpath_token(DUMP_SECRET_PLACEHOLDER),
+            MissingField::RDCleanPathToken => {
+                let token = inquire::Text::new("RDCleanPath token:")
+                    .prompt()
+                    .context("RDCleanPath token prompt")?;
+                builder.with_rdcleanpath_token(token)
             }
             // Frontend-derived identity: never prompted.
             MissingField::ClientBuild => builder.with_client_build(client_build()),
@@ -520,7 +482,7 @@ fn current_platform() -> MajorPlatformType {
 }
 
 pub fn parse_config() -> anyhow::Result<Config> {
-    PartialConfig::parse_args()?.into_config()
+    ViewerConfig::parse_args()?.into_config()
 }
 
 pub fn parse_config_from<I, T>(args: I) -> anyhow::Result<Config>
@@ -528,7 +490,7 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    PartialConfig::parse_from(args)?.into_config()
+    ViewerConfig::parse_from(args)?.into_config()
 }
 
 fn resolve_clipboard_type(cli: ClipboardType, redirect_clipboard: bool) -> ResolvedClipboardType {

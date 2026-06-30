@@ -10,4 +10,4 @@
 #![allow(clippy::cast_sign_loss)]
 
 pub mod app;
-pub mod config;
+pub mod cli;
