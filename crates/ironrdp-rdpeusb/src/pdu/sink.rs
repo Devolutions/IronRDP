@@ -96,13 +96,13 @@ impl AddDevice {
         ensure_size!(in: src, size: 4 /* NumUsbDevice */);
         let num_usb_device = src.read_u32();
         if num_usb_device != 0x1 {
-            return Err(unsupported_value_err!("NumUsbDevice", format!("{num_usb_device}")));
+            return Err(unsupported_value_err!("NumUsbDevice", format!("{num_usb_device}"), in: src));
         }
 
         ensure_size!(in: src, size: InterfaceId::FIXED_PART_SIZE);
         let usb_device = match src.read_u32() {
             0x0..=0x3 => {
-                return Err(invalid_field_err!("UsbDevice", "conflict with default interfaces"));
+                return Err(invalid_field_err!("UsbDevice", "conflict with default interfaces", in: src));
             }
             value => InterfaceId::try_from(value)?,
         };
@@ -230,7 +230,7 @@ impl UsbDeviceCaps {
 impl Encode for UsbDeviceCaps {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         Self::check_device_speed(self.usb_bus_iface_ver, self.device_speed)
-            .map_err(|reason| invalid_field_err!("USB_DEVICE_CAPABILITIES::DeviceIsHighSpeed", reason))?;
+            .map_err(|reason| invalid_field_err!("USB_DEVICE_CAPABILITIES::DeviceIsHighSpeed", reason, in: dst))?;
 
         ensure_fixed_part_size!(in: dst);
 
@@ -268,36 +268,36 @@ impl Decode<'_> for UsbDeviceCaps {
 
         let cb_size = src.read_u32();
         if cb_size != Self::CB_SIZE {
-            return Err(unsupported_value_err!("CbSize", format!("{cb_size}")));
+            return Err(unsupported_value_err!("CbSize", format!("{cb_size}"), in: src));
         }
         let usb_bus_iface_ver = match src.read_u32() {
             0x0 => UsbBusIfaceVer::V0,
             0x1 => UsbBusIfaceVer::V1,
             0x2 => UsbBusIfaceVer::V2,
-            value => return Err(unsupported_value_err!("UsbBusInterfaceVersion", format!("{value}"))),
+            value => return Err(unsupported_value_err!("UsbBusInterfaceVersion", format!("{value}"), in: src)),
         };
         let usbdi_ver = match src.read_u32() {
             0x500 => UsbdiVer::V0x500,
             0x600 => UsbdiVer::V0x600,
-            value => return Err(unsupported_value_err!("USBDI_Version", format!("{value}"))),
+            value => return Err(unsupported_value_err!("USBDI_Version", format!("{value}"), in: src)),
         };
         let supported_usb_ver = match src.read_u32() {
             0x100 => SupportedUsbVer::Usb10,
             0x110 => SupportedUsbVer::Usb11,
             0x200 => SupportedUsbVer::Usb20,
-            value => return Err(unsupported_value_err!("SupportedUsbVersion", format!("{value}"))),
+            value => return Err(unsupported_value_err!("SupportedUsbVersion", format!("{value}"), in: src)),
         };
         let hcd_caps = src.read_u32();
         if hcd_caps != Self::HCD_CAPS {
-            return Err(unsupported_value_err!("HcdCapabilities", format!("{hcd_caps}")));
+            return Err(unsupported_value_err!("HcdCapabilities", format!("{hcd_caps}"), in: src));
         }
         let device_speed = match src.read_u32() {
             0x0 => DeviceSpeed::FullSpeed,
             0x1 => DeviceSpeed::HighSpeed,
-            value => return Err(unsupported_value_err!("DeviceIsHighSpeed", format!("{value}"))),
+            value => return Err(unsupported_value_err!("DeviceIsHighSpeed", format!("{value}"), in: src)),
         };
         Self::check_device_speed(usb_bus_iface_ver, device_speed)
-            .map_err(|reason| invalid_field_err!("USB_DEVICE_CAPABILITIES::DeviceIsHighSpeed", reason))?;
+            .map_err(|reason| invalid_field_err!("USB_DEVICE_CAPABILITIES::DeviceIsHighSpeed", reason, in: src))?;
         let no_ack_isoch_write_jitter_buf_size = match src.read_u32() {
             0 => NoAckIsochWriteJitterBufSizeInMs::TS_URB_ISOCH_TRANSFER_NOT_SUPPORTED,
             value @ 10..=512 => NoAckIsochWriteJitterBufSizeInMs(value),
@@ -305,7 +305,7 @@ impl Decode<'_> for UsbDeviceCaps {
                 return Err(unsupported_value_err!(
                     "NoAckIsochWriteJitterBufferSizeInMs",
                     format!("{value}")
-                ));
+                , in: src));
             }
         };
 

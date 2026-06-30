@@ -60,11 +60,9 @@ impl VersionAndIdPdu {
 
     pub fn new_client_announce_reply(req: VersionAndIdPdu) -> DecodeResult<Self> {
         if req.kind != VersionAndIdPduKind::ServerAnnounceRequest {
-            return Err(invalid_field_err!(
-                "VersionAndIdPdu::new_client_announce_reply",
+            return Err(invalid_field_err!( "VersionAndIdPdu::new_client_announce_reply",
                 "VersionAndIdPduKind",
-                "invalid value"
-            ));
+                "invalid value", at: 0));
         }
 
         Ok(Self {
@@ -88,11 +86,9 @@ impl VersionAndIdPdu {
             PacketId::CoreServerAnnounce => VersionAndIdPduKind::ServerAnnounceRequest,
             PacketId::CoreClientidConfirm => VersionAndIdPduKind::ServerClientIdConfirm,
             _ => {
-                return Err(invalid_field_err!(
-                    "VersionAndIdPdu::decode",
+                return Err(invalid_field_err!( "VersionAndIdPdu::decode",
                     "PacketId",
-                    "invalid value"
-                ));
+                    "invalid value", at: 0));
             }
         };
 
@@ -244,11 +240,9 @@ impl CoreCapability {
             PacketId::CoreServerCapability => CoreCapabilityKind::ServerCoreCapabilityRequest,
             PacketId::CoreClientCapability => CoreCapabilityKind::ClientCoreCapabilityResponse,
             _ => {
-                return Err(invalid_field_err!(
-                    "CoreCapability::decode",
+                return Err(invalid_field_err!( "CoreCapability::decode",
                     "PacketId",
-                    "invalid value"
-                ));
+                    "invalid value", at: 0));
             }
         };
 
@@ -607,7 +601,7 @@ impl TryFrom<u16> for CapabilityType {
             0x0003 => Ok(CapabilityType::Port),
             0x0004 => Ok(CapabilityType::Drive),
             0x0005 => Ok(CapabilityType::Smartcard),
-            _ => Err(invalid_field_err!("try_from", "CapabilityType", "invalid value")),
+            _ => Err(invalid_field_err!("try_from", "CapabilityType", "invalid value", at: 0)),
         }
     }
 }
@@ -971,11 +965,9 @@ impl Devices {
         if let Some(device_type) = self.0.iter().find(|d| d.device_id == device_id).map(|d| d.device_type) {
             Ok(device_type)
         } else {
-            Err(invalid_field_err!(
-                "Devices::for_device_type",
+            Err(invalid_field_err!( "Devices::for_device_type",
                 "device_id",
-                "no device with that ID"
-            ))
+                "no device with that ID", at: 0))
         }
     }
 
@@ -1259,7 +1251,7 @@ impl TryFrom<u32> for DeviceType {
             0x0000_0004 => Ok(DeviceType::Print),
             0x0000_0008 => Ok(DeviceType::Filesystem),
             0x0000_0020 => Ok(DeviceType::Smartcard),
-            _ => Err(invalid_field_err!("try_from", "DeviceType", "invalid value")),
+            _ => Err(invalid_field_err!("try_from", "DeviceType", "invalid value", at: 0)),
         }
     }
 }
@@ -1459,7 +1451,7 @@ impl TryFrom<u32> for MajorFunction {
             0x0000_0006 => Ok(MajorFunction::SetInformation),
             0x0000_000c => Ok(MajorFunction::DirectoryControl),
             0x0000_0011 => Ok(MajorFunction::LockControl),
-            _ => Err(invalid_field_err!("try_from", "MajorFunction", "unsupported value")),
+            _ => Err(invalid_field_err!("try_from", "MajorFunction", "unsupported value", at: 0)),
         }
     }
 }
@@ -1537,7 +1529,7 @@ where
         let input_buffer_length = src.read_u32();
         let io_control_code = T::try_from(src.read_u32()).map_err(|e| {
             error!("Failed to parse IoCtlCode");
-            invalid_field_err_with_source("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode", e)
+            invalid_field_err_with_source("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode", 0, e)
         })?;
 
         // Padding (20 bytes): An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
@@ -1713,11 +1705,9 @@ impl ServerDriveIoRequest {
             MajorFunction::QueryVolumeInformation => {
                 Ok(ServerDriveQueryVolumeInformationRequest::decode(dev_io_req, src)?.into())
             }
-            MajorFunction::SetVolumeInformation => Err(unsupported_value_err!(
-                "ServerDriveIoRequest::decode",
+            MajorFunction::SetVolumeInformation => Err(unsupported_value_err!( "ServerDriveIoRequest::decode",
                 "MajorFunction",
-                "SetVolumeInformation".to_owned()
-            )), // FreeRDP doesn't implement this
+                "SetVolumeInformation".to_owned(), at: 0)), // FreeRDP doesn't implement this
             MajorFunction::QueryInformation => Ok(ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::SetInformation => Ok(ServerDriveSetInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::DirectoryControl => match dev_io_req.minor_function {
@@ -1728,11 +1718,9 @@ impl ServerDriveIoRequest {
                     Ok(ServerDriveNotifyChangeDirectoryRequest::decode(dev_io_req, src)?.into())
                 }
                 // If MajorFunction is set to IRP_MJ_DIRECTORY_CONTROL and MinorFunction is set to any other value, we've encountered a server bug.
-                _ => Err(invalid_field_err!(
-                    "ServerDriveIoRequest::decode",
+                _ => Err(invalid_field_err!( "ServerDriveIoRequest::decode",
                     "MinorFunction",
-                    "invalid value"
-                )),
+                    "invalid value", at: 0)),
             },
             MajorFunction::LockControl => Ok(ServerDriveLockControlRequest::decode(dev_io_req, src)?.into()),
         }
@@ -1831,11 +1819,9 @@ impl PrinterIoRequest {
             MajorFunction::Create => Ok(Self::Create(DeviceCreateRequest::decode(dev_io_req, src)?)),
             MajorFunction::Write => Ok(Self::Write(DeviceWriteRequest::decode(dev_io_req, src)?)),
             MajorFunction::Close => Ok(Self::Close(DeviceCloseRequest::decode(dev_io_req))),
-            _ => Err(invalid_field_err!(
-                "PrinterIoRequest::decode",
+            _ => Err(invalid_field_err!( "PrinterIoRequest::decode",
                 "MajorFunction",
-                "unsupported value"
-            )),
+                "unsupported value", at: 0)),
         }
     }
 
@@ -2301,11 +2287,9 @@ impl FileInformationClass {
             Self::FullDirectory(f) => f.encode(dst),
             Self::Names(f) => f.encode(dst),
             Self::Directory(f) => f.encode(dst),
-            _ => Err(unsupported_value_err!(
-                "FileInformationClass::encode",
+            _ => Err(unsupported_value_err!( "FileInformationClass::encode",
                 "FileInformationClass",
-                self.to_string()
-            )),
+                self.to_string(), at: 0)),
         }
     }
 
@@ -2326,11 +2310,9 @@ impl FileInformationClass {
             FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {
                 Ok(FileAllocationInformation::decode(src)?.into())
             }
-            _ => Err(unsupported_value_err!(
-                "FileInformationClass::decode",
+            _ => Err(unsupported_value_err!( "FileInformationClass::decode",
                 "FileInformationClassLevel",
-                file_info_class_level.to_string()
-            )),
+                file_info_class_level.to_string(), at: 0)),
         }
     }
 
@@ -2940,11 +2922,9 @@ impl ServerDriveQueryDirectoryRequest {
             | FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION
             | FileInformationClassLevel::FILE_NAMES_INFORMATION => {}
             _ => {
-                return Err(invalid_field_err!(
-                    "ServerDriveQueryDirectoryRequest::decode",
+                return Err(invalid_field_err!( "ServerDriveQueryDirectoryRequest::decode",
                     "file_info_class_lvl",
-                    "received invalid level"
-                ));
+                    "received invalid level", at: 0));
             }
         }
 
@@ -3064,11 +3044,9 @@ impl ServerDriveQueryVolumeInformationRequest {
             | FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION
             | FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION => {}
             _ => {
-                return Err(invalid_field_err!(
-                    "ServerDriveQueryVolumeInformationRequest::decode",
-                    "fs_info_class_lvl",
-                    "received invalid level"
-                ));
+                return Err(invalid_field_err!( "ServerDriveQueryVolumeInformationRequest::decode",
+                        "fs_info_class_lvl",
+                        "received invalid level", at: 0));
             }
         }
 
@@ -3615,11 +3593,9 @@ impl ServerDriveSetInformationRequest {
             | FileInformationClassLevel::FILE_RENAME_INFORMATION
             | FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {}
             _ => {
-                return Err(invalid_field_err!(
-                    "ServerDriveSetInformationRequest::decode",
+                return Err(invalid_field_err!( "ServerDriveSetInformationRequest::decode",
                     "file_information_class_level",
-                    "received invalid level"
-                ));
+                    "received invalid level", at: 0));
             }
         };
 

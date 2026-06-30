@@ -53,7 +53,7 @@ impl<'de> Decode<'de> for ClientMonitorData {
         let monitor_count = cast_length!("number of monitors", src.read_u32())?;
 
         if monitor_count > MONITOR_COUNT_MAX {
-            return Err(invalid_field_err!("nMonitors", "too many monitors"));
+            return Err(invalid_field_err!("nMonitors", "too many monitors", at: 0));
         }
 
         let mut monitors = Vec::with_capacity(monitor_count);
@@ -112,7 +112,7 @@ impl<'de> Decode<'de> for Monitor {
         let right = src.read_i32();
         let bottom = src.read_i32();
         let flags = MonitorFlags::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("flags", "invalid monitor flags"))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid monitor flags", at: 0))?;
 
         Ok(Self {
             left,

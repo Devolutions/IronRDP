@@ -72,7 +72,7 @@ impl ServerLicenseRequest {
 
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::LicenseRequest {
-            return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
+            return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type", at: 0));
         }
 
         ensure_size!(in: src, size: RANDOM_NUMBER_SIZE);
@@ -82,18 +82,18 @@ impl ServerLicenseRequest {
 
         let key_exchange_algorithm_blob = BlobHeader::decode(src)?;
         if key_exchange_algorithm_blob.blob_type != BlobType::KEY_EXCHANGE_ALGORITHM {
-            return Err(invalid_field_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type", at: 0));
         }
 
         ensure_size!(in: src, size: 4);
         let key_exchange_algorithm = src.read_u32();
         if key_exchange_algorithm != RSA_EXCHANGE_ALGORITHM {
-            return Err(invalid_field_err!("keyAlgo", "invalid key exchange algorithm"));
+            return Err(invalid_field_err!("keyAlgo", "invalid key exchange algorithm", at: 0));
         }
 
         let cert_blob = BlobHeader::decode(src)?;
         if cert_blob.blob_type != BlobType::CERTIFICATE {
-            return Err(invalid_field_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type", at: 0));
         }
 
         // The terminal server can choose not to send the certificate by setting the wblobLen field in the Licensing Binary BLOB structure to 0
@@ -106,7 +106,7 @@ impl ServerLicenseRequest {
         ensure_size!(in: src, size: 4);
         let scope_count = src.read_u32();
         if scope_count > MAX_SCOPE_COUNT {
-            return Err(invalid_field_err!("scopeCount", "invalid scope count"));
+            return Err(invalid_field_err!("scopeCount", "invalid scope count", at: 0));
         }
 
         let mut scope_list = Vec::with_capacity(
@@ -183,10 +183,10 @@ impl<'de> Decode<'de> for Scope {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let blob_header = BlobHeader::decode(src)?;
         if blob_header.blob_type != BlobType::SCOPE {
-            return Err(invalid_field_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type", at: 0));
         }
         if blob_header.length < UTF8_NULL_TERMINATOR_SIZE {
-            return Err(invalid_field_err!("blobLen", "blob too small"));
+            return Err(invalid_field_err!("blobLen", "blob too small", at: 0));
         }
         ensure_size!(in: src, size: blob_header.length);
         let mut blob_data = src.read_slice(blob_header.length).to_vec();
@@ -195,7 +195,7 @@ impl<'de> Decode<'de> for Scope {
         if let Ok(data) = core::str::from_utf8(&blob_data) {
             Ok(Self(String::from(data)))
         } else {
-            Err(invalid_field_err!("scope", "scope is not utf8"))
+            Err(invalid_field_err!("scope", "scope is not utf8", at: 0))
         }
     }
 }
@@ -306,7 +306,7 @@ impl<'de> Decode<'de> for ServerCertificate {
         let certificate = match cert_version & CERT_CHAIN_VERSION_MASK {
             1 => CertificateType::Proprietary(ProprietaryCertificate::decode(src)?),
             2 => CertificateType::X509(X509CertificateChain::decode(src)?),
-            _ => return Err(invalid_field_err!("certVersion", "invalid certificate version")),
+            _ => return Err(invalid_field_err!("certVersion", "invalid certificate version", at: 0)),
         };
 
         Ok(Self {
@@ -375,7 +375,7 @@ impl<'de> Decode<'de> for ProductInfo {
 
         let company_name_len = cast_length!("companyLen", src.read_u32())?;
         if !(2..=MAX_COMPANY_NAME_LEN).contains(&company_name_len) {
-            return Err(invalid_field_err!("companyLen", "invalid company name length"));
+            return Err(invalid_field_err!("companyLen", "invalid company name length", at: 0));
         }
 
         ensure_size!(in: src, size: company_name_len);
@@ -386,7 +386,7 @@ impl<'de> Decode<'de> for ProductInfo {
         ensure_size!(in: src, size: 4);
         let product_id_len = cast_length!("productIdLen", src.read_u32())?;
         if !(2..=MAX_PRODUCT_ID_LEN).contains(&product_id_len) {
-            return Err(invalid_field_err!("productIdLen", "invalid produce ID length"));
+            return Err(invalid_field_err!("productIdLen", "invalid produce ID length", at: 0));
         }
 
         ensure_size!(in: src, size: product_id_len);

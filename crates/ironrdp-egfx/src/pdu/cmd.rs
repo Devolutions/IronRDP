@@ -206,7 +206,7 @@ impl<'de> Decode<'de> for GfxPdu {
         #[expect(clippy::unwrap_used, reason = "FIXED_PART_SIZE is a small constant")]
         let _payload_length = pdu_length
             .checked_sub(Self::FIXED_PART_SIZE.try_into().unwrap())
-            .ok_or_else(|| invalid_field_err!("Length", "GFX PDU length is too small"))?;
+            .ok_or_else(|| invalid_field_err!("Length", "GFX PDU length is too small", at: 0))?;
 
         match cmdid {
             RDPGFX_CMDID_WIRETOSURFACE_1 => {
@@ -301,7 +301,7 @@ impl<'de> Decode<'de> for GfxPdu {
                 let pdu = MapSurfaceToScaledWindowPdu::decode(src)?;
                 Ok(GfxPdu::MapSurfaceToScaledWindow(pdu))
             }
-            _ => Err(invalid_field_err!("Type", "Unknown GFX PDU type")),
+            _ => Err(invalid_field_err!("Type", "Unknown GFX PDU type", at: 0)),
         }
     }
 }
@@ -1209,20 +1209,18 @@ impl<'a> Decode<'a> for ResetGraphicsPdu {
 
         let width = src.read_u32();
         if width > MAX_RESET_GRAPHICS_WIDTH_HEIGHT {
-            return Err(invalid_field_err!("width", "invalid reset graphics width"));
+            return Err(invalid_field_err!("width", "invalid reset graphics width", at: 0));
         }
 
         let height = src.read_u32();
         if height > MAX_RESET_GRAPHICS_WIDTH_HEIGHT {
-            return Err(invalid_field_err!("height", "invalid reset graphics height"));
+            return Err(invalid_field_err!("height", "invalid reset graphics height", at: 0));
         }
 
         let monitor_count = src.read_u32();
         if monitor_count > MONITOR_COUNT_MAX {
-            return Err(invalid_field_err!(
-                "monitor_count",
-                "invalid reset graphics monitor count"
-            ));
+            return Err(invalid_field_err!( "monitor_count",
+                "invalid reset graphics monitor count", at: 0));
         }
 
         #[expect(clippy::as_conversions, reason = "monitor_count validated above")]
@@ -2207,7 +2205,7 @@ impl TryFrom<u16> for Codec1Type {
             0xc => Ok(Codec1Type::Alpha),
             0xe => Ok(Codec1Type::Avc444),
             0xf => Ok(Codec1Type::Avc444v2),
-            _ => Err(invalid_field_err!("Codec1Type", "invalid codec type")),
+            _ => Err(invalid_field_err!("Codec1Type", "invalid codec type", at: 0)),
         }
     }
 }
@@ -2232,7 +2230,7 @@ impl TryFrom<u16> for Codec2Type {
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
             0x9 => Ok(Codec2Type::RemoteFxProgressive),
-            _ => Err(invalid_field_err!("Codec2Type", "invalid codec type")),
+            _ => Err(invalid_field_err!("Codec2Type", "invalid codec type", at: 0)),
         }
     }
 }

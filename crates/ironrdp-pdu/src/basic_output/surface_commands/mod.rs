@@ -61,7 +61,7 @@ impl<'de> Decode<'de> for SurfaceCommand<'de> {
 
         let cmd_type = src.read_u16();
         let cmd_type = SurfaceCommandType::from_u16(cmd_type)
-            .ok_or_else(|| invalid_field_err!("cmdType", "invalid surface command"))?;
+            .ok_or_else(|| invalid_field_err!("cmdType", "invalid surface command", at: 0))?;
 
         match cmd_type {
             SurfaceCommandType::SetSurfaceBits => Ok(Self::SetSurfaceBits(SurfaceBitsPdu::decode(src)?)),
@@ -151,7 +151,7 @@ impl<'de> Decode<'de> for FrameMarkerPdu {
         let frame_action = src.read_u16();
 
         let frame_action = FrameAction::from_u16(frame_action)
-            .ok_or_else(|| invalid_field_err!("frameAction", "invalid frame action"))?;
+            .ok_or_else(|| invalid_field_err!("frameAction", "invalid frame action", at: 0))?;
 
         let frame_id = if src.is_empty() {
             // Sometimes Windows 10 RDP server sends not complete FrameMarker PDU (without frame ID),

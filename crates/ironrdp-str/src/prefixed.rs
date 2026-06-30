@@ -360,14 +360,14 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> Encode for PrefixedString<P, N> {
         let counted_cch = if N::NULL_COUNTED_IN_PREFIX {
             content_cch
                 .checked_add(1)
-                .ok_or_else(|| invalid_field_err!("length prefix", "content length overflow"))?
+                .ok_or_else(|| invalid_field_err!("length prefix", "content length overflow", at: 0))?
         } else {
             content_cch
         };
         let prefix_value = if P::IS_BYTE_COUNT {
             counted_cch
                 .checked_mul(2)
-                .ok_or_else(|| invalid_field_err!("length prefix", "byte length overflow"))?
+                .ok_or_else(|| invalid_field_err!("length prefix", "byte length overflow", at: 0))?
         } else {
             counted_cch
         };
@@ -406,10 +406,8 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P,
         // Step 2: Convert the raw prefix to a code-unit count on the wire.
         let cch_on_wire = if P::IS_BYTE_COUNT {
             if raw % 2 != 0 {
-                return Err(invalid_field_err!(
-                    "length prefix",
-                    "odd byte count for utf-16 string field"
-                ));
+                return Err(invalid_field_err!( "length prefix",
+                    "odd byte count for utf-16 string field", at: 0));
             }
             raw / 2
         } else {
@@ -423,10 +421,8 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P,
         // NullUncounted / NoNull: cch_on_wire is the content length directly.
         let content_cch = if N::NULL_COUNTED_IN_PREFIX {
             if cch_on_wire == 0 {
-                return Err(invalid_field_err!(
-                    "length prefix",
-                    "NullCounted prefix of 0 is invalid; minimum is 1 (empty string with null)"
-                ));
+                return Err(invalid_field_err!( "length prefix",
+                    "NullCounted prefix of 0 is invalid; minimum is 1 (empty string with null)", at: 0));
             }
             cch_on_wire - 1
         } else {
@@ -436,7 +432,7 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P,
         // Step 4: Read content code units (bulk copy, convert LE bytes to u16 values).
         let content_byte_count = content_cch
             .checked_mul(2)
-            .ok_or_else(|| invalid_field_err!("length prefix", "byte length overflow"))?;
+            .ok_or_else(|| invalid_field_err!("length prefix", "byte length overflow", at: 0))?;
         ensure_size!(in: src, size: content_byte_count);
         let slice = src.read_slice(content_byte_count);
         let units = crate::repr::le_bytes_to_units(slice);
@@ -450,7 +446,7 @@ impl<P: LengthPrefix, N: NullTerminatorPolicy> DecodeOwned for PrefixedString<P,
             ensure_size!(in: src, size: 2);
             let null = src.read_u16();
             if null != 0 {
-                return Err(invalid_field_err!("null terminator", "expected 0x0000 null terminator"));
+                return Err(invalid_field_err!("null terminator", "expected 0x0000 null terminator", at: 0));
             }
         }
 

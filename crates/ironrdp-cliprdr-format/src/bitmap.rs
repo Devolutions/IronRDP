@@ -243,19 +243,19 @@ impl BitmapInfoHeader {
 
         let width = src.read_i32();
         check_invariant(width != i32::MIN && width.abs() <= 10_000)
-            .ok_or_else(|| invalid_field_err!("biWidth", "width is too big"))?;
+            .ok_or_else(|| invalid_field_err!("biWidth", "width is too big", at: 0))?;
 
         let height = src.read_i32();
         check_invariant(height != i32::MIN && height.abs() <= 10_000)
-            .ok_or_else(|| invalid_field_err!("biHeight", "height is too big"))?;
+            .ok_or_else(|| invalid_field_err!("biHeight", "height is too big", at: 0))?;
 
         let planes = src.read_u16();
         if planes != 1 {
-            return Err(invalid_field_err!("biPlanes", "invalid planes count"));
+            return Err(invalid_field_err!("biPlanes", "invalid planes count", at: 0));
         }
 
         let bit_count = src.read_u16();
-        check_invariant(bit_count <= 32).ok_or_else(|| invalid_field_err!("biBitCount", "invalid bit count"))?;
+        check_invariant(bit_count <= 32).ok_or_else(|| invalid_field_err!("biBitCount", "invalid bit count", at: 0))?;
 
         let compression = BitmapCompression(src.read_u32());
         let size_image = src.read_u32();
@@ -320,7 +320,7 @@ impl<'a> Decode<'a> for BitmapInfoHeader {
         let size: usize = cast_int!("biSize", size)?;
 
         if size != Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("biSize", "invalid V1 bitmap info header size"));
+            return Err(invalid_field_err!("biSize", "invalid V1 bitmap info header size", at: 0));
         }
 
         Ok(header)
@@ -406,7 +406,7 @@ impl<'a> Decode<'a> for BitmapV5Header {
         let size: usize = cast_int!("biSize", size)?;
 
         if size != Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("biSize", "invalid V5 bitmap info header size"));
+            return Err(invalid_field_err!("biSize", "invalid V5 bitmap info header size", at: 0));
         }
 
         let red_mask = src.read_u32();

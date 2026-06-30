@@ -77,22 +77,20 @@ macro_rules! check_masks_alignment {
 
         let check_mask = |mask: &[u8], field: &'static str| {
             if $pointer_height == 0 {
-                return Err(invalid_field_err!(field, "pointer height cannot be zero"));
+                return Err(invalid_field_err!(field, "pointer height cannot be zero", at: 0));
             }
             if $large_ptr && (mask.len() > U32_MAX) {
-                return Err(invalid_field_err!(field, "pointer mask is too big for u32 size"));
+                return Err(invalid_field_err!(field, "pointer mask is too big for u32 size", at: 0));
             }
             if !$large_ptr && (mask.len() > usize::from(u16::MAX)) {
-                return Err(invalid_field_err!(field, "pointer mask is too big for u16 size"));
+                return Err(invalid_field_err!(field, "pointer mask is too big for u16 size", at: 0));
             }
             if (mask.len() % pointer_height) != 0 {
-                return Err(invalid_field_err!(field, "pointer mask have incomplete scanlines"));
+                return Err(invalid_field_err!(field, "pointer mask have incomplete scanlines", at: 0));
             }
             if (mask.len() / pointer_height) % 2 != 0 {
-                return Err(invalid_field_err!(
-                    field,
-                    "pointer mask scanlines should be aligned to 16 bits"
-                ));
+                return Err(invalid_field_err!( field,
+                    "pointer mask scanlines should be aligned to 16 bits", at: 0));
             }
             Ok(())
         };

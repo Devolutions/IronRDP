@@ -52,7 +52,7 @@ impl ClientTemporaryDirectory<'_> {
         let mut cursor = ReadCursor::new(&self.path_buffer);
 
         read_string_from_cursor(&mut cursor, CharacterSet::Unicode, true)
-            .map_err(|_| invalid_field_err!("wszTempDir", "failed to decode temp dir path"))
+            .map_err(|_| invalid_field_err!("wszTempDir", "failed to decode temp dir path", at: 0))
     }
 }
 

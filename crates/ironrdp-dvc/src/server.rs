@@ -183,7 +183,7 @@ impl DrdynvcServer {
     fn channel_by_id(&mut self, id: u32) -> DecodeResult<&mut DynamicChannel> {
         self.dynamic_channels
             .get_mut(id)
-            .ok_or_else(|| invalid_field_err!("DRDYNVC", "", "invalid channel id"))
+            .ok_or_else(|| invalid_field_err!("DRDYNVC", "", "invalid channel id", at: 0))
     }
 
     pub fn dvc_by_id<T: DvcServerProcessor>(&self, id: u32) -> Option<DynamicChannelRef<'_, T>> {
