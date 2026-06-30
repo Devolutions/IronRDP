@@ -71,26 +71,32 @@ pub trait SessionErrorExt {
 }
 
 impl SessionErrorExt for SessionError {
+    #[track_caller]
     fn pdu(error: ironrdp_pdu::PduError) -> Self {
         Self::new("payload error", SessionErrorKind::Pdu(error))
     }
 
+    #[track_caller]
     fn encode(error: ironrdp_core::EncodeError) -> Self {
         Self::new("encode error", SessionErrorKind::Encode(error))
     }
 
+    #[track_caller]
     fn decode(error: ironrdp_core::DecodeError) -> Self {
         Self::new("decode error", SessionErrorKind::Decode(error))
     }
 
+    #[track_caller]
     fn general(context: &'static str) -> Self {
         Self::new(context, SessionErrorKind::General)
     }
 
+    #[track_caller]
     fn reason(context: &'static str, reason: impl Into<String>) -> Self {
         Self::new(context, SessionErrorKind::Reason(reason.into()))
     }
 
+    #[track_caller]
     fn custom<E>(context: &'static str, e: E) -> Self
     where
         E: core::error::Error + Sync + Send + 'static,

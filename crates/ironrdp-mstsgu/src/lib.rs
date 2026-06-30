@@ -65,6 +65,7 @@ trait GwErrorExt {
 }
 
 impl GwErrorExt for ironrdp_error::Error<GwErrorKind> {
+    #[track_caller]
     fn custom<E>(context: &'static str, e: E) -> Self
     where
         E: core::error::Error + Sync + Send + 'static,

@@ -50,10 +50,12 @@ pub trait PduErrorExt {
 }
 
 impl PduErrorExt for PduError {
+    #[track_caller]
     fn decode<E: Source>(context: &'static str, source: E) -> Self {
         Self::new(context, PduErrorKind::Decode).with_source(source)
     }
 
+    #[track_caller]
     fn encode<E: Source>(context: &'static str, source: E) -> Self {
         Self::new(context, PduErrorKind::Encode).with_source(source)
     }
