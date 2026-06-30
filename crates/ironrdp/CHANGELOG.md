@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.16.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.16.0...ironrdp-v0.16.1)] - 2026-06-30
+
+### <!-- 1 -->Features
+
+- Gate native backends behind Cargo features ([#1338](https://github.com/Devolutions/IronRDP/issues/1338)) ([f7e6106e0f](https://github.com/Devolutions/IronRDP/commit/f7e6106e0f293c1e0f8129be82aa2d86737ba92a)) 
+
+  ironrdp (meta crate):
+  - Added:    client, client-all, client-sound, client-clipboard,
+              client-rdpdr, client-smartcard, client-gateway,
+              client-dvc-pipe-proxy, client-dvc-com-plugin, and
+              top-level rustls / native-tls (forwarded to ironrdp-client)
+  - Modified: qoi, qoiz now also gate ironrdp-client's codec
+
+
+
 ## [[0.16.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.15.0...ironrdp-v0.16.0)] - 2026-06-05
 
 ### <!-- 7 -->Build

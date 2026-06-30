@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.9.0...ironrdp-connector-v0.9.1)] - 2026-06-30
+
+### <!-- 4 -->Bug Fixes
+
+- Stay in CapabilitiesExchange when activation handles DeactivateAll ([#1371](https://github.com/Devolutions/IronRDP/issues/1371)) ([a4fde9fc50](https://github.com/Devolutions/IronRDP/commit/a4fde9fc50f41d1534f32e619bbe0bbbddc64f25)) 
+
+- Propagate caller location through error constructor helpers ([#1392](https://github.com/Devolutions/IronRDP/issues/1392)) ([d6990d81a1](https://github.com/Devolutions/IronRDP/commit/d6990d81a17e8349e52768ad8a82f673b1e1462d)) 
+
+  The error constructor helpers in several crates wrap the #[track_caller]
+  ironrdp_error::Error::new, but were not themselves marked
+  #[track_caller]. As a result, the captured location pointed at the
+  helper body instead of the real call site, giving misleading "@
+  file:line" info in error reports.
+
+### <!-- 7 -->Build
+
+- Align sspi and picky dependencies ([#1385](https://github.com/Devolutions/IronRDP/issues/1385)) ([0a461b5d36](https://github.com/Devolutions/IronRDP/commit/0a461b5d366677fd2f0f664a4f0074e4ab697c42)) 
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.8.0...ironrdp-connector-v0.9.0)] - 2026-05-27
 
 ### <!-- 1 -->Features
