@@ -5,6 +5,7 @@
 
 use core::net::SocketAddr;
 use core::num::{NonZeroU16, NonZeroUsize};
+use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +13,7 @@ use anyhow::Context as _;
 use ironrdp::cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
 use ironrdp::connector::DesktopSize;
 use ironrdp::rdpsnd::pdu::{AudioFormat, WaveFormat};
-use ironrdp::rdpsnd::server::{NegotiatedFormat, RdpsndServerHandler, RdpsndServerMessage};
+use ironrdp::rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServerHandler, RdpsndServerMessage};
 use ironrdp::server::tokio::sync::mpsc::UnboundedSender;
 use ironrdp::server::tokio::time::{self, Duration, sleep};
 use ironrdp::server::{
@@ -287,24 +288,24 @@ impl RdpsndServerHandler for SndHandler {
         common.first()
     }
 
-    fn start(&mut self, format: &NegotiatedFormat) {
+    fn start(&mut self, format: &NegotiatedFormat) -> Result<(), Box<dyn RdpsndError>> {
         let fmt = format.format().clone();
 
         let mut opus_enc = if fmt.format == WaveFormat::OPUS {
             let n_channels: opus2::Channels = match fmt.n_channels {
                 1 => opus2::Channels::Mono,
                 2 => opus2::Channels::Stereo,
-                n => {
-                    warn!("Invalid OPUS channels: {}", n);
-                    return;
-                }
+                // Init failure: decline the format instead of leaving the channel
+                // negotiated-but-silent (the crate logs the error and skips audio).
+                n => return Err(Box::new(io::Error::other(format!("invalid OPUS channels: {n}")))),
             };
 
             match opus2::Encoder::new(fmt.n_samples_per_sec, n_channels, opus2::Application::Audio) {
                 Ok(enc) => Some(enc),
                 Err(err) => {
-                    warn!("Failed to create OPUS encoder: {}", err);
-                    return;
+                    return Err(Box::new(io::Error::other(format!(
+                        "failed to create OPUS encoder: {err}"
+                    ))));
                 }
             }
         } else {
@@ -339,6 +340,8 @@ impl RdpsndServerHandler for SndHandler {
                 ts = ts.wrapping_add(100);
             }
         }));
+
+        Ok(())
     }
 
     fn stop(&mut self) {

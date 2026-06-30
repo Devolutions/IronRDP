@@ -58,6 +58,14 @@ impl NegotiatedFormat {
     pub fn format(&self) -> &pdu::AudioFormat {
         &self.format
     }
+
+    /// Test-only accessor for the crate-private `wformat_no`, exposed for the
+    /// integration testsuite behind the private `__test` feature. Not a stable API.
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn wformat_no(&self) -> u16 {
+        self.wformat_no
+    }
 }
 
 /// Handler for the server side of the Audio Output Virtual Channel (`RDPSND`).
@@ -97,8 +105,14 @@ pub trait RdpsndServerHandler: Send + core::fmt::Debug {
     /// [`choose_format`]. This is the lifecycle hook: initialize encoder state,
     /// spawn the producer, etc. Waves are then emitted via [`RdpsndServer::wave`].
     ///
+    /// Return `Err` if initialization fails (e.g. the encoder can't be created).
+    /// The crate then **declines the negotiated format** — exactly as if
+    /// [`choose_format`] had returned [`None`] — rather than leaving the channel
+    /// "negotiated" but silently producing no audio. The error is logged by the
+    /// crate.
+    ///
     /// [`choose_format`]: RdpsndServerHandler::choose_format
-    fn start(&mut self, format: &NegotiatedFormat);
+    fn start(&mut self, format: &NegotiatedFormat) -> Result<(), Box<dyn RdpsndError>>;
 
     /// Called when the audio stream is torn down (e.g. the client closed the
     /// channel or the session ended).
@@ -222,6 +236,7 @@ impl RdpsndServer {
 /// client resolves waves against (MS-RDPEA). The result mirrors the server's
 /// ordering so the handler can express preference simply by `get_formats`
 /// order, while the `wFormatNo` always points into the client list.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn negotiate_formats(
     server_formats: &[pdu::AudioFormat],
     client_formats: &[pdu::AudioFormat],
@@ -241,16 +256,24 @@ fn negotiate_formats(
         .collect()
 }
 
-/// Compare two audio formats by their WAVEFORMATEX identity — wave format tag,
-/// channel count, sample rate, and bit depth. Derived fields
-/// (`n_avg_bytes_per_sec`, `n_block_align`) and the codec-specific `data` blob
-/// are deliberately ignored: a client echoes back a format it accepts but is
-/// not guaranteed to reproduce those byte-for-byte.
+/// Compare two audio formats for negotiation. The WAVEFORMATEX identity fields
+/// — wave format tag, channel count, sample rate, bit depth — must match, and so
+/// must the codec-specific extra-data blob (`data`).
+///
+/// The two derived fields (`n_avg_bytes_per_sec`, `n_block_align`) are
+/// deliberately ignored: they are computable from the others and a client may
+/// legitimately not echo them back byte-for-byte. The `data` blob is a different
+/// category, though — for codecs whose extra-format bytes carry real
+/// configuration (AAC's HEAACWAVEINFO extra data is the clear case, MS-RDPEA
+/// 2.2.2.1.1's `cbSize` + extra data), ignoring it could match two genuinely
+/// incompatible formats, so it IS compared.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn audio_format_eq(a: &pdu::AudioFormat, b: &pdu::AudioFormat) -> bool {
     a.format == b.format
         && a.n_channels == b.n_channels
         && a.n_samples_per_sec == b.n_samples_per_sec
         && a.bits_per_sample == b.bits_per_sample
+        && a.data == b.data
 }
 
 impl_as_any!(RdpsndServer);
@@ -307,20 +330,28 @@ impl SvcProcessor for RdpsndServer {
                 // an out-of-range wFormatNo.
                 let common = negotiate_formats(self.handler.get_formats(), &client_format.formats);
                 self.state = RdpsndState::Ready;
-                self.format_no = if common.is_empty() {
+                if common.is_empty() {
                     debug!("No audio format in common with the client; audio disabled");
-                    None
                 } else if let Some(chosen) = self.handler.choose_format(&common) {
-                    // `chosen` borrows `common` (not `self`), so the encoder
-                    // is read off it and the handler is free to borrow again
-                    // for the `start` lifecycle hook.
+                    // `chosen` borrows `common` (a local), not `self`, so the
+                    // handler is free to borrow `&mut self` again for `start`.
                     let wformat_no = chosen.wformat_no;
-                    self.handler.start(chosen);
-                    Some(wformat_no)
+                    // Commit the index BEFORE the `start` lifecycle hook: if `start`
+                    // spawns a producer that emits a wave immediately, `wave()` must
+                    // already see a valid `format_no` rather than racing an unset one.
+                    self.format_no = Some(wformat_no);
+                    if let Err(e) = self.handler.start(chosen) {
+                        // Initialization failed (e.g. the encoder couldn't be
+                        // created). Roll back to a cleanly *declined* state — the
+                        // same outcome as `choose_format` returning `None` — instead
+                        // of leaving the channel "negotiated" but silently producing
+                        // no audio.
+                        error!(error = %e, "rdpsnd handler failed to start; declining the negotiated format");
+                        self.format_no = None;
+                    }
                 } else {
                     debug!("Handler declined every common audio format; audio disabled");
-                    None
-                };
+                }
                 vec![]
             }
             RdpsndState::Ready => {
@@ -359,77 +390,3 @@ impl Drop for RdpsndServer {
 }
 
 impl SvcServerProcessor for RdpsndServer {}
-
-#[cfg(test)]
-mod tests {
-    use super::{audio_format_eq, negotiate_formats};
-    use crate::pdu::{AudioFormat, WaveFormat};
-
-    fn fmt(format: WaveFormat, rate: u32) -> AudioFormat {
-        AudioFormat {
-            format,
-            n_channels: 2,
-            n_samples_per_sec: rate,
-            n_avg_bytes_per_sec: rate * 4,
-            n_block_align: 4,
-            bits_per_sample: 16,
-            data: None,
-        }
-    }
-
-    #[test]
-    fn wformat_no_addresses_the_client_list_not_the_server_list() {
-        // Server prefers AAC over PCM; the client lists them in the opposite
-        // order. wFormatNo must follow the CLIENT's indices.
-        let server = [fmt(WaveFormat::AAC_MS, 44100), fmt(WaveFormat::PCM, 44100)];
-        let client = [fmt(WaveFormat::PCM, 44100), fmt(WaveFormat::AAC_MS, 44100)];
-
-        let common = negotiate_formats(&server, &client);
-
-        // Ordering follows the server's preference (AAC first)...
-        assert_eq!(common.len(), 2);
-        assert_eq!(common[0].format().format, WaveFormat::AAC_MS);
-        assert_eq!(common[1].format().format, WaveFormat::PCM);
-        // ...but each wFormatNo is the position in the CLIENT list.
-        assert_eq!(common[0].wformat_no, 1); // AAC is client index 1
-        assert_eq!(common[1].wformat_no, 0); // PCM is client index 0
-    }
-
-    #[test]
-    fn pcm_only_client_gets_a_valid_client_index() {
-        // Regression for the --enable-aac trap: server advertises [AAC, PCM]
-        // but a PCM-only client must get wFormatNo 0 (its sole index), not
-        // PCM's server-list index of 1 (which the client would reject).
-        let server = [fmt(WaveFormat::AAC_MS, 44100), fmt(WaveFormat::PCM, 44100)];
-        let client = [fmt(WaveFormat::PCM, 44100)];
-
-        let common = negotiate_formats(&server, &client);
-
-        assert_eq!(common.len(), 1);
-        assert_eq!(common[0].format().format, WaveFormat::PCM);
-        assert_eq!(common[0].wformat_no, 0);
-    }
-
-    #[test]
-    fn no_shared_format_yields_empty() {
-        let server = [fmt(WaveFormat::OPUS, 48000)];
-        let client = [fmt(WaveFormat::PCM, 44100)];
-        assert!(negotiate_formats(&server, &client).is_empty());
-    }
-
-    #[test]
-    fn equality_uses_waveformatex_identity_only() {
-        let mut a = fmt(WaveFormat::PCM, 44100);
-        let mut b = fmt(WaveFormat::PCM, 44100);
-        // Differ only in derived/codec fields — still the same format.
-        b.n_avg_bytes_per_sec = 0;
-        b.n_block_align = 99;
-        a.data = Some(vec![1, 2, 3]);
-        b.data = None;
-        assert!(audio_format_eq(&a, &b));
-
-        // A differing identity field (sample rate) is a different format.
-        let c = fmt(WaveFormat::PCM, 48000);
-        assert!(!audio_format_eq(&a, &c));
-    }
-}
