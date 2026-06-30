@@ -9,8 +9,6 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use core::fmt::{self, Display};
 
-use tracing::debug;
-
 pub type Key = Cow<'static, str>;
 
 /// Key-value store for configuration keys.
@@ -26,30 +24,15 @@ impl PropertySet {
 
     pub fn insert(&mut self, key: impl Into<Key>, value: impl Into<Value>) -> Option<Value> {
         let (key, value) = (key.into(), value.into());
-        debug!("PropertySet::insert({key}, {value})");
         self.inner.insert(key, value)
     }
 
     pub fn remove(&mut self, key: &str) -> Option<Value> {
-        let value = self.inner.remove(key);
-
-        match &value {
-            Some(value) => debug!("PropertySet::remove({key}) = {value}"),
-            None => debug!("PropertySet::remove({key}) = None"),
-        }
-
-        value
+        self.inner.remove(key)
     }
 
     pub fn get<'a, V: ExtractFrom<&'a Value>>(&'a self, key: &str) -> Option<V> {
-        let value = self.inner.get(key);
-
-        match &value {
-            Some(value) => debug!("PropertySet::get({key}) = {value}"),
-            None => debug!("PropertySet::get({key}) = None"),
-        }
-
-        value.and_then(|val| V::extract_from(val, private::Token))
+        self.inner.get(key).and_then(|val| V::extract_from(val, private::Token))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&Key, &Value)> {
