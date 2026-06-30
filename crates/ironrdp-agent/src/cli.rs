@@ -45,7 +45,7 @@ enum Command {
     Status,
     /// Query the live session properties.
     QueryProps(QueryPropsArgs),
-    /// Print retained daemon log lines.
+    /// Print the RDP session's captured log lines (from the daemon's in-memory ring buffer).
     QueryLogs(QueryLogsArgs),
     /// Capture the current frame (cursor included) as a PNG written to disk.
     Screenshot(ScreenshotArgs),
@@ -251,7 +251,8 @@ fn load_overlay(path: Option<&Path>) -> anyhow::Result<PropertySet> {
 }
 
 /// Builds a `Connect` request by merging an optional `.rdp` file with CLI overrides into one
-/// [`PropertySet`], then pre-validating it locally.
+/// [`PropertySet`]. Configuration validation happens daemon-side (via
+/// `ConfigBuilder::from_property_set`); this only parses and merges the inputs.
 fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
     let mut properties = PropertySet::new();
 

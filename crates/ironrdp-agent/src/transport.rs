@@ -104,6 +104,11 @@ mod imp {
         /// Binds the listener at `endpoint`.
         pub fn bind(endpoint: &Endpoint) -> io::Result<Self> {
             let inner = UnixListener::bind(&endpoint.0)?;
+            // Restrict the socket to the owner. The fallback directory is world-writable `/tmp`, so
+            // without this any local user could connect and drive the session (input, screenshots,
+            // logs). Fail loudly rather than serve on a world-accessible endpoint.
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&endpoint.0, std::fs::Permissions::from_mode(0o600))?;
             Ok(Self {
                 inner,
                 path: endpoint.0.clone(),

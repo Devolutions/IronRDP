@@ -182,7 +182,10 @@ impl Daemon {
             let guard = self.state.lock().expect("daemon state poisoned");
             if let Some(session) = guard.as_ref() {
                 let state = session.live.lock().expect("session live state poisoned").state;
-                if matches!(state, ConnState::Connecting | ConnState::Connected) {
+                if matches!(
+                    state,
+                    ConnState::Connecting | ConnState::Connected | ConnState::Disconnecting
+                ) {
                     debug!("Refusing connect: a session is already active");
                     return Response::error("a session is already active; disconnect first");
                 }
@@ -284,11 +287,21 @@ impl Daemon {
                 Response::error("no active session")
             }
             Some(session) => {
-                info!(destination = %session.destination, "Disconnecting RDP session");
-                // Request a graceful shutdown; ignore send errors (the session may already be gone).
-                let _ = session.input_tx.send(RdpInputEvent::Close);
-                session.live.lock().expect("session live state poisoned").state = ConnState::Disconnected;
-                Response::ok()
+                let mut live = session.live.lock().expect("session live state poisoned");
+                match live.state {
+                    ConnState::Connecting | ConnState::Connected => {
+                        info!(destination = %session.destination, "Disconnecting RDP session");
+                        // Request a graceful shutdown and move to `Disconnecting`. The engine thread
+                        // keeps running until it drains the close; `consume_output` flips the state
+                        // to a terminal one once it does, which is what re-enables `connect`. Leaving
+                        // it `Connected` here would let a new `connect` race the still-live thread.
+                        let _ = session.input_tx.send(RdpInputEvent::Close);
+                        live.state = ConnState::Disconnecting;
+                        Response::ok()
+                    }
+                    // Already shutting down or terminated: nothing to do (idempotent).
+                    _ => Response::ok(),
+                }
             }
         }
     }
@@ -444,6 +457,16 @@ async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc
             // above; the remaining pointer events (default/hidden) carry no live state we track.
             _ => {}
         }
+    }
+
+    // The engine thread has ended (channel closed). Resolve any transient state so a subsequent
+    // `connect` is not blocked indefinitely, even if no explicit `Terminated` event was emitted.
+    let mut guard = live.lock().expect("session live state poisoned");
+    if matches!(
+        guard.state,
+        ConnState::Connecting | ConnState::Connected | ConnState::Disconnecting
+    ) {
+        guard.state = ConnState::Disconnected;
     }
 }
 

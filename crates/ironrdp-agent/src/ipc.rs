@@ -195,6 +195,8 @@ pub enum ConnState {
     Connecting,
     /// A session is active (at least one frame received).
     Connected,
+    /// A graceful disconnect was requested; the engine thread is still shutting down.
+    Disconnecting,
     /// A session terminated gracefully.
     Disconnected,
     /// A session failed.
@@ -209,6 +211,7 @@ impl ConnState {
             Self::Connected => 2,
             Self::Disconnected => 3,
             Self::Failed => 4,
+            Self::Disconnecting => 5,
         }
     }
 
@@ -219,6 +222,7 @@ impl ConnState {
             2 => Ok(Self::Connected),
             3 => Ok(Self::Disconnected),
             4 => Ok(Self::Failed),
+            5 => Ok(Self::Disconnecting),
             _ => Err(ironrdp_core::invalid_field_err!("connection state", "unknown tag")),
         }
     }

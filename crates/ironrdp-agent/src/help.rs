@@ -30,7 +30,8 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `connect [--rdp-file F] [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. CLI flags win over the .rdp file. The config is
-                                 pre-validated locally before being sent. If `status` reports
+                                 validated by the daemon, which replies with an error listing any
+                                 missing or invalid fields. If `status` reports
                                  `credentials loaded: true`, omit `-p/--password` (and any other
                                  preloaded secret) -- the daemon supplies it. `--log-directive`
                                  refines this session's log capture (e.g. `ironrdp_connector=trace`)

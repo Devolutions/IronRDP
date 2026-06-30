@@ -31,11 +31,11 @@ where
 #[test]
 fn request_variants_round_trip() {
     let mut props = PropertySet::new();
-    props.insert("FullAddress", "host.example:3389");
-    props.insert("Username", "operator");
+    props.insert("full address", "host.example:3389");
+    props.insert("username", "operator");
 
     let mut props2 = PropertySet::new();
-    props2.insert("FullAddress", "host.example:3389");
+    props2.insert("full address", "host.example:3389");
 
     let requests = [
         Request::Connect {
@@ -112,11 +112,11 @@ fn response_variants_round_trip() {
         Response::Ok(Payload::Properties(PropertyDump {
             entries: vec![
                 PropertyEntry {
-                    key: "FullAddress".to_owned(),
+                    key: "full address".to_owned(),
                     value: PropValue::Str("host.example:3389".to_owned()),
                 },
                 PropertyEntry {
-                    key: "ServerPort".to_owned(),
+                    key: "server port".to_owned(),
                     value: PropValue::Int(3389),
                 },
             ],
@@ -138,10 +138,10 @@ fn response_variants_round_trip() {
 #[test]
 fn property_set_wire_round_trips() {
     let mut original = PropertySet::new();
-    original.insert("FullAddress", "host.example:3389");
-    original.insert("ServerPort", 3389i64);
-    original.insert("Username", "operator");
-    original.insert("ScreenModeId", 2i64);
+    original.insert("full address", "host.example:3389");
+    original.insert("server port", 3389i64);
+    original.insert("username", "operator");
+    original.insert("screen mode id", 2i64);
 
     let size = wire::propertyset::size(&original);
     let mut buf = vec![0u8; size];
