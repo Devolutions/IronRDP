@@ -311,9 +311,14 @@ impl UrbdrcDeviceClient {
         self.udev_iface
     }
 
-    fn completion_iface_and_entry(
+    fn accepts_io_request(&self, udev_iface: InterfaceId, request_id: RequestId) -> bool {
+        self.ready_for_io && udev_iface == self.udev_iface && !self.pending_io.contains_key(&request_id)
+    }
+
+    fn pending_completion(
         &mut self,
         request_id: RequestId,
+        expected_kind: PendingKind,
     ) -> PduResult<(
         InterfaceId,
         alloc::collections::btree_map::OccupiedEntry<'_, u32, Pending>,
@@ -324,6 +329,10 @@ impl UrbdrcDeviceClient {
         let Entry::Occupied(entry) = self.pending_io.entry(request_id) else {
             return Err(pdu_other_err!("completion mismatch"));
         };
+        if entry.get().kind != expected_kind {
+            return Err(pdu_other_err!("completion mismatch"));
+        }
+
         Ok((completion_iface, entry))
     }
 
@@ -332,27 +341,7 @@ impl UrbdrcDeviceClient {
         request_id: RequestId,
         response: IoControlCompletionResult,
     ) -> PduResult<DvcMessage> {
-        let (completion_iface, entry) = self.completion_iface_and_entry(request_id)?;
-        let (msg_id, max_output_buf_size) = match entry.get() {
-            Pending::IoCtl {
-                msg_id,
-                max_output_buf_size,
-            } => (*msg_id, *max_output_buf_size),
-            _ => return Err(pdu_other_err!("completion mismatch")),
-        };
-
-        let output_buffer_size = check_output_buffer_size(response.output_buffer.len(), max_output_buf_size)?;
-        entry.remove();
-
-        Ok(Box::new(IoControlCompletion {
-            msg_id,
-            completion_iface,
-            hresult: response.hresult,
-            request_id,
-            information: response.information,
-            output_buffer_size,
-            output_buffer: response.output_buffer,
-        }))
+        self.complete_io_control(PendingKind::IoCtl, request_id, response)
     }
 
     pub fn internal_io_ctl_completion(
@@ -360,27 +349,41 @@ impl UrbdrcDeviceClient {
         request_id: RequestId,
         response: IoControlCompletionResult,
     ) -> PduResult<DvcMessage> {
-        let (completion_iface, entry) = self.completion_iface_and_entry(request_id)?;
-        let (msg_id, max_output_buf_size) = match entry.get() {
-            Pending::InternalIoCtl {
-                msg_id,
-                max_output_buf_size,
-            } => (*msg_id, *max_output_buf_size),
-            _ => return Err(pdu_other_err!("completion mismatch")),
-        };
+        self.complete_io_control(PendingKind::InternalIoCtl, request_id, response)
+    }
 
-        let output_buffer_size = check_output_buffer_size(response.output_buffer.len(), max_output_buf_size)?;
+    fn complete_io_control(
+        &mut self,
+        expected_kind: PendingKind,
+        request_id: RequestId,
+        response: IoControlCompletionResult,
+    ) -> PduResult<DvcMessage> {
+        let (completion_iface, entry) = self.pending_completion(request_id, expected_kind)?;
+        let pending = *entry.get();
+        let completion = build_io_control_completion(pending, completion_iface, request_id, response)?;
         entry.remove();
 
-        Ok(Box::new(IoControlCompletion {
-            msg_id,
-            completion_iface,
-            hresult: response.hresult,
-            request_id,
-            information: response.information,
-            output_buffer_size,
-            output_buffer: response.output_buffer,
-        }))
+        Ok(completion)
+    }
+
+    fn finish_io_control_request(
+        &mut self,
+        request_id: RequestId,
+        completion_iface: InterfaceId,
+        pending: Pending,
+        response: Option<IoControlCompletionResult>,
+    ) -> PduResult<Vec<DvcMessage>> {
+        if let Some(response) = response {
+            Ok(vec![build_io_control_completion(
+                pending,
+                completion_iface,
+                request_id,
+                response,
+            )?])
+        } else {
+            self.pending_io.insert(request_id, pending);
+            Ok(Vec::new())
+        }
     }
 
     pub fn transfer_in_completion(
@@ -388,17 +391,8 @@ impl UrbdrcDeviceClient {
         request_id: RequestId,
         response: TransferInCompletionResult,
     ) -> PduResult<DvcMessage> {
-        let (completion_iface, entry) = self.completion_iface_and_entry(request_id)?;
-        let (msg_id, max_output_buf_size) = match entry.get() {
-            Pending::TransferIn {
-                msg_id,
-                max_output_buf_size,
-            } => (*msg_id, *max_output_buf_size),
-            _ => return Err(pdu_other_err!("completion mismatch")),
-        };
-
-        let output_buffer_size = check_output_buffer_size(response.output_buffer.len(), max_output_buf_size)?;
-        entry.remove();
+        let (completion_iface, entry) = self.pending_completion(request_id, PendingKind::TransferIn)?;
+        let pending = *entry.get();
 
         #[expect(
             clippy::missing_panics_doc,
@@ -406,26 +400,10 @@ impl UrbdrcDeviceClient {
         )]
         let req_id = RequestIdTransferInOut::try_from(request_id)
             .expect("pending TransferIn request id must be a TS_URB request id");
+        let completion = build_transfer_in_completion(pending, completion_iface, req_id, response)?;
+        entry.remove();
 
-        if response.output_buffer.is_empty() {
-            Ok(Box::new(UrbCompletionNoData {
-                msg_id,
-                completion_iface,
-                req_id,
-                ts_urb_result: response.ts_urb_result,
-                hresult: response.hresult,
-                output_buffer_size,
-            }))
-        } else {
-            Ok(Box::new(UrbCompletion {
-                msg_id,
-                completion_iface,
-                req_id,
-                ts_urb_result: response.ts_urb_result,
-                hresult: response.hresult,
-                output_buffer: response.output_buffer,
-            }))
-        }
+        Ok(completion)
     }
 
     pub fn transfer_out_completion(
@@ -433,20 +411,8 @@ impl UrbdrcDeviceClient {
         request_id: RequestId,
         response: TransferOutCompletionResult,
     ) -> PduResult<DvcMessage> {
-        let (completion_iface, entry) = self.completion_iface_and_entry(request_id)?;
-        let (msg_id, max_output_buf_size) = match entry.get() {
-            Pending::TransferOut {
-                msg_id,
-                max_output_buf_size,
-            } => (*msg_id, *max_output_buf_size),
-            _ => return Err(pdu_other_err!("completion mismatch")),
-        };
-
-        if response.output_buffer_size > max_output_buf_size {
-            return Err(pdu_other_err!("output buffer exceeds maximum amount"));
-        }
-
-        entry.remove();
+        let (completion_iface, entry) = self.pending_completion(request_id, PendingKind::TransferOut)?;
+        let pending = *entry.get();
 
         #[expect(
             clippy::missing_panics_doc,
@@ -454,16 +420,79 @@ impl UrbdrcDeviceClient {
         )]
         let req_id = RequestIdTransferInOut::try_from(request_id)
             .expect("pending TransferOut request id must be a TS_URB request id");
+        let completion = build_transfer_out_completion(pending, completion_iface, req_id, response)?;
+        entry.remove();
 
+        Ok(completion)
+    }
+}
+
+fn build_io_control_completion(
+    pending: Pending,
+    completion_iface: InterfaceId,
+    request_id: RequestId,
+    response: IoControlCompletionResult,
+) -> PduResult<DvcMessage> {
+    let output_buffer_size = check_output_buffer_size(response.output_buffer.len(), pending.max_output_buf_size)?;
+
+    Ok(Box::new(IoControlCompletion {
+        msg_id: pending.msg_id,
+        completion_iface,
+        hresult: response.hresult,
+        request_id,
+        information: response.information,
+        output_buffer_size,
+        output_buffer: response.output_buffer,
+    }))
+}
+
+fn build_transfer_in_completion(
+    pending: Pending,
+    completion_iface: InterfaceId,
+    req_id: RequestIdTransferInOut,
+    response: TransferInCompletionResult,
+) -> PduResult<DvcMessage> {
+    let output_buffer_size = check_output_buffer_size(response.output_buffer.len(), pending.max_output_buf_size)?;
+
+    if response.output_buffer.is_empty() {
         Ok(Box::new(UrbCompletionNoData {
-            msg_id,
+            msg_id: pending.msg_id,
             completion_iface,
             req_id,
             ts_urb_result: response.ts_urb_result,
             hresult: response.hresult,
-            output_buffer_size: response.output_buffer_size,
+            output_buffer_size,
+        }))
+    } else {
+        Ok(Box::new(UrbCompletion {
+            msg_id: pending.msg_id,
+            completion_iface,
+            req_id,
+            ts_urb_result: response.ts_urb_result,
+            hresult: response.hresult,
+            output_buffer: response.output_buffer,
         }))
     }
+}
+
+fn build_transfer_out_completion(
+    pending: Pending,
+    completion_iface: InterfaceId,
+    req_id: RequestIdTransferInOut,
+    response: TransferOutCompletionResult,
+) -> PduResult<DvcMessage> {
+    if response.output_buffer_size > pending.max_output_buf_size {
+        return Err(pdu_other_err!("output buffer exceeds maximum amount"));
+    }
+
+    Ok(Box::new(UrbCompletionNoData {
+        msg_id: pending.msg_id,
+        completion_iface,
+        req_id,
+        ts_urb_result: response.ts_urb_result,
+        hresult: response.hresult,
+        output_buffer_size: response.output_buffer_size,
+    }))
 }
 
 fn check_output_buffer_size(output_buffer_size: usize, max_output_buf_size: u32) -> PduResult<u32> {
@@ -565,13 +594,10 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 }
             }
             IoCtl(io_ctl_pdu) => {
-                if !self.ready_for_io || io_ctl_pdu.udev_iface != self.udev_iface {
-                    return Ok(Vec::new());
-                }
                 let msg_id = io_ctl_pdu.msg_id;
                 let request_id = io_ctl_pdu.req_id;
                 let max_output_buf_size = io_ctl_pdu.output_buffer_size;
-                if self.pending_io.contains_key(&request_id) {
+                if !self.accepts_io_request(io_ctl_pdu.udev_iface, request_id) {
                     return Ok(Vec::new());
                 }
                 let Some(completion_iface) = self.request_completion else {
@@ -579,37 +605,23 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 };
 
                 let io_ctl_packet = io_ctl_pdu.into();
-                if let Some(io_ctl_response) = self.backend.io_control(channel_id, request_id, io_ctl_packet)? {
-                    let output_buffer_size =
-                        check_output_buffer_size(io_ctl_response.output_buffer.len(), max_output_buf_size)?;
-                    Ok(vec![Box::new(IoControlCompletion {
+                let response = self.backend.io_control(channel_id, request_id, io_ctl_packet)?;
+                self.finish_io_control_request(
+                    request_id,
+                    completion_iface,
+                    Pending {
+                        kind: PendingKind::IoCtl,
                         msg_id,
-                        completion_iface,
-                        hresult: io_ctl_response.hresult,
-                        request_id,
-                        information: io_ctl_response.information,
-                        output_buffer_size,
-                        output_buffer: io_ctl_response.output_buffer,
-                    })])
-                } else {
-                    self.pending_io.insert(
-                        request_id,
-                        Pending::IoCtl {
-                            msg_id,
-                            max_output_buf_size,
-                        },
-                    );
-                    Ok(Vec::new())
-                }
+                        max_output_buf_size,
+                    },
+                    response,
+                )
             }
             InternalIoCtl(internal_io_ctl_pdu) => {
-                if !self.ready_for_io || internal_io_ctl_pdu.udev_iface != self.udev_iface {
-                    return Ok(Vec::new());
-                }
                 let msg_id = internal_io_ctl_pdu.msg_id;
                 let request_id = internal_io_ctl_pdu.req_id;
                 let max_output_buf_size = internal_io_ctl_pdu.output_buffer_size;
-                if self.pending_io.contains_key(&request_id) {
+                if !self.accepts_io_request(internal_io_ctl_pdu.udev_iface, request_id) {
                     return Ok(Vec::new());
                 }
                 let Some(completion_iface) = self.request_completion else {
@@ -617,40 +629,25 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 };
 
                 let internal_io_ctl_packet = internal_io_ctl_pdu.try_into()?;
-                if let Some(internal_io_ctl_response) =
-                    self.backend
-                        .internal_io_control(channel_id, request_id, internal_io_ctl_packet)?
-                {
-                    let output_buffer_size =
-                        check_output_buffer_size(internal_io_ctl_response.output_buffer.len(), max_output_buf_size)?;
-                    Ok(vec![Box::new(IoControlCompletion {
+                let response = self
+                    .backend
+                    .internal_io_control(channel_id, request_id, internal_io_ctl_packet)?;
+                self.finish_io_control_request(
+                    request_id,
+                    completion_iface,
+                    Pending {
+                        kind: PendingKind::InternalIoCtl,
                         msg_id,
-                        completion_iface,
-                        hresult: internal_io_ctl_response.hresult,
-                        request_id,
-                        information: internal_io_ctl_response.information,
-                        output_buffer_size,
-                        output_buffer: internal_io_ctl_response.output_buffer,
-                    })])
-                } else {
-                    self.pending_io.insert(
-                        request_id,
-                        Pending::InternalIoCtl {
-                            msg_id,
-                            max_output_buf_size,
-                        },
-                    );
-                    Ok(Vec::new())
-                }
+                        max_output_buf_size,
+                    },
+                    response,
+                )
             }
             TransferIn(transfer_in_pdu) => {
-                if !self.ready_for_io || transfer_in_pdu.udev_iface != self.udev_iface {
-                    return Ok(Vec::new());
-                }
                 let msg_id = transfer_in_pdu.msg_id;
                 let max_output_buf_size = transfer_in_pdu.output_buffer_size;
                 let request_id = transfer_in_pdu.request_id();
-                if self.pending_io.contains_key(&request_id.into()) {
+                if !self.accepts_io_request(transfer_in_pdu.udev_iface, request_id.into()) {
                     return Ok(Vec::new());
                 }
                 let Some(completion_iface) = self.request_completion else {
@@ -662,51 +659,32 @@ impl DvcProcessor for UrbdrcDeviceClient {
                     output_buffer_size: transfer_in_pdu.output_buffer_size,
                 };
 
-                if let Some(urb_response) = self.backend.transfer_in(channel_id, request_id.into(), transfer_in)? {
-                    let output_buffer_size =
-                        check_output_buffer_size(urb_response.output_buffer.len(), max_output_buf_size)?;
-                    if urb_response.output_buffer.is_empty() {
-                        Ok(vec![Box::new(UrbCompletionNoData {
-                            msg_id,
-                            completion_iface,
-                            req_id: request_id,
-                            ts_urb_result: urb_response.ts_urb_result,
-                            hresult: urb_response.hresult,
-                            output_buffer_size,
-                        })])
-                    } else {
-                        Ok(vec![Box::new(UrbCompletion {
-                            msg_id,
-                            completion_iface,
-                            req_id: request_id,
-                            ts_urb_result: urb_response.ts_urb_result,
-                            hresult: urb_response.hresult,
-                            output_buffer: urb_response.output_buffer,
-                        })])
-                    }
+                let pending = Pending {
+                    kind: PendingKind::TransferIn,
+                    msg_id,
+                    max_output_buf_size,
+                };
+                if let Some(response) = self.backend.transfer_in(channel_id, request_id.into(), transfer_in)? {
+                    Ok(vec![build_transfer_in_completion(
+                        pending,
+                        completion_iface,
+                        request_id,
+                        response,
+                    )?])
                 } else {
-                    self.pending_io.insert(
-                        request_id.into(),
-                        Pending::TransferIn {
-                            msg_id,
-                            max_output_buf_size,
-                        },
-                    );
+                    self.pending_io.insert(request_id.into(), pending);
                     Ok(Vec::new())
                 }
             }
             TransferOut(transfer_out_pdu) => {
-                if !self.ready_for_io || transfer_out_pdu.udev_iface != self.udev_iface {
-                    return Ok(Vec::new());
-                }
                 let msg_id = transfer_out_pdu.msg_id;
-                let output_buffer_size = u32::try_from(transfer_out_pdu.output_buffer.len())
-                    .map_err(|_| pdu_other_err!("convert usize to u32 failed"))?;
                 let request_id = transfer_out_pdu.ts_urb.header.req_id;
                 let no_ack = transfer_out_pdu.ts_urb.header.no_ack;
-                if self.pending_io.contains_key(&request_id.into()) {
+                if !self.accepts_io_request(transfer_out_pdu.udev_iface, request_id.into()) {
                     return Ok(Vec::new());
                 }
+                let output_buffer_size = u32::try_from(transfer_out_pdu.output_buffer.len())
+                    .map_err(|_| pdu_other_err!("convert usize to u32 failed"))?;
 
                 let transfer_out = TransferOutPacket {
                     ts_urb: transfer_out_pdu.ts_urb.into(),
@@ -720,28 +698,20 @@ impl DvcProcessor for UrbdrcDeviceClient {
                     let Some(completion_iface) = self.request_completion else {
                         return Ok(Vec::new());
                     };
-                    if let Some(urb_response) =
-                        self.backend.transfer_out(channel_id, request_id.into(), transfer_out)?
-                    {
-                        if urb_response.output_buffer_size > output_buffer_size {
-                            return Err(pdu_other_err!("output buffer exceeds maximum amount"));
-                        }
-                        Ok(vec![Box::new(UrbCompletionNoData {
-                            msg_id,
+                    let pending = Pending {
+                        kind: PendingKind::TransferOut,
+                        msg_id,
+                        max_output_buf_size: output_buffer_size,
+                    };
+                    if let Some(response) = self.backend.transfer_out(channel_id, request_id.into(), transfer_out)? {
+                        Ok(vec![build_transfer_out_completion(
+                            pending,
                             completion_iface,
-                            req_id: request_id,
-                            ts_urb_result: urb_response.ts_urb_result,
-                            hresult: urb_response.hresult,
-                            output_buffer_size: urb_response.output_buffer_size,
-                        })])
+                            request_id,
+                            response,
+                        )?])
                     } else {
-                        self.pending_io.insert(
-                            request_id.into(),
-                            Pending::TransferOut {
-                                msg_id,
-                                max_output_buf_size: output_buffer_size,
-                            },
-                        );
+                        self.pending_io.insert(request_id.into(), pending);
                         Ok(Vec::new())
                     }
                 }
@@ -754,21 +724,17 @@ impl_as_any!(UrbdrcDeviceClient);
 
 impl DvcClientProcessor for UrbdrcDeviceClient {}
 
-enum Pending {
-    IoCtl {
-        msg_id: MessageId,
-        max_output_buf_size: u32,
-    },
-    InternalIoCtl {
-        msg_id: MessageId,
-        max_output_buf_size: u32,
-    },
-    TransferIn {
-        msg_id: MessageId,
-        max_output_buf_size: u32,
-    },
-    TransferOut {
-        msg_id: MessageId,
-        max_output_buf_size: u32,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingKind {
+    IoCtl,
+    InternalIoCtl,
+    TransferIn,
+    TransferOut,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Pending {
+    kind: PendingKind,
+    msg_id: MessageId,
+    max_output_buf_size: u32,
 }
