@@ -6,11 +6,11 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
-use ironrdp_client::config::{ConfigBuilder, MissingField};
+use ironrdp_cfg::{PropertySetExt as _, TargetAddr};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::PropertySet;
 
@@ -47,8 +47,8 @@ enum Command {
     QueryProps(QueryPropsArgs),
     /// Print retained daemon log lines.
     QueryLogs(QueryLogsArgs),
-    /// Print the most recent frame dimensions.
-    Screenshot,
+    /// Capture the current frame (cursor included) as a PNG written to disk.
+    Screenshot(ScreenshotArgs),
     /// Move the mouse pointer to an absolute position.
     MouseMove {
         #[arg(long)]
@@ -140,6 +140,12 @@ struct QueryLogsArgs {
     last: Option<u32>,
 }
 
+#[derive(Args, Debug)]
+struct ScreenshotArgs {
+    /// Destination PNG path (defaults to `screenshot.png` in the current directory).
+    path: Option<PathBuf>,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliMouseButton {
     Left,
@@ -203,7 +209,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             substring: args.substring,
             last: args.last,
         },
-        Command::Screenshot => Request::Screenshot,
+        Command::Screenshot(args) => {
+            let response = transport::send_request(&endpoint, &Request::Screenshot).await?;
+            let payload = match response {
+                Response::Ok(payload) => payload,
+                Response::Err(message) => anyhow::bail!("{message}"),
+            };
+            let Payload::Screenshot { width, height, png } = payload else {
+                anyhow::bail!("unexpected response to screenshot request");
+            };
+            let path = args.path.unwrap_or_else(|| PathBuf::from("screenshot.png"));
+            return write_screenshot(width, height, &png, &path);
+        }
         Command::MouseMove { x, y } => Request::MouseMove { x, y },
         Command::MouseButton { button, pressed } => Request::MouseButton {
             button: button.into_button(),
@@ -220,7 +237,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
 /// Loads an operator-provided overlay [`PropertySet`] from an optional `.rdp` file. Returns an
 /// empty set when no path is given.
-fn load_overlay(path: Option<&std::path::Path>) -> anyhow::Result<PropertySet> {
+fn load_overlay(path: Option<&Path>) -> anyhow::Result<PropertySet> {
     let mut properties = PropertySet::new();
     if let Some(path) = path {
         let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -247,12 +264,15 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
         }
     }
 
-    // CLI overrides win: plain inserts with canonical .rdp keys.
+    // CLI overrides win.
     if let Some(server) = args.server {
-        properties.set_full_address(server);
+        let address: TargetAddr = server
+            .parse()
+            .with_context(|| format!("invalid server address: {server}"))?;
+        properties.set_full_address(&address);
     }
     if let Some(username) = args.username {
-        properties.set_username("username", username);
+        properties.set_username(username);
     }
     if let Some(password) = args.password {
         properties.set_clear_text_password(password);
@@ -312,8 +332,16 @@ fn print_payload(payload: Payload) {
                 println!("{line}");
             }
         }
-        Payload::Screenshot { width, height } => println!("frame {width}x{height}"),
+        // Screenshots are handled out-of-band by `write_screenshot`, never printed.
+        Payload::Screenshot { width, height, .. } => println!("frame {width}x{height}"),
     }
+}
+
+/// Writes screenshot PNG bytes to disk, defaulting to `screenshot.png`.
+fn write_screenshot(width: u16, height: u16, png: &[u8], path: &Path) -> anyhow::Result<()> {
+    std::fs::write(path, png).with_context(|| format!("write {}", path.display()))?;
+    println!("wrote {} ({width}x{height}, {} bytes)", path.display(), png.len());
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -339,7 +367,9 @@ fn endpoint_from_arg(arg: Option<String>) -> Endpoint {
 /// though `ConfigBuilder::build` strips them before a session starts, so they never appear in a
 /// dump.
 fn property_description(key: &str) -> Option<&'static str> {
-    let description = match key {
+    // PropertySet keys are case-sensitive and ironrdp-cfg mixes casings (e.g. `ClearTextPassword`),
+    // so normalize to lowercase to match the canonical lowercase arms below.
+    let description = match key.to_ascii_lowercase().as_str() {
         // ── Standard .rdp keys ──────────────────────────────────────────────
         "full address" => "RDP server address as host[:port]",
         "alternate full address" => "fallback RDP server address (host[:port]) tried if 'full address' fails",

@@ -111,7 +111,7 @@ mod imp {
         }
 
         /// Accepts the next client connection.
-        pub async fn accept(&self) -> io::Result<UnixStream> {
+        pub async fn accept(&mut self) -> io::Result<UnixStream> {
             let (stream, _addr) = self.inner.accept().await?;
             Ok(stream)
         }
@@ -152,24 +152,37 @@ mod imp {
         ClientOptions::new().open(&endpoint.0)
     }
 
-    /// A named-pipe listener that creates a fresh server instance per accepted connection.
+    /// A named-pipe listener.
+    ///
+    /// It always keeps one ready (unconnected) server instance alive, which is both what serves the
+    /// next connection and what upholds the `first_pipe_instance` exclusivity (a pipe with no live
+    /// instance would let a second daemon claim the name).
     pub struct Listener {
         name: String,
+        ready: NamedPipeServer,
     }
 
     impl Listener {
-        /// Records the pipe name to serve.
+        /// Creates the first pipe instance, claiming the name exclusively.
+        ///
+        /// `first_pipe_instance(true)` makes this fail with `ERROR_ACCESS_DENIED` if another daemon
+        /// already owns the pipe, so two daemons cannot coexist on the same endpoint.
         pub fn bind(endpoint: &Endpoint) -> io::Result<Self> {
+            let ready = ServerOptions::new().first_pipe_instance(true).create(&endpoint.0)?;
             Ok(Self {
                 name: endpoint.0.clone(),
+                ready,
             })
         }
 
-        /// Creates a new pipe instance and waits for a client to connect to it.
-        pub async fn accept(&self) -> io::Result<NamedPipeServer> {
-            let server = ServerOptions::new().create(&self.name)?;
-            server.connect().await?;
-            Ok(server)
+        /// Waits for the next client to connect to the ready instance, then mints a replacement.
+        pub async fn accept(&mut self) -> io::Result<NamedPipeServer> {
+            // Connect by reference so a cancelled future leaves `ready` intact (and the pipe alive).
+            self.ready.connect().await?;
+            // Mint the next listening instance before returning so the pipe is never instance-less.
+            // Subsequent instances must omit `first_pipe_instance`, which is only valid on the first.
+            let next = ServerOptions::new().create(&self.name)?;
+            Ok(core::mem::replace(&mut self.ready, next))
         }
     }
 }

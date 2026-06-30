@@ -21,8 +21,9 @@ use ironrdp_propertyset::PropertySet;
 
 use crate::wire::propertyset;
 use crate::wire::{
-    opt_string_size, opt_u16_size, read_bool, read_char, read_mouse_button, read_opt_string, read_opt_u16, read_string,
-    string_size, write_bool, write_char, write_mouse_button, write_opt_string, write_opt_u16, write_string,
+    bytes_size, opt_string_size, opt_u16_size, read_bool, read_bytes, read_char, read_mouse_button, read_opt_string,
+    read_opt_u16, read_string, string_size, write_bool, write_bytes, write_char, write_mouse_button, write_opt_string,
+    write_opt_u16, write_string,
 };
 
 /// A request sent by the CLI to the daemon.
@@ -51,7 +52,7 @@ pub enum Request {
         substring: Option<String>,
         last: Option<u32>,
     },
-    /// Return the dimensions of the most recent frame (minimal for V1).
+    /// Capture the most recent frame (cursor composited in) as a PNG.
     Screenshot,
     /// Move the mouse pointer to an absolute position.
     MouseMove { x: u16, y: u16 },
@@ -153,7 +154,7 @@ impl Response {
 }
 
 /// The success payload carried by [`Response::Ok`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Payload {
     /// No data.
     Empty,
@@ -163,8 +164,26 @@ pub enum Payload {
     Properties(PropertyDump),
     /// Retained log lines.
     Logs(Vec<String>),
-    /// Most recent frame dimensions.
-    Screenshot { width: u16, height: u16 },
+    /// The most recent frame encoded as a PNG (cursor included), with its dimensions.
+    Screenshot { width: u16, height: u16, png: Vec<u8> },
+}
+
+impl fmt::Debug for Payload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("Empty"),
+            Self::Status(status) => f.debug_tuple("Status").field(status).finish(),
+            Self::Properties(dump) => f.debug_tuple("Properties").field(dump).finish(),
+            Self::Logs(lines) => f.debug_tuple("Logs").field(lines).finish(),
+            // Print the PNG byte length rather than the (large, binary) blob.
+            Self::Screenshot { width, height, png } => f
+                .debug_struct("Screenshot")
+                .field("width", width)
+                .field("height", height)
+                .field("png_len", &png.len())
+                .finish(),
+        }
+    }
 }
 
 /// Coarse connection state reported by [`Request::Status`].
@@ -491,10 +510,11 @@ impl Encode for Payload {
                     write_string(dst, line)?;
                 }
             }
-            Self::Screenshot { width, height } => {
+            Self::Screenshot { width, height, png } => {
                 dst.write_u8(4);
                 dst.write_u16(*width);
                 dst.write_u16(*height);
+                write_bytes(dst, png)?;
             }
         }
         Ok(())
@@ -511,7 +531,7 @@ impl Encode for Payload {
                 Self::Status(status) => status.size(),
                 Self::Properties(dump) => dump.size(),
                 Self::Logs(lines) => 4 + lines.iter().map(|line| string_size(line)).sum::<usize>(),
-                Self::Screenshot { .. } => 2 /* width */ + 2 /* height */,
+                Self::Screenshot { png, .. } => 2 /* width */ + 2 /* height */ + bytes_size(png),
             }
     }
 }
@@ -536,7 +556,8 @@ impl Decode<'_> for Payload {
                 ensure_size!(in: src, size: 4);
                 let width = src.read_u16();
                 let height = src.read_u16();
-                Ok(Self::Screenshot { width, height })
+                let png = read_bytes(src)?;
+                Ok(Self::Screenshot { width, height, png })
             }
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag")),
         }

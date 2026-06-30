@@ -44,6 +44,27 @@ pub fn read_string(src: &mut ReadCursor<'_>) -> DecodeResult<String> {
     String::from_utf8(bytes.to_vec()).map_err(|_| ironrdp_core::invalid_field_err!("string", "not valid UTF-8"))
 }
 
+/// Size on the wire of a length-prefixed raw byte blob.
+pub fn bytes_size(value: &[u8]) -> usize {
+    4 /* length prefix */ + value.len() /* raw bytes */
+}
+
+pub fn write_bytes(dst: &mut WriteCursor<'_>, value: &[u8]) -> EncodeResult<()> {
+    ensure_size!(in: dst, size: bytes_size(value));
+    let len: u32 = cast_length!("bytes length", value.len())?;
+    dst.write_u32(len);
+    dst.write_slice(value);
+    Ok(())
+}
+
+pub fn read_bytes(src: &mut ReadCursor<'_>) -> DecodeResult<Vec<u8>> {
+    ensure_size!(in: src, size: 4);
+    let len = src.read_u32();
+    let len = usize::try_from(len).map_err(|_| ironrdp_core::other_err!("bytes", "length does not fit in usize"))?;
+    ensure_size!(in: src, size: len);
+    Ok(src.read_slice(len).to_vec())
+}
+
 pub fn write_opt_string(dst: &mut WriteCursor<'_>, value: Option<&str>) -> EncodeResult<()> {
     ensure_size!(in: dst, size: 1);
     match value {

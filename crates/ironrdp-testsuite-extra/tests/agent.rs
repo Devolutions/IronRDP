@@ -125,6 +125,7 @@ fn response_variants_round_trip() {
         Response::Ok(Payload::Screenshot {
             width: 800,
             height: 600,
+            png: vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
         }),
         Response::Ok(Payload::Empty),
     ];
@@ -157,4 +158,19 @@ fn property_set_wire_round_trips() {
     original_pairs.sort_by_key(|(key, _)| *key);
     decoded_pairs.sort_by_key(|(key, _)| *key);
     assert_eq!(original_pairs, decoded_pairs, "property set wire round-trip mismatch");
+}
+
+#[test]
+fn bytes_wire_round_trips() {
+    let original = vec![0x89, b'P', b'N', b'G', 0x00, 0xFF, 0x10, 0x20];
+
+    let size = wire::bytes_size(&original);
+    let mut buf = vec![0u8; size];
+    let mut cursor = ironrdp_core::WriteCursor::new(&mut buf);
+    wire::write_bytes(&mut cursor, &original).expect("write_bytes");
+    assert_eq!(cursor.pos(), size, "written length must match computed size");
+
+    let mut read_cursor = ironrdp_core::ReadCursor::new(&buf);
+    let decoded = wire::read_bytes(&mut read_cursor).expect("read_bytes");
+    assert_eq!(original, decoded, "bytes wire round-trip mismatch");
 }

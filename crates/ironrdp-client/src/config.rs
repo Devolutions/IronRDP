@@ -556,6 +556,7 @@ pub struct ConfigBuilder {
     codecs: Vec<String>,
     autologon: Option<bool>,
     enable_server_pointer: Option<bool>,
+    pointer_software_rendering: Option<bool>,
     enable_audio_playback: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
@@ -777,6 +778,16 @@ impl ConfigBuilder {
     pub fn with_server_pointer(mut self, enabled: bool) -> Self {
         self.enable_server_pointer = Some(enabled);
         self.properties.set_server_pointer(enabled);
+        self
+    }
+
+    /// Enable or disable software pointer rendering. When enabled, the session composites the
+    /// remote cursor directly into the decoded framebuffer (instead of emitting it as separate
+    /// pointer events for a hardware/overlay cursor). Useful for headless clients that have no
+    /// overlay of their own and want the cursor captured in the frame.
+    #[must_use]
+    pub fn with_pointer_software_rendering(mut self, enabled: bool) -> Self {
+        self.pointer_software_rendering = Some(enabled);
         self
     }
 
@@ -1161,7 +1172,7 @@ impl ConfigBuilder {
             autologon: self.autologon.unwrap_or(false),
             enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
             request_data: None,
-            pointer_software_rendering: false,
+            pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
             compression_type,
             performance_flags: PerformanceFlags::default(),

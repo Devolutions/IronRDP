@@ -50,6 +50,9 @@ clap = { version = "4.6", features = ["derive", "cargo"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# PNG encoding for screenshots
+png = "0.18"
+
 # Utils
 anyhow = "1"
 whoami = "2.1"

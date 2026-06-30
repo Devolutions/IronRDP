@@ -21,7 +21,9 @@ the same version, so the format carries no version byte.
 
 Connection configuration travels as a binary-encoded [`PropertySet`][`ironrdp-propertyset`] inside a
 strictly-typed `Request::Connect`. Runtime operations (mouse, keyboard, status, logs, …) are
-strictly-typed messages.
+strictly-typed messages. `Request::Screenshot` returns the most recent frame as PNG bytes (with the
+mouse cursor composited in — the agent enables software pointer rendering), which the CLI writes to
+disk.
 
 ## Secrets
 

@@ -35,13 +35,22 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()>
         if crate::transport::connect(&endpoint).await.is_ok() {
             anyhow::bail!("a daemon already appears to be running at {endpoint}");
         }
-        let _ = std::fs::remove_file(&endpoint.0);
+        // No daemon answered, so the path is a stale socket we can reclaim. Guard against deleting
+        // an unrelated regular file (or following a symlink) when `--endpoint` points elsewhere:
+        // inspect the path itself and only remove genuine sockets.
+        use std::os::unix::fs::FileTypeExt as _;
+        let metadata =
+            std::fs::symlink_metadata(&endpoint.0).with_context(|| format!("stat IPC endpoint {endpoint}"))?;
+        if !metadata.file_type().is_socket() {
+            anyhow::bail!("refusing to remove {endpoint}: path exists and is not a socket");
+        }
+        std::fs::remove_file(&endpoint.0).with_context(|| format!("remove stale socket {endpoint}"))?;
     }
 
     init_daemon_logging();
     let logs = LogBuffer::new();
 
-    let listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
+    let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
     let daemon = Daemon::new(logs, overlay);
 
     info!(%endpoint, "Daemon listening");
@@ -102,8 +111,17 @@ struct Live {
     properties: PropertySet,
     state: ConnState,
     error: Option<String>,
-    /// Most recent frame dimensions (the raw framebuffer is intentionally dropped for V1).
-    frame_size: Option<(u16, u16)>,
+    /// Most recent frame (with the cursor already composited in by the session). Replaced on every
+    /// graphics update; `None` until the first frame arrives.
+    frame: Option<Frame>,
+}
+
+/// A decoded frame retained for screenshots. `pixels` are `0x00RRGGBB` (`to_be_bytes()` yields
+/// `[0, R, G, B]`), row-major, `width * height` entries, with the remote cursor blended in.
+struct Frame {
+    width: u16,
+    height: u16,
+    pixels: Vec<u32>,
 }
 
 impl Daemon {
@@ -186,7 +204,10 @@ impl Daemon {
             .with_client_build(client_build())
             .with_client_dir("C:\\Windows\\System32\\mstscax.dll")
             .with_platform(current_platform())
-            .with_client_name(client_name());
+            .with_client_name(client_name())
+            // Headless: composite the remote cursor into the framebuffer so it appears in
+            // screenshots (there is no separate overlay to draw it).
+            .with_pointer_software_rendering(true);
 
         let missing = builder.missing();
         if !missing.is_empty() {
@@ -217,7 +238,7 @@ impl Daemon {
             properties: live_seed,
             state: ConnState::Connecting,
             error: None,
-            frame_size: None,
+            frame: None,
         }));
 
         // Capture this session's logs into the ring buffer (queryable via `Request::QueryLogs`)
@@ -285,8 +306,8 @@ impl Daemon {
             },
             Some(session) => {
                 let live = session.live.lock().expect("session live state poisoned");
-                let (width, height) = match live.frame_size {
-                    Some((width, height)) => (Some(width), Some(height)),
+                let (width, height) = match &live.frame {
+                    Some(frame) => (Some(frame.width), Some(frame.height)),
                     None => (None, None),
                 };
                 StatusInfo {
@@ -345,9 +366,24 @@ impl Daemon {
             return Response::error("no active session");
         };
         let live = session.live.lock().expect("session live state poisoned");
-        match live.frame_size {
-            Some((width, height)) => Response::Ok(Payload::Screenshot { width, height }),
-            None => Response::error("no frame available yet"),
+        let Some(frame) = live.frame.as_ref() else {
+            return Response::error("no frame available yet");
+        };
+        match encode_png(frame.width, frame.height, &frame.pixels) {
+            Ok(png) => {
+                debug!(
+                    width = frame.width,
+                    height = frame.height,
+                    bytes = png.len(),
+                    "Encoded screenshot"
+                );
+                Response::Ok(Payload::Screenshot {
+                    width: frame.width,
+                    height: frame.height,
+                    png,
+                })
+            }
+            Err(error) => Response::error(format!("failed to encode screenshot: {error:#}")),
         }
     }
 
@@ -373,12 +409,16 @@ async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc
         let mut guard = live.lock().expect("session live state poisoned");
         let previous = guard.state;
         match event {
-            RdpOutputEvent::Image { width, height, .. } => {
+            RdpOutputEvent::Image { buffer, width, height } => {
                 let width = width.get();
                 let height = height.get();
                 guard.properties.insert("desktopwidth", width);
                 guard.properties.insert("desktopheight", height);
-                guard.frame_size = Some((width, height));
+                guard.frame = Some(Frame {
+                    width,
+                    height,
+                    pixels: buffer,
+                });
                 guard.state = ConnState::Connected;
                 guard.error = None;
                 if previous != ConnState::Connected {
@@ -400,10 +440,32 @@ async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc
                 guard.error = Some(format!("{error}"));
                 warn!(%error, "Session terminated with an error");
             }
-            // Pointer events carry no live state we track for V1.
+            // With software pointer rendering the cursor is composited into the `Image` frames
+            // above; the remaining pointer events (default/hidden) carry no live state we track.
             _ => {}
         }
     }
+}
+
+/// Encodes a retained framebuffer to PNG bytes.
+///
+/// `pixels` are `0x00RRGGBB` (`to_be_bytes()` yields `[0, R, G, B]`); the leading byte is the unused
+/// alpha placeholder, so we emit opaque 8-bit RGB.
+fn encode_png(width: u16, height: u16, pixels: &[u32]) -> anyhow::Result<Vec<u8>> {
+    let mut rgb = Vec::with_capacity(pixels.len() * 3 /* RGB */);
+    for pixel in pixels {
+        let [_, r, g, b] = pixel.to_be_bytes();
+        rgb.extend_from_slice(&[r, g, b]);
+    }
+
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, u32::from(width), u32::from(height));
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().context("write PNG header")?;
+    writer.write_image_data(&rgb).context("write PNG image data")?;
+    writer.finish().context("finish PNG stream")?;
+    Ok(png)
 }
 
 /// Installs the daemon's global tracing subscriber: a compact formatter to stderr, defaulting to

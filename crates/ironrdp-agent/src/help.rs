@@ -56,8 +56,10 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  session with `connect --log-directive`. This is the session's own
                                  log; the daemon's operational log goes to stderr (default `info`,
                                  tune with the `IRONRDP_LOG` env var).
-- `screenshot`                   Print the most recent frame dimensions (`frame WxH`). Errors with
-                                 `no frame available yet` until the first frame arrives.
+- `screenshot [PATH]`            Capture the most recent frame (with the mouse cursor composited in)
+                                 as a PNG and write it to PATH (default `screenshot.png`). Prints
+                                 `wrote PATH (WxH, N bytes)`. Errors with `no frame available yet`
+                                 until the first frame arrives.
 
 ## Input (require an active session)
 

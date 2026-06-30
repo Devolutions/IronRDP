@@ -2453,6 +2453,7 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
  "libc",
+ "png",
  "tokio",
  "tracing",
  "tracing-subscriber",
