@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use ironrdp_client::config::{ClipboardType, Transport};
-use ironrdp_viewer::config::parse_config_from;
+use ironrdp_viewer::cli::parse_config_from;
 use uuid::Uuid;
 
 struct TempRdpFile {
