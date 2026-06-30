@@ -143,6 +143,15 @@ impl UrbdrcDeviceBackend for TestDeviceBackend {
         Ok(None)
     }
 
+    fn transfer_out_no_ack(
+        &mut self,
+        _channel_id: u32,
+        _request_id: RequestId,
+        _request: TransferOutPacket,
+    ) -> PduResult<()> {
+        Ok(())
+    }
+
     fn retract(&mut self, _channel_id: u32) -> PduResult<()> {
         Ok(())
     }

@@ -81,7 +81,7 @@ impl RequestIdAllocator {
     const fn alloc(&mut self) -> u32 {
         self.id += 1;
         if self.id > 0x7F_FF_FF_FF {
-            self.id -= 0x7F_FF_FF_FF
+            self.id = 0;
         }
         self.id
     }

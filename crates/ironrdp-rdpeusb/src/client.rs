@@ -196,6 +196,7 @@ impl DvcClientProcessor for UrbdrcControlClient {}
 pub trait UrbdrcDeviceBackend: Send {
     /// Get the USB device information.
     fn device_info(&mut self, channel_id: u32) -> PduResult<DeviceInfo>;
+
     /// [Processing a Cancel Request Message][3.3.5.3.1]:
     ///
     /// The client MUST attempt to stop processing the request identified by the RequestId field in
@@ -205,6 +206,7 @@ pub trait UrbdrcDeviceBackend: Send {
     ///
     /// [3.3.5.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/d5315234-d9ba-42dc-bc1b-b421c57a21ae
     fn cancel_request(&mut self, request_id: RequestId, channel_id: u32);
+
     /// [Processing a Query Device Text Message][3.3.5.3.5]:
     ///
     /// After receiving the QUERY_DEVICE_TEXT message, the client forwards the request to the
@@ -214,7 +216,8 @@ pub trait UrbdrcDeviceBackend: Send {
     ///
     /// [3.3.5.3.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/834f56cc-cfed-4649-8952-0b6486638c28
     fn query_device_text(&mut self, channel_id: u32, text_type: u32, locale_id: u32) -> PduResult<Option<DeviceText>>;
-    /// Process an [`IoControl`] request.
+
+    /// Process an `IoControl` request.
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
     fn io_control(
@@ -223,7 +226,8 @@ pub trait UrbdrcDeviceBackend: Send {
         request_id: RequestId,
         request: IoControlPacket,
     ) -> PduResult<Option<IoControlCompletionResult>>;
-    /// Process an [`InternalIoControl`] request.
+
+    /// Process an `InternalIoControl` request.
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
     fn internal_io_control(
@@ -232,7 +236,8 @@ pub trait UrbdrcDeviceBackend: Send {
         request_id: RequestId,
         request: InternalIoControlPacket,
     ) -> PduResult<Option<IoControlCompletionResult>>;
-    /// Process a [`TransferInRequest`].
+
+    /// Process a `TransferInRequest`.
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
     fn transfer_in(
@@ -241,7 +246,8 @@ pub trait UrbdrcDeviceBackend: Send {
         request_id: RequestId,
         request: TransferInPacket,
     ) -> PduResult<Option<TransferInCompletionResult>>;
-    /// Process a [`TransferOutRequest`].
+
+    /// Process a `TransferOutRequest`.
     ///
     /// Returning [`None`] means the request remains pending and no immediate completion is sent.
     fn transfer_out(
@@ -250,6 +256,15 @@ pub trait UrbdrcDeviceBackend: Send {
         request_id: RequestId,
         request: TransferOutPacket,
     ) -> PduResult<Option<TransferOutCompletionResult>>;
+
+    /// Process a no_ack `TransferOutRequest`.
+    fn transfer_out_no_ack(
+        &mut self,
+        channel_id: u32,
+        request_id: RequestId,
+        request: TransferOutPacket,
+    ) -> PduResult<()>;
+
     /// [Processing a Retract Device Message][3.3.5.3.8]:
     ///
     /// After receiving the RETRACT_DEVICE message, the client SHOULD terminate the dynamic channel
@@ -698,7 +713,8 @@ impl DvcProcessor for UrbdrcDeviceClient {
                     output_buffer: transfer_out_pdu.output_buffer,
                 };
                 if no_ack {
-                    self.backend.transfer_out(channel_id, request_id.into(), transfer_out)?;
+                    self.backend
+                        .transfer_out_no_ack(channel_id, request_id.into(), transfer_out)?;
                     Ok(Vec::new())
                 } else {
                     let Some(completion_iface) = self.request_completion else {
