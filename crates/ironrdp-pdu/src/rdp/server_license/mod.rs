@@ -105,23 +105,21 @@ impl<'de> Decode<'de> for LicenseHeader {
         let security_header = BasicSecurityHeader::decode(src)?;
 
         if !security_header.flags.contains(BasicSecurityHeaderFlags::LICENSE_PKT) {
-            return Err(invalid_field_err!(
-                "securityHeaderFlags",
-                "invalid security header flags"
-            ));
+            return Err(invalid_field_err!( "securityHeaderFlags",
+                "invalid security header flags", in: src));
         }
 
         let preamble_message_type = PreambleType::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_field_err!("preambleType", "invalid license type"))?;
+            .ok_or_else(|| invalid_field_err!("preambleType", "invalid license type", in: src))?;
 
         let flags_with_version = src.read_u8();
         let preamble_message_size = src.read_u16();
 
         let preamble_flags = PreambleFlags::from_bits(flags_with_version & !PROTOCOL_VERSION_MASK)
-            .ok_or_else(|| invalid_field_err!("preambleFlags", "Got invalid flags field"))?;
+            .ok_or_else(|| invalid_field_err!("preambleFlags", "Got invalid flags field", in: src))?;
 
         let preamble_version = PreambleVersion::from_u8(flags_with_version & PROTOCOL_VERSION_MASK)
-            .ok_or_else(|| invalid_field_err!("preambleVersion", "Got invalid version in the flags filed"))?;
+            .ok_or_else(|| invalid_field_err!("preambleVersion", "Got invalid version in the flags filed", in: src))?;
 
         Ok(Self {
             security_header,
@@ -408,7 +406,7 @@ impl Encode for BlobHeader {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.blob_type.0);
-        dst.write_u16(cast_length!("len", self.length)?);
+        dst.write_u16(cast_length!("len", self.length, in: dst)?);
 
         Ok(())
     }
@@ -427,7 +425,7 @@ impl<'de> Decode<'de> for BlobHeader {
         ensure_fixed_part_size!(in: src);
 
         let blob_type = BlobType(src.read_u16());
-        let length = cast_length!("len", src.read_u16())?;
+        let length = cast_length!("len", src.read_u16(), in: src)?;
 
         Ok(Self { blob_type, length })
     }
@@ -482,10 +480,8 @@ impl<'de> Decode<'de> for LicensePdu {
             PreambleType::NewLicense | PreambleType::UpgradeLicense => {
                 Ok(ServerUpgradeLicense::decode(license_header, src)?.into())
             }
-            PreambleType::LicenseInfo => Err(unsupported_value_err!(
-                "LicensePdu::LicenseInfo",
-                "LicenseInfo is not supported".to_owned()
-            )),
+            PreambleType::LicenseInfo => Err(unsupported_value_err!( "LicensePdu::LicenseInfo",
+                "LicenseInfo is not supported".to_owned(), in: src)),
             PreambleType::NewLicenseRequest => Ok(ClientNewLicenseRequest::decode(license_header, src)?.into()),
             PreambleType::PlatformChallengeResponse => {
                 Ok(ClientPlatformChallengeResponse::decode(license_header, src)?.into())

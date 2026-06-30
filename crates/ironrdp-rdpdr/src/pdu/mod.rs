@@ -117,11 +117,9 @@ impl RdpdrPdu {
             )),
             PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
             PacketId::CoreUserLoggedon => Ok(RdpdrPdu::UserLoggedon),
-            packet_id => Err(unsupported_value_err!(
-                "RdpdrPdu::decode_body",
+            packet_id => Err(unsupported_value_err!( "RdpdrPdu::decode_body",
                 "PacketId",
-                format!("{packet_id} ({:#06X})", u16::from(packet_id))
-            )),
+                format!("{packet_id} ({:#06X})", u16::from(packet_id)), in: src)),
         }
     }
 }
@@ -372,7 +370,7 @@ impl TryFrom<u16> for Component {
         match value {
             0x4472 => Ok(Component::RdpdrCtypCore),
             0x5052 => Ok(Component::RdpdrCtypPrn),
-            _ => Err(invalid_field_err!("try_from", "Component", "invalid value")),
+            _ => Err(invalid_field_err!("try_from", "Component", "invalid value", at: 0)),
         }
     }
 }
@@ -436,7 +434,7 @@ impl TryFrom<u16> for PacketId {
             0x5043 => Ok(PacketId::PrnCacheData),
             0x554C => Ok(PacketId::CoreUserLoggedon),
             0x5543 => Ok(PacketId::PrnUsingXps),
-            _ => Err(invalid_field_err!("try_from", "PacketId", "invalid value")),
+            _ => Err(invalid_field_err!("try_from", "PacketId", "invalid value", at: 0)),
         }
     }
 }

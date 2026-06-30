@@ -206,7 +206,7 @@ impl<'de> Decode<'de> for GfxPdu {
         #[expect(clippy::unwrap_used, reason = "FIXED_PART_SIZE is a small constant")]
         let _payload_length = pdu_length
             .checked_sub(Self::FIXED_PART_SIZE.try_into().unwrap())
-            .ok_or_else(|| invalid_field_err!("Length", "GFX PDU length is too small"))?;
+            .ok_or_else(|| invalid_field_err!("Length", "GFX PDU length is too small", at: 0))?;
 
         match cmdid {
             RDPGFX_CMDID_WIRETOSURFACE_1 => {
@@ -301,7 +301,7 @@ impl<'de> Decode<'de> for GfxPdu {
                 let pdu = MapSurfaceToScaledWindowPdu::decode(src)?;
                 Ok(GfxPdu::MapSurfaceToScaledWindow(pdu))
             }
-            _ => Err(invalid_field_err!("Type", "Unknown GFX PDU type")),
+            _ => Err(invalid_field_err!("Type", "Unknown GFX PDU type", at: 0)),
         }
     }
 }
@@ -349,7 +349,7 @@ impl Encode for WireToSurface1Pdu {
         dst.write_u16(self.codec_id.into());
         dst.write_u8(self.pixel_format.into());
         self.destination_rectangle.encode(dst)?;
-        dst.write_u32(cast_length!("BitmapDataLen", self.bitmap_data.len())?);
+        dst.write_u32(cast_length!("BitmapDataLen", self.bitmap_data.len(), in: dst)?);
         dst.write_slice(&self.bitmap_data);
         Ok(())
     }
@@ -371,7 +371,7 @@ impl<'a> Decode<'a> for WireToSurface1Pdu {
         let codec_id = Codec1Type::try_from(src.read_u16())?;
         let pixel_format = PixelFormat::try_from(src.read_u8())?;
         let destination_rectangle = ExclusiveRectangle::decode(src)?;
-        let bitmap_data_length = cast_length!("BitmapDataLen", src.read_u32())?;
+        let bitmap_data_length = cast_length!("BitmapDataLen", src.read_u32(), in: src)?;
 
         ensure_size!(in: src, size: bitmap_data_length);
         let bitmap_data = src.read_slice(bitmap_data_length).to_vec();
@@ -425,7 +425,7 @@ impl Encode for WireToSurface2Pdu {
         dst.write_u16(self.codec_id.into());
         dst.write_u32(self.codec_context_id);
         dst.write_u8(self.pixel_format.into());
-        dst.write_u32(cast_length!("BitmapDataLen", self.bitmap_data.len())?);
+        dst.write_u32(cast_length!("BitmapDataLen", self.bitmap_data.len(), in: dst)?);
         dst.write_slice(&self.bitmap_data);
 
         Ok(())
@@ -448,7 +448,7 @@ impl<'a> Decode<'a> for WireToSurface2Pdu {
         let codec_id = Codec2Type::try_from(src.read_u16())?;
         let codec_context_id = src.read_u32();
         let pixel_format = PixelFormat::try_from(src.read_u8())?;
-        let bitmap_data_length = cast_length!("BitmapDataLen", src.read_u32())?;
+        let bitmap_data_length = cast_length!("BitmapDataLen", src.read_u32(), in: src)?;
 
         ensure_size!(in: src, size: bitmap_data_length);
         let bitmap_data = src.read_slice(bitmap_data_length).to_vec();
@@ -537,7 +537,7 @@ impl Encode for SolidFillPdu {
 
         dst.write_u16(self.surface_id);
         self.fill_pixel.encode(dst)?;
-        dst.write_u16(cast_length!("nRect", self.rectangles.len())?);
+        dst.write_u16(cast_length!("nRect", self.rectangles.len(), in: dst)?);
 
         for rectangle in self.rectangles.iter() {
             rectangle.encode(dst)?;
@@ -604,7 +604,7 @@ impl Encode for SurfaceToSurfacePdu {
         dst.write_u16(self.destination_surface_id);
         self.source_rectangle.encode(dst)?;
 
-        dst.write_u16(cast_length!("DestinationPoints", self.destination_points.len())?);
+        dst.write_u16(cast_length!("DestinationPoints", self.destination_points.len(), in: dst)?);
         for rectangle in self.destination_points.iter() {
             rectangle.encode(dst)?;
         }
@@ -725,7 +725,7 @@ impl Encode for CacheToSurfacePdu {
 
         dst.write_u16(self.cache_slot);
         dst.write_u16(self.surface_id);
-        dst.write_u16(cast_length!("npoints", self.destination_points.len())?);
+        dst.write_u16(cast_length!("npoints", self.destination_points.len(), in: dst)?);
         for point in self.destination_points.iter() {
             point.encode(dst)?;
         }
@@ -1183,7 +1183,7 @@ impl Encode for ResetGraphicsPdu {
 
         dst.write_u32(self.width);
         dst.write_u32(self.height);
-        dst.write_u32(cast_length!("nMonitors", self.monitors.len())?);
+        dst.write_u32(cast_length!("nMonitors", self.monitors.len(), in: dst)?);
 
         for monitor in self.monitors.iter() {
             monitor.encode(dst)?;
@@ -1209,20 +1209,18 @@ impl<'a> Decode<'a> for ResetGraphicsPdu {
 
         let width = src.read_u32();
         if width > MAX_RESET_GRAPHICS_WIDTH_HEIGHT {
-            return Err(invalid_field_err!("width", "invalid reset graphics width"));
+            return Err(invalid_field_err!("width", "invalid reset graphics width", at: 0));
         }
 
         let height = src.read_u32();
         if height > MAX_RESET_GRAPHICS_WIDTH_HEIGHT {
-            return Err(invalid_field_err!("height", "invalid reset graphics height"));
+            return Err(invalid_field_err!("height", "invalid reset graphics height", at: 0));
         }
 
         let monitor_count = src.read_u32();
         if monitor_count > MONITOR_COUNT_MAX {
-            return Err(invalid_field_err!(
-                "monitor_count",
-                "invalid reset graphics monitor count"
-            ));
+            return Err(invalid_field_err!( "monitor_count",
+                "invalid reset graphics monitor count", at: 0));
         }
 
         #[expect(clippy::as_conversions, reason = "monitor_count validated above")]
@@ -1316,7 +1314,7 @@ impl Encode for CacheImportOfferPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u16(cast_length!("Count", self.cache_entries.len())?);
+        dst.write_u16(cast_length!("Count", self.cache_entries.len(), in: dst)?);
 
         for e in self.cache_entries.iter() {
             e.encode(dst)?;
@@ -1367,7 +1365,7 @@ impl Encode for CacheImportReplyPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u16(cast_length!("Count", self.cache_slots.len())?);
+        dst.write_u16(cast_length!("Count", self.cache_slots.len(), in: dst)?);
 
         for cache_slot in self.cache_slots.iter() {
             dst.write_u16(*cache_slot);
@@ -1468,7 +1466,7 @@ impl Encode for CapabilitiesAdvertisePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u16(cast_length!("Count", self.0.len())?);
+        dst.write_u16(cast_length!("Count", self.0.len(), in: dst)?);
 
         for capability_set in self.0.iter() {
             capability_set.encode(dst)?;
@@ -1490,7 +1488,7 @@ impl<'a> Decode<'a> for CapabilitiesAdvertisePdu {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let capabilities_count = cast_length!("Count", src.read_u16())?;
+        let capabilities_count = cast_length!("Count", src.read_u16(), in: src)?;
 
         ensure_size!(in: src, size: capabilities_count * RawCapabilitySet::FIXED_PART_SIZE);
 
@@ -1658,7 +1656,7 @@ impl Encode for RawCapabilitySet {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.version.into());
-        dst.write_u32(cast_length!("dataLength", self.data.len())?);
+        dst.write_u32(cast_length!("dataLength", self.data.len(), in: dst)?);
         dst.write_slice(&self.data);
 
         Ok(())
@@ -1678,7 +1676,7 @@ impl<'de> Decode<'de> for RawCapabilitySet {
         ensure_fixed_part_size!(in: src);
 
         let version = CapabilityVersion(src.read_u32());
-        let data_length: usize = cast_length!("dataLength", src.read_u32())?;
+        let data_length: usize = cast_length!("dataLength", src.read_u32(), in: src)?;
 
         ensure_size!(in: src, size: data_length);
         let data = src.read_slice(data_length).to_vec();
@@ -2207,7 +2205,7 @@ impl TryFrom<u16> for Codec1Type {
             0xc => Ok(Codec1Type::Alpha),
             0xe => Ok(Codec1Type::Avc444),
             0xf => Ok(Codec1Type::Avc444v2),
-            _ => Err(invalid_field_err!("Codec1Type", "invalid codec type")),
+            _ => Err(invalid_field_err!("Codec1Type", "invalid codec type", at: 0)),
         }
     }
 }
@@ -2232,7 +2230,7 @@ impl TryFrom<u16> for Codec2Type {
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
             0x9 => Ok(Codec2Type::RemoteFxProgressive),
-            _ => Err(invalid_field_err!("Codec2Type", "invalid codec type")),
+            _ => Err(invalid_field_err!("Codec2Type", "invalid codec type", at: 0)),
         }
     }
 }

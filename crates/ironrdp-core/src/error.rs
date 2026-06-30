@@ -33,28 +33,25 @@ pub trait NotEnoughBytesErr {
     /// * `context` - The context in which the error occurred.
     /// * `received` - The number of bytes received.
     /// * `expected` - The number of bytes expected.
+    /// * `offset` - Byte offset in the input stream where the shortage was detected.
+    ///   Callers without stream-cursor access pass `0`.
     ///
     /// # Returns
     ///
     /// A new error instance.
-    fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self;
+    fn not_enough_bytes(context: &'static str, received: usize, expected: usize, offset: usize) -> Self;
 }
 
 /// Helper function to create a "not enough bytes" error.
 ///
 /// This function is a convenience wrapper around the `NotEnoughBytesErr` trait.
-///
-/// # Arguments
-///
-/// * `context` - The context in which the error occurred.
-/// * `received` - The number of bytes received.
-/// * `expected` - The number of bytes expected.
-///
-/// # Returns
-///
-/// A new error instance of type `T` that implements `NotEnoughBytesErr`.
-pub fn not_enough_bytes_err<T: NotEnoughBytesErr>(context: &'static str, received: usize, expected: usize) -> T {
-    T::not_enough_bytes(context, received, expected)
+pub fn not_enough_bytes_err<T: NotEnoughBytesErr>(
+    context: &'static str,
+    received: usize,
+    expected: usize,
+    offset: usize,
+) -> T {
+    T::not_enough_bytes(context, received, expected, offset)
 }
 
 /// Trait for creating "invalid field" errors.
@@ -66,39 +63,34 @@ pub trait InvalidFieldErr {
     /// * `context` - The context in which the error occurred.
     /// * `field` - The name of the invalid field.
     /// * `reason` - The reason why the field is invalid.
+    /// * `offset` - Byte offset in the input stream where the field was decoded.
+    ///   Callers without stream-cursor access pass `0`.
     ///
     /// # Returns
     ///
     /// A new error instance.
-    fn invalid_field(context: &'static str, field: &'static str, reason: &'static str) -> Self;
+    fn invalid_field(context: &'static str, field: &'static str, reason: &'static str, offset: usize) -> Self;
 }
 
 /// Helper function to create an "invalid field" error with a source.
-///
-/// This function is a convenience wrapper around the `InvalidFieldErr` and `WithSource` traits.
-///
-/// # Arguments
-///
-/// * `context` - The context in which the error occurred.
-/// * `field` - The name of the invalid field.
-/// * `reason` - The reason why the field is invalid.
-/// * `source` - The source error to add.
-///
-/// # Returns
-///
-/// A new error instance of type `T` that implements both `InvalidFieldErr` and `WithSource`.
 pub fn invalid_field_err_with_source<T: InvalidFieldErr + WithSource, E: Source>(
     context: &'static str,
     field: &'static str,
     reason: &'static str,
+    offset: usize,
     source: E,
 ) -> T {
-    T::invalid_field(context, field, reason).with_source(source)
+    T::invalid_field(context, field, reason, offset).with_source(source)
 }
 
 /// Helper function to create an "invalid field" error.
-pub fn invalid_field_err<T: InvalidFieldErr>(context: &'static str, field: &'static str, reason: &'static str) -> T {
-    T::invalid_field(context, field, reason)
+pub fn invalid_field_err<T: InvalidFieldErr>(
+    context: &'static str,
+    field: &'static str,
+    reason: &'static str,
+    offset: usize,
+) -> T {
+    T::invalid_field(context, field, reason, offset)
 }
 
 /// Trait for creating "unexpected message type" errors.
@@ -109,27 +101,14 @@ pub trait UnexpectedMessageTypeErr {
     ///
     /// * `context` - The context in which the error occurred.
     /// * `got` - The unexpected message type received.
-    ///
-    /// # Returns
-    ///
-    /// A new error instance.
-    fn unexpected_message_type(context: &'static str, got: u8) -> Self;
+    /// * `offset` - Byte offset in the input stream where the type was read.
+    ///   Callers without stream-cursor access pass `0`.
+    fn unexpected_message_type(context: &'static str, got: u8, offset: usize) -> Self;
 }
 
 /// Helper function to create an "unexpected message type" error.
-///
-/// This function is a convenience wrapper around the `UnexpectedMessageTypeErr` trait.
-///
-/// # Arguments
-///
-/// * `context` - The context in which the error occurred.
-/// * `got` - The unexpected message type received.
-///
-/// # Returns
-///
-/// A new error instance of type `T` that implements `UnexpectedMessageTypeErr`.
-pub fn unexpected_message_type_err<T: UnexpectedMessageTypeErr>(context: &'static str, got: u8) -> T {
-    T::unexpected_message_type(context, got)
+pub fn unexpected_message_type_err<T: UnexpectedMessageTypeErr>(context: &'static str, got: u8, offset: usize) -> T {
+    T::unexpected_message_type(context, got, offset)
 }
 
 /// Trait for creating "unsupported version" errors.
@@ -140,27 +119,14 @@ pub trait UnsupportedVersionErr {
     ///
     /// * `context` - The context in which the error occurred.
     /// * `got` - The unsupported version received.
-    ///
-    /// # Returns
-    ///
-    /// A new error instance.
-    fn unsupported_version(context: &'static str, got: u8) -> Self;
+    /// * `offset` - Byte offset in the input stream where the version was read.
+    ///   Callers without stream-cursor access pass `0`.
+    fn unsupported_version(context: &'static str, got: u8, offset: usize) -> Self;
 }
 
 /// Helper function to create an "unsupported version" error.
-///
-/// This function is a convenience wrapper around the `UnsupportedVersionErr` trait.
-///
-/// # Arguments
-///
-/// * `context` - The context in which the error occurred.
-/// * `got` - The unsupported version received.
-///
-/// # Returns
-///
-/// A new error instance of type `T` that implements `UnsupportedVersionErr`.
-pub fn unsupported_version_err<T: UnsupportedVersionErr>(context: &'static str, got: u8) -> T {
-    T::unsupported_version(context, got)
+pub fn unsupported_version_err<T: UnsupportedVersionErr>(context: &'static str, got: u8, offset: usize) -> T {
+    T::unsupported_version(context, got, offset)
 }
 
 /// Trait for creating "unsupported value" errors.
@@ -172,12 +138,10 @@ pub trait UnsupportedValueErr {
     /// * `context` - The context in which the error occurred.
     /// * `name` - The name of the unsupported value.
     /// * `value` - The unsupported value.
-    ///
-    /// # Returns
-    ///
-    /// A new error instance.
+    /// * `offset` - Byte offset in the input stream where the value was read.
+    ///   Callers without stream-cursor access pass `0`.
     #[cfg(feature = "alloc")]
-    fn unsupported_value(context: &'static str, name: &'static str, value: String) -> Self;
+    fn unsupported_value(context: &'static str, name: &'static str, value: String, offset: usize) -> Self;
 
     /// Creates a new "unsupported value" error when the "alloc" feature is disabled.
     ///
@@ -185,36 +149,27 @@ pub trait UnsupportedValueErr {
     ///
     /// * `context` - The context in which the error occurred.
     /// * `name` - The name of the unsupported value.
-    ///
-    /// # Returns
-    ///
-    /// A new error instance.
+    /// * `offset` - Byte offset in the input stream where the value was read.
+    ///   Callers without stream-cursor access pass `0`.
     #[cfg(not(feature = "alloc"))]
-    fn unsupported_value(context: &'static str, name: &'static str) -> Self;
+    fn unsupported_value(context: &'static str, name: &'static str, offset: usize) -> Self;
 }
 
 /// Helper function to create an "unsupported value" error when the "alloc" feature is enabled.
-///
-/// This function is a convenience wrapper around the `UnsupportedValueErr` trait.
-///
-/// # Arguments
-///
-/// * `context` - The context in which the error occurred.
-/// * `name` - The name of the unsupported value.
-/// * `value` - The unsupported value.
-///
-/// # Returns
-///
-/// A new error instance of type `T` that implements `UnsupportedValueErr`.]
 #[cfg(feature = "alloc")]
-pub fn unsupported_value_err<T: UnsupportedValueErr>(context: &'static str, name: &'static str, value: String) -> T {
-    T::unsupported_value(context, name, value)
+pub fn unsupported_value_err<T: UnsupportedValueErr>(
+    context: &'static str,
+    name: &'static str,
+    value: String,
+    offset: usize,
+) -> T {
+    T::unsupported_value(context, name, value, offset)
 }
 
 /// Helper function to create an "unsupported value" error.
 #[cfg(not(feature = "alloc"))]
-pub fn unsupported_value_err<T: UnsupportedValueErr>(context: &'static str, name: &'static str) -> T {
-    T::unsupported_value(context, name)
+pub fn unsupported_value_err<T: UnsupportedValueErr>(context: &'static str, name: &'static str, offset: usize) -> T {
+    T::unsupported_value(context, name, offset)
 }
 
 /// Trait for creating generic "other" errors.

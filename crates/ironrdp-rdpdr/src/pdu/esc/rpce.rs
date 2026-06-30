@@ -108,7 +108,7 @@ impl<T: HeaderlessEncode> ironrdp_core::Encode for Pdu<T> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         let stream_header = StreamHeader::default();
-        let type_header = TypeHeader::new(cast_length!("Pdu<T>", "size", self.size())?);
+        let type_header = TypeHeader::new(cast_length!("Pdu<T>", "size", self.size(), in: dst)?);
 
         stream_header.encode(dst)?;
         type_header.encode(dst)?;
@@ -211,11 +211,9 @@ impl StreamHeader {
                 filler,
             })
         } else {
-            Err(invalid_field_err!(
-                "decode",
+            Err(invalid_field_err!( "decode",
                 "StreamHeader",
-                "server returned big-endian data, parsing not implemented"
-            ))
+                "server returned big-endian data, parsing not implemented", in: src))
         }
     }
 
@@ -238,7 +236,7 @@ impl TryFrom<u8> for Endianness {
         match value {
             0x00 => Ok(Endianness::BigEndian),
             0x10 => Ok(Endianness::LittleEndian),
-            _ => Err(invalid_field_err!("try_from", "RpceEndianness", "unsupported value")),
+            _ => Err(invalid_field_err!("try_from", "RpceEndianness", "unsupported value", at: 0)),
         }
     }
 }

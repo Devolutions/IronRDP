@@ -390,7 +390,7 @@ impl ChunkProcessor {
                 flags |= message.flags;
 
                 ChannelPduHeader {
-                    length: ironrdp_core::cast_int!(ChannelPduHeader::NAME, "length", total_len)?,
+                    length: ironrdp_core::cast_int!(ChannelPduHeader::NAME, "length", total_len, at: 0)?,
                     flags,
                 }
             };

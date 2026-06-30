@@ -27,12 +27,12 @@ macro_rules! ensure_transfer_flag {
             return Err(invalid_field_err!(
                 concat!("TRANSFER_IN_REQUEST::TsUrb: ", $ts_urb_name, "::TransferFlags"),
                 "does not contain USBD_TRANSFER_DIRECTION_IN"
-            ));
+            , at: 0));
         } else if !transfer_in && flag_in {
             return Err(invalid_field_err!(
                 concat!("TRANSFER_OUT_REQUEST::TsUrb: ", $ts_urb_name, "::TransferFlags"),
                 "contains USBD_TRANSFER_DIRECTION_IN"
-            ));
+            , at: 0));
         }
     };
 }
@@ -66,7 +66,7 @@ impl Decode<'_> for TsUrbIn {
             return Err(invalid_field_err!(
                 "TRANSFER_IN_REQUEST::TsUrb::TS_URB_HEADER::NoAck",
                 "is non-zero: NoAck MUST be set to zero for TRANSFER_IN_REQUEST"
-            ));
+            , in: src));
         }
 
         let payload_size = usize::from(header.ts_urb_size) - header.size();
@@ -165,7 +165,7 @@ impl Decode<'_> for TsUrbIn {
             UrbFunction::URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR => {
                 Self::OsFeatDescReq(TsUrbOsFeatDescRequest::decode(&mut src, header)?)
             }
-            func => return Err(unsupported_value_err!("URB Function", format!("{}", u16::from(func)))),
+            func => return Err(unsupported_value_err!("URB Function", format!("{}", u16::from(func)), in: src)),
         };
 
         Ok(ts_urb)
@@ -311,7 +311,7 @@ impl Decode<'_> for TsUrbOut {
                 );
                 Self::VendorClassReq(urb)
             }
-            func => return Err(unsupported_value_err!("URB Function", format!("{}", u16::from(func)))),
+            func => return Err(unsupported_value_err!("URB Function", format!("{}", u16::from(func)), in: src)),
         };
 
         Ok(ts_urb)
@@ -427,13 +427,13 @@ impl Encode for TsUrbSelectConfig {
             return Err(invalid_field_err!(
                 "TS_URB_SELECT_CONFIGURATION::TS_URB_HEADER::URB_Function",
                 "is not URB_FUNCTION_SELECT_CONFIGURATION"
-            ));
+            , in: dst));
         }
         if self.header.no_ack {
             return Err(invalid_field_err!(
                 "TS_URB_SELECT_CONFIGURATION::TS_URB_HEADER::URB_Function::NoAck",
                 "is non-zero"
-            ));
+            , in: dst));
         }
         ensure_size!(in: dst, size: self.size());
         self.header.encode_with_size(dst, self.size())?;
@@ -518,13 +518,13 @@ impl Encode for TsUrbSelectInterface {
             return Err(invalid_field_err!(
                 "TS_URB_SELECT_INTERFACE::TS_URB_HEADER::URB_Function",
                 "is not URB_FUNCTION_SELECT_INTERFACE"
-            ));
+            , in: dst));
         }
         if self.header.no_ack {
             return Err(invalid_field_err!(
                 "TS_URB_SELECT_INTERFACE::TS_URB_HEADER::URB_Function::NoAck",
                 "is non-zero"
-            ));
+            , in: dst));
         }
 
         ensure_size!(in: dst, size: self.size());
@@ -589,14 +589,15 @@ impl Encode for TsUrbPipeRequest {
                     URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL, \
                     URB_FUNCTION_SYNC_RESET_PIPE, \
                     URB_FUNCTION_SYNC_CLEAR_STALL, \
-                    URB_FUNCTION_CLOSE_STATIC_STREAMS"
+                    URB_FUNCTION_CLOSE_STATIC_STREAMS",
+                in: dst
             ));
         }
         if self.header.no_ack {
             return Err(invalid_field_err!(
                 "TS_URB_PIPE_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
                 "is non-zero"
-            ));
+            , in: dst));
         }
 
         ensure_fixed_part_size!(in: dst);
@@ -643,13 +644,13 @@ impl Encode for TsUrbGetCurrFrameNum {
             return Err(invalid_field_err!(
                 "TS_URB_GET_CURRENT_FRAME_NUMBER::TS_URB_HEADER::URB_Function",
                 "is not URB_FUNCTION_GET_CURRENT_FRAME_NUMBER"
-            ));
+            , in: dst));
         }
         if self.header.no_ack {
             return Err(invalid_field_err!(
                 "TS_URB_GET_CURRENT_FRAME_NUMBER::TS_URB_HEADER::URB_Function::NoAck",
                 "is non-zero"
-            ));
+            , in: dst));
         }
         self.header.encode_with_size(dst, self.size())
     }
@@ -708,7 +709,7 @@ impl Encode for TsUrbControlTransfer {
             return Err(invalid_field_err!(
                 "TS_URB_CONTROL_TRANSFER::TS_URB_HEADER::URB_Function",
                 "is not URB_FUNCTION_CONTROL_TRANSFER"
-            ));
+            , in: dst));
         }
         ensure_fixed_part_size!(in: dst);
         self.header.encode_with_size(dst, self.size())?;
@@ -771,7 +772,7 @@ impl Encode for TsUrbBulkOrInterruptTransfer {
             return Err(invalid_field_err!(
                 "TS_URB_BULK_OR_INTERRUPT_TRANSFER::TS_URB_HEADER::URB_Function",
                 "is not one of: URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER, URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL"
-            ));
+            , in: dst));
         }
         ensure_fixed_part_size!(in: dst);
 
@@ -845,7 +846,7 @@ impl Encode for TsUrbIsochTransfer {
             return Err(invalid_field_err!(
                 "TS_URB_ISOCH_TRANSFER::TS_URB_HEADER::URB_Function",
                 "is not one of: URB_FUNCTION_ISOCH_TRANSFER, URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL"
-            ));
+            , in: dst));
         }
         ensure_size!(in: dst, size: self.size());
 
@@ -857,7 +858,7 @@ impl Encode for TsUrbIsochTransfer {
             invalid_field_err!(
                 "TS_URB_ISOCH_TRANSFER::IsoPacket",
                 "too many packets: count exceeded field NumberOfPackets (4 bytes)"
-            )
+            , in: dst)
         })?);
         dst.write_u32(self.error_count);
         self.iso_packet.iter().try_for_each(|packet| packet.encode(dst))
@@ -942,7 +943,8 @@ impl Encode for TsUrbControlDescRequest {
                     URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE, \
                     URB_FUNCTION_SET_DESCRIPTOR_TO_DEVICE, \
                     URB_FUNCTION_SET_DESCRIPTOR_TO_ENDPOINT, \
-                    URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE"
+                    URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE",
+                in: dst
             ));
         }
         ensure_fixed_part_size!(in: dst);
@@ -1023,13 +1025,13 @@ impl Encode for TsUrbControlFeatRequest {
                     URB_FUNCTION_CLEAR_FEATURE_TO_INTERFACE, \
                     URB_FUNCTION_CLEAR_FEATURE_TO_ENDPOINT, \
                     URB_FUNCTION_CLEAR_FEATURE_TO_OTHER"
-            ));
+            , in: dst));
         }
         if self.header.no_ack {
             return Err(invalid_field_err!(
                 "TS_URB_CONTROL_FEATURE_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
                 "is non-zero"
-            ));
+            , in: dst));
         }
         ensure_fixed_part_size!(in: dst);
 
@@ -1093,14 +1095,15 @@ impl Encode for TsUrbControlGetStatusRequest {
                     URB_FUNCTION_GET_STATUS_FROM_DEVICE, \
                     URB_FUNCTION_GET_STATUS_FROM_INTERFACE, \
                     URB_FUNCTION_GET_STATUS_FROM_ENDPOINT, \
-                    URB_FUNCTION_GET_STATUS_FROM_OTHER"
+                    URB_FUNCTION_GET_STATUS_FROM_OTHER",
+                in: dst
             ));
         }
         if self.header.no_ack {
             return Err(invalid_field_err!(
                 "TS_URB_CONTROL_GET_STATUS_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
                 "is non-zero"
-            ));
+            , in: dst));
         }
         ensure_fixed_part_size!(in: dst);
 
@@ -1192,7 +1195,8 @@ impl Encode for TsUrbControlVendorClassRequest {
                     URB_FUNCTION_CLASS_DEVICE, \
                     URB_FUNCTION_CLASS_INTERFACE, \
                     URB_FUNCTION_CLASS_ENDPOINT, \
-                    URB_FUNCTION_CLASS_OTHER"
+                    URB_FUNCTION_CLASS_OTHER",
+                in: dst
             ));
         }
         ensure_fixed_part_size!(in: dst);
@@ -1244,13 +1248,13 @@ impl Encode for TsUrbControlGetConfigRequest {
             return Err(invalid_field_err!(
                 "TS_URB_CONTROL_GET_CONFIGURATION_REQUEST::TS_URB_HEADER::URB_Function",
                 "is not URB_FUNCTION_GET_CONFIGURATION"
-            ));
+            , in: dst));
         }
         if self.header.no_ack {
             return Err(invalid_field_err!(
                 "TS_URB_CONTROL_GET_CONFIGURATION_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
                 "is non-zero"
-            ));
+            , in: dst));
         }
         ensure_fixed_part_size!(in: dst);
         self.header.encode_with_size(dst, self.size())
@@ -1299,13 +1303,13 @@ impl Encode for TsUrbControlGetInterfaceRequest {
             return Err(invalid_field_err!(
                 "TS_URB_CONTROL_GET_INTERFACE_REQUEST::TS_URB_HEADER::URB_Function",
                 "is not URB_FUNCTION_GET_INTERFACE"
-            ));
+            , in: dst));
         }
         if self.header.no_ack {
             return Err(invalid_field_err!(
                 "TS_URB_CONTROL_GET_INTERFACE_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
                 "is non-zero"
-            ));
+            , in: dst));
         }
         ensure_fixed_part_size!(in: dst);
         self.header.encode_with_size(dst, self.size())?;
@@ -1359,7 +1363,7 @@ impl TsUrbOsFeatDescRequest {
             return Err(invalid_field_err!(
                 "TRANSFER_IN_REQUEST::TsUrb: TS_URB_OS_FEATURE_DESCRIPTOR_REQUEST::MS_PageIndex",
                 "must be: 0x0"
-            ));
+            , in: src));
         }
         let ms_feat_desc_index = src.read_u16();
         read_padding!(src, 3);
@@ -1379,13 +1383,13 @@ impl Encode for TsUrbOsFeatDescRequest {
             return Err(invalid_field_err!(
                 "TS_URB_OS_FEATURE_DESCRIPTOR_REQUEST::TS_URB_HEADER::URB_Function",
                 "is not URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR"
-            ));
+            , in: dst));
         }
         if self.header.no_ack {
             return Err(invalid_field_err!(
                 "TS_URB_OS_FEATURE_DESCRIPTOR_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
                 "is non-zero"
-            ));
+            , in: dst));
         }
         ensure_fixed_part_size!(in: dst);
         self.header.encode_with_size(dst, self.size())?;
@@ -1457,7 +1461,7 @@ impl Encode for TsUrbControlTransferEx {
             return Err(invalid_field_err!(
                 "TS_URB_CONTROL_TRANSFER_EX::TS_URB_HEADER::URB_Function",
                 "is not URB_FUNCTION_CONTROL_TRANSFER_EX"
-            ));
+            , in: dst));
         }
         ensure_fixed_part_size!(in: dst);
         self.header.encode_with_size(dst, self.size())?;

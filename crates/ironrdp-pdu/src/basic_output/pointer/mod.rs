@@ -68,31 +68,30 @@ impl ColorPointerAttribute<'_> {
 }
 
 macro_rules! check_masks_alignment {
-    ($and_mask:expr, $xor_mask:expr, $pointer_height:expr, $large_ptr:expr) => {{
+    ($and_mask:expr, $xor_mask:expr, $pointer_height:expr, $large_ptr:expr, $offset:expr) => {{
         const AND_MASK_SIZE_FIELD: &str = "lengthAndMask";
         const XOR_MASK_SIZE_FIELD: &str = "lengthXorMask";
         const U32_MAX: usize = 0xFFFFFFFF;
 
-        let pointer_height: usize = cast_int!("pointer height", $pointer_height)?;
+        let offset: usize = $offset;
+        let pointer_height: usize = cast_int!("pointer height", $pointer_height, at: offset)?;
 
         let check_mask = |mask: &[u8], field: &'static str| {
             if $pointer_height == 0 {
-                return Err(invalid_field_err!(field, "pointer height cannot be zero"));
+                return Err(invalid_field_err!(field, "pointer height cannot be zero", at: offset));
             }
             if $large_ptr && (mask.len() > U32_MAX) {
-                return Err(invalid_field_err!(field, "pointer mask is too big for u32 size"));
+                return Err(invalid_field_err!(field, "pointer mask is too big for u32 size", at: offset));
             }
             if !$large_ptr && (mask.len() > usize::from(u16::MAX)) {
-                return Err(invalid_field_err!(field, "pointer mask is too big for u16 size"));
+                return Err(invalid_field_err!(field, "pointer mask is too big for u16 size", at: offset));
             }
             if (mask.len() % pointer_height) != 0 {
-                return Err(invalid_field_err!(field, "pointer mask have incomplete scanlines"));
+                return Err(invalid_field_err!(field, "pointer mask have incomplete scanlines", at: offset));
             }
             if (mask.len() / pointer_height) % 2 != 0 {
-                return Err(invalid_field_err!(
-                    field,
-                    "pointer mask scanlines should be aligned to 16 bits"
-                ));
+                return Err(invalid_field_err!( field,
+                    "pointer mask scanlines should be aligned to 16 bits", at: offset));
             }
             Ok(())
         };
@@ -106,15 +105,15 @@ impl Encode for ColorPointerAttribute<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        check_masks_alignment!(self.and_mask, self.xor_mask, self.height, false)?;
+        check_masks_alignment!(self.and_mask, self.xor_mask, self.height, false, dst.pos())?;
 
         dst.write_u16(self.cache_index);
         self.hot_spot.encode(dst)?;
         dst.write_u16(self.width);
         dst.write_u16(self.height);
 
-        dst.write_u16(cast_length!("and mask length", self.and_mask.len())?);
-        dst.write_u16(cast_length!("xor mask length", self.xor_mask.len())?);
+        dst.write_u16(cast_length!("and mask length", self.and_mask.len(), in: dst)?);
+        dst.write_u16(cast_length!("xor mask length", self.xor_mask.len(), in: dst)?);
         // Note that masks are written in reverse order. It is not a mistake, that is how the
         // message is defined in [MS-RDPBCGR]
         dst.write_slice(self.xor_mask);
@@ -150,7 +149,7 @@ impl<'a> Decode<'a> for ColorPointerAttribute<'a> {
         let xor_mask = src.read_slice(length_xor_mask);
         let and_mask = src.read_slice(length_and_mask);
 
-        check_masks_alignment!(and_mask, xor_mask, height, false)?;
+        check_masks_alignment!(and_mask, xor_mask, height, false, src.pos())?;
 
         Ok(Self {
             cache_index,
@@ -270,7 +269,7 @@ impl Encode for LargePointerAttribute<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        check_masks_alignment!(self.and_mask, self.xor_mask, self.height, true)?;
+        check_masks_alignment!(self.and_mask, self.xor_mask, self.height, true, dst.pos())?;
 
         dst.write_u16(self.xor_bpp);
         dst.write_u16(self.cache_index);
@@ -278,8 +277,8 @@ impl Encode for LargePointerAttribute<'_> {
         dst.write_u16(self.width);
         dst.write_u16(self.height);
 
-        dst.write_u32(cast_length!("and mask length", self.and_mask.len())?);
-        dst.write_u32(cast_length!("xor mask length", self.xor_mask.len())?);
+        dst.write_u32(cast_length!("and mask length", self.and_mask.len(), in: dst)?);
+        dst.write_u32(cast_length!("xor mask length", self.xor_mask.len(), in: dst)?);
         // See comment in `ColorPointerAttribute::encode` about encoding order
         dst.write_slice(self.xor_mask);
         dst.write_slice(self.and_mask);
@@ -306,8 +305,8 @@ impl<'a> Decode<'a> for LargePointerAttribute<'a> {
         let width = src.read_u16();
         let height = src.read_u16();
         // Convert to usize to prevent overflow during addition
-        let length_and_mask = cast_length!("and mask length", src.read_u32())?;
-        let length_xor_mask = cast_length!("xor mask length", src.read_u32())?;
+        let length_and_mask = cast_length!("and mask length", src.read_u32(), in: src)?;
+        let length_xor_mask = cast_length!("xor mask length", src.read_u32(), in: src)?;
 
         let expected_masks_size = length_and_mask + length_xor_mask;
         ensure_size!(in: src, size: expected_masks_size);
@@ -315,7 +314,7 @@ impl<'a> Decode<'a> for LargePointerAttribute<'a> {
         let xor_mask = src.read_slice(length_xor_mask);
         let and_mask = src.read_slice(length_and_mask);
 
-        check_masks_alignment!(and_mask, xor_mask, height, true)?;
+        check_masks_alignment!(and_mask, xor_mask, height, true, src.pos())?;
 
         Ok(Self {
             xor_bpp,

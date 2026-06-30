@@ -127,7 +127,7 @@ impl<'de> Decode<'de> for GlyphCache {
 
         let frag_cache = CacheDefinition::decode(src)?;
         let glyph_support_level = GlyphSupportLevel::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("glyphSupport", "invalid glyph support level"))?;
+            .ok_or_else(|| invalid_field_err!("glyphSupport", "invalid glyph support level", in: src))?;
         let _padding = src.read_u16();
 
         Ok(GlyphCache {

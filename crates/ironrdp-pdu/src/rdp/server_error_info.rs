@@ -37,8 +37,8 @@ impl<'de> Decode<'de> for ServerSetErrorInfoPdu {
         ensure_fixed_part_size!(in: src);
 
         let error_info = src.read_u32();
-        let error_info =
-            ErrorInfo::from_u32(error_info).ok_or_else(|| invalid_field_err!("errorInfo", "unexpected info code"))?;
+        let error_info = ErrorInfo::from_u32(error_info)
+            .ok_or_else(|| invalid_field_err!("errorInfo", "unexpected info code", in: src))?;
 
         Ok(Self(error_info))
     }

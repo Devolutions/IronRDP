@@ -129,18 +129,15 @@ impl<'a> FileContentsResponse<'a> {
     /// Should not panic - the try_into conversion is guaranteed to succeed after length validation.
     pub fn data_as_size(&self) -> DecodeResult<u64> {
         if self.data.len() != 8 {
-            return Err(invalid_field_err!(
-                "requestedFileContentsData",
-                "SIZE response must be exactly 8 bytes per MS-RDPECLIP 2.2.5.4"
-            ));
+            return Err(invalid_field_err!( "requestedFileContentsData",
+                "SIZE response must be exactly 8 bytes per MS-RDPECLIP 2.2.5.4", at: 0));
         }
 
         // Per length check above, this conversion is infallible.
-        let chunk: [u8; 8] = self
-            .data
-            .as_ref()
-            .try_into()
-            .map_err(|_| invalid_field_err!("requestedFileContentsData", "SIZE response data is not 8 bytes"))?;
+        let chunk: [u8; 8] =
+            self.data.as_ref().try_into().map_err(
+                |_| invalid_field_err!("requestedFileContentsData", "SIZE response data is not 8 bytes", at: 0),
+            )?;
         Ok(u64::from_le_bytes(chunk))
     }
 }
@@ -153,7 +150,7 @@ impl Encode for FileContentsResponse<'_> {
             ClipboardPduFlags::RESPONSE_OK
         };
 
-        let header = PartialHeader::new_with_flags(cast_int!("dataLen", self.inner_size())?, flags);
+        let header = PartialHeader::new_with_flags(cast_int!("dataLen", self.inner_size(), in: dst)?, flags);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.inner_size());
@@ -182,7 +179,7 @@ impl<'de> Decode<'de> for FileContentsResponse<'de> {
         ensure_size!(in: src, size: header.data_length());
 
         if header.data_length() < Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("requestedFileContentsData", "invalid data size"));
+            return Err(invalid_field_err!("requestedFileContentsData", "invalid data size", in: src));
         };
 
         let data_size = header.data_length() - Self::FIXED_PART_SIZE;
@@ -233,7 +230,7 @@ impl Encode for FileContentsRequest {
     /// Callers that build these PDUs are responsible for setting fields correctly;
     /// use [`FileContentsFlags::validate`] to check flag consistency.
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        let header = PartialHeader::new(cast_int!("dataLen", self.inner_size())?);
+        let header = PartialHeader::new(cast_int!("dataLen", self.inner_size(), in: dst)?);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.inner_size());
@@ -287,28 +284,24 @@ impl<'de> Decode<'de> for FileContentsRequest {
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate lindex is non-negative
         if index < 0 {
-            return Err(invalid_field_err!(
-                "lindex",
-                "file index must be non-negative per MS-RDPECLIP 2.2.5.3"
-            ));
+            return Err(invalid_field_err!( "lindex",
+                "file index must be non-negative per MS-RDPECLIP 2.2.5.3", in: src));
         }
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate flags are spec-compliant
-        flags.validate().map_err(|e| invalid_field_err!("dwFlags", e))?;
+        flags
+            .validate()
+            .map_err(|e| invalid_field_err!("dwFlags", e, in: src))?;
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate SIZE request constraints
         if flags.contains(FileContentsFlags::SIZE) {
             if requested_size != 8 {
-                return Err(invalid_field_err!(
-                    "cbRequested",
-                    "SIZE request must have cbRequested=8 per MS-RDPECLIP 2.2.5.3"
-                ));
+                return Err(invalid_field_err!( "cbRequested",
+                    "SIZE request must have cbRequested=8 per MS-RDPECLIP 2.2.5.3", in: src));
             }
             if position != 0 {
-                return Err(invalid_field_err!(
-                    "position",
-                    "SIZE request must have position=0 per MS-RDPECLIP 2.2.5.3"
-                ));
+                return Err(invalid_field_err!( "position",
+                    "SIZE request must have position=0 per MS-RDPECLIP 2.2.5.3", in: src));
             }
         }
 

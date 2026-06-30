@@ -24,7 +24,7 @@ impl SubcodecId {
             0x00 => Ok(Self::Raw),
             0x01 => Ok(Self::NsCodec),
             0x02 => Ok(Self::Rlex),
-            _ => Err(invalid_field_err!("subCodecId", "unknown subcodec ID")),
+            _ => Err(invalid_field_err!("subCodecId", "unknown subcodec ID", at: 0)),
         }
     }
 }
@@ -68,12 +68,12 @@ fn decode_single_subcodec<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Subcodec
     let y_start = src.read_u16();
     let width = src.read_u16();
     let height = src.read_u16();
-    let bitmap_data_byte_count: usize = cast_length!("bitmapDataByteCount", src.read_u32())?;
+    let bitmap_data_byte_count: usize = cast_length!("bitmapDataByteCount", src.read_u32(), in: src)?;
     let codec_id_raw = src.read_u8();
     let codec_id = SubcodecId::from_u8(codec_id_raw)?;
 
     if width == 0 || height == 0 {
-        return Err(invalid_field_err!("dimensions", "subcodec region has zero dimension"));
+        return Err(invalid_field_err!("dimensions", "subcodec region has zero dimension", in: src));
     }
 
     ensure_size!(ctx: Subcodec::NAME, in: src, size: bitmap_data_byte_count);
