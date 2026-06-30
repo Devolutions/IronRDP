@@ -2773,9 +2773,6 @@ version = "0.0.0"
 [[package]]
 name = "ironrdp-propertyset"
 version = "0.1.0"
-dependencies = [
- "tracing",
-]
 
 [[package]]
 name = "ironrdp-rdcleanpath"
