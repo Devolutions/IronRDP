@@ -589,7 +589,8 @@ impl ConfigBuilder {
             Ok(ip) => ironrdp_cfg::TargetHost::Ip(ip),
             Err(_) => ironrdp_cfg::TargetHost::Domain(destination.name.clone()),
         };
-        self.properties.set_full_address(&ironrdp_cfg::TargetAddr { host, port: None });
+        self.properties
+            .set_full_address(&ironrdp_cfg::TargetAddr { host, port: None });
         self.properties.set_server_port(destination.port);
         self.properties.clear_alternate_full_address();
         self.destination = Some(destination);
