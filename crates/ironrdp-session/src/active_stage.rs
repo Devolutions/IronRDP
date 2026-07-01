@@ -44,6 +44,7 @@ impl ActiveStage {
             connection_result.static_channels,
             connection_result.user_channel_id,
             connection_result.io_channel_id,
+            connection_result.message_channel_id,
             connection_result.share_id,
             connection_result.connection_activation,
         );
