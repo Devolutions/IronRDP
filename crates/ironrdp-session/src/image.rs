@@ -661,6 +661,18 @@ impl DecodedImage {
         bgr24: &[u8],
         update_rectangle: &InclusiveRectangle,
     ) -> SessionResult<InclusiveRectangle> {
+        self.apply_bgr24_bitmap_with_order(bgr24, update_rectangle, true)
+    }
+
+    /// Apply a 24-bit BGR bitmap with configurable row order.
+    /// If `bottom_up` is true, rows are reversed (standard RDP bitmap order).
+    /// If false, rows are kept in top-down order (RDP6 decompressed output).
+    pub(crate) fn apply_bgr24_bitmap_with_order(
+        &mut self,
+        bgr24: &[u8],
+        update_rectangle: &InclusiveRectangle,
+        bottom_up: bool,
+    ) -> SessionResult<InclusiveRectangle> {
         if !self.rect_fits(update_rectangle) {
             debug!(
                 "Skipping bgr24 update {:?} outside image bounds {}x{}",
@@ -680,11 +692,13 @@ impl DecodedImage {
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
-        bgr24
-            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
-            .rev()
-            .enumerate()
-            .for_each(|(row_idx, row)| {
+        let rows: Box<dyn Iterator<Item = (usize, &[u8])>> = if bottom_up {
+            Box::new(bgr24.chunks_exact(rectangle_width * SRC_COLOR_DEPTH).rev().enumerate())
+        } else {
+            Box::new(bgr24.chunks_exact(rectangle_width * SRC_COLOR_DEPTH).enumerate())
+        };
+
+        rows.for_each(|(row_idx, row)| {
                 row.chunks_exact(SRC_COLOR_DEPTH)
                     .enumerate()
                     .for_each(|(col_idx, src_pixel)| {
