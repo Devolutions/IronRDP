@@ -203,24 +203,33 @@ impl Processor {
                     // Compressed bitmaps at a color depth of 32 bpp are compressed using RDP 6.0
                     // Bitmap Compression and stored inside an RDP 6.0 Bitmap Compressed Stream
                     // structure ([MS-RDPEGDI] section 2.2.2.5.1).
+                    let source_width = usize::from(update.width);
+                    let source_height = usize::from(update.height);
+                    let rect_width = usize::from(update.rectangle.width());
+                    let rect_height = usize::from(update.rectangle.height());
+
                     debug!(
-                        "32 bpp compressed RDP6_BITMAP_STREAM: {}x{} at {:?}, data_len={}, expected={}",
-                        update.width,
-                        update.height,
+                        "32 bpp compressed RDP6_BITMAP_STREAM: source={}x{}, rectangle={}x{} at {:?}, data_len={}, expected={}",
+                        source_width,
+                        source_height,
+                        rect_width,
+                        rect_height,
                         update.rectangle,
                         update.bitmap_data.len(),
-                        usize::from(update.width) * usize::from(update.height) * 3
+                        source_width * source_height * 3
                     );
 
                     match self.bitmap_stream_decoder.decode_bitmap_stream_to_rgb24(
                         update.bitmap_data,
                         &mut buf,
-                        usize::from(update.width),
-                        usize::from(update.height),
+                        source_width,
+                        source_height,
                     ) {
                         Ok(()) => {
-                            debug!("RDP6 decoded to {} bytes (expected {})", buf.len(), usize::from(update.width) * usize::from(update.height) * 3);
-                            image.apply_rgb24(&buf, &update.rectangle, true)?
+                            debug!("RDP6 decoded to {} bytes (expected {})", buf.len(), source_width * source_height * 3);
+                            // Use actual decoded dimensions (source_width), not rectangle width
+                            // The rectangle tells us WHERE to place the bitmap, not HOW BIG it is
+                            image.apply_rgb24_with_dimensions(&buf, &update.rectangle, source_width, true)?
                         }
                         Err(err) => {
                             warn!("Invalid RDP6_BITMAP_STREAM: {err}");

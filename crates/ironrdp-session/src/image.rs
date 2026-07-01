@@ -807,20 +807,34 @@ impl DecodedImage {
         Ok(update_rectangle)
     }
 
+    /// Apply RGB24 bitmap with explicit source dimensions.
+    /// `rgb24` contains `source_width × source_height` pixels in RGB24 format.
+    /// `update_rectangle` specifies WHERE to place the bitmap, not its size.
+    pub(crate) fn apply_rgb24_with_dimensions(
+        &mut self,
+        rgb24: &[u8],
+        update_rectangle: &InclusiveRectangle,
+        source_width: usize,
+        flip: bool,
+    ) -> SessionResult<InclusiveRectangle> {
+        const SRC_COLOR_DEPTH: usize = 3;
+        let lines = rgb24.chunks_exact(source_width * SRC_COLOR_DEPTH);
+        if flip {
+            self.apply_rgb24_iter(lines.rev(), update_rectangle)
+        } else {
+            self.apply_rgb24_iter(lines, update_rectangle)
+        }
+    }
+
     pub(crate) fn apply_rgb24(
         &mut self,
         rgb24: &[u8],
         update_rectangle: &InclusiveRectangle,
         flip: bool,
     ) -> SessionResult<InclusiveRectangle> {
-        const SRC_COLOR_DEPTH: usize = 3;
+        // Legacy API: assume source width matches rectangle width
         let rectangle_width = usize::from(update_rectangle.width());
-        let lines = rgb24.chunks_exact(rectangle_width * SRC_COLOR_DEPTH);
-        if flip {
-            self.apply_rgb24_iter(lines.rev(), update_rectangle)
-        } else {
-            self.apply_rgb24_iter(lines, update_rectangle)
-        }
+        self.apply_rgb24_with_dimensions(rgb24, update_rectangle, rectangle_width, flip)
     }
 
     #[cfg(feature = "qoi")]
