@@ -78,6 +78,9 @@ name = "bitflags"
 version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84d7ced0ae9557296835c32bf1b1e02b44c746701f898460fb000d7eaa84f00a"
+dependencies = [
+ "arbitrary",
+]
 
 [[package]]
 name = "bitvec"
@@ -340,6 +343,7 @@ dependencies = [
 name = "ironrdp-egfx"
 version = "0.2.0"
 dependencies = [
+ "arbitrary",
  "bit_field",
  "bitflags",
  "ironrdp-core",
@@ -371,6 +375,7 @@ dependencies = [
  "ironrdp-cliprdr-format",
  "ironrdp-core",
  "ironrdp-displaycontrol",
+ "ironrdp-dvc",
  "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-pdu",
@@ -398,6 +403,7 @@ dependencies = [
 name = "ironrdp-pdu"
 version = "0.8.0"
 dependencies = [
+ "arbitrary",
  "bit_field",
  "bitflags",
  "byteorder",
