@@ -16,7 +16,7 @@ use crate::pdu::{
         TsUrbBulkOrInterruptTransfer, TsUrbControlDescRequest, TsUrbControlFeatRequest, TsUrbControlGetConfigRequest,
         TsUrbControlGetInterfaceRequest, TsUrbControlGetStatusRequest, TsUrbControlTransfer, TsUrbControlTransferEx,
         TsUrbControlVendorClassRequest, TsUrbGetCurrFrameNum, TsUrbIn, TsUrbIsochTransfer, TsUrbOsFeatDescRequest,
-        TsUrbOut, TsUrbPipeRequest, TsUrbSelectConfig, TsUrbSelectInterface,
+        TsUrbOutKind, TsUrbPipeRequest, TsUrbSelectConfig, TsUrbSelectInterface,
     },
 };
 
@@ -297,7 +297,7 @@ impl From<UrbFunction> for u16 {
 ///
 /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/578da9ca-3116-4608-9737-1bf3df4de3d1
 #[doc(alias = "TS_URB_HEADER")]
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct TsUrbHeader {
     /// The size in bytes of the TS_URB structure.
     pub ts_urb_size: u16,

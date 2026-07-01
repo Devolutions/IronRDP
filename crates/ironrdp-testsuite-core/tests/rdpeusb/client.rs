@@ -6,16 +6,14 @@ use ironrdp_dvc::{DvcChannelListener as _, DvcMessage, DvcProcessor as _};
 use ironrdp_pdu::PduResult;
 use ironrdp_rdpeusb::CHANNEL_NAME;
 use ironrdp_rdpeusb::client::{
-    DeviceInfo, DeviceManagerBackend, DeviceText, IoControlResponse, UrbInResponse, UrbOutResponse,
-    UrbdrcControlClient, UrbdrcDeviceBackend, UrbdrcDeviceClient, UrbdrcListener,
+    DeviceManagerBackend, UrbdrcControlClient, UrbdrcDeviceBackend, UrbdrcDeviceClient, UrbdrcListener,
 };
+use ironrdp_rdpeusb::io::*;
 use ironrdp_rdpeusb::pdu::caps::{Capability, RimExchangeCapabilityRequest};
 use ironrdp_rdpeusb::pdu::header::InterfaceId;
 use ironrdp_rdpeusb::pdu::iface_manipulation::InterfaceRelease;
 use ironrdp_rdpeusb::pdu::notify::{ChannelCreated, Direction};
 use ironrdp_rdpeusb::pdu::sink::AddVirtualChannel;
-use ironrdp_rdpeusb::pdu::usb_dev::{InternalIoControl, IoControl, TransferInRequest, TransferOutRequest};
-use ironrdp_rdpeusb::pdu::utils::RequestId;
 use ironrdp_rdpeusb::pdu::{
     UrbdrcClientControlPdu, UrbdrcClientDevicePdu, UrbdrcServerControlPdu, UrbdrcServerDevicePdu,
 };
@@ -113,8 +111,8 @@ impl UrbdrcDeviceBackend for TestDeviceBackend {
         &mut self,
         _channel_id: u32,
         _request_id: RequestId,
-        _request: IoControl,
-    ) -> PduResult<Option<IoControlResponse>> {
+        _request: IoControlPacket,
+    ) -> PduResult<Option<IoControlCompletionResult>> {
         Ok(None)
     }
 
@@ -122,8 +120,8 @@ impl UrbdrcDeviceBackend for TestDeviceBackend {
         &mut self,
         _channel_id: u32,
         _request_id: RequestId,
-        _request: InternalIoControl,
-    ) -> PduResult<Option<IoControlResponse>> {
+        _request: InternalIoControlPacket,
+    ) -> PduResult<Option<IoControlCompletionResult>> {
         Ok(None)
     }
 
@@ -131,8 +129,8 @@ impl UrbdrcDeviceBackend for TestDeviceBackend {
         &mut self,
         _channel_id: u32,
         _request_id: RequestId,
-        _request: TransferInRequest,
-    ) -> PduResult<Option<UrbInResponse>> {
+        _request: TransferInPacket,
+    ) -> PduResult<Option<TransferInCompletionResult>> {
         Ok(None)
     }
 
@@ -140,9 +138,18 @@ impl UrbdrcDeviceBackend for TestDeviceBackend {
         &mut self,
         _channel_id: u32,
         _request_id: RequestId,
-        _request: TransferOutRequest,
-    ) -> PduResult<Option<UrbOutResponse>> {
+        _request: TransferOutPacket,
+    ) -> PduResult<Option<TransferOutCompletionResult>> {
         Ok(None)
+    }
+
+    fn transfer_out_no_ack(
+        &mut self,
+        _channel_id: u32,
+        _request_id: RequestId,
+        _request: TransferOutPacket,
+    ) -> PduResult<()> {
+        Ok(())
     }
 
     fn retract(&mut self, _channel_id: u32) -> PduResult<()> {

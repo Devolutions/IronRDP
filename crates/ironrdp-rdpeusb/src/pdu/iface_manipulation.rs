@@ -72,6 +72,8 @@ impl Encode for InterfaceRelease {
     }
 }
 
+impl DvcEncode for InterfaceRelease {}
+
 /// [\[MS-RDPEXPS\] 2.2.2.1.1 Query Interface Request (QI_REQ)][1] message.
 ///
 /// Request a new interface ID. Per [MS-RDPEXPS § 3.1.5.2.1.1] the server MUST NOT send `QI_REQ`;

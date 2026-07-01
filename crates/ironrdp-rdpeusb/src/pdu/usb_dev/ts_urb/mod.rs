@@ -11,6 +11,7 @@ use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, ensure_size,
     invalid_field_err, read_padding, unsupported_value_err, write_padding,
 };
+use ironrdp_pdu::{PduResult, pdu_other_err};
 
 use crate::pdu::usb_dev::ts_urb::utils::{SetupPacket, TsUrbHeader, TsUsbdInterfaceInfo, UrbFunction, UsbConfigDesc};
 #[cfg(doc)]
@@ -41,7 +42,61 @@ macro_rules! ensure_transfer_flag {
 ///
 /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/eed35296-3ca1-4271-bd0a-597138131b47
 #[derive(Debug, PartialEq, Clone)]
-pub enum TsUrbIn {
+pub struct TsUrbIn {
+    pub kind: TsUrbInKind,
+    pub header: TsUrbHeader,
+}
+
+impl Decode<'_> for TsUrbIn {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let header = TsUrbHeader::decode(src)?;
+        if header.no_ack {
+            return Err(invalid_field_err!(
+                "TRANSFER_IN_REQUEST::TsUrb::TS_URB_HEADER::NoAck",
+                "is non-zero: NoAck MUST be set to zero for TRANSFER_IN_REQUEST"
+            ));
+        }
+
+        let kind = TsUrbInKind::decode(src, header)?;
+
+        Ok(Self { kind, header })
+    }
+}
+
+impl Encode for TsUrbIn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        if self.header.no_ack {
+            return Err(invalid_field_err!(
+                "TRANSFER_IN_REQUEST::TsUrb::TS_URB_HEADER::NoAck",
+                "is non-zero: NoAck MUST be set to zero for TRANSFER_IN_REQUEST"
+            ));
+        }
+        if !self.kind.matches_func(self.header.func) {
+            return Err(invalid_field_err!(
+                "TRANSFER_IN_REQUEST::TsUrb::TS_URB_HEADER::URB_Function",
+                "does not match TS_URB payload"
+            ));
+        }
+
+        ensure_size!(in: dst, size: self.size());
+        self.header.encode_with_size(dst, self.size())?;
+        self.kind.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "TS_URB"
+    }
+
+    fn size(&self) -> usize {
+        TsUrbHeader::FIXED_PART_SIZE + self.kind.size()
+    }
+}
+
+/// Enumeration of all the [\[MS-RDPEUSB\] 2.2.9 TS_URB TRANSFER_IN_REQUEST Structures][1].
+///
+/// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/eed35296-3ca1-4271-bd0a-597138131b47
+#[derive(Debug, PartialEq, Clone)]
+pub enum TsUrbInKind {
     SelectConfig(TsUrbSelectConfig),
     SelectIface(TsUrbSelectInterface),
     PipeReq(TsUrbPipeRequest),
@@ -59,52 +114,41 @@ pub enum TsUrbIn {
     CtlTransferEx(TsUrbControlTransferEx),
 }
 
-impl Decode<'_> for TsUrbIn {
-    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        let header = TsUrbHeader::decode(src)?;
-        if header.no_ack {
-            return Err(invalid_field_err!(
-                "TRANSFER_IN_REQUEST::TsUrb::TS_URB_HEADER::NoAck",
-                "is non-zero: NoAck MUST be set to zero for TRANSFER_IN_REQUEST"
-            ));
-        }
+impl TsUrbInKind {
+    pub fn ts_urb_size(&self) -> PduResult<u16> {
+        u16::try_from(TsUrbHeader::FIXED_PART_SIZE + self.size())
+            .map_err(|_| pdu_other_err!("converts usize to u16 failed"))
+    }
 
+    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
         let payload_size = usize::from(header.ts_urb_size) - header.size();
         ensure_size!(in: src, size: payload_size);
         let mut src = ReadCursor::new(src.read_slice(payload_size));
 
         let ts_urb = match header.func {
-            UrbFunction::URB_FUNCTION_SELECT_CONFIGURATION => {
-                Self::SelectConfig(TsUrbSelectConfig::decode(&mut src, header)?)
-            }
-
-            UrbFunction::URB_FUNCTION_SELECT_INTERFACE => {
-                Self::SelectIface(TsUrbSelectInterface::decode(&mut src, header)?)
-            }
-
+            UrbFunction::URB_FUNCTION_SELECT_CONFIGURATION => Self::SelectConfig(TsUrbSelectConfig::decode(&mut src)?),
+            UrbFunction::URB_FUNCTION_SELECT_INTERFACE => Self::SelectIface(TsUrbSelectInterface::decode(&mut src)?),
             UrbFunction::URB_FUNCTION_ABORT_PIPE
             | UrbFunction::URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL
             | UrbFunction::URB_FUNCTION_SYNC_RESET_PIPE
             | UrbFunction::URB_FUNCTION_SYNC_CLEAR_STALL
-            | UrbFunction::URB_FUNCTION_CLOSE_STATIC_STREAMS => {
-                Self::PipeReq(TsUrbPipeRequest::decode(&mut src, header)?)
-            }
+            | UrbFunction::URB_FUNCTION_CLOSE_STATIC_STREAMS => Self::PipeReq(TsUrbPipeRequest::decode(&mut src)?),
             UrbFunction::URB_FUNCTION_GET_CURRENT_FRAME_NUMBER => {
-                Self::GetCurFrameNum(TsUrbGetCurrFrameNum::decode(&mut src, header)?)
+                Self::GetCurFrameNum(TsUrbGetCurrFrameNum::decode(&mut src)?)
             }
             UrbFunction::URB_FUNCTION_CONTROL_TRANSFER => {
-                let urb = TsUrbControlTransfer::decode(&mut src, header)?;
+                let urb = TsUrbControlTransfer::decode(&mut src)?;
                 ensure_transfer_flag!(TransferDirection::In, urb.transfer_flags, "TS_URB_CONTROL_TRANSFER");
                 Self::CtlTransfer(urb)
             }
             UrbFunction::URB_FUNCTION_CONTROL_TRANSFER_EX => {
-                let urb = TsUrbControlTransferEx::decode(&mut src, header)?;
+                let urb = TsUrbControlTransferEx::decode(&mut src)?;
                 ensure_transfer_flag!(TransferDirection::In, urb.transfer_flags, "TS_URB_CONTROL_TRANSFER_EX");
                 Self::CtlTransferEx(urb)
             }
             UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER
             | UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL => {
-                let urb = TsUrbBulkOrInterruptTransfer::decode(&mut src, header)?;
+                let urb = TsUrbBulkOrInterruptTransfer::decode(&mut src)?;
                 ensure_transfer_flag!(
                     TransferDirection::In,
                     urb.transfer_flags,
@@ -113,14 +157,14 @@ impl Decode<'_> for TsUrbIn {
                 Self::BulkInterruptTransfer(urb)
             }
             UrbFunction::URB_FUNCTION_ISOCH_TRANSFER | UrbFunction::URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL => {
-                let urb = TsUrbIsochTransfer::decode(&mut src, header)?;
+                let urb = TsUrbIsochTransfer::decode(&mut src)?;
                 ensure_transfer_flag!(TransferDirection::In, urb.transfer_flags, "TS_URB_ISOCH_TRANSFER");
                 Self::IsochTransfer(urb)
             }
             UrbFunction::URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE
             | UrbFunction::URB_FUNCTION_GET_DESCRIPTOR_FROM_ENDPOINT
             | UrbFunction::URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE => {
-                Self::CtlDescReq(TsUrbControlDescRequest::decode(&mut src, header)?)
+                Self::CtlDescReq(TsUrbControlDescRequest::decode(&mut src)?)
             }
             UrbFunction::URB_FUNCTION_SET_FEATURE_TO_DEVICE
             | UrbFunction::URB_FUNCTION_SET_FEATURE_TO_INTERFACE
@@ -130,13 +174,13 @@ impl Decode<'_> for TsUrbIn {
             | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_INTERFACE
             | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_ENDPOINT
             | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_OTHER => {
-                Self::CtlFeatReq(TsUrbControlFeatRequest::decode(&mut src, header)?)
+                Self::CtlFeatReq(TsUrbControlFeatRequest::decode(&mut src)?)
             }
             UrbFunction::URB_FUNCTION_GET_STATUS_FROM_DEVICE
             | UrbFunction::URB_FUNCTION_GET_STATUS_FROM_INTERFACE
             | UrbFunction::URB_FUNCTION_GET_STATUS_FROM_ENDPOINT
             | UrbFunction::URB_FUNCTION_GET_STATUS_FROM_OTHER => {
-                Self::CtlGetStatus(TsUrbControlGetStatusRequest::decode(&mut src, header)?)
+                Self::CtlGetStatus(TsUrbControlGetStatusRequest::decode(&mut src)?)
             }
             UrbFunction::URB_FUNCTION_VENDOR_DEVICE
             | UrbFunction::URB_FUNCTION_VENDOR_INTERFACE
@@ -146,7 +190,7 @@ impl Decode<'_> for TsUrbIn {
             | UrbFunction::URB_FUNCTION_CLASS_INTERFACE
             | UrbFunction::URB_FUNCTION_CLASS_ENDPOINT
             | UrbFunction::URB_FUNCTION_CLASS_OTHER => {
-                let urb = TsUrbControlVendorClassRequest::decode(&mut src, header)?;
+                let urb = TsUrbControlVendorClassRequest::decode(&mut src)?;
                 ensure_transfer_flag!(
                     TransferDirection::In,
                     urb.transfer_flags,
@@ -155,26 +199,99 @@ impl Decode<'_> for TsUrbIn {
                 Self::VendorClassReq(urb)
             }
             UrbFunction::URB_FUNCTION_GET_CONFIGURATION => {
-                Self::CtlGetConfig(TsUrbControlGetConfigRequest::decode(&mut src, header)?)
+                Self::CtlGetConfig(TsUrbControlGetConfigRequest::decode(&mut src)?)
             }
 
             UrbFunction::URB_FUNCTION_GET_INTERFACE => {
-                Self::CtlGetIface(TsUrbControlGetInterfaceRequest::decode(&mut src, header)?)
+                Self::CtlGetIface(TsUrbControlGetInterfaceRequest::decode(&mut src)?)
             }
 
             UrbFunction::URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR => {
-                Self::OsFeatDescReq(TsUrbOsFeatDescRequest::decode(&mut src, header)?)
+                Self::OsFeatDescReq(TsUrbOsFeatDescRequest::decode(&mut src)?)
             }
             func => return Err(unsupported_value_err!("URB Function", format!("{}", u16::from(func)))),
         };
 
         Ok(ts_urb)
     }
+
+    pub(crate) fn matches_func(&self, func: UrbFunction) -> bool {
+        matches!(
+            (self, func),
+            (Self::SelectConfig(_), UrbFunction::URB_FUNCTION_SELECT_CONFIGURATION)
+                | (Self::SelectIface(_), UrbFunction::URB_FUNCTION_SELECT_INTERFACE)
+                | (
+                    Self::PipeReq(_),
+                    UrbFunction::URB_FUNCTION_ABORT_PIPE
+                        | UrbFunction::URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL
+                        | UrbFunction::URB_FUNCTION_SYNC_RESET_PIPE
+                        | UrbFunction::URB_FUNCTION_SYNC_CLEAR_STALL
+                        | UrbFunction::URB_FUNCTION_CLOSE_STATIC_STREAMS
+                )
+                | (
+                    Self::GetCurFrameNum(_),
+                    UrbFunction::URB_FUNCTION_GET_CURRENT_FRAME_NUMBER
+                )
+                | (Self::CtlTransfer(_), UrbFunction::URB_FUNCTION_CONTROL_TRANSFER)
+                | (
+                    Self::BulkInterruptTransfer(_),
+                    UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER
+                        | UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL
+                )
+                | (
+                    Self::IsochTransfer(_),
+                    UrbFunction::URB_FUNCTION_ISOCH_TRANSFER
+                        | UrbFunction::URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL
+                )
+                | (
+                    Self::CtlDescReq(_),
+                    UrbFunction::URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE
+                        | UrbFunction::URB_FUNCTION_GET_DESCRIPTOR_FROM_ENDPOINT
+                        | UrbFunction::URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE
+                )
+                | (
+                    Self::CtlFeatReq(_),
+                    UrbFunction::URB_FUNCTION_SET_FEATURE_TO_DEVICE
+                        | UrbFunction::URB_FUNCTION_SET_FEATURE_TO_INTERFACE
+                        | UrbFunction::URB_FUNCTION_SET_FEATURE_TO_ENDPOINT
+                        | UrbFunction::URB_FUNCTION_SET_FEATURE_TO_OTHER
+                        | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_DEVICE
+                        | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_INTERFACE
+                        | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_ENDPOINT
+                        | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_OTHER
+                )
+                | (
+                    Self::CtlGetStatus(_),
+                    UrbFunction::URB_FUNCTION_GET_STATUS_FROM_DEVICE
+                        | UrbFunction::URB_FUNCTION_GET_STATUS_FROM_INTERFACE
+                        | UrbFunction::URB_FUNCTION_GET_STATUS_FROM_ENDPOINT
+                        | UrbFunction::URB_FUNCTION_GET_STATUS_FROM_OTHER
+                )
+                | (
+                    Self::VendorClassReq(_),
+                    UrbFunction::URB_FUNCTION_VENDOR_DEVICE
+                        | UrbFunction::URB_FUNCTION_VENDOR_INTERFACE
+                        | UrbFunction::URB_FUNCTION_VENDOR_ENDPOINT
+                        | UrbFunction::URB_FUNCTION_VENDOR_OTHER
+                        | UrbFunction::URB_FUNCTION_CLASS_DEVICE
+                        | UrbFunction::URB_FUNCTION_CLASS_INTERFACE
+                        | UrbFunction::URB_FUNCTION_CLASS_ENDPOINT
+                        | UrbFunction::URB_FUNCTION_CLASS_OTHER
+                )
+                | (Self::CtlGetConfig(_), UrbFunction::URB_FUNCTION_GET_CONFIGURATION)
+                | (Self::CtlGetIface(_), UrbFunction::URB_FUNCTION_GET_INTERFACE)
+                | (
+                    Self::OsFeatDescReq(_),
+                    UrbFunction::URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR
+                )
+                | (Self::CtlTransferEx(_), UrbFunction::URB_FUNCTION_CONTROL_TRANSFER_EX)
+        )
+    }
 }
 
-impl Encode for TsUrbIn {
+impl Encode for TsUrbInKind {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        use TsUrbIn::*;
+        use TsUrbInKind::*;
         match self {
             SelectConfig(urb) => urb.encode(dst),
             SelectIface(urb) => urb.encode(dst),
@@ -217,12 +334,8 @@ impl Encode for TsUrbIn {
         }
     }
 
-    fn name(&self) -> &'static str {
-        "TS_URB"
-    }
-
     fn size(&self) -> usize {
-        use TsUrbIn::*;
+        use TsUrbInKind::*;
         match self {
             SelectConfig(urb) => urb.size(),
             SelectIface(urb) => urb.size(),
@@ -241,13 +354,68 @@ impl Encode for TsUrbIn {
             CtlTransferEx(urb) => urb.size(),
         }
     }
+
+    fn name(&self) -> &'static str {
+        "TS_URB"
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct TsUrbOut {
+    pub kind: TsUrbOutKind,
+    pub header: TsUrbHeader,
+}
+
+impl Decode<'_> for TsUrbOut {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let header = TsUrbHeader::decode(src)?;
+
+        let kind = TsUrbOutKind::decode(src, header)?;
+        Ok(Self { kind, header })
+    }
+}
+
+impl Encode for TsUrbOut {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        if !self.kind.matches_func(self.header.func) {
+            return Err(invalid_field_err!(
+                "TRANSFER_OUT_REQUEST::TsUrb::TS_URB_HEADER::URB_Function",
+                "does not match TS_URB payload"
+            ));
+        }
+        if self.header.no_ack
+            && !matches!(
+                self.header.func,
+                UrbFunction::URB_FUNCTION_ISOCH_TRANSFER | UrbFunction::URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL
+            )
+        {
+            return Err(invalid_field_err!(
+                "TRANSFER_OUT_REQUEST::TsUrb::TS_URB_HEADER::NoAck",
+                "can only be set for TS_URB_ISOCH_TRANSFER"
+            ));
+        }
+
+        ensure_size!(in: dst, size: self.size());
+        self.header.encode_with_size(dst, self.size())?;
+        self.kind.encode(dst)?;
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "TS_URB"
+    }
+
+    fn size(&self) -> usize {
+        TsUrbHeader::FIXED_PART_SIZE + self.kind.size()
+    }
 }
 
 /// Enumeration of all the [\[MS-RDPEUSB\] 2.2.9 TS_URB TRANSFER_OUT_REQUEST Structures][1].
 ///
 /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/eed35296-3ca1-4271-bd0a-597138131b47
 #[derive(Debug, PartialEq, Clone)]
-pub enum TsUrbOut {
+pub enum TsUrbOutKind {
     CtlTransfer(TsUrbControlTransfer),
     BulkInterruptTransfer(TsUrbBulkOrInterruptTransfer),
     IsochTransfer(TsUrbIsochTransfer),
@@ -256,28 +424,31 @@ pub enum TsUrbOut {
     CtlTransferEx(TsUrbControlTransferEx),
 }
 
-impl Decode<'_> for TsUrbOut {
-    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        let header = TsUrbHeader::decode(src)?;
+impl TsUrbOutKind {
+    pub fn ts_urb_size(&self) -> PduResult<u16> {
+        u16::try_from(TsUrbHeader::FIXED_PART_SIZE + self.size())
+            .map_err(|_| pdu_other_err!("converts usize to u16 failed"))
+    }
 
+    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
         let payload_size = usize::from(header.ts_urb_size) - header.size();
         ensure_size!(in: src, size: payload_size);
         let mut src = ReadCursor::new(src.read_slice(payload_size));
 
         let ts_urb = match header.func {
             UrbFunction::URB_FUNCTION_CONTROL_TRANSFER => {
-                let urb = TsUrbControlTransfer::decode(&mut src, header)?;
+                let urb = TsUrbControlTransfer::decode(&mut src)?;
                 ensure_transfer_flag!(TransferDirection::Out, urb.transfer_flags, "TS_URB_CONTROL_TRANSFER");
                 Self::CtlTransfer(urb)
             }
             UrbFunction::URB_FUNCTION_CONTROL_TRANSFER_EX => {
-                let urb = TsUrbControlTransferEx::decode(&mut src, header)?;
+                let urb = TsUrbControlTransferEx::decode(&mut src)?;
                 ensure_transfer_flag!(TransferDirection::Out, urb.transfer_flags, "TS_URB_CONTROL_TRANSFER_EX");
                 Self::CtlTransferEx(urb)
             }
             UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER
             | UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL => {
-                let urb = TsUrbBulkOrInterruptTransfer::decode(&mut src, header)?;
+                let urb = TsUrbBulkOrInterruptTransfer::decode(&mut src)?;
                 ensure_transfer_flag!(
                     TransferDirection::Out,
                     urb.transfer_flags,
@@ -286,14 +457,14 @@ impl Decode<'_> for TsUrbOut {
                 Self::BulkInterruptTransfer(urb)
             }
             UrbFunction::URB_FUNCTION_ISOCH_TRANSFER | UrbFunction::URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL => {
-                let urb = TsUrbIsochTransfer::decode(&mut src, header)?;
+                let urb = TsUrbIsochTransfer::decode(&mut src)?;
                 ensure_transfer_flag!(TransferDirection::Out, urb.transfer_flags, "TS_URB_ISOCH_TRANSFER");
                 Self::IsochTransfer(urb)
             }
             UrbFunction::URB_FUNCTION_SET_DESCRIPTOR_TO_DEVICE
             | UrbFunction::URB_FUNCTION_SET_DESCRIPTOR_TO_ENDPOINT
             | UrbFunction::URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE => {
-                Self::CtlDescReq(TsUrbControlDescRequest::decode(&mut src, header)?)
+                Self::CtlDescReq(TsUrbControlDescRequest::decode(&mut src)?)
             }
             UrbFunction::URB_FUNCTION_VENDOR_DEVICE
             | UrbFunction::URB_FUNCTION_VENDOR_INTERFACE
@@ -303,7 +474,7 @@ impl Decode<'_> for TsUrbOut {
             | UrbFunction::URB_FUNCTION_CLASS_INTERFACE
             | UrbFunction::URB_FUNCTION_CLASS_ENDPOINT
             | UrbFunction::URB_FUNCTION_CLASS_OTHER => {
-                let urb = TsUrbControlVendorClassRequest::decode(&mut src, header)?;
+                let urb = TsUrbControlVendorClassRequest::decode(&mut src)?;
                 ensure_transfer_flag!(
                     TransferDirection::Out,
                     urb.transfer_flags,
@@ -316,11 +487,46 @@ impl Decode<'_> for TsUrbOut {
 
         Ok(ts_urb)
     }
+
+    pub(crate) fn matches_func(&self, func: UrbFunction) -> bool {
+        matches!(
+            (self, func),
+            (Self::CtlTransfer(_), UrbFunction::URB_FUNCTION_CONTROL_TRANSFER)
+                | (
+                    Self::BulkInterruptTransfer(_),
+                    UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER
+                        | UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL
+                )
+                | (
+                    Self::IsochTransfer(_),
+                    UrbFunction::URB_FUNCTION_ISOCH_TRANSFER
+                        | UrbFunction::URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL
+                )
+                | (
+                    Self::CtlDescReq(_),
+                    UrbFunction::URB_FUNCTION_SET_DESCRIPTOR_TO_DEVICE
+                        | UrbFunction::URB_FUNCTION_SET_DESCRIPTOR_TO_ENDPOINT
+                        | UrbFunction::URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE
+                )
+                | (
+                    Self::VendorClassReq(_),
+                    UrbFunction::URB_FUNCTION_VENDOR_DEVICE
+                        | UrbFunction::URB_FUNCTION_VENDOR_INTERFACE
+                        | UrbFunction::URB_FUNCTION_VENDOR_ENDPOINT
+                        | UrbFunction::URB_FUNCTION_VENDOR_OTHER
+                        | UrbFunction::URB_FUNCTION_CLASS_DEVICE
+                        | UrbFunction::URB_FUNCTION_CLASS_INTERFACE
+                        | UrbFunction::URB_FUNCTION_CLASS_ENDPOINT
+                        | UrbFunction::URB_FUNCTION_CLASS_OTHER
+                )
+                | (Self::CtlTransferEx(_), UrbFunction::URB_FUNCTION_CONTROL_TRANSFER_EX)
+        )
+    }
 }
 
-impl Encode for TsUrbOut {
+impl Encode for TsUrbOutKind {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        use TsUrbOut::*;
+        use TsUrbOutKind::*;
         match self {
             CtlTransfer(urb) => {
                 ensure_transfer_flag!(TransferDirection::Out, urb.transfer_flags, "TS_URB_CONTROL_TRANSFER");
@@ -355,7 +561,7 @@ impl Encode for TsUrbOut {
     }
 
     fn size(&self) -> usize {
-        use TsUrbOut::*;
+        use TsUrbOutKind::*;
         match self {
             CtlTransfer(urb) => urb.size(),
             BulkInterruptTransfer(urb) => urb.size(),
@@ -388,13 +594,12 @@ pub(crate) enum TransferDirection {
 #[doc(alias = "TS_URB_SELECT_CONFIGURATION")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbSelectConfig {
-    pub header: TsUrbHeader,
     pub usbd_ifaces: Vec<TsUsbdInterfaceInfo>,
     pub desc: Option<UsbConfigDesc>,
 }
 
-impl TsUrbSelectConfig {
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
+impl Decode<'_> for TsUrbSelectConfig {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let desc = src.read_u8(/* ConfigurationDescriptorIsValid */) != 0;
 
         ensure_size!(in: src, size: const { 3 * size_of::<u8>() });
@@ -413,30 +618,13 @@ impl TsUrbSelectConfig {
 
         let desc = if desc { Some(UsbConfigDesc::decode(src)?) } else { None };
 
-        Ok(Self {
-            header,
-            usbd_ifaces,
-            desc,
-        })
+        Ok(Self { usbd_ifaces, desc })
     }
 }
 
 impl Encode for TsUrbSelectConfig {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(self.header.func, UrbFunction::URB_FUNCTION_SELECT_CONFIGURATION) {
-            return Err(invalid_field_err!(
-                "TS_URB_SELECT_CONFIGURATION::TS_URB_HEADER::URB_Function",
-                "is not URB_FUNCTION_SELECT_CONFIGURATION"
-            ));
-        }
-        if self.header.no_ack {
-            return Err(invalid_field_err!(
-                "TS_URB_SELECT_CONFIGURATION::TS_URB_HEADER::URB_Function::NoAck",
-                "is non-zero"
-            ));
-        }
         ensure_size!(in: dst, size: self.size());
-        self.header.encode_with_size(dst, self.size())?;
 
         // ConfigurationDescriptorIsValid
         dst.write_u8(self.desc.is_some().into());
@@ -468,12 +656,9 @@ impl Encode for TsUrbSelectConfig {
     }
 
     fn size(&self) -> usize {
-        TsUrbHeader::FIXED_PART_SIZE
-            + const {
-                size_of::<u8>(/* ConfigurationDescriptorIsValid */)
-                    + (3 * size_of::<u8>()/* Padding */)
-                    + size_of::<u32>(/* NumInterfaces */)
-            }
+        1 /* ConfigurationDescriptorIsValid */
+            + 3 /* Padding */
+            + 4 /* NumInterfaces */
             + self.usbd_ifaces.iter().map(Encode::size).sum::<usize>()
             + self.desc.as_ref().map(Encode::size).unwrap_or_default()
     }
@@ -489,13 +674,12 @@ impl Encode for TsUrbSelectConfig {
 #[doc(alias = "TS_URB_SELECT_INTERFACE")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbSelectInterface {
-    pub header: TsUrbHeader,
     pub config_handle: ConfigHandle,
     pub usbd_iface: TsUsbdInterfaceInfo,
 }
 
-impl TsUrbSelectInterface {
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
+impl Decode<'_> for TsUrbSelectInterface {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: const {
             size_of::<u32>(/* ConfigurationHandle */)
         });
@@ -505,7 +689,6 @@ impl TsUrbSelectInterface {
         let usbd_iface = TsUsbdInterfaceInfo::decode(src)?;
 
         Ok(Self {
-            header,
             config_handle,
             usbd_iface,
         })
@@ -514,21 +697,7 @@ impl TsUrbSelectInterface {
 
 impl Encode for TsUrbSelectInterface {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(self.header.func, UrbFunction::URB_FUNCTION_SELECT_INTERFACE) {
-            return Err(invalid_field_err!(
-                "TS_URB_SELECT_INTERFACE::TS_URB_HEADER::URB_Function",
-                "is not URB_FUNCTION_SELECT_INTERFACE"
-            ));
-        }
-        if self.header.no_ack {
-            return Err(invalid_field_err!(
-                "TS_URB_SELECT_INTERFACE::TS_URB_HEADER::URB_Function::NoAck",
-                "is non-zero"
-            ));
-        }
-
         ensure_size!(in: dst, size: self.size());
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u32(self.config_handle);
         self.usbd_iface.encode(dst)
     }
@@ -538,11 +707,9 @@ impl Encode for TsUrbSelectInterface {
     }
 
     fn size(&self) -> usize {
-        TsUrbHeader::FIXED_PART_SIZE
-            + const {
-                size_of::<u32>(/* ConfigurationHandle */)
-            }
-            + self.usbd_iface.size()
+        (const {
+            size_of::<u32>(/* ConfigurationHandle */)
+        }) + self.usbd_iface.size()
     }
 }
 
@@ -556,51 +723,26 @@ impl Encode for TsUrbSelectInterface {
 #[doc(alias = "TS_URB_PIPE_REQUEST")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbPipeRequest {
-    pub header: TsUrbHeader,
     pub pipe_handle: PipeHandle,
 }
 
 impl TsUrbPipeRequest {
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + size_of::<u32>(/* PipeHandle */);
+    pub const FIXED_PART_SIZE: usize = size_of::<u32>(/* PipeHandle */);
+}
 
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: const { size_of::<ConfigHandle>(/* PipeHandle */) });
+impl Decode<'_> for TsUrbPipeRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
         let pipe_handle = src.read_u32();
 
-        Ok(Self { header, pipe_handle })
+        Ok(Self { pipe_handle })
     }
 }
 
 impl Encode for TsUrbPipeRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(
-            self.header.func,
-            UrbFunction::URB_FUNCTION_ABORT_PIPE
-                | UrbFunction::URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL
-                | UrbFunction::URB_FUNCTION_SYNC_RESET_PIPE
-                | UrbFunction::URB_FUNCTION_SYNC_CLEAR_STALL
-                | UrbFunction::URB_FUNCTION_CLOSE_STATIC_STREAMS
-        ) {
-            return Err(invalid_field_err!(
-                "TS_URB_PIPE_REQUEST::TS_URB_HEADER::URB_Function",
-                "is not one of: \
-                    URB_FUNCTION_ABORT_PIPE, \
-                    URB_FUNCTION_SYNC_RESET_PIPE_AND_CLEAR_STALL, \
-                    URB_FUNCTION_SYNC_RESET_PIPE, \
-                    URB_FUNCTION_SYNC_CLEAR_STALL, \
-                    URB_FUNCTION_CLOSE_STATIC_STREAMS"
-            ));
-        }
-        if self.header.no_ack {
-            return Err(invalid_field_err!(
-                "TS_URB_PIPE_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
-                "is non-zero"
-            ));
-        }
-
         ensure_fixed_part_size!(in: dst);
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u32(self.pipe_handle);
 
         Ok(())
@@ -624,34 +766,22 @@ impl Encode for TsUrbPipeRequest {
 /// [2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_get_current_frame_number
 #[doc(alias = "TS_URB_GET_CURRENT_FRAME_NUMBER")]
 #[derive(Debug, PartialEq, Clone)]
-pub struct TsUrbGetCurrFrameNum {
-    pub header: TsUrbHeader,
-}
+pub struct TsUrbGetCurrFrameNum;
 
 impl TsUrbGetCurrFrameNum {
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE;
+    pub const FIXED_PART_SIZE: usize = 0;
+}
 
-    #[inline]
-    pub fn decode(_: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        Ok(Self { header })
+impl Decode<'_> for TsUrbGetCurrFrameNum {
+    fn decode(_: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        Ok(Self)
     }
 }
 
 impl Encode for TsUrbGetCurrFrameNum {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(self.header.func, UrbFunction::URB_FUNCTION_GET_CURRENT_FRAME_NUMBER) {
-            return Err(invalid_field_err!(
-                "TS_URB_GET_CURRENT_FRAME_NUMBER::TS_URB_HEADER::URB_Function",
-                "is not URB_FUNCTION_GET_CURRENT_FRAME_NUMBER"
-            ));
-        }
-        if self.header.no_ack {
-            return Err(invalid_field_err!(
-                "TS_URB_GET_CURRENT_FRAME_NUMBER::TS_URB_HEADER::URB_Function::NoAck",
-                "is non-zero"
-            ));
-        }
-        self.header.encode_with_size(dst, self.size())
+        ensure_fixed_part_size!(in: dst);
+        Ok(())
     }
 
     fn name(&self) -> &'static str {
@@ -674,27 +804,25 @@ impl Encode for TsUrbGetCurrFrameNum {
 #[doc(alias = "TS_URB_CONTROL_TRANSFER")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbControlTransfer {
-    pub header: TsUrbHeader,
     pub pipe: PipeHandle,
     pub transfer_flags: u32,
     pub setup_packet: SetupPacket,
 }
 
 impl TsUrbControlTransfer {
-    pub const PAYLOAD_SIZE: usize =
+    pub const FIXED_PART_SIZE: usize =
         size_of::<u32>(/* PipeHandle */) + size_of::<u32>(/* TransferFlags */) + SetupPacket::FIXED_PART_SIZE;
+}
 
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + Self::PAYLOAD_SIZE;
-
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+impl Decode<'_> for TsUrbControlTransfer {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
         let pipe_handle = src.read_u32();
         let transfer_flags = src.read_u32();
         let setup_packet = SetupPacket::decode(src)?;
 
         Ok(Self {
-            header,
             pipe: pipe_handle,
             transfer_flags,
             setup_packet,
@@ -704,14 +832,7 @@ impl TsUrbControlTransfer {
 
 impl Encode for TsUrbControlTransfer {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(self.header.func, UrbFunction::URB_FUNCTION_CONTROL_TRANSFER) {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_TRANSFER::TS_URB_HEADER::URB_Function",
-                "is not URB_FUNCTION_CONTROL_TRANSFER"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u32(self.pipe);
         dst.write_u32(self.transfer_flags);
         self.setup_packet.encode(dst)
@@ -737,24 +858,22 @@ impl Encode for TsUrbControlTransfer {
 #[doc(alias = "TS_URB_BULK_OR_INTERRUPT_TRANSFER")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbBulkOrInterruptTransfer {
-    pub header: TsUrbHeader,
     pub pipe_handle: PipeHandle,
     pub transfer_flags: u32,
 }
 
 impl TsUrbBulkOrInterruptTransfer {
-    pub const PAYLOAD_SIZE: usize = size_of::<u32>(/* PipeHandle */) + size_of::<u32>(/* TransferFlags */);
+    pub const FIXED_PART_SIZE: usize = size_of::<u32>(/* PipeHandle */) + size_of::<u32>(/* TransferFlags */);
+}
 
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + Self::PAYLOAD_SIZE;
-
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+impl Decode<'_> for TsUrbBulkOrInterruptTransfer {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
         let pipe_handle = src.read_u32();
         let transfer_flags = src.read_u32();
 
         Ok(Self {
-            header,
             pipe_handle,
             transfer_flags,
         })
@@ -763,19 +882,8 @@ impl TsUrbBulkOrInterruptTransfer {
 
 impl Encode for TsUrbBulkOrInterruptTransfer {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(
-            self.header.func,
-            UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER
-                | UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL
-        ) {
-            return Err(invalid_field_err!(
-                "TS_URB_BULK_OR_INTERRUPT_TRANSFER::TS_URB_HEADER::URB_Function",
-                "is not one of: URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER, URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
 
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u32(self.pipe_handle);
         dst.write_u32(self.transfer_flags);
 
@@ -802,7 +910,6 @@ impl Encode for TsUrbBulkOrInterruptTransfer {
 #[doc(alias = "TS_URB_ISOCH_TRANSFER")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbIsochTransfer {
-    pub header: TsUrbHeader,
     pub pipe_handle: PipeHandle,
     pub transfer_flags: u32,
     pub start_frame: FrameNumber,
@@ -810,8 +917,8 @@ pub struct TsUrbIsochTransfer {
     pub iso_packet: Vec<UsbdIsoPacketDesc>,
 }
 
-impl TsUrbIsochTransfer {
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
+impl Decode<'_> for TsUrbIsochTransfer {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 20);
 
         let pipe_handle = src.read_u32();
@@ -826,7 +933,6 @@ impl TsUrbIsochTransfer {
             .collect::<Result<Vec<UsbdIsoPacketDesc>, _>>()?;
 
         Ok(Self {
-            header,
             pipe_handle,
             transfer_flags,
             start_frame,
@@ -838,18 +944,8 @@ impl TsUrbIsochTransfer {
 
 impl Encode for TsUrbIsochTransfer {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(
-            self.header.func,
-            UrbFunction::URB_FUNCTION_ISOCH_TRANSFER | UrbFunction::URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL
-        ) {
-            return Err(invalid_field_err!(
-                "TS_URB_ISOCH_TRANSFER::TS_URB_HEADER::URB_Function",
-                "is not one of: URB_FUNCTION_ISOCH_TRANSFER, URB_FUNCTION_ISOCH_TRANSFER_USING_CHAINED_MDL"
-            ));
-        }
         ensure_size!(in: dst, size: self.size());
 
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u32(self.pipe_handle);
         dst.write_u32(self.transfer_flags);
         dst.write_u32(self.start_frame);
@@ -868,14 +964,11 @@ impl Encode for TsUrbIsochTransfer {
     }
 
     fn size(&self) -> usize {
-        TsUrbHeader::FIXED_PART_SIZE
-            + const {
-                size_of::<PipeHandle>()
-                    + size_of::<u32>(/* TransferFlags */)
-                    + size_of::<u32>(/* StartFrame */)
-                    + size_of::<u32>(/* NumberOfPackets */)
-                    + size_of::<u32>(/* ErrorCount */)
-            }
+        size_of::<PipeHandle>()
+            + size_of::<u32>(/* TransferFlags */)
+            + size_of::<u32>(/* StartFrame */)
+            + size_of::<u32>(/* NumberOfPackets */)
+            + size_of::<u32>(/* ErrorCount */)
             + self.iso_packet.len() * UsbdIsoPacketDesc::FIXED_PART_SIZE
     }
 }
@@ -894,27 +987,25 @@ impl Encode for TsUrbIsochTransfer {
 #[doc(alias = "TS_URB_CONTROL_DESCRIPTOR_REQUEST")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbControlDescRequest {
-    pub header: TsUrbHeader,
     pub index: u8,
     pub desc_type: u8,
     pub lang_id: u16,
 }
 
 impl TsUrbControlDescRequest {
-    pub const PAYLOAD_SIZE: usize =
+    pub const FIXED_PART_SIZE: usize =
         size_of::<u8>(/* Index */) + size_of::<u8>(/* DescriptorType */) + size_of::<u16>(/* LanguageId */);
+}
 
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + Self::PAYLOAD_SIZE;
-
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+impl Decode<'_> for TsUrbControlDescRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
         let index = src.read_u8();
         let desc_type = src.read_u8();
         let lang_id = src.read_u16();
 
         Ok(Self {
-            header,
             index,
             desc_type,
             lang_id,
@@ -924,30 +1015,8 @@ impl TsUrbControlDescRequest {
 
 impl Encode for TsUrbControlDescRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        #[expect(unused_parens)]
-        if !matches!(
-            self.header.func,
-            (UrbFunction::URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE
-                | UrbFunction::URB_FUNCTION_GET_DESCRIPTOR_FROM_ENDPOINT
-                | UrbFunction::URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE)
-                | (UrbFunction::URB_FUNCTION_SET_DESCRIPTOR_TO_DEVICE
-                    | UrbFunction::URB_FUNCTION_SET_DESCRIPTOR_TO_ENDPOINT
-                    | UrbFunction::URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE)
-        ) {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_DESCRIPTOR_REQUEST::TS_URB_HEADER::URB_Function",
-                "is not one of: \
-                    URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE, \
-                    URB_FUNCTION_GET_DESCRIPTOR_FROM_ENDPOINT, \
-                    URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE, \
-                    URB_FUNCTION_SET_DESCRIPTOR_TO_DEVICE, \
-                    URB_FUNCTION_SET_DESCRIPTOR_TO_ENDPOINT, \
-                    URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
 
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u8(self.index);
         dst.write_u8(self.desc_type);
         dst.write_u16(self.lang_id);
@@ -974,66 +1043,29 @@ impl Encode for TsUrbControlDescRequest {
 #[doc(alias = "TS_URB_CONTROL_FEATURE_REQUEST")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbControlFeatRequest {
-    pub header: TsUrbHeader,
     pub feat_selector: u16,
     pub index: u16,
 }
 
 impl TsUrbControlFeatRequest {
-    pub const PAYLOAD_SIZE: usize = size_of::<u16>(/* FeatureSelector */) + size_of::<u16>(/* Index */);
+    pub const FIXED_PART_SIZE: usize = size_of::<u16>(/* FeatureSelector */) + size_of::<u16>(/* Index */);
+}
 
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + Self::PAYLOAD_SIZE;
-
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+impl Decode<'_> for TsUrbControlFeatRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
         let feat_selector = src.read_u16();
         let index = src.read_u16();
 
-        Ok(Self {
-            header,
-            feat_selector,
-            index,
-        })
+        Ok(Self { feat_selector, index })
     }
 }
 
 impl Encode for TsUrbControlFeatRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        #[expect(unused_parens)]
-        if !matches!(
-            self.header.func,
-            (UrbFunction::URB_FUNCTION_SET_FEATURE_TO_DEVICE
-                | UrbFunction::URB_FUNCTION_SET_FEATURE_TO_INTERFACE
-                | UrbFunction::URB_FUNCTION_SET_FEATURE_TO_ENDPOINT
-                | UrbFunction::URB_FUNCTION_SET_FEATURE_TO_OTHER)
-                | (UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_DEVICE
-                    | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_INTERFACE
-                    | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_ENDPOINT
-                    | UrbFunction::URB_FUNCTION_CLEAR_FEATURE_TO_OTHER)
-        ) {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_FEATURE_REQUEST::TS_URB_HEADER::URB_Function",
-                "is not one of: \
-                    URB_FUNCTION_SET_FEATURE_TO_DEVICE, \
-                    URB_FUNCTION_SET_FEATURE_TO_INTERFACE, \
-                    URB_FUNCTION_SET_FEATURE_TO_ENDPOINT, \
-                    URB_FUNCTION_SET_FEATURE_TO_OTHER, \
-                    URB_FUNCTION_CLEAR_FEATURE_TO_DEVICE, \
-                    URB_FUNCTION_CLEAR_FEATURE_TO_INTERFACE, \
-                    URB_FUNCTION_CLEAR_FEATURE_TO_ENDPOINT, \
-                    URB_FUNCTION_CLEAR_FEATURE_TO_OTHER"
-            ));
-        }
-        if self.header.no_ack {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_FEATURE_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
-                "is non-zero"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
 
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u16(self.feat_selector);
         dst.write_u16(self.index);
 
@@ -1059,52 +1091,28 @@ impl Encode for TsUrbControlFeatRequest {
 #[doc(alias = "TS_URB_CONTROL_GET_STATUS_REQUEST")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbControlGetStatusRequest {
-    pub header: TsUrbHeader,
     pub index: u16,
 }
 
 impl TsUrbControlGetStatusRequest {
-    pub const PAYLOAD_SIZE: usize = size_of::<u16>(/* Index */) + size_of::<u16>(/* Padding */);
+    pub const FIXED_PART_SIZE: usize = size_of::<u16>(/* Index */) + size_of::<u16>(/* Padding */);
+}
 
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + Self::PAYLOAD_SIZE;
-
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+impl Decode<'_> for TsUrbControlGetStatusRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
         let index = src.read_u16();
         read_padding!(src, 2);
 
-        Ok(Self { header, index })
+        Ok(Self { index })
     }
 }
 
 impl Encode for TsUrbControlGetStatusRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(
-            self.header.func,
-            UrbFunction::URB_FUNCTION_GET_STATUS_FROM_DEVICE
-                | UrbFunction::URB_FUNCTION_GET_STATUS_FROM_INTERFACE
-                | UrbFunction::URB_FUNCTION_GET_STATUS_FROM_ENDPOINT
-                | UrbFunction::URB_FUNCTION_GET_STATUS_FROM_OTHER
-        ) {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_GET_STATUS_REQUEST::TS_URB_HEADER::URB_Function",
-                "is not one of: \
-                    URB_FUNCTION_GET_STATUS_FROM_DEVICE, \
-                    URB_FUNCTION_GET_STATUS_FROM_INTERFACE, \
-                    URB_FUNCTION_GET_STATUS_FROM_ENDPOINT, \
-                    URB_FUNCTION_GET_STATUS_FROM_OTHER"
-            ));
-        }
-        if self.header.no_ack {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_GET_STATUS_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
-                "is non-zero"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
 
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u16(self.index);
         write_padding!(dst, 2);
 
@@ -1131,7 +1139,6 @@ impl Encode for TsUrbControlGetStatusRequest {
 #[doc(alias = "TS_URB_CONTROL_VENDOR_OR_CLASS_REQUEST")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbControlVendorClassRequest {
-    pub header: TsUrbHeader,
     pub transfer_flags: u32,
     pub request: u8,
     pub value: u16,
@@ -1139,17 +1146,17 @@ pub struct TsUrbControlVendorClassRequest {
 }
 
 impl TsUrbControlVendorClassRequest {
-    pub const PAYLOAD_SIZE: usize = size_of::<u32>()
+    pub const FIXED_PART_SIZE: usize = size_of::<u32>()
         + size_of::<u8>(/* RequestTypeReservedBits */)
         + size_of::<u8>(/* Request */)
         + size_of::<u16>(/* Value */)
         + size_of::<u16>(/* Index */)
         + size_of::<u16>(/* Padding */);
+}
 
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + Self::PAYLOAD_SIZE;
-
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+impl Decode<'_> for TsUrbControlVendorClassRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
         let transfer_flags: u32 = src.read_u32();
         src.advance(1); // RequestTypeReservedBits
@@ -1159,7 +1166,6 @@ impl TsUrbControlVendorClassRequest {
         read_padding!(src, 2);
 
         Ok(Self {
-            header,
             transfer_flags,
             request,
             value,
@@ -1170,34 +1176,8 @@ impl TsUrbControlVendorClassRequest {
 
 impl Encode for TsUrbControlVendorClassRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        #[expect(unused_parens)]
-        if !matches!(
-            self.header.func,
-            (UrbFunction::URB_FUNCTION_VENDOR_DEVICE
-                | UrbFunction::URB_FUNCTION_VENDOR_INTERFACE
-                | UrbFunction::URB_FUNCTION_VENDOR_ENDPOINT
-                | UrbFunction::URB_FUNCTION_VENDOR_OTHER)
-                | (UrbFunction::URB_FUNCTION_CLASS_DEVICE
-                    | UrbFunction::URB_FUNCTION_CLASS_INTERFACE
-                    | UrbFunction::URB_FUNCTION_CLASS_ENDPOINT
-                    | UrbFunction::URB_FUNCTION_CLASS_OTHER)
-        ) {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_VENDOR_OR_CLASS_REQUEST::TS_URB_HEADER::URB_Function",
-                "is not one of: \
-                    URB_FUNCTION_VENDOR_DEVICE, \
-                    URB_FUNCTION_VENDOR_INTERFACE, \
-                    URB_FUNCTION_VENDOR_ENDPOINT, \
-                    URB_FUNCTION_VENDOR_OTHER, \
-                    URB_FUNCTION_CLASS_DEVICE, \
-                    URB_FUNCTION_CLASS_INTERFACE, \
-                    URB_FUNCTION_CLASS_ENDPOINT, \
-                    URB_FUNCTION_CLASS_OTHER"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
 
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u32(self.transfer_flags);
         write_padding!(dst, 1); // RequestTypeReservedBits
         dst.write_u8(self.request);
@@ -1225,35 +1205,22 @@ impl Encode for TsUrbControlVendorClassRequest {
 /// [2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/usb/ns-usb-_urb_control_get_configuration_request
 #[doc(alias = "TS_URB_CONTROL_GET_CONFIGURATION_REQUEST")]
 #[derive(Debug, PartialEq, Clone)]
-pub struct TsUrbControlGetConfigRequest {
-    pub header: TsUrbHeader,
-}
+pub struct TsUrbControlGetConfigRequest;
 
 impl TsUrbControlGetConfigRequest {
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE;
+    pub const FIXED_PART_SIZE: usize = 0;
+}
 
-    #[inline]
-    pub fn decode(_: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        Ok(Self { header })
+impl Decode<'_> for TsUrbControlGetConfigRequest {
+    fn decode(_: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        Ok(Self)
     }
 }
 
 impl Encode for TsUrbControlGetConfigRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(self.header.func, UrbFunction::URB_FUNCTION_GET_CONFIGURATION) {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_GET_CONFIGURATION_REQUEST::TS_URB_HEADER::URB_Function",
-                "is not URB_FUNCTION_GET_CONFIGURATION"
-            ));
-        }
-        if self.header.no_ack {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_GET_CONFIGURATION_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
-                "is non-zero"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
-        self.header.encode_with_size(dst, self.size())
+        Ok(())
     }
 
     fn name(&self) -> &'static str {
@@ -1275,40 +1242,26 @@ impl Encode for TsUrbControlGetConfigRequest {
 #[doc(alias = "TS_URB_CONTROL_GET_INTERFACE_REQUEST")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbControlGetInterfaceRequest {
-    pub header: TsUrbHeader,
     pub interface: u16,
 }
 
 impl TsUrbControlGetInterfaceRequest {
-    pub const PAYLOAD_SIZE: usize = size_of::<u16>(/* Interface */) + size_of::<u16>(/* Padding */);
+    pub const FIXED_PART_SIZE: usize = size_of::<u16>(/* Interface */) + size_of::<u16>(/* Padding */);
+}
 
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + Self::PAYLOAD_SIZE;
-
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+impl Decode<'_> for TsUrbControlGetInterfaceRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
         let interface = src.read_u16();
         read_padding!(src, 2);
 
-        Ok(Self { header, interface })
+        Ok(Self { interface })
     }
 }
 
 impl Encode for TsUrbControlGetInterfaceRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(self.header.func, UrbFunction::URB_FUNCTION_GET_INTERFACE) {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_GET_INTERFACE_REQUEST::TS_URB_HEADER::URB_Function",
-                "is not URB_FUNCTION_GET_INTERFACE"
-            ));
-        }
-        if self.header.no_ack {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_GET_INTERFACE_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
-                "is non-zero"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u16(self.interface);
         write_padding!(dst, 2);
 
@@ -1334,23 +1287,22 @@ impl Encode for TsUrbControlGetInterfaceRequest {
 #[doc(alias = "TS_URB_OS_FEATURE_DESCRIPTOR_REQUEST")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbOsFeatDescRequest {
-    pub header: TsUrbHeader,
     pub recipient: u8,
     pub interface_number: u8,
     pub ms_feat_desc_index: u16,
 }
 
 impl TsUrbOsFeatDescRequest {
-    pub const PAYLOAD_SIZE: usize = size_of::<u8>(/* Recipient + Padding1 */)
+    pub const FIXED_PART_SIZE: usize = size_of::<u8>(/* Recipient + Padding1 */)
         + size_of::<u8>(/* InterfaceNumber */)
         + size_of::<u8>(/* MS_PageIndex */)
         + size_of::<u16>(/* MS_FeatureDescriptorIndex */)
         + (3 * size_of::<u8>()/* Padding2 */);
+}
 
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + Self::PAYLOAD_SIZE;
-
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+impl Decode<'_> for TsUrbOsFeatDescRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
         let recipient = src.read_u8() & 0x1F;
         let interface_number = src.read_u8();
@@ -1365,7 +1317,6 @@ impl TsUrbOsFeatDescRequest {
         read_padding!(src, 3);
 
         Ok(Self {
-            header,
             recipient,
             interface_number,
             ms_feat_desc_index,
@@ -1375,20 +1326,7 @@ impl TsUrbOsFeatDescRequest {
 
 impl Encode for TsUrbOsFeatDescRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(self.header.func, UrbFunction::URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR) {
-            return Err(invalid_field_err!(
-                "TS_URB_OS_FEATURE_DESCRIPTOR_REQUEST::TS_URB_HEADER::URB_Function",
-                "is not URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR"
-            ));
-        }
-        if self.header.no_ack {
-            return Err(invalid_field_err!(
-                "TS_URB_OS_FEATURE_DESCRIPTOR_REQUEST::TS_URB_HEADER::URB_Function::NoAck",
-                "is non-zero"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u8(self.recipient & 0x1F);
         dst.write_u8(self.interface_number);
         dst.write_u8(0x0); // MS_PageIndex
@@ -1418,7 +1356,6 @@ impl Encode for TsUrbOsFeatDescRequest {
 #[doc(alias = "TS_URB_CONTROL_TRANSFER_EX")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct TsUrbControlTransferEx {
-    pub header: TsUrbHeader,
     pub pipe: PipeHandle,
     pub transfer_flags: u32,
     pub timeout: u32,
@@ -1426,15 +1363,15 @@ pub struct TsUrbControlTransferEx {
 }
 
 impl TsUrbControlTransferEx {
-    pub const PAYLOAD_SIZE: usize = size_of::<PipeHandle>()
+    pub const FIXED_PART_SIZE: usize = size_of::<PipeHandle>()
         + size_of::<u32>(/* TransferFlags */)
         + size_of::<u32>(/* Timeout */)
         + SetupPacket::FIXED_PART_SIZE;
+}
 
-    pub const FIXED_PART_SIZE: usize = TsUrbHeader::FIXED_PART_SIZE + Self::PAYLOAD_SIZE;
-
-    pub fn decode(src: &mut ReadCursor<'_>, header: TsUrbHeader) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+impl Decode<'_> for TsUrbControlTransferEx {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
         let pipe_handle = src.read_u32();
         let transfer_flags = src.read_u32();
@@ -1442,7 +1379,6 @@ impl TsUrbControlTransferEx {
         let setup_packet = SetupPacket::decode(src)?;
 
         Ok(Self {
-            header,
             pipe: pipe_handle,
             transfer_flags,
             timeout,
@@ -1453,14 +1389,7 @@ impl TsUrbControlTransferEx {
 
 impl Encode for TsUrbControlTransferEx {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if !matches!(self.header.func, UrbFunction::URB_FUNCTION_CONTROL_TRANSFER_EX) {
-            return Err(invalid_field_err!(
-                "TS_URB_CONTROL_TRANSFER_EX::TS_URB_HEADER::URB_Function",
-                "is not URB_FUNCTION_CONTROL_TRANSFER_EX"
-            ));
-        }
         ensure_fixed_part_size!(in: dst);
-        self.header.encode_with_size(dst, self.size())?;
         dst.write_u32(self.pipe);
         dst.write_u32(self.transfer_flags);
         dst.write_u32(self.timeout);

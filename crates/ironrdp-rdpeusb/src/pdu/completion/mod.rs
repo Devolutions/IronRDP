@@ -196,8 +196,7 @@ impl UrbCompletion {
 
     pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
-        let req_id = RequestIdTransferInOut::try_from(src.read_u32())
-            .map_err(|reason| invalid_field_err!("URB_COMPLETION::RequestId", reason))?;
+        let req_id = RequestIdTransferInOut::try_from(src.read_u32())?;
 
         let cb_ts_urb_result: usize = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
         ensure_size!(in: src, size: cb_ts_urb_result);
@@ -300,8 +299,7 @@ impl UrbCompletionNoData {
 
     pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
-        let req_id = RequestIdTransferInOut::try_from(src.read_u32())
-            .map_err(|reason| invalid_field_err!("URB_COMPLETION_NO_DATA::RequestId", reason))?;
+        let req_id = RequestIdTransferInOut::try_from(src.read_u32())?;
 
         let cb_ts_urb_result = usize::try_from(src.read_u32()).map_err(|e| other_err!(source: e))?;
         ensure_size!(in: src, size: cb_ts_urb_result);

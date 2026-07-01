@@ -48,6 +48,13 @@ const USB_CLASS_MISCELLANEOUS: u8 = 0xef;
 const USB_SUBCLASS_COMMON: u8 = 0x02;
 const USB_PROTOCOL_INTERFACE_ASSOCIATION: u8 = 0x01;
 
+/// USB device facts supplied by a client backend.
+///
+/// [`UrbdrcDeviceBackend::device_info`] returns this backend-neutral description. The RDPEUSB
+/// client uses it to construct the Windows Plug and Play identifiers and capabilities carried by
+/// `ADD_DEVICE`.
+///
+/// [`UrbdrcDeviceBackend::device_info`]: crate::client::UrbdrcDeviceBackend::device_info
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
     /// Physical/topological location. Used to derive stable Windows PnP instance/container IDs.
@@ -96,6 +103,7 @@ impl DeviceInfo {
     }
 }
 
+/// Physical location of a USB device in the backend's USB topology.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsbDeviceLocation {
     pub bus_number: u8,
@@ -115,6 +123,7 @@ impl UsbDeviceLocation {
     }
 }
 
+/// Fields from a standard USB device descriptor needed for device announcement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UsbDeviceDescriptorInfo {
     pub vendor_id: u16,
@@ -125,16 +134,19 @@ pub struct UsbDeviceDescriptorInfo {
     pub num_configurations: u8,
 }
 
+/// Information from the device's active USB configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsbConfigInfo {
     pub interfaces: Vec<UsbInterfaceInfo>,
 }
 
+/// Information from a USB interface descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UsbInterfaceInfo {
     pub class_codes: UsbClassCodes,
 }
 
+/// USB class, subclass, and protocol code triplet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UsbClassCodes {
     pub class_code: u8,
@@ -157,6 +169,7 @@ impl UsbClassCodes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UsbBcdVersion(u16);
 impl UsbBcdVersion {
+    /// Wraps a raw `bcdUSB` value without validating its BCD digits.
     pub const fn from_bcd(value: u16) -> Self {
         Self(value)
     }
@@ -176,6 +189,7 @@ impl UsbBcdVersion {
     }
 }
 
+/// Connection speed reported by the USB backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsbConnectionSpeed {
     Unknown,

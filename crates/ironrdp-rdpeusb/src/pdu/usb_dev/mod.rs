@@ -15,7 +15,7 @@ use ironrdp_dvc::DvcEncode;
 use ironrdp_str::prefixed::Cch32String;
 
 use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
-use crate::pdu::usb_dev::ts_urb::{TsUrbIn, TsUrbOut};
+use crate::pdu::usb_dev::ts_urb::{TsUrbIn, TsUrbInKind, TsUrbOut};
 use crate::pdu::utils::{HResult, RequestId, RequestIdIoctl, RequestIdTransferInOut};
 #[cfg(doc)]
 use crate::pdu::{
@@ -276,6 +276,8 @@ impl Encode for IoControl {
         SharedMsgHeader::SIZE_REQ + Self::PAYLOAD_MIN_SIZE + self.input_buffer.len()
     }
 }
+
+impl DvcEncode for IoControl {}
 
 /// [\[MS-RDPEUSB\] 2.2.12 USB IO Control Code][1]s.
 ///
@@ -652,29 +654,13 @@ impl TransferInRequest {
     }
 
     pub fn request_id(&self) -> RequestIdTransferInOut {
-        match &self.ts_urb {
-            TsUrbIn::SelectConfig(urb) => urb.header.req_id,
-            TsUrbIn::SelectIface(urb) => urb.header.req_id,
-            TsUrbIn::PipeReq(urb) => urb.header.req_id,
-            TsUrbIn::GetCurFrameNum(urb) => urb.header.req_id,
-            TsUrbIn::CtlTransfer(urb) => urb.header.req_id,
-            TsUrbIn::BulkInterruptTransfer(urb) => urb.header.req_id,
-            TsUrbIn::IsochTransfer(urb) => urb.header.req_id,
-            TsUrbIn::CtlDescReq(urb) => urb.header.req_id,
-            TsUrbIn::CtlFeatReq(urb) => urb.header.req_id,
-            TsUrbIn::CtlGetStatus(urb) => urb.header.req_id,
-            TsUrbIn::VendorClassReq(urb) => urb.header.req_id,
-            TsUrbIn::CtlGetConfig(urb) => urb.header.req_id,
-            TsUrbIn::CtlGetIface(urb) => urb.header.req_id,
-            TsUrbIn::OsFeatDescReq(urb) => urb.header.req_id,
-            TsUrbIn::CtlTransferEx(urb) => urb.header.req_id,
-        }
+        self.ts_urb.header.req_id
     }
 
     pub fn check_output_buffer_size(&self) -> Result<(), &'static str> {
-        use TsUrbIn::*;
+        use TsUrbInKind::*;
 
-        match self.ts_urb {
+        match &self.ts_urb.kind {
             SelectConfig(_) if self.output_buffer_size != 0 => {
                 Err("is not: 0; TRANSFER_IN_REQUEST::TsUrb: TS_URB_SELECT_CONFIGURATION")
             }
