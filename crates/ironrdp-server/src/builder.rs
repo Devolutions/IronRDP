@@ -246,6 +246,18 @@ impl RdpServerBuilder<BuilderDone> {
     /// through [`RdpServerDisplay::request_initial_size`].
     ///
     /// Defaults to `false`, enforcing the size reported by the display handler.
+    ///
+    /// # Precondition
+    ///
+    /// Only enable this with a [`RdpServerDisplay`] whose
+    /// [`request_initial_size`] actually adopts (or at least intersects) the
+    /// size it is given: the acceptor negotiates the client's size, but the
+    /// server still builds its framebuffer/encoder from the size the display
+    /// handler reports. A fixed-size handler that ignores the requested size
+    /// can produce a mismatch that drops the client. Leave this disabled when
+    /// the display handler serves a fixed framebuffer.
+    ///
+    /// [`request_initial_size`]: crate::RdpServerDisplay::request_initial_size
     pub fn with_honor_client_desktop_size(mut self, honor: bool) -> Self {
         self.state.honor_client_desktop_size = honor;
         self

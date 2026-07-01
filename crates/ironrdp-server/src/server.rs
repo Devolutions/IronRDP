@@ -218,6 +218,7 @@ impl CredentialValidator for ExactMatchCredentialValidator {
 }
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct RdpServerOptions {
     pub addr: SocketAddr,
     pub security: RdpServerSecurity,

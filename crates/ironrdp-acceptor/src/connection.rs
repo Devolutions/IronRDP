@@ -41,10 +41,12 @@ pub struct Acceptor {
     honor_client_desktop_size: bool,
 }
 
-/// Minimum and maximum desktop dimension accepted from a client.
+/// Minimum and maximum desktop dimension honored from a client.
 ///
 /// A desktop dimension in RDP is a `u16`; [MS-RDPBCGR] caps it at 8192, and
-/// 200 is a conservative floor below which a request is treated as malformed.
+/// 200 is a conservative floor. A client-requested dimension outside this
+/// range is not honored: the acceptor keeps the server-provided desktop size
+/// rather than treating the request as an error.
 const MIN_DESKTOP_DIM: u16 = 200;
 const MAX_DESKTOP_DIM: u16 = 8192;
 
@@ -145,6 +147,19 @@ impl Acceptor {
     ///
     /// Disabled by default, preserving the previous behavior of always
     /// enforcing the server-provided size.
+    ///
+    /// # Precondition
+    ///
+    /// Enabling this only makes sense together with a display handler
+    /// ([`RdpServerDisplay`]) whose `request_initial_size` actually adopts (or
+    /// at least intersects) the size it is given. The acceptor negotiates the
+    /// client's size, but the server still builds its framebuffer/encoder from
+    /// the size the display handler reports; if that handler ignores the
+    /// requested size and returns a fixed, smaller framebuffer, the resulting
+    /// mismatch can cause the client to be dropped. With a fixed-size display
+    /// handler, leave this disabled.
+    ///
+    /// [`RdpServerDisplay`]: <https://docs.rs/ironrdp-server/latest/ironrdp_server/trait.RdpServerDisplay.html>
     pub fn set_honor_client_desktop_size(&mut self, honor: bool) {
         self.honor_client_desktop_size = honor;
     }
@@ -516,6 +531,12 @@ impl Sequence for Acceptor {
                             self.desktop_size = client_size;
                             set_bitmap_desktop_size(&mut self.server_capabilities, client_size);
                         }
+                    } else {
+                        debug!(
+                            width = gcc_blocks.core.desktop_width,
+                            height = gcc_blocks.core.desktop_height,
+                            "Client requested an out-of-range desktop size; keeping the server-provided size"
+                        );
                     }
                 }
 
