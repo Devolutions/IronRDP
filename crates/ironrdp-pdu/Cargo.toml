@@ -35,12 +35,12 @@ tap = "1"
 bit_field = "0.10"
 byteorder = "1.5" # TODO: remove
 der-parser = "10.0"
-md5 = { package = "md-5", version = "0.10" }
+md5 = { package = "md-5", version = "0.11" }
 num-bigint = "0.4"
 num-derive.workspace = true # TODO: remove
 num-integer = "0.1"
 num-traits.workspace = true # TODO: remove
-sha1 = "0.10"
+sha1 = "0.11"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 pkcs1 = "0.7"
 

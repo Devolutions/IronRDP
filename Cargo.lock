@@ -1199,7 +1199,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
- "der_derive",
+ "der_derive 0.7.3",
  "flagset",
  "pem-rfc7468 0.7.0",
  "zeroize",
@@ -1212,6 +1212,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71fd89660b2dc699704064e59e9dba0147b903e85319429e131620d022be411b"
 dependencies = [
  "const-oid 0.10.2",
+ "der_derive 0.8.0",
  "pem-rfc7468 1.0.0",
  "zeroize",
 ]
@@ -1234,6 +1235,17 @@ name = "der_derive"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "der_derive"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59600e2c2d636fde9b65e99cc6445ac770c63d3628195ff39932b8d6d7409903"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2776,13 +2788,13 @@ dependencies = [
  "expect-test",
  "ironrdp-core",
  "ironrdp-error",
- "md-5 0.10.6",
+ "md-5",
  "num-bigint 0.4.6",
  "num-derive",
  "num-integer",
  "num-traits",
  "pkcs1 0.7.5",
- "sha1 0.10.6",
+ "sha1 0.11.0",
  "tap",
  "x509-cert",
 ]
@@ -2799,7 +2811,7 @@ version = "0.1.0"
 name = "ironrdp-rdcleanpath"
 version = "0.2.2"
 dependencies = [
- "der 0.7.10",
+ "der 0.8.0",
 ]
 
 [[package]]
@@ -3373,16 +3385,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
-]
-
-[[package]]
-name = "md-5"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
-dependencies = [
- "cfg-if",
- "digest 0.10.7",
 ]
 
 [[package]]
@@ -4211,7 +4213,7 @@ dependencies = [
  "hmac",
  "http",
  "inout",
- "md-5 0.11.0",
+ "md-5",
  "p256",
  "p384",
  "p521",
@@ -5636,7 +5638,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "hmac",
- "md-5 0.11.0",
+ "md-5",
  "md4",
  "num-derive",
  "num-traits",
