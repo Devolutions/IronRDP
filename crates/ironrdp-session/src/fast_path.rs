@@ -203,7 +203,14 @@ impl Processor {
                     // Compressed bitmaps at a color depth of 32 bpp are compressed using RDP 6.0
                     // Bitmap Compression and stored inside an RDP 6.0 Bitmap Compressed Stream
                     // structure ([MS-RDPEGDI] section 2.2.2.5.1).
-                    debug!("32 bpp compressed RDP6_BITMAP_STREAM");
+                    debug!(
+                        "32 bpp compressed RDP6_BITMAP_STREAM: {}x{} at {:?}, data_len={}, expected={}",
+                        update.width,
+                        update.height,
+                        update.rectangle,
+                        update.bitmap_data.len(),
+                        usize::from(update.width) * usize::from(update.height) * 3
+                    );
 
                     match self.bitmap_stream_decoder.decode_bitmap_stream_to_rgb24(
                         update.bitmap_data,
@@ -211,7 +218,10 @@ impl Processor {
                         usize::from(update.width),
                         usize::from(update.height),
                     ) {
-                        Ok(()) => image.apply_rgb24(&buf, &update.rectangle, false)?, // RDP6 decoder outputs top-down, don't flip
+                        Ok(()) => {
+                            debug!("RDP6 decoded to {} bytes (expected {})", buf.len(), usize::from(update.width) * usize::from(update.height) * 3);
+                            image.apply_rgb24(&buf, &update.rectangle, true)?
+                        }
                         Err(err) => {
                             warn!("Invalid RDP6_BITMAP_STREAM: {err}");
                             update.rectangle.clone()
