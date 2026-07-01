@@ -18,7 +18,16 @@ test = false
 
 [features]
 default = [] # No default feature, the user must choose a TLS backend by enabling the appropriate feature.
-rustls = ["dep:tokio-rustls", "dep:x509-cert", "tokio/io-util"]
+# The rustls backend. `rustls` keeps using the aws-lc-rs crypto provider (unchanged
+# default); the crypto provider is otherwise selectable so downstream crates are not
+# forced onto a specific one.
+rustls = ["rustls-aws-lc-rs"]
+rustls-aws-lc-rs = ["rustls-no-provider", "tokio-rustls/aws_lc_rs"]
+rustls-ring = ["rustls-no-provider", "tokio-rustls/ring"]
+# rustls backend without a bundled crypto provider: the downstream must install a
+# rustls CryptoProvider as the process default before opening a connection, otherwise
+# building the client configuration panics.
+rustls-no-provider = ["dep:tokio-rustls", "dep:x509-cert", "tokio/io-util", "tokio-rustls/logging", "tokio-rustls/tls12"]
 native-tls = ["dep:tokio-native-tls", "dep:x509-cert", "tokio/io-util"]
 stub = []
 
@@ -26,7 +35,7 @@ stub = []
 tokio = { version = "1.52" }
 x509-cert = { version = "0.2", default-features = false, features = ["std"], optional = true } # public
 tokio-native-tls = { version = "0.3", optional = true } # public
-tokio-rustls =  { version = "0.26", optional = true } # public
+tokio-rustls = { version = "0.26", default-features = false, optional = true } # public
 
 [lints]
 workspace = true
