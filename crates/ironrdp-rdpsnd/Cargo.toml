@@ -19,6 +19,11 @@ test = false
 [features]
 default = []
 std = []
+# Internal (PRIVATE!) feature used to aid testing.
+# Don't rely on this whatsoever. It may disappear at any time.
+# It uses `visibility` to expose otherwise-private negotiation helpers to the
+# integration testsuite (the lib has no inline test harness — `test = false`).
+__test = ["dep:visibility"]
 
 [dependencies]
 bitflags = "2.11"
@@ -26,6 +31,7 @@ tracing = { version = "0.1", features = ["log"] }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.7" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.8", features = ["alloc"] } # public
+visibility = { version = "0.1", optional = true }
 
 [lints]
 workspace = true

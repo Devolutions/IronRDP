@@ -2852,6 +2852,7 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
+ "visibility",
 ]
 
 [[package]]
