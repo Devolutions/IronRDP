@@ -31,6 +31,7 @@ pub struct Acceptor {
     user_channel_id: u16,
     message_channel_id: Option<u16>,
     desktop_size: DesktopSize,
+    keyboard_layout: u32,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
@@ -54,6 +55,14 @@ pub struct AcceptorResult {
     /// channel. `None` when the client did not request it.
     pub message_channel_id: Option<u16>,
     pub reactivation: bool,
+    /// Keyboard layout identifier (KLID) announced by the client in its GCC
+    /// Client Core Data (section 2.2.1.3.2, `keyboardLayout`).
+    ///
+    /// This is the low word of a Windows locale identifier (e.g. `0x0000_0409`
+    /// for US English, `0x0000_040C` for French). `0` when the client did not
+    /// announce one. Servers can use it to pick a server-side keyboard layout
+    /// matching the client without changing any local input state.
+    pub keyboard_layout: u32,
     /// Credentials received from the client during SecureSettingsExchange.
     ///
     /// Present for TLS-mode connections where the client sends credentials
@@ -79,6 +88,7 @@ impl Acceptor {
             io_channel_id: IO_CHANNEL_ID,
             message_channel_id: None,
             desktop_size,
+            keyboard_layout: 0,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
@@ -122,6 +132,7 @@ impl Acceptor {
             io_channel_id: consumed.io_channel_id,
             message_channel_id: consumed.message_channel_id,
             desktop_size,
+            keyboard_layout: consumed.keyboard_layout,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
@@ -181,6 +192,7 @@ impl Acceptor {
                 user_channel_id: self.user_channel_id,
                 io_channel_id: self.io_channel_id,
                 message_channel_id: self.message_channel_id,
+                keyboard_layout: self.keyboard_layout,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
             }),
@@ -438,6 +450,7 @@ impl Sequence for Acceptor {
                 let gcc_blocks = settings_initial.conference_create_request.into_gcc_blocks();
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
+                self.keyboard_layout = gcc_blocks.core.keyboard_layout;
 
                 let joined: Vec<_> = gcc_blocks
                     .network
