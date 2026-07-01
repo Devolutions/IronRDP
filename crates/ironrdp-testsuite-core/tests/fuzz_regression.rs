@@ -56,3 +56,13 @@ fn check_pdu_round_trip() {
 fn check_egfx_round_trip() {
     check!(egfx_round_trip);
 }
+
+#[test]
+fn check_egfx_avc420_decode() {
+    check!(egfx_avc420_decode);
+}
+
+#[test]
+fn check_egfx_avc444_decode() {
+    check!(egfx_avc444_decode);
+}
