@@ -237,9 +237,10 @@ macro_rules! pdu_round_trip_one {
 /// - Re-decode returning `Err`. Surfaces an asymmetry but not a memory-safety
 ///   bug; tracked via filed follow-up issues, not this oracle.
 ///
-/// Initial type coverage mirrors `pdu_decode` so the same corpus feeds both
-/// oracles. As new PDU types gain `Encode` impls, they auto-extend coverage
-/// here when added to the macro list below.
+/// Type coverage matches `pdu_decode`: any input that exercises `pdu_decode`'s
+/// decoder set also exercises this oracle's round-trip assertions by
+/// construction. As new PDU types gain `Encode` impls, they auto-extend
+/// coverage here when added to the macro list below.
 pub fn pdu_round_trip(data: &[u8]) {
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
@@ -355,6 +356,130 @@ pub fn egfx_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, CapabilitiesConfirmPdu);
     pdu_round_trip_one!(data, Avc420BitmapStream<'_>);
     pdu_round_trip_one!(data, Avc444BitmapStream<'_>);
+}
+
+/// Helper for [`message_decoding_invariants`].
+///
+/// On every successful `decode`, asserts that `pdu.size()` accurately reports
+/// the encoded length: `pdu.size() == encode_vec(&pdu).len()`. This is the
+/// `Encode` trait's implicit soundness contract; downstream callers rely on
+/// `size()` for buffer sizing (`ensure_size!`, `cast_length!`, etc.) and a lie
+/// here produces buffer overflows or under-allocations in encode paths.
+///
+/// Distinct from [`pdu_round_trip`]: that oracle silently drops `Err` and
+/// catches panics only. This oracle ASSERTS on the size contract, so a
+/// violation aborts the fuzz iteration as a libFuzzer crash.
+///
+/// What this catches (that `pdu_round_trip` does not):
+///
+/// - `Encode::size()` lies about its own size (returns N but `encode` writes
+///   N+M bytes or fails after writing some bytes), causing buffer
+///   over-allocation or under-allocation in callers.
+/// - Decode-acceptable bytes that the encoder cannot reconstruct to the same
+///   length (lossy decode that loses framing structure).
+///
+/// What this does NOT catch (covered by other oracles):
+///
+/// - Decode-time panics or OOM (covered by `pdu_decode`).
+/// - Re-decode equality after round-trip (covered by `pdu_round_trip`'s
+///   silent-drop pattern; assertion-based re-decode is intentionally out of
+///   scope here to keep the oracle's failure mode unambiguous).
+macro_rules! decode_size_invariant_one {
+    ($data:expr, $ty:ty) => {{
+        use ironrdp_core::Encode as _;
+        let mut cursor = ironrdp_core::ReadCursor::new($data);
+        if let Ok(pdu) = ironrdp_core::decode_cursor::<$ty>(&mut cursor) {
+            if let Ok(encoded) = ironrdp_core::encode_vec(&pdu) {
+                let size_reported = pdu.size();
+                let actual_len = encoded.len();
+                assert!(
+                    size_reported == actual_len,
+                    "{} violates Encode::size() contract: pdu.size() = {}, encode_vec(&pdu).len() = {}",
+                    ::core::any::type_name::<$ty>(),
+                    size_reported,
+                    actual_len
+                );
+            }
+        }
+    }};
+}
+
+/// Message-decoding invariants oracle: for each PDU type, exercise the
+/// `decode -> size() -> encode_vec` pipeline and assert that the type's
+/// reported `size()` matches the actual encoded length.
+///
+/// The property tested is the `Encode` trait soundness contract: on any
+/// decoder-accepted input, the decoded PDU's `size()` method must accurately
+/// report the byte length the encoder will produce. Caller code uses `size()`
+/// for buffer sizing (`ensure_size!`, `cast_length!`), so a violation
+/// produces real downstream bugs (under-allocation -> truncated encode,
+/// over-allocation -> wasted memory or buffer-overflow risk depending on
+/// surrounding context).
+///
+/// The bug class is distinct from `pdu_round_trip`: that oracle catches
+/// encoder panics on decoder-accepted inputs, while this one catches the
+/// strictly weaker but distinct class of size-contract violations.
+///
+/// Type coverage matches `pdu_round_trip`: any input that exercises the
+/// round-trip oracle's decoder set also exercises this oracle's
+/// size-invariant assertion by construction.
+pub fn message_decoding_invariants(data: &[u8]) {
+    use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
+    use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
+    use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+    use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, vc};
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
+
+    // Connection-time PDUs
+    decode_size_invariant_one!(data, X224<ConnectionRequest>);
+    decode_size_invariant_one!(data, X224<ConnectionConfirm>);
+    decode_size_invariant_one!(data, X224<McsMessage<'_>>);
+    decode_size_invariant_one!(data, ConnectInitial);
+    decode_size_invariant_one!(data, ConnectResponse);
+    decode_size_invariant_one!(data, ClientInfoPdu);
+    decode_size_invariant_one!(data, pcb::PreconnectionBlob);
+    decode_size_invariant_one!(data, server_error_info::ServerSetErrorInfoPdu);
+
+    // Capability sharing. `ShareControlHeader` transits through `CapabilitySet`'s
+    // encoder via the Active variants, so the same encoder path exercises both.
+    decode_size_invariant_one!(data, CapabilitySet);
+    decode_size_invariant_one!(data, ShareControlHeader);
+
+    // GCC blocks and conference creation
+    decode_size_invariant_one!(data, gcc::ClientGccBlocks);
+    decode_size_invariant_one!(data, gcc::ServerGccBlocks);
+    decode_size_invariant_one!(data, gcc::ClientClusterData);
+    decode_size_invariant_one!(data, gcc::ConferenceCreateRequest);
+    decode_size_invariant_one!(data, gcc::ConferenceCreateResponse);
+
+    // Licensing
+    decode_size_invariant_one!(data, server_license::LicensePdu);
+
+    // Virtual channel header
+    decode_size_invariant_one!(data, vc::ChannelPduHeader);
+
+    // Fast-path framing
+    decode_size_invariant_one!(data, fast_path::FastPathHeader);
+    decode_size_invariant_one!(data, fast_path::FastPathUpdatePdu<'_>);
+
+    // Surface commands
+    decode_size_invariant_one!(data, surface_commands::SurfaceCommand<'_>);
+    decode_size_invariant_one!(data, surface_commands::SurfaceBitsPdu<'_>);
+    decode_size_invariant_one!(data, surface_commands::FrameMarkerPdu);
+    decode_size_invariant_one!(data, surface_commands::ExtendedBitmapDataPdu<'_>);
+    decode_size_invariant_one!(data, surface_commands::BitmapDataHeader);
+
+    // Codecs
+    decode_size_invariant_one!(data, codecs::rfx::Block<'_>);
+
+    // Input
+    decode_size_invariant_one!(data, input::InputEventPdu);
+    decode_size_invariant_one!(data, input::InputEvent);
+
+    // Bitmap RDP6
+    decode_size_invariant_one!(data, bitmap::rdp6::BitmapStream<'_>);
 }
 
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {
