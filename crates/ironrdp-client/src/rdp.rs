@@ -972,7 +972,6 @@ async fn active_session(
                                     share_id,
                                     enable_server_pointer,
                                     pointer_software_rendering,
-                                    bulk_decompressor: None,
                                 }
                                 .build(),
                             );

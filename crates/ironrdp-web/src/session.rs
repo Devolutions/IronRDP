@@ -1031,7 +1031,6 @@ impl iron_remote_desktop::Session for Session {
                                         share_id,
                                         enable_server_pointer,
                                         pointer_software_rendering,
-                                        bulk_decompressor: None,
                                     }
                                     .build(),
                                 );

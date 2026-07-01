@@ -40,6 +40,7 @@ hex = "0.4"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", features = ["__test"] }
 ironrdp-acceptor.path = "../ironrdp-acceptor"
+ironrdp-bulk.path = "../ironrdp-bulk"
 ironrdp-connector.path = "../ironrdp-connector"
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
 ironrdp-dvc.path = "../ironrdp-dvc"
