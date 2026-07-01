@@ -692,25 +692,42 @@ impl DecodedImage {
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
-        let rows: Box<dyn Iterator<Item = (usize, &[u8])>> = if bottom_up {
-            Box::new(bgr24.chunks_exact(rectangle_width * SRC_COLOR_DEPTH).rev().enumerate())
+        if bottom_up {
+            bgr24
+                .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+                .rev()
+                .enumerate()
+                .for_each(|(row_idx, row)| {
+                    row.chunks_exact(SRC_COLOR_DEPTH)
+                        .enumerate()
+                        .for_each(|(col_idx, src_pixel)| {
+                            let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+
+                            // BGR -> RGB channel swap
+                            self.data[dst_idx + ri] = src_pixel[2];
+                            self.data[dst_idx + gi] = src_pixel[1];
+                            self.data[dst_idx + bi] = src_pixel[0];
+                            self.data[dst_idx + ai] = 0xff;
+                        })
+                });
         } else {
-            Box::new(bgr24.chunks_exact(rectangle_width * SRC_COLOR_DEPTH).enumerate())
-        };
+            bgr24
+                .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+                .enumerate()
+                .for_each(|(row_idx, row)| {
+                    row.chunks_exact(SRC_COLOR_DEPTH)
+                        .enumerate()
+                        .for_each(|(col_idx, src_pixel)| {
+                            let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-        rows.for_each(|(row_idx, row)| {
-                row.chunks_exact(SRC_COLOR_DEPTH)
-                    .enumerate()
-                    .for_each(|(col_idx, src_pixel)| {
-                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
-
-                        // BGR -> RGB channel swap
-                        self.data[dst_idx + ri] = src_pixel[2];
-                        self.data[dst_idx + gi] = src_pixel[1];
-                        self.data[dst_idx + bi] = src_pixel[0];
-                        self.data[dst_idx + ai] = 0xff;
-                    })
-            });
+                            // BGR -> RGB channel swap
+                            self.data[dst_idx + ri] = src_pixel[2];
+                            self.data[dst_idx + gi] = src_pixel[1];
+                            self.data[dst_idx + bi] = src_pixel[0];
+                            self.data[dst_idx + ai] = 0xff;
+                        })
+                });
+        }
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
 
@@ -810,6 +827,8 @@ impl DecodedImage {
     /// Apply RGB24 bitmap with explicit source dimensions.
     /// `rgb24` contains `source_width × source_height` pixels in RGB24 format.
     /// `update_rectangle` specifies WHERE to place the bitmap, not its size.
+    ///
+    /// When source dimensions exceed the rectangle, only the overlapping region is copied.
     pub(crate) fn apply_rgb24_with_dimensions(
         &mut self,
         rgb24: &[u8],
@@ -817,13 +836,61 @@ impl DecodedImage {
         source_width: usize,
         flip: bool,
     ) -> SessionResult<InclusiveRectangle> {
-        const SRC_COLOR_DEPTH: usize = 3;
-        let lines = rgb24.chunks_exact(source_width * SRC_COLOR_DEPTH);
-        if flip {
-            self.apply_rgb24_iter(lines.rev(), update_rectangle)
-        } else {
-            self.apply_rgb24_iter(lines, update_rectangle)
+        if source_width == 0 {
+            return Ok(InclusiveRectangle::empty());
         }
+
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgb24 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+
+        const SRC_COLOR_DEPTH: usize = 3;
+        const DST_COLOR_DEPTH: usize = 4;
+
+        let image_width = usize::from(self.width);
+        let rect_width = usize::from(update_rectangle.width());
+        let rect_height = usize::from(update_rectangle.height());
+        let top = usize::from(update_rectangle.top);
+        let left = usize::from(update_rectangle.left);
+        let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
+
+        // Clamp copy dimensions to the smaller of source and rectangle
+        let copy_width = source_width.min(rect_width);
+        let copy_height = (rgb24.len() / (source_width * SRC_COLOR_DEPTH)).min(rect_height);
+
+        let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
+
+        let source_row_stride = source_width * SRC_COLOR_DEPTH;
+        let rows = rgb24.chunks_exact(source_row_stride).take(copy_height);
+
+        let row_iter: Box<dyn Iterator<Item = (usize, &[u8])>> = if flip {
+            Box::new(rows.rev().enumerate())
+        } else {
+            Box::new(rows.enumerate())
+        };
+
+        row_iter.for_each(|(row_idx, row)| {
+            // Only copy copy_width pixels from each row (not the entire source_width)
+            row[..copy_width * SRC_COLOR_DEPTH]
+                .chunks_exact(SRC_COLOR_DEPTH)
+                .enumerate()
+                .for_each(|(col_idx, src_pixel)| {
+                    let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+
+                    self.data[dst_idx + ri] = src_pixel[0];
+                    self.data[dst_idx + gi] = src_pixel[1];
+                    self.data[dst_idx + bi] = src_pixel[2];
+                    self.data[dst_idx + ai] = 0xFF;
+                })
+        });
+
+        let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
+
+        Ok(update_rectangle)
     }
 
     pub(crate) fn apply_rgb24(

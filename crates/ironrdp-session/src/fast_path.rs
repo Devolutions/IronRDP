@@ -209,14 +209,14 @@ impl Processor {
                     let rect_height = usize::from(update.rectangle.height());
 
                     debug!(
-                        "32 bpp compressed RDP6_BITMAP_STREAM: source={}x{}, rectangle={}x{} at {:?}, data_len={}, expected={}",
                         source_width,
                         source_height,
                         rect_width,
                         rect_height,
-                        update.rectangle,
-                        update.bitmap_data.len(),
-                        source_width * source_height * 3
+                        rect = ?update.rectangle,
+                        data_len = update.bitmap_data.len(),
+                        expected_len = source_width * source_height * 3,
+                        "Compressed RDP6 bitmap stream (32 bpp)"
                     );
 
                     match self.bitmap_stream_decoder.decode_bitmap_stream_to_rgb24(
@@ -226,7 +226,11 @@ impl Processor {
                         source_height,
                     ) {
                         Ok(()) => {
-                            debug!("RDP6 decoded to {} bytes (expected {})", buf.len(), source_width * source_height * 3);
+                            debug!(
+                                decoded_len = buf.len(),
+                                expected_len = source_width * source_height * 3,
+                                "RDP6 bitmap decoded"
+                            );
                             // Use actual decoded dimensions (source_width), not rectangle width
                             // The rectangle tells us WHERE to place the bitmap, not HOW BIG it is
                             image.apply_rgb24_with_dimensions(&buf, &update.rectangle, source_width, true)?
