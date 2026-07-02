@@ -42,7 +42,7 @@ pub struct BuilderDone {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     display_suppressed: Option<Arc<AtomicBool>>,
     autodetect_rtt: Option<Arc<AtomicU32>>,
-    honor_client_desktop_size: bool,
+    honor_client_desktop_size: Option<DesktopSize>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -143,7 +143,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 gfx_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
-                honor_client_desktop_size: false,
+                honor_client_desktop_size: None,
             },
         }
     }
@@ -165,7 +165,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 gfx_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
-                honor_client_desktop_size: false,
+                honor_client_desktop_size: None,
             },
         }
     }
@@ -245,7 +245,14 @@ impl RdpServerBuilder<BuilderDone> {
     /// Reactivation resize. The display handler observes the negotiated size
     /// through [`RdpServerDisplay::request_initial_size`].
     ///
-    /// Defaults to `false`, enforcing the size reported by the display handler.
+    /// Pass `Some(max)` to honor the client's request, clamped per dimension to
+    /// `max`: the client may ask for a smaller desktop, but never a larger one.
+    /// The desktop size is a client-controlled `u16` bounded only by the
+    /// protocol ([200, 8192]); `max` is the ceiling the server is willing to
+    /// render (for instance the host display's native resolution) so an
+    /// untrusted client can't drive the framebuffer/encoder allocation off that
+    /// number. Pass `None` (the default) to disable honoring and enforce the
+    /// size reported by the display handler.
     ///
     /// # Precondition
     ///
@@ -258,8 +265,8 @@ impl RdpServerBuilder<BuilderDone> {
     /// the display handler serves a fixed framebuffer.
     ///
     /// [`request_initial_size`]: crate::RdpServerDisplay::request_initial_size
-    pub fn with_honor_client_desktop_size(mut self, honor: bool) -> Self {
-        self.state.honor_client_desktop_size = honor;
+    pub fn with_honor_client_desktop_size(mut self, max: Option<DesktopSize>) -> Self {
+        self.state.honor_client_desktop_size = max;
         self
     }
 
