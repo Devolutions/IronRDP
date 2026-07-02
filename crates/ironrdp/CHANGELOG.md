@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.17.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.16.0...ironrdp-v0.17.0)] - 2026-07-02
+
+### <!-- 1 -->Features
+
+- Gate native backends behind Cargo features ([#1338](https://github.com/Devolutions/IronRDP/issues/1338)) ([f7e6106e0f](https://github.com/Devolutions/IronRDP/commit/f7e6106e0f293c1e0f8129be82aa2d86737ba92a)) 
+
+  ironrdp (meta crate):
+  - Added:    client, client-all, client-sound, client-clipboard,
+              client-rdpdr, client-smartcard, client-gateway,
+              client-dvc-pipe-proxy, client-dvc-com-plugin, and
+              top-level rustls / native-tls (forwarded to ironrdp-client)
+  - Modified: qoi, qoiz now also gate ironrdp-client's codec
+
+- [**breaking**] Misuse-resistant format negotiation for RdpsndServerHandler ([#1359](https://github.com/Devolutions/IronRDP/issues/1359)) ([2d3bdef1a7](https://github.com/Devolutions/IronRDP/commit/2d3bdef1a7167d2acdc478a92917cbb2f018960b)) 
+
+  Move the negotiation into the crate and split selection from lifecycle:
+  
+  ```rust
+  fn choose_format<'a>(&mut self, common: &'a [NegotiatedFormat]) -> Option<&'a NegotiatedFormat>;
+  fn start(&mut self, format: &NegotiatedFormat);
+  ```
+
+
+
 ## [[0.16.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-v0.15.0...ironrdp-v0.16.0)] - 2026-06-05
 
 ### <!-- 7 -->Build

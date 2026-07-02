@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.8.0...ironrdp-pdu-v0.8.1)] - 2026-07-02
+
+### <!-- 4 -->Bug Fixes
+
+- Set COMPRESSION_USED on the FastPath update header when compressed ([#1382](https://github.com/Devolutions/IronRDP/issues/1382)) ([3f96d0029d](https://github.com/Devolutions/IronRDP/commit/3f96d0029d37d3cee84b419bbf4d53b5519e385d)) 
+
+- Propagate caller location through error constructor helpers ([#1392](https://github.com/Devolutions/IronRDP/issues/1392)) ([d6990d81a1](https://github.com/Devolutions/IronRDP/commit/d6990d81a17e8349e52768ad8a82f673b1e1462d)) 
+
+  The error constructor helpers in several crates wrap the #[track_caller]
+  ironrdp_error::Error::new, but were not themselves marked
+  #[track_caller]. As a result, the captured location pointed at the
+  helper body instead of the real call site, giving misleading "@
+  file:line" info in error reports.
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.7.0...ironrdp-pdu-v0.8.0)] - 2026-05-27
 
 ### <!-- 1 -->Features

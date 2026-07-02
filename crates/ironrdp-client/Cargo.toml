@@ -73,10 +73,10 @@ ironrdp-propertyset = { path = "../ironrdp-propertyset" }
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.6", optional = true }
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.6", optional = true }
-ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.8", optional = true }
+ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9", optional = true }
 
 # Optional backend crates (activated by features above)
-ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.6", optional = true }
+ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.7", optional = true }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.6", optional = true }
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu", optional = true }
 ironrdp-dvc-pipe-proxy = { path = "../ironrdp-dvc-pipe-proxy", optional = true }

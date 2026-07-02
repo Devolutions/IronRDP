@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.2.1...ironrdp-tls-v0.2.2)] - 2026-07-02
+
+### <!-- 1 -->Features
+
+- Expose negotiated TLS version and cipher suite ([#1384](https://github.com/Devolutions/IronRDP/issues/1384)) ([8f76260ea7](https://github.com/Devolutions/IronRDP/commit/8f76260ea753f546a577ad7a1176a5740adc94cf)) 
+
+  Adds a backend-neutral way to query the TLS parameters negotiated for an established
+  ironrdp-tls::TlsStream, enabling downstream diagnostic tooling to report the negotiated
+  protocol version and cipher suite alongside the existing certificate information.
+
+- Gate native backends behind Cargo features ([#1338](https://github.com/Devolutions/IronRDP/issues/1338)) ([f7e6106e0f](https://github.com/Devolutions/IronRDP/commit/f7e6106e0f293c1e0f8129be82aa2d86737ba92a)) 
+
+  ironrdp (meta crate):
+  - Added:    client, client-all, client-sound, client-clipboard,
+              client-rdpdr, client-smartcard, client-gateway,
+              client-dvc-pipe-proxy, client-dvc-com-plugin, and
+              top-level rustls / native-tls (forwarded to ironrdp-client)
+  - Modified: qoi, qoiz now also gate ironrdp-client's codec
+
+- Make the rustls crypto provider selectable ([#1387](https://github.com/Devolutions/IronRDP/issues/1387)) ([d767d99032](https://github.com/Devolutions/IronRDP/commit/d767d990325448bf3385974da7ea9b6dcc477673)) 
+
+  Makes the ironrdp-tls rustls backend’s crypto provider selectable at compile time by restructuring Cargo features, avoiding forcing a single provider onto downstreams via tokio-rustls default features.
+
+
+
 ## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.2.0...ironrdp-tls-v0.2.1)] - 2026-05-27
 
 ### <!-- 7 -->Build
