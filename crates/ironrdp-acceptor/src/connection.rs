@@ -150,10 +150,11 @@ impl Acceptor {
     /// later in the client's Confirm Active is, per [MS-RDPBCGR] 2.2.1.13.2,
     /// the value the client copied from the *server's* Demand Active, so it
     /// cannot be used to discover what the client originally asked for. When
-    /// this is enabled and the client's request is within the protocol-legal
-    /// range, the acceptor negotiates that size from the start (it is written
-    /// into the server's Bitmap capability set before Demand Active is sent),
-    /// avoiding a Deactivation-Reactivation resize round trip.
+    /// this is enabled, the client's request is first clamped per dimension to
+    /// the operator maximum and then validated against the protocol-legal range;
+    /// if the clamped size is legal the acceptor negotiates it from the start (it
+    /// is written into the server's Bitmap capability set before Demand Active is
+    /// sent), avoiding a Deactivation-Reactivation resize round trip.
     ///
     /// Pass `Some(max)` to honor the client's request, clamped per dimension to
     /// `max`: the client can ask for a *smaller* desktop than `max`, but never a
@@ -567,9 +568,10 @@ impl Sequence for Acceptor {
                         }
                     } else {
                         debug!(
-                            width = requested_width,
-                            height = requested_height,
-                            "Client requested an out-of-range desktop size; keeping the server-provided size"
+                            requested = ?DesktopSize { width: requested_width, height: requested_height },
+                            clamped = ?DesktopSize { width: clamped_width, height: clamped_height },
+                            max = ?max,
+                            "Client-requested desktop size is out of protocol range after clamping to the operator maximum; keeping the server-provided size"
                         );
                     }
                 }

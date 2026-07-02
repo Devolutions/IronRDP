@@ -243,11 +243,12 @@ impl RdpServerBuilder<BuilderDone> {
     /// Core Data of the connection handshake; the size echoed back in the
     /// client's Confirm Active is the value it copied from the server's Demand
     /// Active (per [MS-RDPBCGR] 2.2.1.13.2) and so cannot reveal what the
-    /// client asked for. With this enabled the acceptor adopts the requested
-    /// size (when within the protocol-legal range) before Demand Active is
-    /// sent, so the session starts at that size with no Deactivation-
-    /// Reactivation resize. The display handler observes the negotiated size
-    /// through [`RdpServerDisplay::request_initial_size`].
+    /// client asked for. With this enabled the acceptor first clamps the
+    /// requested size to the operator maximum and then, if the clamped size is
+    /// within the protocol-legal range, adopts it before Demand Active is sent,
+    /// so the session starts at that size with no Deactivation-Reactivation
+    /// resize. The display handler observes the negotiated size through
+    /// [`RdpServerDisplay::request_initial_size`].
     ///
     /// Pass `Some(max)` to honor the client's request, clamped per dimension to
     /// `max`: the client may ask for a smaller desktop, but never a larger one.
