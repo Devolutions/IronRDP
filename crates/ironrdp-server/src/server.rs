@@ -723,20 +723,29 @@ impl RdpServer {
     /// `ShouldUpgrade`, exactly as [`run_connection`](Self::run_connection).
     ///
     /// With [`TransportTls::AlreadyDone`], the caller's `stream` has ALREADY
-    /// been transport-encrypted at a lower layer (typically a WSS terminator in
-    /// a proxy-shaped deployment), so IronRDP skips the TLS handshake and
+    /// been transport-encrypted at a lower layer that the embedder owns
+    /// (typically a WSS terminator in the same process, or a TLS stream the
+    /// embedder accepted up front), so IronRDP skips the TLS handshake and
     /// advances the state machine via [`Acceptor::mark_security_upgrade_as_done`].
     /// Everything past the handshake, including the optional Hybrid CredSSP
     /// exchange and finalization, is identical to the managed path.
     ///
     /// # Use case for [`TransportTls::AlreadyDone`]
     ///
-    /// The motivating use case is the [RDCleanPath] protocol used by
-    /// Devolutions Gateway and Cloudflare's IronRDP-WASM deployment: an
-    /// RDCleanPath-aware client connects via WSS to a proxy (or, in the
-    /// embedded shape, to a server that has its own WSS terminator). The WSS
-    /// layer terminates TLS end-to-end with the client; the server side sees a
-    /// post-TLS plaintext byte stream and must not re-run TLS on it.
+    /// This mode decouples transport encryption from the RDP security-upgrade
+    /// step. It is for ironrdp-server endpoints that terminate transport
+    /// encryption themselves before the RDP state machine runs — for example a
+    /// server that accepts WSS directly, or one fronted by an in-process TLS
+    /// terminator — and therefore must not perform a second, inner TLS
+    /// handshake when the X.224 negotiation selects `PROTOCOL_SSL`.
+    ///
+    /// This is distinct from a [RDCleanPath] proxy deployment (e.g.
+    /// Devolutions Gateway), where the proxy performs a real TLS handshake with
+    /// a *separate* backend RDP server and relays that server's certificate
+    /// chain to the client. In that topology the backend server owns its own
+    /// TLS and uses [`TransportTls::Managed`]; this mode does not apply to it.
+    /// RDCleanPath is relevant here only as one client-side mechanism (see
+    /// precondition 2) for telling a client not to expect an inner handshake.
     ///
     /// # Preconditions for [`TransportTls::AlreadyDone`] (caller MUST guarantee)
     ///
@@ -744,12 +753,13 @@ impl RdpServer {
     ///    (WSS, in-process, etc.). Passing a plain TCP stream here exposes
     ///    RDP traffic in plaintext on the wire.
     ///
-    /// 2. The connecting RDP client speaks a proxy protocol that informs
-    ///    it that TLS happened at a lower layer (e.g. RDCleanPath). Vanilla
-    ///    RDP clients (mstsc, xfreerdp) negotiate TLS based on the X.224
-    ///    selectedProtocol and have no concept of "TLS already done at a
-    ///    lower layer": they will hang or fail. Vanilla clients must use
-    ///    [`TransportTls::Managed`].
+    /// 2. The connecting client must not expect an inner TLS handshake on this
+    ///    stream. Vanilla RDP clients (mstsc, xfreerdp) negotiate TLS from the
+    ///    X.224 `selectedProtocol` and have no concept of "TLS already done at a
+    ///    lower layer": they will hang or fail, and must use
+    ///    [`TransportTls::Managed`]. Arranging for a client to skip the inner
+    ///    handshake is the embedder's responsibility; RDCleanPath is one such
+    ///    mechanism, but this method does not depend on it.
     ///
     /// 3. If `self.opts.security` is [`RdpServerSecurity::Hybrid`], two things
     ///    must hold. First, the client must support CredSSP over this
@@ -757,15 +767,14 @@ impl RdpServer {
     ///    (CredSSP carries its own crypto via TSRequest), so it runs the same
     ///    as on the managed path. Second, and less obvious: the CredSSP
     ///    server-public-key confirmation (`pubKeyAuth`, per MS-CSSP) binds to
-    ///    the certificate the client validated at the lower TLS layer, not to
-    ///    anything IronRDP does here. So the public key configured in
+    ///    the certificate the client validated at the lower transport layer,
+    ///    not to anything IronRDP does here. So the public key configured in
     ///    [`RdpServerSecurity::Hybrid`] MUST be the public key of the
     ///    certificate that lower layer (e.g. the WSS terminator) presented to
     ///    the client, otherwise the client's `pubKeyAuth` check fails and
-    ///    Hybrid is rejected. In an embedded-terminator deployment this means
-    ///    terminating TLS with the same certificate configured for Hybrid; in
-    ///    an RDCleanPath proxy deployment it holds by construction, because the
-    ///    proxy relays the backend server's certificate to the client.
+    ///    Hybrid is rejected. This is the embedder's responsibility; it does
+    ///    not hold automatically. In practice it means terminating transport
+    ///    TLS with the same certificate configured for Hybrid.
     ///
     /// [RDCleanPath]: https://docs.rs/ironrdp-rdcleanpath
     ///
@@ -777,15 +786,6 @@ impl RdpServer {
     /// under [`TransportTls::AlreadyDone`] is that after the negotiation reaches
     /// the security-upgrade gate, no TLS handshake is performed on the byte
     /// stream, because the caller's stream is already past TLS at a lower layer.
-    ///
-    /// Earlier attempts to express "TLS already done" via wire-level signalling
-    /// (a new `RdpServerSecurity::PreSecured` variant that advertised
-    /// `PROTOCOL_SSL` while skipping the actual TLS handshake) failed
-    /// interop with vanilla clients: `PROTOCOL_SSL` selected on the X.224
-    /// wire is a mandatory TLS signal per MS-RDPBCGR, with no provision for
-    /// "TLS already happened elsewhere". RDCleanPath sidesteps this at a
-    /// higher layer rather than at the wire layer; that distinction is the
-    /// invariant this method preserves.
     pub async fn run_connection_with<S>(&mut self, stream: S, tls: TransportTls) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
