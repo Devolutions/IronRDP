@@ -477,9 +477,9 @@ pub struct RdpServer {
     /// client only enters its automatic reconnection sequence (MS-RDPBCGR
     /// 1.3.1.5) on an *ungraceful* disconnect if it was handed this cookie
     /// during logon; without it, a dropped connection simply reports as
-    /// disconnected. `None` (the default) sends nothing. Configure via
-    /// [`RdpServerBuilder::with_auto_reconnect_cookie`](crate::RdpServerBuilder::with_auto_reconnect_cookie)
-    /// or [`Self::set_auto_reconnect_cookie`].
+    /// disconnected. `None` (the default) sends nothing. Configure it on the
+    /// builder ([`RdpServer::builder`]) via `with_auto_reconnect_cookie`, or at
+    /// runtime via [`Self::set_auto_reconnect_cookie`].
     auto_reconnect_cookie: Option<rdp::session_info::ServerAutoReconnect>,
     /// Per-connection guard so the auto-reconnect cookie is sent exactly once,
     /// after the first activation — not again on a Deactivation-Reactivation
@@ -613,9 +613,9 @@ impl RdpServer {
     ///
     /// Pass `None` (the default) to send no cookie.
     ///
-    /// Most callers should configure this at construction time via the builder's
-    /// [`with_auto_reconnect_cookie`](crate::RdpServerBuilder::with_auto_reconnect_cookie);
-    /// this setter exists for dynamic post-construction reconfiguration.
+    /// Most callers should configure this at construction time via the builder
+    /// ([`RdpServer::builder`])'s `with_auto_reconnect_cookie`; this setter exists
+    /// for dynamic post-construction reconfiguration.
     ///
     /// # Note on the returning cookie
     ///
