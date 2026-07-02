@@ -307,20 +307,11 @@ impl UrbdrcDeviceServer {
         let udev_iface = self.usb_device_iface()?;
         let request_id = self.request_id_alloc.alloc();
 
-        // Currently, INTERNAL_IO_CONTROL is specified with an empty input buffer and a fixed 4-byte output buffer.
-        if !internal_io_ctl_packet.input_buffer.is_empty() {
-            return Err(pdu_other_err!("internal io control input buffer must be empty"));
-        }
-        if internal_io_ctl_packet.output_buffer_size != 4 {
-            return Err(pdu_other_err!("internal io control output buffer size must be 4"));
-        }
-
-        let output_buffer_size = 4;
         let request = internal_io_ctl_packet.into_pdu(self.msg_alloc.alloc(), request_id, udev_iface);
         self.insert_pending_io(
             request_id,
             Pending::InternalIoCtl {
-                max_output_buf_size: output_buffer_size,
+                max_output_buf_size: request.output_buffer_size,
             },
         )?;
 

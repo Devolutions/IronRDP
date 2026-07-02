@@ -228,9 +228,10 @@ impl IoControl {
         };
         let input_buffer_size = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
         ensure_size!(in: src,
-            size: input_buffer_size /* InputBuffer */ + 4 /* OutputBufferSize */ + 4 /* RequestId */);
+            size: input_buffer_size);
         // TODO: size limit
         let input_buffer = src.read_slice(input_buffer_size).to_vec();
+        ensure_size!(in: src, size: 4 /*output buffer size */ + 4 /* request id */);
         let output_buffer_size = src.read_u32();
         let req_id = src.read_u32();
         let io_control = Self {
@@ -374,11 +375,11 @@ impl IoctlInternalUsb {
 /// [\[MS-RDPEUSB\] 2.2.13 USB Internal IO Control Code][1].
 ///
 /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/55d1cd44-eda3-4cba-931c-c3cb8b3c3c92
-#[repr(u32)]
-#[non_exhaustive]
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 #[doc(alias = "IOCTL_TSUSBGD_IOCTL_USBDI_QUERY_BUS_TIME")]
-pub enum UsbInternalIoctlCode {
+pub struct UsbInternalIoctlCode(pub u32);
+
+impl UsbInternalIoctlCode {
     /// [\[MS-RDPEUSB\] 2.2.13.1 IOCTL_TSUSBGD_IOCTL_USBDI_QUERY_BUS_TIME][1].
     ///
     /// Sent when the server receives a request its system to query the device's current frame
@@ -389,10 +390,8 @@ pub enum UsbInternalIoctlCode {
     ///
     /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/68506bc9-fedc-4fc1-b826-3cdbb1988774
     #[doc(alias = "IOCTL_TSUSBGD_IOCTL_USBDI_QUERY_BUS_TIME")]
-    IoctlTsusbgdIoctlUsbdiQueryBusTime = 0x00224000,
+    pub const QUERY_BUS_TIME: Self = Self(0x00224000);
 }
-
-const IOCTL_TSUSBGD_IOCTL_USBDI_QUERY_BUS_TIME: u32 = 0x00224000;
 
 /// [\[MS-RDPEUSB\] 2.2.6.4 Internal IO Control Message (INTERNAL_IO_CONTROL)][1] message.
 ///
@@ -404,27 +403,17 @@ const IOCTL_TSUSBGD_IOCTL_USBDI_QUERY_BUS_TIME: u32 = 0x00224000;
 pub struct InternalIoControl {
     pub msg_id: MessageId,
     pub udev_iface: InterfaceId,
-    // Should make adding new codes easier.
     pub ioctl_code: UsbInternalIoctlCode,
-    /// As of **v20240423**, all codes used for this message require sending an empty input buffer.
-    ///
-    /// * [MS-RDPEUSB 2.2.13 USB Internal IO Control Code][1]
-    ///
-    /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/55d1cd44-eda3-4cba-931c-c3cb8b3c3c92
     pub input_buffer: Vec<u8>,
     pub output_buffer_size: u32,
     pub req_id: RequestIdIoctl,
 }
 
 impl InternalIoControl {
-    #[expect(clippy::identity_op, reason = "for developer documentation purposes?")]
-    pub const PAYLOAD_SIZE: usize = 4 // IoControlCode
+    pub const PAYLOAD_MIN_SIZE: usize = 4 // IoControlCode
         + 4 // InputBufferSize
-        + 0 // InputBuffer
         + 4 // OutputBufferSize
         + 4; // RequestId
-
-    pub const FIXED_PART_SIZE: usize = SharedMsgHeader::SIZE_REQ /* Header */ + Self::PAYLOAD_SIZE;
 
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
@@ -435,40 +424,23 @@ impl InternalIoControl {
     }
 
     pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: Self::PAYLOAD_SIZE);
+        ensure_size!(in: src, size: Self::PAYLOAD_MIN_SIZE);
 
-        {
-            let code = src.read_u32();
-            if code != IOCTL_TSUSBGD_IOCTL_USBDI_QUERY_BUS_TIME {
-                return Err(unsupported_value_err!(
-                    "INTERNAL_IO_CONTROL::IoControlCode",
-                    format!("{code:#X}")
-                ));
-            }
-        }
-        {
-            let size = src.read_u32(/* InputBufferSize */);
-            if size != 0 {
-                return Err(unsupported_value_err!(
-                    "INTERNAL_IO_CONTROL::InputBufferSize",
-                    format!("{size:#X}")
-                ));
-            }
-        }
+        let code = src.read_u32();
+
+        let size = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
+        ensure_size!(in: src, size: size);
+        let input_buffer = src.read_slice(size).to_vec();
+
+        ensure_size!(in: src, size: 4 /*output buffer size */ + 4 /* request id */);
         let output_buffer_size = src.read_u32(/* OutputBufferSize */);
-        if output_buffer_size != 0x4 {
-            return Err(unsupported_value_err!(
-                "INTERNAL_IO_CONTROL::OutputBufferSize",
-                format!("{output_buffer_size:#X}")
-            ));
-        }
         let req_id = src.read_u32();
 
         Ok(Self {
             msg_id,
             udev_iface,
-            ioctl_code: UsbInternalIoctlCode::IoctlTsusbgdIoctlUsbdiQueryBusTime,
-            input_buffer: Vec::new(),
+            ioctl_code: UsbInternalIoctlCode(code),
+            input_buffer,
             output_buffer_size,
             req_id,
         })
@@ -477,12 +449,12 @@ impl InternalIoControl {
 
 impl Encode for InternalIoControl {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        ensure_fixed_part_size!(in: dst);
-
+        ensure_size!(in: dst, size: self.size());
         self.header().encode(dst)?;
-        dst.write_u32(IOCTL_TSUSBGD_IOCTL_USBDI_QUERY_BUS_TIME); // IoControlCode
-        dst.write_u32(0x0); // InputBufferSize
-        dst.write_u32(0x4); // OutputBufferSize
+        dst.write_u32(self.ioctl_code.0); // IoControlCode
+        dst.write_u32(self.input_buffer.len().try_into().map_err(|e| other_err!(source: e))?); // InputBufferSize
+        dst.write_slice(&self.input_buffer); // InputBuffer
+        dst.write_u32(self.output_buffer_size); // OutputBufferSize
         dst.write_u32(self.req_id);
 
         Ok(())
@@ -493,7 +465,7 @@ impl Encode for InternalIoControl {
     }
 
     fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE
+        SharedMsgHeader::SIZE_REQ + Self::PAYLOAD_MIN_SIZE + self.input_buffer.len()
     }
 }
 

@@ -70,8 +70,7 @@ pub struct IoControlCompletionResult {
     pub information: u32,
     /// Data produced by the request.
     ///
-    /// Its length must not exceed the request's [`IoControlPacket::output_buffer_size`] or
-    /// [`InternalIoControlPacket::output_buffer_size`]. For failures other than an
+    /// Its length must not exceed the request's output buffer size. For failures other than an
     /// insufficient-buffer result, this must be empty.
     pub output_buffer: Vec<u8>,
 }
@@ -141,34 +140,39 @@ impl IoControlPacket {
 
 /// Backend-facing form of an RDPEUSB `INTERNAL_IO_CONTROL` request.
 #[derive(Debug, Clone)]
-pub struct InternalIoControlPacket {
-    /// RDPEUSB-defined internal operation to perform.
-    pub ioctl_code: UsbInternalIoctlCode,
-    /// Raw input supplied to the operation.
-    pub input_buffer: Vec<u8>,
-    /// Maximum number of bytes that may be returned in the completion's output buffer.
-    pub output_buffer_size: u32,
+pub enum InternalIoControlPacket {
+    QueryBusTime,
 }
 
 impl InternalIoControlPacket {
     pub(crate) fn into_pdu(self, msg_id: MessageId, req_id: RequestId, udev_iface: InterfaceId) -> InternalIoControl {
-        InternalIoControl {
-            msg_id,
-            udev_iface,
-            ioctl_code: self.ioctl_code,
-            input_buffer: self.input_buffer,
-            output_buffer_size: self.output_buffer_size,
-            req_id,
+        match self {
+            Self::QueryBusTime => InternalIoControl {
+                msg_id,
+                udev_iface,
+                ioctl_code: UsbInternalIoctlCode::QUERY_BUS_TIME,
+                input_buffer: Vec::new(),
+                output_buffer_size: 4,
+                req_id,
+            },
         }
     }
 }
 
-impl From<InternalIoControl> for InternalIoControlPacket {
-    fn from(value: InternalIoControl) -> Self {
-        Self {
-            ioctl_code: value.ioctl_code,
-            input_buffer: value.input_buffer,
-            output_buffer_size: value.output_buffer_size,
+impl TryFrom<InternalIoControl> for InternalIoControlPacket {
+    type Error = PduError;
+    fn try_from(value: InternalIoControl) -> PduResult<Self> {
+        match value.ioctl_code {
+            UsbInternalIoctlCode::QUERY_BUS_TIME => {
+                if !value.input_buffer.is_empty() {
+                    return Err(pdu_other_err!("internal io control input buffer must be empty"));
+                }
+                if value.output_buffer_size != 4 {
+                    return Err(pdu_other_err!("internal io control output buffer size must be 4"));
+                }
+                Ok(Self::QueryBusTime)
+            }
+            _ => Err(pdu_other_err!("unsupported InternalIoControl ioctl code")),
         }
     }
 }
