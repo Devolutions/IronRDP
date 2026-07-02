@@ -449,9 +449,14 @@ pub fn rgba_to_ycbcr(pixels: &[u8], y_out: &mut [i16], cb_out: &mut [i16], cr_ou
         let cb = (-11059 * r - 21709 * g + 32768 * b + 32768) >> 16;
         let cr = (32768 * r - 27439 * g - 5329 * b + 32768) >> 16;
 
-        y_out[i] = clamp_i16(y);
-        cb_out[i] = clamp_i16(cb);
-        cr_out[i] = clamp_i16(cr);
+        // Add the 5-bit fixed-point headroom the decoder removes with `>> 5` in
+        // `reconstruct_to_rgba`. The base dequant retains +5 bits (matching
+        // FreeRDP's `/* -6 + 5 = -1 */`); scaling up here keeps the
+        // encode->decode round-trip an identity. Range after `<< 5` is
+        // [-4096, 4064], well within i16.
+        y_out[i] = clamp_i16(y << 5);
+        cb_out[i] = clamp_i16(cb << 5);
+        cr_out[i] = clamp_i16(cr << 5);
     }
 }
 
@@ -830,9 +835,17 @@ impl TileState {
 
         // YCbCr to RGBA conversion
         for i in 0..64 * 64 {
-            let y = i32::from(y_buf[i]) + 128;
-            let cb = i32::from(cb_buf[i]);
-            let cr = i32::from(cr_buf[i]);
+            // The base dequantization (`<< (quant - 1)`) retains +5 bits of
+            // fixed-point headroom by design (the DWT itself is unity-gain --
+            // see tests/dwt_gain.rs), so the spatial coefficients arrive scaled
+            // up by 2^5. FreeRDP folds this descale into its colour primitive
+            // (yCbCrToRGB_16s8u_P3AC4R shifts by `divisor + 5`); we apply the
+            // matching `>> 5` here. Without it every value overflows the ±128
+            // range and clamps to 0/255 -- luma loses mid-tones and chroma
+            // collapses to pure primaries (the posterised image).
+            let y = (i32::from(y_buf[i]) >> 5) + 128;
+            let cb = i32::from(cb_buf[i]) >> 5;
+            let cr = i32::from(cr_buf[i]) >> 5;
 
             // ITU-R BT.601 YCbCr to RGB conversion
             let r = y + ((cr * 91881 + 32768) >> 16);
@@ -1703,12 +1716,11 @@ mod tests {
         rgba_to_ycbcr(&pixels, &mut y, &mut cb, &mut cr);
 
         // Pure white: R=G=B=255
-        // Y = (19595*255 + 38470*255 + 7471*255 + 32768) >> 16 - 128
-        //   = (65536*255 + 32768) >> 16 - 128 = 255 - 128 = 127
-        // Cb and Cr should be ~0 (achromatic)
-        assert!((y[0] - 127).abs() <= 1, "Y for white: got {}", y[0]);
-        assert!(cb[0].abs() <= 1, "Cb for white: got {}", cb[0]);
-        assert!(cr[0].abs() <= 1, "Cr for white: got {}", cr[0]);
+        // Y = ((65536*255 + 32768) >> 16 - 128) << 5 = 127 << 5 = 4064
+        // Cb and Cr should be ~0 (achromatic), unaffected by the << 5 scale
+        assert!((y[0] - 4064).abs() <= 32, "Y for white: got {}", y[0]);
+        assert!(cb[0].abs() <= 32, "Cb for white: got {}", cb[0]);
+        assert!(cr[0].abs() <= 32, "Cr for white: got {}", cr[0]);
     }
 
     #[test]
@@ -1720,8 +1732,8 @@ mod tests {
 
         rgba_to_ycbcr(&pixels, &mut y, &mut cb, &mut cr);
 
-        // Pure black: Y = -128, Cb = 0, Cr = 0
-        assert_eq!(y[0], -128);
+        // Pure black: Y = -128 << 5 = -4096, Cb = 0, Cr = 0
+        assert_eq!(y[0], -4096);
         assert_eq!(cb[0], 0);
         assert_eq!(cr[0], 0);
     }
