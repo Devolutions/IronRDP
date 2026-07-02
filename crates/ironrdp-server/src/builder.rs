@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, server_codecs_capabilities};
+use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
 
 use super::clipboard::CliprdrServerFactory;
@@ -43,6 +44,7 @@ pub struct BuilderDone {
     display_suppressed: Option<Arc<AtomicBool>>,
     autodetect_rtt: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: bool,
+    auto_reconnect_cookie: Option<ServerAutoReconnect>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -144,6 +146,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 display_suppressed: None,
                 autodetect_rtt: None,
                 honor_client_desktop_size: false,
+                auto_reconnect_cookie: None,
             },
         }
     }
@@ -166,6 +169,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 display_suppressed: None,
                 autodetect_rtt: None,
                 honor_client_desktop_size: false,
+                auto_reconnect_cookie: None,
             },
         }
     }
@@ -289,6 +293,23 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Provision the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.3
+    /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
+    ///
+    /// When set to `Some`, the server sends a Save Session Info PDU carrying the
+    /// cookie once per connection, right after activation, which is what lets a
+    /// client automatically re-establish the session after an *ungraceful*
+    /// disconnect (MS-RDPBCGR 1.3.1.5, "Automatic Reconnection") rather than
+    /// reporting the connection as simply lost. Generate the cookie's 16-byte
+    /// `random_bits` from a CSPRNG. `None` (the default) sends no cookie.
+    ///
+    /// See [`RdpServer::set_auto_reconnect_cookie`] for the runtime equivalent
+    /// and a note on the (unvalidated) returning `ARC_CS_PRIVATE_PACKET`.
+    pub fn with_auto_reconnect_cookie(mut self, cookie: Option<ServerAutoReconnect>) -> Self {
+        self.state.auto_reconnect_cookie = cookie;
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         let mut server = RdpServer::new(
             RdpServerOptions {
@@ -309,6 +330,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.autodetect_rtt,
         );
         server.set_credential_validator(self.state.credential_validator);
+        server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
         server
     }
 }
