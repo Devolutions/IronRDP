@@ -115,8 +115,17 @@ impl<'de> Decode<'de> for MultitransportRequestPdu {
 
         let security_header = BasicSecurityHeader::decode(src)?;
 
-        if !security_header.flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ) {
-            return Err(invalid_field_err!("securityHeader", "expected TRANSPORT_REQ flag"));
+        // Must be EXACTLY SEC_TRANSPORT_REQ (MS-RDPBCGR 2.2.15.1), not merely
+        // contain the bit. A `contains` check false-positives when this decode
+        // is used to distinguish a request from another PDU: e.g. a Demand
+        // Active's leading `ShareControlHeader::totalLength` aliases onto this
+        // flags field and can carry the TRANSPORT_REQ bit as part of an
+        // otherwise-valid flag combination.
+        if security_header.flags != BasicSecurityHeaderFlags::TRANSPORT_REQ {
+            return Err(invalid_field_err!(
+                "securityHeader",
+                "expected securityHeader flags to be exactly SEC_TRANSPORT_REQ"
+            ));
         }
 
         let request_id = src.read_u32();
@@ -229,8 +238,13 @@ impl<'de> Decode<'de> for MultitransportResponsePdu {
 
         let security_header = BasicSecurityHeader::decode(src)?;
 
-        if !security_header.flags.contains(BasicSecurityHeaderFlags::TRANSPORT_RSP) {
-            return Err(invalid_field_err!("securityHeader", "expected TRANSPORT_RSP flag"));
+        // Must be EXACTLY SEC_TRANSPORT_RSP (MS-RDPBCGR 2.2.15.2), not merely
+        // contain the bit; see the note on `MultitransportRequestPdu::decode`.
+        if security_header.flags != BasicSecurityHeaderFlags::TRANSPORT_RSP {
+            return Err(invalid_field_err!(
+                "securityHeader",
+                "expected securityHeader flags to be exactly SEC_TRANSPORT_RSP"
+            ));
         }
 
         let request_id = src.read_u32();
