@@ -470,6 +470,23 @@ pub struct RdpServer {
     /// so display backends can read a fresh, frame-traffic-independent network
     /// RTT for flow control.
     autodetect_rtt: Arc<AtomicU32>,
+
+    /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.3
+    /// `ARC_SC_PRIVATE_PACKET`). When `Some`, the server sends a Save Session
+    /// Info PDU carrying it once per connection, right after activation. A
+    /// client only enters its automatic reconnection sequence (MS-RDPBCGR
+    /// 1.3.1.5) on an *ungraceful* disconnect if it was handed this cookie
+    /// during logon; without it, a dropped connection simply reports as
+    /// disconnected. `None` (the default) sends nothing. Configure via
+    /// [`RdpServerBuilder::with_auto_reconnect_cookie`] or
+    /// [`Self::set_auto_reconnect_cookie`].
+    ///
+    /// [`RdpServerBuilder::with_auto_reconnect_cookie`]: crate::RdpServerBuilder::with_auto_reconnect_cookie
+    auto_reconnect_cookie: Option<rdp::session_info::ServerAutoReconnect>,
+    /// Per-connection guard so the auto-reconnect cookie is sent exactly once,
+    /// after the first activation — not again on a Deactivation-Reactivation
+    /// sequence. Reset at the start of every connection.
+    auto_reconnect_sent: bool,
 }
 
 #[derive(Debug)]
@@ -556,6 +573,8 @@ impl RdpServer {
                 handle.store(u32::MAX, Ordering::Relaxed);
                 handle
             },
+            auto_reconnect_cookie: None,
+            auto_reconnect_sent: false,
         }
     }
 
@@ -580,6 +599,38 @@ impl RdpServer {
     /// Not used for CredSSP/Hybrid connections (those use pre-loaded credentials).
     pub fn set_credential_validator(&mut self, validator: Option<Arc<dyn CredentialValidator>>) {
         self.credential_validator = validator;
+    }
+
+    /// Set or clear the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.3
+    /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
+    ///
+    /// When set to `Some`, the server sends a Save Session Info PDU carrying the
+    /// cookie once per connection, right after activation. This is what lets a
+    /// client (e.g. mstsc) automatically re-establish the session after an
+    /// *ungraceful* disconnect (MS-RDPBCGR 1.3.1.5, "Automatic Reconnection")
+    /// instead of reporting the connection as simply lost; a graceful logoff is
+    /// unaffected. The [`ServerAutoReconnect`] carries a `logon_id` identifying
+    /// the session and a 16-byte `random_bits` auto-reconnect random — generate
+    /// `random_bits` from a CSPRNG.
+    ///
+    /// Pass `None` (the default) to send no cookie.
+    ///
+    /// Most callers should configure this at construction time via the builder's
+    /// [`with_auto_reconnect_cookie`](RdpServerBuilder::with_auto_reconnect_cookie);
+    /// this setter exists for dynamic post-construction reconfiguration.
+    ///
+    /// # Note on the returning cookie
+    ///
+    /// This only *enables* the client's automatic reconnection; it does not
+    /// validate the `ARC_CS_PRIVATE_PACKET` the client sends back on reconnect
+    /// (MS-RDPBCGR 2.2.4.4). A server that re-authenticates every connection by
+    /// other means (e.g. NLA/CredSSP) does not need to; a server that wants the
+    /// cookie itself to be an authentication factor must verify the returned
+    /// value.
+    ///
+    /// [`ServerAutoReconnect`]: ironrdp_pdu::rdp::session_info::ServerAutoReconnect
+    pub fn set_auto_reconnect_cookie(&mut self, cookie: Option<rdp::session_info::ServerAutoReconnect>) {
+        self.auto_reconnect_cookie = cookie;
     }
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
@@ -807,6 +858,11 @@ impl RdpServer {
         // here also covers backends that share an externally-created Arc via
         // `set_display_suppressed_handle()`.
         self.display_suppressed.store(false, Ordering::Relaxed);
+
+        // The Server Auto-Reconnect Cookie is sent once per connection after
+        // activation; clear the "already sent" guard so this new connection
+        // sends it (a previous connection would have left it `true`).
+        self.auto_reconnect_sent = false;
 
         let framed = TokioFramed::new(stream);
 
@@ -1473,6 +1529,29 @@ impl RdpServer {
         let desktop_size = self.display.lock().await.size().await;
         let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs, self.opts.max_request_size)
             .context("failed to initialize update encoder")?;
+
+        // If configured, hand the client its Server Auto-Reconnect Cookie now
+        // that activation is complete (Confirm Active processed, encoder built),
+        // once per connection. This Save Session Info PDU is what lets a client
+        // automatically re-establish the session after an ungraceful disconnect
+        // (MS-RDPBCGR 1.3.1.5). Not re-sent on a Deactivation-Reactivation
+        // sequence (`auto_reconnect_sent` guard, reset per connection).
+        if !self.auto_reconnect_sent {
+            if let Some(cookie) = self.auto_reconnect_cookie.clone() {
+                let pdu = rdp::headers::ShareDataPdu::SaveSessionInfo(rdp::session_info::SaveSessionInfoPdu {
+                    info_type: rdp::session_info::InfoType::LogonExtended,
+                    info_data: rdp::session_info::InfoData::LogonExtended(rdp::session_info::LogonInfoExtended {
+                        present_fields_flags: rdp::session_info::LogonExFlags::AUTO_RECONNECT_COOKIE,
+                        auto_reconnect: Some(cookie),
+                        errors_info: None,
+                    }),
+                });
+                let data = encode_share_data_pdu(pdu, result.io_channel_id, result.user_channel_id)?;
+                writer.write_all(&data).await.context("send auto-reconnect cookie")?;
+                self.auto_reconnect_sent = true;
+                debug!("Sent Server Auto-Reconnect Cookie (Save Session Info PDU)");
+            }
+        }
 
         let state = self
             .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)
