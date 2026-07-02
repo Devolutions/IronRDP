@@ -356,6 +356,20 @@ impl DisplayControlHandler for DisplayControlBackend {
     }
 }
 
+/// Selects who performs the TLS handshake for a connection accepted via
+/// [`RdpServer::run_connection_with`].
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum TransportTls {
+    /// IronRDP performs the TLS accept on the stream (standard TCP+TLS).
+    Managed,
+    /// The stream is already past TLS, terminated by a lower layer (e.g. a WSS
+    /// terminator). IronRDP skips the TLS handshake. The caller MUST guarantee
+    /// the transport is already encrypted; see the preconditions on
+    /// [`RdpServer::run_connection_with`].
+    AlreadyDone,
+}
+
 /// RDP Server
 ///
 /// A server is created to listen for connections.
@@ -697,20 +711,101 @@ impl RdpServer {
         acceptor.attach_static_channel(dvc);
     }
 
+    /// Run a single RDP connection over `stream`, performing the
+    /// IronRDP-managed TLS handshake on `ShouldUpgrade` (standard TCP+TLS).
+    ///
+    /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
+    /// [`TransportTls::Managed`].
     pub async fn run_connection<S>(&mut self, stream: S) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        self.run_connection_with(stream, TransportTls::Managed).await
+    }
+
+    /// Run a single RDP connection over `stream`, choosing who performs the TLS
+    /// handshake with `tls`.
+    ///
+    /// With [`TransportTls::Managed`], IronRDP performs the TLS accept on
+    /// `ShouldUpgrade`, exactly as [`run_connection`](Self::run_connection).
+    ///
+    /// With [`TransportTls::AlreadyDone`], the caller's `stream` has ALREADY
+    /// been transport-encrypted at a lower layer that the embedder owns
+    /// (typically a WSS terminator in the same process, or a TLS stream the
+    /// embedder accepted up front), so IronRDP skips the TLS handshake and
+    /// advances the state machine via [`Acceptor::mark_security_upgrade_as_done`].
+    /// Everything past the handshake, including the optional Hybrid CredSSP
+    /// exchange and finalization, is identical to the managed path.
+    ///
+    /// # Use case for [`TransportTls::AlreadyDone`]
+    ///
+    /// This mode decouples transport encryption from the RDP security-upgrade
+    /// step. It is for ironrdp-server endpoints that terminate transport
+    /// encryption themselves before the RDP state machine runs — for example a
+    /// server that accepts WSS directly, or one fronted by an in-process TLS
+    /// terminator — and therefore must not perform a second, inner TLS
+    /// handshake when the X.224 negotiation selects `PROTOCOL_SSL`.
+    ///
+    /// This is distinct from a [RDCleanPath] proxy deployment (e.g.
+    /// Devolutions Gateway), where the proxy performs a real TLS handshake with
+    /// a *separate* backend RDP server and relays that server's certificate
+    /// chain to the client. In that topology the backend server owns its own
+    /// TLS and uses [`TransportTls::Managed`]; this mode does not apply to it.
+    /// RDCleanPath is relevant here only as one client-side mechanism (see
+    /// precondition 2) for telling a client not to expect an inner handshake.
+    ///
+    /// # Preconditions for [`TransportTls::AlreadyDone`] (caller MUST guarantee)
+    ///
+    /// 1. The `stream` is already transport-encrypted by another layer
+    ///    (WSS, in-process, etc.). Passing a plain TCP stream here exposes
+    ///    RDP traffic in plaintext on the wire.
+    ///
+    /// 2. The connecting client must not expect an inner TLS handshake on this
+    ///    stream. Vanilla RDP clients (mstsc, xfreerdp) negotiate TLS from the
+    ///    X.224 `selectedProtocol` and have no concept of "TLS already done at a
+    ///    lower layer": they will hang or fail, and must use
+    ///    [`TransportTls::Managed`]. Arranging for a client to skip the inner
+    ///    handshake is the embedder's responsibility; RDCleanPath is one such
+    ///    mechanism, but this method does not depend on it.
+    ///
+    /// 3. If `self.opts.security` is [`RdpServerSecurity::Hybrid`], two things
+    ///    must hold. First, the client must support CredSSP over this
+    ///    transport; the SPNEGO exchange itself is transport-independent
+    ///    (CredSSP carries its own crypto via TSRequest), so it runs the same
+    ///    as on the managed path. Second, and less obvious: the CredSSP
+    ///    server-public-key confirmation (`pubKeyAuth`, per MS-CSSP) binds to
+    ///    the certificate the client validated at the lower transport layer,
+    ///    not to anything IronRDP does here. So the public key configured in
+    ///    [`RdpServerSecurity::Hybrid`] MUST be the public key of the
+    ///    certificate that lower layer (e.g. the WSS terminator) presented to
+    ///    the client, otherwise the client's `pubKeyAuth` check fails and
+    ///    Hybrid is rejected. This is the embedder's responsibility; it does
+    ///    not hold automatically. In practice it means terminating transport
+    ///    TLS with the same certificate configured for Hybrid.
+    ///
+    /// [RDCleanPath]: https://docs.rs/ironrdp-rdcleanpath
+    ///
+    /// # Wire-level invariant
+    ///
+    /// This method does NOT alter the X.224 negotiation. The acceptor still
+    /// advertises whatever `SecurityProtocol` it was constructed with, and the
+    /// connecting client still negotiates as normal. The only behaviour change
+    /// under [`TransportTls::AlreadyDone`] is that after the negotiation reaches
+    /// the security-upgrade gate, no TLS handshake is performed on the byte
+    /// stream, because the caller's stream is already past TLS at a lower layer.
+    pub async fn run_connection_with<S>(&mut self, stream: S, tls: TransportTls) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
         // Per-connection state must start fresh: if the previous client
         // disconnected while it had sent `SuppressOutput { None }` (e.g.,
         // closed the mstsc window while minimized so the matching resume
-        // PDU never arrived), the flag would still read `true` here and
-        // the display backend would silently drop frames for the entire
-        // new session until/unless the new client happens to send a
+        // PDU never arrived), the flag would still read `true` here and the
+        // display backend would silently drop frames for the entire new
+        // session until/unless the new client happens to send a
         // `RefreshRectangle` or `SuppressOutput { Some(rect) }`. Resetting
-        // here also covers backends that share an externally-created Arc
-        // via `set_display_suppressed_handle()` — they get the same
-        // per-connection clean slate.
+        // here also covers backends that share an externally-created Arc via
+        // `set_display_suppressed_handle()`.
         self.display_suppressed.store(false, Ordering::Relaxed);
 
         let framed = TokioFramed::new(stream);
@@ -727,52 +822,81 @@ impl RdpServer {
             .context("accept_begin failed")?;
 
         match res {
-            BeginResult::ShouldUpgrade(stream) => {
-                let tls_acceptor = match &self.opts.security {
-                    RdpServerSecurity::Tls(acceptor) => acceptor,
-                    RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
-                    RdpServerSecurity::None => unreachable!(),
-                };
-                let accept = match tls_acceptor.accept(stream).await {
-                    Ok(accept) => accept,
-                    Err(e) => {
-                        warn!("Failed to TLS accept: {}", e);
-                        return Ok(());
-                    }
-                };
-                let mut framed = TokioFramed::new(accept);
-
-                acceptor.mark_security_upgrade_as_done();
-
-                if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
-                    // Generic streams don't expose peer address. Use a neutral
-                    // placeholder; it's unclear whether CredSSP/NTLM actually
-                    // uses this value in practice.
-                    let client_name = "rdp-client".to_owned();
-
-                    ironrdp_acceptor::accept_credssp(
-                        &mut framed,
-                        &mut acceptor,
-                        &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
-                        client_name.into(),
-                        pub_key.clone(),
-                        None,
-                    )
-                    .await?;
+            // The only thing that varies between the two modes is who performs
+            // the TLS handshake; everything past it is `finalize_after_upgrade`.
+            BeginResult::ShouldUpgrade(stream) => match tls {
+                TransportTls::Managed => {
+                    let tls_acceptor = match &self.opts.security {
+                        RdpServerSecurity::Tls(acceptor) => acceptor,
+                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
+                        RdpServerSecurity::None => unreachable!(),
+                    };
+                    let accept = match tls_acceptor.accept(stream).await {
+                        Ok(accept) => accept,
+                        Err(e) => {
+                            warn!("Failed to TLS accept: {}", e);
+                            return Ok(());
+                        }
+                    };
+                    self.finalize_after_upgrade(TokioFramed::new(accept), acceptor, "TLS connection")
+                        .await?;
                 }
-
-                let framed = self.accept_finalize(framed, acceptor).await?;
-                debug!("Shutting down TLS connection");
-                let (mut tls_stream, _) = framed.into_inner();
-                if let Err(e) = tls_stream.shutdown().await {
-                    debug!(?e, "TLS shutdown error");
+                TransportTls::AlreadyDone => {
+                    // The stream is already past TLS (terminated at a lower
+                    // layer, e.g. a WSS terminator); do NOT call
+                    // tls_acceptor.accept on it.
+                    self.finalize_after_upgrade(TokioFramed::new(stream), acceptor, "TLS-offloaded stream")
+                        .await?;
                 }
-            }
+            },
 
             BeginResult::Continue(framed) => {
                 self.accept_finalize(framed, acceptor).await?;
             }
         };
+
+        Ok(())
+    }
+
+    /// Shared post-handshake tail for both [`TransportTls`] modes: mark the
+    /// security upgrade complete, run the optional Hybrid CredSSP exchange,
+    /// finalize, and shut the stream down. Single-sourcing this is what keeps
+    /// the managed and TLS-offloaded paths structurally identical past the
+    /// handshake, so per-connection state handling cannot drift between them.
+    async fn finalize_after_upgrade<S>(
+        &mut self,
+        mut framed: TokioFramed<S>,
+        mut acceptor: Acceptor,
+        shutdown_label: &str,
+    ) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
+    {
+        acceptor.mark_security_upgrade_as_done();
+
+        if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
+            // Generic streams don't expose peer address. Use a neutral
+            // placeholder; it's unclear whether CredSSP/NTLM actually
+            // uses this value in practice.
+            let client_name = "rdp-client".to_owned();
+
+            ironrdp_acceptor::accept_credssp(
+                &mut framed,
+                &mut acceptor,
+                &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+                client_name.into(),
+                pub_key.clone(),
+                None,
+            )
+            .await?;
+        }
+
+        let framed = self.accept_finalize(framed, acceptor).await?;
+        debug!("Shutting down {}", shutdown_label);
+        let (mut inner, _) = framed.into_inner();
+        if let Err(e) = inner.shutdown().await {
+            debug!(?e, "{} shutdown error", shutdown_label);
+        }
 
         Ok(())
     }
