@@ -67,6 +67,8 @@ pub enum Request {
     KeyScancode { scancode: u16, pressed: bool },
     /// Press or release a key identified by a Unicode character.
     KeyUnicode { ch: char, pressed: bool },
+    /// Resize the remote desktop.
+    Resize { width: u16, height: u16 },
     // TODO: add clipboard support (CLIPRDR), e.g. requests to read the remote clipboard text and to
     // set it, so an LLM can copy/paste to and from the session.
 }
@@ -113,6 +115,11 @@ impl fmt::Debug for Request {
                 .debug_struct("KeyUnicode")
                 .field("ch", ch)
                 .field("pressed", pressed)
+                .finish(),
+            Self::Resize { width, height } => f
+                .debug_struct("Resize")
+                .field("width", width)
+                .field("height", height)
                 .finish(),
         }
     }
@@ -676,6 +683,11 @@ impl Encode for Request {
                 write_char(dst, *ch)?;
                 write_bool(dst, *pressed)?;
             }
+            Self::Resize { width, height } => {
+                dst.write_u8(11);
+                dst.write_u16(*width);
+                dst.write_u16(*height);
+            }
         }
         Ok(())
     }
@@ -700,6 +712,7 @@ impl Encode for Request {
                 Self::Wheel { .. } => 2 /* delta */ + 1 /* horizontal */,
                 Self::KeyScancode { .. } => 2 /* scancode */ + 1 /* pressed */,
                 Self::KeyUnicode { .. } => 4 /* ch */ + 1 /* pressed */,
+                Self::Resize { .. } => 2 /* width */ + 2 /* height */,
             }
     }
 }
@@ -769,6 +782,12 @@ impl Decode<'_> for Request {
                 let ch = read_char(src)?;
                 let pressed = read_bool(src)?;
                 Ok(Self::KeyUnicode { ch, pressed })
+            }
+            11 => {
+                ensure_size!(in: src, size: 4);
+                let width = src.read_u16();
+                let height = src.read_u16();
+                Ok(Self::Resize { width, height })
             }
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag")),
         }

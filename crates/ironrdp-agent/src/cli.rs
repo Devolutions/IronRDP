@@ -84,6 +84,13 @@ enum Command {
         #[arg(long, action = clap::ArgAction::Set)]
         pressed: bool,
     },
+    /// Resize the remote desktop.
+    Resize {
+        #[arg(long)]
+        width: u16,
+        #[arg(long)]
+        height: u16,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -229,6 +236,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Wheel { delta, horizontal } => Request::Wheel { delta, horizontal },
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
+        Command::Resize { width, height } => Request::Resize { width, height },
     };
 
     let response = transport::send_request(&endpoint, &request).await?;
