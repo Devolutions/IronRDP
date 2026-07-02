@@ -38,6 +38,39 @@ pub struct Acceptor {
     pub(crate) creds: Option<Credentials>,
     received_credentials: Option<Credentials>,
     reactivation: bool,
+    honor_client_desktop_size: bool,
+}
+
+/// Minimum and maximum desktop dimension honored from a client.
+///
+/// A desktop dimension in RDP is a `u16`; [MS-RDPBCGR] caps it at 8192, and
+/// 200 is a conservative floor. A client-requested dimension outside this
+/// range is not honored: the acceptor keeps the server-provided desktop size
+/// rather than treating the request as an error.
+const MIN_DESKTOP_DIM: u16 = 200;
+const MAX_DESKTOP_DIM: u16 = 8192;
+
+/// Returns the client-requested desktop size if both dimensions are within the
+/// protocol-legal range, otherwise `None`.
+fn validate_desktop_size(width: u16, height: u16) -> Option<DesktopSize> {
+    if (MIN_DESKTOP_DIM..=MAX_DESKTOP_DIM).contains(&width) && (MIN_DESKTOP_DIM..=MAX_DESKTOP_DIM).contains(&height) {
+        Some(DesktopSize { width, height })
+    } else {
+        None
+    }
+}
+
+/// Writes `size` into every Bitmap capability set in `capabilities`.
+///
+/// The server advertises its desktop size in the Bitmap capability set of the
+/// Demand Active PDU; this keeps that advertisement in sync with `size`.
+fn set_bitmap_desktop_size(capabilities: &mut [CapabilitySet], size: DesktopSize) {
+    for cap in capabilities.iter_mut() {
+        if let CapabilitySet::Bitmap(cap) = cap {
+            cap.desktop_width = size.width;
+            cap.desktop_height = size.height;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -95,7 +128,40 @@ impl Acceptor {
             creds,
             received_credentials: None,
             reactivation: false,
+            honor_client_desktop_size: false,
         }
+    }
+
+    /// Adopt the desktop size requested by the client in its Client Core Data
+    /// instead of the size this acceptor was constructed with.
+    ///
+    /// The client's requested resolution is only carried in the GCC Client
+    /// Core Data of the MCS Connect Initial PDU; the desktop size echoed back
+    /// later in the client's Confirm Active is, per [MS-RDPBCGR] 2.2.1.13.2,
+    /// the value the client copied from the *server's* Demand Active, so it
+    /// cannot be used to discover what the client originally asked for. When
+    /// this is enabled and the client's request is within the protocol-legal
+    /// range, the acceptor negotiates that size from the start (it is written
+    /// into the server's Bitmap capability set before Demand Active is sent),
+    /// avoiding a Deactivation-Reactivation resize round trip.
+    ///
+    /// Disabled by default, preserving the previous behavior of always
+    /// enforcing the server-provided size.
+    ///
+    /// # Precondition
+    ///
+    /// Enabling this only makes sense together with a display handler
+    /// ([`RdpServerDisplay`]) whose `request_initial_size` actually adopts (or
+    /// at least intersects) the size it is given. The acceptor negotiates the
+    /// client's size, but the server still builds its framebuffer/encoder from
+    /// the size the display handler reports; if that handler ignores the
+    /// requested size and returns a fixed, smaller framebuffer, the resulting
+    /// mismatch can cause the client to be dropped. With a fixed-size display
+    /// handler, leave this disabled.
+    ///
+    /// [`RdpServerDisplay`]: <https://docs.rs/ironrdp-server/latest/ironrdp_server/trait.RdpServerDisplay.html>
+    pub fn set_honor_client_desktop_size(&mut self, honor: bool) {
+        self.honor_client_desktop_size = honor;
     }
 
     pub fn new_deactivation_reactivation(
@@ -111,12 +177,7 @@ impl Acceptor {
             return Err(general_err!("invalid acceptor state"));
         };
 
-        for cap in consumed.server_capabilities.iter_mut() {
-            if let CapabilitySet::Bitmap(cap) = cap {
-                cap.desktop_width = desktop_size.width;
-                cap.desktop_height = desktop_size.height;
-            }
-        }
+        set_bitmap_desktop_size(&mut consumed.server_capabilities, desktop_size);
         let state = AcceptorState::CapabilitiesSendServer {
             early_capability,
             channels: channels.clone(),
@@ -139,6 +200,7 @@ impl Acceptor {
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
             reactivation: true,
+            honor_client_desktop_size: consumed.honor_client_desktop_size,
         })
     }
 
@@ -451,6 +513,32 @@ impl Sequence for Acceptor {
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
+
+                // Adopt the client's requested desktop size (from its Client
+                // Core Data) before Demand Active is sent, so the session is
+                // negotiated at that size without a Deactivation-Reactivation
+                // resize. See `set_honor_client_desktop_size`.
+                if self.honor_client_desktop_size {
+                    if let Some(client_size) =
+                        validate_desktop_size(gcc_blocks.core.desktop_width, gcc_blocks.core.desktop_height)
+                    {
+                        if client_size != self.desktop_size {
+                            debug!(
+                                requested = ?client_size,
+                                previous = ?self.desktop_size,
+                                "Honoring client-requested desktop size"
+                            );
+                            self.desktop_size = client_size;
+                            set_bitmap_desktop_size(&mut self.server_capabilities, client_size);
+                        }
+                    } else {
+                        debug!(
+                            width = gcc_blocks.core.desktop_width,
+                            height = gcc_blocks.core.desktop_height,
+                            "Client requested an out-of-range desktop size; keeping the server-provided size"
+                        );
+                    }
+                }
 
                 let joined: Vec<_> = gcc_blocks
                     .network
