@@ -69,6 +69,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `wheel --delta N [--horizontal]`               Rotate the wheel (negative N scrolls down/left).
 - `key-scancode --scancode <0x1D|29> --pressed <true|false>`
 - `key-unicode --char C --pressed <true|false>`  Type by Unicode character.
+- `resize --width W --height H`                  Resize the remote desktop.
 
 ## Errors
 

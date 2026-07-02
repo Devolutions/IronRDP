@@ -171,6 +171,7 @@ impl Daemon {
             } else {
                 Operation::UnicodeKeyReleased(ch)
             }),
+            Request::Resize { width, height } => self.resize(width, height),
         }
     }
 
@@ -397,6 +398,26 @@ impl Daemon {
                 })
             }
             Err(error) => Response::error(format!("failed to encode screenshot: {error:#}")),
+        }
+    }
+
+    fn resize(&self, width: u16, height: u16) -> Response {
+        if width == 0 || height == 0 {
+            return Response::error("width and height must be non-zero");
+        }
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Response::error("no active session");
+        };
+        match session.input_tx.send(RdpInputEvent::Resize {
+            width,
+            height,
+            // No window/DPI concept in a headless agent: request the plain pixel size unscaled.
+            scale_factor: 100,
+            physical_size: None,
+        }) {
+            Ok(()) => Response::ok(),
+            Err(_) => Response::error("session input channel is closed"),
         }
     }
 
