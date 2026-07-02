@@ -616,7 +616,7 @@ impl DvcProcessor for UrbdrcDeviceClient {
                     return Ok(Vec::new());
                 };
 
-                let internal_io_ctl_packet = internal_io_ctl_pdu.into();
+                let internal_io_ctl_packet = internal_io_ctl_pdu.try_into()?;
                 if let Some(internal_io_ctl_response) =
                     self.backend
                         .internal_io_control(channel_id, request_id, internal_io_ctl_packet)?
