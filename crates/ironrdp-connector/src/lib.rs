@@ -26,7 +26,9 @@ use ironrdp_pdu::{PduHint, gcc, x224};
 pub use sspi;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-pub use self::connection::{ClientConnector, ClientConnectorState, ConnectionResult, encode_send_data_request};
+pub use self::connection::{
+    ClientConnector, ClientConnectorState, ConnectionResult, MultitransportResult, encode_send_data_request,
+};
 pub use self::connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 pub use self::license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use self::server_name::ServerName;
