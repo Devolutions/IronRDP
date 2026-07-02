@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-dvc-pipe-proxy"
-version = "0.4.1"
+version = "0.4.2"
 readme = "README.md"
 description = "DVC named pipe proxy for IronRDP"
 edition.workspace = true
