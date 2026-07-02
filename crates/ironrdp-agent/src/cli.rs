@@ -202,6 +202,10 @@ impl FromStr for PropOverride {
         let (Some(key), Some(ty), Some(value)) = (parts.next(), parts.next(), parts.next()) else {
             return Err(format!("malformed --prop '{input}', expected KEY:TYPE:VALUE"));
         };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("empty key in --prop '{input}', expected KEY:TYPE:VALUE"));
+        }
         let value = match ty {
             "i" => value
                 .parse::<i64>()
