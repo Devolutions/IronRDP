@@ -1,0 +1,31 @@
+[package]
+name = "ironrdp-agent-e2e"
+version = "0.0.0"
+description = "Live-RDP smoke test driver for ironrdp-agent, exercised over its real CLI surface"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# Not publishing for now.
+publish = false
+
+[[bin]]
+name = "ironrdp-agent-e2e"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+# Decode the screenshot PNG to verify it is not a blank frame.
+png = "0.18"
+
+# CLI args, matching xtask's own version/style.
+pico-args = "0.5"
+
+anyhow = "1"
+
+[lints]
+workspace = true

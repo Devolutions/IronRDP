@@ -1,0 +1,84 @@
+name: Live RDP
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "crates/ironrdp-agent/**"
+      - "crates/ironrdp-agent-e2e/**"
+      - "crates/ironrdp-client/**"
+      - "crates/ironrdp-connector/**"
+      - "crates/ironrdp-session/**"
+      - "crates/ironrdp-server/**"
+      - "crates/ironrdp-core/**"
+      - "crates/ironrdp-pdu/**"
+      - "crates/ironrdp-graphics/**"
+      - "crates/ironrdp-nscodec/**"
+      - "crates/ironrdp-egfx/**"
+      - "crates/ironrdp-dvc/**"
+      - "crates/ironrdp-svc/**"
+      - "crates/ironrdp-bulk/**"
+      - "crates/ironrdp-tls/**"
+      - "crates/ironrdp-async/**"
+      - "crates/ironrdp-tokio/**"
+      - "crates/ironrdp-futures/**"
+      - "crates/ironrdp-input/**"
+      - "crates/ironrdp-cfg/**"
+      - "crates/ironrdp-propertyset/**"
+      - "crates/ironrdp-rdpfile/**"
+      - "Cargo.lock"
+      - "xtask/src/live_rdp.rs"
+      - "xtask/src/cli.rs"
+      - "xtask/src/main.rs"
+      - ".github/workflows/live-rdp.yml"
+      - ".github/scripts/live-rdp/**"
+  workflow_dispatch:
+
+jobs:
+  live-rdp:
+    name: Live RDP smoke test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install NASM
+        run: |
+          choco install nasm
+          $Env:PATH += ";$Env:ProgramFiles\NASM"
+          echo "PATH=$Env:PATH" >> $Env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.7.3
+
+      - name: Enable local RDP
+        id: enable-rdp
+        run: .github/scripts/live-rdp/Enable-LocalRdp.ps1
+        shell: pwsh
+
+      - name: Live RDP smoke test
+        run: |
+          cargo xtask live-rdp run `
+            --host 127.0.0.1 `
+            --username "${{ steps.enable-rdp.outputs.domain_username }}" `
+            --password-env IRONRDP_LIVE_RDP_PASSWORD `
+            --artifacts-dir artifacts\live-rdp
+        shell: pwsh
+        env:
+          IRONRDP_LIVE_RDP_PASSWORD: ${{ steps.enable-rdp.outputs.password }}
+
+      - name: Restore RDP configuration
+        if: always()
+        run: .github/scripts/live-rdp/Enable-LocalRdp.ps1 -Cleanup
+        shell: pwsh
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-rdp
+          path: artifacts\live-rdp\**
+          if-no-files-found: warn

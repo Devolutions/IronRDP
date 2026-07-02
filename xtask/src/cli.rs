@@ -40,8 +40,11 @@ TASKS:
   web run                 Run SvelteKit-based standalone Web Client
   ffi install             Install all requirements for ffi tasks
   ffi build [--release]   Build DLL for FFI (default is debug)
-  ffi bindings [--skip-dotnet-build]            
+  ffi bindings [--skip-dotnet-build]
                           Generate C# bindings for FFI, optionally skipping the .NET build
+  live-rdp run [--host <HOST>] [--port <PORT>] [--username <NAME>] [--password-env <VAR>]
+               [--domain <DOMAIN>] [--artifacts-dir <DIR>]
+                          Build and run the live-RDP smoke test against a real RDP server
 ";
 
 pub fn print_help() {
@@ -118,6 +121,14 @@ pub enum Action {
     FfiBuildBindings {
         skip_dotnet_build: bool,
     },
+    LiveRdpRun {
+        host: Option<String>,
+        port: Option<u16>,
+        username: Option<String>,
+        password_env: Option<String>,
+        domain: Option<String>,
+        artifacts_dir: Option<String>,
+    },
 }
 
 pub fn parse_args() -> anyhow::Result<Args> {
@@ -190,6 +201,18 @@ pub fn parse_args() -> anyhow::Result<Args> {
                     skip_dotnet_build: args.contains("--skip-dotnet-build"),
                 },
                 Some(unknown) => anyhow::bail!("unknown ffi action: {unknown}"),
+                None => Action::ShowHelp,
+            },
+            Some("live-rdp") => match args.subcommand()?.as_deref() {
+                Some("run") => Action::LiveRdpRun {
+                    host: args.opt_value_from_str("--host")?,
+                    port: args.opt_value_from_str("--port")?,
+                    username: args.opt_value_from_str("--username")?,
+                    password_env: args.opt_value_from_str("--password-env")?,
+                    domain: args.opt_value_from_str("--domain")?,
+                    artifacts_dir: args.opt_value_from_str("--artifacts-dir")?,
+                },
+                Some(unknown) => anyhow::bail!("unknown live-rdp action: {unknown}"),
                 None => Action::ShowHelp,
             },
             None | Some(_) => Action::ShowHelp,

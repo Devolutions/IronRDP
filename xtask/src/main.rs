@@ -12,6 +12,7 @@ mod cli;
 mod features;
 mod ffi;
 mod fuzz;
+mod live_rdp;
 mod prelude;
 mod section;
 mod wasm;
@@ -118,6 +119,14 @@ fn main() -> anyhow::Result<()> {
         Action::FfiInstall => ffi::install(&sh)?,
         Action::FfiBuildDll { release } => ffi::build_dynamic_lib(&sh, release)?,
         Action::FfiBuildBindings { skip_dotnet_build } => ffi::build_bindings(&sh, skip_dotnet_build)?,
+        Action::LiveRdpRun {
+            host,
+            port,
+            username,
+            password_env,
+            domain,
+            artifacts_dir,
+        } => live_rdp::run(&sh, host, port, username, password_env, domain, artifacts_dir)?,
     }
 
     Ok(())
