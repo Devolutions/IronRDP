@@ -118,7 +118,9 @@ pub fn pdu_decode(data: &[u8]) {
     };
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
-    use ironrdp_pdu::rdp::{ClientInfoPdu, capability_sets, headers, server_error_info, server_license, vc};
+    use ironrdp_pdu::rdp::{
+        ClientInfoPdu, capability_sets, headers, multitransport, server_error_info, server_license, vc,
+    };
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
 
@@ -140,6 +142,11 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<gcc::ConferenceCreateResponse>(data);
 
     let _ = decode::<server_license::LicensePdu>(data);
+
+    // Post-licensing multitransport bootstrapping: the connector try-decodes
+    // arbitrary server bytes as a request to distinguish it from Demand Active.
+    let _ = decode::<multitransport::MultitransportRequestPdu>(data);
+    let _ = decode::<multitransport::MultitransportResponsePdu>(data);
 
     let _ = decode::<vc::ChannelPduHeader>(data);
 
@@ -245,7 +252,7 @@ pub fn pdu_round_trip(data: &[u8]) {
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
     use ironrdp_pdu::rdp::headers::ShareControlHeader;
-    use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, vc};
+    use ironrdp_pdu::rdp::{ClientInfoPdu, multitransport, server_error_info, server_license, vc};
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
 
@@ -272,6 +279,10 @@ pub fn pdu_round_trip(data: &[u8]) {
 
     // Licensing
     pdu_round_trip_one!(data, server_license::LicensePdu);
+
+    // Multitransport bootstrapping (server request / client response)
+    pdu_round_trip_one!(data, multitransport::MultitransportRequestPdu);
+    pdu_round_trip_one!(data, multitransport::MultitransportResponsePdu);
 
     // Virtual channel header
     pdu_round_trip_one!(data, vc::ChannelPduHeader);
