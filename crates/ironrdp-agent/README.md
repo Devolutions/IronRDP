@@ -42,6 +42,21 @@ wins). When the overlay carries a secret (password/token), `Request::Status` rep
 `credentials_loaded`, so a caller should check the status first to learn whether it still needs to
 supply a password.
 
+## Property overrides
+
+`connect` and `daemon-start` both accept a repeatable `--prop KEY:TYPE:VALUE` flag, using the same
+grammar as one `.rdp` file line (`TYPE` is `i` for integer or `s` for string, e.g.
+`--prop ironrdp_autologon:i:1 --prop username:s:admin`). It lets a caller set any property without a
+dedicated CLI flag existing for it. Final precedence, low to high:
+
+```
+.rdp file → --prop overrides → named flags (--server/--username/…) → daemon's overlay
+```
+
+On `connect`, `--prop` overrides win over an optional `--rdp-file` but lose to the named flags. On
+`daemon-start`, `--prop` overrides win over an optional `--overlay` file, and the resulting overlay
+still wins over everything a `connect` request supplies (unchanged).
+
 ## Logging
 
 Two logging concerns are kept separate:

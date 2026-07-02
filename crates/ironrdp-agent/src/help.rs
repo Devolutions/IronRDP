@@ -20,16 +20,22 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Lifecycle
 
-- `daemon-start [--overlay FILE]`
+- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]...`
                                  Start the daemon (foreground). Run this first. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
                                  (overlay wins), letting an operator provision any setting out of
-                                 band -- credentials in particular (e.g. the password). Check
-                                 `status` to see whether credentials are already loaded before
-                                 supplying any yourself.
-- `connect [--rdp-file F] [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--log-directive D]`
+                                 band -- credentials in particular (e.g. the password). `--prop` is
+                                 repeatable and layers additional overlay properties on top of
+                                 `--overlay`, using the same `KEY:TYPE:VALUE` grammar as one .rdp
+                                 file line (TYPE is `i` for integer or `s` for string), e.g.
+                                 `--prop ironrdp_autologon:i:1`. Check `status` to see whether
+                                 credentials are already loaded before supplying any yourself.
+- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
-                                 open a session. CLI flags win over the .rdp file. The config is
+                                 open a session. Precedence (low to high): .rdp file -> `--prop`
+                                 overrides -> named flags (`--server`/`-u`/`-p`/`-d`). `--prop` is
+                                 repeatable and lets you set any property without a dedicated flag
+                                 existing for it, e.g. `--prop username:s:admin`. The config is
                                  validated by the daemon, which replies with an error listing any
                                  missing or invalid fields. If `status` reports
                                  `credentials loaded: true`, omit `-p/--password` (and any other
