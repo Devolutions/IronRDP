@@ -5,7 +5,7 @@ use ironrdp_connector::ConnectionResult;
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
-use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -237,11 +237,14 @@ impl ActiveStage {
         self.x224_processor.get_svc_processor_mut()
     }
 
-    pub fn get_dvc<T: DvcProcessor + 'static>(&mut self) -> Option<&DynamicVirtualChannel> {
+    pub fn get_dvc<T: DvcClientProcessor + 'static>(&mut self) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc::<T>()
     }
 
-    pub fn get_dvc_by_channel_id(&mut self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
+    pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(
+        &mut self,
+        channel_id: u32,
+    ) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc_by_channel_id(channel_id)
     }
 
@@ -277,25 +280,20 @@ impl ActiveStage {
         physical_dims: Option<(u32, u32)>,
     ) -> Option<SessionResult<Vec<u8>>> {
         if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
-            if let Some(channel_id) = dvc.channel_id() {
-                let display_control = dvc.channel_processor_downcast_ref::<DisplayControlClient>()?;
-                let svc_messages = match display_control.encode_single_primary_monitor(
-                    channel_id,
-                    width,
-                    height,
-                    scale_factor,
-                    physical_dims,
-                ) {
-                    Ok(messages) => messages,
-                    Err(e) => return Some(Err(SessionError::encode(e))),
-                };
+            let channel_id = dvc.channel_id();
+            let display_control = dvc.processor();
+            let svc_messages = match display_control.encode_single_primary_monitor(
+                channel_id,
+                width,
+                height,
+                scale_factor,
+                physical_dims,
+            ) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
 
-                return Some(
-                    self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)),
-                );
-            } else {
-                debug!("Could not encode a resize: Display Control Virtual Channel is not yet connected");
-            }
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
         } else {
             debug!("Could not encode a resize: Display Control Virtual Channel is not available");
         }

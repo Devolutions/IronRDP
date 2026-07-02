@@ -80,7 +80,7 @@ impl DvcChannelListener for UrbdrcListener {
         CHANNEL_NAME
     }
 
-    fn create(&mut self, channel_id: u32) -> Option<Box<dyn DvcProcessor>> {
+    fn create(&mut self, channel_id: u32) -> Option<Box<dyn DvcClientProcessor>> {
         if let Some(callback) = self.on_capability_exchanged.take() {
             self.device_man.control_channel_assigned(channel_id);
             Some(Box::new(UrbdrcControlClient::new(callback)))
@@ -89,7 +89,7 @@ impl DvcChannelListener for UrbdrcListener {
             #[expect(clippy::as_conversions)]
             self.device_man.take_device_for_channel(channel_id).map(|backend| {
                 Box::new(UrbdrcDeviceClient::new(udev_iface, backend).expect("invalid interface id"))
-                    as Box<dyn DvcProcessor>
+                    as Box<dyn DvcClientProcessor>
             })
         }
     }
