@@ -1,12 +1,17 @@
 use std::borrow::Cow;
 
 use ironrdp_connector::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
-use ironrdp_connector::{ClientConnector, ClientConnectorState, Credentials, DesktopSize, Sequence as _, Written};
-use ironrdp_core::{WriteBuf, encode_vec};
+use ironrdp_connector::{
+    ClientConnector, ClientConnectorState, Credentials, DesktopSize, MultitransportResult, Sequence as _, Written,
+};
+use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc;
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
-use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlHeader, ShareControlPdu};
+use ironrdp_pdu::rdp::headers::{
+    BasicSecurityHeader, BasicSecurityHeaderFlags, ServerDeactivateAll, ShareControlHeader, ShareControlPdu,
+};
+use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, RequestedProtocol};
 use ironrdp_pdu::x224::X224;
 
 use ironrdp_testsuite_core::capsets::SERVER_DEMAND_ACTIVE;
@@ -138,5 +143,145 @@ fn demand_active_after_deactivate_all_transitions_to_connection_finalization() {
             ConnectionActivationState::ConnectionFinalization { .. }
         ),
         "state should transition to ConnectionFinalization after DemandActive"
+    );
+}
+
+fn multitransport_request(request_id: u32, requested_protocol: RequestedProtocol) -> MultitransportRequestPdu {
+    MultitransportRequestPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::TRANSPORT_REQ,
+        },
+        request_id,
+        requested_protocol,
+        security_cookie: [0u8; 16],
+    }
+}
+
+/// A connector parked in `MultitransportPending` with `requests` outstanding and
+/// a real Demand Active buffered, ready for `complete`/`skip` to replay.
+fn multitransport_pending_connector(requests: Vec<MultitransportRequestPdu>) -> ClientConnector {
+    let buffered_demand_active =
+        encode_server_share_control(ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()));
+    let mut connector = ClientConnector::new(test_config(), "127.0.0.1:3389".parse().unwrap());
+    connector.state = ClientConnectorState::MultitransportPending {
+        io_channel_id: IO_CHANNEL_ID,
+        user_channel_id: USER_CHANNEL_ID,
+        requests,
+        buffered_demand_active,
+    };
+    connector
+}
+
+#[test]
+fn should_perform_multitransport_reflects_pending_state() {
+    let connector = multitransport_pending_connector(vec![multitransport_request(1, RequestedProtocol::UdpFecR)]);
+    assert!(connector.should_perform_multitransport());
+    assert_eq!(connector.multitransport_requests().len(), 1);
+}
+
+#[test]
+fn complete_multitransport_replays_demand_active_and_advances() {
+    let mut connector = multitransport_pending_connector(vec![
+        multitransport_request(1, RequestedProtocol::UdpFecR),
+        multitransport_request(2, RequestedProtocol::UdpFecL),
+    ]);
+    let mut output = WriteBuf::new();
+
+    let written = connector
+        .complete_multitransport(
+            &[MultitransportResult::Success, MultitransportResult::Success],
+            &mut output,
+        )
+        .unwrap();
+
+    assert!(
+        written != Written::Nothing,
+        "responses plus the replayed ClientConfirmActive"
+    );
+    assert!(
+        matches!(connector.state, ClientConnectorState::ConnectionFinalization { .. }),
+        "connector must advance past the buffered Demand Active on completion"
+    );
+    assert!(!connector.should_perform_multitransport());
+}
+
+#[test]
+fn complete_multitransport_carries_failure_results() {
+    let mut connector = multitransport_pending_connector(vec![multitransport_request(7, RequestedProtocol::UdpFecR)]);
+    let mut output = WriteBuf::new();
+
+    let written = connector
+        .complete_multitransport(&[MultitransportResult::Failure(0x8000_0001)], &mut output)
+        .unwrap();
+
+    assert!(written != Written::Nothing);
+    assert!(matches!(
+        connector.state,
+        ClientConnectorState::ConnectionFinalization { .. }
+    ));
+}
+
+#[test]
+fn skip_multitransport_replays_demand_active_and_advances() {
+    let mut connector = multitransport_pending_connector(vec![multitransport_request(1, RequestedProtocol::UdpFecR)]);
+    let mut output = WriteBuf::new();
+
+    let written = connector.skip_multitransport(&mut output).unwrap();
+
+    assert!(written != Written::Nothing, "the replayed ClientConfirmActive");
+    assert!(matches!(
+        connector.state,
+        ClientConnectorState::ConnectionFinalization { .. }
+    ));
+    assert!(!connector.should_perform_multitransport());
+}
+
+#[test]
+fn complete_multitransport_rejects_result_count_mismatch() {
+    let mut connector = multitransport_pending_connector(vec![multitransport_request(1, RequestedProtocol::UdpFecR)]);
+    let mut output = WriteBuf::new();
+
+    // One outstanding request, zero results provided.
+    assert!(connector.complete_multitransport(&[], &mut output).is_err());
+}
+
+#[test]
+fn complete_multitransport_outside_pending_state_errors() {
+    let mut connector = ClientConnector::new(test_config(), "127.0.0.1:3389".parse().unwrap());
+    connector.state = ClientConnectorState::CapabilitiesExchange {
+        connection_activation: ConnectionActivationSequence::new(test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID),
+    };
+    let mut output = WriteBuf::new();
+
+    assert!(connector.complete_multitransport(&[], &mut output).is_err());
+}
+
+#[test]
+fn skip_multitransport_outside_pending_state_errors() {
+    let mut connector = ClientConnector::new(test_config(), "127.0.0.1:3389".parse().unwrap());
+    connector.state = ClientConnectorState::CapabilitiesExchange {
+        connection_activation: ConnectionActivationSequence::new(test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID),
+    };
+    let mut output = WriteBuf::new();
+
+    assert!(connector.skip_multitransport(&mut output).is_err());
+}
+
+#[test]
+fn demand_active_user_data_does_not_decode_as_multitransport_request() {
+    // The connector distinguishes a multitransport request from a Demand Active
+    // by try-decoding the SendDataIndication user_data as MultitransportRequestPdu.
+    // A Demand Active must fail cleanly (the decoder validates SEC_TRANSPORT_REQ),
+    // otherwise the bootstrapping state would swallow the Demand Active.
+    let share_control_header = ShareControlHeader {
+        share_control_pdu: ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()),
+        pdu_source: USER_CHANNEL_ID,
+        share_id: SHARE_ID,
+    };
+    let user_data = encode_vec(&share_control_header).unwrap();
+
+    assert!(
+        decode::<MultitransportRequestPdu>(&user_data).is_err(),
+        "a Demand Active must not be mistaken for a multitransport request"
     );
 }
