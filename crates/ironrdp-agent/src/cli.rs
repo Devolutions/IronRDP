@@ -3,16 +3,22 @@
 //!
 //! The CLI operates purely at the [`PropertySet`] level for connection config — it never calls
 //! typed `ConfigBuilder` setters.
+//!
+//! For `connect`, property precedence from low to high is: `.rdp` file → `--prop` overrides →
+//! named flags (`--server`/`--username`/…). The daemon's own overlay (`daemon-start --overlay`,
+//! itself built from a `.rdp` file with `--prop` overrides layered on top) wins over all of that —
+//! see `Daemon::connect` in `daemon.rs`.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::Context as _;
 use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
 use ironrdp_cfg::{PropertySetExt as _, TargetAddr};
 use ironrdp_input::MouseButton;
-use ironrdp_propertyset::PropertySet;
+use ironrdp_propertyset::{PropertySet, Value};
 
 use crate::ipc::{KeyFilter, Payload, PropValue, Request, Response};
 use crate::transport::{self, Endpoint};
@@ -94,6 +100,12 @@ struct DaemonArgs {
     /// `credentials loaded: true`.
     #[arg(long)]
     overlay: Option<PathBuf>,
+    /// Arbitrary overlay property override (repeatable): `KEY:TYPE:VALUE`, the same grammar as one
+    /// `.rdp` file line (`TYPE` is `i` for integer or `s` for string), e.g.
+    /// `--prop ironrdp_autologon:i:1`. Applied on top of `--overlay`, so it lets an operator set any
+    /// property without a dedicated flag existing for it.
+    #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
+    prop: Vec<PropOverride>,
 }
 
 #[derive(Args, Debug)]
@@ -101,6 +113,13 @@ struct ConnectArgs {
     /// Path to a .rdp file to read the base configuration from.
     #[arg(long)]
     rdp_file: Option<PathBuf>,
+    /// Arbitrary property override (repeatable): `KEY:TYPE:VALUE`, the same grammar as one `.rdp`
+    /// file line (`TYPE` is `i` for integer or `s` for string), e.g. `--prop
+    /// ironrdp_autologon:i:1 --prop username:s:admin`. Applied on top of `--rdp-file` but under the
+    /// named flags below (e.g. `--username`), which always win for the same key. Use this to set
+    /// any property without a dedicated flag existing for it.
+    #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
+    prop: Vec<PropOverride>,
     /// RDP server address (host[:port]). Overrides the .rdp file.
     #[arg(long)]
     server: Option<String>,
@@ -167,6 +186,48 @@ impl CliMouseButton {
     }
 }
 
+/// A single `--prop KEY:TYPE:VALUE` override, parsed with the same grammar as one `.rdp` file line
+/// (see `ironrdp_rdpfile::load`): `TYPE` is `i` for integer or `s` for string.
+#[derive(Clone, Debug)]
+struct PropOverride {
+    key: String,
+    value: Value,
+}
+
+impl FromStr for PropOverride {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let mut parts = input.splitn(3, ':');
+        let (Some(key), Some(ty), Some(value)) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(format!("malformed --prop '{input}', expected KEY:TYPE:VALUE"));
+        };
+        let value = match ty {
+            "i" => value
+                .parse::<i64>()
+                .map(Value::from)
+                .map_err(|_| format!("invalid integer value in --prop '{input}'"))?,
+            "s" => Value::from(value),
+            other => {
+                return Err(format!(
+                    "unknown type '{other}' in --prop '{input}', expected 'i' or 's'"
+                ));
+            }
+        };
+        Ok(Self {
+            key: key.to_owned(),
+            value,
+        })
+    }
+}
+
+/// Applies `--prop` overrides onto `properties`, in argument order (last one for a given key wins).
+fn apply_prop_overrides(properties: &mut PropertySet, overrides: Vec<PropOverride>) {
+    for over in overrides {
+        properties.insert(over.key, over.value);
+    }
+}
+
 /// Parses an RDP scancode in decimal or `0x`-prefixed hexadecimal.
 fn parse_scancode(input: &str) -> Result<u16, core::num::ParseIntError> {
     if let Some(hex) = input.strip_prefix("0x").or_else(|| input.strip_prefix("0X")) {
@@ -193,7 +254,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let request = match command {
         Command::DaemonStart(args) => {
-            let overlay = load_overlay(args.overlay.as_deref())?;
+            let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
             return crate::daemon::run(endpoint, overlay).await;
         }
         Command::Connect(args) => build_connect_request(args)?,
@@ -235,9 +296,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     print_response(response)
 }
 
-/// Loads an operator-provided overlay [`PropertySet`] from an optional `.rdp` file. Returns an
-/// empty set when no path is given.
-fn load_overlay(path: Option<&Path>) -> anyhow::Result<PropertySet> {
+/// Loads an operator-provided overlay [`PropertySet`] from an optional `.rdp` file, then layers
+/// `--prop` overrides on top. Returns an empty set when neither is given.
+fn load_overlay(path: Option<&Path>, prop_overrides: Vec<PropOverride>) -> anyhow::Result<PropertySet> {
     let mut properties = PropertySet::new();
     if let Some(path) = path {
         let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
@@ -247,6 +308,7 @@ fn load_overlay(path: Option<&Path>) -> anyhow::Result<PropertySet> {
             }
         }
     }
+    apply_prop_overrides(&mut properties, prop_overrides);
     Ok(properties)
 }
 
@@ -265,7 +327,10 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
         }
     }
 
-    // CLI overrides win.
+    // `--prop` overrides win over the .rdp file but lose to the named flags below.
+    apply_prop_overrides(&mut properties, args.prop);
+
+    // Named CLI flags win over everything above.
     if let Some(server) = args.server {
         let address: TargetAddr = server
             .parse()
