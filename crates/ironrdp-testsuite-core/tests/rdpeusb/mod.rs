@@ -1,6 +1,10 @@
-use ironrdp_rdpeusb::io::device::{
-    DeviceInfo, UsbBcdVersion, UsbClassCodes, UsbConfigInfo, UsbConnectionSpeed, UsbDeviceDescriptorInfo,
-    UsbDeviceLocation, UsbInterfaceInfo,
+use ironrdp_core::encode_vec;
+use ironrdp_rdpeusb::{
+    io::device::{
+        DeviceInfo, UsbBcdVersion, UsbClassCodes, UsbConfigInfo, UsbConnectionSpeed, UsbDeviceDescriptorInfo,
+        UsbDeviceLocation, UsbInterfaceInfo,
+    },
+    pdu::header::InterfaceId,
 };
 
 fn simple_device_info() -> DeviceInfo {
@@ -31,5 +35,17 @@ fn simple_device_info() -> DeviceInfo {
     }
 }
 
+const STREAM_ID_PROXY: u32 = 1;
+
+fn proxy_iface_id(iface: InterfaceId) -> u32 {
+    u32::from(iface) | (STREAM_ID_PROXY << 30)
+}
+
+fn encode_pdu<T: ironrdp_core::Encode>(pdu: &T) -> Vec<u8> {
+    encode_vec(pdu).expect("encode should succeed")
+}
+
 mod client;
 mod device;
+mod io;
+mod server;
