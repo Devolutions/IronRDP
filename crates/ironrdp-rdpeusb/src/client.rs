@@ -215,7 +215,7 @@ pub trait UrbdrcDeviceBackend: Send {
     /// the message MUST match the RequestId in the QUERY_DEVICE_TEXT message.
     ///
     /// [3.3.5.3.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/834f56cc-cfed-4649-8952-0b6486638c28
-    fn query_device_text(&mut self, channel_id: u32, text_type: u32, locale_id: u32) -> PduResult<Option<DeviceText>>;
+    fn query_device_text(&mut self, channel_id: u32, text_type: u32, locale_id: u32) -> PduResult<DeviceText>;
 
     /// Process an `IoControl` request.
     ///
@@ -550,19 +550,15 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 if !self.ready_for_io || dev_text_pdu.udev_iface != self.udev_iface {
                     return Ok(Vec::new());
                 }
-                if let Some(device_text) =
+                let device_text =
                     self.backend
-                        .query_device_text(channel_id, dev_text_pdu.text_type, dev_text_pdu.locale_id)?
-                {
-                    Ok(vec![Box::new(QueryDeviceTextRsp {
-                        msg_id: dev_text_pdu.msg_id,
-                        udev_iface: dev_text_pdu.udev_iface,
-                        hresult: device_text.hresult,
-                        device_description: device_text.description.into(),
-                    })])
-                } else {
-                    Ok(Vec::new())
-                }
+                        .query_device_text(channel_id, dev_text_pdu.text_type, dev_text_pdu.locale_id)?;
+                Ok(vec![Box::new(QueryDeviceTextRsp {
+                    msg_id: dev_text_pdu.msg_id,
+                    udev_iface: dev_text_pdu.udev_iface,
+                    hresult: device_text.hresult,
+                    device_description: device_text.description.into(),
+                })])
             }
             IoCtl(io_ctl_pdu) => {
                 if !self.ready_for_io || io_ctl_pdu.udev_iface != self.udev_iface {
