@@ -1,6 +1,7 @@
 use core::any::TypeId;
 use core::mem;
 
+use ironrdp_connector::sspi::AuthIdentity;
 use ironrdp_connector::{
     ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written, encode_x224_packet,
     general_err, reason_err,
@@ -106,11 +107,11 @@ pub struct AcceptorResult {
     /// implement UDP multitransport can use it to decide whether to send a
     /// Server Initiate Multitransport Request.
     pub multitransport_flags: gcc::MultiTransportFlags,
-    /// Credentials received from the client during SecureSettingsExchange.
+    /// Credentials received from the client.
     ///
     /// Present for TLS-mode connections where the client sends credentials
-    /// in the ClientInfoPdu. `None` for CredSSP/Hybrid connections (where
-    /// authentication happens during the CredSSP exchange instead).
+    /// in the ClientInfoPdu, and for CredSSP/Hybrid connections once the
+    /// delegated TSPasswordCreds have been decrypted by CredSSP.
     ///
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
     /// can use this field for post-handshake validation.
@@ -293,6 +294,17 @@ impl Acceptor {
 
     pub fn should_perform_credssp(&self) -> bool {
         matches!(self.state, AcceptorState::Credssp { .. })
+    }
+
+    /// Store credentials delegated by CredSSP/NLA so server code can use the
+    /// same post-handshake validation and binding path as TLS ClientInfo
+    /// credentials.
+    pub(crate) fn set_received_credssp_credentials(&mut self, identity: AuthIdentity) {
+        self.received_credentials = Some(Credentials {
+            username: identity.username.account_name().to_owned(),
+            password: identity.password.as_ref().clone(),
+            domain: identity.username.domain_name().map(str::to_owned),
+        });
     }
 
     /// # Panics

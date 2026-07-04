@@ -208,7 +208,10 @@ where
             }; // drop generator
 
             buf.clear();
-            let written = sequence.handle_process_result(result, buf)?;
+            let (written, delegated_credentials) = sequence.handle_process_result(result, buf)?;
+            if let Some(credentials) = delegated_credentials {
+                acceptor.set_received_credssp_credentials(credentials);
+            }
 
             if let Some(response_len) = written.size() {
                 let response = &buf[..response_len];
