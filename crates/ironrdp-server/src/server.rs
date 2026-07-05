@@ -205,7 +205,7 @@ pub struct BoundConnection {
 
 /// Async post-auth connection binder.
 ///
-/// This hook runs after [`CredentialValidator`] accepts credentials and before
+/// This hook runs once authenticated credentials are available and before
 /// static channels, display updates, or input dispatch begin. It lets a server
 /// bind display/input resources to the authenticated identity without creating
 /// per-user resources before authentication.
@@ -1679,20 +1679,24 @@ impl RdpServer {
             }
         };
 
-        if let Some(binder) = self.connection_binder.clone() {
-            let Some(credentials) = authenticated_credentials.as_ref() else {
-                warn!("Connection binder configured but no authenticated credentials are available");
-                send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                bail!("no authenticated credentials for connection binding");
-            };
+        if !result.reactivation {
+            if let Some(binder) = self.connection_binder.clone() {
+                let Some(credentials) = authenticated_credentials.as_ref() else {
+                    warn!("Connection binder configured but no authenticated credentials are available");
+                    send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                    bail!("no authenticated credentials for connection binding");
+                };
 
-            let bound = binder
-                .bind_connection(credentials)
-                .await
-                .context("connection binder failed")?;
-            *self.display.lock().await = bound.display;
-            *self.handler.lock().await = bound.input;
-            debug!("Connection binder installed display/input handlers");
+                let bound = binder
+                    .bind_connection(credentials)
+                    .await
+                    .context("connection binder failed")?;
+                *self.display.lock().await = bound.display;
+                *self.handler.lock().await = bound.input;
+                debug!("Connection binder installed display/input handlers");
+            }
+        } else if self.connection_binder.is_some() {
+            debug!("Skipping connection binder during reactivation");
         }
 
         if !result.input_events.is_empty() {
