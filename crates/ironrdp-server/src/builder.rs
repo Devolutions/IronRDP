@@ -13,8 +13,8 @@ use super::display::{DesktopSize, RdpServerDisplay};
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
-    ConnectionHandler, ConnectionPolicy, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity,
-    StaticChannelFactory,
+    ConnectionBinder, ConnectionHandler, ConnectionPolicy, CredentialValidator, RdpServer, RdpServerOptions,
+    RdpServerSecurity, StaticChannelFactory,
 };
 use crate::error::ServerResult;
 #[cfg(feature = "usb")]
@@ -52,6 +52,7 @@ pub struct BuilderDone {
     rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
+    connection_binder: Option<Arc<dyn ConnectionBinder>>,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "usb")]
@@ -166,6 +167,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
+                connection_binder: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
@@ -203,6 +205,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
+                connection_binder: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
@@ -392,6 +395,12 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Set a binder that replaces display/input handlers after credentials are accepted.
+    pub fn with_connection_binder(mut self, binder: Option<Arc<dyn ConnectionBinder>>) -> Self {
+        self.state.connection_binder = binder;
+        self
+    }
+
     /// Inject a shared NetworkAutoDetect RTT handle (milliseconds, `u32::MAX`
     /// until the first measurement). The server writes the latest measured RTT
     /// to the same instance the backend reads. When not called, the server
@@ -551,6 +560,7 @@ impl RdpServerBuilder<BuilderDone> {
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
+        server.set_connection_binder(self.state.connection_binder);
         server
     }
 }
