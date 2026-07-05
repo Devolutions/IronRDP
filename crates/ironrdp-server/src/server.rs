@@ -844,9 +844,9 @@ impl RdpServer {
 
     /// Set or clear a post-auth connection binder.
     ///
-    /// When set, the binder is called after credentials have been validated.
-    /// The returned display/input handlers replace the server defaults for the
-    /// accepted connection.
+    /// When set, the binder is called only when authenticated credentials are
+    /// available. The returned display/input handlers replace the server
+    /// defaults for the accepted connection.
     pub fn set_connection_binder(&mut self, binder: Option<Arc<dyn ConnectionBinder>>) {
         self.connection_binder = binder;
     }
@@ -1664,13 +1664,20 @@ impl RdpServer {
         } else {
             self.credential_validator.clone()
         };
-        let authenticated_credentials = resolve_authenticated_credentials(
+        let authenticated_credentials = match resolve_authenticated_credentials(
             credential_validator,
             result.credentials.as_ref(),
             result.reactivation,
             authenticated_credentials_cache,
         )
-        .await?;
+        .await
+        {
+            Ok(credentials) => credentials,
+            Err(e) => {
+                send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                return Err(e);
+            }
+        };
 
         if let Some(binder) = self.connection_binder.clone() {
             let Some(credentials) = authenticated_credentials.as_ref() else {
@@ -2315,15 +2322,10 @@ mod wrdp_reactivation_tests {
         .expect("initial validation should produce credentials");
         assert_eq!(first.username, "alice");
 
-        let reactivated = resolve_authenticated_credentials(
-            Some(validator),
-            None,
-            true,
-            &mut per_connection_cache,
-        )
-        .await
-        .expect("reactivation should reuse same-connection cache")
-        .expect("reactivation should have cached credentials");
+        let reactivated = resolve_authenticated_credentials(Some(validator), None, true, &mut per_connection_cache)
+            .await
+            .expect("reactivation should reuse same-connection cache")
+            .expect("reactivation should have cached credentials");
         assert_eq!(reactivated.username, "alice");
     }
 
@@ -2342,14 +2344,9 @@ mod wrdp_reactivation_tests {
         assert!(first_connection_cache.is_some());
 
         let mut second_connection_cache = None;
-        let reactivated = resolve_authenticated_credentials(
-            Some(validator),
-            None,
-            true,
-            &mut second_connection_cache,
-        )
-        .await
-        .expect("missing same-connection cache is not a backend error");
+        let reactivated = resolve_authenticated_credentials(Some(validator), None, true, &mut second_connection_cache)
+            .await
+            .expect("missing same-connection cache is not a backend error");
         assert!(reactivated.is_none());
         assert!(second_connection_cache.is_none());
     }
