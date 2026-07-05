@@ -192,6 +192,28 @@ pub trait CredentialValidator: Send + Sync {
     async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
 }
 
+/// Display/input objects bound after a credential validator accepts a client.
+///
+/// Servers with per-user desktop/session isolation can start with placeholder
+/// display and input handlers, validate the client's credentials, and then
+/// replace those placeholders with handlers attached to the authenticated
+/// user's session before the RDP client loop starts.
+pub struct BoundConnection {
+    pub display: Box<dyn RdpServerDisplay>,
+    pub input: Box<dyn RdpServerInputHandler>,
+}
+
+/// Async post-auth connection binder.
+///
+/// This hook runs after [`CredentialValidator`] accepts credentials and before
+/// static channels, display updates, or input dispatch begin. It lets a server
+/// bind display/input resources to the authenticated identity without creating
+/// per-user resources before authentication.
+#[async_trait::async_trait]
+pub trait ConnectionBinder: Send + Sync {
+    async fn bind_connection(&self, credentials: &Credentials) -> anyhow::Result<BoundConnection>;
+}
+
 /// A built-in [`CredentialValidator`] that accepts exactly one fixed set of credentials.
 ///
 /// This is the validation-policy equivalent of the acceptor's pre-loaded
@@ -453,6 +475,7 @@ pub struct RdpServer {
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
+    connection_binder: Option<Arc<dyn ConnectionBinder>>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
@@ -611,6 +634,7 @@ impl RdpServer {
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
             credential_validator: None,
+            connection_binder: None,
             local_addr: None,
             autodetect: None,
             connection_handler,
@@ -816,6 +840,15 @@ impl RdpServer {
         self.auto_reconnect_sent = true;
 
         Ok(())
+    }
+
+    /// Set or clear a post-auth connection binder.
+    ///
+    /// When set, the binder is called after credentials have been validated.
+    /// The returned display/input handlers replace the server defaults for the
+    /// accepted connection.
+    pub fn set_connection_binder(&mut self, binder: Option<Arc<dyn ConnectionBinder>>) {
+        self.connection_binder = binder;
     }
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
@@ -1625,11 +1658,14 @@ impl RdpServer {
         // async server layer, rather than in the sans-I/O acceptor, because real validators
         // (PAM/LDAP/DB) are I/O-bound. On rejection, deny with a ServerSetErrorInfoPdu before
         // closing, matching the acceptor's exact-match denial path.
-        if !is_auto_reconnect && let Some(validator) = self.credential_validator.clone() {
+        let authenticated_credentials = if is_auto_reconnect {
+            result.credentials.clone()
+        } else if let Some(validator) = self.credential_validator.clone() {
             if let Some(creds) = &result.credentials {
                 match validator.validate(creds).await {
                     Ok(CredentialDecision::Accept) => {
                         debug!("Credential validation accepted");
+                        Some(creds.clone())
                     }
                     Ok(CredentialDecision::Reject) => {
                         warn!("Credential validation rejected");
@@ -1644,7 +1680,26 @@ impl RdpServer {
                 }
             } else {
                 debug!("Skipping credential validation (no credentials in AcceptorResult)");
+                None
             }
+        } else {
+            result.credentials.clone()
+        };
+
+        if let Some(binder) = self.connection_binder.clone() {
+            let Some(credentials) = authenticated_credentials.as_ref() else {
+                warn!("Connection binder configured but no authenticated credentials are available");
+                send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                bail!("no authenticated credentials for connection binding");
+            };
+
+            let bound = binder
+                .bind_connection(credentials)
+                .await
+                .context("connection binder failed")?;
+            *self.display.lock().await = bound.display;
+            *self.handler.lock().await = bound.input;
+            debug!("Connection binder installed display/input handlers");
         }
 
         if !result.input_events.is_empty() {
