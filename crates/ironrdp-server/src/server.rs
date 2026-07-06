@@ -7,8 +7,7 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Instant;
 
 use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
@@ -54,13 +53,13 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::autodetect::{AutoDetectManager, AutoDetectOutcome};
 use crate::clipboard::CliprdrServerFactory;
-use crate::display::{DisplayUpdate, RdpServerDisplay};
+use crate::display::{DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
-use crate::handler::RdpServerInputHandler;
+use crate::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use crate::heartbeat::HeartbeatConfig;
 use crate::multitransport;
 use crate::rdpeai::RdpeaiServerFactory;
@@ -315,6 +314,111 @@ pub struct BoundConnection {
 #[async_trait::async_trait]
 pub trait ConnectionBinder: Send + Sync {
     async fn bind_connection(&self, credentials: &Credentials) -> Result<BoundConnection>;
+}
+
+struct BoundDisplaySlot {
+    default: Box<dyn RdpServerDisplay>,
+    bound: Arc<StdMutex<Option<Box<dyn RdpServerDisplay>>>>,
+}
+
+impl BoundDisplaySlot {
+    fn new(default: Box<dyn RdpServerDisplay>, bound: Arc<StdMutex<Option<Box<dyn RdpServerDisplay>>>>) -> Self {
+        Self { default, bound }
+    }
+}
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for BoundDisplaySlot {
+    async fn size(&mut self) -> DesktopSize {
+        let bound_display = {
+            let mut bound = self.bound.lock().expect("bound display lock poisoned");
+            bound.take()
+        };
+
+        if let Some(mut display) = bound_display {
+            let size = display.size().await;
+            *self.bound.lock().expect("bound display lock poisoned") = Some(display);
+            size
+        } else {
+            self.default.size().await
+        }
+    }
+
+    async fn request_initial_size(&mut self, client_size: DesktopSize) -> DesktopSize {
+        let bound_display = {
+            let mut bound = self.bound.lock().expect("bound display lock poisoned");
+            bound.take()
+        };
+
+        if let Some(mut display) = bound_display {
+            let size = display.request_initial_size(client_size).await;
+            *self.bound.lock().expect("bound display lock poisoned") = Some(display);
+            size
+        } else {
+            self.default.request_initial_size(client_size).await
+        }
+    }
+
+    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+        let bound_display = {
+            let mut bound = self.bound.lock().expect("bound display lock poisoned");
+            bound.take()
+        };
+
+        if let Some(mut display) = bound_display {
+            let updates = display.updates().await;
+            *self.bound.lock().expect("bound display lock poisoned") = Some(display);
+            updates
+        } else {
+            self.default.updates().await
+        }
+    }
+
+    fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
+        let mut bound = self.bound.lock().expect("bound display lock poisoned");
+        if let Some(display) = bound.as_mut() {
+            display.request_layout(layout);
+        } else {
+            drop(bound);
+            self.default.request_layout(layout);
+        }
+    }
+}
+
+struct BoundInputSlot {
+    default: Box<dyn RdpServerInputHandler>,
+    bound: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
+}
+
+impl BoundInputSlot {
+    fn new(
+        default: Box<dyn RdpServerInputHandler>,
+        bound: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
+    ) -> Self {
+        Self { default, bound }
+    }
+}
+
+impl RdpServerInputHandler for BoundInputSlot {
+    fn keyboard(&mut self, event: KeyboardEvent) {
+        let mut bound = self.bound.lock().expect("bound input lock poisoned");
+        if let Some(handler) = bound.as_mut() {
+            handler.keyboard(event);
+        } else {
+            drop(bound);
+            self.default.keyboard(event);
+        }
+    }
+
+    fn mouse(&mut self, event: MouseEvent) {
+        let mut bound = self.bound.lock().expect("bound input lock poisoned");
+        if let Some(handler) = bound.as_mut() {
+            handler.mouse(event);
+        } else {
+            drop(bound);
+            self.default.mouse(event);
+        }
+    }
 }
 
 /// A built-in [`CredentialValidator`] that accepts exactly one fixed set of credentials.
@@ -758,6 +862,8 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    bound_handler: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
+    bound_display: Arc<StdMutex<Option<Box<dyn RdpServerDisplay>>>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
@@ -1633,11 +1739,21 @@ impl RdpServer {
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
         }
+        let bound_handler = Arc::new(StdMutex::new(None));
+        let bound_display = Arc::new(StdMutex::new(None));
 
         Self {
             opts,
-            handler: Arc::new(Mutex::new(handler)),
-            display: Arc::new(Mutex::new(display)),
+            handler: Arc::new(Mutex::new(Box::new(BoundInputSlot::new(
+                handler,
+                Arc::clone(&bound_handler),
+            )))),
+            display: Arc::new(Mutex::new(Box::new(BoundDisplaySlot::new(
+                display,
+                Arc::clone(&bound_display),
+            )))),
+            bound_handler,
+            bound_display,
             static_channel_factories,
             sound_factory,
             cliprdr_factory,
@@ -1936,6 +2052,16 @@ impl RdpServer {
     /// defaults for the accepted connection.
     pub fn set_connection_binder(&mut self, binder: Option<Arc<dyn ConnectionBinder>>) {
         self.connection_binder = binder;
+    }
+
+    async fn install_bound_connection(&mut self, bound: BoundConnection) {
+        *self.bound_display.lock().expect("bound display lock poisoned") = Some(bound.display);
+        *self.bound_handler.lock().expect("bound input lock poisoned") = Some(bound.input);
+    }
+
+    async fn clear_bound_connection(&mut self) {
+        self.bound_display.lock().expect("bound display lock poisoned").take();
+        self.bound_handler.lock().expect("bound input lock poisoned").take();
     }
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
@@ -2637,6 +2763,7 @@ impl RdpServer {
                 }
                 continue;
             }
+            self.clear_bound_connection().await;
 
             let started = tokio::time::Instant::now();
 
@@ -4268,18 +4395,26 @@ impl RdpServer {
 
         if !result.reactivation {
             if let Some(binder) = self.connection_binder.clone() {
+                if self.credential_validator.is_none() && !matches!(self.opts.security, RdpServerSecurity::Hybrid(_)) {
+                    warn!("Connection binder requires authenticated credentials from a validator or CredSSP/Hybrid");
+                    send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                    bail!("connection binder requires authenticated credentials");
+                }
+
                 let Some(credentials) = authenticated_credentials.as_ref() else {
                     warn!("Connection binder configured but no authenticated credentials are available");
                     send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
                     bail!("no authenticated credentials for connection binding");
                 };
 
-                let bound = binder
-                    .bind_connection(credentials)
-                    .await
-                    .context("connection binder failed")?;
-                *self.display.lock().await = bound.display;
-                *self.handler.lock().await = bound.input;
+                let bound = match binder.bind_connection(credentials).await {
+                    Ok(bound) => bound,
+                    Err(e) => {
+                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                        return Err(e).context("connection binder failed");
+                    }
+                };
+                self.install_bound_connection(bound).await;
                 debug!("Connection binder installed display/input handlers");
             }
         } else if self.connection_binder.is_some() {
