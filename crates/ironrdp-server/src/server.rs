@@ -4341,7 +4341,6 @@ impl RdpServer {
         result: AcceptorResult,
         udp_transport: Rc<RefCell<Option<multitransport::UdpTransportHandle>>>,
         pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
-        authenticated_credentials_cache: &mut Option<Credentials>,
     ) -> ServerResult<RunState>
     where
         R: FramedRead,
@@ -4371,8 +4370,8 @@ impl RdpServer {
         // Validate credentials if a validator is configured. The validator runs here, in the
         // async server layer, rather than in the sans-I/O acceptor, because real validators
         // (PAM/LDAP/DB) are I/O-bound. On rejection, deny with a ServerSetErrorInfoPdu before
-        // closing, matching the acceptor's exact-match denial path. Reactivation still resolves
-        // credentials so clients that resend them are re-validated before channel state is reused.
+        // closing, matching the acceptor's exact-match denial path. Reactivation still validates
+        // credentials again if the client resends them before channel state is reused.
         // A verified auto-reconnect cookie bypasses the configured credential validator.
         let credential_validator = if is_auto_reconnect {
             None
@@ -4383,7 +4382,6 @@ impl RdpServer {
             credential_validator,
             result.credentials.as_ref(),
             result.reactivation,
-            authenticated_credentials_cache,
         )
         .await
         {
@@ -5003,7 +5001,6 @@ impl RdpServer {
         // synchronously as part of finalize, so establishing it must never
         // block the RDP handshake finalize itself is driving.
         let mut pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>> = None;
-        let mut authenticated_credentials_cache = None;
 
         loop {
             // Bounded: see `FINALIZE_TIMEOUT`. The bound belongs on THIS call
@@ -5061,7 +5058,6 @@ impl RdpServer {
                     result,
                     Rc::clone(&udp_transport),
                     pending_udp_accept.take(),
-                    &mut authenticated_credentials_cache,
                 )
                 .await?
             {
@@ -5118,15 +5114,13 @@ async fn resolve_authenticated_credentials(
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     result_credentials: Option<&Credentials>,
     reactivation: bool,
-    authenticated_credentials_cache: &mut Option<Credentials>,
-) -> Result<Option<Credentials>> {
-    if let Some(validator) = credential_validator {
-        if let Some(creds) = result_credentials {
+) -> Result<Option<&Credentials>> {
+    if let Some(creds) = result_credentials {
+        if let Some(validator) = credential_validator {
             match validator.validate(creds).await {
                 Ok(CredentialDecision::Accept) => {
                     debug!("Credential validation accepted");
-                    *authenticated_credentials_cache = Some(creds.clone());
-                    Ok(Some(creds.clone()))
+                    Ok(Some(creds))
                 }
                 Ok(CredentialDecision::Reject) => {
                     warn!("Credential validation rejected");
@@ -5137,24 +5131,14 @@ async fn resolve_authenticated_credentials(
                     bail!("credential validation backend error");
                 }
             }
-        } else if reactivation {
-            let credentials = authenticated_credentials_cache.clone();
-            if credentials.is_some() {
-                debug!("Reusing cached authenticated credentials for reactivation");
-            } else {
-                debug!("Skipping credential validation for reactivation without cached credentials");
-            }
-            Ok(credentials)
         } else {
-            debug!("Skipping credential validation (no credentials in AcceptorResult)");
-            Ok(None)
+            Ok(Some(creds))
         }
-    } else if let Some(creds) = result_credentials {
-        *authenticated_credentials_cache = Some(creds.clone());
-        Ok(Some(creds.clone()))
     } else if reactivation {
-        Ok(authenticated_credentials_cache.clone())
+        debug!("Skipping credential validation for reactivation without credentials");
+        Ok(None)
     } else {
+        debug!("Skipping credential validation (no credentials in AcceptorResult)");
         Ok(None)
     }
 }
@@ -6230,47 +6214,31 @@ mod wrdp_reactivation_tests {
     }
 
     #[tokio::test]
-    async fn reactivation_without_credentials_reuses_same_connection_validated_identity() {
+    async fn reactivation_without_credentials_does_not_retain_validated_identity() {
         let validator = Arc::new(AllowUserValidator("alice"));
-        let mut per_connection_cache = None;
+        let initial_credentials = creds("alice");
 
-        let first = resolve_authenticated_credentials(
-            Some(validator.clone()),
-            Some(&creds("alice")),
-            false,
-            &mut per_connection_cache,
-        )
-        .await
-        .expect("initial validation should succeed")
-        .expect("initial validation should produce credentials");
+        let first = resolve_authenticated_credentials(Some(validator.clone()), Some(&initial_credentials), false)
+            .await
+            .expect("initial validation should succeed")
+            .expect("initial validation should produce credentials");
         assert_eq!(first.username, "alice");
 
-        let reactivated = resolve_authenticated_credentials(Some(validator), None, true, &mut per_connection_cache)
+        let reactivated = resolve_authenticated_credentials(Some(validator), None, true)
             .await
-            .expect("reactivation should reuse same-connection cache")
-            .expect("reactivation should have cached credentials");
-        assert_eq!(reactivated.username, "alice");
+            .expect("missing reactivation credentials is not a backend error");
+        assert!(reactivated.is_none());
     }
 
     #[tokio::test]
-    async fn reactivation_without_credentials_cannot_use_previous_tcp_connection_cache() {
+    async fn reactivation_with_credentials_revalidates_resent_identity() {
         let validator = Arc::new(AllowUserValidator("alice"));
-        let mut first_connection_cache = None;
-        resolve_authenticated_credentials(
-            Some(validator.clone()),
-            Some(&creds("alice")),
-            false,
-            &mut first_connection_cache,
-        )
-        .await
-        .expect("initial validation should succeed");
-        assert!(first_connection_cache.is_some());
+        let reactivation_credentials = creds("alice");
 
-        let mut second_connection_cache = None;
-        let reactivated = resolve_authenticated_credentials(Some(validator), None, true, &mut second_connection_cache)
+        let reactivated = resolve_authenticated_credentials(Some(validator), Some(&reactivation_credentials), true)
             .await
-            .expect("missing same-connection cache is not a backend error");
-        assert!(reactivated.is_none());
-        assert!(second_connection_cache.is_none());
+            .expect("resent reactivation credentials should be validated")
+            .expect("resent reactivation credentials should remain available");
+        assert_eq!(reactivated.username, "alice");
     }
 }
