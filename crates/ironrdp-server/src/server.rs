@@ -192,10 +192,10 @@ pub trait CredentialValidator: Send + Sync {
     async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
 }
 
-/// Display/input objects bound after a credential validator accepts a client.
+/// Display/input objects bound after the server authenticates a client.
 ///
 /// Servers with per-user desktop/session isolation can start with placeholder
-/// display and input handlers, validate the client's credentials, and then
+/// display and input handlers, authenticate the client's credentials, and then
 /// replace those placeholders with handlers attached to the authenticated
 /// user's session before the RDP client loop starts.
 pub struct BoundConnection {
@@ -773,11 +773,12 @@ impl RdpServer {
         builder::RdpServerBuilder::new()
     }
 
-    /// Set or clear the credential validator for TLS-mode connections.
+    /// Set or clear the credential validator for accepted client credentials.
     ///
-    /// When set, credentials received from the client during
-    /// `SecureSettingsExchange` are validated through this callback before
-    /// the session is established. If the validator returns
+    /// When set, credentials surfaced by the acceptor are validated through
+    /// this callback before the session is established. This includes
+    /// `SecureSettingsExchange` (`ClientInfoPdu`) credentials and, when
+    /// available, CredSSP/Hybrid delegated credentials. If the validator returns
     /// [`CredentialDecision::Reject`] (or a [`CredentialValidationError`]),
     /// the connection is rejected. Passing `None` clears any previously
     /// configured validator.
@@ -790,8 +791,6 @@ impl RdpServer {
     /// the builder's `with_credential_validator` method
     /// ([`RdpServer::builder`]); this setter exists for dynamic
     /// post-construction reconfiguration.
-    ///
-    /// Not used for CredSSP/Hybrid connections (those use pre-loaded credentials).
     pub fn set_credential_validator(&mut self, validator: Option<Arc<dyn CredentialValidator>>) {
         self.credential_validator = validator;
     }
