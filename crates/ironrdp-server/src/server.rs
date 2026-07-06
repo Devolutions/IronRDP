@@ -1787,7 +1787,9 @@ impl RdpServer {
         // Validate credentials if a validator is configured. The validator runs here, in the
         // async server layer, rather than in the sans-I/O acceptor, because real validators
         // (PAM/LDAP/DB) are I/O-bound. On rejection, deny with a ServerSetErrorInfoPdu before
-        // closing, matching the acceptor's exact-match denial path.
+        // closing, matching the acceptor's exact-match denial path. Reactivation still resolves
+        // credentials so clients that resend them are re-validated before channel state is reused.
+        // A verified auto-reconnect cookie bypasses the configured credential validator.
         let credential_validator = if is_auto_reconnect {
             None
         } else {
