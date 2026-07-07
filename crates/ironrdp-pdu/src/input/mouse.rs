@@ -26,10 +26,14 @@ impl Encode for MousePdu {
             PointerFlags::empty().bits()
         };
 
-        // The wire field is 9-bit two's complement, representable range
-        // [-256, 255] — narrower than i16. A value outside that range
-        // truncates silently here (predates this fix; not this PR's job to
-        // widen the field, but worth flagging for the next reader).
+        // The wire field is 9-bit two's complement: representable range is
+        // [-256, 255], narrower than i16.
+        debug_assert!(
+            (-256..=255).contains(&self.number_of_wheel_rotation_units),
+            "number_of_wheel_rotation_units out of the 9-bit two's-complement range [-256, 255]: {}",
+            self.number_of_wheel_rotation_units
+        );
+
         #[expect(
             clippy::as_conversions,
             clippy::cast_sign_loss,
