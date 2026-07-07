@@ -68,8 +68,15 @@ impl<'de> Decode<'de> for MousePdu {
         )]
         let wheel_rotations_bits = flags_raw as u8;
 
+        // Per MS-RDPBCGR 2.2.8.1.1.3.1.1.3, WheelRotationMask (0x01FF) is a 9-bit
+        // TWO'S-COMPLEMENT field: WHEEL_NEGATIVE (0x0100) is the sign bit of that
+        // 9-bit value, not an independent "negate this magnitude" flag. So a byte
+        // of 0xFF with WHEEL_NEGATIVE set means -1, not -255. This must mirror
+        // `encode` below, which already produces a proper two's-complement byte
+        // via a truncating cast (`self.number_of_wheel_rotation_units as u8`) —
+        // without this, `decode(encode(x))` does not round-trip for x < 0.
         let number_of_wheel_rotation_units = if flags.contains(PointerFlags::WHEEL_NEGATIVE) {
-            -i16::from(wheel_rotations_bits)
+            i16::from(wheel_rotations_bits) - 0x100
         } else {
             i16::from(wheel_rotations_bits)
         };
@@ -99,5 +106,50 @@ bitflags! {
         const DOWN = 0x8000;
 
         const _ = !0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_core::{decode, encode_vec};
+
+    use super::*;
+
+    fn mouse_pdu(number_of_wheel_rotation_units: i16) -> MousePdu {
+        MousePdu {
+            flags: PointerFlags::VERTICAL_WHEEL,
+            number_of_wheel_rotation_units,
+            x_position: 0,
+            y_position: 0,
+        }
+    }
+
+    #[test]
+    fn wheel_rotation_units_round_trip_through_encode_decode() {
+        // Every representable value must survive an encode/decode round trip.
+        // This previously failed for small negative values: encode(-1) produced
+        // byte 0xFF + WHEEL_NEGATIVE, which decode incorrectly read back as -255
+        // (sign-magnitude) instead of -1 (two's complement, matching encode).
+        for value in i8::MIN..=i8::MAX {
+            let value = i16::from(value);
+            let pdu = mouse_pdu(value);
+            let buffer = encode_vec(&pdu).unwrap();
+            let decoded: MousePdu = decode(buffer.as_slice()).unwrap();
+            assert_eq!(
+                decoded.number_of_wheel_rotation_units, value,
+                "round trip failed for {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn small_negative_wheel_rotation_decodes_correctly() {
+        // WHEEL_NEGATIVE set, byte = 0xFF -> true value is -1 (two's complement:
+        // byte - 0x100), NOT -255 (sign-magnitude: -byte).
+        let flags = (PointerFlags::VERTICAL_WHEEL | PointerFlags::WHEEL_NEGATIVE).bits() | 0x00FF;
+        let mut buffer = [0u8; 6];
+        buffer[0..2].copy_from_slice(&flags.to_le_bytes());
+        let pdu: MousePdu = decode(buffer.as_slice()).unwrap();
+        assert_eq!(pdu.number_of_wheel_rotation_units, -1);
     }
 }
