@@ -26,6 +26,10 @@ impl Encode for MousePdu {
             PointerFlags::empty().bits()
         };
 
+        // The wire field is 9-bit two's complement, representable range
+        // [-256, 255] — narrower than i16. A value outside that range
+        // truncates silently here (predates this fix; not this PR's job to
+        // widen the field, but worth flagging for the next reader).
         #[expect(
             clippy::as_conversions,
             clippy::cast_sign_loss,
@@ -72,7 +76,7 @@ impl<'de> Decode<'de> for MousePdu {
         // TWO'S-COMPLEMENT field: WHEEL_NEGATIVE (0x0100) is the sign bit of that
         // 9-bit value, not an independent "negate this magnitude" flag. So a byte
         // of 0xFF with WHEEL_NEGATIVE set means -1, not -255. This must mirror
-        // `encode` below, which already produces a proper two's-complement byte
+        // `encode` above, which already produces a proper two's-complement byte
         // via a truncating cast (`self.number_of_wheel_rotation_units as u8`) —
         // without this, `decode(encode(x))` does not round-trip for x < 0.
         let number_of_wheel_rotation_units = if flags.contains(PointerFlags::WHEEL_NEGATIVE) {
@@ -130,8 +134,12 @@ mod tests {
         // This previously failed for small negative values: encode(-1) produced
         // byte 0xFF + WHEEL_NEGATIVE, which decode incorrectly read back as -255
         // (sign-magnitude) instead of -1 (two's complement, matching encode).
-        for value in i8::MIN..=i8::MAX {
-            let value = i16::from(value);
+        //
+        // The wire field is 9-bit two's complement, so its representable domain
+        // is [-256, 255] (wider than i8, narrower than i16) — iterate that exact
+        // range rather than i8::MIN..=i8::MAX so this test documents (and checks)
+        // the real contract, not an arbitrary subset of it.
+        for value in -256i16..=255i16 {
             let pdu = mouse_pdu(value);
             let buffer = encode_vec(&pdu).unwrap();
             let decoded: MousePdu = decode(buffer.as_slice()).unwrap();
