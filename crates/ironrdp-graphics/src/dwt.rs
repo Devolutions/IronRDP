@@ -8,13 +8,13 @@ const MAX_SUBBAND_WIDTH: usize = 32;
 /// Loads 8 contiguous `i16` from `s[off..]` into a vector. The caller guarantees `off + 8 <= s.len()`.
 #[inline]
 fn vld(s: &[i16], off: usize) -> i16x8 {
-    i16x8::from(<[i16; 8]>::try_from(&s[off..off + 8]).expect("off + 8 within bounds"))
+    i16x8::from_slice_unaligned(&s[off..][..8])
 }
 
 /// Stores a vector into `s[off..]`.
 #[inline]
 fn vst(s: &mut [i16], off: usize, v: i16x8) {
-    s[off..off + 8].copy_from_slice(&v.to_array());
+    s[off..][..8].copy_from_slice(v.as_array_ref());
 }
 
 /// Ceil average `(a + b + 1) >> 1`, overflow-free (SWAR; arithmetic shift).
@@ -138,21 +138,21 @@ fn dwt_horizontal<const SUBBAND_WIDTH: usize>(mut buffer: &mut [i16], dwt: &[i16
 }
 
 pub fn decode(buffer: &mut [i16], temp_buffer: &mut [i16]) {
-    decode_block(&mut buffer[3840..], temp_buffer, 8);
-    decode_block(&mut buffer[3072..], temp_buffer, 16);
-    decode_block(&mut *buffer, temp_buffer, 32);
+    decode_block::<8>(&mut buffer[3840..], temp_buffer);
+    decode_block::<16>(&mut buffer[3072..], temp_buffer);
+    decode_block::<32>(&mut *buffer, temp_buffer);
 }
 
-fn decode_block(buffer: &mut [i16], temp_buffer: &mut [i16], subband_width: usize) {
-    inverse_horizontal(buffer, temp_buffer, subband_width);
-    inverse_vertical(buffer, temp_buffer, subband_width);
+fn decode_block<const SUBBAND_WIDTH: usize>(buffer: &mut [i16], temp_buffer: &mut [i16]) {
+    inverse_horizontal::<SUBBAND_WIDTH>(buffer, temp_buffer);
+    inverse_vertical::<SUBBAND_WIDTH>(buffer, temp_buffer);
 }
 
 // Inverse DWT horizontal pass (portable `wide`). The 4 sub-bands are stored HL(0), LH(1), HH(2),
 // LL(3); the L band reconstructs from LL+HL, the H band from LH+HH. Each row is reconstructed by
 // `horizontal_band`.
-fn inverse_horizontal(buffer: &[i16], temp_buffer: &mut [i16], subband_width: usize) {
-    let sw = subband_width;
+fn inverse_horizontal<const SUBBAND_WIDTH: usize>(buffer: &[i16], temp_buffer: &mut [i16]) {
+    let sw = SUBBAND_WIDTH;
     let tw = sw * 2;
     let ssw = sw * sw;
     let hl = &buffer[0..ssw];
@@ -163,17 +163,15 @@ fn inverse_horizontal(buffer: &[i16], temp_buffer: &mut [i16], subband_width: us
 
     for r in 0..sw {
         let row = r * sw;
-        horizontal_band(
+        horizontal_band::<SUBBAND_WIDTH>(
             &ll[row..row + sw],
             &hl[row..row + sw],
             &mut l_dst[r * tw..r * tw + tw],
-            sw,
         );
-        horizontal_band(
+        horizontal_band::<SUBBAND_WIDTH>(
             &lh[row..row + sw],
             &hh[row..row + sw],
             &mut h_dst[r * tw..r * tw + tw],
-            sw,
         );
     }
 }
@@ -182,11 +180,14 @@ fn inverse_horizontal(buffer: &[i16], temp_buffer: &mut [i16], subband_width: us
 // source subband rows (len `sw`), `dst` the reconstructed row (len `2*sw`, even/odd interleaved).
 // Bit-exact with the former scalar code (SWAR averages + wrapping `i16` arithmetic). `sw` is a
 // multiple of 8 and ≤ 32.
-fn horizontal_band(low: &[i16], high: &[i16], dst: &mut [i16], sw: usize) {
-    debug_assert!(
-        sw % 8 == 0 && sw <= MAX_SUBBAND_WIDTH,
-        "sw must be a multiple of 8 and <= MAX_SUBBAND_WIDTH"
-    );
+fn horizontal_band<const SUBBAND_WIDTH: usize>(low: &[i16], high: &[i16], dst: &mut [i16]) {
+    const {
+        assert!(
+            SUBBAND_WIDTH == 8 || SUBBAND_WIDTH == 16 || SUBBAND_WIDTH == 32,
+            "subband width must be one of 8, 16, or 32"
+        )
+    };
+    let sw = SUBBAND_WIDTH;
 
     // Left-shifted copy so `high_pad[n] == high[n-1]` (and `high[0]` for n == 0): lets the even
     // pass load the left neighbour contiguously instead of shuffling.
@@ -230,13 +231,15 @@ fn horizontal_band(low: &[i16], high: &[i16], dst: &mut [i16], sw: usize) {
 // first/last rows, the averages use the overflow-free SWAR `ceil_avg`/`floor_avg`, and every other
 // op is wrapping `i16` arithmetic (identical to i32-intermediate-then-truncate).
 // Precondition: `subband_width` is a multiple of 8 and <= MAX_SUBBAND_WIDTH (for the 8-wide tiling).
-fn inverse_vertical(buffer: &mut [i16], temp_buffer: &[i16], subband_width: usize) {
-    let sw = subband_width;
+fn inverse_vertical<const SUBBAND_WIDTH: usize>(buffer: &mut [i16], temp_buffer: &[i16]) {
+    const {
+        assert!(
+            SUBBAND_WIDTH == 8 || SUBBAND_WIDTH == 16 || SUBBAND_WIDTH == 32,
+            "subband width must be one of 8, 16, or 32"
+        )
+    };
+    let sw = SUBBAND_WIDTH;
     let tw = sw * 2;
-    debug_assert!(
-        sw % 8 == 0 && sw <= MAX_SUBBAND_WIDTH,
-        "sw must be a multiple of 8 and <= MAX_SUBBAND_WIDTH"
-    );
 
     let mut cb = 0;
     while cb < tw {
