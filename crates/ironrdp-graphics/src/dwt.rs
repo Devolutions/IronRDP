@@ -163,16 +163,8 @@ fn inverse_horizontal<const SUBBAND_WIDTH: usize>(buffer: &[i16], temp_buffer: &
 
     for r in 0..sw {
         let row = r * sw;
-        horizontal_band::<SUBBAND_WIDTH>(
-            &ll[row..row + sw],
-            &hl[row..row + sw],
-            &mut l_dst[r * tw..r * tw + tw],
-        );
-        horizontal_band::<SUBBAND_WIDTH>(
-            &lh[row..row + sw],
-            &hh[row..row + sw],
-            &mut h_dst[r * tw..r * tw + tw],
-        );
+        horizontal_band::<SUBBAND_WIDTH>(&ll[row..row + sw], &hl[row..row + sw], &mut l_dst[r * tw..r * tw + tw]);
+        horizontal_band::<SUBBAND_WIDTH>(&lh[row..row + sw], &hh[row..row + sw], &mut h_dst[r * tw..r * tw + tw]);
     }
 }
 
