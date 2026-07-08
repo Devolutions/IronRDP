@@ -283,11 +283,11 @@ impl RdpServerBuilder<BuilderDone> {
     /// Set a credential validator for accepted client credentials.
     ///
     /// When set, credentials surfaced by the acceptor are passed to this
-    /// validator before the session is established. This includes
-    /// `SecureSettingsExchange` (`ClientInfoPdu`) credentials and, when
-    /// available, CredSSP/Hybrid delegated credentials. Rejection or a backend
-    /// error closes the connection. Pass `None` (the default) to skip
-    /// validation entirely.
+    /// validator before the session is established, together with their
+    /// origin. This includes `SecureSettingsExchange` (`ClientInfoPdu`)
+    /// credentials and, when available, CredSSP/Hybrid delegated credentials.
+    /// Rejection or a backend error closes the connection. Pass `None` (the
+    /// default) to skip validation entirely.
     ///
     /// A valid Server Auto-Reconnect Cookie bypasses this validator. Applications
     /// that must validate every connection should leave automatic reconnection
