@@ -8,7 +8,6 @@ pub mod fast_path;
 pub mod image;
 pub mod pointer;
 pub mod rfx; // FIXME: maybe this module should not be in this crate
-
 pub mod x224;
 
 mod active_stage;
