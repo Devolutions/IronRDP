@@ -10,7 +10,8 @@ use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Instant;
 
-use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
+use anyhow::{Context as _, Result, bail};
+use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, CredentialOrigin, DesktopSize};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::ClipboardMessage;
@@ -244,20 +245,21 @@ impl core::error::Error for CredentialValidationError {
     }
 }
 
-/// Server-side credential validator for TLS-mode connections.
+/// Server-side credential validator for accepted client credentials.
 ///
-/// Called during connection setup when the server receives client credentials
-/// via `ClientInfoPdu`. Not used for CredSSP/Hybrid connections (those use
-/// pre-loaded credentials for NTLM challenge-response).
+/// Called during connection setup when the acceptor surfaces credentials from
+/// either `ClientInfoPdu` or CredSSP delegated TSPasswordCreds. Use the
+/// [`CredentialOrigin`] argument to distinguish unauthenticated ClientInfo
+/// credentials from CredSSP-delegated credentials authenticated by the exchange.
 ///
-/// Implement this trait to validate credentials against external systems
+/// Implement this trait to validate or authorize credentials against external systems
 /// (PAM, LDAP, database, etc.). For blocking backends, wrap the call in
 /// `tokio::task::spawn_blocking` to avoid stalling the async runtime.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use ironrdp_server::{CredentialDecision, CredentialValidationError, CredentialValidator, Credentials};
+/// use ironrdp_server::{CredentialDecision, CredentialOrigin, CredentialValidationError, CredentialValidator, Credentials};
 ///
 /// struct StaticValidator {
 ///     expected_user: String,
@@ -280,7 +282,7 @@ impl core::error::Error for CredentialValidationError {
 /// ```
 #[async_trait::async_trait]
 pub trait CredentialValidator: Send + Sync {
-    /// Validate credentials received from the client.
+    /// Validate or authorize credentials received from the client.
     ///
     /// Return `Ok(CredentialDecision::Accept)` to permit the connection,
     /// `Ok(CredentialDecision::Reject)` to refuse it. Return
@@ -291,7 +293,11 @@ pub trait CredentialValidator: Send + Sync {
     /// database driver) should offload the work, for example with
     /// `tokio::task::spawn_blocking`, so the returned future does not stall the
     /// caller's executor. Native-async backends can simply `.await`.
-    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
+    async fn validate(
+        &self,
+        credentials: &Credentials,
+        origin: CredentialOrigin,
+    ) -> Result<CredentialDecision, CredentialValidationError>;
 }
 
 /// Display/input objects bound after the server authenticates a client.
@@ -318,6 +324,9 @@ pub trait ConnectionBinder: Send + Sync {
 
 struct BoundDisplaySlot {
     default: Box<dyn RdpServerDisplay>,
+    // Async display methods temporarily take the bound display out of this
+    // slot before awaiting. That relies on the outer tokio::Mutex around
+    // RdpServer::display to serialize all display callers.
     bound: Arc<StdMutex<Option<Box<dyn RdpServerDisplay>>>>,
 }
 
@@ -387,6 +396,8 @@ impl RdpServerDisplay for BoundDisplaySlot {
 
 struct BoundInputSlot {
     default: Box<dyn RdpServerInputHandler>,
+    // Kept parallel to BoundDisplaySlot. The outer tokio::Mutex around
+    // RdpServer::handler serializes access before input dispatch reaches this slot.
     bound: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
 }
 
@@ -439,7 +450,11 @@ impl ExactMatchCredentialValidator {
 
 #[async_trait::async_trait]
 impl CredentialValidator for ExactMatchCredentialValidator {
-    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError> {
+    async fn validate(
+        &self,
+        credentials: &Credentials,
+        _origin: CredentialOrigin,
+    ) -> Result<CredentialDecision, CredentialValidationError> {
         if credentials == &self.expected {
             Ok(CredentialDecision::Accept)
         } else {
@@ -864,7 +879,8 @@ pub struct RdpServer {
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     // ConnectionBinder installs per-user handlers into these slots. The
     // default handler/display above stay stable for the server lifetime, while
-    // the slots are cleared after each connection to avoid cross-user reuse.
+    // the slots are cleared at connection entry and after each connection to
+    // avoid cross-user reuse.
     bound_handler: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
     bound_display: Arc<StdMutex<Option<Box<dyn RdpServerDisplay>>>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
@@ -4350,6 +4366,7 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Client accepted");
+        self.clear_bound_connection().await;
 
         // MS-RDPBCGR 3.3.5.7.1: a Set Error Info PDU MUST NOT be sent to a client that did not
         // set `SUPPORT_ERR_INFO_PDU`; such a client is just disconnected.
@@ -4384,6 +4401,7 @@ impl RdpServer {
         let authenticated_credentials = match resolve_authenticated_credentials(
             credential_validator,
             result.credentials.as_ref(),
+            result.credentials_origin,
             result.reactivation,
         )
         .await
@@ -4397,8 +4415,10 @@ impl RdpServer {
 
         if !result.reactivation {
             if let Some(binder) = self.connection_binder.clone() {
-                if self.credential_validator.is_none() && !matches!(self.opts.security, RdpServerSecurity::Hybrid(_)) {
-                    warn!("Connection binder requires authenticated credentials from a validator or CredSSP/Hybrid");
+                if self.credential_validator.is_none()
+                    && result.credentials_origin != Some(CredentialOrigin::CredSspDelegated)
+                {
+                    warn!("Connection binder requires authenticated credentials from a validator or CredSSP");
                     send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
                     bail!("connection binder requires authenticated credentials");
                 }
@@ -5118,11 +5138,16 @@ impl RdpServer {
 async fn resolve_authenticated_credentials(
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     result_credentials: Option<&Credentials>,
+    credentials_origin: Option<CredentialOrigin>,
     reactivation: bool,
 ) -> Result<Option<&Credentials>> {
     if let Some(creds) = result_credentials {
+        let Some(origin) = credentials_origin else {
+            bail!("credentials provided without an origin");
+        };
+
         if let Some(validator) = credential_validator {
-            match validator.validate(creds).await {
+            match validator.validate(creds, origin).await {
                 Ok(CredentialDecision::Accept) => {
                     debug!("Credential validation accepted");
                     Ok(Some(creds))
@@ -6201,7 +6226,11 @@ mod wrdp_reactivation_tests {
 
     #[async_trait::async_trait]
     impl CredentialValidator for AllowUserValidator {
-        async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError> {
+        async fn validate(
+            &self,
+            credentials: &Credentials,
+            _origin: CredentialOrigin,
+        ) -> Result<CredentialDecision, CredentialValidationError> {
             if credentials.username == self.0 {
                 Ok(CredentialDecision::Accept)
             } else {
@@ -6223,13 +6252,18 @@ mod wrdp_reactivation_tests {
         let validator: Arc<dyn CredentialValidator> = Arc::new(AllowUserValidator("alice"));
         let initial_credentials = creds("alice");
 
-        let first = resolve_authenticated_credentials(Some(Arc::clone(&validator)), Some(&initial_credentials), false)
-            .await
-            .expect("initial validation should succeed")
-            .expect("initial validation should produce credentials");
+        let first = resolve_authenticated_credentials(
+            Some(Arc::clone(&validator)),
+            Some(&initial_credentials),
+            Some(CredentialOrigin::ClientInfo),
+            false,
+        )
+        .await
+        .expect("initial validation should succeed")
+        .expect("initial validation should produce credentials");
         assert_eq!(first.username, "alice");
 
-        let reactivated = resolve_authenticated_credentials(Some(validator), None, true)
+        let reactivated = resolve_authenticated_credentials(Some(validator), None, None, true)
             .await
             .expect("missing reactivation credentials is not a backend error");
         assert!(reactivated.is_none());
@@ -6240,10 +6274,15 @@ mod wrdp_reactivation_tests {
         let validator = Arc::new(AllowUserValidator("alice"));
         let reactivation_credentials = creds("alice");
 
-        let reactivated = resolve_authenticated_credentials(Some(validator), Some(&reactivation_credentials), true)
-            .await
-            .expect("resent reactivation credentials should be validated")
-            .expect("resent reactivation credentials should remain available");
+        let reactivated = resolve_authenticated_credentials(
+            Some(validator),
+            Some(&reactivation_credentials),
+            Some(CredentialOrigin::ClientInfo),
+            true,
+        )
+        .await
+        .expect("resent reactivation credentials should be validated")
+        .expect("resent reactivation credentials should remain available");
         assert_eq!(reactivated.username, "alice");
     }
 }
