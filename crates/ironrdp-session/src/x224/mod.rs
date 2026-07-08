@@ -1,8 +1,7 @@
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
-use ironrdp_connector::legacy::SendDataIndicationCtx;
 use ironrdp_core::WriteBuf;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
-use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
+use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
@@ -129,7 +128,7 @@ impl Processor {
     /// in the returned order.
     pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<ProcessorOutput>> {
         let data_ctx: SendDataIndicationCtx<'_> =
-            ironrdp_connector::legacy::decode_send_data_indication(frame).map_err(crate::legacy::map_error)?;
+            ironrdp_pdu::mcs::decode_send_data_indication(frame).map_err(SessionError::decode)?;
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
@@ -146,10 +145,10 @@ impl Processor {
     fn process_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
 
-        let io_channel = ironrdp_connector::legacy::decode_io_channel(data_ctx).map_err(crate::legacy::map_error)?;
+        let io_channel = ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx).map_err(SessionError::decode)?;
 
         match io_channel {
-            ironrdp_connector::legacy::IoChannelPdu::Data(ctx) => {
+            ironrdp_pdu::rdp::headers::IoChannelPdu::Data(ctx) => {
                 match ctx.pdu {
                     ShareDataPdu::SaveSessionInfo(session_info) => {
                         debug!("Got Session Save Info PDU: {session_info:?}");
@@ -198,14 +197,14 @@ impl Processor {
                     ShareDataPdu::AutoDetectReq(AutoDetectRequest::RttRequest { sequence_number, .. }) => {
                         let response = AutoDetectResponse::RttResponse { sequence_number };
                         let mut frame = WriteBuf::new();
-                        ironrdp_connector::legacy::encode_share_data(
+                        ironrdp_pdu::rdp::headers::encode_share_data(
                             self.user_channel_id,
                             self.io_channel_id,
                             self.share_id,
                             ShareDataPdu::AutoDetectRsp(response),
                             &mut frame,
                         )
-                        .map_err(crate::legacy::map_error)?;
+                        .map_err(SessionError::encode)?;
                         debug!(sequence_number, "Responded to auto-detect RTT request");
                         Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
                     }
@@ -239,14 +238,14 @@ impl Processor {
                     )),
                 }
             }
-            ironrdp_connector::legacy::IoChannelPdu::MultitransportRequest(pdu) => {
+            ironrdp_pdu::rdp::headers::IoChannelPdu::MultitransportRequest(pdu) => {
                 debug!(
                     "Received Initiate Multitransport Request: request_id={}",
                     pdu.request_id
                 );
                 Ok(vec![ProcessorOutput::MultitransportRequest(pdu)])
             }
-            ironrdp_connector::legacy::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll(
+            ironrdp_pdu::rdp::headers::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll(
                 Box::new(self.connection_activation.reset_clone()),
             )]),
         }
@@ -254,14 +253,14 @@ impl Processor {
 
     /// Send a pdu on the static global channel. Typically used to send input events
     pub fn encode_static(&self, output: &mut WriteBuf, pdu: ShareDataPdu) -> SessionResult<usize> {
-        let written = ironrdp_connector::legacy::encode_share_data(
+        let written = ironrdp_pdu::rdp::headers::encode_share_data(
             self.user_channel_id,
             self.io_channel_id,
             self.share_id,
             pdu,
             output,
         )
-        .map_err(crate::legacy::map_error)?;
+        .map_err(SessionError::encode)?;
         Ok(written)
     }
 }

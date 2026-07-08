@@ -5,8 +5,8 @@ use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use tracing::{debug, warn};
 
 use crate::{
-    Config, ConnectionFinalizationSequence, ConnectorResult, DesktopSize, Sequence, State, Written, general_err,
-    legacy, reason_err,
+    Config, ConnectionFinalizationSequence, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize,
+    Sequence, State, Written, general_err, reason_err,
 };
 
 /// Represents the Capability Exchange and Connection Finalization phases
@@ -106,8 +106,10 @@ impl Sequence for ConnectionActivationSequence {
             } => {
                 debug!("Capabilities Exchange");
 
-                let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
-                let share_control_ctx = legacy::decode_share_control(send_data_indication_ctx)?;
+                let send_data_indication_ctx =
+                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
+                let share_control_ctx =
+                    rdp::headers::decode_share_control(send_data_indication_ctx).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?share_control_ctx.pdu, "Received");
 
@@ -191,13 +193,14 @@ impl Sequence for ConnectionActivationSequence {
 
                 debug!(message = ?client_confirm_active, "Send");
 
-                let written = legacy::encode_share_control(
+                let written = rdp::headers::encode_share_control(
                     user_channel_id,
                     io_channel_id,
                     share_id,
                     client_confirm_active,
                     output,
-                )?;
+                )
+                .map_err(ConnectorError::encode)?;
 
                 (
                     Written::from_size(written)?,

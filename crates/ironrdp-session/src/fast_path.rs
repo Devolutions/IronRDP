@@ -695,7 +695,7 @@ impl FrameMarkerProcessor {
         match marker.frame_action {
             FrameAction::Begin => Ok(()),
             FrameAction::End => {
-                ironrdp_connector::legacy::encode_share_data(
+                ironrdp_pdu::rdp::headers::encode_share_data(
                     self.user_channel_id,
                     self.io_channel_id,
                     self.share_id,
@@ -704,7 +704,7 @@ impl FrameMarkerProcessor {
                     }),
                     output,
                 )
-                .map_err(crate::legacy::map_error)?;
+                .map_err(SessionError::encode)?;
 
                 Ok(())
             }

@@ -3,8 +3,6 @@
 
 mod macros;
 
-pub mod legacy;
-
 mod channel_connection;
 mod connection;
 pub mod connection_activation;

@@ -1,15 +1,80 @@
 use std::borrow::Cow;
 
 use ironrdp_core::{
-    IntoOwned, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err,
-    read_padding, unexpected_message_type_err,
+    Decode, Encode, IntoOwned, ReadCursor, WriteBuf, WriteCursor, cast_length, decode, encode_buf, encode_vec,
+    ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, read_padding, unexpected_message_type_err,
 };
 
 use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, ConferenceCreateResponse};
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
-use crate::x224::{X224Pdu, user_data_size};
+use crate::x224::{X224, X224Pdu, user_data_size};
 use crate::{DecodeResult, EncodeResult, impl_x224_pdu_borrowing, impl_x224_pdu_pod, per};
+
+/// Encodes an arbitrary PDU as the user data of an MCS [`SendDataRequest`], wrapped in an X.224 data PDU.
+pub fn encode_send_data_request<T>(
+    initiator_id: u16,
+    channel_id: u16,
+    user_msg: &T,
+    buf: &mut WriteBuf,
+) -> EncodeResult<usize>
+where
+    T: Encode,
+{
+    let user_data = encode_vec(user_msg)?;
+
+    let pdu = SendDataRequest {
+        initiator_id,
+        channel_id,
+        user_data: Cow::Owned(user_data),
+    };
+
+    let written = encode_buf(&X224(pdu), buf)?;
+
+    Ok(written)
+}
+
+/// The user data carried by an MCS Send Data Indication, along with its channel routing information.
+#[derive(Debug, Clone, Copy)]
+pub struct SendDataIndicationCtx<'a> {
+    pub initiator_id: u16,
+    pub channel_id: u16,
+    pub user_data: &'a [u8],
+}
+
+impl<'a> SendDataIndicationCtx<'a> {
+    pub fn decode_user_data<'de, T>(&self) -> DecodeResult<T>
+    where
+        T: Decode<'de>,
+        'a: 'de,
+    {
+        decode::<T>(self.user_data)
+    }
+}
+
+/// Decodes an X.224-wrapped MCS Send Data Indication and returns its [`SendDataIndicationCtx`].
+pub fn decode_send_data_indication(src: &[u8]) -> DecodeResult<SendDataIndicationCtx<'_>> {
+    let mcs_msg = decode::<X224<McsMessage<'_>>>(src)?;
+
+    match mcs_msg.0 {
+        McsMessage::SendDataIndication(msg) => {
+            let Cow::Borrowed(user_data) = msg.user_data else {
+                unreachable!()
+            };
+
+            Ok(SendDataIndicationCtx {
+                initiator_id: msg.initiator_id,
+                channel_id: msg.channel_id,
+                user_data,
+            })
+        }
+        McsMessage::DisconnectProviderUltimatum(_) => Err(other_err!(
+            "decode_send_data_indication",
+            "received disconnect provider ultimatum"
+        )),
+        _ => Err(other_err!("decode_send_data_indication", "unexpected MCS message")),
+    }
+}
 
 // T.125 MCS is defined in:
 //
