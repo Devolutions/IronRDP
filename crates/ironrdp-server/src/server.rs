@@ -568,6 +568,9 @@ pub struct RdpServer {
     // FIXME: replace with a channel and poll/process the handler?
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
+    // ConnectionBinder installs per-user handlers into these slots. The
+    // default handler/display above stay stable for the server lifetime, while
+    // the slots are cleared after each connection to avoid cross-user reuse.
     bound_handler: Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>,
     bound_display: Arc<StdMutex<Option<Box<dyn RdpServerDisplay>>>>,
     static_channels: StaticChannelSet,
@@ -1821,6 +1824,8 @@ impl RdpServer {
                     bail!("no authenticated credentials for connection binding");
                 };
 
+                // Bound handlers are connection-local: install them into the dispatch slots
+                // for this client only, then clear the slots when the connection ends.
                 let bound = match binder.bind_connection(credentials).await {
                     Ok(bound) => bound,
                     Err(e) => {
@@ -2431,10 +2436,10 @@ mod wrdp_reactivation_tests {
 
     #[tokio::test]
     async fn reactivation_without_credentials_does_not_retain_validated_identity() {
-        let validator = Arc::new(AllowUserValidator("alice"));
+        let validator: Arc<dyn CredentialValidator> = Arc::new(AllowUserValidator("alice"));
         let initial_credentials = creds("alice");
 
-        let first = resolve_authenticated_credentials(Some(validator.clone()), Some(&initial_credentials), false)
+        let first = resolve_authenticated_credentials(Some(Arc::clone(&validator)), Some(&initial_credentials), false)
             .await
             .expect("initial validation should succeed")
             .expect("initial validation should produce credentials");
