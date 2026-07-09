@@ -83,6 +83,9 @@ Each release provides one `.tar.gz` archive and a SHA-256 sidecar for these nati
 | macOS x64 | `x86_64-apple-darwin` |
 | macOS ARM64 | `aarch64-apple-darwin` |
 
+Linux archives use an Ubuntu 22.04 build baseline and require glibc 2.35 or later. macOS archives
+target macOS 10.13 or later on Intel and macOS 11.0 or later on Apple Silicon.
+
 For example, download and extract the Linux x64 agent from its release:
 
 ```shell

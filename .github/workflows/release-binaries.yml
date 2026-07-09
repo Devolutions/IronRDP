@@ -56,14 +56,16 @@ jobs:
             target: x86_64-pc-windows-msvc
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
-          - runner: ubuntu-24.04
+          - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+            macos_deployment_target: '10.13'
           - runner: macos-14
             target: aarch64-apple-darwin
+            macos_deployment_target: '11.0'
 
     steps:
       - name: Checkout release tag
@@ -93,6 +95,10 @@ jobs:
         run: |
           if ($env:RUNNER_OS -eq 'Windows') {
             $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          }
+
+          if ($env:RUNNER_OS -eq 'macOS') {
+            $env:MACOSX_DEPLOYMENT_TARGET = '${{ matrix.macos_deployment_target }}'
           }
 
           cargo build --locked --release --package '${{ needs.select-package.outputs.package }}'
