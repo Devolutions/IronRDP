@@ -24,8 +24,8 @@ use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
-use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
-use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp::pdu::rdp::capability_sets::{BitmapCodecs, client_codecs_capabilities};
+use ironrdp::pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
 use ironrdp::rdpdr::Rdpdr;
 use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
@@ -90,10 +90,12 @@ struct SessionBuilderInner {
 
     use_display_control: bool,
     enable_credssp: bool,
+    legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
 }
 
 impl Default for SessionBuilderInner {
+    /// 中文注释：初始化 Web RDP session builder 的默认参数，默认使用增强图形路径。
     fn default() -> Self {
         Self {
             username: None,
@@ -131,6 +133,7 @@ impl Default for SessionBuilderInner {
 
             use_display_control: false,
             enable_credssp: true,
+            legacy_graphics: false,
             outbound_message_size_limit: None,
         }
     }
@@ -241,6 +244,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
+    /// 中文注释：接收 JS 侧扩展配置，包括 CredSSP、legacy 图形和外设回调参数。
     fn extension(&self, ext: Extension) -> Self {
         iron_remote_desktop::extension_match! {
             match ext;
@@ -248,6 +252,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
+            |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
             |outbound_message_size_limit: f64| {
                 let limit = if outbound_message_size_limit >= 0.0 && outbound_message_size_limit <= f64::from(u32::MAX) {
                     #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -323,6 +328,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
+    /// 中文注释：收集 JS builder 参数并建立 RDP 会话。
     async fn connect(&self) -> Result<Self::Session, Self::Error> {
         let (
             username,
@@ -398,7 +404,15 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let mut config = build_config(username, password, server_domain, client_name.clone(), desktop_size);
+        let legacy_graphics = self.0.borrow().legacy_graphics;
+        let mut config = build_config(
+            username,
+            password,
+            server_domain,
+            client_name.clone(),
+            desktop_size,
+            legacy_graphics,
+        );
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
@@ -1392,13 +1406,36 @@ fn parse_file_metadata_array(files: JsValue) -> Result<Vec<FileMetadata>, IronEr
     Ok(file_list)
 }
 
+/// 中文注释：构造 IronRDP 连接配置；增强图形路径启用压缩，legacy 图形路径关闭压缩以兼容未接 slow-path 解压的旧服务端。
 fn build_config(
     username: String,
     password: String,
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
+    legacy_graphics: bool,
 ) -> connector::Config {
+    // 中文注释：legacy 图形模式关闭增强 bitmap codec、有损压缩与 bulk compression，避免 Win7 等旧服务端进入不兼容的 surface/slow-path 更新路径。
+    let (bitmap, compression_type) = if legacy_graphics {
+        (
+            Some(connector::BitmapConfig {
+                color_depth: 32,
+                lossy_compression: false,
+                codecs: BitmapCodecs(Vec::new()),
+            }),
+            None,
+        )
+    } else {
+        (
+            Some(connector::BitmapConfig {
+                color_depth: 16,
+                lossy_compression: true,
+                codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
+            }),
+            Some(CompressionType::Rdp61),
+        )
+    };
+
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
@@ -1415,11 +1452,7 @@ fn build_config(
             width: desktop_size.width,
             height: desktop_size.height,
         },
-        bitmap: Some(connector::BitmapConfig {
-            color_depth: 16,
-            lossy_compression: true,
-            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
-        }),
+        bitmap,
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "fine unless we end up with an insanely big version"
@@ -1433,14 +1466,19 @@ fn build_config(
         // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
-        compression_type: None,
+        compression_type,
         enable_server_pointer: false,
         autologon: false,
         enable_audio_playback: false,
         request_data: None,
         pointer_software_rendering: false,
         multitransport_flags: None,
-        performance_flags: PerformanceFlags::default(),
+        // 中文注释：保留远端壁纸，其它可通过性能标志关闭的桌面特效都禁用，以降低 RDP 图形更新量。
+        performance_flags: PerformanceFlags::DISABLE_FULLWINDOWDRAG
+            | PerformanceFlags::DISABLE_MENUANIMATIONS
+            | PerformanceFlags::DISABLE_THEMING
+            | PerformanceFlags::DISABLE_CURSOR_SHADOW
+            | PerformanceFlags::DISABLE_CURSORSETTINGS,
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,

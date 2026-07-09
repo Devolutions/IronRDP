@@ -300,6 +300,7 @@ impl State for ConnectionActivationState {
 
 const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
 
+/// 中文注释：根据连接配置和服务端能力生成 Client Confirm Active，legacy 图形模式会跳过增强 surface 能力。
 fn create_client_confirm_active(
     config: &Config,
     mut server_capability_sets: Vec<CapabilitySet>,
@@ -310,7 +311,7 @@ fn create_client_confirm_active(
         ClientConfirmActive, CmdFlags, DemandActive, FrameAcknowledge, GLYPH_CACHE_NUM, General, GeneralExtraFlags,
         GlyphCache, GlyphSupportLevel, Input, InputFlags, LargePointer, LargePointerSupportFlags, MultifragmentUpdate,
         OffscreenBitmapCache, Order, OrderFlags, OrderSupportExFlags, Pointer, SERVER_CHANNEL_ID, Sound, SoundFlags,
-        SupportLevel, SurfaceCommands, VirtualChannel, VirtualChannelFlags, client_codecs_capabilities,
+        SupportLevel, SurfaceCommands, VirtualChannel, VirtualChannelFlags,
     };
 
     server_capability_sets.retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
@@ -328,6 +329,9 @@ fn create_client_confirm_active(
     } else {
         BitmapDrawingFlags::ALLOW_SKIP_ALPHA
     };
+
+    let bitmap_codecs = config.bitmap.as_ref().map(|bitmap| bitmap.codecs.clone());
+    let enable_surface_commands = bitmap_codecs.as_ref().is_some_and(|codecs| !codecs.0.is_empty());
 
     server_capability_sets.extend_from_slice(&[
         CapabilitySet::General(General {
@@ -402,20 +406,23 @@ fn create_client_confirm_active(
             // in Windows 2019 and older
             flags: LargePointerSupportFlags::UP_TO_96X96_PIXELS | LargePointerSupportFlags::UP_TO_384X384_PIXELS,
         }),
-        CapabilitySet::SurfaceCommands(SurfaceCommands {
-            flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,
-        }),
-        CapabilitySet::BitmapCodecs(match config.bitmap.as_ref().map(|b| b.codecs.clone()) {
-            Some(codecs) => codecs,
-            None => client_codecs_capabilities(&[]).expect("can't panic for &[]"),
-        }),
-        CapabilitySet::FrameAcknowledge(FrameAcknowledge {
-            // FIXME(#447): Revert this to 2 per FreeRDP.
-            // This is a temporary hack to fix a resize bug, see:
-            // https://github.com/Devolutions/IronRDP/issues/447
-            max_unacknowledged_frame_count: 20,
-        }),
     ]);
+
+    if enable_surface_commands {
+        // 中文注释：只有声明了具体 bitmap codec 时才启用 surface commands；legacy 图形模式保持基础 bitmap 更新。
+        server_capability_sets.extend_from_slice(&[
+            CapabilitySet::SurfaceCommands(SurfaceCommands {
+                flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,
+            }),
+            CapabilitySet::BitmapCodecs(bitmap_codecs.expect("checked by enable_surface_commands")),
+            CapabilitySet::FrameAcknowledge(FrameAcknowledge {
+                // FIXME(#447): Revert this to 2 per FreeRDP.
+                // This is a temporary hack to fix a resize bug, see:
+                // https://github.com/Devolutions/IronRDP/issues/447
+                max_unacknowledged_frame_count: 20,
+            }),
+        ]);
+    }
 
     if !server_capability_sets
         .iter()
