@@ -10,7 +10,9 @@ use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 use tracing::{debug, error, info, warn};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-use crate::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
+use crate::connection_activation::{
+    ConnectionActivationFactory, ConnectionActivationSequence, ConnectionActivationState,
+};
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
     Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize,
@@ -26,7 +28,13 @@ pub struct ConnectionResult {
     pub desktop_size: DesktopSize,
     pub enable_server_pointer: bool,
     pub pointer_software_rendering: bool,
-    pub connection_activation: ConnectionActivationSequence,
+    /// Factory for producing connection activation sequences.
+    ///
+    /// Used to drive the [Deactivation-Reactivation Sequence] when a Server Deactivate All PDU is
+    /// received: produce a fresh sequence, drive it to completion, then drop it.
+    ///
+    /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
+    pub activation_factory: ConnectionActivationFactory,
     /// The bulk compression type that was negotiated, if any.
     pub compression_type: Option<rdp::client_info::CompressionType>,
 }
@@ -562,7 +570,7 @@ impl Sequence for ClientConnector {
                     // Server Deactivate All PDU before the Server Demand Active PDU (sent
                     // by e.g. Windows Server and gnome-remote-desktop); mirror it here and
                     // wait for the next input.
-                    ConnectionActivationState::CapabilitiesExchange { .. } => (
+                    ConnectionActivationState::CapabilitiesExchange => (
                         written,
                         ClientConnectorState::CapabilitiesExchange { connection_activation },
                     ),
@@ -583,22 +591,24 @@ impl Sequence for ClientConnector {
                 } else {
                     match connection_activation.connection_activation_state() {
                         ConnectionActivationState::Finalized {
-                            io_channel_id,
-                            user_channel_id,
                             desktop_size,
                             share_id,
                             enable_server_pointer,
                             pointer_software_rendering,
                         } => ClientConnectorState::Connected {
                             result: ConnectionResult {
-                                io_channel_id,
-                                user_channel_id,
+                                io_channel_id: connection_activation.io_channel_id(),
+                                user_channel_id: connection_activation.user_channel_id(),
                                 share_id,
                                 static_channels: mem::take(&mut self.static_channels),
                                 desktop_size,
                                 enable_server_pointer,
                                 pointer_software_rendering,
-                                connection_activation,
+                                activation_factory: ConnectionActivationFactory::new(
+                                    self.config.clone(),
+                                    connection_activation.io_channel_id(),
+                                    connection_activation.user_channel_id(),
+                                ),
                                 compression_type: self.config.compression_type,
                             },
                         },

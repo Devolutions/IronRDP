@@ -28,6 +28,12 @@ public partial struct ConnectionActivationSequence
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_step_no_input", ExactSpelling = true)]
     public static unsafe extern ConnectorActivationFfiResultBoxWrittenBoxIronRdpError StepNoInput(ConnectionActivationSequence* self, WriteBuf* buf);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_get_io_channel_id", ExactSpelling = true)]
+    public static unsafe extern ushort GetIoChannelId(ConnectionActivationSequence* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_get_user_channel_id", ExactSpelling = true)]
+    public static unsafe extern ushort GetUserChannelId(ConnectionActivationSequence* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ConnectionActivationSequence* self);
 }

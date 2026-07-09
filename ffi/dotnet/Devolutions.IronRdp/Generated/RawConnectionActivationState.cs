@@ -19,9 +19,6 @@ public partial struct ConnectionActivationState
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationState_get_type", ExactSpelling = true)]
     public static unsafe extern ConnectionActivationStateType GetType(ConnectionActivationState* self);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationState_get_capabilities_exchange", ExactSpelling = true)]
-    public static unsafe extern ConnectorActivationFfiResultBoxConnectionActivationStateCapabilitiesExchangeBoxIronRdpError GetCapabilitiesExchange(ConnectionActivationState* self);
-
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationState_get_connection_finalization", ExactSpelling = true)]
     public static unsafe extern ConnectorActivationFfiResultBoxConnectionActivationStateConnectionFinalizationBoxIronRdpError GetConnectionFinalization(ConnectionActivationState* self);
 

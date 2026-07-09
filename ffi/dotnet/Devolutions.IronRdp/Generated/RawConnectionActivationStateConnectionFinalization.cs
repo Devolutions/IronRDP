@@ -16,12 +16,6 @@ public partial struct ConnectionActivationStateConnectionFinalization
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateConnectionFinalization_get_io_channel_id", ExactSpelling = true)]
-    public static unsafe extern ushort GetIoChannelId(ConnectionActivationStateConnectionFinalization* self);
-
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateConnectionFinalization_get_user_channel_id", ExactSpelling = true)]
-    public static unsafe extern ushort GetUserChannelId(ConnectionActivationStateConnectionFinalization* self);
-
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateConnectionFinalization_get_desktop_size", ExactSpelling = true)]
     public static unsafe extern DesktopSize* GetDesktopSize(ConnectionActivationStateConnectionFinalization* self);
 

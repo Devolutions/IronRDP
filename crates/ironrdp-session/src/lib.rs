@@ -15,7 +15,7 @@ mod palette;
 
 use core::fmt;
 
-pub use active_stage::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
+pub use active_stage::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
 
 pub type SessionResult<T> = Result<T, SessionError>;
 

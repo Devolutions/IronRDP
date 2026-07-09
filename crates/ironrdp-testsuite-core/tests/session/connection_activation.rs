@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 
-use ironrdp_connector::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
+use ironrdp_connector::connection_activation::{
+    ConnectionActivationFactory, ConnectionActivationSequence, ConnectionActivationState,
+};
 use ironrdp_connector::{ClientConnector, ClientConnectorState, Credentials, DesktopSize, Sequence as _, Written};
 use ironrdp_core::{WriteBuf, encode_vec};
 use ironrdp_pdu::gcc;
@@ -89,7 +91,7 @@ fn deactivate_all_during_capabilities_exchange_stays_in_same_state() {
     assert!(
         matches!(
             seq.connection_activation_state(),
-            ConnectionActivationState::CapabilitiesExchange { .. }
+            ConnectionActivationState::CapabilitiesExchange
         ),
         "state should remain CapabilitiesExchange after DeactivateAll"
     );

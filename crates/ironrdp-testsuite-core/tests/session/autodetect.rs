@@ -1,12 +1,8 @@
 use std::borrow::Cow;
 
-use ironrdp_connector::connection_activation::ConnectionActivationSequence;
-use ironrdp_connector::{Credentials, DesktopSize};
 use ironrdp_core::encode_vec;
-use ironrdp_pdu::gcc;
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
-use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
     CompressionFlags, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, StreamPriority,
@@ -19,51 +15,8 @@ const USER_CHANNEL_ID: u16 = 1002;
 const IO_CHANNEL_ID: u16 = 1003;
 const SHARE_ID: u32 = 0x0001_0000;
 
-fn test_config() -> ironrdp_connector::Config {
-    ironrdp_connector::Config {
-        desktop_size: DesktopSize {
-            width: 1024,
-            height: 768,
-        },
-        desktop_scale_factor: 0,
-        enable_tls: true,
-        enable_credssp: false,
-        credentials: Credentials::UsernamePassword {
-            username: "test".into(),
-            password: "test".into(),
-        },
-        domain: None,
-        client_build: 0,
-        client_name: "test".into(),
-        keyboard_type: gcc::KeyboardType::IbmEnhanced,
-        keyboard_subtype: 0,
-        keyboard_layout: 0,
-        keyboard_functional_keys_count: 12,
-        ime_file_name: String::new(),
-        bitmap: None,
-        dig_product_id: String::new(),
-        client_dir: String::new(),
-        platform: MajorPlatformType::UNIX,
-        hardware_id: None,
-        request_data: None,
-        autologon: false,
-        enable_audio_playback: false,
-        license_cache: None,
-        compression_type: None,
-        enable_server_pointer: false,
-        pointer_software_rendering: false,
-        multitransport_flags: None,
-        performance_flags: Default::default(),
-        timezone_info: Default::default(),
-        alternate_shell: String::new(),
-        work_dir: String::new(),
-    }
-}
-
 fn make_processor() -> Processor {
-    let config = test_config();
-    let cas = ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID);
-    Processor::new(StaticChannelSet::new(), USER_CHANNEL_ID, IO_CHANNEL_ID, SHARE_ID, cas)
+    Processor::new(StaticChannelSet::new(), USER_CHANNEL_ID, IO_CHANNEL_ID, SHARE_ID)
 }
 
 /// Encode a ShareDataPdu as a server-to-client SendDataIndication frame.

@@ -19,7 +19,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 #[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult, fast_path};
+use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult, fast_path};
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
@@ -732,7 +732,20 @@ async fn active_session(
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
     let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-    let mut active_stage = ActiveStage::new(connection_result);
+
+    // We retain the factory to drive the Deactivation-Reactivation Sequence locally.
+    let activation_factory = connection_result.activation_factory;
+
+    let mut active_stage = ActiveStageBuilder {
+        static_channels: connection_result.static_channels,
+        user_channel_id: connection_result.user_channel_id,
+        io_channel_id: connection_result.io_channel_id,
+        share_id: connection_result.share_id,
+        compression_type: connection_result.compression_type,
+        enable_server_pointer: connection_result.enable_server_pointer,
+        pointer_software_rendering: connection_result.pointer_software_rendering,
+    }
+    .build();
 
     // Timer interval for driving clipboard lock timeouts.
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
@@ -938,13 +951,14 @@ async fn active_session(
                         .await
                         .map_err(|e| ironrdp_session::custom_err!("output_event_sender", e))?;
                 }
-                ActiveStageOutput::DeactivateAll(mut connection_activation) => {
+                ActiveStageOutput::DeactivateAll => {
                     // Deactivation-Reactivation Sequence:
                     // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
                     debug!("Executing Deactivation-Reactivation Sequence");
+                    let mut connection_activation = activation_factory.create();
                     let mut buf = WriteBuf::new();
                     'activation_seq: loop {
-                        let written = single_sequence_step_read(&mut reader, &mut *connection_activation, &mut buf)
+                        let written = single_sequence_step_read(&mut reader, &mut connection_activation, &mut buf)
                             .await
                             .map_err(|e| {
                                 ironrdp_session::custom_err!("read deactivation-reactivation sequence step", e)
@@ -955,8 +969,6 @@ async fn active_session(
                             })?;
                         }
                         if let ConnectionActivationState::Finalized {
-                            io_channel_id,
-                            user_channel_id,
                             desktop_size,
                             share_id,
                             enable_server_pointer,
@@ -967,8 +979,8 @@ async fn active_session(
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                             active_stage.set_fastpath_processor(
                                 fast_path::ProcessorBuilder {
-                                    io_channel_id,
-                                    user_channel_id,
+                                    io_channel_id: connection_activation.io_channel_id(),
+                                    user_channel_id: connection_activation.user_channel_id(),
                                     share_id,
                                     enable_server_pointer,
                                     pointer_software_rendering,

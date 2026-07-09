@@ -16,7 +16,7 @@ use ironrdp::server::{
     RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{self, ActiveStage, ActiveStageOutput};
+use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_async::{Framed, FramedWrite as _};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
@@ -33,9 +33,10 @@ const PASSWORD: &str = "";
 
 #[tokio::test]
 async fn test_client_server() {
-    client_server(default_client_config(), |stage, framed, _display_tx| async {
-        (stage, framed)
-    })
+    client_server(
+        default_client_config(),
+        |stage, _activation_factory, framed, _display_tx| async { (stage, framed) },
+    )
     .await
 }
 
@@ -47,77 +48,81 @@ async fn test_deactivation_reactivation() {
         client_config.desktop_size.width,
         client_config.desktop_size.height,
     );
-    client_server(client_config, |mut stage, mut framed, display_tx| async move {
-        display_tx
-            .send(DisplayUpdate::Resize(DesktopSize {
-                width: 2048,
-                height: 2048,
-            }))
-            .unwrap();
-        {
-            let (action, payload) = framed.read_pdu().await.expect("valid PDU");
-            let outputs = stage.process(&mut image, action, &payload).expect("stage process");
-            let out = outputs.into_iter().next().unwrap();
-            match out {
-                ActiveStageOutput::DeactivateAll(mut connection_activation) => {
-                    // TODO: factor this out in common client code
-                    // Execute the Deactivation-Reactivation Sequence:
-                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
-                    debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
-                    let mut buf = pdu::WriteBuf::new();
-                    'activation_seq: loop {
-                        let written = ironrdp_async::single_sequence_step_read(
-                            &mut framed,
-                            &mut *connection_activation,
-                            &mut buf,
-                        )
-                        .await
-                        .map_err(|e| session::custom_err!("read deactivation-reactivation sequence step", e))
-                        .unwrap();
+    client_server(
+        client_config,
+        |mut stage, activation_factory, mut framed, display_tx| async move {
+            display_tx
+                .send(DisplayUpdate::Resize(DesktopSize {
+                    width: 2048,
+                    height: 2048,
+                }))
+                .unwrap();
+            {
+                let (action, payload) = framed.read_pdu().await.expect("valid PDU");
+                let outputs = stage.process(&mut image, action, &payload).expect("stage process");
+                let out = outputs.into_iter().next().unwrap();
+                match out {
+                    ActiveStageOutput::DeactivateAll => {
+                        // TODO: factor this out in common client code
+                        // Execute the Deactivation-Reactivation Sequence:
+                        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
+                        debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
+                        let mut connection_activation = activation_factory.create();
+                        let mut buf = pdu::WriteBuf::new();
+                        'activation_seq: loop {
+                            let written = ironrdp_async::single_sequence_step_read(
+                                &mut framed,
+                                &mut connection_activation,
+                                &mut buf,
+                            )
+                            .await
+                            .map_err(|e| session::custom_err!("read deactivation-reactivation sequence step", e))
+                            .unwrap();
 
-                        if written.size().is_some() {
-                            framed
-                                .write_all(buf.filled())
-                                .await
-                                .map_err(|e| session::custom_err!("write deactivation-reactivation sequence step", e))
-                                .unwrap();
-                        }
+                            if written.size().is_some() {
+                                framed
+                                    .write_all(buf.filled())
+                                    .await
+                                    .map_err(|e| {
+                                        session::custom_err!("write deactivation-reactivation sequence step", e)
+                                    })
+                                    .unwrap();
+                            }
 
-                        if let connector::connection_activation::ConnectionActivationState::Finalized {
-                            io_channel_id,
-                            user_channel_id,
-                            desktop_size,
-                            share_id,
-                            enable_server_pointer,
-                            pointer_software_rendering,
-                        } = connection_activation.connection_activation_state()
-                        {
-                            debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
-                            // Update image size with the new desktop size.
-                            // image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-                            // Update the active stage with the new channel IDs and pointer settings.
-                            stage.set_fastpath_processor(
-                                session::fast_path::ProcessorBuilder {
-                                    io_channel_id,
-                                    user_channel_id,
-                                    share_id,
-                                    enable_server_pointer,
-                                    pointer_software_rendering,
-                                    bulk_decompressor: None,
-                                }
-                                .build(),
-                            );
-                            stage.set_share_id(share_id);
-                            stage.set_enable_server_pointer(enable_server_pointer);
-                            break 'activation_seq;
+                            if let connector::connection_activation::ConnectionActivationState::Finalized {
+                                desktop_size,
+                                share_id,
+                                enable_server_pointer,
+                                pointer_software_rendering,
+                            } = connection_activation.connection_activation_state()
+                            {
+                                debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
+                                // Update image size with the new desktop size.
+                                // image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+                                // Update the active stage with the new channel IDs and pointer settings.
+                                stage.set_fastpath_processor(
+                                    session::fast_path::ProcessorBuilder {
+                                        io_channel_id: connection_activation.io_channel_id(),
+                                        user_channel_id: connection_activation.user_channel_id(),
+                                        share_id,
+                                        enable_server_pointer,
+                                        pointer_software_rendering,
+                                        bulk_decompressor: None,
+                                    }
+                                    .build(),
+                                );
+                                stage.set_share_id(share_id);
+                                stage.set_enable_server_pointer(enable_server_pointer);
+                                break 'activation_seq;
+                            }
                         }
                     }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
             }
-        }
-        (stage, framed)
-    })
+            (stage, framed)
+        },
+    )
     .await
 }
 
@@ -129,7 +134,7 @@ async fn test_echo_virtual_channel_end_to_end() {
     client_server_with_connector(
         default_client_config(),
         |connector| connector.with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new())),
-        move |mut stage, mut framed, display_tx, echo_handle| async move {
+        move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
             let _display_tx = display_tx;
             let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
@@ -218,13 +223,21 @@ impl RdpServerInputHandler for TestInputHandler {
 
 async fn client_server<F, Fut>(client_config: connector::Config, clientfn: F)
 where
-    F: FnOnce(ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>, UnboundedSender<DisplayUpdate>) -> Fut + 'static,
+    F: FnOnce(
+            ActiveStage,
+            connector::connection_activation::ConnectionActivationFactory,
+            Framed<TokioStream<TlsStream<TcpStream>>>,
+            UnboundedSender<DisplayUpdate>,
+        ) -> Fut
+        + 'static,
     Fut: Future<Output = (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>)>,
 {
     client_server_with_connector(
         client_config,
         |connector| connector,
-        move |stage, framed, display_tx, _echo_handle| clientfn(stage, framed, display_tx),
+        move |stage, connection_activation, framed, display_tx, _echo_handle| {
+            clientfn(stage, connection_activation, framed, display_tx)
+        },
     )
     .await;
 }
@@ -233,6 +246,7 @@ async fn client_server_with_connector<F, Fut, C>(client_config: connector::Confi
 where
     F: FnOnce(
             ActiveStage,
+            connector::connection_activation::ConnectionActivationFactory,
             Framed<TokioStream<TlsStream<TcpStream>>>,
             UnboundedSender<DisplayUpdate>,
             server::EchoServerHandle,
@@ -241,6 +255,7 @@ where
     Fut: Future<Output = (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>)>,
     C: FnOnce(connector::ClientConnector) -> connector::ClientConnector + 'static,
 {
+    // FIXME(@CBenoit): If this is really necessary, we may consider a non-global way of registering the subscriber; otherwise it’s unnecessary to register that.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -306,9 +321,27 @@ where
                 .await
                 .expect("finalize connection");
 
-                let active_stage = ActiveStage::new(connection_result);
-                let (active_stage, mut upgraded_framed) =
-                    clientfn(active_stage, upgraded_framed, display_tx, echo_handle).await;
+                // Retain the connection activation factory so the client closure can drive its own
+                // Deactivation-Reactivation Sequence.
+                let activation_factory = connection_result.activation_factory;
+                let active_stage = ActiveStageBuilder {
+                    static_channels: connection_result.static_channels,
+                    user_channel_id: connection_result.user_channel_id,
+                    io_channel_id: connection_result.io_channel_id,
+                    share_id: connection_result.share_id,
+                    compression_type: connection_result.compression_type,
+                    enable_server_pointer: connection_result.enable_server_pointer,
+                    pointer_software_rendering: connection_result.pointer_software_rendering,
+                }
+                .build();
+                let (active_stage, mut upgraded_framed) = clientfn(
+                    active_stage,
+                    activation_factory,
+                    upgraded_framed,
+                    display_tx,
+                    echo_handle,
+                )
+                .await;
                 let outputs = active_stage.graceful_shutdown().expect("shutdown");
                 for out in outputs {
                     match out {

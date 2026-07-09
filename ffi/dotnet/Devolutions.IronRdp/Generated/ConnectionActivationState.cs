@@ -15,14 +15,6 @@ public partial class ConnectionActivationState: IDisposable
 {
     private unsafe Raw.ConnectionActivationState* _inner;
 
-    public ConnectionActivationStateCapabilitiesExchange CapabilitiesExchange
-    {
-        get
-        {
-            return GetCapabilitiesExchange();
-        }
-    }
-
     public ConnectionActivationStateConnectionFinalization ConnectionFinalization
     {
         get
@@ -74,28 +66,6 @@ public partial class ConnectionActivationState: IDisposable
             }
             Raw.ConnectionActivationStateType retVal = Raw.ConnectionActivationState.GetType(_inner);
             return (ConnectionActivationStateType)retVal;
-        }
-    }
-
-    /// <exception cref="IronRdpException"></exception>
-    /// <returns>
-    /// A <c>ConnectionActivationStateCapabilitiesExchange</c> allocated on Rust side.
-    /// </returns>
-    public ConnectionActivationStateCapabilitiesExchange GetCapabilitiesExchange()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ConnectionActivationState");
-            }
-            Raw.ConnectorActivationFfiResultBoxConnectionActivationStateCapabilitiesExchangeBoxIronRdpError result = Raw.ConnectionActivationState.GetCapabilitiesExchange(_inner);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
-            }
-            Raw.ConnectionActivationStateCapabilitiesExchange* retVal = result.Ok;
-            return new ConnectionActivationStateCapabilitiesExchange(retVal);
         }
     }
 

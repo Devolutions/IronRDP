@@ -1,4 +1,3 @@
-use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_core::WriteBuf;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
@@ -23,7 +22,7 @@ pub enum ProcessorOutput {
     /// [Deactivation-Reactivation Sequence].
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
-    DeactivateAll(Box<ConnectionActivationSequence>),
+    DeactivateAll,
     /// Server Initiate Multitransport Request. The application should establish a
     /// sideband UDP transport using the request ID and security cookie, then send
     /// a [`MultitransportResponsePdu`] back on the IO channel.
@@ -65,23 +64,15 @@ pub struct Processor {
     user_channel_id: u16,
     io_channel_id: u16,
     share_id: u32,
-    connection_activation: ConnectionActivationSequence,
 }
 
 impl Processor {
-    pub fn new(
-        static_channels: StaticChannelSet,
-        user_channel_id: u16,
-        io_channel_id: u16,
-        share_id: u32,
-        connection_activation: ConnectionActivationSequence,
-    ) -> Self {
+    pub fn new(static_channels: StaticChannelSet, user_channel_id: u16, io_channel_id: u16, share_id: u32) -> Self {
         Self {
             static_channels,
             user_channel_id,
             io_channel_id,
             share_id,
-            connection_activation,
         }
     }
 
@@ -245,9 +236,7 @@ impl Processor {
                 );
                 Ok(vec![ProcessorOutput::MultitransportRequest(pdu)])
             }
-            ironrdp_pdu::rdp::headers::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll(
-                Box::new(self.connection_activation.reset_clone()),
-            )]),
+            ironrdp_pdu::rdp::headers::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
         }
     }
 

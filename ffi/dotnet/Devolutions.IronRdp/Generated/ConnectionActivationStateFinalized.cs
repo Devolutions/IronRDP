@@ -31,14 +31,6 @@ public partial class ConnectionActivationStateFinalized: IDisposable
         }
     }
 
-    public ushort IoChannelId
-    {
-        get
-        {
-            return GetIoChannelId();
-        }
-    }
-
     public bool PointerSoftwareRendering
     {
         get
@@ -55,14 +47,6 @@ public partial class ConnectionActivationStateFinalized: IDisposable
         }
     }
 
-    public ushort UserChannelId
-    {
-        get
-        {
-            return GetUserChannelId();
-        }
-    }
-
     /// <summary>
     /// Creates a managed <c>ConnectionActivationStateFinalized</c> from a raw handle.
     /// </summary>
@@ -75,32 +59,6 @@ public partial class ConnectionActivationStateFinalized: IDisposable
     public unsafe ConnectionActivationStateFinalized(Raw.ConnectionActivationStateFinalized* handle)
     {
         _inner = handle;
-    }
-
-    public ushort GetIoChannelId()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ConnectionActivationStateFinalized");
-            }
-            ushort retVal = Raw.ConnectionActivationStateFinalized.GetIoChannelId(_inner);
-            return retVal;
-        }
-    }
-
-    public ushort GetUserChannelId()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ConnectionActivationStateFinalized");
-            }
-            ushort retVal = Raw.ConnectionActivationStateFinalized.GetUserChannelId(_inner);
-            return retVal;
-        }
     }
 
     public uint GetShareId()
