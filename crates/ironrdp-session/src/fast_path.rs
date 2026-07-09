@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use ironrdp_bulk::BulkCompressor;
 use ironrdp_core::{DecodeErrorKind, ReadCursor, WriteBuf, decode_cursor};
@@ -20,6 +20,65 @@ use crate::image::DecodedImage;
 use crate::palette::Palette;
 use crate::pointer::PointerCache;
 use crate::{SessionError, SessionErrorExt as _, SessionResult, custom_err, reason_err, rfx};
+
+fn normalize_bitmap_rows<'a>(
+    data: &'a [u8],
+    source_width: usize,
+    dest_width: usize,
+    height: usize,
+    bytes_per_pixel: usize,
+    source_stride: usize,
+) -> Cow<'a, [u8]> {
+    if data.is_empty() || height == 0 || dest_width == 0 || bytes_per_pixel == 0 {
+        return Cow::Borrowed(data);
+    }
+
+    let dest_row_bytes = dest_width.saturating_mul(bytes_per_pixel);
+    let packed_len = dest_row_bytes.saturating_mul(height);
+    if data.len() == packed_len {
+        return Cow::Borrowed(data);
+    }
+
+    let tight_source_stride = source_width.saturating_mul(bytes_per_pixel);
+    let mut stride = source_stride.max(tight_source_stride).max(dest_row_bytes);
+    if data.len() < stride.saturating_mul(height) {
+        if data.len() % height != 0 {
+            return Cow::Borrowed(data);
+        }
+
+        let inferred_stride = data.len() / height;
+        if inferred_stride < dest_row_bytes {
+            return Cow::Borrowed(data);
+        }
+        stride = inferred_stride;
+    }
+
+    if stride == dest_row_bytes {
+        return Cow::Borrowed(data);
+    }
+
+    let mut packed = Vec::with_capacity(packed_len);
+    for row in data.chunks(stride).take(height) {
+        if row.len() < dest_row_bytes {
+            return Cow::Borrowed(data);
+        }
+        packed.extend_from_slice(&row[..dest_row_bytes]);
+    }
+
+    if packed.len() == packed_len {
+        debug!(
+            source_width,
+            dest_width,
+            height,
+            bytes_per_pixel,
+            source_stride = stride,
+            "Normalized bitmap rows to destination rectangle width"
+        );
+        Cow::Owned(packed)
+    } else {
+        Cow::Borrowed(data)
+    }
+}
 
 #[derive(Debug)]
 pub enum UpdateKind {
@@ -211,7 +270,17 @@ impl Processor {
                         usize::from(update.width),
                         usize::from(update.height),
                     ) {
-                        Ok(()) => image.apply_rgb24(&buf, &update.rectangle, true)?,
+                        Ok(()) => {
+                            let pixels = normalize_bitmap_rows(
+                                &buf,
+                                usize::from(update.width),
+                                usize::from(update.rectangle.width()),
+                                usize::from(update.height),
+                                3,
+                                usize::from(update.width) * 3,
+                            );
+                            image.apply_rgb24(pixels.as_ref(), &update.rectangle, true)?
+                        }
                         Err(err) => {
                             warn!("Invalid RDP6_BITMAP_STREAM: {err}");
                             update.rectangle.clone()
@@ -230,11 +299,49 @@ impl Processor {
                         usize::from(update.height),
                         usize::from(update.bits_per_pixel),
                     ) {
-                        Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
-                        Ok(RlePixelFormat::Rgb15) => image.apply_rgb15_bitmap(&buf, &update.rectangle)?,
-                        Ok(RlePixelFormat::Rgb24) => image.apply_bgr24_bitmap(&buf, &update.rectangle)?,
+                        Ok(RlePixelFormat::Rgb16) => {
+                            let pixels = normalize_bitmap_rows(
+                                &buf,
+                                usize::from(update.width),
+                                usize::from(update.rectangle.width()),
+                                usize::from(update.height),
+                                2,
+                                usize::from(update.width) * 2,
+                            );
+                            image.apply_rgb16_bitmap(pixels.as_ref(), &update.rectangle)?
+                        }
+                        Ok(RlePixelFormat::Rgb15) => {
+                            let pixels = normalize_bitmap_rows(
+                                &buf,
+                                usize::from(update.width),
+                                usize::from(update.rectangle.width()),
+                                usize::from(update.height),
+                                2,
+                                usize::from(update.width) * 2,
+                            );
+                            image.apply_rgb15_bitmap(pixels.as_ref(), &update.rectangle)?
+                        }
+                        Ok(RlePixelFormat::Rgb24) => {
+                            let pixels = normalize_bitmap_rows(
+                                &buf,
+                                usize::from(update.width),
+                                usize::from(update.rectangle.width()),
+                                usize::from(update.height),
+                                3,
+                                usize::from(update.width) * 3,
+                            );
+                            image.apply_bgr24_bitmap(pixels.as_ref(), &update.rectangle)?
+                        }
                         Ok(RlePixelFormat::Rgb8) => {
-                            image.apply_rgb8_with_palette(&buf, &update.rectangle, self.palette.colors())?
+                            let pixels = normalize_bitmap_rows(
+                                &buf,
+                                usize::from(update.width),
+                                usize::from(update.rectangle.width()),
+                                usize::from(update.height),
+                                1,
+                                usize::from(update.width),
+                            );
+                            image.apply_rgb8_with_palette(pixels.as_ref(), &update.rectangle, self.palette.colors())?
                         }
 
                         Err(e) => {
@@ -252,45 +359,28 @@ impl Processor {
 
                 let bpp = usize::from(update.bits_per_pixel);
                 let width = usize::from(update.width);
+                let dest_width = usize::from(update.rectangle.width());
                 let bytes_per_pixel = bpp.div_ceil(8);
                 let row_bytes = width * bytes_per_pixel;
                 let padded_row_bytes = (row_bytes + 3) & !3;
+                let pixels = normalize_bitmap_rows(
+                    update.bitmap_data,
+                    width,
+                    dest_width,
+                    usize::from(update.height),
+                    bytes_per_pixel,
+                    padded_row_bytes,
+                );
 
-                if padded_row_bytes != row_bytes {
-                    // Strip per-row padding before passing to the bitmap apply functions,
-                    // which expect tightly packed pixel data.
-                    buf.clear();
-                    for row in update.bitmap_data.chunks(padded_row_bytes) {
-                        let end = row_bytes.min(row.len());
-                        buf.extend_from_slice(&row[..end]);
-                    }
-
-                    match update.bits_per_pixel {
-                        8 => image.apply_rgb8_with_palette(&buf, &update.rectangle, self.palette.colors())?,
-                        15 => image.apply_rgb15_bitmap(&buf, &update.rectangle)?,
-                        16 => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
-                        24 => image.apply_bgr24_bitmap(&buf, &update.rectangle)?,
-                        32 => image.apply_rgb32_bitmap(&buf, PixelFormat::BgrX32, &update.rectangle)?,
-                        _ => {
-                            warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
-                            update.rectangle.clone()
-                        }
-                    }
-                } else {
-                    match update.bits_per_pixel {
-                        8 => image.apply_rgb8_with_palette(
-                            update.bitmap_data,
-                            &update.rectangle,
-                            self.palette.colors(),
-                        )?,
-                        15 => image.apply_rgb15_bitmap(update.bitmap_data, &update.rectangle)?,
-                        16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
-                        24 => image.apply_bgr24_bitmap(update.bitmap_data, &update.rectangle)?,
-                        32 => image.apply_rgb32_bitmap(update.bitmap_data, PixelFormat::BgrX32, &update.rectangle)?,
-                        _ => {
-                            warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
-                            update.rectangle.clone()
-                        }
+                match update.bits_per_pixel {
+                    8 => image.apply_rgb8_with_palette(pixels.as_ref(), &update.rectangle, self.palette.colors())?,
+                    15 => image.apply_rgb15_bitmap(pixels.as_ref(), &update.rectangle)?,
+                    16 => image.apply_rgb16_bitmap(pixels.as_ref(), &update.rectangle)?,
+                    24 => image.apply_bgr24_bitmap(pixels.as_ref(), &update.rectangle)?,
+                    32 => image.apply_rgb32_bitmap(pixels.as_ref(), PixelFormat::BgrX32, &update.rectangle)?,
+                    _ => {
+                        warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
+                        update.rectangle.clone()
                     }
                 }
             };

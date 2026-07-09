@@ -132,7 +132,7 @@ impl Processor {
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
-            self.process_io_channel(data_ctx)
+            self.process_io_channel_data_indication(data_ctx)
         } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
             let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
             process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
@@ -140,6 +140,43 @@ impl Processor {
         } else {
             Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
         }
+    }
+
+    fn process_io_channel_data_indication(
+        &self,
+        data_ctx: SendDataIndicationCtx<'_>,
+    ) -> SessionResult<Vec<ProcessorOutput>> {
+        debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
+
+        let mut outputs = Vec::new();
+        let mut offset = 0usize;
+        let data = data_ctx.user_data;
+        while offset < data.len() {
+            if offset + 2 > data.len() {
+                return Err(reason_err!("X224", "truncated Share Control PDU length"));
+            }
+
+            let total_length = usize::from(u16::from_le_bytes([data[offset], data[offset + 1]]));
+            if total_length == 0 || offset + total_length > data.len() {
+                if offset == 0 {
+                    return self.process_io_channel(data_ctx);
+                }
+                return Err(reason_err!(
+                    "X224",
+                    "invalid concatenated Share Control PDU length: {total_length}"
+                ));
+            }
+
+            let part_ctx = SendDataIndicationCtx {
+                initiator_id: data_ctx.initiator_id,
+                channel_id: data_ctx.channel_id,
+                user_data: &data[offset..offset + total_length],
+            };
+            outputs.extend(self.process_io_channel(part_ctx)?);
+            offset += total_length;
+        }
+
+        Ok(outputs)
     }
 
     fn process_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
