@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 
-use ironrdp_connector::connection_activation::{
-    ConnectionActivationFactory, ConnectionActivationSequence, ConnectionActivationState,
-};
+use ironrdp_connector::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
 use ironrdp_connector::{ClientConnector, ClientConnectorState, Credentials, DesktopSize, Sequence as _, Written};
 use ironrdp_core::{WriteBuf, encode_vec};
 use ironrdp_pdu::gcc;
