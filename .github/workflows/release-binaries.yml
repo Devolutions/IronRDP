@@ -115,7 +115,7 @@ jobs:
           Pop-Location
 
       - name: Upload release asset
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets-${{ matrix.target }}
           path: release-assets/*
