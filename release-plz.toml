@@ -9,6 +9,11 @@ release_commits = "^(feat|docs|fix|build|perf)"
 
 # Flagship crate for which we push a GitHub release.
 [[package]]
+name = "ironrdp-agent"
+git_release_enable = true
+publish = false # TODO: enable publishing when ready.
+
+[[package]]
 name = "ironrdp-viewer"
 git_release_enable = true
 publish = false # TODO: enable publishing when ready.

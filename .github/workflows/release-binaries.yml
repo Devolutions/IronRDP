@@ -1,0 +1,143 @@
+name: Release binaries
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+jobs:
+  select-package:
+    name: Select package
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.select.outputs.package }}
+      version: ${{ steps.select.outputs.version }}
+
+    steps:
+      - name: Select released CLI
+        id: select
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          case "$TAG_NAME" in
+            ironrdp-agent-v*)
+              package=ironrdp-agent
+              ;;
+            ironrdp-viewer-v*)
+              package=ironrdp-viewer
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
+
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG_NAME#"$package-v"}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ needs.select-package.outputs.package }} [${{ matrix.target }}]
+    needs: select-package
+    if: ${{ needs.select-package.outputs.package != '' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Linux build dependencies
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get -y install libasound2-dev
+
+      - name: Install NASM
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          choco install nasm
+          $Env:PATH += ";$Env:ProgramFiles\NASM"
+          echo "PATH=$Env:PATH" >> $Env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.7.3
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --locked --release --package '${{ needs.select-package.outputs.package }}'
+
+      - name: Package binary
+        shell: pwsh
+        env:
+          PACKAGE: ${{ needs.select-package.outputs.package }}
+          VERSION: ${{ needs.select-package.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $extension = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
+          $binary = Join-Path (Join-Path 'target' 'release') "$env:PACKAGE$extension"
+          $assetName = "$env:PACKAGE-$env:VERSION-$env:TARGET.tar.gz"
+          $assetDirectory = 'release-assets'
+
+          New-Item -ItemType Directory -Force -Path $assetDirectory | Out-Null
+          Copy-Item $binary (Join-Path $assetDirectory "$env:PACKAGE$extension")
+
+          Push-Location $assetDirectory
+          tar -czf $assetName "$env:PACKAGE$extension"
+          $hash = (Get-FileHash -Algorithm SHA256 $assetName).Hash.ToLowerInvariant()
+          "$hash  $assetName" | Set-Content -NoNewline -Encoding ascii "$assetName.sha256"
+          Remove-Item "$env:PACKAGE$extension"
+          Pop-Location
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.target }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Upload release assets
+    needs: [select-package, build]
+    if: ${{ always() && needs.select-package.outputs.package != '' && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG_NAME" release-assets/* --clobber
