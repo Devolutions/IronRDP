@@ -90,7 +90,12 @@ jobs:
 
       - name: Build release binary
         shell: pwsh
-        run: cargo build --locked --release --package '${{ needs.select-package.outputs.package }}'
+        run: |
+          if ($env:RUNNER_OS -eq 'Windows') {
+            $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          }
+
+          cargo build --locked --release --package '${{ needs.select-package.outputs.package }}'
 
       - name: Package binary
         shell: pwsh
