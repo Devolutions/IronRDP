@@ -13,6 +13,12 @@ The single `ironrdp-agent` binary bundles two roles:
 
 Run `ironrdp-agent --help-agent` for a structured, machine-readable description of every operation.
 
+## Prebuilt binaries
+
+Prebuilt, checksummed archives are attached to each GitHub Release under the `ironrdp-agent-v*`
+tags. See the [Releases page](https://github.com/Devolutions/IronRDP/releases) for per-platform
+download and verification instructions.
+
 ## Wire format
 
 Messages are encoded with [`ironrdp-core`]'s `Encode`/`Decode` traits, length-delimited with a

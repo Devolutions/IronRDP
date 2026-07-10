@@ -7,7 +7,8 @@ pr_name = "chore(release): prepare for publishing"
 changelog_config = "cliff.toml"
 release_commits = "^(feat|docs|fix|build|perf)"
 
-# Flagship crate for which we push a GitHub release.
+# Executable crates for which we push a GitHub release (and attach prebuilt binaries via
+# release-binaries.yml). Each is released under its own tag (ironrdp-agent-v*, ironrdp-viewer-v*).
 [[package]]
 name = "ironrdp-agent"
 git_release_enable = true

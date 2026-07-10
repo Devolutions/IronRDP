@@ -6,6 +6,12 @@ This is a a full-fledged RDP client based on IronRDP crates suite, and implement
 non-blocking, asynchronous I/O. Portability is achieved by using softbuffer for rendering
 and winit for windowing.
 
+## Prebuilt binaries
+
+Prebuilt, checksummed archives are attached to each GitHub Release under the `ironrdp-viewer-v*`
+tags. See the [Releases page](https://github.com/Devolutions/IronRDP/releases) for per-platform
+download and verification instructions.
+
 ## Sample usage
 
 ```shell

@@ -51,20 +51,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `target` is each runner's native triple; it is passed to cargo (see the build step) so a
+        # runner/target mismatch fails the build loudly instead of silently mislabeling an asset.
+        # `os_arch` is the friendly, triple-free label used for the asset and artifact names.
         include:
           - runner: windows-2022
             target: x86_64-pc-windows-msvc
+            os_arch: windows-x64
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
+            os_arch: windows-arm64
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            os_arch: linux-x64
           - runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            os_arch: linux-arm64
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+            os_arch: macos-x64
             macos_deployment_target: '10.13'
           - runner: macos-14
             target: aarch64-apple-darwin
+            os_arch: macos-arm64
             macos_deployment_target: '11.0'
 
     steps:
@@ -73,19 +82,8 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
 
-      - name: Install Linux build dependencies
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get -y install libasound2-dev
-
-      - name: Install NASM
-        if: ${{ runner.os == 'Windows' }}
-        run: |
-          choco install nasm
-          $Env:PATH += ";$Env:ProgramFiles\NASM"
-          echo "PATH=$Env:PATH" >> $Env:GITHUB_ENV
-        shell: pwsh
+      - name: Install build dependencies
+        uses: ./.github/actions/install-build-deps
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.7.3
@@ -101,7 +99,8 @@ jobs:
             $env:MACOSX_DEPLOYMENT_TARGET = '${{ matrix.macos_deployment_target }}'
           }
 
-          cargo build --locked --release --package '${{ needs.select-package.outputs.package }}'
+          rustup target add '${{ matrix.target }}'
+          cargo build --locked --release --target '${{ matrix.target }}' --package '${{ needs.select-package.outputs.package }}'
 
       - name: Package binary
         shell: pwsh
@@ -109,10 +108,11 @@ jobs:
           PACKAGE: ${{ needs.select-package.outputs.package }}
           VERSION: ${{ needs.select-package.outputs.version }}
           TARGET: ${{ matrix.target }}
+          OS_ARCH: ${{ matrix.os_arch }}
         run: |
           $extension = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
-          $binary = Join-Path (Join-Path 'target' 'release') "$env:PACKAGE$extension"
-          $assetName = "$env:PACKAGE-$env:VERSION-$env:TARGET.tar.gz"
+          $binary = Join-Path (Join-Path (Join-Path 'target' $env:TARGET) 'release') "$env:PACKAGE$extension"
+          $assetName = "$env:PACKAGE-$env:VERSION-$env:OS_ARCH.tar.gz"
           $assetDirectory = 'release-assets'
 
           New-Item -ItemType Directory -Force -Path $assetDirectory | Out-Null
@@ -128,7 +128,7 @@ jobs:
       - name: Upload release asset
         uses: actions/upload-artifact@v7
         with:
-          name: release-assets-${{ matrix.target }}
+          name: release-assets-${{ matrix.os_arch }}
           path: release-assets/*
           if-no-files-found: error
           retention-days: 1
@@ -136,6 +136,11 @@ jobs:
   publish:
     name: Upload release assets
     needs: [select-package, build]
+    # All-or-nothing on purpose: with `fail-fast: false`, if any one of the matrix legs fails,
+    # `needs.build.result` is not 'success' and NO assets are uploaded, rather than publishing a
+    # partial set. The Release itself is already published by release-plz, so a failed build leaves
+    # it without binaries; recovery is re-running this workflow. The final `gh release upload
+    # --clobber` and the notes step below are both idempotent, so re-runs are safe.
     if: ${{ always() && needs.select-package.outputs.package != '' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
 
@@ -152,3 +157,83 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.event.release.tag_name }}
         run: gh release upload "$TAG_NAME" release-assets/* --clobber
+
+      - name: Update release notes with install instructions
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+          PACKAGE: ${{ needs.select-package.outputs.package }}
+          VERSION: ${{ needs.select-package.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $begin = '<!-- BEGIN prebuilt-binaries -->'
+          $end = '<!-- END prebuilt-binaries -->'
+
+          # Literal template: the ${PACKAGE}/${VERSION} placeholders are substituted below; the tag is
+          # derived as ${PACKAGE}-v${VERSION}. Example variables ($ASSET, $BASE, $Asset) stay literal
+          # because the here-string is single-quoted (no interpolation).
+          $template = @'
+          <!-- BEGIN prebuilt-binaries -->
+          ## Prebuilt binaries
+
+          Prebuilt, checksummed archives of `${PACKAGE}` are attached to this release, one per platform:
+
+          - `${PACKAGE}-${VERSION}-windows-x64.tar.gz`
+          - `${PACKAGE}-${VERSION}-windows-arm64.tar.gz`
+          - `${PACKAGE}-${VERSION}-linux-x64.tar.gz`
+          - `${PACKAGE}-${VERSION}-linux-arm64.tar.gz`
+          - `${PACKAGE}-${VERSION}-macos-x64.tar.gz`
+          - `${PACKAGE}-${VERSION}-macos-arm64.tar.gz`
+
+          Each archive has a matching `.sha256` sidecar. The Windows archives contain `${PACKAGE}.exe`; all
+          other archives contain the bare `${PACKAGE}` executable.
+
+          ### Download and verify
+
+          Pick the archive for your platform (this example uses `linux-x64`):
+
+          ```shell
+          ASSET="${PACKAGE}-${VERSION}-linux-x64.tar.gz"
+          BASE="https://github.com/Devolutions/IronRDP/releases/download/${PACKAGE}-v${VERSION}"
+          curl -fLO "$BASE/$ASSET"
+          curl -fLO "$BASE/$ASSET.sha256"
+          sha256sum --check "$ASSET.sha256"
+          tar -xzf "$ASSET"
+          ```
+
+          On Windows, verify with `Get-FileHash` and extract with the bundled `tar` (PowerShell):
+
+          ```powershell
+          $Asset = "${PACKAGE}-${VERSION}-windows-x64.tar.gz"
+          (Get-FileHash -Algorithm SHA256 $Asset).Hash.ToLowerInvariant()  # compare with the .sha256 sidecar
+          tar -xzf $Asset
+          ```
+
+          ### Build baselines
+
+          - Linux archives are built on Ubuntu 22.04 and require glibc 2.35 or later.
+          - macOS archives target macOS 10.13 or later on Intel and macOS 11.0 or later on Apple Silicon.
+
+          Assets are attached to this release (tag `${PACKAGE}-v${VERSION}`). Don't rely on the `latest` release URL:
+          releases are tagged per package (`ironrdp-agent-v*`, `ironrdp-viewer-v*`), so `latest` may resolve
+          to the other package.
+          <!-- END prebuilt-binaries -->
+          '@
+
+          $block = $template.Replace('${PACKAGE}', $env:PACKAGE).Replace('${VERSION}', $env:VERSION)
+
+          $body = (gh release view $env:TAG_NAME --json body -q .body | Out-String).TrimEnd()
+
+          # Idempotent inject: replace the sentinel-delimited region if present, otherwise append.
+          $beginIndex = $body.IndexOf($begin)
+          $endIndex = $body.IndexOf($end)
+          if ($beginIndex -ge 0 -and $endIndex -ge 0) {
+            $newBody = $body.Substring(0, $beginIndex) + $block + $body.Substring($endIndex + $end.Length)
+          } else {
+            $newBody = if ($body) { "$body`n`n$block" } else { $block }
+          }
+
+          Set-Content -Path newbody.md -Value $newBody -Encoding utf8
+          gh release edit $env:TAG_NAME --notes-file newbody.md

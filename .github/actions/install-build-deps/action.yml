@@ -1,0 +1,20 @@
+name: Install build dependencies
+description: Install the native build dependencies required to build IronRDP (Linux ALSA headers, Windows NASM).
+
+runs:
+  using: composite
+  steps:
+    - name: Install devel packages
+      if: ${{ runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get -y install libasound2-dev
+
+    - name: Install NASM
+      if: ${{ runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        choco install nasm
+        $Env:PATH += ";$Env:ProgramFiles\NASM"
+        echo "PATH=$Env:PATH" >> $Env:GITHUB_ENV

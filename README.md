@@ -67,39 +67,15 @@ Alternatively, you may change a few group policies using `gpedit.msc`:
 
 ## Binary releases
 
-Standalone archives are attached to GitHub Releases for the executable packages:
+Prebuilt, checksummed `.tar.gz` archives are attached to each GitHub Release for the executable
+packages, one per supported platform:
 
-- [`ironrdp-agent`](./crates/ironrdp-agent) provides the agentic, daemon-backed CLI.
-- [`ironrdp-viewer`](./crates/ironrdp-viewer) provides the windowed RDP client CLI.
+- [`ironrdp-agent`](./crates/ironrdp-agent) — the agentic, daemon-backed CLI.
+- [`ironrdp-viewer`](./crates/ironrdp-viewer) — the windowed RDP client CLI.
 
-Each release provides one `.tar.gz` archive and a SHA-256 sidecar for these native target triples:
-
-| Platform | Target triple |
-| --- | --- |
-| Windows x64 | `x86_64-pc-windows-msvc` |
-| Windows ARM64 | `aarch64-pc-windows-msvc` |
-| Linux x64 | `x86_64-unknown-linux-gnu` |
-| Linux ARM64 | `aarch64-unknown-linux-gnu` |
-| macOS x64 | `x86_64-apple-darwin` |
-| macOS ARM64 | `aarch64-apple-darwin` |
-
-Linux archives use an Ubuntu 22.04 build baseline and require glibc 2.35 or later. macOS archives
-target macOS 10.13 or later on Intel and macOS 11.0 or later on Apple Silicon.
-
-For example, download and extract the Linux x64 agent from its release:
-
-```shell
-VERSION=<VERSION>
-ASSET="ironrdp-agent-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-curl -fLO "https://github.com/Devolutions/IronRDP/releases/download/ironrdp-agent-v${VERSION}/${ASSET}"
-curl -fLO "https://github.com/Devolutions/IronRDP/releases/download/ironrdp-agent-v${VERSION}/${ASSET}.sha256"
-sha256sum --check "${ASSET}.sha256"
-tar -xzf "${ASSET}"
-```
-
-Replace `ironrdp-agent` with `ironrdp-viewer` to download the windowed client from its corresponding
-package release. Windows archives contain an `.exe`; all other archives contain the executable without
-an extension.
+Each package is released under its own tag (`ironrdp-agent-v*`, `ironrdp-viewer-v*`). See the
+[Releases page](https://github.com/Devolutions/IronRDP/releases) to pick a release and follow the
+per-platform download, checksum, and extraction instructions included in its notes.
 
 ## Rust version (MSRV)
 

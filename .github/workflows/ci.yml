@@ -74,19 +74,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install devel packages
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get -y install libasound2-dev
-
-      - name: Install NASM
-        if: ${{ runner.os == 'Windows' }}
-        run: |
-          choco install nasm
-          $Env:PATH += ";$Env:ProgramFiles\NASM"
-          echo "PATH=$Env:PATH" >> $Env:GITHUB_ENV
-        shell: pwsh
+      - name: Install build dependencies
+        uses: ./.github/actions/install-build-deps
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.7.3
@@ -232,10 +221,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install devel packages
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get -y install libasound2-dev
+      - name: Install build dependencies
+        uses: ./.github/actions/install-build-deps
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.7.3
