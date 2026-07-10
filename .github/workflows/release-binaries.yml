@@ -132,6 +132,9 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
           retention-days: 1
+          # Allow a full "Re-run all jobs" (the recovery path) to re-upload over a prior attempt's
+          # artifact of the same name instead of failing.
+          overwrite: true
 
   publish:
     name: Upload release assets
@@ -178,37 +181,34 @@ jobs:
           <!-- BEGIN prebuilt-binaries -->
           ## Prebuilt binaries
 
-          Prebuilt, checksummed archives of `${PACKAGE}` are attached to this release, one per platform:
+          Prebuilt, checksummed archives of `${PACKAGE}` are attached to this release:
 
-          - `${PACKAGE}-${VERSION}-windows-x64.tar.gz`
-          - `${PACKAGE}-${VERSION}-windows-arm64.tar.gz`
-          - `${PACKAGE}-${VERSION}-linux-x64.tar.gz`
-          - `${PACKAGE}-${VERSION}-linux-arm64.tar.gz`
-          - `${PACKAGE}-${VERSION}-macos-x64.tar.gz`
-          - `${PACKAGE}-${VERSION}-macos-arm64.tar.gz`
+          ${ASSET_LIST}
 
-          Each archive has a matching `.sha256` sidecar. The Windows archives contain `${PACKAGE}.exe`; all
-          other archives contain the bare `${PACKAGE}` executable.
+          Each archive has a matching `.sha256` sidecar. The Windows archive contains `${PACKAGE}.exe`;
+          the others contain the bare `${PACKAGE}` executable.
 
           ### Download and verify
 
-          Pick the archive for your platform (this example uses `linux-x64`):
+          Pick an archive from the list above and download it together with its `.sha256` sidecar:
 
           ```shell
-          ASSET="${PACKAGE}-${VERSION}-linux-x64.tar.gz"
+          ASSET="<archive name from the list above>"
           BASE="https://github.com/Devolutions/IronRDP/releases/download/${PACKAGE}-v${VERSION}"
           curl -fLO "$BASE/$ASSET"
           curl -fLO "$BASE/$ASSET.sha256"
-          sha256sum --check "$ASSET.sha256"
-          tar -xzf "$ASSET"
           ```
 
-          On Windows, verify with `Get-FileHash` and extract with the bundled `tar` (PowerShell):
+          Verify the checksum with the tool available on your platform:
 
-          ```powershell
-          $Asset = "${PACKAGE}-${VERSION}-windows-x64.tar.gz"
-          (Get-FileHash -Algorithm SHA256 $Asset).Hash.ToLowerInvariant()  # compare with the .sha256 sidecar
-          tar -xzf $Asset
+          - Linux: `sha256sum --check "$ASSET.sha256"`
+          - macOS: `shasum -a 256 --check "$ASSET.sha256"`
+          - Windows (PowerShell): `(Get-FileHash -Algorithm SHA256 $ASSET).Hash.ToLowerInvariant() -eq (Get-Content "$ASSET.sha256").Split(' ')[0]`
+
+          Then extract (`tar` ships with Linux, macOS, and Windows):
+
+          ```shell
+          tar -xzf "$ASSET"
           ```
 
           ### Build baselines
@@ -222,7 +222,11 @@ jobs:
           <!-- END prebuilt-binaries -->
           '@
 
-          $block = $template.Replace('${PACKAGE}', $env:PACKAGE).Replace('${VERSION}', $env:VERSION)
+          # Build the asset list from the archives actually attached to this release, so it can never
+          # drift from the build matrix (adding/renaming a target updates the notes automatically).
+          $assetList = (Get-ChildItem -Path release-assets -Filter *.tar.gz | Sort-Object Name | ForEach-Object { "- ``$($_.Name)``" }) -join "`n"
+
+          $block = $template.Replace('${PACKAGE}', $env:PACKAGE).Replace('${VERSION}', $env:VERSION).Replace('${ASSET_LIST}', $assetList)
 
           $body = (gh release view $env:TAG_NAME --json body -q .body | Out-String).TrimEnd()
 
