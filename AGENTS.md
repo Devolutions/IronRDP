@@ -189,7 +189,7 @@ CI runs via GitHub Actions (`.github/workflows/ci.yml`).
 The expectation is that `cargo xtask ci -v` locally is equivalent to a full CI run.
 All commands in the Core and Specialized Commands sections above are what CI executes (each preceded by its `install` step where applicable, and `cargo xtask check locks -v` is run in multiple jobs).
 
-Additional workflows exist for releases (`release-crates.yml`), npm (`npm-publish.yml`), NuGet (`nuget-publish.yml`), coverage, and fuzzing.
+Additional workflows exist for releases (`release-crates.yml`), npm (`npm-publish.yml`), NuGet (`nuget-publish.yml`), and fuzzing.
 Do not alter release automation unless explicitly requested.
 
 ### Workspace & Change Scope Rules

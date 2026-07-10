@@ -16,7 +16,9 @@ pub mod ffi {
 
     impl ConnectionActivationSequence {
         pub fn get_state(&self) -> Box<ConnectionActivationState> {
-            Box::new(ConnectionActivationState(self.0.connection_activation_state()))
+            Box::new(ConnectionActivationState {
+                state: self.0.connection_activation_state(),
+            })
         }
 
         pub fn next_pdu_hint<'a>(&'a self) -> Result<Option<Box<PduHint<'a>>>, Box<IronRdpError>> {
@@ -33,10 +35,20 @@ pub mod ffi {
             let res = self.0.step_no_input(&mut buf.0).map(Written).map(Box::new)?;
             Ok(res)
         }
+
+        pub fn get_io_channel_id(&self) -> u16 {
+            self.0.io_channel_id()
+        }
+
+        pub fn get_user_channel_id(&self) -> u16 {
+            self.0.user_channel_id()
+        }
     }
 
     #[diplomat::opaque]
-    pub struct ConnectionActivationState(pub ironrdp::connector::connection_activation::ConnectionActivationState);
+    pub struct ConnectionActivationState {
+        pub state: ironrdp::connector::connection_activation::ConnectionActivationState,
+    }
 
     pub enum ConnectionActivationStateType {
         Consumed,
@@ -47,13 +59,13 @@ pub mod ffi {
 
     impl ConnectionActivationState {
         pub fn get_type(&self) -> ConnectionActivationStateType {
-            match self.0 {
+            match self.state {
                 ironrdp::connector::connection_activation::ConnectionActivationState::Consumed => {
                     ConnectionActivationStateType::Consumed
                 }
-                ironrdp::connector::connection_activation::ConnectionActivationState::CapabilitiesExchange {
-                    ..
-                } => ConnectionActivationStateType::CapabilitiesExchange,
+                ironrdp::connector::connection_activation::ConnectionActivationState::CapabilitiesExchange => {
+                    ConnectionActivationStateType::CapabilitiesExchange
+                }
                 ironrdp::connector::connection_activation::ConnectionActivationState::ConnectionFinalization {
                     ..
                 } => ConnectionActivationStateType::ConnectionFinalization,
@@ -63,36 +75,15 @@ pub mod ffi {
             }
         }
 
-        pub fn get_capabilities_exchange(
-            &self,
-        ) -> Result<Box<ConnectionActivationStateCapabilitiesExchange>, Box<IronRdpError>> {
-            match &self.0 {
-                ironrdp::connector::connection_activation::ConnectionActivationState::CapabilitiesExchange {
-                    io_channel_id,
-                    user_channel_id,
-                } => Ok(Box::new(ConnectionActivationStateCapabilitiesExchange {
-                    io_channel_id: *io_channel_id,
-                    user_channel_id: *user_channel_id,
-                })),
-                _ => Err(IncorrectEnumTypeError::on_variant("CapabilitiesExchange")
-                    .of_enum("ConnectionActivationState")
-                    .into()),
-            }
-        }
-
         pub fn get_connection_finalization(
             &self,
         ) -> Result<Box<ConnectionActivationStateConnectionFinalization>, Box<IronRdpError>> {
-            match self.0 {
+            match self.state {
                 ironrdp::connector::connection_activation::ConnectionActivationState::ConnectionFinalization {
-                    io_channel_id,
-                    user_channel_id,
                     desktop_size,
                     share_id: _,
                     connection_finalization,
                 } => Ok(Box::new(ConnectionActivationStateConnectionFinalization {
-                    io_channel_id,
-                    user_channel_id,
                     desktop_size,
                     connection_finalization,
                 })),
@@ -103,17 +94,13 @@ pub mod ffi {
         }
 
         pub fn get_finalized(&self) -> Result<Box<ConnectionActivationStateFinalized>, Box<IronRdpError>> {
-            match &self.0 {
+            match &self.state {
                 ironrdp::connector::connection_activation::ConnectionActivationState::Finalized {
-                    io_channel_id,
-                    user_channel_id,
                     desktop_size,
                     share_id,
                     enable_server_pointer,
                     pointer_software_rendering,
                 } => Ok(Box::new(ConnectionActivationStateFinalized {
-                    io_channel_id: *io_channel_id,
-                    user_channel_id: *user_channel_id,
                     share_id: *share_id,
                     desktop_size: *desktop_size,
                     enable_server_pointer: *enable_server_pointer,
@@ -127,38 +114,12 @@ pub mod ffi {
     }
 
     #[diplomat::opaque]
-    pub struct ConnectionActivationStateCapabilitiesExchange {
-        pub io_channel_id: u16,
-        pub user_channel_id: u16,
-    }
-
-    impl ConnectionActivationStateCapabilitiesExchange {
-        pub fn get_io_channel_id(&self) -> u16 {
-            self.io_channel_id
-        }
-
-        pub fn get_user_channel_id(&self) -> u16 {
-            self.user_channel_id
-        }
-    }
-
-    #[diplomat::opaque]
     pub struct ConnectionActivationStateConnectionFinalization {
-        pub io_channel_id: u16,
-        pub user_channel_id: u16,
         pub desktop_size: ironrdp::connector::DesktopSize,
         pub connection_finalization: ironrdp::connector::ConnectionFinalizationSequence,
     }
 
     impl ConnectionActivationStateConnectionFinalization {
-        pub fn get_io_channel_id(&self) -> u16 {
-            self.io_channel_id
-        }
-
-        pub fn get_user_channel_id(&self) -> u16 {
-            self.user_channel_id
-        }
-
         pub fn get_desktop_size(&self) -> Box<DesktopSize> {
             Box::new(DesktopSize(self.desktop_size))
         }
@@ -166,8 +127,6 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct ConnectionActivationStateFinalized {
-        pub io_channel_id: u16,
-        pub user_channel_id: u16,
         pub share_id: u32,
         pub desktop_size: ironrdp::connector::DesktopSize,
         pub enable_server_pointer: bool,
@@ -175,14 +134,6 @@ pub mod ffi {
     }
 
     impl ConnectionActivationStateFinalized {
-        pub fn get_io_channel_id(&self) -> u16 {
-            self.io_channel_id
-        }
-
-        pub fn get_user_channel_id(&self) -> u16 {
-            self.user_channel_id
-        }
-
         pub fn get_share_id(&self) -> u32 {
             self.share_id
         }

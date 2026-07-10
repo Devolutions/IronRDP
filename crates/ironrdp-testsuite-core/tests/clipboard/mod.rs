@@ -9,6 +9,7 @@ mod lock_lifecycle;
 mod lock_strategy;
 mod lock_timeout;
 mod path_sanitization;
+mod preferred_drop_effect;
 mod server_role;
 mod test_helpers;
 mod upload_and_cleanup;

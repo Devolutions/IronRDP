@@ -151,6 +151,34 @@ error!(%err, "Active stage failed");
 **Rationale**: consistency.
 We can rely on this to filter and collect diagnostics.
 
+### Log levels
+
+Choose a level by how often the event fires and who needs it, keeping in mind that
+IronRDP crates are libraries embedded into a final client which owns the default
+verbosity. The final consumer should not be flooded at default level by routine
+protocol mechanics.
+
+- `info!`: reserved for **rare lifecycle milestones** a consumer would typically want
+  at default verbosity (e.g. connection or session lifecycle transitions). It should
+  be uncommon in a library, and never used for anything that repeats during normal
+  operation (per copy/paste, per lock/unlock, per frame, etc.).
+- `debug!`: **significant one-off events** — nothing that repeats in abundance, and no
+  "entering function X" tracing.
+- `trace!`: everything else, the fine-grained detail you only want when that is all
+  that is left to understand a problem.
+
+```rust
+// GOOD: a rare lifecycle milestone the consumer wants by default.
+info!(%server_addr, "Connection established");
+
+// BAD: fires on every clipboard lock/unlock — routine mechanics belong at debug!/trace!.
+info!(count = cleared.len(), "Releasing outgoing locks before taking clipboard ownership");
+```
+
+**Rationale**: the binary at the top of the stack decides what to surface to the user;
+a library that emits `info!` for routine operations takes that choice away and spams
+default logs.
+
 [tracing-fields]: https://docs.rs/tracing/latest/tracing/index.html#recording-fields
 
 ## Helper functions

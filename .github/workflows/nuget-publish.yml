@@ -53,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [win, osx, linux, ios, android]
+        os: [win, osx, linux, ios, iossimulator, android]
         arch: [x86, x64, arm, arm64]
         include:
           - os: win
@@ -63,6 +63,8 @@ jobs:
           - os: linux
             runner: ubuntu-22.04
           - os: ios
+            runner: macos-14
+          - os: iossimulator
             runner: macos-14
           - os: android
             runner: ubuntu-22.04
@@ -83,6 +85,14 @@ jobs:
             os: linux
           - arch: x86
             os: ios
+          - arch: x64
+            os: ios
+          - arch: arm
+            os: iossimulator
+          - arch: x86
+            os: iossimulator
+          - arch: x64
+            os: iossimulator
 
     steps:
       - name: Checkout ${{ github.repository }}
@@ -102,6 +112,14 @@ jobs:
       - name: Configure iOS deployement target
         if: ${{ matrix.os == 'ios' }}
         run: Write-Output "IPHONEOS_DEPLOYMENT_TARGET=12.1" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
+
+      - name: Configure iOS simulator deployement target
+        if: ${{ matrix.os == 'iossimulator' }}
+        run: |
+          Write-Output "IPHONESIMULATOR_DEPLOYMENT_TARGET=12.1" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          $SimulatorSdk = xcrun --sdk iphonesimulator --show-sdk-path
+          Write-Output "SDKROOT=$SimulatorSdk" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
         shell: pwsh
 
       - name: Update runner
@@ -129,7 +147,7 @@ jobs:
       # No pre-generated bindings for Android and iOS.
       # https://aws.github.io/aws-lc-rs/platform_support.html#pre-generated-bindings
       - name: Install bindgen-cli for aws-lc-sys
-        if: ${{ matrix.os == 'android' || matrix.os == 'ios' }}
+        if: ${{ matrix.os == 'android' || matrix.os == 'ios' || matrix.os == 'iossimulator' }}
         run: cargo install --force --locked bindgen-cli
 
       # For aws-lc-sys. Error returned otherwise:
@@ -160,11 +178,11 @@ jobs:
           $RustArch = @{'x64'='x86_64';'arm64'='aarch64';
             'x86'='i686';'arm'='armv7'}[$DotNetArch]
           $RustPlatform = @{'win'='pc-windows-msvc';
-            'osx'='apple-darwin';'ios'='apple-ios';
+            'osx'='apple-darwin';'ios'='apple-ios';'iossimulator'='apple-ios-sim';
             'linux'='unknown-linux-gnu';'android'='linux-android'}[$DotNetOs]
-          $LibPrefix = @{'win'='';'osx'='lib';'ios'='lib';
+          $LibPrefix = @{'win'='';'osx'='lib';'ios'='lib';'iossimulator'='lib';
             'linux'='lib';'android'='lib'}[$DotNetOs]
-          $LibSuffix = @{'win'='.dll';'osx'='.dylib';'ios'='.dylib';
+          $LibSuffix = @{'win'='.dll';'osx'='.dylib';'ios'='.dylib';'iossimulator'='.dylib';
             'linux'='.so';'android'='.so'}[$DotNetOs]
           $RustTarget = "$RustArch-$RustPlatform"
 
@@ -211,52 +229,13 @@ jobs:
           Copy-Item $OutputLibrary $(Join-Path $OutputPath $RenamedLibraryName)
         shell: pwsh
 
-      - name: Upload native components
-        uses: actions/upload-artifact@v7
-        with:
-          name: ironrdp-${{matrix.os}}-${{matrix.arch}}
-          path: dependencies/runtimes/${{matrix.os}}-${{matrix.arch}}
-
-  build-universal:
-    name: Universal build
-    needs: [preflight, build-native]
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ osx, ios ]
-
-    steps:
-      - name: Checkout ${{ github.repository }}
-        uses: actions/checkout@v6
-
-      - name: Setup CCTools
-        uses: Devolutions/actions-public/setup-cctools@v1
-
-      - name: Download native components
-        uses: actions/download-artifact@v8
-        with:
-          path: dependencies/runtimes
-
-      - name: Lipo native components
-        run: |
-          Set-Location "dependencies/runtimes"
-          # No RID for universal binaries, see: https://github.com/dotnet/runtime/issues/53156
-          $OutputPath = Join-Path "${{ matrix.os }}-universal" "native"
-          New-Item -ItemType Directory -Path $OutputPath | Out-Null
-          $Libraries = Get-ChildItem -Recurse -Path "ironrdp-${{ matrix.os }}-*" -Filter "*.dylib" | Foreach-Object { $_.FullName } | Select -Unique
-          $LipoCmd = $(@('lipo', '-create', '-output', (Join-Path -Path $OutputPath -ChildPath "libDevolutionsIronRdp.dylib")) + $Libraries) -Join ' '
-          Write-Host $LipoCmd
-          Invoke-Expression $LipoCmd
-        shell: pwsh
-
-      - name: Framework
-        if: ${{ matrix.os == 'ios' }}
+      - name: Framework (${{matrix.os}}-${{matrix.arch}})
+        if: ${{ matrix.os == 'ios' || matrix.os == 'iossimulator' }}
         run: |
           $Version = '${{ needs.preflight.outputs.project-version }}'
           $ShortVersion = '${{ needs.preflight.outputs.package-version }}'
           $BundleName = "libDevolutionsIronRdp"
-          $RuntimesDir = Join-Path "dependencies" "runtimes" "ios-universal" "native"
+          $RuntimesDir = Join-Path "dependencies" "runtimes" "${{ matrix.os }}-${{ matrix.arch }}" "native"
           $FrameworkDir = Join-Path "$RuntimesDir" "$BundleName.framework"
           New-Item -Path $FrameworkDir -ItemType "directory" -Force
           $FrameworkExecutable = Join-Path $FrameworkDir $BundleName
@@ -293,6 +272,45 @@ jobs:
           # .NET XML document inserts two square brackets at the end of the DOCTYPE tag
           # It's perfectly valid XML, but we're dealing with plists here and dyld will not be able to read the file
           ((Get-Content -Path (Join-Path $FrameworkDir "Info.plist") -Raw) -Replace 'PropertyList-1.0.dtd"\[\]', 'PropertyList-1.0.dtd"') | Set-Content -Path (Join-Path $FrameworkDir "Info.plist")
+        shell: pwsh
+
+      - name: Upload native components
+        uses: actions/upload-artifact@v7
+        with:
+          name: ironrdp-${{matrix.os}}-${{matrix.arch}}
+          path: dependencies/runtimes/${{matrix.os}}-${{matrix.arch}}
+
+  build-universal:
+    name: Universal build
+    needs: [preflight, build-native]
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ osx ]
+
+    steps:
+      - name: Checkout ${{ github.repository }}
+        uses: actions/checkout@v6
+
+      - name: Setup CCTools
+        uses: Devolutions/actions-public/setup-cctools@v1
+
+      - name: Download native components
+        uses: actions/download-artifact@v8
+        with:
+          path: dependencies/runtimes
+
+      - name: Lipo native components
+        run: |
+          Set-Location "dependencies/runtimes"
+          # No RID for universal binaries, see: https://github.com/dotnet/runtime/issues/53156
+          $OutputPath = Join-Path "${{ matrix.os }}-universal" "native"
+          New-Item -ItemType Directory -Path $OutputPath | Out-Null
+          $Libraries = Get-ChildItem -Recurse -Path "ironrdp-${{ matrix.os }}-*" -Filter "*.dylib" | Foreach-Object { $_.FullName } | Select -Unique
+          $LipoCmd = $(@('lipo', '-create', '-output', (Join-Path -Path $OutputPath -ChildPath "libDevolutionsIronRdp.dylib")) + $Libraries) -Join ' '
+          Write-Host $LipoCmd
+          Invoke-Expression $LipoCmd
         shell: pwsh
 
       - name: Upload native components

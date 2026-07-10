@@ -1,17 +1,19 @@
 use bitflags::bitflags;
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
-    ensure_size, invalid_field_err, not_enough_bytes_err, other_err, read_padding, write_padding,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteBuf, WriteCursor, cast_length, decode,
+    ensure_fixed_part_size, ensure_size, invalid_field_err, not_enough_bytes_err, other_err, read_padding,
+    write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
 use crate::codecs::rfx::FrameAcknowledgePdu;
 use crate::input::InputEventPdu;
-use crate::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
+use crate::mcs::SendDataIndicationCtx;
 use crate::rdp::capability_sets::{ClientConfirmActive, ServerDemandActive};
 use crate::rdp::client_info;
 use crate::rdp::finalization_messages::{ControlPdu, FontPdu, MonitorLayoutPdu, SynchronizePdu};
+use crate::rdp::multitransport::MultitransportRequestPdu;
 use crate::rdp::refresh_rectangle::RefreshRectanglePdu;
 use crate::rdp::server_error_info::ServerSetErrorInfoPdu;
 use crate::rdp::session_info::SaveSessionInfoPdu;
@@ -33,6 +35,7 @@ const COMPRESSION_TYPE_FIELD_SIZE: usize = 1;
 const COMPRESSED_LENGTH_FIELD_SIZE: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BasicSecurityHeader {
     pub flags: BasicSecurityHeaderFlags,
 }
@@ -73,7 +76,156 @@ impl<'de> Decode<'de> for BasicSecurityHeader {
     }
 }
 
+/// Encodes a [`ShareControlPdu`] wrapped in an MCS Send Data Request.
+pub fn encode_share_control(
+    initiator_id: u16,
+    channel_id: u16,
+    share_id: u32,
+    pdu: ShareControlPdu,
+    buf: &mut WriteBuf,
+) -> EncodeResult<usize> {
+    let share_control_header = ShareControlHeader {
+        share_control_pdu: pdu,
+        pdu_source: initiator_id,
+        share_id,
+    };
+
+    crate::mcs::encode_send_data_request(initiator_id, channel_id, &share_control_header, buf)
+}
+
+/// Encodes a [`ShareDataPdu`] wrapped in a Share Control header and an MCS Send Data Request.
+pub fn encode_share_data(
+    initiator_id: u16,
+    channel_id: u16,
+    share_id: u32,
+    pdu: ShareDataPdu,
+    buf: &mut WriteBuf,
+) -> EncodeResult<usize> {
+    let share_data_header = ShareDataHeader {
+        share_data_pdu: pdu,
+        stream_priority: StreamPriority::Medium,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: client_info::CompressionType::K8, // ignored if CompressionFlags::empty()
+    };
+
+    encode_share_control(
+        initiator_id,
+        channel_id,
+        share_id,
+        ShareControlPdu::Data(share_data_header),
+        buf,
+    )
+}
+
+/// A decoded Share Control PDU together with its channel routing information.
+#[derive(Debug, Clone)]
+pub struct ShareControlCtx {
+    pub initiator_id: u16,
+    pub channel_id: u16,
+    pub share_id: u32,
+    pub pdu_source: u16,
+    pub pdu: ShareControlPdu,
+}
+
+/// Decodes a [`ShareControlHeader`] from the user data of a Send Data Indication.
+pub fn decode_share_control(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<ShareControlCtx> {
+    let user_msg = ctx.decode_user_data::<ShareControlHeader>()?;
+
+    Ok(ShareControlCtx {
+        initiator_id: ctx.initiator_id,
+        channel_id: ctx.channel_id,
+        share_id: user_msg.share_id,
+        pdu_source: user_msg.pdu_source,
+        pdu: user_msg.share_control_pdu,
+    })
+}
+
+/// A decoded Share Data PDU together with its channel routing information.
+#[derive(Debug, Clone)]
+pub struct ShareDataCtx {
+    pub initiator_id: u16,
+    pub channel_id: u16,
+    pub share_id: u32,
+    pub pdu_source: u16,
+    pub pdu: ShareDataPdu,
+}
+
+/// Decodes a [`ShareDataHeader`] from the user data of a Send Data Indication.
+pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<ShareDataCtx> {
+    let ctx = decode_share_control(ctx)?;
+
+    let ShareControlPdu::Data(share_data_header) = ctx.pdu else {
+        return Err(other_err!(
+            "decode_share_data",
+            "received unexpected Share Control PDU (expected Data PDU)"
+        ));
+    };
+
+    Ok(ShareDataCtx {
+        initiator_id: ctx.initiator_id,
+        channel_id: ctx.channel_id,
+        share_id: ctx.share_id,
+        pdu_source: ctx.pdu_source,
+        pdu: share_data_header.share_data_pdu,
+    })
+}
+
+/// A PDU received on the RDP IO channel.
+pub enum IoChannelPdu {
+    Data(ShareDataCtx),
+    DeactivateAll(ServerDeactivateAll),
+    /// Server Initiate Multitransport Request PDU.
+    ///
+    /// Received when the server wants the client to establish a sideband UDP transport.
+    MultitransportRequest(MultitransportRequestPdu),
+}
+
+/// Decodes a PDU received on the RDP IO channel from the user data of a Send Data Indication.
+pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<IoChannelPdu> {
+    // Multitransport PDUs use BasicSecurityHeader (flags:u16, flagsHi:u16) instead
+    // of the ShareControlHeader (totalLength:u16, pduType:u16, ...) used by all
+    // other IO channel PDUs. We discriminate by checking flagsHi == 0 (ShareControl
+    // has pduType there, which is always non-zero) and requiring flags to be a valid
+    // BasicSecurityHeaderFlags combination.
+    if ctx.user_data.len() >= BASIC_SECURITY_HEADER_SIZE {
+        let flags_raw = u16::from_le_bytes([ctx.user_data[0], ctx.user_data[1]]);
+        let flags_hi = u16::from_le_bytes([ctx.user_data[2], ctx.user_data[3]]);
+
+        if flags_hi == 0 {
+            if let Some(flags) = BasicSecurityHeaderFlags::from_bits(flags_raw) {
+                if flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ) {
+                    if let Ok(pdu) = decode::<MultitransportRequestPdu>(ctx.user_data) {
+                        return Ok(IoChannelPdu::MultitransportRequest(pdu));
+                    }
+                }
+            }
+        }
+    }
+
+    let ctx = decode_share_control(ctx)?;
+
+    match ctx.pdu {
+        ShareControlPdu::ServerDeactivateAll(deactivate_all) => Ok(IoChannelPdu::DeactivateAll(deactivate_all)),
+        ShareControlPdu::Data(share_data_header) => {
+            let share_data_ctx = ShareDataCtx {
+                initiator_id: ctx.initiator_id,
+                channel_id: ctx.channel_id,
+                share_id: ctx.share_id,
+                pdu_source: ctx.pdu_source,
+                pdu: share_data_header.share_data_pdu,
+            };
+
+            Ok(IoChannelPdu::Data(share_data_ctx))
+        }
+        _ => Err(other_err!(
+            "decode_io_channel",
+            "received unexpected Share Control PDU (expected Data PDU or Server Deactivate All PDU)"
+        )),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ShareControlHeader {
     pub share_control_pdu: ShareControlPdu,
     pub pdu_source: u16,
@@ -157,6 +309,7 @@ impl<'de> Decode<'de> for ShareControlHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ShareControlPdu {
     ServerDemandActive(ServerDemandActive),
     ClientConfirmActive(ClientConfirmActive),
@@ -227,6 +380,7 @@ impl Encode for ShareControlPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ShareDataHeader {
     pub share_data_pdu: ShareDataPdu,
     pub stream_priority: StreamPriority,
@@ -305,6 +459,7 @@ impl<'de> Decode<'de> for ShareDataHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ShareDataPdu {
     Synchronize(SynchronizePdu),
     Control(ControlPdu),
@@ -331,10 +486,6 @@ pub enum ShareDataPdu {
     DrawGdiPusErrorPdu(Vec<u8>),
     ArcStatusPdu(Vec<u8>),
     StatusInfoPdu(Vec<u8>),
-    /// Auto-Detect Request (server to client)
-    AutoDetectReq(AutoDetectRequest),
-    /// Auto-Detect Response (client to server)
-    AutoDetectRsp(AutoDetectResponse),
 }
 
 impl ShareDataPdu {
@@ -367,8 +518,6 @@ impl ShareDataPdu {
             ShareDataPdu::DrawGdiPusErrorPdu(_) => "Draw GDI PUS Error PDU",
             ShareDataPdu::ArcStatusPdu(_) => "Arc Status PDU",
             ShareDataPdu::StatusInfoPdu(_) => "Status Info PDU",
-            ShareDataPdu::AutoDetectReq(_) => "Auto-Detect Request PDU",
-            ShareDataPdu::AutoDetectRsp(_) => "Auto-Detect Response PDU",
         }
     }
 
@@ -399,7 +548,6 @@ impl ShareDataPdu {
             ShareDataPdu::DrawGdiPusErrorPdu(_) => ShareDataPduType::DrawGdiPusErrorPdu,
             ShareDataPdu::ArcStatusPdu(_) => ShareDataPduType::ArcStatusPdu,
             ShareDataPdu::StatusInfoPdu(_) => ShareDataPduType::StatusInfoPdu,
-            ShareDataPdu::AutoDetectReq(_) | ShareDataPdu::AutoDetectRsp(_) => ShareDataPduType::AutoDetect,
         }
     }
 
@@ -440,15 +588,6 @@ impl ShareDataPdu {
             ShareDataPduType::DrawGdiPusErrorPdu => Ok(ShareDataPdu::DrawGdiPusErrorPdu(src.remaining().to_vec())),
             ShareDataPduType::ArcStatusPdu => Ok(ShareDataPdu::ArcStatusPdu(src.remaining().to_vec())),
             ShareDataPduType::StatusInfoPdu => Ok(ShareDataPdu::StatusInfoPdu(src.remaining().to_vec())),
-            ShareDataPduType::AutoDetect => {
-                ensure_size!(in: src, size: 2);
-                let type_id = src.remaining()[1];
-                if type_id == crate::rdp::autodetect::TYPE_ID_AUTODETECT_REQUEST {
-                    Ok(ShareDataPdu::AutoDetectReq(AutoDetectRequest::decode(src)?))
-                } else {
-                    Ok(ShareDataPdu::AutoDetectRsp(AutoDetectResponse::decode(src)?))
-                }
-            }
         }
     }
 }
@@ -467,8 +606,6 @@ impl Encode for ShareDataPdu {
             ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => Ok(()),
             ShareDataPdu::SuppressOutput(pdu) => pdu.encode(dst),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.encode(dst),
-            ShareDataPdu::AutoDetectReq(pdu) => pdu.encode(dst),
-            ShareDataPdu::AutoDetectRsp(pdu) => pdu.encode(dst),
             _ => Err(other_err!("Encoding not implemented")),
         }
     }
@@ -502,14 +639,13 @@ impl Encode for ShareDataPdu {
             | ShareDataPdu::DrawGdiPusErrorPdu(buffer)
             | ShareDataPdu::ArcStatusPdu(buffer)
             | ShareDataPdu::StatusInfoPdu(buffer) => buffer.len(),
-            ShareDataPdu::AutoDetectReq(pdu) => pdu.size(),
-            ShareDataPdu::AutoDetectRsp(pdu) => pdu.size(),
         }
     }
 }
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct BasicSecurityHeaderFlags: u16 {
         const EXCHANGE_PKT = 0x0001;
         const TRANSPORT_REQ = 0x0002;
@@ -532,6 +668,7 @@ bitflags! {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum StreamPriority {
     Undefined = 0,
     Low = 1,
@@ -551,6 +688,7 @@ impl StreamPriority {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ShareControlPduType {
     DemandActivePdu = 0x1,
     ConfirmActivePdu = 0x3,
@@ -570,6 +708,7 @@ impl ShareControlPduType {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u8)]
 pub enum ShareDataPduType {
     Update = 0x02,
@@ -597,13 +736,6 @@ pub enum ShareDataPduType {
     StatusInfoPdu = 0x36,
     MonitorLayoutPdu = 0x37,
     FrameAcknowledgePdu = 0x38,
-    /// Auto-Detect Request or Response ([MS-RDPBCGR 2.2.14]).
-    ///
-    /// The headerTypeId field within the PDU body discriminates direction:
-    /// 0x00 for server-to-client requests, 0x01 for client-to-server responses.
-    ///
-    /// [MS-RDPBCGR 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
-    AutoDetect = 0x3b,
 }
 
 impl ShareDataPduType {
@@ -618,6 +750,7 @@ impl ShareDataPduType {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CompressionFlags: u8 {
         const COMPRESSED = 0x20;
         const AT_FRONT = 0x40;
@@ -631,6 +764,7 @@ bitflags! {
 ///
 /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/8a29971a-df3c-48da-add2-8ed9a05edc89
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerDeactivateAll;
 
 impl ServerDeactivateAll {

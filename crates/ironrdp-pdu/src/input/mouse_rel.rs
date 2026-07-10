@@ -2,6 +2,7 @@ use bitflags::bitflags;
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MouseRelPdu {
     pub flags: PointerRelFlags,
     pub x_delta: i16,
@@ -52,6 +53,7 @@ impl<'de> Decode<'de> for MouseRelPdu {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct PointerRelFlags: u16 {
         const MOVE = 0x0800;
         const DOWN = 0x8000;

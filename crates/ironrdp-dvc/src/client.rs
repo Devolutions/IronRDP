@@ -25,7 +25,7 @@ pub trait DvcChannelListener: Send {
 
     /// Called for each incoming DYNVC_CREATE_REQ matching this name.
     /// Return `None` to reject (NO_LISTENER).
-    fn create(&mut self) -> Option<Box<dyn DvcProcessor>>;
+    fn create(&mut self, channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>>;
 }
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
@@ -51,7 +51,7 @@ impl DvcChannelListener for OnceListener {
             .channel_name()
     }
 
-    fn create(&mut self) -> Option<Box<dyn DvcProcessor>> {
+    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>> {
         self.inner.take()
     }
 }
@@ -161,11 +161,20 @@ impl DrdynvcClient {
         self.dynamic_channels.get_by_channel_id(channel_id)
     }
 
+    pub fn get_dvc_by_channel_id_mut(&mut self, channel_id: u32) -> Option<&mut DynamicVirtualChannel> {
+        self.dynamic_channels.get_by_channel_id_mut(channel_id)
+    }
+
     fn create_capabilities_response(&mut self, server_version: CapsVersion) -> SvcMessage {
         let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(server_version));
         debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
         self.cap_handshake_done = true;
         SvcMessage::from(caps_response)
+    }
+
+    pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
+        self.dynamic_channels.remove_by_channel_id(channel_id)?;
+        Some(SvcMessage::from(DrdynvcClientPdu::Close(ClosePdu::new(channel_id))))
     }
 }
 
@@ -210,7 +219,17 @@ impl SvcProcessor for DrdynvcClient {
 
                 let (creation_status, start_messages) =
                     if let Some(dvc) = self.dynamic_channels.try_create_channel(&channel_name, channel_id) {
-                        (CreationStatus::OK, dvc.start()?)
+                        match dvc.start(channel_id) {
+                            Ok(messages) => (CreationStatus::OK, messages),
+                            Err(e) => {
+                                debug!(
+                                    ?channel_id, error = %e,
+                                    "DVC start failed; removing channel and reporting NO_LISTENER"
+                                );
+                                self.dynamic_channels.remove_by_channel_id(channel_id);
+                                (CreationStatus::NO_LISTENER, Vec::new())
+                            }
+                        }
                     } else {
                         (CreationStatus::NO_LISTENER, Vec::new())
                     };
@@ -227,14 +246,14 @@ impl SvcProcessor for DrdynvcClient {
                     );
                 }
             }
-            DrdynvcServerPdu::Close(close_request) => {
-                debug!("Got DVC Close Request PDU: {close_request:?}");
-                self.dynamic_channels.remove_by_channel_id(close_request.channel_id());
-
-                let close_response = DrdynvcClientPdu::Close(ClosePdu::new(close_request.channel_id()));
-
-                debug!("Send DVC Close Response PDU: {close_response:?}");
-                responses.push(SvcMessage::from(close_response));
+            DrdynvcServerPdu::Close(close) => {
+                debug!("Got DVC Close PDU: {close:?}");
+                let channel_id = close.channel_id();
+                if self.dynamic_channels.remove_by_channel_id(channel_id).is_some() {
+                    let close_response = DrdynvcClientPdu::Close(ClosePdu::new(channel_id));
+                    debug!("Send DVC Close Response PDU: {close_response:?}");
+                    responses.push(SvcMessage::from(close_response));
+                }
             }
             DrdynvcServerPdu::Data(data) => {
                 let channel_id = data.channel_id();
@@ -305,14 +324,15 @@ impl DynamicChannelSet {
         channel_id: DynamicChannelId,
     ) -> Option<&mut DynamicVirtualChannel> {
         let entry = self.listeners.get_mut(name)?;
-        let processor = entry.listener.create()?;
+        let processor = entry.listener.create(channel_id)?;
 
         if let Some(type_id) = entry.type_id {
             self.type_id_to_channel_id.insert(type_id, channel_id);
         }
 
-        let mut dvc = DynamicVirtualChannel::from_boxed(processor);
-        dvc.channel_id = Some(channel_id);
+        let dvc = DynamicVirtualChannel::from_boxed(processor);
+        // `dvc.channel_id` stays `None` here — it is set by `DynamicVirtualChannel::start`
+        // on success, so `Drop` only invokes `close` for channels that were actually opened.
         let dvc = match self.active_channels.entry(channel_id) {
             alloc::collections::btree_map::Entry::Occupied(mut e) => {
                 e.insert(dvc);
@@ -337,8 +357,8 @@ impl DynamicChannelSet {
         self.active_channels.get_mut(&id)
     }
 
-    fn remove_by_channel_id(&mut self, id: DynamicChannelId) {
-        if let Some(dvc) = self.active_channels.remove(&id) {
+    fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> Option<DynamicVirtualChannel> {
+        self.active_channels.remove(&id).inspect(|dvc| {
             let type_id = dvc.processor_type_id();
 
             // Only matters for pre-registered channels
@@ -347,7 +367,7 @@ impl DynamicChannelSet {
             {
                 entry.remove();
             }
-        }
+        })
     }
 
     #[inline]

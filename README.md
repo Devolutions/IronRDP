@@ -19,12 +19,13 @@ Supported codecs:
 
 ## Examples
 
-### [`ironrdp-client`](https://github.com/Devolutions/IronRDP/tree/master/crates/ironrdp-client)
+### [`ironrdp-viewer`](https://github.com/Devolutions/IronRDP/tree/master/crates/ironrdp-viewer)
 
 A full-fledged RDP client based on IronRDP crates suite, and implemented using non-blocking, asynchronous I/O.
+It is built on top of the reusable [`ironrdp-client`](https://github.com/Devolutions/IronRDP/tree/master/crates/ironrdp-client) library crate.
 
 ```shell
-cargo run --bin ironrdp-client -- <HOSTNAME> --username <USERNAME> --password <PASSWORD>
+cargo run --bin ironrdp-viewer -- <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
 ### [`screenshot`](https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp/examples/screenshot.rs)
@@ -63,6 +64,18 @@ Alternatively, you may change a few group policies using `gpedit.msc`:
 4. Enable `Computer Configuration/Administrative Templates/Windows Components/Remote Desktop Services/Remote Desktop Session Host/Remote Session Environment/Limit maximum color depth`
 
 5. Reboot.
+
+## Binary releases
+
+Prebuilt, checksummed `.tar.gz` archives are attached to each GitHub Release for the executable
+packages, one per supported platform:
+
+- [`ironrdp-agent`](./crates/ironrdp-agent) — the agentic, daemon-backed CLI.
+- [`ironrdp-viewer`](./crates/ironrdp-viewer) — the windowed RDP client CLI.
+
+Each package is released under its own tag (`ironrdp-agent-v*`, `ironrdp-viewer-v*`). See the
+[Releases page](https://github.com/Devolutions/IronRDP/releases) to pick a release and follow the
+per-platform download, checksum, and extraction instructions included in its notes.
 
 ## Rust version (MSRV)
 

@@ -51,6 +51,9 @@ pub(crate) struct UpdateEncoderCodecs {
     qoi: Option<u8>,
     #[cfg(feature = "qoiz")]
     qoiz: Option<u8>,
+    /// `(codec_id, color_loss_level)` from the negotiated NsCodec capability.
+    #[cfg(feature = "nscodec")]
+    nscodec: Option<(u8, u8)>,
 }
 
 impl UpdateEncoderCodecs {
@@ -62,6 +65,8 @@ impl UpdateEncoderCodecs {
             qoi: None,
             #[cfg(feature = "qoiz")]
             qoiz: None,
+            #[cfg(feature = "nscodec")]
+            nscodec: None,
         }
     }
 
@@ -80,6 +85,14 @@ impl UpdateEncoderCodecs {
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn set_qoiz(&mut self, qoiz: Option<u8>) {
         self.qoiz = qoiz
+    }
+
+    /// Record the negotiated NsCodec codec id and color-loss level so the
+    /// encoder selection path can build an `NsCodecHandler` for this session.
+    #[cfg(feature = "nscodec")]
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    pub(crate) fn set_nscodec(&mut self, nscodec: Option<(u8, u8)>) {
+        self.nscodec = nscodec
     }
 }
 
@@ -128,6 +141,17 @@ impl UpdateEncoder {
                     remotefx: Some((algo, id)),
                     ..
                 } => BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size)),
+                // NSCodec is the lowest-priority codec because it predates
+                // RemoteFX and produces larger output. It's relevant mainly
+                // for clients (notably macOS Microsoft Remote Desktop /
+                // Windows App) whose legacy bitmap-codec list advertises
+                // only NSCodec — those clients would otherwise fall through
+                // to raw/RLE BitmapUpdate at much higher bandwidth.
+                #[cfg(feature = "nscodec")]
+                UpdateEncoderCodecs {
+                    nscodec: Some((id, cll)),
+                    ..
+                } => BitmapUpdater::NsCodec(NsCodecHandler::new(id, cll)),
                 _ => BitmapUpdater::None(NoneHandler),
             }
         } else {
@@ -431,6 +455,8 @@ enum BitmapUpdater {
     Qoi(QoiHandler),
     #[cfg(feature = "qoiz")]
     Qoiz(QoizHandler),
+    #[cfg(feature = "nscodec")]
+    NsCodec(NsCodecHandler),
 }
 
 impl BitmapUpdater {
@@ -443,6 +469,8 @@ impl BitmapUpdater {
             Self::Qoi(up) => up.handle(bitmap),
             #[cfg(feature = "qoiz")]
             Self::Qoiz(up) => up.handle(bitmap),
+            #[cfg(feature = "nscodec")]
+            Self::NsCodec(up) => up.handle(bitmap),
         }
     }
 
@@ -648,18 +676,61 @@ impl BitmapUpdateHandler for QoizHandler {
     }
 }
 
+#[cfg(feature = "nscodec")]
+#[derive(Clone, Debug)]
+struct NsCodecHandler {
+    codec_id: u8,
+    color_loss_level: u8,
+}
+
+#[cfg(feature = "nscodec")]
+impl NsCodecHandler {
+    fn new(codec_id: u8, color_loss_level: u8) -> Self {
+        Self {
+            codec_id,
+            color_loss_level,
+        }
+    }
+}
+
+#[cfg(feature = "nscodec")]
+impl BitmapUpdateHandler for NsCodecHandler {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+        let data = ironrdp_nscodec::encoder::encode(
+            &bitmap.data,
+            bitmap.width.get(),
+            bitmap.height.get(),
+            bitmap.stride.get(),
+            bitmap.format,
+            self.color_loss_level,
+        );
+        set_surface(bitmap, self.codec_id, &data)
+    }
+}
+
 #[cfg(feature = "qoi")]
 fn qoi_encode(bitmap: &BitmapUpdate) -> Result<Vec<u8>> {
     use ironrdp_graphics::image_processing::PixelFormat::*;
+    // Map every 4-byte input — whether it nominally has an alpha byte or
+    // an "X" filler — to the 3-channel-output `*x` variant of
+    // `RawChannels`. The qoi crate selects `Channels::Rgb` vs
+    // `Channels::Rgba` for the QOI header from this enum: `*x` and `*r/g/b`
+    // produce `Rgb`; `*a` produces `Rgba`. The `ironrdp-session` NSCodec-
+    // free decode path in `fast_path.rs::qoi_apply` only supports
+    // `Channels::Rgb` and explicitly drops `Channels::Rgba` frames with
+    // `WARN: Unsupported RGBA QOI data`, so the previous "honest" mapping
+    // (`BgrA32 -> Bgra`, etc.) produced output that no IronRDP client
+    // could decode — every QOI session rendered a blank screen.
+    //
+    // Server-side bitmap captures are functionally opaque (the alpha byte
+    // is either always 0xFF or treated as filler), so discarding it is
+    // safe and matches what every successful legacy bitmap path
+    // already does.
     let raw_channels = match bitmap.format {
-        ARgb32 => qoi::RawChannels::Argb,
-        XRgb32 => qoi::RawChannels::Xrgb,
-        ABgr32 => qoi::RawChannels::Abgr,
-        XBgr32 => qoi::RawChannels::Xbgr,
-        BgrA32 => qoi::RawChannels::Bgra,
-        BgrX32 => qoi::RawChannels::Bgrx,
-        RgbA32 => qoi::RawChannels::Rgba,
-        RgbX32 => qoi::RawChannels::Rgbx,
+        ARgb32 | XRgb32 => qoi::RawChannels::Xrgb,
+        ABgr32 | XBgr32 => qoi::RawChannels::Xbgr,
+        BgrA32 | BgrX32 => qoi::RawChannels::Bgrx,
+        RgbA32 | RgbX32 => qoi::RawChannels::Rgbx,
     };
     let enc = qoi::EncoderBuilder::new(&bitmap.data, bitmap.width.get().into(), bitmap.height.get().into())
         .stride(bitmap.stride.get())

@@ -196,3 +196,23 @@ fn palette_decode_with_code_returns_palette_variant() {
         other => panic!("Expected Palette variant, got: {other:?}"),
     }
 }
+
+#[test]
+fn compressed_update_round_trips() {
+    // The encoder must set the COMPRESSION_USED bit on the update header when
+    // compression flags are present, otherwise the decoder does not consume the
+    // trailing compression flags byte and misreads the data length.
+    let data = [0xAAu8; 8];
+    let pdu = FastPathUpdatePdu {
+        fragmentation: Fragmentation::Single,
+        update_code: UpdateCode::SurfaceCommands,
+        compression_flags: Some(CompressionFlags::COMPRESSED),
+        compression_type: Some(CompressionType::K64),
+        data: &data,
+    };
+
+    let mut buffer = vec![0u8; pdu.size()];
+    encode(&pdu, buffer.as_mut_slice()).unwrap();
+
+    assert_eq!(pdu, decode::<FastPathUpdatePdu<'_>>(&buffer).unwrap());
+}

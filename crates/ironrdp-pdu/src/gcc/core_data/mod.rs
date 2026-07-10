@@ -1,16 +1,11 @@
 pub(crate) mod client;
 pub(crate) mod server;
 
-use std::io;
-
-use thiserror::Error;
-
-use crate::PduError;
-
 const VERSION_SIZE: usize = 4;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RdpVersion(pub u32);
 
 impl From<u32> for RdpVersion {
@@ -41,38 +36,4 @@ impl RdpVersion {
     pub const V10_10: Self = Self(0x0008_000F);
     pub const V10_11: Self = Self(0x0008_0010);
     pub const V10_12: Self = Self(0x0008_0011);
-}
-
-#[derive(Debug, Error)]
-pub enum CoreDataError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid version field")]
-    InvalidVersion,
-    #[error("invalid color depth field")]
-    InvalidColorDepth,
-    #[error("invalid post beta color depth field")]
-    InvalidPostBetaColorDepth,
-    #[error("invalid high color depth field")]
-    InvalidHighColorDepth,
-    #[error("invalid supported color depths field")]
-    InvalidSupportedColorDepths,
-    #[error("invalid secure access sequence field")]
-    InvalidSecureAccessSequence,
-    #[error("invalid keyboard type field")]
-    InvalidKeyboardType,
-    #[error("invalid early capability flags field")]
-    InvalidEarlyCapabilityFlags,
-    #[error("invalid connection type field")]
-    InvalidConnectionType,
-    #[error("invalid server security protocol field")]
-    InvalidServerSecurityProtocol,
-    #[error("PDU error: {0}")]
-    Pdu(PduError),
-}
-
-impl From<PduError> for CoreDataError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
-    }
 }

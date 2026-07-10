@@ -12,8 +12,110 @@
 
 use crate::generators::BitmapInput;
 
+// Bulk decompression oracles. Each target is algorithm-pinned so libFuzzer
+// can build a per-algorithm corpus. The `flags` byte uses the bit layout
+// from `ironrdp-bulk::flags`: low nibble selects the algorithm (per
+// `CompressionType::from_flags`), `PACKET_COMPRESSED (0x20)` gates whether
+// the decompressor will actually run (otherwise it returns the source slice
+// unchanged).
+
+pub fn bulk_decompress_mppc(data: &[u8]) {
+    use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
+
+    // First byte selects RDP4 (low bit clear) vs RDP5 (low bit set) so a
+    // single corpus exercises both MPPC modes via libFuzzer mutation across
+    // the byte boundary.
+    let Some((mode_byte, payload)) = data.split_first() else {
+        return;
+    };
+    let (comp_type, algo_bits) = if mode_byte & 0x01 == 0 {
+        (CompressionType::Rdp4, 0x00)
+    } else {
+        (CompressionType::Rdp5, 0x01)
+    };
+    let Ok(mut bulk) = BulkCompressor::new(comp_type) else {
+        return;
+    };
+    let _ = bulk.decompress(payload, flags::PACKET_COMPRESSED | algo_bits);
+}
+
+pub fn bulk_decompress_ncrush(data: &[u8]) {
+    use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
+
+    let Ok(mut bulk) = BulkCompressor::new(CompressionType::Rdp6) else {
+        return;
+    };
+    let _ = bulk.decompress(data, flags::PACKET_COMPRESSED | 0x02);
+}
+
+pub fn bulk_decompress_xcrush(data: &[u8]) {
+    use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
+
+    let Ok(mut bulk) = BulkCompressor::new(CompressionType::Rdp61) else {
+        return;
+    };
+    let _ = bulk.decompress(data, flags::PACKET_COMPRESSED | 0x03);
+}
+
+/// Round-trip oracle: compress uncompressed input then decompress the result,
+/// assert byte-equality with the original. `BulkCompressor` holds both halves;
+/// a fresh compressor and decompressor are constructed per call to avoid
+/// sliding-window state leaking between fuzz iterations.
+///
+/// # Panics
+///
+/// Panics (reporting the bug to libFuzzer) when:
+/// - `decompress` returns `Err` on input that `compress` just produced
+///   (asymmetric compress/decompress bug), or
+/// - the decompressed output does not equal the original input
+///   (silent corruption bug in either half).
+#[expect(clippy::panic, reason = "panic is the libFuzzer bug-reporting mechanism")]
+pub fn bulk_round_trip(data: &[u8]) {
+    use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
+
+    // First byte selects algorithm; remaining bytes are the uncompressed input.
+    let Some((algo_byte, src)) = data.split_first() else {
+        return;
+    };
+    let algo = match algo_byte & 0x03 {
+        0x00 => CompressionType::Rdp4,
+        0x01 => CompressionType::Rdp5,
+        0x02 => CompressionType::Rdp6,
+        _ => CompressionType::Rdp61,
+    };
+
+    let Ok(mut sender) = BulkCompressor::new(algo) else {
+        return;
+    };
+    let Ok((compressed_size, compress_flags)) = sender.compress(src) else {
+        return;
+    };
+    // Per `BulkCompressor::compress`'s contract, when `PACKET_COMPRESSED` is
+    // cleared the caller transmits `src` unchanged; the output buffer holds
+    // no meaningful data in that case. Selecting the wire payload here
+    // exercises both the real compressed path and the decompressor's
+    // pass-through branch on incompressible inputs.
+    let payload = if compress_flags & flags::PACKET_COMPRESSED == 0 {
+        src
+    } else {
+        sender.compressed_data(compressed_size)
+    };
+
+    let Ok(mut receiver) = BulkCompressor::new(algo) else {
+        return;
+    };
+    let decompressed = receiver
+        .decompress(payload, compress_flags)
+        .unwrap_or_else(|e| panic!("bulk round-trip decompress failed for {algo:?}: {e:?}"));
+    assert_eq!(decompressed, src, "bulk round-trip byte-equality failed for {algo:?}",);
+}
+
 pub fn pdu_decode(data: &[u8]) {
     use ironrdp_core::decode;
+    use ironrdp_egfx::pdu::{
+        Avc420BitmapStream, Avc444BitmapStream, CacheToSurfacePdu, Color, GfxPdu, Point, QuantQuality,
+        RawCapabilitySet as EgfxRawCapabilitySet,
+    };
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::{ClientInfoPdu, capability_sets, headers, server_error_info, server_license, vc};
@@ -80,6 +182,179 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>>(data);
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
+
+    let _ = decode::<GfxPdu>(data);
+    let _ = decode::<CacheToSurfacePdu>(data);
+    let _ = decode::<EgfxRawCapabilitySet>(data);
+    let _ = decode::<Avc420BitmapStream<'_>>(data);
+    let _ = decode::<Avc444BitmapStream<'_>>(data);
+    let _ = decode::<QuantQuality>(data);
+    let _ = decode::<Point>(data);
+    let _ = decode::<Color>(data);
+}
+
+/// Helper for [`pdu_round_trip`].
+///
+/// Exercises `decode` → `encode_vec` → re-`decode`, silently dropping `Err`
+/// results from any stage. The oracle's value is in detecting INTERNAL
+/// panics from inside the encoder/decoder (e.g., `unreachable!()` reached
+/// on a valid decoded state), not in asserting Err-result symmetry. Many
+/// `ironrdp-pdu` types have known asymmetric `Encode` impls that return
+/// `"Encoding not implemented"` for variants the decoder still accepts;
+/// those are tracked separately and not in scope for this oracle.
+macro_rules! pdu_round_trip_one {
+    ($data:expr, $ty:ty) => {{
+        if let Ok(pdu) = ironrdp_core::decode::<$ty>($data) {
+            if let Ok(encoded) = ironrdp_core::encode_vec(&pdu) {
+                let _ = ironrdp_core::decode::<$ty>(&encoded);
+            }
+        }
+    }};
+}
+
+/// Round-trip oracle: for each PDU type, exercise the
+/// `decode` → `encode_vec` → re-`decode` pipeline.
+///
+/// The property tested is *no internal panic from inside the encoder or
+/// decoder when fed a decoder-accepted input through both directions of the
+/// round-trip*. Asymmetric `Err` returns (decoder accepts something the
+/// encoder reports as `"Encoding not implemented"`, or vice-versa) are not
+/// in scope: those are tolerated incomplete-impl cases tracked separately.
+///
+/// What this catches:
+///
+/// - `unreachable!()` reached during encoding of a valid decoded state (i.e.
+///   the encoder's match arms are missing a variant the decoder produces).
+/// - Integer overflow / index-out-of-bounds inside the encoder on
+///   decoder-accepted inputs.
+/// - Panics in the decoder when fed encoder-produced bytes (re-decode path).
+///
+/// What this does NOT catch:
+///
+/// - Encode returning `Err`. Many PDU types intentionally return errors for
+///   partially-implemented variants; exercising them is the encoder
+///   developer's responsibility, not this oracle's.
+/// - Re-decode returning `Err`. Surfaces an asymmetry but not a memory-safety
+///   bug; tracked via filed follow-up issues, not this oracle.
+///
+/// Initial type coverage mirrors `pdu_decode` so the same corpus feeds both
+/// oracles. As new PDU types gain `Encode` impls, they auto-extend coverage
+/// here when added to the macro list below.
+pub fn pdu_round_trip(data: &[u8]) {
+    use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
+    use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
+    use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+    use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, vc};
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
+
+    // Connection-time PDUs
+    pdu_round_trip_one!(data, X224<ConnectionRequest>);
+    pdu_round_trip_one!(data, X224<ConnectionConfirm>);
+    pdu_round_trip_one!(data, X224<McsMessage<'_>>);
+    pdu_round_trip_one!(data, ConnectInitial);
+    pdu_round_trip_one!(data, ConnectResponse);
+    pdu_round_trip_one!(data, ClientInfoPdu);
+    pdu_round_trip_one!(data, pcb::PreconnectionBlob);
+    pdu_round_trip_one!(data, server_error_info::ServerSetErrorInfoPdu);
+
+    // Capability sharing
+    pdu_round_trip_one!(data, CapabilitySet);
+    pdu_round_trip_one!(data, ShareControlHeader);
+
+    // GCC blocks and conference creation
+    pdu_round_trip_one!(data, gcc::ClientGccBlocks);
+    pdu_round_trip_one!(data, gcc::ServerGccBlocks);
+    pdu_round_trip_one!(data, gcc::ClientClusterData);
+    pdu_round_trip_one!(data, gcc::ConferenceCreateRequest);
+    pdu_round_trip_one!(data, gcc::ConferenceCreateResponse);
+
+    // Licensing
+    pdu_round_trip_one!(data, server_license::LicensePdu);
+
+    // Virtual channel header
+    pdu_round_trip_one!(data, vc::ChannelPduHeader);
+
+    // Fast-path framing
+    pdu_round_trip_one!(data, fast_path::FastPathHeader);
+    pdu_round_trip_one!(data, fast_path::FastPathUpdatePdu<'_>);
+
+    // Surface commands
+    pdu_round_trip_one!(data, surface_commands::SurfaceCommand<'_>);
+    pdu_round_trip_one!(data, surface_commands::SurfaceBitsPdu<'_>);
+    pdu_round_trip_one!(data, surface_commands::FrameMarkerPdu);
+    pdu_round_trip_one!(data, surface_commands::ExtendedBitmapDataPdu<'_>);
+    pdu_round_trip_one!(data, surface_commands::BitmapDataHeader);
+
+    // Codecs
+    pdu_round_trip_one!(data, codecs::rfx::Block<'_>);
+
+    // Input
+    pdu_round_trip_one!(data, input::InputEventPdu);
+    pdu_round_trip_one!(data, input::InputEvent);
+
+    // Bitmap RDP6
+    pdu_round_trip_one!(data, bitmap::rdp6::BitmapStream<'_>);
+
+    // Clipboard
+    pdu_round_trip_one!(data, ironrdp_cliprdr::pdu::ClipboardPdu<'_>);
+    pdu_round_trip_one!(data, ironrdp_cliprdr::pdu::PackedFileList);
+    pdu_round_trip_one!(data, ironrdp_cliprdr::pdu::FileContentsRequest);
+    pdu_round_trip_one!(data, ironrdp_cliprdr::pdu::FileContentsResponse<'_>);
+
+    // RDPDR
+    pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::RdpdrPdu);
+
+    // Display control
+    pdu_round_trip_one!(data, ironrdp_displaycontrol::pdu::DisplayControlPdu);
+
+    // RDPSND
+    pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>);
+    pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ClientAudioOutputPdu);
+}
+
+/// Round-trip oracle for `ironrdp-egfx` PDU types: `decode` → `encode_vec` → re-`decode`.
+///
+/// Same shape and property as [`pdu_round_trip`] but scoped to `ironrdp-egfx`'s
+/// own encoder surface. This is the egfx-scoped sibling of the `pdu_round_trip`
+/// oracle and the first target under the egfx fuzz-coverage umbrella tracked at
+/// the egfx-fuzz issue.
+///
+/// Coverage:
+///
+/// - `GfxPdu` is the top-level egfx command dispatch and transitively covers
+///   `WireToSurface1Pdu`, `WireToSurface2Pdu`, `SolidFillPdu`,
+///   `SurfaceToSurfacePdu`, `SurfaceToCachePdu`, `CacheToSurfacePdu`,
+///   `EvictCacheEntryPdu`, `CreateSurfacePdu`, `DeleteSurfacePdu`,
+///   `StartFramePdu`, `EndFramePdu`, `ResetGraphicsPdu`,
+///   `MapSurfaceToOutputPdu`, `MapSurfaceToWindowPdu`,
+///   `MapSurfaceToScaledOutputPdu`, `MapSurfaceToScaledWindowPdu`,
+///   `FrameAcknowledgePdu`, `QoeFrameAcknowledgePdu`,
+///   `DeleteEncodingContextPdu`, `CacheImportOfferPdu`, `CacheImportReplyPdu`.
+/// - `CapabilitiesAdvertisePdu` and `CapabilitiesConfirmPdu` exercise the
+///   capability-negotiation encoder surface (with `RawCapabilitySet` payloads
+///   post-#1305's wire/typed split).
+/// - `Avc420BitmapStream` and `Avc444BitmapStream` exercise the H.264 wire
+///   container encoder.
+///
+/// What this catches: same as `pdu_round_trip` — `unreachable!()` reached on
+/// decoder-accepted inputs, integer overflow / OOB in egfx encoders, panics
+/// in the decoder when fed encoder-produced bytes.
+///
+/// What this does NOT catch: the OpenH264 input-construction wrapper, ZGFX
+/// decompression, multi-frame H.264 state. Those are sibling targets in the
+/// egfx fuzz-coverage umbrella.
+pub fn egfx_round_trip(data: &[u8]) {
+    use ironrdp_egfx::pdu::{
+        Avc420BitmapStream, Avc444BitmapStream, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, GfxPdu,
+    };
+
+    pdu_round_trip_one!(data, GfxPdu);
+    pdu_round_trip_one!(data, CapabilitiesAdvertisePdu);
+    pdu_round_trip_one!(data, CapabilitiesConfirmPdu);
+    pdu_round_trip_one!(data, Avc420BitmapStream<'_>);
+    pdu_round_trip_one!(data, Avc444BitmapStream<'_>);
 }
 
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {

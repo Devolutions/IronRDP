@@ -98,24 +98,28 @@ impl fmt::Display for DecodeErrorKind {
 }
 
 impl NotEnoughBytesErr for DecodeError {
+    #[track_caller]
     fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self {
         Self::new(context, DecodeErrorKind::NotEnoughBytes { received, expected })
     }
 }
 
 impl InvalidFieldErr for DecodeError {
+    #[track_caller]
     fn invalid_field(context: &'static str, field: &'static str, reason: &'static str) -> Self {
         Self::new(context, DecodeErrorKind::InvalidField { field, reason })
     }
 }
 
 impl UnexpectedMessageTypeErr for DecodeError {
+    #[track_caller]
     fn unexpected_message_type(context: &'static str, got: u8) -> Self {
         Self::new(context, DecodeErrorKind::UnexpectedMessageType { got })
     }
 }
 
 impl UnsupportedVersionErr for DecodeError {
+    #[track_caller]
     fn unsupported_version(context: &'static str, got: u8) -> Self {
         Self::new(context, DecodeErrorKind::UnsupportedVersion { got })
     }
@@ -123,16 +127,19 @@ impl UnsupportedVersionErr for DecodeError {
 
 impl UnsupportedValueErr for DecodeError {
     #[cfg(feature = "alloc")]
+    #[track_caller]
     fn unsupported_value(context: &'static str, name: &'static str, value: String) -> Self {
         Self::new(context, DecodeErrorKind::UnsupportedValue { name, value })
     }
     #[cfg(not(feature = "alloc"))]
+    #[track_caller]
     fn unsupported_value(context: &'static str, name: &'static str) -> Self {
         Self::new(context, DecodeErrorKind::UnsupportedValue { name })
     }
 }
 
 impl OtherErr for DecodeError {
+    #[track_caller]
     fn other(context: &'static str, description: &'static str) -> Self {
         Self::new(context, DecodeErrorKind::Other { description })
     }

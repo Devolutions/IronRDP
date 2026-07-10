@@ -8,10 +8,14 @@ import {
     lockCallback,
     unlockCallback,
     locksExpiredCallback,
+    formatListResponseCallback,
     requestFileContents,
     submitFileContents,
     initiateFileCopy,
 } from './extensions';
+import type { FileStorageBackend, FileWriteHandle } from './storage';
+import { detectStorageBackend } from './storage';
+import type { StorageBackendPreference } from './storage';
 
 /**
  * Minimal session interface for extension-based file transfer.
@@ -43,6 +47,21 @@ export interface RdpFileTransferProviderOptions {
      * Use this to resume clipboard monitoring after {@link onUploadStarted}.
      */
     onUploadFinished?: () => void;
+
+    /**
+     * Storage backend for downloads.
+     *
+     * Accepts either a preference string or a pre-constructed backend
+     * instance (useful for testing or custom backends):
+     *
+     * - `'auto'` (default): use OPFS when available, fall back to
+     *   in-memory Blob.  OPFS reduces peak RAM from ~2x file size to
+     *   ~chunk size.
+     * - `'blob'`: force in-memory Blob storage.
+     * - `FileStorageBackend`: use the provided backend instance directly,
+     *   bypassing auto-detection.
+     */
+    storageBackend?: StorageBackendPreference | FileStorageBackend;
 }
 
 /**
@@ -142,7 +161,12 @@ interface TransferState {
     streamId: number;
     clipDataId?: number;
     expectedSize?: number;
-    chunks: Uint8Array[];
+    writeHandle?: FileWriteHandle;
+    /** Resolves when `writeHandle` has been assigned.  Always resolves (never
+     *  rejects) so that concurrent `handleDataChunk` callers awaiting this
+     *  promise do not need individual error handling -- failures are detected
+     *  via the `!state.writeHandle` guard after the await. */
+    writeHandleReady?: Promise<void>;
     bytesReceived: number;
     resolve: (blob: Blob) => void;
     reject: (error: Error) => void;
@@ -188,6 +212,11 @@ type EventMap = {
      *  listeners can register all transfers eagerly before progress events arrive. */
     'upload-batch-started': [Map<number, number>, DroppedFile[]];
     'files-available': [FileInfo[]];
+    /** Remote's response to one of our outbound Format Lists: `true` = accepted
+     *  (CB_RESPONSE_OK), `false` = rejected (CB_RESPONSE_FAIL). Fires for every
+     *  outbound advertise, so consumers can drive paste from it (e.g. inject the
+     *  paste keystroke on accept, retry on reject). */
+    'format-list-response': [boolean];
     error: [FileTransferError];
 };
 
@@ -262,6 +291,26 @@ export class RdpFileTransferProvider {
     private static readonly MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
     /** Timeout for FileReader operations (60 seconds) to prevent stalled uploads */
     private static readonly FILE_READER_TIMEOUT_MS = 60 * 1000;
+    /**
+     * How long to keep clipboard monitoring suppressed after advertising an upload
+     * while waiting for the remote to pull the files (first FileContentsRequest),
+     * before giving up. Matches the Rust cliprdr lock inactivity timeout (60s), so
+     * the JS side gives up exactly when the protocol lock does. If the remote never
+     * requests contents (the paste landed in a non-file target, or the advertise was
+     * clobbered), the watchdog resumes monitoring and fails the upload so its state
+     * cannot wedge later uploads.
+     */
+    private static readonly PASTE_ACK_TIMEOUT_MS = 60 * 1000;
+    /**
+     * Upload inactivity window. After the remote starts pulling, each FileContentsRequest
+     * resets this; if pulls then stop for this long -- e.g. the remote grabbed the
+     * clipboard with a text/image copy that never reaches handleFilesAvailable -- the
+     * upload is failed so `uploadState` is released and later uploads aren't wedged. A
+     * slow-but-progressing transfer keeps resetting it, so it is never killed.
+     */
+    private static readonly UPLOAD_INACTIVITY_TIMEOUT_MS = 60 * 1000;
+    /** Timeout for storage backend write handle initialization (30 seconds). */
+    private static readonly WRITE_HANDLE_INIT_TIMEOUT_MS = 30 * 1000;
     /** Maximum recursion depth when traversing dropped directories. */
     private static readonly MAX_DIRECTORY_DEPTH = 32;
     /** Maximum total entries (files + directories) collected from a single drop. */
@@ -271,11 +320,31 @@ export class RdpFileTransferProvider {
     private readonly chunkSize: number;
     private readonly onUploadStarted?: () => void;
     private readonly onUploadFinished?: () => void;
+    private readonly storagePreference: StorageBackendPreference;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private readonly eventHandlers: Map<keyof EventMap, Set<EventHandler<any>>> = new Map();
 
+    private storageBackend?: FileStorageBackend;
+    private storageBackendReady?: Promise<FileStorageBackend>;
     private activeDownloads: Map<number, TransferState> = new Map();
     private uploadState?: UploadState;
+    // Upload paste-window watchdog. Armed when we advertise an upload, disarmed on the
+    // first FileContentsRequest (the remote pulled the files). Being armed is the single
+    // "advertised but not yet pulled" signal: on timeout it resumes monitoring and fails
+    // the never-pulled upload, and handleFormatListResponse consults it to fail a refused
+    // paste early (handleUnlock is a deliberate no-op: Unlock is not a reliable failure
+    // signal). Upload completion/failure run only after that first request, so they need
+    // not touch it.
+    private pasteAckTimeout?: ReturnType<typeof setTimeout>;
+    // Upload inactivity watchdog. Armed/reset on each FileContentsRequest once the remote
+    // starts pulling; fires if pulls stop for UPLOAD_INACTIVITY_TIMEOUT_MS (a stalled or
+    // clipboard-superseded paste) to release uploadState. Complements the paste-ack
+    // watchdog above, which only covers the "advertised but never pulled" case.
+    private uploadInactivityTimeout?: ReturnType<typeof setTimeout>;
+    // True between onUploadStarted (suppress monitoring) and onUploadFinished
+    // (resume), so resume fires exactly once even though it is now deferred until
+    // the paste is pulled, times out, fails, or the provider is disposed.
+    private uploadMonitoringSuppressed = false;
     // DroppedFile metadata retained after upload completes so re-paste works
     // without re-dropping. Cleared when a new upload starts or the manager is disposed.
     private retainedFiles?: DroppedFile[];
@@ -292,6 +361,29 @@ export class RdpFileTransferProvider {
         this.chunkSize = options?.chunkSize ?? 65536; // Default: 64KB
         this.onUploadStarted = options?.onUploadStarted;
         this.onUploadFinished = options?.onUploadFinished;
+
+        const sb = options?.storageBackend;
+        if (typeof sb === 'object' && sb !== null) {
+            if (
+                typeof (sb as FileStorageBackend).createWriteHandle !== 'function' ||
+                typeof (sb as FileStorageBackend).dispose !== 'function'
+            ) {
+                throw new Error(
+                    "storageBackend: expected 'auto', 'blob', or a FileStorageBackend " +
+                        'with createWriteHandle() and dispose() methods',
+                );
+            }
+            this.storageBackend = sb;
+            this.storagePreference = 'auto'; // unused when backend is pre-set
+        } else {
+            const pref = sb ?? 'auto';
+            if (pref !== 'auto' && pref !== 'blob') {
+                throw new Error(
+                    `storageBackend: invalid preference '${pref}', expected 'auto', 'blob', or a FileStorageBackend instance`,
+                );
+            }
+            this.storagePreference = pref;
+        }
     }
 
     /**
@@ -307,6 +399,37 @@ export class RdpFileTransferProvider {
             throw new Error('RdpFileTransferProvider: Session not available. Ensure connect() has been called.');
         }
         return this.session;
+    }
+
+    /**
+     * Lazily initialize and return the storage backend.
+     *
+     * Detection is performed once and cached.  Concurrent callers share
+     * the same initialization promise so the probe only runs once.
+     * If detection fails the cached promise is cleared so subsequent
+     * downloads can retry.
+     */
+    private async ensureStorageBackend(): Promise<FileStorageBackend> {
+        if (this.storageBackend) {
+            return this.storageBackend;
+        }
+
+        if (!this.storageBackendReady) {
+            this.storageBackendReady = detectStorageBackend(this.storagePreference)
+                .then((backend) => {
+                    this.storageBackend = backend;
+                    console.debug(`File transfer storage: ${backend.name}`);
+                    return backend;
+                })
+                .catch((error: unknown) => {
+                    // Clear the cached promise so the next download retries
+                    // detection instead of hitting the same failure.
+                    this.storageBackendReady = undefined;
+                    throw error;
+                });
+        }
+
+        return this.storageBackendReady;
     }
 
     // --- Extension-based session method wrappers ---
@@ -355,6 +478,7 @@ export class RdpFileTransferProvider {
             lockCallback((id: number) => this.handleLock(id)),
             unlockCallback((id: number) => this.handleUnlock(id)),
             locksExpiredCallback((ids: Uint32Array) => this.handleLocksExpired(ids)),
+            formatListResponseCallback((ok: boolean) => this.handleFormatListResponse(ok)),
         ];
     }
 
@@ -453,7 +577,6 @@ export class RdpFileTransferProvider {
                 fileIndex,
                 streamId,
                 clipDataId,
-                chunks: [],
                 bytesReceived: 0,
                 resolve,
                 reject,
@@ -545,7 +668,7 @@ export class RdpFileTransferProvider {
 
         // Execute with concurrency limit.
         // Each task promise catches its own errors so that Promise.race/Promise.all
-        // never reject — errors are collected in the `errors` array above.
+        // never reject - errors are collected in the `errors` array above.
         const executing: Array<Promise<void>> = [];
         for (const task of downloadTasks) {
             const promise = task().finally(() => {
@@ -592,8 +715,10 @@ export class RdpFileTransferProvider {
      * ```
      */
     uploadFiles(files: File[] | DroppedFile[]): UploadHandle {
+        // A new paste supersedes the previous offer (MS-RDPECLIP §3.1.1.1), so tear down any
+        // existing batch instead of throwing.
         if (this.uploadState !== undefined) {
-            throw new Error('Upload already in progress');
+            this.supersedeUpload();
         }
 
         // New upload supersedes any retained files from a previous batch
@@ -643,19 +768,23 @@ export class RdpFileTransferProvider {
                 reject,
             };
 
-            // Suppress clipboard monitoring briefly so the polling loop does not
-            // clobber our FormatList with a text/image update. Resume immediately
-            // after the FormatList is sent - the suppression window only needs to
-            // cover the race between suppressMonitoring() and the wire send.
-            // Upload state tracking continues independently via this.uploadState.
-            this.onUploadStarted?.();
+            // Suppress clipboard monitoring so the 100ms polling loop cannot clobber our
+            // file FormatList with a stale text/image update during the paste window. It
+            // stays suppressed -- NOT just for the synchronous wire send, which left a
+            // race the monitor could win -- until we leave the advertised-but-not-pulled
+            // window: the remote pulls (first FileContentsRequest), or we give up on it
+            // (watchdog timeout or a rejected advertise).
+            this.suppressUploadMonitoring();
 
             // Initiate file copy (broadcasts file list to remote)
             try {
                 this.sendInitiateFileCopy(fileInfos);
                 this.emit('upload-batch-started', transferIds, dropped);
             } catch (error) {
+                // Immediate failure: resume monitoring now and clear state so the
+                // next upload is not blocked.
                 this.uploadState = undefined;
+                this.resumeUploadMonitoring();
                 const err: FileTransferError = {
                     message: 'Failed to initiate file upload',
                     direction: 'upload',
@@ -663,15 +792,204 @@ export class RdpFileTransferProvider {
                 };
                 this.emit('error', err);
                 reject(new Error(err.message, { cause: error }));
-            } finally {
-                // Resume monitoring regardless of success/failure. The brief
-                // suppression window is intentionally short - just long enough
-                // to prevent the clipboard poll from racing with our FormatList.
-                this.onUploadFinished?.();
+                return;
             }
+
+            // FormatList is on the wire. Wait for the remote to pull the files; if it
+            // never does (paste landed in a non-file target, or the advertise was
+            // clobbered/rejected), the watchdog resumes monitoring and rejects this
+            // upload so its state cannot wedge later uploads ("Upload already in progress").
+            this.armPasteAckWatchdog();
         });
 
         return { transferIds, completion };
+    }
+
+    /** Whether an upload batch is currently advertised or in flight (a fresh upload, or a re-paste
+     *  rebuilt from retained files). */
+    isUploadInProgress(): boolean {
+        return this.uploadState !== undefined;
+    }
+
+    /** Suppress clipboard monitoring for an upload's paste window. Idempotent: a supersede keeps
+     *  monitoring suppressed across the old->new upload, so this must not re-fire `onUploadStarted`. */
+    private suppressUploadMonitoring(): void {
+        if (this.uploadMonitoringSuppressed) {
+            return;
+        }
+        // Flip the flag before the callback so it holds even if the callback throws.
+        this.uploadMonitoringSuppressed = true;
+        try {
+            this.onUploadStarted?.();
+        } catch (error) {
+            console.error('Error in onUploadStarted callback:', error);
+        }
+    }
+
+    /** Resume clipboard monitoring (idempotent: fires onUploadFinished at most once
+     *  per upload, since the resume point is now deferred past the wire send). */
+    private resumeUploadMonitoring(): void {
+        if (!this.uploadMonitoringSuppressed) {
+            return;
+        }
+        // Flip the flag before the callback so it holds even if the callback throws.
+        this.uploadMonitoringSuppressed = false;
+        try {
+            this.onUploadFinished?.();
+        } catch (error) {
+            console.error('Error in onUploadFinished callback:', error);
+        }
+    }
+
+    /** Arm the paste-acknowledgment watchdog for the current upload. */
+    private armPasteAckWatchdog(): void {
+        this.clearPasteAckWatchdog();
+        // A new upload is starting: drop any inactivity watchdog left from a prior upload
+        // so it can't fire mid-way through this one.
+        this.clearUploadInactivityWatchdog();
+        this.pasteAckTimeout = setTimeout(() => {
+            this.pasteAckTimeout = undefined;
+            // The remote never requested the files within the lock window. Resume
+            // monitoring and fail the pending upload so it cannot wedge later ones.
+            const state = this.uploadState;
+            if (state !== undefined && state.isRePaste !== true) {
+                this.failPendingUpload('The remote did not request the files in time, so the paste was not completed');
+            } else {
+                this.resumeUploadMonitoring();
+            }
+        }, RdpFileTransferProvider.PASTE_ACK_TIMEOUT_MS);
+    }
+
+    /** Disarm the paste-acknowledgment watchdog, if armed. */
+    private clearPasteAckWatchdog(): void {
+        if (this.pasteAckTimeout !== undefined) {
+            clearTimeout(this.pasteAckTimeout);
+            this.pasteAckTimeout = undefined;
+        }
+    }
+
+    /**
+     * (Re)arm the upload inactivity watchdog (see {@link UPLOAD_INACTIVITY_TIMEOUT_MS}).
+     * Called on every FileContentsRequest, so continued pulls keep resetting it and a
+     * slow-but-progressing transfer is never killed; if pulls stop for the window the
+     * upload is failed (releasing uploadState). Skipped for re-pastes, matching the
+     * paste-ack watchdog.
+     */
+    private resetUploadInactivityWatchdog(): void {
+        this.clearUploadInactivityWatchdog();
+        this.uploadInactivityTimeout = setTimeout(() => {
+            this.uploadInactivityTimeout = undefined;
+            const state = this.uploadState;
+            if (state !== undefined && state.isRePaste !== true) {
+                this.failPendingUpload('The remote stopped requesting the files, so the paste did not complete');
+            }
+        }, RdpFileTransferProvider.UPLOAD_INACTIVITY_TIMEOUT_MS);
+    }
+
+    /** Disarm the upload inactivity watchdog, if armed. */
+    private clearUploadInactivityWatchdog(): void {
+        if (this.uploadInactivityTimeout !== undefined) {
+            clearTimeout(this.uploadInactivityTimeout);
+            this.uploadInactivityTimeout = undefined;
+        }
+    }
+
+    /**
+     * The remote acknowledged the paste by requesting file contents: the clobber
+     * window is over, so disarm the paste-ack watchdog and resume clipboard monitoring.
+     * Called on every FileContentsRequest; only the first disarms/resumes. Every request
+     * also (re)arms the inactivity watchdog so a stall after pulling began is recovered.
+     */
+    private acknowledgePaste(): void {
+        if (this.pasteAckTimeout !== undefined) {
+            this.clearPasteAckWatchdog();
+            this.resumeUploadMonitoring();
+        }
+
+        // A directory-only batch (expectedFileCount === 0) gets a SIZE request per directory but
+        // never a RANGE -- the only path that marks a file complete -- so finishUploadBatch would
+        // never run and the inactivity watchdog below would fail an upload that actually succeeded.
+        // The remote acknowledging the paste is the only completion signal a data-less batch can
+        // get, so finish it now. (Mirrors the 0-byte file SIZE-path completion; here there are no
+        // counted files at all.) Re-pastes are left alone, like the watchdog itself.
+        const state = this.uploadState;
+        if (state !== undefined && state.isRePaste !== true && state.expectedFileCount === 0) {
+            this.finishUploadBatch(state);
+            return;
+        }
+
+        this.resetUploadInactivityWatchdog();
+    }
+
+    /**
+     * Abort any in-flight chunk reads for a batch and clear their timeouts. Without this, a read
+     * still running when the batch is torn down keeps its FileReader and a 60s reader-timeout
+     * alive. Shared by every upload teardown path (fail, supersede, dispose).
+     */
+    private abortInFlightReads(state: UploadState): void {
+        for (const timeout of state.readerTimeouts.values()) {
+            clearTimeout(timeout);
+        }
+        state.readerTimeouts.clear();
+        for (const reader of state.activeReaders.values()) {
+            reader.abort();
+        }
+        state.activeReaders.clear();
+    }
+
+    /**
+     * Fail the in-flight upload (reject its completion, emit an upload error, clear
+     * uploadState) and resume monitoring. Used when the advertise is rejected or the
+     * paste is never pulled, so `uploadState` is released instead of lingering and
+     * throwing "Upload already in progress" on every later upload.
+     */
+    private failPendingUpload(message: string): void {
+        this.clearPasteAckWatchdog();
+        this.clearUploadInactivityWatchdog();
+        this.resumeUploadMonitoring();
+        const state = this.uploadState;
+        if (state === undefined) {
+            return;
+        }
+        this.abortInFlightReads(state);
+
+        const err: FileTransferError = { message, direction: 'upload' };
+        this.emit('error', err);
+        const { reject } = state;
+        this.uploadState = undefined;
+        reject(new Error(message));
+    }
+
+    /**
+     * Tear down the current upload because a new paste is replacing it. Unlike
+     * {@link failPendingUpload}, this emits no error and leaves monitoring suppressed (a new upload
+     * is starting); it aborts in-flight reads, clears the state, and *resolves* the old completion
+     * (a replacement, not a failure).
+     */
+    private supersedeUpload(): void {
+        this.clearPasteAckWatchdog();
+        this.clearUploadInactivityWatchdog();
+        const state = this.uploadState;
+        if (state === undefined) {
+            return;
+        }
+        this.abortInFlightReads(state);
+        const { resolve } = state;
+        this.uploadState = undefined;
+        resolve();
+    }
+
+    /**
+     * Finalize a fully-accounted upload batch (every counted file either served in full
+     * or permanently failed). Stops the inactivity watchdog so it cannot linger past
+     * completion, retains the DroppedFile metadata so a re-paste from the remote can serve
+     * the data again, clears `uploadState`, and resolves the completion promise.
+     */
+    private finishUploadBatch(state: UploadState): void {
+        this.clearUploadInactivityWatchdog();
+        this.retainedFiles = state.droppedFiles;
+        this.uploadState = undefined;
+        state.resolve();
     }
 
     /**
@@ -953,25 +1271,22 @@ export class RdpFileTransferProvider {
     dispose(): void {
         this.disposed = true;
 
+        // Stop the paste-ack watchdog and resume monitoring if an upload was still
+        // mid-paste-window (we defer the resume, so it may not have fired yet).
+        this.clearPasteAckWatchdog();
+        this.clearUploadInactivityWatchdog();
+        this.resumeUploadMonitoring();
+
         // Cancel active downloads (lock cleanup is handled by the Rust layer)
         for (const state of this.activeDownloads.values()) {
-            state.chunks = [];
+            void this.abortWriteHandle(state);
             state.reject(new Error('RdpFileTransferProvider disposed'));
         }
         this.activeDownloads.clear();
 
         // Clean up active FileReaders, clear timeouts, and reject upload promise
         if (this.uploadState !== undefined) {
-            for (const timeout of this.uploadState.readerTimeouts.values()) {
-                clearTimeout(timeout);
-            }
-            this.uploadState.readerTimeouts.clear();
-
-            for (const reader of this.uploadState.activeReaders.values()) {
-                reader.abort();
-            }
-            this.uploadState.activeReaders.clear();
-
+            this.abortInFlightReads(this.uploadState);
             this.uploadState.reject(new Error('RdpFileTransferProvider disposed'));
         }
         this.uploadState = undefined;
@@ -981,6 +1296,16 @@ export class RdpFileTransferProvider {
         this.availableFiles = [];
         this.clipDataId = undefined;
 
+        // Dispose the storage backend (deletes OPFS session directory, etc.).
+        // Fire-and-forget -- dispose() is synchronous per the FileTransferProvider
+        // interface, but backend cleanup is async.  This is acceptable because
+        // the session is terminating and the OPFS data is expendable.
+        if (this.storageBackend) {
+            void this.storageBackend.dispose();
+            this.storageBackend = undefined;
+            this.storageBackendReady = undefined;
+        }
+
         // Clear event handlers
         this.eventHandlers.clear();
     }
@@ -988,6 +1313,16 @@ export class RdpFileTransferProvider {
     // ==================== Callback Handlers ====================
 
     private handleFilesAvailable(files: FileInfo[], clipDataId?: number): void {
+        // A remote FormatList means the remote took ownership of the clipboard, which
+        // supersedes any in-flight upload advertise of ours: the remote will not pull our
+        // files, and once the paste has been acknowledged the paste-ack watchdog is
+        // already disarmed, so nothing else would ever release `uploadState`. Left
+        // lingering it wedges every later upload with "Upload already in progress". Release
+        // it here. This is the symmetric counterpart of handleFormatListResponse(false):
+        // that recovers when the remote *rejects* our advertise; this recovers when the
+        // remote *replaces* it. No-op when no upload is in flight.
+        this.failPendingUpload('Upload interrupted: the remote clipboard changed');
+
         // Do NOT cancel active downloads here.
         //
         // Per MS-RDPECLIP 2.2.4.1 and 3.1.5.3.2, clipboard locks ensure that
@@ -1060,6 +1395,10 @@ export class RdpFileTransferProvider {
     }
 
     private handleFileContentsRequest(request: FileContentsRequest): void {
+        // The remote is pulling the files, so the paste was accepted: end the
+        // clobber-protection window (disarm the watchdog, resume monitoring).
+        this.acknowledgePaste();
+
         if (!this.uploadState) {
             if (!this.retainedFiles) {
                 console.warn('Received file contents request but no upload in progress');
@@ -1085,7 +1424,9 @@ export class RdpFileTransferProvider {
         const fileHandle = files[request.index];
         const dropped = droppedFiles[request.index];
         if (dropped === undefined) {
-            console.error(`File index ${request.index} out of range`);
+            console.error(
+                `File index ${request.index} out of range (stream ${request.streamId}, valid: 0..${droppedFiles.length - 1})`,
+            );
             this.sendSubmitFileContents(request.streamId, true, new Uint8Array());
             return;
         }
@@ -1114,6 +1455,13 @@ export class RdpFileTransferProvider {
             const view = new DataView(sizeBytes.buffer);
             view.setBigUint64(0, BigInt(file.size), true);
             this.sendSubmitFileContents(request.streamId, false, sizeBytes);
+
+            // A 0-byte file gets no RANGE request (no bytes to read), so complete it here --
+            // otherwise it never reaches completedFiles and the batch never finishes. Mirrors
+            // the download path's size===0 handling.
+            if (file.size === 0) {
+                this.markUploadFileComplete(request.index, file, state.transferIds.get(request.index) ?? -1);
+            }
         } else if ((request.flags & FileContentsFlags.RANGE) !== 0) {
             // RANGE request: read file chunk
             const chunk = file.slice(request.position, request.position + request.size);
@@ -1147,10 +1495,7 @@ export class RdpFileTransferProvider {
                     this.uploadState.failedFiles.add(request.index);
                     this.uploadState.completedFiles.add(request.index);
                     if (this.uploadState.completedFiles.size >= this.uploadState.expectedFileCount) {
-                        const { resolve, droppedFiles: completed } = this.uploadState;
-                        this.retainedFiles = completed;
-                        this.uploadState = undefined;
-                        resolve();
+                        this.finishUploadBatch(this.uploadState);
                     }
                 }
             }, RdpFileTransferProvider.FILE_READER_TIMEOUT_MS);
@@ -1190,22 +1535,7 @@ export class RdpFileTransferProvider {
 
                     // Check if all bytes for this file have been served
                     if (served >= file.size) {
-                        const alreadyCompleted = this.uploadState.completedFiles.has(request.index);
-
-                        this.uploadState.completedFiles.add(request.index);
-
-                        if (!alreadyCompleted) {
-                            this.emit('upload-complete', file, request.index, uploadTransferId);
-                        }
-
-                        if (this.uploadState.completedFiles.size === this.uploadState.expectedFileCount) {
-                            // All files uploaded successfully. Retain DroppedFile
-                            // metadata so re-paste from the remote can serve data again.
-                            const { resolve, droppedFiles: completed } = this.uploadState;
-                            this.retainedFiles = completed;
-                            this.uploadState = undefined;
-                            resolve();
-                        }
+                        this.markUploadFileComplete(request.index, file, uploadTransferId);
                     }
                 }
             };
@@ -1243,15 +1573,29 @@ export class RdpFileTransferProvider {
                     this.uploadState.failedFiles.add(request.index);
                     this.uploadState.completedFiles.add(request.index);
                     if (this.uploadState.completedFiles.size >= this.uploadState.expectedFileCount) {
-                        const { resolve, droppedFiles: completed } = this.uploadState;
-                        this.retainedFiles = completed;
-                        this.uploadState = undefined;
-                        resolve();
+                        this.finishUploadBatch(this.uploadState);
                     }
                 }
             };
 
             reader.readAsArrayBuffer(chunk);
+        }
+    }
+
+    /**
+     * Mark a single upload file as fully served: record it, emit upload-complete once, and
+     * finalize the batch once every counted file is accounted for. Shared by the RANGE onload
+     * path (final chunk served) and the SIZE path for 0-byte files (which get no RANGE request).
+     */
+    private markUploadFileComplete(index: number, file: File, transferId: number): void {
+        const state = this.uploadState;
+        if (state === undefined || state.completedFiles.has(index)) {
+            return;
+        }
+        state.completedFiles.add(index);
+        this.emit('upload-complete', file, index, transferId);
+        if (state.completedFiles.size === state.expectedFileCount) {
+            this.finishUploadBatch(state);
         }
     }
 
@@ -1297,7 +1641,7 @@ export class RdpFileTransferProvider {
 
         if (response.isError) {
             this.activeDownloads.delete(response.streamId);
-            state.chunks = [];
+            void this.abortWriteHandle(state);
             const err: FileTransferError = {
                 message: 'Remote failed to provide file contents',
                 transferId: state.streamId,
@@ -1315,7 +1659,7 @@ export class RdpFileTransferProvider {
             // Validate response data is valid before creating DataView
             if (response.data.length < 8) {
                 this.activeDownloads.delete(response.streamId);
-                state.chunks = [];
+                void this.abortWriteHandle(state);
                 const err: FileTransferError = {
                     message: 'Invalid SIZE response: expected 8 bytes for file size',
                     transferId: state.streamId,
@@ -1334,7 +1678,7 @@ export class RdpFileTransferProvider {
             // Validate file size doesn't exceed browser memory limits
             if (size > RdpFileTransferProvider.MAX_FILE_SIZE) {
                 this.activeDownloads.delete(response.streamId);
-                state.chunks = [];
+                void this.abortWriteHandle(state);
                 const err: FileTransferError = {
                     message: `File size ${(size / (1024 * 1024 * 1024)).toFixed(2)}GB exceeds maximum download limit of 2GB`,
                     transferId: state.streamId,
@@ -1352,40 +1696,160 @@ export class RdpFileTransferProvider {
             // Handle empty files
             if (size === 0) {
                 this.activeDownloads.delete(response.streamId);
+                void this.abortWriteHandle(state);
                 const blob = new Blob([]);
                 this.emit('download-complete', state.fileInfo, blob, state.fileIndex, state.streamId);
                 state.resolve(blob);
                 return;
             }
 
-            // Request data in chunks
-            this.requestNextChunk(state);
+            // Initialize the storage write handle now that we know the file
+            // size, then request the first data chunk.
+            this.initWriteHandleAndRequestFirstChunk(state);
         } else {
-            // This is a DATA response.
-            // TODO: chunks accumulate in memory until the download completes and a
-            // Blob is created. For a 2 GB file this means ~4 GB peak RAM (chunks +
-            // final Blob). Consider incremental Blob construction or the File System
-            // Access API (WritableStream) to reduce peak memory in a future milestone.
-            state.chunks.push(response.data);
-            state.bytesReceived += response.data.length;
+            // This is a DATA response -- write the chunk to the storage backend.
+            void this.handleDataChunk(state, response.data);
+        }
+    }
 
-            // Validate that received data doesn't grossly exceed expected size
-            if (state.bytesReceived > state.expectedSize * 2) {
-                this.activeDownloads.delete(response.streamId);
-                state.chunks = [];
+    /**
+     * Create a write handle for the given transfer and request the first
+     * data chunk.  Runs asynchronously because backend initialization
+     * (especially OPFS) is async.
+     *
+     * The init promise is stored on `state.writeHandleReady` so that
+     * DATA responses arriving before the handle is ready can await it.
+     */
+    private initWriteHandleAndRequestFirstChunk(state: TransferState): void {
+        // The init promise always resolves (never rejects) so that awaiting
+        // callers in handleDataChunk do not need individual error handling.
+        // Failures are signaled by leaving writeHandle undefined; the
+        // !state.writeHandle guard after the await detects this.
+        state.writeHandleReady = (async () => {
+            try {
+                const initPromise = (async () => {
+                    const backend = await this.ensureStorageBackend();
+                    return backend.createWriteHandle(state.fileInfo.name, state.expectedSize ?? 0);
+                })();
+
+                const timeout = RdpFileTransferProvider.WRITE_HANDLE_INIT_TIMEOUT_MS;
+                const handle = await Promise.race([
+                    initPromise,
+                    new Promise<never>((_resolve, reject) =>
+                        setTimeout(() => reject(new Error(`Storage init timed out after ${timeout / 1000}s`)), timeout),
+                    ),
+                ]);
+
+                // Provider may have been disposed while we were awaiting.
+                // Abort the newly created handle to avoid orphaned OPFS files.
+                if (this.disposed || !this.activeDownloads.has(state.streamId)) {
+                    try {
+                        await handle.abort();
+                    } catch {
+                        // Best-effort cleanup.
+                    }
+                    return;
+                }
+
+                state.writeHandle = handle;
+            } catch (error) {
+                this.activeDownloads.delete(state.streamId);
                 const err: FileTransferError = {
-                    message: `Received ${state.bytesReceived} bytes but expected ${state.expectedSize} — aborting`,
+                    message: 'Failed to initialize storage for download',
                     transferId: state.streamId,
                     fileIndex: state.fileIndex,
                     fileName: state.fileInfo.name,
                     direction: 'download',
+                    cause: error,
                 };
                 this.emit('error', err);
-                state.reject(new Error(err.message));
+                state.reject(new Error(err.message, { cause: error }));
+                // Do not rethrow: the promise must resolve (not reject) so
+                // that awaiting callers in handleDataChunk can detect the
+                // failure via the !state.writeHandle guard without needing
+                // per-caller error handling.
                 return;
             }
 
-            // Emit progress (clamp percentage to 100% in case server sends slightly more than expected)
+            this.requestNextChunk(state);
+        })();
+    }
+
+    /**
+     * Write a data chunk to the storage backend and advance the download.
+     *
+     * If the write handle is not yet ready (DATA response arrived before
+     * backend init completed), this method awaits `state.writeHandleReady`
+     * to preserve chunk ordering -- each concurrent caller awaits the same
+     * promise in sequence.
+     */
+    private async handleDataChunk(state: TransferState, data: Uint8Array): Promise<void> {
+        if (!state.writeHandle) {
+            if (!state.writeHandleReady || this.disposed || !this.activeDownloads.has(state.streamId)) {
+                // No init in progress or download already cancelled.
+                return;
+            }
+            // writeHandleReady always resolves (never rejects); init
+            // failures leave writeHandle undefined, caught by the
+            // guard below.
+            await state.writeHandleReady;
+
+            // Re-check: the download may have been cancelled or disposed
+            // while we were waiting for the write handle.
+            if (this.disposed || !this.activeDownloads.has(state.streamId)) {
+                return;
+            }
+        }
+
+        // Guard defensively: writeHandle may still be undefined if init
+        // failed or dispose() cleared it during the await above.
+        const writeHandle = state.writeHandle;
+        if (!writeHandle) {
+            return;
+        }
+
+        try {
+            await writeHandle.write(data);
+        } catch (error) {
+            this.activeDownloads.delete(state.streamId);
+            void this.abortWriteHandle(state);
+            const isQuota = error instanceof DOMException && error.name === 'QuotaExceededError';
+            const message = isQuota
+                ? `Storage quota exceeded while downloading "${state.fileInfo.name}"`
+                : 'Failed to write download chunk to storage';
+            const err: FileTransferError = {
+                message,
+                transferId: state.streamId,
+                fileIndex: state.fileIndex,
+                fileName: state.fileInfo.name,
+                direction: 'download',
+                cause: error,
+            };
+            this.emit('error', err);
+            state.reject(new Error(err.message, { cause: error }));
+            return;
+        }
+
+        state.bytesReceived += data.length;
+
+        // Validate that received data doesn't grossly exceed expected size
+        if (state.expectedSize !== undefined && state.bytesReceived > state.expectedSize * 2) {
+            this.activeDownloads.delete(state.streamId);
+            void this.abortWriteHandle(state);
+            const err: FileTransferError = {
+                message: `Received ${state.bytesReceived} bytes but expected ${state.expectedSize} - aborting`,
+                transferId: state.streamId,
+                fileIndex: state.fileIndex,
+                fileName: state.fileInfo.name,
+                direction: 'download',
+            };
+            this.emit('error', err);
+            state.reject(new Error(err.message));
+            return;
+        }
+
+        // Emit progress (clamp percentage to 100% in case server sends slightly more than expected)
+        if (state.expectedSize !== undefined) {
             const progress: TransferProgress = {
                 transferId: state.streamId,
                 fileIndex: state.fileIndex,
@@ -1395,17 +1859,62 @@ export class RdpFileTransferProvider {
                 percentage: Math.min((state.bytesReceived / state.expectedSize) * 100, 100),
             };
             this.emit('download-progress', progress);
+        }
 
-            // Check if download complete
-            if (state.bytesReceived >= state.expectedSize) {
-                this.activeDownloads.delete(response.streamId);
-                const blob = new Blob(state.chunks as BlobPart[]);
+        // Check if download complete
+        if (state.expectedSize !== undefined && state.bytesReceived >= state.expectedSize) {
+            this.activeDownloads.delete(state.streamId);
+            try {
+                const blob = await writeHandle.finalize();
                 this.emit('download-complete', state.fileInfo, blob, state.fileIndex, state.streamId);
                 state.resolve(blob);
-            } else {
-                // Request next chunk
-                this.requestNextChunk(state);
+            } catch (error) {
+                void this.abortWriteHandle(state);
+                const err: FileTransferError = {
+                    message: 'Failed to finalize downloaded file',
+                    transferId: state.streamId,
+                    fileIndex: state.fileIndex,
+                    fileName: state.fileInfo.name,
+                    direction: 'download',
+                    cause: error,
+                };
+                this.emit('error', err);
+                state.reject(new Error(err.message, { cause: error }));
             }
+        } else {
+            // Request next chunk
+            this.requestNextChunk(state);
+        }
+    }
+
+    /** Abort and clean up a write handle, ignoring errors. */
+    private async abortWriteHandle(state: TransferState): Promise<void> {
+        if (state.writeHandle) {
+            try {
+                await state.writeHandle.abort();
+            } catch {
+                // Best-effort cleanup.
+            }
+            state.writeHandle = undefined;
+        }
+    }
+
+    /**
+     * Handle the remote's response to one of our outbound Format Lists, surfaced via
+     * `on_format_list_response`. Always re-emitted as a `format-list-response` event so
+     * a frontend can drive paste from it (inject on accept, retry on reject).
+     *
+     * On reject (`ok === false`) the remote silently discards the advertised clipboard
+     * (MS-RDPECLIP), so an upload still waiting to be pulled can never complete --
+     * previously this left `uploadState` set and every later upload threw "Upload
+     * already in progress". The watchdog-armed check scopes the release to an upload
+     * that was advertised but not yet pulled, so re-paste and an already-progressing
+     * transfer are left alone.
+     */
+    private handleFormatListResponse(ok: boolean): void {
+        this.emit('format-list-response', ok);
+        if (!ok && this.pasteAckTimeout !== undefined) {
+            this.failPendingUpload('The remote rejected the file list, so the paste was not accepted');
         }
     }
 
@@ -1429,7 +1938,7 @@ export class RdpFileTransferProvider {
         for (const [streamId, state] of this.activeDownloads) {
             if (state.clipDataId !== undefined && expiredLockSet.has(state.clipDataId)) {
                 this.activeDownloads.delete(streamId);
-                state.chunks = [];
+                void this.abortWriteHandle(state);
 
                 // Build user-friendly error message with timeout info and remediation
                 const errorMessage =
@@ -1473,7 +1982,7 @@ export class RdpFileTransferProvider {
             );
         } catch (error) {
             this.activeDownloads.delete(state.streamId);
-            state.chunks = [];
+            void this.abortWriteHandle(state);
             const err: FileTransferError = {
                 message: 'Failed to request file chunk',
                 transferId: state.streamId,
@@ -1503,6 +2012,6 @@ export class RdpFileTransferProvider {
             }
         }
         // Should never happen: more active downloads than the counter can skip
-        throw new Error('unable to generate unique stream ID');
+        throw new Error('Unable to generate unique stream ID');
     }
 }

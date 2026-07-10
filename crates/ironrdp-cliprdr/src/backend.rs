@@ -43,6 +43,13 @@ pub enum ClipboardMessage {
     /// Implementation should send file contents response on `CLIPRDR` SVC when received.
     SendFileContentsResponse(FileContentsResponse<'static>),
 
+    /// Sent by clipboard backend when a local file list is ready to be offered to the remote.
+    ///
+    /// Implementation should initiate a file copy on `CLIPRDR` SVC when this message is
+    /// received. Unlike [`ClipboardMessage::SendInitiateCopy`], this records the file list so
+    /// later `FileContentsRequest`s from the remote can be serviced.
+    SendInitiateFileCopy(Vec<FileDescriptor>),
+
     /// Failure received from the OS clipboard event loop.
     ///
     /// Client implementation should log/display this error.
@@ -82,6 +89,23 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// sequence on the client. This is needed to advertise available formats on the
     /// client's clipboard prior to `CLIPRDR` SVC initialization.
     fn on_request_format_list(&mut self);
+
+    /// Called by [`crate::Cliprdr`] when the remote responds to a `FormatList` we
+    /// sent (i.e. an outbound advertise of our own clipboard contents).
+    ///
+    /// `ok = true` means the remote accepted the list (`CB_RESPONSE_OK`);
+    /// `ok = false` means it rejected it (`CB_RESPONSE_FAIL`), and
+    /// [`crate::Cliprdr`] has already cleared
+    /// `local_file_list` / `local_file_list_format_id` per MS-RDPECLIP 3.1.5.2.4.
+    ///
+    /// Backends can use this to retry on `Fail` (e.g. ride out a transient
+    /// rejection caused by the remote window being inactive at the instant we
+    /// advertised) and, equally important, to **stop** re-advertising once an
+    /// `Ok` is seen — a later blind re-advertise that gets rejected would wipe
+    /// already-accepted state and silently break a paste that was about to work.
+    fn on_format_list_response(&mut self, ok: bool) {
+        let _ = ok;
+    }
 
     /// Adjusts [crate::Cliprdr] backend capabilities based on capabilities negotiated with a server.
     ///

@@ -15,6 +15,8 @@ use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
 
+use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -135,6 +137,7 @@ pub const NETCHAR_SYNC: u16 = 0x0018;
 ///
 /// [\[MS-RDPBCGR\] 2.2.14.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5a53eadd-64a2-430d-b197-56bdf7ac9ee9
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum AutoDetectRequest {
     /// [\[MS-RDPBCGR\] 2.2.14.1.1] RTT Measure Request
     ///
@@ -497,6 +500,7 @@ impl<'de> Decode<'de> for AutoDetectRequest {
 ///
 /// [\[MS-RDPBCGR\] 2.2.14.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/fd28dcb8-671d-48bf-8a98-18be46785dab
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum AutoDetectResponse {
     /// [\[MS-RDPBCGR\] 2.2.14.2.1] RTT Measure Response
     ///
@@ -674,9 +678,169 @@ impl<'de> Decode<'de> for AutoDetectResponse {
     }
 }
 
+// ============================================================================
+// MCS message channel framing
+// ============================================================================
+//
+// Auto-detect is not a Share Data PDU. Per [MS-RDPBCGR] 2.2.14.3 / 2.2.14.4 it
+// rides the MCS message channel framed by a Basic Security Header whose
+// SEC_AUTODETECT_REQ / SEC_AUTODETECT_RSP flag identifies it, the same dispatch
+// mechanism used by multitransport (see `rdp::multitransport`).
+
+/// Server Auto-Detect Request PDU ([MS-RDPBCGR] 2.2.14.3).
+///
+/// Wraps an [`AutoDetectRequest`] with the `SEC_AUTODETECT_REQ` security header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct AutoDetectReqPdu {
+    pub security_header: BasicSecurityHeader,
+    pub request: AutoDetectRequest,
+}
+
+impl AutoDetectReqPdu {
+    const NAME: &'static str = "AutoDetectReqPdu";
+
+    /// Wrap a request with the `SEC_AUTODETECT_REQ` security header.
+    pub fn new(request: AutoDetectRequest) -> Self {
+        Self {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::AUTODETECT_REQ,
+            },
+            request,
+        }
+    }
+}
+
+impl Encode for AutoDetectReqPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        self.security_header.encode(dst)?;
+        self.request.encode(dst)?;
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        BasicSecurityHeader::FIXED_PART_SIZE + self.request.size()
+    }
+}
+
+impl<'de> Decode<'de> for AutoDetectReqPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        let security_header = BasicSecurityHeader::decode(src)?;
+
+        if !security_header.flags.contains(BasicSecurityHeaderFlags::AUTODETECT_REQ) {
+            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_REQ flag"));
+        }
+
+        let request = AutoDetectRequest::decode(src)?;
+
+        Ok(Self {
+            security_header,
+            request,
+        })
+    }
+}
+
+/// Client Auto-Detect Response PDU ([MS-RDPBCGR] 2.2.14.4).
+///
+/// Wraps an [`AutoDetectResponse`] with the `SEC_AUTODETECT_RSP` security header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct AutoDetectRspPdu {
+    pub security_header: BasicSecurityHeader,
+    pub response: AutoDetectResponse,
+}
+
+impl AutoDetectRspPdu {
+    const NAME: &'static str = "AutoDetectRspPdu";
+
+    /// Wrap a response with the `SEC_AUTODETECT_RSP` security header.
+    pub fn new(response: AutoDetectResponse) -> Self {
+        Self {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::AUTODETECT_RSP,
+            },
+            response,
+        }
+    }
+}
+
+impl Encode for AutoDetectRspPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        self.security_header.encode(dst)?;
+        self.response.encode(dst)?;
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        BasicSecurityHeader::FIXED_PART_SIZE + self.response.size()
+    }
+}
+
+impl<'de> Decode<'de> for AutoDetectRspPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        let security_header = BasicSecurityHeader::decode(src)?;
+
+        if !security_header.flags.contains(BasicSecurityHeaderFlags::AUTODETECT_RSP) {
+            return Err(invalid_field_err!("securityHeader", "expected SEC_AUTODETECT_RSP flag"));
+        }
+
+        let response = AutoDetectResponse::decode(src)?;
+
+        Ok(Self {
+            security_header,
+            response,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn req_pdu_round_trip() {
+        let original = AutoDetectReqPdu::new(AutoDetectRequest::RttRequest {
+            sequence_number: 7,
+            request_type: RTT_REQUEST_CONTINUOUS,
+        });
+        assert_eq!(original.security_header.flags, BasicSecurityHeaderFlags::AUTODETECT_REQ);
+
+        let encoded = ironrdp_core::encode_vec(&original).unwrap();
+        let decoded = ironrdp_core::decode::<AutoDetectReqPdu>(&encoded).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn rsp_pdu_round_trip() {
+        let original = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number: 7 });
+        assert_eq!(original.security_header.flags, BasicSecurityHeaderFlags::AUTODETECT_RSP);
+
+        let encoded = ironrdp_core::encode_vec(&original).unwrap();
+        let decoded = ironrdp_core::decode::<AutoDetectRspPdu>(&encoded).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn req_pdu_rejects_response_flag() {
+        // A response-flagged frame must not decode as a request PDU.
+        let rsp = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number: 1 });
+        let encoded = ironrdp_core::encode_vec(&rsp).unwrap();
+        assert!(ironrdp_core::decode::<AutoDetectReqPdu>(&encoded).is_err());
+    }
 
     // ========================================================================
     // Request encoding/decoding tests

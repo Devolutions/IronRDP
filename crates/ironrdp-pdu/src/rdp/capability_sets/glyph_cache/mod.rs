@@ -15,6 +15,7 @@ const CACHE_DEFINITION_LENGTH: usize = 4;
 
 #[repr(u16)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum GlyphSupportLevel {
     None = 0,
     Partial = 1,
@@ -33,6 +34,7 @@ impl GlyphSupportLevel {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CacheDefinition {
     pub entries: u16,
     pub max_cell_size: u16,
@@ -75,6 +77,7 @@ impl<'de> Decode<'de> for CacheDefinition {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct GlyphCache {
     pub glyph_cache: [CacheDefinition; GLYPH_CACHE_NUM],
     pub frag_cache: CacheDefinition,

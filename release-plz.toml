@@ -7,16 +7,26 @@ pr_name = "chore(release): prepare for publishing"
 changelog_config = "cliff.toml"
 release_commits = "^(feat|docs|fix|build|perf)"
 
-# Flagship crate for which we push a GitHub release.
+# Executable crates for which we push a GitHub release (and attach prebuilt binaries via
+# release-binaries.yml). Each is released under its own tag (ironrdp-agent-v*, ironrdp-viewer-v*).
 [[package]]
-name = "ironrdp-client"
+name = "ironrdp-agent"
 git_release_enable = true
-publish = false # TODO: enable publishing when ready.
+[[package]]
+name = "ironrdp-viewer"
+git_release_enable = true
 
-# ironrdp-tls does not compile if no backend is specified.
-# rustls is the most common backend, so we let cargo publish check with it.
+# ironrdp-tls does not compile if no backend is specified, and the following crates depend on it
+# without enabling a backend by default. rustls is the most common backend, so we let cargo publish
+# check with it.
 [[package]]
 name = "ironrdp-tls"
+publish_features = ["rustls"]
+[[package]]
+name = "ironrdp-client"
+publish_features = ["rustls"]
+[[package]]
+name = "ironrdp-mstsgu"
 publish_features = ["rustls"]
 
 # *-native crates may have all kinds of system requirements depending on the platform.

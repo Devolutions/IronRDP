@@ -16,7 +16,7 @@ use pdu::DrdynvcDataPdu;
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
 use ironrdp_core::{AsAny, Encode, EncodeResult, assert_obj_safe, cast_length, encode_vec, other_err};
-use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
+use ironrdp_pdu::{PduResult, decode_err};
 use ironrdp_svc::SvcMessage;
 
 mod complete_data;
@@ -105,8 +105,16 @@ pub struct DynamicVirtualChannel {
     complete_data: CompleteData,
     /// The channel ID assigned by the server.
     ///
-    /// This field is `None` until the server assigns a channel ID.
+    /// `Some` only after [`DynamicVirtualChannel::start`] has succeeded. This invariant
     channel_id: Option<DynamicChannelId>,
+}
+
+impl Drop for DynamicVirtualChannel {
+    fn drop(&mut self) {
+        if let Some(id) = self.channel_id {
+            self.channel_processor.close(id);
+        }
+    }
 }
 
 impl DynamicVirtualChannel {
@@ -134,12 +142,10 @@ impl DynamicVirtualChannel {
         self.channel_processor.as_any().downcast_ref()
     }
 
-    fn start(&mut self) -> PduResult<Vec<DvcMessage>> {
-        if let Some(channel_id) = self.channel_id {
-            self.channel_processor.start(channel_id)
-        } else {
-            Err(pdu_other_err!("DynamicVirtualChannel::start", "channel ID not set"))
-        }
+    fn start(&mut self, channel_id: DynamicChannelId) -> PduResult<Vec<DvcMessage>> {
+        let messages = self.channel_processor.start(channel_id)?;
+        self.channel_id = Some(channel_id);
+        Ok(messages)
     }
 
     fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {
@@ -154,6 +160,54 @@ impl DynamicVirtualChannel {
 
     fn channel_name(&self) -> &str {
         self.channel_processor.channel_name()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicChannelRef<'a, T> {
+    channel_id: DynamicChannelId,
+    processor: &'a T,
+}
+
+impl<T> DynamicChannelRef<'_, T> {
+    pub fn channel_id(&self) -> DynamicChannelId {
+        self.channel_id
+    }
+}
+
+impl<'a, T: DvcProcessor> DynamicChannelRef<'a, T> {
+    fn new(channel_id: u32, processor: &'a T) -> Self {
+        Self { channel_id, processor }
+    }
+
+    pub fn processor(&self) -> &'a T {
+        self.processor
+    }
+}
+
+#[derive(Debug)]
+pub struct DynamicChannelMut<'a, T> {
+    channel_id: DynamicChannelId,
+    processor: &'a mut T,
+}
+
+impl<T> DynamicChannelMut<'_, T> {
+    pub fn channel_id(&self) -> DynamicChannelId {
+        self.channel_id
+    }
+}
+
+impl<'a, T: DvcProcessor> DynamicChannelMut<'a, T> {
+    fn new(channel_id: u32, processor: &'a mut T) -> Self {
+        Self { channel_id, processor }
+    }
+
+    pub fn processor(&self) -> &T {
+        self.processor
+    }
+
+    pub fn processor_mut(&mut self) -> &mut T {
+        self.processor
     }
 }
 

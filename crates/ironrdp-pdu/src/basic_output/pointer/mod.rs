@@ -5,6 +5,7 @@ use ironrdp_core::{
 
 // Represents `TS_POINT16` described in [MS-RDPBCGR] 2.2.9.1.1.4.1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Point16 {
     pub x: u16,
     pub y: u16,
@@ -50,6 +51,7 @@ pub type PointerPositionAttribute = Point16;
 
 /// Represents `TS_COLORPOINTERATTRIBUTE` described in [MS-RDPBCGR] 2.2.9.1.1.4.4
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ColorPointerAttribute<'a> {
     pub cache_index: u16,
     pub hot_spot: Point16,
@@ -163,6 +165,7 @@ impl<'a> Decode<'a> for ColorPointerAttribute<'a> {
 
 /// Represents `TS_POINTERATTRIBUTE` described in [MS-RDPBCGR] 2.2.9.1.1.4.5
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct PointerAttribute<'a> {
     pub xor_bpp: u16,
     pub color_pointer: ColorPointerAttribute<'a>,
@@ -205,6 +208,7 @@ impl<'a> Decode<'a> for PointerAttribute<'a> {
 
 /// Represents `TS_CACHEDPOINTERATTRIBUTE` described in [MS-RDPBCGR] 2.2.9.1.1.4.6
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CachedPointerAttribute {
     pub cache_index: u16,
 }
@@ -244,6 +248,7 @@ impl Decode<'_> for CachedPointerAttribute {
 
 /// Represents `TS_FP_LARGEPOINTERATTRIBUTE` described in [MS-RDPBCGR] 2.2.9.1.2.1.11
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LargePointerAttribute<'a> {
     pub xor_bpp: u16,
     pub cache_index: u16,
@@ -326,6 +331,7 @@ impl<'a> Decode<'a> for LargePointerAttribute<'a> {
 
 /// Pointer-related FastPath update messages (inner FastPath packet data)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum PointerUpdateData<'a> {
     SetHidden,
     SetDefault,

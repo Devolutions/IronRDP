@@ -23,22 +23,6 @@ public partial class ConnectionActivationStateConnectionFinalization: IDisposabl
         }
     }
 
-    public ushort IoChannelId
-    {
-        get
-        {
-            return GetIoChannelId();
-        }
-    }
-
-    public ushort UserChannelId
-    {
-        get
-        {
-            return GetUserChannelId();
-        }
-    }
-
     /// <summary>
     /// Creates a managed <c>ConnectionActivationStateConnectionFinalization</c> from a raw handle.
     /// </summary>
@@ -51,32 +35,6 @@ public partial class ConnectionActivationStateConnectionFinalization: IDisposabl
     public unsafe ConnectionActivationStateConnectionFinalization(Raw.ConnectionActivationStateConnectionFinalization* handle)
     {
         _inner = handle;
-    }
-
-    public ushort GetIoChannelId()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ConnectionActivationStateConnectionFinalization");
-            }
-            ushort retVal = Raw.ConnectionActivationStateConnectionFinalization.GetIoChannelId(_inner);
-            return retVal;
-        }
-    }
-
-    public ushort GetUserChannelId()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ConnectionActivationStateConnectionFinalization");
-            }
-            ushort retVal = Raw.ConnectionActivationStateConnectionFinalization.GetUserChannelId(_inner);
-            return retVal;
-        }
     }
 
     /// <returns>

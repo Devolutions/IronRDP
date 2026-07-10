@@ -55,7 +55,8 @@ pub fn build(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
     } else {
         let _env_guard = sh.push_env(
             "RUSTFLAGS",
-            "-Ctarget-feature=+simd128,+bulk-memory --cfg getrandom_backend=\"wasm_js\"",
+            "-Ctarget-feature=+simd128,+bulk-memory --cfg getrandom_backend=\"wasm_js\"
+                -Copt-level=s -Ccodegen-units=1 -Cllvm-args=-enable-dfa-jump-thread",
         );
         run_cmd_in!(sh, IRONRDP_WEB_PATH, "wasm-pack build --target web")?;
     }

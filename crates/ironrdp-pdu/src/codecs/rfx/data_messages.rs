@@ -28,6 +28,7 @@ const RECTANGLE_SIZE: usize = 8;
 ///
 /// [2.2.2.2.4]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/bde1ce78-5d9e-44c1-8a15-5843fa12270a
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ContextPdu {
     pub flags: OperatingMode,
     pub entropy_algorithm: EntropyAlgorithm,
@@ -115,6 +116,7 @@ impl<'de> Decode<'de> for ContextPdu {
 ///
 /// [2.2.2.3.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/7a938a26-3fc2-436b-bc84-09dfff59b5e7
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FrameBeginPdu {
     pub index: u32,
     pub number_of_regions: i16,
@@ -163,6 +165,7 @@ impl<'de> Decode<'de> for FrameBeginPdu {
 ///
 /// [2.2.2.3.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/b4cb2676-0268-450b-ad32-72f66d0598e8
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FrameEndPdu;
 
 impl FrameEndPdu {
@@ -199,6 +202,7 @@ impl<'de> Decode<'de> for FrameEndPdu {
 ///
 /// [2.2.2.3.3]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/23d2a1d6-1be0-4357-83eb-998b66ddd4d9
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RegionPdu {
     pub rectangles: Vec<RfxRectangle>,
 }
@@ -275,6 +279,7 @@ impl<'de> Decode<'de> for RegionPdu {
 ///
 /// [2.2.2.3.4] https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/7c926114-4bea-4c69-a9a1-caa6e88847a6
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TileSetPdu<'a> {
     pub entropy_algorithm: EntropyAlgorithm,
     pub quants: Vec<Quant>,
@@ -413,6 +418,7 @@ impl<'de> Decode<'de> for TileSetPdu<'de> {
 ///
 /// [2.2.2.1.6]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/26eb819a-955b-4b08-b3a0-997231170059
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxRectangle {
     pub x: u16,
     pub y: u16,
@@ -464,6 +470,7 @@ impl<'de> Decode<'de> for RfxRectangle {
 ///
 /// [2.2.2.1.5]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/3e9c8af4-7539-4c9d-95de-14b1558b902c
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Quant {
     pub ll3: u8,
     pub lh3: u8,
@@ -589,6 +596,7 @@ impl<'de> Decode<'de> for Quant {
 ///
 /// [2.2.2.3.4.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/89e669ed-b6dd-4591-a267-73a72bc6d84e
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Tile<'a> {
     pub y_quant_index: u8,
     pub cb_quant_index: u8,
@@ -677,6 +685,7 @@ impl<'de> Decode<'de> for Tile<'de> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u16)]
 pub enum EntropyAlgorithm {
     Rlgr1 = 0x01,
@@ -695,6 +704,7 @@ impl EntropyAlgorithm {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct OperatingMode: u16 {
         const IMAGE_MODE = 0x02; // if not set, the codec is operating in video mode
 

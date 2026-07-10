@@ -48,6 +48,7 @@ const GUID_QOI: Guid = Guid(0x4dae_9af8, 0xb399, 0x4df6, 0xb4, 0x3a, 0x66, 0x2f,
 const GUID_QOIZ: Guid = Guid(0x229c_c6dc, 0xa860, 0x4b52, 0xb4, 0xd8, 0x05, 0x3a, 0x22, 0xb3, 0x89, 0x2b);
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Guid(u32, u16, u16, u8, u8, u8, u8, u8, u8, u8, u8);
 
 impl Guid {
@@ -107,6 +108,7 @@ impl<'de> Decode<'de> for Guid {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapCodecs(pub Vec<Codec>);
 
 impl BitmapCodecs {
@@ -153,6 +155,7 @@ impl<'de> Decode<'de> for BitmapCodecs {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Codec {
     pub id: u8,
     pub property: CodecProperty,
@@ -278,7 +281,12 @@ impl<'de> Decode<'de> for Codec {
                 match guid {
                     GUID_REMOTEFX => CodecProperty::RemoteFx(property),
                     GUID_IMAGE_REMOTEFX => CodecProperty::ImageRemoteFx(property),
-                    _ => unreachable!(),
+                    // `guid` is validated as RemoteFX or ImageRemoteFX by the outer
+                    // match arm, so the `_` branch is genuinely dead. Keep it as a
+                    // redundant correctness check that fires loudly under tests and
+                    // fuzzing if a future change to the outer arm breaks that
+                    // invariant. Not reachable from the wire.
+                    _ => unreachable!("guid validated as RemoteFX or ImageRemoteFX by the outer match"),
                 }
             }
             GUID_IGNORE => CodecProperty::Ignore,
@@ -304,12 +312,14 @@ impl<'de> Decode<'de> for Codec {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum RemoteFxContainer {
     ClientContainer(RfxClientCapsContainer),
     ServerContainer(usize),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CodecProperty {
     NsCodec(NsCodec),
     RemoteFx(RemoteFxContainer),
@@ -336,6 +346,7 @@ pub enum CodecProperty {
 ///
 /// * [NSCodec Capability Set](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpnsc/0eac0ba8-7bdd-4300-ab8d-9bc784c0a669)
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct NsCodec {
     pub is_dynamic_fidelity_allowed: bool,
     pub is_subsampling_allowed: bool,
@@ -386,6 +397,7 @@ impl<'de> Decode<'de> for NsCodec {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxClientCapsContainer {
     pub capture_flags: CaptureFlags,
     pub caps_data: RfxCaps,
@@ -435,6 +447,7 @@ impl<'de> Decode<'de> for RfxClientCapsContainer {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxCaps(pub RfxCapset);
 
 impl RfxCaps {
@@ -490,6 +503,7 @@ impl<'de> Decode<'de> for RfxCaps {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxCapset(pub Vec<RfxICap>);
 
 impl RfxCapset {
@@ -562,6 +576,7 @@ impl<'de> Decode<'de> for RfxCapset {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxICap {
     pub flags: RfxICapFlags,
     pub entropy_bits: EntropyBits,
@@ -631,6 +646,7 @@ impl<'de> Decode<'de> for RfxICap {
 
 #[repr(u8)]
 #[derive(PartialEq, Eq, Debug, FromPrimitive, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum EntropyBits {
     Rlgr1 = 1,
     Rlgr3 = 4,
@@ -648,6 +664,7 @@ impl EntropyBits {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct CaptureFlags: u32 {
         const CARDP_CAPS_CAPTURE_NON_CAC = 1;
 
@@ -657,6 +674,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct RfxICapFlags: u8 {
         const CODEC_MODE = 2;
 
@@ -667,6 +685,7 @@ bitflags! {
 // Those IDs are hard-coded for practical reasons, they are implementation
 // details of the IronRDP client. The server should respect the client IDs.
 #[derive(Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CodecId(u8);
 
 pub const CODEC_ID_NONE: CodecId = CodecId(0);
@@ -720,6 +739,9 @@ fn parse_codecs_config<'a>(codecs: &'a [&'a str]) -> Result<HashMap<&'a str, boo
     Ok(result)
 }
 
+// FIXME(#api): this is a CLI-shaped API (string slices like "codec:on"/"codec:off", help string,
+// errors as `String`). A programmatic API would be warranted, especially for servers; the
+// `ConfigBuilder::with_codecs` method may also be too low-level and should be revisited.
 /// This function generates a list of client codec capabilities based on the
 /// provided configuration.
 ///
@@ -790,6 +812,8 @@ List of codecs:
     Ok(BitmapCodecs(codecs))
 }
 
+// FIXME(#api): this is a CLI-shaped API (string slices like "codec:on"/"codec:off", help string,
+// errors as `String`). A more programmatic API is warranted for server use cases.
 /// This function generates a list of server codec capabilities based on the
 /// provided configuration.
 ///

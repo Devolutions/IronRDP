@@ -106,11 +106,8 @@ impl RdpdrPdu {
             },
         }
     }
-}
 
-impl Decode<'_> for RdpdrPdu {
-    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        let header = SharedHeader::decode(src)?;
+    pub(crate) fn decode_body(header: SharedHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         match header.packet_id {
             PacketId::CoreServerAnnounce => Ok(RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu::decode(header, src)?)),
             PacketId::CoreServerCapability => Ok(RdpdrPdu::CoreCapability(CoreCapability::decode(header, src)?)),
@@ -120,12 +117,19 @@ impl Decode<'_> for RdpdrPdu {
             )),
             PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
             PacketId::CoreUserLoggedon => Ok(RdpdrPdu::UserLoggedon),
-            _ => Err(unsupported_value_err!(
-                "RdpdrPdu",
+            packet_id => Err(unsupported_value_err!(
+                "RdpdrPdu::decode_body",
                 "PacketId",
-                header.packet_id.to_string()
+                format!("{packet_id} ({:#06X})", u16::from(packet_id))
             )),
         }
+    }
+}
+
+impl Decode<'_> for RdpdrPdu {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let header = SharedHeader::decode(src)?;
+        Self::decode_body(header, src)
     }
 }
 
@@ -383,7 +387,7 @@ impl From<Component> for u16 {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum PacketId {
     /// PAKID_CORE_SERVER_ANNOUNCE

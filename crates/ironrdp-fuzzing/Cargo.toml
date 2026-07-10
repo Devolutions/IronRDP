@@ -11,6 +11,7 @@ test = false
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"] }
+ironrdp-bulk.path = "../ironrdp-bulk"
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-pdu.path = "../ironrdp-pdu"
@@ -19,6 +20,7 @@ ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
+ironrdp-egfx.path = "../ironrdp-egfx"
 ironrdp-svc.path = "../ironrdp-svc"
 
 [lints]

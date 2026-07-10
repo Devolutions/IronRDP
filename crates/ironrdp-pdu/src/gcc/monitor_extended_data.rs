@@ -14,6 +14,7 @@ const MONITOR_COUNT: usize = 4;
 const MONITOR_SIZE: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientMonitorExtendedData {
     pub extended_monitors_info: Vec<ExtendedMonitorInfo>,
 }
@@ -75,6 +76,7 @@ impl<'de> Decode<'de> for ClientMonitorExtendedData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ExtendedMonitorInfo {
     pub physical_width: u32,
     pub physical_height: u32,
@@ -134,6 +136,7 @@ impl<'de> Decode<'de> for ExtendedMonitorInfo {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum MonitorOrientation {
     Landscape = 0,
     Portrait = 90,

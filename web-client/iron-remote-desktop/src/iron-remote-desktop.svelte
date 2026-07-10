@@ -58,20 +58,22 @@
 
     let currentScreenScale = ScreenScale.Fit;
 
+    function captureKeys(evt: KeyboardEvent) {
+        if (capturingInputs()) {
+            keyboardEvent(evt);
+        }
+    }
+
     function initListeners() {
         serverBridgeListeners();
         userInteractionListeners();
-
-        function captureKeys(evt: KeyboardEvent) {
-            if (capturingInputs()) {
-                keyboardEvent(evt);
-            }
-        }
 
         window.addEventListener('keydown', captureKeys, false);
         window.addEventListener('keyup', captureKeys, false);
 
         window.addEventListener('focus', focusEventHandler);
+        window.addEventListener('blur', blurEventHandler);
+        document.addEventListener('visibilitychange', visibilityChangeHandler);
     }
 
     function resetHostStyle() {
@@ -327,6 +329,16 @@
         }
     }
 
+    function blurEventHandler() {
+        remoteDesktopService.focusLost();
+    }
+
+    function visibilityChangeHandler() {
+        if (document.visibilityState === 'hidden') {
+            remoteDesktopService.focusLost();
+        }
+    }
+
     onMount(async () => {
         isComponentDestroyed.set(false);
         loggingService.verbose = verbose === 'true';
@@ -337,7 +349,11 @@
 
     onDestroy(() => {
         window.removeEventListener('resize', resizeHandler);
+        window.removeEventListener('keydown', captureKeys, false);
+        window.removeEventListener('keyup', captureKeys, false);
         window.removeEventListener('focus', focusEventHandler);
+        window.removeEventListener('blur', blurEventHandler);
+        document.removeEventListener('visibilitychange', visibilityChangeHandler);
         isComponentDestroyed.set(true);
     });
 </script>
@@ -357,7 +373,6 @@
                 onmousedown={(event) => setMouseButtonState(event, true)}
                 onmouseup={(event) => setMouseButtonState(event, false)}
                 onmouseleave={(event) => {
-                    setMouseButtonState(event, false);
                     setMouseOut(event);
                 }}
                 onmouseenter={(event) => {

@@ -3,11 +3,12 @@ use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface};
 use ironrdp_egfx::decode::{DecodedFrame, DecoderResult, H264Decoder};
 use ironrdp_egfx::pdu::{
-    CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet, Codec1Type, CreateSurfacePdu,
-    DeleteSurfacePdu, EndFramePdu, GfxPdu, PixelFormat, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
+    CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet, CapabilityVersion,
+    Codec1Type, CreateSurfacePdu, DeleteSurfacePdu, EndFramePdu, GfxPdu, PixelFormat, ResetGraphicsPdu, StartFramePdu,
+    Timestamp, WireToSurface1Pdu,
 };
 use ironrdp_graphics::zgfx::wrap_uncompressed;
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::ExclusiveRectangle;
 
 // ============================================================================
 // Test Handler
@@ -70,11 +71,7 @@ impl H264Decoder for MockH264Decoder {
             pixel[0] = 255; // R
             pixel[3] = 255; // A
         }
-        Ok(DecodedFrame {
-            data,
-            width: 16,
-            height: 16,
-        })
+        Ok(DecodedFrame::new(data, 16, 16))
     }
 }
 
@@ -117,7 +114,7 @@ fn setup_active_client_with_surface(
     let mut client = GraphicsPipelineClient::new(Box::new(handler), decoder);
 
     // Activate via CapabilitiesConfirm
-    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu(CapabilitySet::V8 {
+    let confirm = GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V8 {
         flags: CapabilitiesV8Flags::empty(),
     }));
     client
@@ -164,7 +161,7 @@ fn client_filters_avc_caps_without_decoder() {
         "expected exactly one capability set when no decoder is present"
     );
     assert!(
-        matches!(caps_pdu.0[0], CapabilitySet::V8 { .. }),
+        caps_pdu.0[0].version == CapabilityVersion::V8,
         "expected only V8 capability set without decoder, got {:?}",
         caps_pdu.0[0]
     );
@@ -183,9 +180,9 @@ fn client_keeps_avc_caps_with_decoder() {
         3,
         "expected all three capability sets with decoder present"
     );
-    assert!(matches!(caps_pdu.0[0], CapabilitySet::V10_7 { .. }));
-    assert!(matches!(caps_pdu.0[1], CapabilitySet::V8_1 { .. }));
-    assert!(matches!(caps_pdu.0[2], CapabilitySet::V8 { .. }));
+    assert_eq!(caps_pdu.0[0].version, CapabilityVersion::V10_7);
+    assert_eq!(caps_pdu.0[1].version, CapabilityVersion::V8_1);
+    assert_eq!(caps_pdu.0[2].version, CapabilityVersion::V8);
 }
 
 // ============================================================================
@@ -213,11 +210,11 @@ fn client_handles_uncompressed_via_process() {
         surface_id: 1,
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 3,
-            bottom: 3,
+            right: 4,
+            bottom: 4,
         },
         bitmap_data: vec![0u8; 4 * 4 * 4],
     });
@@ -245,11 +242,11 @@ fn client_dispatches_avc420_via_process() {
         surface_id: 1,
         codec_id: Codec1Type::Avc420,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 15,
-            bottom: 15,
+            right: 16,
+            bottom: 16,
         },
         bitmap_data,
     });
@@ -276,11 +273,11 @@ fn client_skips_avc420_without_decoder() {
         surface_id: 1,
         codec_id: Codec1Type::Avc420,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 15,
-            bottom: 15,
+            right: 16,
+            bottom: 16,
         },
         bitmap_data,
     });
@@ -310,11 +307,11 @@ fn client_frame_ordering_via_process() {
         surface_id: 1,
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 3,
-            bottom: 3,
+            right: 4,
+            bottom: 4,
         },
         bitmap_data: vec![0u8; 4 * 4 * 4],
     });
@@ -403,11 +400,11 @@ fn client_rejects_wire_to_unknown_surface() {
         surface_id: 99, // does not exist
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 3,
-            bottom: 3,
+            right: 4,
+            bottom: 4,
         },
         bitmap_data: vec![0u8; 4 * 4 * 4],
     });
@@ -424,7 +421,7 @@ fn client_rejects_invalid_rectangle_ordering() {
         surface_id: 1,
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 50,
             top: 0,
             right: 10,
@@ -447,13 +444,13 @@ fn client_tolerates_out_of_bounds_rectangle() {
         surface_id: 1,
         codec_id: Codec1Type::Uncompressed,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: InclusiveRectangle {
+        destination_rectangle: ExclusiveRectangle {
             left: 0,
             top: 0,
             right: 200, // exceeds surface width of 100
             bottom: 50,
         },
-        bitmap_data: vec![0u8; 201 * 51 * 4],
+        bitmap_data: vec![0u8; 200 * 50 * 4],
     });
     let result = client.process(0, &encode_for_process(&pdu));
     assert!(

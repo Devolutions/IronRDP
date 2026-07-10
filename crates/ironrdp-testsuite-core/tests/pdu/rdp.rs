@@ -447,3 +447,22 @@ fn buffer_length_is_correct_for_client_demand_active() {
 
     assert_eq!(expected_buffer_len, len);
 }
+
+/// Regression for issue #1292: decoding a `BitmapCacheV3` capability set then re-encoding it
+/// must not reach `unreachable!()` in the `Encode` impl. The decoder accepts
+/// `CapabilitySetType::BitmapCacheV3CodecID` (0x06) and stores the body in
+/// `CapabilitySet::BitmapCacheV3(Vec<u8>)`; before the fix the inner `match` of the encoder's
+/// catch-all arm did not cover that variant.
+#[test]
+fn bitmap_cache_v3_round_trip_does_not_panic() {
+    use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+
+    // 4-byte capability-set header with type=BitmapCacheV3CodecID(0x06) and length=4 (header only)
+    let input: [u8; 4] = [0x06, 0x00, 0x04, 0x00];
+
+    let decoded: CapabilitySet = decode(&input).expect("decode BitmapCacheV3 capability set");
+    assert!(matches!(decoded, CapabilitySet::BitmapCacheV3(_)));
+
+    let encoded = encode_vec(&decoded).expect("re-encode must not panic");
+    assert_eq!(encoded, input, "round-trip must reproduce the original bytes");
+}

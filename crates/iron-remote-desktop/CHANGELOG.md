@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.7.0...iron-remote-desktop-v0.7.1)] - 2026-05-27
+
+### <!-- 1 -->Features
+
+- Expose granular RDCleanPath error details ([#1117](https://github.com/Devolutions/IronRDP/issues/1117)) ([2911124e8f](https://github.com/Devolutions/IronRDP/commit/2911124e8fe6160bc8ba03a574b67077e6d2cca9)) 
+
+  Add RDCleanPathDetails struct to provide detailed error information for
+  RDCleanPath errors, including HTTP status codes, WSA error codes, and
+  TLS alert codes.
+  
+  Allows the web client to distinguish between different types of network
+  errors (say, WSAEACCES/10013) instead of showing a generic RDCleanpath
+  error message.
+
+- Implement clipboard file transfer support ([#1166](https://github.com/Devolutions/IronRDP/issues/1166)) ([c98a8fb774](https://github.com/Devolutions/IronRDP/commit/c98a8fb7741986e9afef00cb5615250c963a7fa9)) 
+
+  Add end-to-end clipboard file transfer (upload and download) across the
+  CLIPRDR channel per MS-RDPECLIP.
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.6.0...iron-remote-desktop-v0.7.0)] - 2025-09-29
 
 ### <!-- 4 -->Bug Fixes
@@ -35,5 +54,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### <!-- 4 -->Bug Fixes
 
 - [**breaking**] Rename extension_call to invoke_extension (#803) ([f68cd06ac3](https://github.com/Devolutions/IronRDP/commit/f68cd06ac3705608e6f2ac6bde684d9ae906ea53)) 
-
 

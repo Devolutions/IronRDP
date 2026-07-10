@@ -14,9 +14,10 @@ namespace Devolutions.IronRdp;
 public enum ClipboardMessageType
 {
     SendInitiateCopy = 0,
-    SendFormatData = 1,
-    SendInitiatePaste = 2,
-    SendFileContentsRequest = 3,
-    SendFileContentsResponse = 4,
-    Error = 5,
+    SendInitiateFileCopy = 1,
+    SendFormatData = 2,
+    SendInitiatePaste = 3,
+    SendFileContentsRequest = 4,
+    SendFileContentsResponse = 5,
+    Error = 6,
 }

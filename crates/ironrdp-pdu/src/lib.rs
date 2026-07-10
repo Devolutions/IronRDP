@@ -30,7 +30,6 @@ pub(crate) mod crypto;
 pub(crate) mod per;
 
 pub use crate::basic_output::{bitmap, fast_path, pointer, slow_path, surface_commands};
-pub use crate::rdp::vc::dvc;
 
 pub type PduResult<T> = Result<T, PduError>;
 
@@ -51,10 +50,12 @@ pub trait PduErrorExt {
 }
 
 impl PduErrorExt for PduError {
+    #[track_caller]
     fn decode<E: Source>(context: &'static str, source: E) -> Self {
         Self::new(context, PduErrorKind::Decode).with_source(source)
     }
 
+    #[track_caller]
     fn encode<E: Source>(context: &'static str, source: E) -> Self {
         Self::new(context, PduErrorKind::Encode).with_source(source)
     }

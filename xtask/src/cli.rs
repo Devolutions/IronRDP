@@ -13,22 +13,24 @@ TASKS:
   check fmt               Check formatting
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
+  check dependencies      Check dependency-graph invariants between crates
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
   check typos             Check for typos in the codebase
+  check features          Run every feature-matrix case sequentially
+  check features --case <NAME>
+                          Run a single feature-matrix case
+  check features --list [--format <FMT>]
+                          List feature-matrix cases (fmt: human (default) | github-matrix)
   check install           Install all requirements for check tasks
   ci                      Run all checks required on CI
   clean                   Clean workspace
-  cov grcov               Generate a nice HTML report using code-coverage data from tests and fuzz targets
-  cov install             Install cargo-llvm-cov in cargo local root
-  cov report-gh --repo <REPO_NAME> --pr <PR_ID>
-                          Generate a coverage report, posting a comment in GitHub PR
-  cov report [--html]     Generate a coverage report (optionally, a HTML report)
-  cov update              Update coverage data in the cov-data branch
   fuzz corpus-fetch       Fetch fuzzing corpus from Azure storage
   fuzz corpus-min [--target <NAME>]
                           Minify fuzzing corpus for a specific target (or all if unspecified)
   fuzz corpus-push        Push fuzzing corpus to Azure storage
   fuzz install            Install dependencies required for fuzzing
+  fuzz list [--format <FMT>]
+                          List fuzz targets (fmt: human (default) | github-matrix)
   fuzz run [--duration <SECONDS>] [--target <NAME>]
                           Fuzz a specific target if any or all targets for a limited duration (default is 5s)
   wasm check              Ensure WASM module is compatible for the web
@@ -52,35 +54,55 @@ pub struct Args {
     pub action: Action,
 }
 
+pub enum ListFormat {
+    Human,
+    GithubMatrix,
+}
+
+impl ListFormat {
+    pub const DEFAULT: Self = Self::Human;
+}
+
+impl core::str::FromStr for ListFormat {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "human" => Ok(Self::Human),
+            "github-matrix" => Ok(Self::GithubMatrix),
+            other => anyhow::bail!("unknown --format value: {other}"),
+        }
+    }
+}
+
 pub enum Action {
     ShowHelp,
     Bootstrap,
     CheckFmt,
     CheckLints,
     CheckLocks,
+    CheckDependencies,
     CheckTests {
         no_run: bool,
     },
     CheckTypos,
+    CheckFeatures {
+        case: Option<String>,
+        list: bool,
+        format: ListFormat,
+    },
     CheckInstall,
     Ci,
     Clean,
-    CovGrcov,
-    CovInstall,
-    CovReportGitHub {
-        repo: String,
-        pr: u32,
-    },
-    CovReport {
-        html_report: bool,
-    },
-    CovUpdate,
     FuzzCorpusFetch,
     FuzzCorpusMin {
         target: Option<String>,
     },
     FuzzCorpusPush,
     FuzzInstall,
+    FuzzList {
+        format: ListFormat,
+    },
     FuzzRun {
         duration: Option<u32>,
         target: Option<String>,
@@ -112,29 +134,22 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("fmt") => Action::CheckFmt,
                 Some("lints") => Action::CheckLints,
                 Some("locks") => Action::CheckLocks,
+                Some("dependencies") => Action::CheckDependencies,
                 Some("tests") => Action::CheckTests {
                     no_run: args.contains("--no-run"),
                 },
                 Some("typos") => Action::CheckTypos,
+                Some("features") => Action::CheckFeatures {
+                    case: args.opt_value_from_str("--case")?,
+                    list: args.contains("--list"),
+                    format: args.opt_value_from_str("--format")?.unwrap_or(ListFormat::DEFAULT),
+                },
                 Some("install") => Action::CheckInstall,
                 Some(unknown) => anyhow::bail!("unknown check action: {unknown}"),
                 None => Action::ShowHelp,
             },
             Some("ci") => Action::Ci,
             Some("clean") => Action::Clean,
-            Some("cov") => match args.subcommand()?.as_deref() {
-                Some("grcov") => Action::CovGrcov,
-                Some("install") => Action::CovInstall,
-                Some("report-gh") => Action::CovReportGitHub {
-                    repo: args.value_from_str("--repo")?,
-                    pr: args.value_from_str("--pr")?,
-                },
-                Some("report") => Action::CovReport {
-                    html_report: args.contains("--html"),
-                },
-                Some("update") => Action::CovUpdate,
-                None | Some(_) => anyhow::bail!("Unknown cov action"),
-            },
             Some("fuzz") => match args.subcommand()?.as_deref() {
                 Some("corpus-fetch") => Action::FuzzCorpusFetch,
                 Some("corpus-min") => Action::FuzzCorpusMin {
@@ -142,6 +157,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 },
                 Some("corpus-push") => Action::FuzzCorpusPush,
                 Some("install") => Action::FuzzInstall,
+                Some("list") => Action::FuzzList {
+                    format: args.opt_value_from_str("--format")?.unwrap_or(ListFormat::DEFAULT),
+                },
                 Some("run") => Action::FuzzRun {
                     duration: args.opt_value_from_str("--duration")?,
                     target: args.opt_value_from_str("--target")?,

@@ -15,11 +15,11 @@ public partial class ActiveStageOutput: IDisposable
 {
     private unsafe Raw.ActiveStageOutput* _inner;
 
-    public ConnectionActivationSequence DeactivateAll
+    public NetworkCharacteristics AutodetectNetworkCharacteristics
     {
         get
         {
-            return GetDeactivateAll();
+            return GetAutodetectNetworkCharacteristics();
         }
     }
 
@@ -219,28 +219,6 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
-    /// <exception cref="IronRdpException"></exception>
-    /// <returns>
-    /// A <c>ConnectionActivationSequence</c> allocated on Rust side.
-    /// </returns>
-    public ConnectionActivationSequence GetDeactivateAll()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ActiveStageOutput");
-            }
-            Raw.SessionFfiResultBoxConnectionActivationSequenceBoxIronRdpError result = Raw.ActiveStageOutput.GetDeactivateAll(_inner);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
-            }
-            Raw.ConnectionActivationSequence* retVal = result.Ok;
-            return new ConnectionActivationSequence(retVal);
-        }
-    }
-
     /// <summary>
     /// Returns the multitransport request ID and requested protocol.
     /// </summary>
@@ -267,6 +245,34 @@ public partial class ActiveStageOutput: IDisposable
             }
             Raw.MultitransportRequest retVal = result.Ok;
             return new MultitransportRequest(retVal);
+        }
+    }
+
+    /// <summary>
+    /// Connection quality signals from the server's auto-detect mechanism.
+    /// Returns RTT and bandwidth measurements for health monitoring.
+    /// These values will feed into FramePacingFeedback when the
+    /// library-level health observer traits from #1158 land.
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>NetworkCharacteristics</c> allocated on C# side.
+    /// </returns>
+    public NetworkCharacteristics GetAutodetectNetworkCharacteristics()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStageOutput");
+            }
+            Raw.SessionFfiResultNetworkCharacteristicsBoxIronRdpError result = Raw.ActiveStageOutput.GetAutodetectNetworkCharacteristics(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.NetworkCharacteristics retVal = result.Ok;
+            return new NetworkCharacteristics(retVal);
         }
     }
 

@@ -21,6 +21,7 @@ const SECURITY_COOKIE_LEN: usize = 16;
 ///
 /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u16)]
 pub enum RequestedProtocol {
     /// Reliable UDP transport (RDPEUDP2 + TLS).
@@ -65,6 +66,7 @@ impl RequestedProtocol {
 ///
 /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MultitransportRequestPdu {
     pub security_header: BasicSecurityHeader,
     /// Unique ID correlating this request with the tunnel creation request.
@@ -146,6 +148,7 @@ impl<'de> Decode<'de> for MultitransportRequestPdu {
 ///
 /// [\[MS-RDPBCGR\] 2.2.15.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/44044233-e498-46f8-8e16-1ffa595a8e8b
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MultitransportResponsePdu {
     pub security_header: BasicSecurityHeader,
     /// Request ID matching the server's Initiate Multitransport Request.

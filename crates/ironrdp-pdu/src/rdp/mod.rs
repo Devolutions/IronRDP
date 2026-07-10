@@ -1,16 +1,9 @@
-use std::io;
-
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, invalid_field_err,
 };
-use thiserror::Error;
 
-use crate::PduError;
-use crate::input::InputEventError;
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::rdp::client_info::{ClientInfo, ClientInfoError};
-use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlPduType, ShareDataPduType};
-use crate::rdp::server_license::ServerLicenseError;
+use crate::rdp::client_info::ClientInfo;
+use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 
 pub mod autodetect;
 pub mod capability_sets;
@@ -26,6 +19,7 @@ pub mod suppress_output;
 pub mod vc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientInfoPdu {
     pub security_header: BasicSecurityHeader,
     pub client_info: ClientInfo,
@@ -71,49 +65,5 @@ impl<'de> Decode<'de> for ClientInfoPdu {
             security_header,
             client_info,
         })
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum RdpError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("client Info PDU error")]
-    ClientInfoError(#[from] ClientInfoError),
-    #[error("server License PDU error")]
-    ServerLicenseError(#[from] ServerLicenseError),
-    #[error("capability sets error")]
-    CapabilitySetsError(#[from] CapabilitySetsError),
-    #[error("invalid RDP security header")]
-    InvalidSecurityHeader,
-    #[error("invalid RDP Share Control Header: {0}")]
-    InvalidShareControlHeader(String),
-    #[error("invalid RDP Share Data Header: {0}")]
-    InvalidShareDataHeader(String),
-    #[error("invalid RDP Connection Sequence PDU")]
-    InvalidPdu(String),
-    #[error("unexpected RDP Share Control Header PDU type: {0:?}")]
-    UnexpectedShareControlPdu(ShareControlPduType),
-    #[error("unexpected RDP Share Data Header PDU type: {0:?}")]
-    UnexpectedShareDataPdu(ShareDataPduType),
-    #[error("save session info PDU error")]
-    SaveSessionInfoError(#[from] session_info::SessionError),
-    #[error("input event PDU error")]
-    InputEventError(#[from] InputEventError),
-    #[error("not enough bytes")]
-    NotEnoughBytes,
-    #[error("PDU error: {0}")]
-    Pdu(PduError),
-}
-
-impl From<PduError> for RdpError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
-    }
-}
-
-impl From<RdpError> for io::Error {
-    fn from(e: RdpError) -> io::Error {
-        io::Error::other(format!("RDP Connection Sequence error: {e}"))
     }
 }

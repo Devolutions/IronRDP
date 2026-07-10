@@ -562,3 +562,77 @@ fn on_outgoing_locks_expired_callback_invoked() {
     // Cleared callback should NOT have fired yet (cleanup hasn't run)
     assert!(cleared_ids.lock().unwrap().is_empty());
 }
+
+// -- Taking clipboard ownership releases stale download locks --------
+
+/// When the local side initiates a file copy (an upload), it takes clipboard
+/// ownership — so the outgoing locks placed for downloads from the previous owner are
+/// now stale. They must be released with `Unlock` PDUs that PRECEDE our `FormatList` on
+/// the wire; otherwise the server keeps tracking a lock for a download that will never
+/// complete, which desyncs its clipboard state.
+#[test]
+fn initiate_file_copy_releases_outgoing_download_locks() {
+    let mut cliprdr = ready_locking_client();
+
+    // Two remote file lists => two outgoing download locks (e.g. two in-flight downloads).
+    let lock1 = process_file_format_list(&mut cliprdr);
+    let lock2 = process_file_format_list(&mut cliprdr);
+    assert_eq!(cliprdr.__test_outgoing_locks().len(), 2);
+
+    let messages: Vec<SvcMessage> = cliprdr
+        .initiate_file_copy(vec![FileDescriptor::new("upload.txt")])
+        .unwrap()
+        .into();
+
+    // Every outgoing lock is released and the current lock id is cleared.
+    assert!(
+        cliprdr.__test_outgoing_locks().is_empty(),
+        "outgoing locks must be released when taking clipboard ownership"
+    );
+    assert_eq!(cliprdr.__test_current_lock_id(), None);
+
+    // Wire order: an Unlock for each held lock, THEN our FormatList last.
+    assert_eq!(messages.len(), 3, "expected 2 Unlock PDUs + 1 FormatList");
+
+    decode_pdu!(messages[0] => _b0, pdu0);
+    let id0 = match pdu0 {
+        ClipboardPdu::UnlockData(id) => id.0,
+        other => panic!("expected UnlockData first, got {other:?}"),
+    };
+    decode_pdu!(messages[1] => _b1, pdu1);
+    let id1 = match pdu1 {
+        ClipboardPdu::UnlockData(id) => id.0,
+        other => panic!("expected UnlockData second, got {other:?}"),
+    };
+    let mut unlocked = [id0, id1];
+    unlocked.sort_unstable();
+    let mut expected = [lock1, lock2];
+    expected.sort_unstable();
+    assert_eq!(unlocked, expected, "both download locks must be unlocked");
+
+    decode_pdu!(messages[2] => _b2, last_pdu);
+    assert!(
+        matches!(last_pdu, ClipboardPdu::FormatList(_)),
+        "FormatList must come after the Unlock PDUs, got {last_pdu:?}"
+    );
+}
+
+/// With no outgoing locks held, `initiate_file_copy` sends only the `FormatList`
+/// (no spurious `Unlock`).
+#[test]
+fn initiate_file_copy_without_locks_sends_only_format_list() {
+    let mut cliprdr = ready_locking_client();
+    assert!(cliprdr.__test_outgoing_locks().is_empty());
+
+    let messages: Vec<SvcMessage> = cliprdr
+        .initiate_file_copy(vec![FileDescriptor::new("upload.txt")])
+        .unwrap()
+        .into();
+
+    assert_eq!(messages.len(), 1, "expected only a FormatList when no locks are held");
+    decode_pdu!(messages[0] => _b0, pdu);
+    assert!(
+        matches!(pdu, ClipboardPdu::FormatList(_)),
+        "expected FormatList, got {pdu:?}"
+    );
+}

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc as std_mpsc;
 
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 use windows::Win32::System::RemoteDesktop::{
     IWTSListenerCallback, IWTSPlugin, IWTSVirtualChannel, IWTSVirtualChannelCallback, IWTSVirtualChannelManager,
 };
@@ -50,7 +50,7 @@ pub(crate) fn run_com_worker(
     command_rx: std_mpsc::Receiver<ComCommand>,
     on_write_dvc_rx: std_mpsc::Receiver<OnWriteDvc>,
 ) {
-    info!("COM worker thread started");
+    debug!("COM worker thread started");
 
     let mut active_channels: HashMap<u32, ActiveChannel> = HashMap::new();
 
@@ -129,7 +129,7 @@ pub(crate) fn run_com_worker(
                 match result {
                     Ok(()) if accept.as_bool() => {
                         if let Some(callback) = channel_callback {
-                            info!(channel_name = %channel_name, channel_id, "Plugin accepted DVC channel");
+                            debug!(channel_name = %channel_name, channel_id, "Plugin accepted DVC channel");
                             active_channels.insert(
                                 channel_id,
                                 ActiveChannel {
@@ -187,7 +187,7 @@ pub(crate) fn run_com_worker(
             }
 
             ComCommand::Shutdown => {
-                info!("Shutting down COM plugin");
+                debug!("Shutting down COM plugin");
 
                 // Close all active channels
                 for (channel_id, active) in active_channels.drain() {
@@ -216,5 +216,5 @@ pub(crate) fn run_com_worker(
         }
     }
 
-    info!("COM worker thread exiting");
+    debug!("COM worker thread exiting");
 }

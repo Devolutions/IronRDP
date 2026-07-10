@@ -2,15 +2,26 @@
 
 TLS boilerplate common with most IronRDP clients.
 
-This crate exposes three features for selecting the TLS backend:
+This crate exposes features for selecting the TLS backend:
 
-- `rustls`: use the rustls crate.
+- `rustls`: use the rustls crate (with the default aws-lc-rs crypto provider).
 - `native-tls`: use the native-tls crate.
 - `stub`: use a stubbed backend which fail at runtime when used.
 
-These features are mutually exclusive and only one may be enabled at a time.
+These backends are mutually exclusive and only one may be enabled at a time.
 When more than one backend is enabled, a compile-time error is emitted.
 For this reason, no feature is enabled by default.
+
+When the rustls backend is used, its crypto provider is selectable so downstream
+crates are not forced onto a specific one:
+
+- `rustls` or `rustls-aws-lc-rs`: the aws-lc-rs provider. `rustls` is an alias for
+  `rustls-aws-lc-rs`, so the default backend is unchanged.
+- `rustls-ring`: the ring provider.
+- `rustls-no-provider`: no provider is bundled. The downstream must install a rustls
+  `CryptoProvider` as the process default before opening a connection, otherwise
+  building the client configuration panics. Use this to plug in a custom or pure-Rust
+  provider.
 
 The rationale is two-fold:
 

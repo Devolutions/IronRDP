@@ -14,6 +14,7 @@
 
 mod cfg;
 mod clipboard;
+mod connector;
 mod displaycontrol;
 mod dvc;
 mod echo;
@@ -25,6 +26,8 @@ mod pcb;
 mod pdu;
 mod propertyset;
 mod rdcleanpath;
+mod rdpdr;
+mod rdpeusb;
 mod rdpsnd;
 mod server;
 mod server_name;

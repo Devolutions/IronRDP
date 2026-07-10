@@ -79,3 +79,5 @@ jobs:
         with:
           command: release
           registry-token: ${{ steps.auth.outputs.token }}
+          # Ensure the published GitHub Release triggers release-binaries.yml.
+          github-token: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}

@@ -4,9 +4,17 @@
     <SupportedOSPlatformVersion>12.1</SupportedOSPlatformVersion>
   </PropertyGroup>
 
-  <ItemGroup Condition="Exists('$(NativeLibPath_ios_framework)')">
-    <None Include="$(RuntimesPath)/ios-universal/native/*.framework/**">
-      <PackagePath>runtimes/ios/native/</PackagePath>
+  <ItemGroup Condition="Exists('$(NativeLibPath_ios_arm64_framework)')">
+    <None Include="$(RuntimesPath)/ios-arm64/native/*.framework/**">
+      <PackagePath>runtimes/ios-arm64/native/</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_iossimulator_arm64_framework)')">
+    <None Include="$(RuntimesPath)/iossimulator-arm64/native/*.framework/**">
+      <PackagePath>runtimes/iossimulator-arm64/native/</PackagePath>
       <Pack>true</Pack>
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </None>

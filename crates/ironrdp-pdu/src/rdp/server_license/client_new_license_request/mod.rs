@@ -23,6 +23,7 @@ pub const PLATFORM_ID: u32 = ClientOsType::NT_POST_52.bits() | Isv::MICROSOFT.bi
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct ClientOsType: u32 {
         const NT_351 = 0x100_0000;
         const NT_40 = 0x200_0000;
@@ -33,6 +34,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct Isv: u32 {
         const MICROSOFT = 0x10000;
         const CITRIX = 0x20000;
@@ -43,6 +45,7 @@ bitflags! {
 ///
 /// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/c57e4890-9049-421e-9fe8-9a6f9519675a
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientNewLicenseRequest {
     pub license_header: LicenseHeader,
     pub client_random: Vec<u8>,
