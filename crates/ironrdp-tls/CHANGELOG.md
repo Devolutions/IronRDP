@@ -18,12 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Gate native backends behind Cargo features ([#1338](https://github.com/Devolutions/IronRDP/issues/1338)) ([f7e6106e0f](https://github.com/Devolutions/IronRDP/commit/f7e6106e0f293c1e0f8129be82aa2d86737ba92a)) 
 
-  ironrdp (meta crate):
-  - Added:    client, client-all, client-sound, client-clipboard,
-              client-rdpdr, client-smartcard, client-gateway,
-              client-dvc-pipe-proxy, client-dvc-com-plugin, and
-              top-level rustls / native-tls (forwarded to ironrdp-client)
-  - Modified: qoi, qoiz now also gate ironrdp-client's codec
 
 - Make the rustls crypto provider selectable ([#1387](https://github.com/Devolutions/IronRDP/issues/1387)) ([d767d99032](https://github.com/Devolutions/IronRDP/commit/d767d990325448bf3385974da7ea9b6dcc477673)) 
 
