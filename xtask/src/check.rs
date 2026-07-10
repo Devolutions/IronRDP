@@ -44,6 +44,47 @@ pub fn typos(sh: &Shell) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("DEPENDENCIES");
+
+    // Dependency-graph invariants that must hold to keep crate boundaries slim.
+    // Each pair `(package, banned)` asserts that `package` has no transitive
+    // (non-dev) edge to `banned`, ensuring consumers can depend on the
+    // former without pulling in the latter’s graph.
+    const FORBIDDEN: &[(&str, &str)] = &[("ironrdp-session", "ironrdp-connector"), ("ironrdp-session", "sspi")];
+
+    let mut violations = Vec::new();
+
+    for &(package, banned) in FORBIDDEN {
+        // `cargo tree -i` inverts the graph to show what depends on `banned`,
+        // scoped to `package`’s subtree. When there is no such edge, cargo exits
+        // non-zero with a "did not match any packages" error; a successful,
+        // non-empty output means the forbidden edge is present.
+        let output = cmd!(sh, "{CARGO} tree -p {package} -e no-dev -i {banned}")
+            .ignore_status()
+            .quiet()
+            .output()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        if output.status.success() && !stdout.trim().is_empty() {
+            println!("Forbidden dependency edge: `{package}` depends on `{banned}`");
+            print!("{stdout}");
+            violations.push((package, banned));
+        } else {
+            println!("`{package}` has no dependency on `{banned}` (good)");
+        }
+    }
+
+    if !violations.is_empty() {
+        anyhow::bail!("forbidden dependency edge(s) detected, see output above");
+    }
+
+    println!("All good!");
+
+    Ok(())
+}
+
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("CHECK-INSTALL");
 

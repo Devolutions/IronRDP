@@ -108,6 +108,9 @@ jobs:
       - name: Lints
         run: cargo xtask check lints -v
 
+      - name: Dependencies
+        run: cargo xtask check dependencies -v
+
       - name: WASM (prepare)
         run: cargo xtask wasm install -v
 

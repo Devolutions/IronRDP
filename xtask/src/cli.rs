@@ -13,6 +13,7 @@ TASKS:
   check fmt               Check formatting
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
+  check dependencies      Check dependency-graph invariants between crates
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
   check typos             Check for typos in the codebase
   check features          Run every feature-matrix case sequentially
@@ -80,6 +81,7 @@ pub enum Action {
     CheckFmt,
     CheckLints,
     CheckLocks,
+    CheckDependencies,
     CheckTests {
         no_run: bool,
     },
@@ -132,6 +134,7 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("fmt") => Action::CheckFmt,
                 Some("lints") => Action::CheckLints,
                 Some("locks") => Action::CheckLocks,
+                Some("dependencies") => Action::CheckDependencies,
                 Some("tests") => Action::CheckTests {
                     no_run: args.contains("--no-run"),
                 },

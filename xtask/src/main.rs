@@ -61,6 +61,7 @@ fn main() -> anyhow::Result<()> {
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
+        Action::CheckDependencies => check::dependencies(&sh)?,
         Action::CheckTests { no_run } => {
             if no_run {
                 check::tests_compile(&sh)?;
@@ -93,6 +94,7 @@ fn main() -> anyhow::Result<()> {
             check::tests_run(&sh)?;
             check::lints(&sh)?;
             features::run_all(&sh)?;
+            check::dependencies(&sh)?;
             wasm::check(&sh)?;
             fuzz::run(&sh, None, None)?;
             web::install(&sh)?;
