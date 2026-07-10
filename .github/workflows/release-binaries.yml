@@ -3,6 +3,16 @@ name: Release binaries
 on:
   release:
     types: [published]
+  # Manual re-run path: when the release-triggered run fails (e.g. a bug in this
+  # workflow), a UI re-run reuses the workflow file at the tag's commit, so a fix
+  # merged to the default branch would NOT take effect. Dispatching manually runs
+  # the fixed workflow from the default branch against an existing release tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to (re)build binaries for (e.g. ironrdp-agent-v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -26,7 +36,7 @@ jobs:
       - name: Select released CLI
         id: select
         env:
-          TAG_NAME: ${{ github.event.release.tag_name }}
+          TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           case "$TAG_NAME" in
             ironrdp-agent-v*)
@@ -80,7 +90,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - name: Install build dependencies
         uses: ./.github/actions/install-build-deps
@@ -159,7 +169,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ github.event.release.tag_name }}
+          TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
         run: gh release upload "$TAG_NAME" release-assets/* --clobber
 
       - name: Update release notes with install instructions
@@ -167,7 +177,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ github.event.release.tag_name }}
+          TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
           PACKAGE: ${{ needs.select-package.outputs.package }}
           VERSION: ${{ needs.select-package.outputs.version }}
         run: |
