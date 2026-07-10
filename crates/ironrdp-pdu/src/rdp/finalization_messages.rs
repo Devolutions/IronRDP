@@ -15,6 +15,7 @@ const SYNCHRONIZE_MESSAGE_TYPE: u16 = 1;
 const MAX_MONITOR_COUNT: u32 = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SynchronizePdu {
     pub target_user_id: u16,
 }
@@ -60,6 +61,7 @@ impl<'de> Decode<'de> for SynchronizePdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ControlPdu {
     pub action: ControlAction,
     pub grant_id: u16,
@@ -113,6 +115,7 @@ impl<'de> Decode<'de> for ControlPdu {
 ///
 /// [2.2.1.22.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b4e557f3-7540-46fc-815d-0c12299cf1ee
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FontPdu {
     pub number: u16,
     pub total_number: u16,
@@ -179,6 +182,7 @@ impl<'de> Decode<'de> for FontPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MonitorLayoutPdu {
     pub monitors: Vec<gcc::Monitor>,
 }
@@ -234,6 +238,7 @@ impl<'de> Decode<'de> for MonitorLayoutPdu {
 
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ControlAction {
     RequestControl = 1,
     GrantedControl = 2,
@@ -253,6 +258,7 @@ impl ControlAction {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct SequenceFlags: u16 {
         const FIRST = 1;
         const LAST = 2;

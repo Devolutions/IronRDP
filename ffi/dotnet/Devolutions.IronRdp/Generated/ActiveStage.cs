@@ -61,6 +61,30 @@ public partial class ActiveStage: IDisposable
         }
     }
 
+    /// <summary>
+    /// Produces a fresh connection activation sequence to drive the Deactivation-Reactivation
+    /// Sequence.
+    /// </summary>
+    /// <remarks>
+    /// Call this upon receiving a [`ActiveStageOutputType::DeactivateAll`] output, drive the
+    /// returned sequence until it is finalized, then discard it.
+    /// </remarks>
+    /// <returns>
+    /// A <c>ConnectionActivationSequence</c> allocated on Rust side.
+    /// </returns>
+    public ConnectionActivationSequence CreateConnectionActivation()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.ConnectionActivationSequence* retVal = Raw.ActiveStage.CreateConnectionActivation(_inner);
+            return new ConnectionActivationSequence(retVal);
+        }
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.

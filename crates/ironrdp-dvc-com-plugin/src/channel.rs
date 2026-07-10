@@ -16,7 +16,7 @@ use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, trace, warn};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::RemoteDesktop::{IWTSListenerCallback, IWTSPlugin, IWTSVirtualChannelManager};
 use windows::core::{HRESULT, PCSTR, PCWSTR};
@@ -62,7 +62,7 @@ impl DvcProcessor for DvcComChannel {
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        info!(
+        debug!(
             channel_name = %self.channel_name,
             channel_id,
             "DVC COM channel start"
@@ -92,7 +92,7 @@ impl DvcProcessor for DvcComChannel {
         let accepted = accept_rx.recv().unwrap_or(false);
 
         if accepted {
-            info!(
+            debug!(
                 channel_name = %self.channel_name,
                 channel_id,
                 "COM plugin accepted DVC channel"
@@ -164,7 +164,7 @@ pub fn load_dvc_plugin<F>(dll_path: &Path, on_write_dvc_factory: F) -> PduResult
 where
     F: Fn() -> OnWriteDvcMessage + Send + Sync + 'static,
 {
-    info!(dll = %dll_path.display(), "Loading DVC COM plugin");
+    debug!(dll = %dll_path.display(), "Loading DVC COM plugin");
 
     // Channel for sending commands to the COM worker thread
     let (command_tx, command_rx) = std_mpsc::channel();
@@ -185,7 +185,7 @@ where
             match initialize_plugin_on_thread(&dll_path_owned) {
                 Ok((plugin, manager, listeners)) => {
                     let channel_names: Vec<String> = listeners.keys().cloned().collect();
-                    info!(
+                    debug!(
                         channels = ?channel_names,
                         "Plugin initialized, registered {} listener(s)",
                         channel_names.len()
@@ -256,7 +256,7 @@ fn initialize_plugin_on_thread(
     // SAFETY: loading the DLL into this process
     let hmodule = unsafe { LoadLibraryW(dll_path_pcwstr) }.map_err(|e| format!("LoadLibraryW failed: {e}"))?;
 
-    info!(dll = %dll_path.display(), "DLL loaded successfully");
+    trace!(dll = %dll_path.display(), "DLL loaded successfully");
 
     // Get the VirtualChannelGetInstance export
     let proc_name = PCSTR::from_raw(c"VirtualChannelGetInstance".as_ptr().cast::<u8>());
@@ -268,7 +268,7 @@ fn initialize_plugin_on_thread(
     // SAFETY: transmuting the function pointer; we trust the DLL follows the documented API
     let get_instance: VirtualChannelGetInstanceFn = unsafe { core::mem::transmute(proc_addr) };
 
-    info!("VirtualChannelGetInstance export found");
+    trace!("VirtualChannelGetInstance export found");
 
     // Phase 1: query the number of plugin objects
     let iid = IWTSPlugin::IID;
@@ -283,7 +283,7 @@ fn initialize_plugin_on_thread(
         ));
     }
 
-    info!(count = num_objs, "Plugin reports {} object(s)", num_objs);
+    trace!(count = num_objs, "Plugin reports {} object(s)", num_objs);
 
     if num_objs == 0 {
         return Err("plugin returned 0 objects".to_owned());
@@ -311,7 +311,7 @@ fn initialize_plugin_on_thread(
     // SAFETY: the plugin pointer is a valid IWTSPlugin COM interface pointer
     let plugin: IWTSPlugin = unsafe { IWTSPlugin::from_raw(plugin_ptr) };
 
-    info!("Got IWTSPlugin COM object");
+    trace!("Got IWTSPlugin COM object");
 
     // Create shared state for listeners: we keep an Rc clone so we can read the
     // map after Initialize() without needing an unsafe cast from the COM pointer.
@@ -322,7 +322,7 @@ fn initialize_plugin_on_thread(
     // SAFETY: calling IWTSPlugin::Initialize with our channel manager
     unsafe { plugin.Initialize(&manager) }.map_err(|e| format!("IWTSPlugin::Initialize failed: {e}"))?;
 
-    info!("IWTSPlugin::Initialize succeeded");
+    trace!("IWTSPlugin::Initialize succeeded");
 
     // Read the listener map that the plugin populated during Initialize.
     let listeners: HashMap<String, IWTSListenerCallback> = listeners_rc.borrow().clone();

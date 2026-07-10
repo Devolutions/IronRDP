@@ -9,7 +9,7 @@ mod bin_version;
 mod check;
 mod clean;
 mod cli;
-mod cov;
+mod features;
 mod ffi;
 mod fuzz;
 mod prelude;
@@ -33,15 +33,6 @@ pub const CARGO: &str = env!("CARGO");
 
 pub const WASM_PACKAGES: &[&str] = &["ironrdp-web"];
 
-pub const FUZZ_TARGETS: &[&str] = &[
-    "pdu_decoding",
-    "rle_decompression",
-    "bitmap_stream",
-    "cliprdr_format",
-    "cliprdr_channel_processing",
-    "channel_processing",
-];
-
 fn main() -> anyhow::Result<()> {
     let args = match cli::parse_args() {
         Ok(args) => args,
@@ -59,7 +50,6 @@ fn main() -> anyhow::Result<()> {
         Action::ShowHelp => cli::print_help(),
         Action::Bootstrap => {
             check::install(&sh)?;
-            cov::install(&sh)?;
             fuzz::install(&sh)?;
             wasm::install(&sh)?;
             web::install(&sh)?;
@@ -71,6 +61,7 @@ fn main() -> anyhow::Result<()> {
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
+        Action::CheckDependencies => check::dependencies(&sh)?,
         Action::CheckTests { no_run } => {
             if no_run {
                 check::tests_compile(&sh)?;
@@ -81,6 +72,18 @@ fn main() -> anyhow::Result<()> {
         Action::CheckTypos => {
             check::typos(&sh)?;
         }
+        Action::CheckFeatures { case, list, format } => {
+            if list {
+                match format {
+                    cli::ListFormat::Human => features::list_human()?,
+                    cli::ListFormat::GithubMatrix => features::list_github_matrix()?,
+                }
+            } else if let Some(case_name) = case {
+                features::run_case(&sh, &case_name)?;
+            } else {
+                features::run_all(&sh)?;
+            }
+        }
         Action::CheckInstall => {
             check::install(&sh)?;
         }
@@ -90,6 +93,8 @@ fn main() -> anyhow::Result<()> {
             check::tests_compile(&sh)?;
             check::tests_run(&sh)?;
             check::lints(&sh)?;
+            features::run_all(&sh)?;
+            check::dependencies(&sh)?;
             wasm::check(&sh)?;
             fuzz::run(&sh, None, None)?;
             web::install(&sh)?;
@@ -97,15 +102,14 @@ fn main() -> anyhow::Result<()> {
             check::lock_files(&sh)?;
         }
         Action::Clean => clean::workspace(&sh)?,
-        Action::CovGrcov => cov::grcov(&sh)?,
-        Action::CovInstall => cov::install(&sh)?,
-        Action::CovReportGitHub { repo, pr } => cov::report_github(&sh, &repo, pr)?,
-        Action::CovReport { html_report } => cov::report(&sh, html_report)?,
-        Action::CovUpdate => cov::update(&sh)?,
         Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
         Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
         Action::FuzzInstall => fuzz::install(&sh)?,
+        Action::FuzzList { format } => match format {
+            cli::ListFormat::Human => fuzz::list_human()?,
+            cli::ListFormat::GithubMatrix => fuzz::list_github_matrix()?,
+        },
         Action::FuzzRun { duration, target } => fuzz::run(&sh, duration, target)?,
         Action::WasmCheck => wasm::check(&sh)?,
         Action::WasmInstall => wasm::install(&sh)?,

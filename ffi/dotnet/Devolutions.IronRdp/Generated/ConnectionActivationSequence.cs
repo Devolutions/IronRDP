@@ -15,11 +15,27 @@ public partial class ConnectionActivationSequence: IDisposable
 {
     private unsafe Raw.ConnectionActivationSequence* _inner;
 
+    public ushort IoChannelId
+    {
+        get
+        {
+            return GetIoChannelId();
+        }
+    }
+
     public ConnectionActivationState State
     {
         get
         {
             return GetState();
+        }
+    }
+
+    public ushort UserChannelId
+    {
+        get
+        {
+            return GetUserChannelId();
         }
     }
 
@@ -136,6 +152,32 @@ public partial class ConnectionActivationSequence: IDisposable
             }
             Raw.Written* retVal = result.Ok;
             return new Written(retVal);
+        }
+    }
+
+    public ushort GetIoChannelId()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionActivationSequence");
+            }
+            ushort retVal = Raw.ConnectionActivationSequence.GetIoChannelId(_inner);
+            return retVal;
+        }
+    }
+
+    public ushort GetUserChannelId()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionActivationSequence");
+            }
+            ushort retVal = Raw.ConnectionActivationSequence.GetUserChannelId(_inner);
+            return retVal;
         }
     }
 

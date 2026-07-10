@@ -468,6 +468,15 @@ are considered to be known and defined. In such cases, `from_bits` also never fa
 precisely the same as `from_bits_retain`, except it’s less ergonomic because it returns a `Result`
 which must be needlessly handled.
 
+## Feature Flags
+
+- `std` (depends on `alloc`): enables `std` integration in `ironrdp-error` and `ironrdp-core`.
+- `alloc`: enables allocation-dependent code paths while keeping `no_std`-compatible.
+- `qoi`, `qoiz`: optional [QOI image format](https://qoiformat.org/) bitmap codec support.
+- `arbitrary` (depends on `alloc`): enables [`arbitrary::Arbitrary`](https://docs.rs/arbitrary)
+  implementations on PDU types for use under structure-aware fuzzing. See
+  [`fuzz/README.md`](../../fuzz/README.md) for the fuzz target organization.
+
 This crate is part of the [IronRDP] project.
 
 [IronRDP]: https://github.com/Devolutions/IronRDP

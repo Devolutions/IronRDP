@@ -20,14 +20,29 @@ mod padding;
 #[cfg(feature = "alloc")]
 mod write_buf;
 
-// Flat API hierarchy of common traits and types
+// Flat API hierarchy of common traits and types.
+//
+// Each `pub use` lists its exports explicitly so that adding a new `pub`
+// item to a module is a conscious public-API commitment rather than
+// auto-public via a wildcard.
 
-pub use self::as_any::*;
-pub use self::cursor::*;
-pub use self::decode::*;
-pub use self::encode::*;
-pub use self::error::*;
-pub use self::into_owned::*;
-pub use self::padding::*;
+pub use self::as_any::AsAny;
+pub use self::cursor::{NotEnoughBytesError, ReadCursor, WriteCursor};
+pub use self::decode::{
+    Decode, DecodeError, DecodeErrorKind, DecodeOwned, DecodeResult, decode, decode_cursor, decode_owned,
+    decode_owned_cursor,
+};
 #[cfg(feature = "alloc")]
-pub use self::write_buf::*;
+pub use self::encode::encode_buf;
+#[cfg(any(feature = "alloc", test))]
+pub use self::encode::encode_vec;
+pub use self::encode::{Encode, EncodeError, EncodeErrorKind, EncodeResult, encode, encode_cursor, name, size};
+pub use self::error::{
+    InvalidFieldErr, NotEnoughBytesErr, OtherErr, UnexpectedMessageTypeErr, UnsupportedValueErr, UnsupportedVersionErr,
+    WithSource, invalid_field_err, invalid_field_err_with_source, not_enough_bytes_err, other_err,
+    other_err_with_source, unexpected_message_type_err, unsupported_value_err, unsupported_version_err,
+};
+pub use self::into_owned::IntoOwned;
+pub use self::padding::{read_padding, write_padding};
+#[cfg(feature = "alloc")]
+pub use self::write_buf::WriteBuf;

@@ -34,14 +34,33 @@ jobs:
             ./fuzz/artifacts
           key: fuzz-corpus-${{ github.run_id }}
 
+  fuzz-setup:
+    name: Fuzz matrix setup
+    needs: [corpus-download]
+    runs-on: ubuntu-latest
+    outputs:
+      fuzz-matrix: ${{ steps.setup-matrix.outputs.fuzz-matrix }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.7.3
+
+      - name: Setup matrix
+        id: setup-matrix
+        run: |
+          MATRIX="$(cargo xtask fuzz list --format github-matrix)"
+          echo "fuzz-matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
   fuzz:
     name: Fuzzing ${{ matrix.target }}
-    needs: [corpus-download]
+    needs: [corpus-download, fuzz-setup]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: [pdu_decoding, rle_decompression, bitmap_stream, cliprdr_format, cliprdr_channel_processing, channel_processing]
+        include: ${{ fromJson(needs.fuzz-setup.outputs.fuzz-matrix) }}
 
     steps:
       - uses: actions/checkout@v6

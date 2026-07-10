@@ -12,7 +12,6 @@ use crate::{
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ChannelConnectionState {
     #[default]
     Consumed,
@@ -56,7 +55,6 @@ impl State for ChannelConnectionState {
 }
 
 #[derive(Debug)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ChannelConnectionSequence {
     pub state: ChannelConnectionState,
     pub channel_ids: Option<HashSet<u16>>,

@@ -21,6 +21,7 @@ use super::pointer::{
 
 /// `updateType` field in TS_UPDATE_HDR for slow-path graphics updates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u16)]
 pub enum GraphicsUpdateType {
     Orders = 0x0000,
@@ -64,6 +65,7 @@ pub fn decode_slow_path_bitmap<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Bit
 
 /// `messageType` values for slow-path pointer updates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u16)]
 pub enum PointerMessageType {
     System = 0x0001,
@@ -77,6 +79,7 @@ pub enum PointerMessageType {
 
 /// `systemPointerType` values used when `messageType == System`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u32)]
 pub enum SystemPointerType {
     /// SYSPTR_NULL — hide the pointer

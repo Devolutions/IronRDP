@@ -1,93 +1,82 @@
 use core::num::NonZeroU32;
 
-use anyhow::Context as _;
-use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
-use softbuffer::{NoDisplayHandle, NoWindowHandle};
-use web_sys::HtmlCanvasElement;
+#[cfg(target_arch = "wasm32")]
+use anyhow::anyhow;
+use ironrdp::pdu::geometry::InclusiveRectangle;
+#[cfg(target_arch = "wasm32")]
+use ironrdp::pdu::geometry::Rectangle as _;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{Clamped, JsCast as _};
+#[cfg(target_arch = "wasm32")]
+use web_sys::ImageData;
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+/// Web render surface: blits each dirty region to the canvas with `put_image_data`.
 pub(crate) struct Canvas {
-    width: NonZeroU32,
-    surface: softbuffer::Surface<NoDisplayHandle, NoWindowHandle>,
+    canvas: HtmlCanvasElement,
+    ctx: CanvasRenderingContext2d,
 }
 
 impl Canvas {
     pub(crate) fn new(render_canvas: HtmlCanvasElement, width: NonZeroU32, height: NonZeroU32) -> anyhow::Result<Self> {
         render_canvas.set_width(width.get());
         render_canvas.set_height(height.get());
+        let ctx = context_2d(&render_canvas)?;
 
-        #[cfg(target_arch = "wasm32")]
-        let mut surface = {
-            use softbuffer::SurfaceExtWeb as _;
-            softbuffer::Surface::from_canvas(render_canvas).expect("surface")
-        };
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut surface = {
-            fn stub(_: HtmlCanvasElement) -> softbuffer::Surface<NoDisplayHandle, NoWindowHandle> {
-                unimplemented!()
-            }
-
-            stub(render_canvas)
-        };
-
-        surface.resize(width, height).expect("surface resize");
-
-        Ok(Self { width, surface })
+        Ok(Self {
+            canvas: render_canvas,
+            ctx,
+        })
     }
 
+    /// Resizes the backing store. Note: this also clears the canvas and resets 2D context state;
+    /// the cached `ctx` stays valid.
     pub(crate) fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) {
-        self.surface.resize(width, height).expect("surface resize");
-        self.width = width;
+        self.canvas.set_width(width.get());
+        self.canvas.set_height(height.get());
     }
 
-    pub(crate) fn draw(&mut self, buffer: &[u8], region: InclusiveRectangle) -> anyhow::Result<()> {
-        let region_width = region.width();
-        let region_height = region.height();
-
-        let mut src = buffer.chunks_exact(4).map(|pixel| {
-            let r = pixel[0];
-            let g = pixel[1];
-            let b = pixel[2];
-            u32::from_be_bytes([0, r, g, b])
-        });
-
-        let mut dst = self.surface.buffer_mut().expect("surface buffer");
-
-        {
-            // Copy src into dst
-
-            let region_top_usize = usize::from(region.top);
-            let region_height_usize = usize::from(region_height);
-            let region_left_usize = usize::from(region.left);
-            let region_width_usize = usize::from(region_width);
-
-            for dst_row in dst
-                .chunks_exact_mut(usize::try_from(self.width.get()).context("canvas width")?)
-                .skip(region_top_usize)
-                .take(region_height_usize)
-            {
-                let src_row = src.by_ref().take(region_width_usize);
-
-                dst_row
-                    .iter_mut()
-                    .skip(region_left_usize)
-                    .take(region_width_usize)
-                    .zip(src_row)
-                    .for_each(|(dst, src)| *dst = src);
-            }
+    /// Blits a dirty region with `put_image_data`. Forces alpha opaque first: the framebuffer isn't
+    /// guaranteed opaque (zero-init columns, QOI-RGBA) and `put_image_data` stores alpha verbatim.
+    pub(crate) fn draw(&self, buffer: &mut [u8], region: InclusiveRectangle) -> anyhow::Result<()> {
+        for pixel in buffer.chunks_exact_mut(4) {
+            pixel[3] = 0xFF;
         }
 
-        let damage_rect = softbuffer::Rect {
-            x: u32::from(region.left),
-            y: u32::from(region.top),
-            width: NonZeroU32::new(u32::from(region_width))
-                .expect("per InclusiveRectangle invariants: 0 < region_width"),
-            height: NonZeroU32::new(u32::from(region_height))
-                .expect("per InclusiveRectangle invariants: 0 < region_height"),
-        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let image = ImageData::new_with_u8_clamped_array_and_sh(
+                Clamped(&*buffer),
+                u32::from(region.width()),
+                u32::from(region.height()),
+            )
+            .map_err(|err| anyhow!("ImageData::new failed: {err:?}"))?;
+            self.ctx
+                .put_image_data(&image, f64::from(region.left), f64::from(region.top))
+                .map_err(|err| anyhow!("put_image_data failed: {err:?}"))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = (&self.ctx, buffer, region);
+            unimplemented!("web canvas is only available on wasm32")
+        }
+    }
+}
 
-        dst.present_with_damage(&[damage_rect]).expect("buffer present");
-
-        Ok(())
+/// Acquires the canvas 2D context (wasm only; panics on other targets).
+fn context_2d(canvas: &HtmlCanvasElement) -> anyhow::Result<CanvasRenderingContext2d> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        canvas
+            .get_context("2d")
+            .map_err(|err| anyhow!("get_context(\"2d\") failed: {err:?}"))?
+            .ok_or_else(|| anyhow!("canvas has no 2d context"))?
+            .dyn_into::<CanvasRenderingContext2d>()
+            .map_err(|_| anyhow!("2d context is not a CanvasRenderingContext2d"))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = canvas;
+        unimplemented!("web canvas is only available on wasm32")
     }
 }

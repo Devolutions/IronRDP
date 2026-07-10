@@ -15,6 +15,7 @@ pub const SURFACE_COMMAND_HEADER_SIZE: usize = 2;
 
 // TS_SURFCMD
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum SurfaceCommand<'a> {
     SetSurfaceBits(SurfaceBitsPdu<'a>),
     FrameMarker(FrameMarkerPdu),
@@ -72,6 +73,7 @@ impl<'de> Decode<'de> for SurfaceCommand<'de> {
 
 // TS_SURFCMD_STREAM_SURF_BITS and TS_SURFCMD_SET_SURF_BITS
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SurfaceBitsPdu<'a> {
     pub destination: ExclusiveRectangle,
     pub extended_bitmap_data: ExtendedBitmapDataPdu<'a>,
@@ -112,6 +114,7 @@ impl<'de> Decode<'de> for SurfaceBitsPdu<'de> {
 
 // TS_FRAME_MARKER
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FrameMarkerPdu {
     pub frame_action: FrameAction,
     pub frame_id: Option<u32>,
@@ -166,6 +169,7 @@ impl<'de> Decode<'de> for FrameMarkerPdu {
 
 // TS_BITMAP_DATA_EX
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ExtendedBitmapDataPdu<'a> {
     pub bpp: u8,
     pub codec_id: u8,
@@ -269,6 +273,7 @@ impl<'de> Decode<'de> for ExtendedBitmapDataPdu<'de> {
 
 // TS_COMPRESSED_BITMAP_HEADER_EX
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapDataHeader {
     pub high_unique_id: u32,
     pub low_unique_id: u32,
@@ -351,6 +356,7 @@ impl From<&SurfaceCommand<'_>> for SurfaceCommandType {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u16)]
 pub enum FrameAction {
     Begin = 0x00,

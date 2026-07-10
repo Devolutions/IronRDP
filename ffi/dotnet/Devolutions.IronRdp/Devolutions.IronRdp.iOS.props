@@ -1,7 +1,18 @@
 <?xml version="1.0"?>
 <Project ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <ItemGroup Condition="(('$(Platform)' == 'iPhone')) or (('$(Platform)' == 'iPhoneSimulator'))">
-    <NativeReference Include="$(MSBuildThisFileDirectory)..\runtimes\ios\native\libDevolutionsIronRdp.framework">
+  <PropertyGroup>
+    <IsIOS Condition="'$(Platform)' == 'iPhone' or '$(Platform)' == 'iPhoneSimulator' or $(TargetFramework.Contains('-ios')) or $(TargetFramework.Contains('-iossimulator'))">true</IsIOS>
+    <IsIOSSimulator Condition="'$(Platform)' == 'iPhoneSimulator' or '$(RuntimeIdentifier)' == 'iossimulator-arm64' or $(RuntimeIdentifiers.Contains('iossimulator-arm64')) or $(TargetFramework.Contains('-iossimulator'))">true</IsIOSSimulator>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsIOS)' == 'true' AND '$(IsIOSSimulator)' != 'true'">
+    <NativeReference Include="$(MSBuildThisFileDirectory)..\runtimes\ios-arm64\native\libDevolutionsIronRdp.framework">
+      <Kind>Framework</Kind>
+    </NativeReference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IsIOSSimulator)' == 'true'">
+    <NativeReference Include="$(MSBuildThisFileDirectory)..\runtimes\iossimulator-arm64\native\libDevolutionsIronRdp.framework">
       <Kind>Framework</Kind>
     </NativeReference>
   </ItemGroup>

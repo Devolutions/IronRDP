@@ -2,17 +2,19 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // FIXME: remove
 
-use ironrdp_core::{ReadCursor, decode_cursor, impl_as_any};
+use ironrdp_core::{ReadCursor, impl_as_any};
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
-use pdu::RdpdrPdu;
 use pdu::efs::{
-    Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest, ClientNameRequestUnicodeFlag,
-    CoreCapability, CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices,
-    ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    AnyIoCtlCode, Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest,
+    ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME,
+    DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceIoRequest,
+    DeviceIoResponse, DeviceType, Devices, MajorFunction, NtStatus, PrinterIoRequest, ServerDeviceAnnounceResponse,
+    VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
+use pdu::{PacketId, RdpdrPdu, SharedHeader};
 use tracing::{debug, trace, warn};
 
 pub mod backend;
@@ -42,6 +44,7 @@ pub struct Rdpdr {
     ///
     /// All devices not of the type [`DeviceType::Filesystem`] must be declared here.
     device_list: Devices,
+    post_logon_devices_announced: bool,
     backend: Option<Box<dyn RdpdrBackend>>,
 }
 
@@ -56,6 +59,7 @@ impl Rdpdr {
             computer_name,
             capabilities: Capabilities::new(),
             device_list: Devices::new(),
+            post_logon_devices_announced: false,
             backend: Some(backend),
         }
     }
@@ -80,6 +84,33 @@ impl Rdpdr {
                 self.device_list.add_drive(device_id, path);
             }
         }
+        self
+    }
+
+    /// Adds printer redirection capability and announces a single
+    /// virtual printer under `device_id` with the user-visible name
+    /// `print_name`.
+    ///
+    /// Uses [`DEFAULT_PRINTER_DRIVER_NAME`] as the PostScript driver and
+    /// marks the device as the session's default printer — see
+    /// [`pdu::efs::Devices::add_printer`] for the rationale. IRPs
+    /// targeting this device are dispatched to
+    /// [`RdpdrBackend::handle_printer_io_request`].
+    #[must_use]
+    pub fn with_printer(self, device_id: u32, print_name: String) -> Self {
+        self.with_printer_driver(device_id, print_name, DEFAULT_PRINTER_DRIVER_NAME.to_owned())
+    }
+
+    /// Adds printer redirection capability with an explicit server-side
+    /// printer driver name.
+    ///
+    /// Use this when the target host needs a driver other than
+    /// [`DEFAULT_PRINTER_DRIVER_NAME`] for the redirected printer queue.
+    #[must_use]
+    pub fn with_printer_driver(mut self, device_id: u32, print_name: String, driver_name: String) -> Self {
+        self.capabilities.add_printer();
+        self.device_list
+            .add_printer_with_driver(device_id, print_name, driver_name);
         self
     }
 
@@ -121,16 +152,60 @@ impl Rdpdr {
         ])
     }
 
-    fn handle_server_capability(&mut self, _req: CoreCapability) -> PduResult<Vec<SvcMessage>> {
-        let res = RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_inner()));
-        trace!("sending {:?}", res);
-        Ok(vec![SvcMessage::from(res)])
+    fn handle_server_capability(&mut self, req: CoreCapability) -> PduResult<Vec<SvcMessage>> {
+        let client_capability_response =
+            RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_supported_by(&req)));
+        trace!("sending {:?}", client_capability_response);
+        Ok(vec![SvcMessage::from(client_capability_response)])
     }
 
-    fn handle_client_id_confirm(&mut self) -> PduResult<Vec<SvcMessage>> {
-        let res = RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
-            device_list: self.device_list.clone_inner(),
-        });
+    fn handle_client_id_confirm(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
+        let announce_all_devices = req.version_minor == VERSION_MINOR_RDP51;
+        if announce_all_devices {
+            self.post_logon_devices_announced = true;
+        }
+
+        let device_list = self
+            .device_list
+            .clone_inner()
+            .into_iter()
+            .filter(|device| announce_all_devices || Self::is_pre_logon_device(device))
+            .collect::<Vec<_>>();
+
+        if device_list.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Self::announce_devices(device_list)
+    }
+
+    fn announce_post_logon_devices(&mut self) -> PduResult<Vec<SvcMessage>> {
+        if self.post_logon_devices_announced {
+            return Ok(Vec::new());
+        }
+
+        self.post_logon_devices_announced = true;
+
+        let device_list = self
+            .device_list
+            .clone_inner()
+            .into_iter()
+            .filter(|device| !Self::is_pre_logon_device(device))
+            .collect::<Vec<_>>();
+
+        if device_list.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Self::announce_devices(device_list)
+    }
+
+    fn is_pre_logon_device(device: &DeviceAnnounceHeader) -> bool {
+        matches!(device.device_type(), DeviceType::Smartcard)
+    }
+
+    fn announce_devices(device_list: Vec<DeviceAnnounceHeader>) -> PduResult<Vec<SvcMessage>> {
+        let res = RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce { device_list });
         trace!("sending {:?}", res);
         Ok(vec![SvcMessage::from(res)])
     }
@@ -150,7 +225,10 @@ impl Rdpdr {
         let mut backend = self.backend.take().expect("missing rdpdr backend");
         let res = backend.handle_user_logged_on(self);
         self.backend = Some(backend);
-        res.inspect(|response| trace!("sending {:?}", response))
+        let mut messages = res?;
+        messages.extend(self.announce_post_logon_devices()?);
+        trace!("sending {:?}", messages);
+        Ok(messages)
     }
 
     fn handle_device_io_request(
@@ -192,12 +270,48 @@ impl Rdpdr {
                     .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
                     .handle_drive_io_request(req)?)
             }
+            DeviceType::Print => match dev_io_req.major_function {
+                MajorFunction::DeviceControl => {
+                    let req =
+                        DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                    debug!(?req, "Completing printer device-control IRP");
+
+                    Ok(vec![SvcMessage::from(RdpdrPdu::DeviceControlResponse(
+                        DeviceControlResponse::new(req, NtStatus::SUCCESS, None),
+                    ))])
+                }
+                MajorFunction::Create | MajorFunction::Write | MajorFunction::Close => {
+                    let req = PrinterIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                    debug!(?req, "Dispatching printer IRP to backend");
+                    self.backend
+                        .as_mut()
+                        .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                        .handle_printer_io_request(req)
+                }
+                _ => {
+                    debug!(
+                        major = ?dev_io_req.major_function,
+                        minor = ?dev_io_req.minor_function,
+                        file_id = dev_io_req.file_id,
+                        completion_id = dev_io_req.completion_id,
+                        "Completing unsupported printer IRP"
+                    );
+
+                    Ok(vec![Self::unsupported_printer_io_response(dev_io_req)])
+                }
+            },
             _ => {
                 // This should never happen, as we only announce devices that we support.
                 warn!(?dev_io_req, "received packet for unsupported device type");
                 Ok(Vec::new())
             }
         }
+    }
+
+    fn unsupported_printer_io_response(device_io_request: DeviceIoRequest) -> SvcMessage {
+        SvcMessage::from(RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
+            device_io_response: DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED),
+        }))
     }
 }
 
@@ -212,7 +326,16 @@ impl SvcProcessor for Rdpdr {
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let mut src = ReadCursor::new(payload);
-        let pdu = decode_cursor::<RdpdrPdu>(&mut src).map_err(|e| decode_err!(e))?;
+        let header = SharedHeader::decode(&mut src).map_err(|e| decode_err!(e))?;
+        if matches!(header.packet_id, PacketId::PrnCacheData | PacketId::PrnUsingXps) {
+            warn!(
+                packet_id = ?header.packet_id,
+                "Ignoring unhandled RDPDR printer-cache PDU"
+            );
+            return Ok(vec![]);
+        }
+
+        let pdu = RdpdrPdu::decode_body(header, &mut src).map_err(|e| decode_err!(e))?;
         debug!("Received {:?}", pdu);
 
         match pdu {
@@ -223,7 +346,7 @@ impl SvcProcessor for Rdpdr {
                 self.handle_server_capability(pdu)
             }
             RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerClientIdConfirm => {
-                self.handle_client_id_confirm()
+                self.handle_client_id_confirm(pdu)
             }
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => self.handle_server_device_announce_response(pdu),
             RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu, &mut src),

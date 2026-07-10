@@ -7,6 +7,8 @@
 
 use alloc::borrow::Cow;
 #[cfg(not(feature = "std"))]
+use alloc::borrow::ToOwned;
+#[cfg(not(feature = "std"))]
 use alloc::string::String;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;

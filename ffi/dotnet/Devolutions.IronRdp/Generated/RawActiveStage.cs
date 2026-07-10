@@ -19,6 +19,17 @@ public partial struct ActiveStage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_new", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxActiveStageBoxIronRdpError New(ConnectionResult* connectionResult);
 
+    /// <summary>
+    /// Produces a fresh connection activation sequence to drive the Deactivation-Reactivation
+    /// Sequence.
+    /// </summary>
+    /// <remarks>
+    /// Call this upon receiving a [`ActiveStageOutputType::DeactivateAll`] output, drive the
+    /// returned sequence until it is finalized, then discard it.
+    /// </remarks>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_create_connection_activation", ExactSpelling = true)]
+    public static unsafe extern ConnectionActivationSequence* CreateConnectionActivation(ActiveStage* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError Process(ActiveStage* self, DecodedImage* image, Action* action, byte* payload, nuint payloadSz);
 

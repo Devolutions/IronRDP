@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tokio::fs;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tracing::{info, trace};
+use tracing::{debug, trace};
 
 use crate::error::DvcPipeProxyError;
 use crate::os_pipe::OsPipe;
@@ -19,9 +19,9 @@ impl OsPipe for UnixPipe {
             Ok(metadata) => {
                 use std::os::unix::fs::FileTypeExt as _;
 
-                info!(
+                debug!(
                     %pipe_name,
-                    "DVC pipe already exists, removing stale file."
+                    "DVC pipe already exists, removing stale file"
                 );
 
                 // Just to be sure, check if it's indeed a socket -
@@ -38,7 +38,7 @@ impl OsPipe for UnixPipe {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 trace!(
                     %pipe_name,
-                    "DVC pipe does not exist, creating it."
+                    "DVC pipe does not exist, creating it"
                 );
             }
             Err(e) => {

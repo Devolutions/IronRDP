@@ -48,6 +48,7 @@ macro_rules! const_assert {
     };
 }
 
+// TODO: move to ironrdp-core crate.
 /// Implements additional traits for a plain old data structure (POD).
 #[macro_export]
 macro_rules! impl_pdu_pod {
@@ -88,6 +89,7 @@ macro_rules! impl_x224_pdu_pod {
     };
 }
 
+// TODO: move to ironrdp-core crate.
 /// Implements additional traits for a borrowing PDU and defines a static-bounded owned version.
 #[macro_export]
 macro_rules! impl_pdu_borrowing {

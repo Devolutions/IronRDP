@@ -6,6 +6,7 @@ use ironrdp_core::{
 const NON_RLE_PADDING_SIZE: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ColorPlaneDefinition {
     Argb,
     AYCoCg {
@@ -15,6 +16,7 @@ pub enum ColorPlaneDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapStreamHeader {
     pub enable_rle_compression: bool,
     pub use_alpha: bool,
@@ -93,6 +95,7 @@ impl Encode for BitmapStreamHeader {
 
 /// Represents `RDP6_BITMAP_STREAM` structure described in [MS-RDPEGDI] 2.2.2.5.1
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapStream<'a> {
     pub header: BitmapStreamHeader,
     pub color_planes: &'a [u8],

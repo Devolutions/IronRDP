@@ -46,12 +46,11 @@ where
     S: Read,
 {
     /// Accumulates at least `length` bytes and returns exactly `length` bytes, keeping the leftover in the internal buffer.
-    pub fn read_exact(&mut self, length: usize) -> io::Result<BytesMut> {
+    pub(crate) fn read_exact(&mut self, length: usize) -> io::Result<BytesMut> {
         loop {
             if self.buf.len() >= length {
                 return Ok(self.buf.split_to(length));
             } else {
-                #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked underflow)")]
                 self.buf
                     .reserve(length.checked_sub(self.buf.len()).expect("length > self.buf.len()"));
             }

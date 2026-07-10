@@ -19,6 +19,14 @@ pub(crate) fn capabilities(opts: &RdpServerOptions, size: DesktopSize) -> Vec<ca
 fn general_capabilities() -> capability_sets::General {
     capability_sets::General {
         extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED,
+        // Advertise that the server handles `SuppressOutput` and
+        // `RefreshRectangle` (per MS-RDPBCGR 2.2.7.1.1) — spec-compliant
+        // clients only send these PDUs when the server says it supports
+        // them. mstsc sends them regardless, but FreeRDP and others
+        // follow the spec; without both flags, those clients never
+        // benefit from the minimize→refocus backlog fix.
+        refresh_rect_support: true,
+        suppress_output_support: true,
         ..Default::default()
     }
 }

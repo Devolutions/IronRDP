@@ -1,5 +1,3 @@
-use std::io;
-
 use bitflags::bitflags;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
@@ -7,7 +5,6 @@ use ironrdp_core::{
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-use thiserror::Error;
 
 const CLIENT_ENCRYPTION_METHODS_SIZE: usize = 4;
 const CLIENT_EXT_ENCRYPTION_METHODS_SIZE: usize = 4;
@@ -20,6 +17,7 @@ const SERVER_RANDOM_LEN: usize = 0x20;
 const MAX_SERVER_CERT_LEN: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientSecurityData {
     pub encryption_methods: EncryptionMethod,
     pub ext_encryption_methods: u32,
@@ -73,6 +71,7 @@ impl<'de> Decode<'de> for ClientSecurityData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerSecurityData {
     pub encryption_method: EncryptionMethod,
     pub encryption_level: EncryptionLevel,
@@ -192,6 +191,7 @@ impl<'de> Decode<'de> for ServerSecurityData {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct EncryptionMethod: u32 {
         const BIT_40 = 0x0000_0001;
         const BIT_128 = 0x0000_0002;
@@ -201,6 +201,7 @@ bitflags! {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum EncryptionLevel {
     None = 0,
     Low = 1,
@@ -217,20 +218,4 @@ impl EncryptionLevel {
     fn as_u32(self) -> u32 {
         self as u32
     }
-}
-
-#[derive(Debug, Error)]
-pub enum SecurityDataError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid encryption methods field")]
-    InvalidEncryptionMethod,
-    #[error("invalid encryption level field")]
-    InvalidEncryptionLevel,
-    #[error("invalid server random length field: {0}")]
-    InvalidServerRandomLen(u32),
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
-    #[error("invalid server certificate length: {0}")]
-    InvalidServerCertificateLen(u32),
 }

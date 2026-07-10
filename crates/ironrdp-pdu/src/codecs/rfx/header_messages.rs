@@ -14,6 +14,7 @@ const CHANNEL_ID: u8 = 0;
 //
 // [2.2.2.2.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/f01b81b6-1a8f-49fd-9543-081fbc8e1831
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SyncPdu;
 
 impl SyncPdu {
@@ -62,6 +63,7 @@ impl<'de> Decode<'de> for SyncPdu {
 ///
 /// [2.2.2.2.2]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/2650e6c2-faf7-4858-b169-828db842b663
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CodecVersionsPdu;
 
 impl CodecVersionsPdu {
@@ -108,6 +110,7 @@ impl<'de> Decode<'de> for CodecVersionsPdu {
 ///
 /// [2.2.2.2.3]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/c6efba0b-f59e-4d8e-8d76-840c41edce5b
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ChannelsPdu(pub Vec<RfxChannel>);
 
 impl ChannelsPdu {
@@ -154,6 +157,7 @@ impl<'de> Decode<'de> for ChannelsPdu {
 ///
 /// [2.2.2.1.3]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/4060f07e-9d73-454d-841e-131a93aca675
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RfxChannel {
     pub width: i16,
     pub height: i16,

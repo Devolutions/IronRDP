@@ -23,6 +23,7 @@ const CHANNEL_ID_FOR_CONTEXT: u8 = 0xFF;
 const CHANNEL_ID_FOR_OTHER_VALUES: u8 = 0x00;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Block<'a> {
     Tile(Tile<'a>),
     Caps(RfxCaps),
@@ -151,6 +152,7 @@ impl<'de> Decode<'de> for Block<'de> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum CodecChannel<'a> {
     Context(ContextPdu),
     FrameBegin(FrameBeginPdu),
@@ -173,6 +175,7 @@ impl CodecChannel<'_> {
 ///
 /// [2.2.2.1.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/1e1b69a9-c2aa-4b13-bd44-23dcf96d4a74
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BlockHeader {
     pub ty: BlockType,
     pub data_length: usize,
@@ -222,6 +225,7 @@ impl<'de> Decode<'de> for BlockHeader {
 ///
 /// [2.2.2.1.2]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/56b78b0c-6eef-40cc-b9da-96d21f197c14
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CodecChannelHeader {
     channel_id: u8,
 }
@@ -270,6 +274,7 @@ impl Decode<'_> for CodecChannelHeader {
 ///
 /// [2.2.3.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/24364aa2-9a7f-4d86-bcfb-67f5a6c19064
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FrameAcknowledgePdu {
     pub frame_id: u32,
 }
@@ -309,6 +314,7 @@ impl<'de> Decode<'de> for FrameAcknowledgePdu {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u16)]
 pub enum BlockType {
     Tile = 0xCAC3,

@@ -3,8 +3,6 @@
 
 mod macros;
 
-pub mod legacy;
-
 mod channel_connection;
 mod connection;
 pub mod connection_activation;
@@ -82,14 +80,12 @@ impl fmt::Display for NegotiationFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct DesktopSize {
     pub width: u16,
     pub height: u16,
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapConfig {
     pub lossy_compression: bool,
     pub color_depth: u32,
@@ -139,7 +135,6 @@ impl Credentials {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Config {
     /// The initial desktop size to request
     pub desktop_size: DesktopSize,
@@ -396,22 +391,27 @@ pub trait ConnectorErrorExt {
 }
 
 impl ConnectorErrorExt for ConnectorError {
+    #[track_caller]
     fn encode(error: ironrdp_core::EncodeError) -> Self {
         Self::new("encode error", ConnectorErrorKind::Encode(error))
     }
 
+    #[track_caller]
     fn decode(error: ironrdp_core::DecodeError) -> Self {
         Self::new("decode error", ConnectorErrorKind::Decode(error))
     }
 
+    #[track_caller]
     fn general(context: &'static str) -> Self {
         Self::new(context, ConnectorErrorKind::General)
     }
 
+    #[track_caller]
     fn reason(context: &'static str, reason: impl Into<String>) -> Self {
         Self::new(context, ConnectorErrorKind::Reason(reason.into()))
     }
 
+    #[track_caller]
     fn custom<E>(context: &'static str, e: E) -> Self
     where
         E: core::error::Error + Sync + Send + 'static,

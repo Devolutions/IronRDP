@@ -110,12 +110,11 @@ where
     /// `tokio::select!` statement and some other branch
     /// completes first, then it is safe to drop the future and re-create it later.
     /// Data may have been read, but it will be stored in the internal buffer.
-    pub async fn read_exact(&mut self, length: usize) -> io::Result<BytesMut> {
+    pub(crate) async fn read_exact(&mut self, length: usize) -> io::Result<BytesMut> {
         loop {
             if self.buf.len() >= length {
                 return Ok(self.buf.split_to(length));
             } else {
-                #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked integer underflow)")]
                 self.buf
                     .reserve(length.checked_sub(self.buf.len()).expect("length > self.buf.len()"));
             }

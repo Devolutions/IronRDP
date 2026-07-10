@@ -24,6 +24,7 @@ use crate::rdp::headers::{CompressionFlags, SHARE_DATA_HEADER_COMPRESSION_MASK};
     reason = "this structure is used in the match expression in the integration tests"
 )]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FastPathHeader {
     pub flags: EncryptionFlags,
     pub data_length: usize,
@@ -116,6 +117,7 @@ impl<'de> Decode<'de> for FastPathHeader {
 
 /// TS_FP_UPDATE
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct FastPathUpdatePdu<'a> {
     pub fragmentation: Fragmentation,
     pub update_code: UpdateCode,
@@ -139,11 +141,15 @@ impl Encode for FastPathUpdatePdu<'_> {
         let mut header = 0u8;
         header.set_bits(0..4, self.update_code.as_u8());
         header.set_bits(4..6, self.fragmentation.as_u8());
+        if self.compression_flags.is_some() {
+            // The COMPRESSION_USED bit must be set on the header byte before it
+            // is written, so the decoder knows a compression flags byte follows.
+            header.set_bits(6..8, Compression::COMPRESSION_USED.bits());
+        }
 
         dst.write_u8(header);
 
         if self.compression_flags.is_some() {
-            header.set_bits(6..8, Compression::COMPRESSION_USED.bits());
             let compression_flags_with_type =
                 self.compression_flags.map(|f| f.bits()).unwrap_or(0) | self.compression_type.map_or(0, |f| f.as_u8());
             dst.write_u8(compression_flags_with_type);
@@ -217,6 +223,7 @@ impl<'de> Decode<'de> for FastPathUpdatePdu<'de> {
 
 /// TS_FP_UPDATE data
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum FastPathUpdate<'a> {
     SurfaceCommands(Vec<SurfaceCommand<'a>>),
     Bitmap(BitmapUpdateData<'a>),
@@ -329,6 +336,7 @@ impl Encode for FastPathUpdate<'_> {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum UpdateCode {
     Orders = 0x0,
     Bitmap = 0x1,
@@ -375,6 +383,7 @@ impl From<&FastPathUpdate<'_>> for UpdateCode {
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Fragmentation {
     Single = 0x0,
     Last = 0x1,
@@ -394,6 +403,7 @@ impl Fragmentation {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct EncryptionFlags: u8 {
         const SECURE_CHECKSUM = 0x1;
         const ENCRYPTED = 0x2;
@@ -404,6 +414,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct Compression: u8 {
         const COMPRESSION_USED = 0x2;
 

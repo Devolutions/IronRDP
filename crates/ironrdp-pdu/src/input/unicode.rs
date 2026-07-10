@@ -5,6 +5,7 @@ use ironrdp_core::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct UnicodePdu {
     pub flags: KeyboardFlags,
     pub unicode_code: u16,
@@ -50,6 +51,7 @@ impl<'de> Decode<'de> for UnicodePdu {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct KeyboardFlags: u16 {
         const RELEASE = 0x8000;
 

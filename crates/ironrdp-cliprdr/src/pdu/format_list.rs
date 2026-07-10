@@ -153,6 +153,14 @@ impl ClipboardFormatName {
     /// Special format defined by Windows to store HTML fragment in clipboard.
     pub const HTML: Self = Self::new_static("HTML Format");
 
+    /// `CFSTR_PREFERREDDROPEFFECT`: 4-byte little-endian `DROPEFFECT` value
+    /// (1 = DROPEFFECT_COPY, 2 = DROPEFFECT_MOVE). Conventionally placed on
+    /// the clipboard alongside [`Self::FILE_LIST`] to label the operation
+    /// as a copy. When present, Windows Explorer engages its shell
+    /// file-copy machinery on paste (with the native "Copying… items"
+    /// progress dialog) instead of doing a plain synchronous IStream read.
+    pub const PREFERRED_DROP_EFFECT: Self = Self::new_static("Preferred DropEffect");
+
     pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
         Self(name.into())
     }

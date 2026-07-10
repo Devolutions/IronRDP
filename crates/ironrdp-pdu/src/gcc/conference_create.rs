@@ -30,6 +30,17 @@ pub struct ConferenceCreateRequest {
     gcc_blocks: ClientGccBlocks,
 }
 
+// Hand-rolled because the gcc_blocks size invariant cannot be expressed via
+// `derive(Arbitrary)`. Without it, encode() panics via u16::try_from on
+// overflowing gcc_blocks under fuzz.
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for ConferenceCreateRequest {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let gcc_blocks = ClientGccBlocks::arbitrary(u)?;
+        Self::new(gcc_blocks).map_err(|_| arbitrary::Error::IncorrectFormat)
+    }
+}
+
 impl ConferenceCreateRequest {
     const NAME: &'static str = "ConferenceCreateRequest";
 
@@ -201,6 +212,17 @@ pub struct ConferenceCreateResponse {
     user_id: u16,
     /// INVARIANT: `gcc_blocks.size() <= u16::MAX - CONFERENCE_RESPONSE_CONNECT_PDU_SIZE`
     gcc_blocks: ServerGccBlocks,
+}
+
+// Hand-rolled for the same reason as `ConferenceCreateRequest` above: the
+// gcc_blocks size invariant cannot be expressed via `derive(Arbitrary)`.
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for ConferenceCreateResponse {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let user_id = u16::arbitrary(u)?;
+        let gcc_blocks = ServerGccBlocks::arbitrary(u)?;
+        Self::new(user_id, gcc_blocks).map_err(|_| arbitrary::Error::IncorrectFormat)
+    }
 }
 
 impl ConferenceCreateResponse {

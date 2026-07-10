@@ -31,6 +31,7 @@ const RSA_EXCHANGE_ALGORITHM: u32 = 1;
 ///
 /// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/e17772e9-9642-4bb6-a2bc-82875dd6da7c
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerLicenseRequest {
     pub license_header: LicenseHeader,
     pub server_random: Vec<u8>,
@@ -148,6 +149,7 @@ impl ServerLicenseRequest {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Scope(pub String);
 
 impl Scope {
@@ -202,6 +204,7 @@ impl<'de> Decode<'de> for Scope {
 ///
 /// [2.2.1.4.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/54e72cc6-3422-404c-a6b4-2486db125342
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerCertificate {
     pub issued_permanently: bool,
     pub certificate: CertificateType,
@@ -314,6 +317,7 @@ impl<'de> Decode<'de> for ServerCertificate {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProductInfo {
     pub version: u32,
     pub company_name: String,

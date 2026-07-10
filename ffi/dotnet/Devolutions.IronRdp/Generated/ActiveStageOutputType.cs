@@ -22,4 +22,10 @@ public enum ActiveStageOutputType
     Terminate = 6,
     DeactivateAll = 7,
     MultitransportRequest = 8,
+    /// <summary>
+    /// Auto-detect network characteristics from server.
+    /// Use `get_autodetect_network_characteristics()` to retrieve
+    /// RTT and bandwidth values for connection quality monitoring.
+    /// </summary>
+    AutoDetect = 9,
 }

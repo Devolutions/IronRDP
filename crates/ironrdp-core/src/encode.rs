@@ -102,24 +102,28 @@ impl fmt::Display for EncodeErrorKind {
 }
 
 impl NotEnoughBytesErr for EncodeError {
+    #[track_caller]
     fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self {
         Self::new(context, EncodeErrorKind::NotEnoughBytes { received, expected })
     }
 }
 
 impl InvalidFieldErr for EncodeError {
+    #[track_caller]
     fn invalid_field(context: &'static str, field: &'static str, reason: &'static str) -> Self {
         Self::new(context, EncodeErrorKind::InvalidField { field, reason })
     }
 }
 
 impl UnexpectedMessageTypeErr for EncodeError {
+    #[track_caller]
     fn unexpected_message_type(context: &'static str, got: u8) -> Self {
         Self::new(context, EncodeErrorKind::UnexpectedMessageType { got })
     }
 }
 
 impl UnsupportedVersionErr for EncodeError {
+    #[track_caller]
     fn unsupported_version(context: &'static str, got: u8) -> Self {
         Self::new(context, EncodeErrorKind::UnsupportedVersion { got })
     }
@@ -127,16 +131,19 @@ impl UnsupportedVersionErr for EncodeError {
 
 impl UnsupportedValueErr for EncodeError {
     #[cfg(feature = "alloc")]
+    #[track_caller]
     fn unsupported_value(context: &'static str, name: &'static str, value: String) -> Self {
         Self::new(context, EncodeErrorKind::UnsupportedValue { name, value })
     }
     #[cfg(not(feature = "alloc"))]
+    #[track_caller]
     fn unsupported_value(context: &'static str, name: &'static str) -> Self {
         Self::new(context, EncodeErrorKind::UnsupportedValue { name })
     }
 }
 
 impl OtherErr for EncodeError {
+    #[track_caller]
     fn other(context: &'static str, description: &'static str) -> Self {
         Self::new(context, EncodeErrorKind::Other { description })
     }

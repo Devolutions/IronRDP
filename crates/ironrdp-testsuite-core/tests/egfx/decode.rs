@@ -86,8 +86,8 @@ fn test_openh264_decode_sps_pps() {
 
     let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
     let frame = decoder.decode(&avc_data).expect("decode should succeed");
-    assert!(frame.width >= 16, "decoded width should be at least 16");
-    assert!(frame.height >= 16, "decoded height should be at least 16");
+    assert!(frame.width() >= 16, "decoded width should be at least 16");
+    assert!(frame.height() >= 16, "decoded height should be at least 16");
 }
 
 #[test]
@@ -98,9 +98,9 @@ fn test_openh264_decode_iframe() {
     let frame = decoder.decode(&avc_data).expect("decode should succeed");
 
     // Verify RGBA output dimensions and data
-    assert_eq!(frame.width, 16);
-    assert_eq!(frame.height, 16);
-    assert_eq!(frame.data.len(), 16 * 16 * 4, "RGBA data should be 16x16x4 bytes");
+    assert_eq!(frame.width(), 16);
+    assert_eq!(frame.height(), 16);
+    assert_eq!(frame.data().len(), 16 * 16 * 4, "RGBA data should be 16x16x4 bytes");
 }
 
 #[test]
@@ -116,8 +116,8 @@ fn test_openh264_decoder_reset() {
 
     // Decoder should still be usable after reset
     let frame = decoder.decode(&avc_data).expect("decode after reset should succeed");
-    assert_eq!(frame.width, 16);
-    assert_eq!(frame.height, 16);
+    assert_eq!(frame.width(), 16);
+    assert_eq!(frame.height(), 16);
 }
 
 // ============================================================================

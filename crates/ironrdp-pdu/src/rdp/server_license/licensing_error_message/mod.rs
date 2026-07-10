@@ -19,6 +19,7 @@ const STATE_TRANSITION_SIZE: usize = 4;
 ///
 /// [2.2.1.12.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f18b6c9f-f3d8-4a0e-8398-f9b153233dca
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicensingErrorMessage {
     pub license_header: LicenseHeader,
     pub error_code: LicenseErrorCode,
@@ -105,6 +106,7 @@ impl LicensingErrorMessage {
 
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LicenseErrorCode {
     InvalidServerCertificate = 0x01,
     NoLicense = 0x02,
@@ -129,6 +131,7 @@ impl LicenseErrorCode {
 
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, FromPrimitive, Copy, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LicensingStateTransition {
     TotalAbort = 1,
     NoTransition = 2,
