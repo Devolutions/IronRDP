@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.6.0...ironrdp-rdpsnd-native-v0.7.0)] - 2026-07-10
+
+### <!-- 4 -->Bug Fixes
+
+- Lower verbosity of routine logs in library crates ([c36032f91b](https://github.com/Devolutions/IronRDP/commit/c36032f91b27390a2cd34bfb300cfbe099d847a9)) 
+
+  Library crates should not emit info! for routine, repeating operations;
+  that floods the default logs of the final consumer, which owns the
+  verbosity decision. Reserve info! for rare connection/session lifecycle
+  milestones, debug! for significant one-off events, and trace! for the
+  fine-grained detail only needed when nothing else explains a problem.
+
+- [**breaking**] Replace anyhow with typed RdpsndNativeError ([#1277](https://github.com/Devolutions/IronRDP/issues/1277)) ([37483ebd9b](https://github.com/Devolutions/IronRDP/commit/37483ebd9b7628325666f434e1679e7f885fb289)) 
+
+
+
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.5.0...ironrdp-rdpsnd-native-v0.6.0)] - 2026-05-27
 
 ### <!-- 4 -->Bug Fixes

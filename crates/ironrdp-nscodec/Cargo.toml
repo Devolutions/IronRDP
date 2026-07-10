@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-nscodec"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 description = "NSCodec ([MS-RDPNSC]) implementation for IronRDP"
 edition.workspace = true
@@ -23,7 +23,7 @@ default = []
 encoder = ["dep:ironrdp-graphics"]
 
 [dependencies]
-ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.8", optional = true } # public when `encoder` is on
+ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9", optional = true } # public when `encoder` is on
 
 [lints]
 workspace = true

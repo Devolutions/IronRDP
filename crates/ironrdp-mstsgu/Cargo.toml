@@ -3,7 +3,6 @@ name = "ironrdp-mstsgu"
 version = "0.0.1"
 readme = "README.md"
 description = "Terminal Services Gateway Server Protocol"
-publish = false # TODO: publish
 edition.workspace = true
 rust-version = "1.89"
 license.workspace = true

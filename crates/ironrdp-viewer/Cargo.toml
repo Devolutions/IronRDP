@@ -12,9 +12,6 @@ keywords.workspace = true
 categories.workspace = true
 default-run = "ironrdp-viewer"
 
-# Not publishing for now.
-publish = false
-
 [lib]
 doctest = false
 test = false
@@ -31,10 +28,10 @@ qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
-ironrdp = { path = "../ironrdp", features = ["connector", "cliprdr", "input", "pdu", "client", "client-all"] }
-ironrdp-cfg = { path = "../ironrdp-cfg" }
-ironrdp-propertyset = { path = "../ironrdp-propertyset" }
-ironrdp-rdpfile = { path = "../ironrdp-rdpfile" }
+ironrdp = { path = "../ironrdp", version = "0.17", features = ["connector", "cliprdr", "input", "pdu", "client", "client-all"] }
+ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
+ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
+ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
 
 # Windowing and rendering
 winit = { version = "0.30", features = ["rwh_06"] }

@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.8.1...ironrdp-rdpsnd-v0.9.0)] - 2026-07-10
+
+### <!-- 1 -->Features
+
+- [**breaking**] Misuse-resistant format negotiation for RdpsndServerHandler ([#1359](https://github.com/Devolutions/IronRDP/issues/1359)) ([2d3bdef1a7](https://github.com/Devolutions/IronRDP/commit/2d3bdef1a7167d2acdc478a92917cbb2f018960b)) 
+
+  Move the negotiation into the crate and split selection from lifecycle:
+  
+  ```rust
+  fn choose_format<'a>(&mut self, common: &'a [NegotiatedFormat]) -> Option<&'a NegotiatedFormat>;
+  fn start(&mut self, format: &NegotiatedFormat);
+  ```
+
+
+
 ## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.8.0...ironrdp-rdpsnd-v0.8.1)] - 2026-06-05
 
 ### <!-- 6 -->Documentation

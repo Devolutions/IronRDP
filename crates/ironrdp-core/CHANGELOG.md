@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-core-v0.2.0...ironrdp-core-v0.2.1)] - 2026-07-10
+
+### <!-- 1 -->Features
+
+- Add `WriteBuf::filled_mut`, the mutable counterpart of `filled` ([#1374](https://github.com/Devolutions/IronRDP/issues/1374)) ([d3705af18c](https://github.com/Devolutions/IronRDP/commit/d3705af18cff1851f4d48017affcb85aaa678d57)) 
+
+### <!-- 4 -->Bug Fixes
+
+- Propagate caller location through error constructor helpers ([#1392](https://github.com/Devolutions/IronRDP/issues/1392)) ([d6990d81a1](https://github.com/Devolutions/IronRDP/commit/d6990d81a17e8349e52768ad8a82f673b1e1462d)) 
+
+  The error constructor helpers in several crates wrap the #[track_caller]
+  ironrdp_error::Error::new, but were not themselves marked
+  #[track_caller]. As a result, the captured location pointed at the
+  helper body instead of the real call site, giving misleading "@
+  file:line" info in error reports.
+
+
+
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-core-v0.1.5...ironrdp-core-v0.2.0)] - 2026-05-27
 
 ### <!-- 7 -->Build

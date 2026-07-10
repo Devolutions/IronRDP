@@ -12,17 +12,21 @@ release_commits = "^(feat|docs|fix|build|perf)"
 [[package]]
 name = "ironrdp-agent"
 git_release_enable = true
-publish = false # TODO: enable publishing when ready.
-
 [[package]]
 name = "ironrdp-viewer"
 git_release_enable = true
-publish = false # TODO: enable publishing when ready.
 
-# ironrdp-tls does not compile if no backend is specified.
-# rustls is the most common backend, so we let cargo publish check with it.
+# ironrdp-tls does not compile if no backend is specified, and the following crates depend on it
+# without enabling a backend by default. rustls is the most common backend, so we let cargo publish
+# check with it.
 [[package]]
 name = "ironrdp-tls"
+publish_features = ["rustls"]
+[[package]]
+name = "ironrdp-client"
+publish_features = ["rustls"]
+[[package]]
+name = "ironrdp-mstsgu"
 publish_features = ["rustls"]
 
 # *-native crates may have all kinds of system requirements depending on the platform.

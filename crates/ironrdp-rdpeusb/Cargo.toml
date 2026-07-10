@@ -22,8 +22,8 @@ std = []
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.8", features = ["alloc"] } # public
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.7" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["alloc"] } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public
 ironrdp-str = { path = "../ironrdp-str", version = "0.1" }
 
 [lints]

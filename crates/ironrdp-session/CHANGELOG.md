@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.10.0...ironrdp-session-v0.11.0)] - 2026-07-10
+
+### <!-- 0 -->Security
+
+- [**breaking**] Send NetworkAutoDetect over the MCS message channel ([#1348](https://github.com/Devolutions/IronRDP/issues/1348)) ([8a1fd0118e](https://github.com/Devolutions/IronRDP/commit/8a1fd0118e0bac214c9050b6ca6b36a040046dd3)) 
+
+  Corrects Network Auto-Detect framing and routing to match MS-RDPBCGR by
+  moving it off the I/O channel slow-path Share Data PDUs and onto the MCS
+  message channel with the required Basic Security Header
+  (SEC_AUTODETECT_REQ / SEC_AUTODETECT_RSP). This aligns IronRDP with
+  mstsc/xfreerdp behavior and enables both connect-time and continuous
+  auto-detection to actually function.
+
+### <!-- 4 -->Bug Fixes
+
+- Propagate caller location through error constructor helpers ([#1392](https://github.com/Devolutions/IronRDP/issues/1392)) ([d6990d81a1](https://github.com/Devolutions/IronRDP/commit/d6990d81a17e8349e52768ad8a82f673b1e1462d)) 
+
+  The error constructor helpers in several crates wrap the #[track_caller]
+  ironrdp_error::Error::new, but were not themselves marked
+  #[track_caller]. As a result, the captured location pointed at the
+  helper body instead of the real call site, giving misleading "@
+  file:line" info in error reports.
+
+- Reduce dependency on ironrdp-connector ([#1419](https://github.com/Devolutions/IronRDP/issues/1419)) ([5c22f86a71](https://github.com/Devolutions/IronRDP/commit/5c22f86a7150bc10c26a3be39bfaebf84c67d781)) 
+
+  Drops session's reliance on ironrdp-connector legacy helpers, now sourced from ironrdp-pdu.
+
+- [**breaking**] Remove ironrdp-connector dependency ([#1435](https://github.com/Devolutions/IronRDP/issues/1435)) ([c6a0286dcb](https://github.com/Devolutions/IronRDP/commit/c6a0286dcb49d9ac54c65c4f9325b41e05d541b8)) 
+
+  Removes the last ironrdp-connector coupling from ironrdp-session by
+  turning Deactivate-All handling into a bare signal and shifting ownership
+  of the Deactivation-Reactivation activation sequence back to each consumer.
+  It introduces a ConnectionActivationFactory (fresh sequence per reactivation)
+  and an ActiveStageBuilder so session construction no longer depends on
+  ConnectionResult.
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.9.0...ironrdp-session-v0.10.0)] - 2026-06-05
 
 ### <!-- 4 -->Bug Fixes

@@ -3,7 +3,6 @@ name = "ironrdp-propertyset"
 version = "0.1.0"
 readme = "README.md"
 description = "A key-value store for configuration options"
-publish = false # TODO: publish
 edition.workspace = true
 rust-version = "1.89"
 license.workspace = true

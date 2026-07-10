@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.8.1...ironrdp-graphics-v0.9.0)] - 2026-07-10
+
+### <!-- 4 -->Bug Fixes
+
+- Don't require CONTEXT block on every progressive frame ([#1395](https://github.com/Devolutions/IronRDP/issues/1395)) ([368fe8e68b](https://github.com/Devolutions/IronRDP/commit/368fe8e68b2d5d72da2e15dcf99469b98e965a2b)) 
+
+  Fixes progressive RemoteFX (MS-RDPEGFX) decoding by no longer requiring a CONTEXT block on every WireToSurface2 progressive frame once a codec context has already been established (keyed by codec_context_id). This aligns the decoder with real-world server behavior and the spec’s “establish once, then reference” model for progressive contexts.
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.9
+
+
+
 ## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.8.0...ironrdp-graphics-v0.8.1)] - 2026-06-05
 
 ### <!-- 4 -->Bug Fixes

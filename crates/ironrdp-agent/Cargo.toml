@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-agent"
-version = "0.0.0"
+version = "0.1.0"
 readme = "README.md"
 description = "CLI-driven, daemon-backed agentic RDP client suitable for LLM consumption"
 edition.workspace = true
@@ -10,9 +10,6 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
-
-# Not publishing for now.
-publish = false
 
 [lib]
 doctest = false
@@ -30,15 +27,15 @@ internal = []
 
 [dependencies]
 # RDP client engine: only the TLS backend is mandated
-ironrdp-client = { path = "../ironrdp-client", features = ["rustls"] }
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls"] }
 
 # Configuration model and codecs
-ironrdp-core = { path = "../ironrdp-core", features = ["alloc"] }
-ironrdp-pdu = { path = "../ironrdp-pdu" }
-ironrdp-propertyset = { path = "../ironrdp-propertyset" }
-ironrdp-cfg = { path = "../ironrdp-cfg" }
-ironrdp-rdpfile = { path = "../ironrdp-rdpfile" }
-ironrdp-input = { path = "../ironrdp-input" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
+ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
+ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
+ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
+ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 
 # Async runtime and IPC transport
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time", "signal"] }

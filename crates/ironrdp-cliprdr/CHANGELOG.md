@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.6.0...ironrdp-cliprdr-v0.7.0)] - 2026-07-10
+
+### <!-- 1 -->Features
+
+- Dispatch initiate_file_copy via ClipboardMessage ([#1388](https://github.com/Devolutions/IronRDP/issues/1388)) ([b6325f9ea6](https://github.com/Devolutions/IronRDP/commit/b6325f9ea6900a84643b4415f9ebc7b1010cf3cd)) 
+
+  Extends the CLIPRDR backend-facing API to properly support offering clipboard file lists (so later FileContentsRequests can be serviced) by introducing ClipboardMessage::SendInitiateFileCopy(Vec<FileDescriptor>) and wiring it through the in-tree ClipboardMessage dispatchers.
+
+### <!-- 4 -->Bug Fixes
+
+- Release outgoing locks before initiating a file copy ([#1375](https://github.com/Devolutions/IronRDP/issues/1375)) ([5d534f10a6](https://github.com/Devolutions/IronRDP/commit/5d534f10a6f62ac7a860521b4e95c8c47b754612)) 
+
+- Lower verbosity of routine logs in library crates ([c36032f91b](https://github.com/Devolutions/IronRDP/commit/c36032f91b27390a2cd34bfb300cfbe099d847a9)) 
+
+  Library crates should not emit info! for routine, repeating operations;
+  that floods the default logs of the final consumer, which owns the
+  verbosity decision. Reserve info! for rare connection/session lifecycle
+  milestones, debug! for significant one-off events, and trace! for the
+  fine-grained detail only needed when nothing else explains a problem.
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.9
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.8
+
+
+
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.5.0...ironrdp-cliprdr-v0.6.0)] - 2026-05-27
 
 ### <!-- 1 -->Features
