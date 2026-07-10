@@ -190,25 +190,29 @@ jobs:
 
           ### Download and verify
 
-          Pick an archive from the list above and download it together with its `.sha256` sidecar:
+          Pick an archive from the list above, then download, verify, and extract it. The two blocks
+          below are self-contained; use the one for your platform.
+
+          Linux and macOS (POSIX shell):
 
           ```shell
           ASSET="<archive name from the list above>"
           BASE="https://github.com/Devolutions/IronRDP/releases/download/${PACKAGE}-v${VERSION}"
           curl -fLO "$BASE/$ASSET"
           curl -fLO "$BASE/$ASSET.sha256"
+          sha256sum --check "$ASSET.sha256"   # on macOS: shasum -a 256 --check "$ASSET.sha256"
+          tar -xzf "$ASSET"
           ```
 
-          Verify the checksum with the tool available on your platform:
+          Windows (PowerShell):
 
-          - Linux: `sha256sum --check "$ASSET.sha256"`
-          - macOS: `shasum -a 256 --check "$ASSET.sha256"`
-          - Windows (PowerShell): `(Get-FileHash -Algorithm SHA256 $ASSET).Hash.ToLowerInvariant() -eq (Get-Content "$ASSET.sha256").Split(' ')[0]`
-
-          Then extract (`tar` ships with Linux, macOS, and Windows):
-
-          ```shell
-          tar -xzf "$ASSET"
+          ```powershell
+          $Asset = "<archive name from the list above>"
+          $Base = "https://github.com/Devolutions/IronRDP/releases/download/${PACKAGE}-v${VERSION}"
+          curl.exe -fLO "$Base/$Asset"
+          curl.exe -fLO "$Base/$Asset.sha256"
+          if ((Get-FileHash -Algorithm SHA256 $Asset).Hash.ToLowerInvariant() -ne (Get-Content "$Asset.sha256").Split(' ')[0]) { throw 'checksum mismatch' }
+          tar -xzf $Asset
           ```
 
           ### Build baselines
