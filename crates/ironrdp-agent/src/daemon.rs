@@ -18,13 +18,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc::{
-    ConnState, KeyFilter, NowExecutionRequest, NowStream, Payload, PropValue, PropertyDump, PropertyEntry, Request,
-    Response, StatusInfo,
+    ConnState, KeyFilter, NowExecutionRequest, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response,
+    StatusInfo,
 };
 use crate::logbuf::{self, LogBuffer};
-use crate::now::{
-    DVC_CHANNEL_NAME, NowClient, NowOperationEvent, PowerShellKind as NowPowerShellKind, PowerShellRequest,
-};
+use crate::now::{DVC_CHANNEL_NAME, NowClient, PowerShellKind as NowPowerShellKind, PowerShellRequest};
+use crate::operations::{NowOperationManager, OUTPUT_RETENTION_BYTES};
 use crate::transport::{Endpoint, Listener, read_message, write_message};
 
 /// Binds the IPC endpoint and serves requests until a shutdown signal is received.
@@ -86,12 +85,21 @@ where
 {
     let request: Request = read_message(&mut stream).await?;
     trace!(?request, "Handling IPC request");
-    if let Request::NowExecute(request) = request {
-        daemon.stream_now_execution(request, &mut stream).await?;
-    } else {
-        let response = daemon.handle(request).await;
-        trace!(ok = response.is_ok(), "Replying to IPC request");
-        write_message(&mut stream, &response).await?;
+    match request {
+        Request::NowExecute(request) => daemon.stream_now_execution(request, &mut stream).await?,
+        Request::NowOperationAttach {
+            operation_id,
+            after_sequence,
+        } => {
+            daemon
+                .attach_now_operation(operation_id, after_sequence, &mut stream)
+                .await?
+        }
+        request => {
+            let response = daemon.handle(request).await;
+            trace!(ok = response.is_ok(), "Replying to IPC request");
+            write_message(&mut stream, &response).await?;
+        }
     }
     Ok(())
 }
@@ -115,6 +123,7 @@ struct Session {
     destination: String,
     live: Arc<Mutex<Live>>,
     now: Arc<NowClient>,
+    now_operations: Arc<NowOperationManager>,
 }
 
 /// Per-session state shared with the output-consumer task.
@@ -205,6 +214,17 @@ impl Daemon {
             Request::NowCapabilities => self.now_capabilities().await,
             Request::NowExecute(_) => Response::error("NOW execution must use a streaming IPC connection"),
             Request::NowCancel { operation_id } => self.cancel_now(operation_id),
+            Request::NowOperations => self.now_operations(),
+            Request::NowOperationStatus { operation_id } => self.now_operation_status(operation_id),
+            Request::NowOperationAttach { .. } => {
+                Response::error("NOW operation attachment must use a streaming IPC connection")
+            }
+            Request::NowDiagnostics => self.now_diagnostics(),
+            Request::NowWriteStdin {
+                operation_id,
+                data,
+                last,
+            } => self.now_write_stdin(operation_id, data, last).await,
         }
     }
 
@@ -311,12 +331,14 @@ impl Daemon {
 
         info!(%destination, "Started RDP session");
 
+        let now_operations = Arc::new(NowOperationManager::new(Arc::clone(&now)));
         *self.state.lock().expect("daemon state poisoned") = Some(Session {
             input_tx,
             input_db: Database::new(),
             destination,
             live,
             now,
+            now_operations,
         });
 
         Response::ok()
@@ -491,12 +513,12 @@ impl Daemon {
     }
 
     fn cancel_now(&self, operation_id: u64) -> Response {
-        let now = match self.now_client() {
-            Ok(now) => now,
+        let operations = match self.now_operation_manager() {
+            Ok(operations) => operations,
             Err(response) => return response,
         };
-        match now.cancel(operation_id) {
-            Ok(()) => Response::Ok(Payload::NowCancelAccepted { operation_id }),
+        match operations.cancel(operation_id) {
+            Ok(_) => Response::Ok(Payload::NowCancelAccepted { operation_id }),
             Err(error) => Response::error(format!("{error:#}")),
         }
     }
@@ -505,14 +527,14 @@ impl Daemon {
     where
         S: AsyncWrite + Unpin,
     {
-        let now = match self.now_client() {
-            Ok(now) => now,
+        let operations = match self.now_operation_manager_connected() {
+            Ok(operations) => operations,
             Err(response) => {
                 write_message(stream, &response).await?;
                 return Ok(());
             }
         };
-        let mut operation = match now.start_execution(request) {
+        let operation = match operations.start(request) {
             Ok(operation) => operation,
             Err(error) => {
                 write_message(stream, &Response::error(format!("{error:#}"))).await?;
@@ -522,50 +544,71 @@ impl Daemon {
         write_message(
             stream,
             &Response::Ok(Payload::NowExecutionStarted {
-                operation_id: operation.id,
+                operation_id: operation.operation_id,
             }),
         )
         .await?;
+        operations.attach(operation.operation_id, 0, stream).await
+    }
 
-        while let Some(event) = operation.events.recv().await {
-            let response = match event {
-                NowOperationEvent::Data {
-                    stream: NowStream::Stdout,
-                    data,
-                } => Response::Ok(Payload::NowExecutionData {
-                    operation_id: operation.id,
-                    stream: NowStream::Stdout,
-                    data,
-                }),
-                NowOperationEvent::Data {
-                    stream: NowStream::Stderr,
-                    data,
-                } => Response::Ok(Payload::NowExecutionData {
-                    operation_id: operation.id,
-                    stream: NowStream::Stderr,
-                    data,
-                }),
-                NowOperationEvent::Finished { exit_code } => Response::Ok(Payload::NowExecutionResult {
-                    operation_id: operation.id,
-                    exit_code,
-                }),
-                NowOperationEvent::Failed { message } => Response::error(message),
-            };
-            let terminal = matches!(
-                response,
-                Response::Err(_) | Response::Ok(Payload::NowExecutionResult { .. })
-            );
-            write_message(stream, &response).await?;
-            if terminal {
+    async fn attach_now_operation<S>(
+        &self,
+        operation_id: u64,
+        after_sequence: u64,
+        stream: &mut S,
+    ) -> anyhow::Result<()>
+    where
+        S: AsyncWrite + Unpin,
+    {
+        let operations = match self.now_operation_manager() {
+            Ok(operations) => operations,
+            Err(response) => {
+                write_message(stream, &response).await?;
                 return Ok(());
             }
+        };
+        match operations.attach(operation_id, after_sequence, stream).await {
+            Ok(()) => Ok(()),
+            Err(error) => write_message(stream, &Response::error(format!("{error:#}"))).await,
         }
+    }
 
-        write_message(
-            stream,
-            &Response::error("NOW execution ended without a terminal result"),
-        )
-        .await
+    fn now_operations(&self) -> Response {
+        match self.now_operation_manager() {
+            Ok(operations) => Response::Ok(Payload::NowOperations(operations.list())),
+            Err(response) => response,
+        }
+    }
+
+    fn now_operation_status(&self, operation_id: u64) -> Response {
+        match self.now_operation_manager() {
+            Ok(operations) => match operations.status(operation_id) {
+                Ok(info) => Response::Ok(Payload::NowOperationInfo(info)),
+                Err(error) => Response::error(format!("{error:#}")),
+            },
+            Err(response) => response,
+        }
+    }
+
+    fn now_diagnostics(&self) -> Response {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Response::error("no active session");
+        };
+        Response::Ok(Payload::NowDiagnostics(session.now.diagnostics(
+            u32::try_from(OUTPUT_RETENTION_BYTES).expect("retention cap fits in u32"),
+        )))
+    }
+
+    async fn now_write_stdin(&self, operation_id: u64, data: Vec<u8>, last: bool) -> Response {
+        let operations = match self.now_operation_manager() {
+            Ok(operations) => operations,
+            Err(response) => return response,
+        };
+        match operations.write_stdin(operation_id, data, last).await {
+            Ok(()) => Response::Ok(Payload::NowStdinAccepted { operation_id, last }),
+            Err(error) => Response::error(format!("{error:#}")),
+        }
     }
 
     fn now_client(&self) -> Result<Arc<NowClient>, Response> {
@@ -577,6 +620,25 @@ impl Daemon {
             return Err(Response::error("NOW execution requires a connected RDP session"));
         }
         Ok(Arc::clone(&session.now))
+    }
+
+    fn now_operation_manager(&self) -> Result<Arc<NowOperationManager>, Response> {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Err(Response::error("no active session"));
+        };
+        Ok(Arc::clone(&session.now_operations))
+    }
+
+    fn now_operation_manager_connected(&self) -> Result<Arc<NowOperationManager>, Response> {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Err(Response::error("no active session"));
+        };
+        if session.live.lock().expect("session live state poisoned").state != ConnState::Connected {
+            return Err(Response::error("NOW execution requires a connected RDP session"));
+        }
+        Ok(Arc::clone(&session.now_operations))
     }
 
     fn input(&self, operation: Operation) -> Response {

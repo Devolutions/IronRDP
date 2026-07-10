@@ -70,7 +70,8 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Remote NOW execution (requires an active session)
 
-- `now capabilities`                 Print the negotiated NOW version and named system, session,
+- `now capabilities [--format text|json|ndjson]`
+                                    Print the negotiated NOW version and named system, session,
                                     and execution capabilities. System/session entries are
                                     discovery-only; this release exposes the execution operations
                                     below.
@@ -80,24 +81,38 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `now pwsh [--profile] [--interactive] [--file PATH] [COMMAND]`
                                  Execute COMMAND with the remote PowerShell 7 (`pwsh.exe`) through
                                  the `Devolutions::Now::Agent` DVC.
-- `now exec process FILE [--parameters ARGS]`
+- `now exec process FILE [--parameters ARGS|--arg ARG...]`
                                  Execute FILE with the remote CreateProcess style.
-- `now exec shell COMMAND [--shell PATH]`
+- `now exec shell [--file PATH] [COMMAND] [--shell PATH]`
                                  Execute COMMAND with the remote host's configured shell.
-- `now exec batch COMMAND`           Execute a remote Windows batch command.
+- `now exec batch [--file PATH] [COMMAND]`
+                                 Execute a remote Windows batch command.
 - `now cancel OPERATION_ID`          Request normal cancellation of a running operation.
+- `now list` / `now status OPERATION_ID`
+                                 Inspect daemon-owned operation metadata.
+- `now attach OPERATION_ID [--after-sequence N]`
+                                 Replay retained output, then follow until completion.
+- `now stdin OPERATION_ID [--file PATH]`
+                                 Stream local stdin or PATH to an active operation.
+- `now diagnostics`                  Print DVC endpoint readiness and operation bounds.
 
 All tracked execution commands require their corresponding remote NOW capability and I/O
-redirection. They accept `--directory PATH`, `--timeout SECONDS`, `--stdin PATH` (or `-` for raw
-local stdin), and `--operation-id-file PATH`; use the written ID with `now cancel` from another
-process. PowerShell commands also accept `--profile` and `--interactive`, and accept an inline
-command or one UTF-8 `--file` script.
+redirection. They accept `--directory PATH`, `--timeout SECONDS`, buffered `--stdin PATH` (or `-`
+for raw local stdin), and `--operation-id-file PATH`; use the written ID with `now cancel` or
+`now stdin` from another process. PowerShell commands also accept `--profile` and `--interactive`,
+and accept an inline command or one UTF-8 `--file` script.
 
 Stdout/stderr are forwarded as raw bytes to the matching local stream as they arrive; the CLI does
 not aggregate output. A nonzero remote exit code from 1 through 255 is this CLI's exit status;
 wide nonzero codes map to 255. `--timeout` uses normal NOW cancellation and waits for the terminal
 result. `--detached` is explicit, cannot use stdin or a timeout, and does not provide remote output
-or exit tracking.
+or exit tracking. The daemon retains at most 8 MiB per operation, 32 terminal records, and 32 MiB
+total output, evicting oldest completed records; it requests normal cancellation on an
+operation-output overflow. Live stdin uses 64 KiB bounded fragments and retryable backpressure. A
+disconnected CLI does not terminate a tracked operation; use `now attach` to replay/continue.
+`--format text` preserves raw output, `--format json` emits
+one-shot snapshots, and `--format ndjson` emits versioned (`ironrdp-agent.now.v1`) lifecycle/data
+records with base64 raw bytes and stable typed error categories.
 
 The agent uses a fresh local DVC pipe endpoint for each RDP session, negotiates before its first
 NOW command, and handles fragmented or coalesced frames. If the NOW DVC is unavailable, the first

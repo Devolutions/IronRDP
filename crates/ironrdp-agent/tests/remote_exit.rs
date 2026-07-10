@@ -37,11 +37,13 @@ async fn now_process_preserves_remote_exit_code() {
             Response::Ok(Payload::NowExecutionStarted { operation_id: 9 }),
             Response::Ok(Payload::NowExecutionData {
                 operation_id: 9,
+                sequence: 1,
                 stream: ironrdp_agent::ipc::NowStream::Stdout,
                 data: b"stdout".to_vec(),
             }),
             Response::Ok(Payload::NowExecutionData {
                 operation_id: 9,
+                sequence: 2,
                 stream: ironrdp_agent::ipc::NowStream::Stderr,
                 data: b"stderr".to_vec(),
             }),

@@ -2416,6 +2416,7 @@ name = "ironrdp-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "ironrdp-cfg",
  "ironrdp-client",
@@ -2427,6 +2428,7 @@ dependencies = [
  "libc",
  "now-proto-pdu",
  "png",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

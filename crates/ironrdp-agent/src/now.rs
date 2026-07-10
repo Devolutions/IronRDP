@@ -15,7 +15,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::{Mutex, Notify, mpsc};
 use tracing::{debug, info};
 
-use crate::ipc::{NowCapabilities, NowExecutionKind, NowExecutionRequest, NowStream};
+use crate::ipc::{NowCapabilities, NowDiagnostics, NowExecutionKind, NowExecutionRequest, NowStream};
 
 pub(crate) const DVC_CHANNEL_NAME: &str = "Devolutions::Now::Agent";
 const MAX_MESSAGE_BODY_LEN: usize = 16 * 1024 * 1024;
@@ -26,6 +26,8 @@ const NON_INTERACTIVE_FLAG: u16 = 0x0020;
 const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+/// Bounds protocol data that can be queued while the daemon operation collector is scheduled.
+const OPERATION_EVENT_QUEUE_CAPACITY: usize = 8;
 
 static NEXT_ENDPOINT_ID: AtomicU64 = AtomicU64::new(0);
 static NEXT_OPERATION_ID: AtomicU64 = AtomicU64::new(1);
@@ -76,10 +78,18 @@ pub(crate) enum NowOperationEvent {
     Failed { message: String },
 }
 
+/// One bounded standard-input fragment delivered to an active NOW operation.
+#[derive(Debug)]
+pub(crate) struct NowStdinChunk {
+    pub(crate) data: Vec<u8>,
+    pub(crate) last: bool,
+}
+
 /// A running NOW operation with a local ID and a stream of protocol events.
 pub(crate) struct NowOperation {
     pub(crate) id: u64,
-    pub(crate) events: mpsc::UnboundedReceiver<NowOperationEvent>,
+    pub(crate) events: mpsc::Receiver<NowOperationEvent>,
+    pub(crate) stdin: mpsc::Sender<NowStdinChunk>,
 }
 
 struct NowState {
@@ -91,6 +101,13 @@ struct NowState {
     heartbeat_interval: Option<Duration>,
     next_session_id: u32,
     connected_once: bool,
+}
+
+enum StreamEvent<'a> {
+    Message(anyhow::Result<NowMessage<'a>>),
+    Cancellation,
+    Timeout,
+    Stdin(Option<NowStdinChunk>),
 }
 
 impl NowClient {
@@ -188,6 +205,25 @@ impl NowClient {
         state.capabilities()
     }
 
+    /// Returns transport diagnostics that do not require opening the DVC endpoint.
+    pub(crate) fn diagnostics(&self, output_retention_bytes: u32) -> NowDiagnostics {
+        let active_operation_id = self
+            .active
+            .lock()
+            .expect("NOW operation state poisoned")
+            .as_ref()
+            .map(|operation| operation.id);
+        NowDiagnostics {
+            endpoint: self.endpoint.clone(),
+            active_operation_id,
+            output_retention_bytes,
+            event_queue_capacity: u16::try_from(OPERATION_EVENT_QUEUE_CAPACITY).expect("queue capacity fits in u16"),
+            initial_connect_timeout_secs: u32::try_from(INITIAL_CONNECT_TIMEOUT.as_secs())
+                .expect("initial connect timeout fits in u32"),
+            reconnect_timeout_secs: u32::try_from(RECONNECT_TIMEOUT.as_secs()).expect("reconnect timeout fits in u32"),
+        }
+    }
+
     /// Starts a streamed execution. Only one execution can own a NOW transport at a time, but the
     /// returned operation can be cancelled from another daemon IPC connection.
     pub(crate) fn start_execution(self: &Arc<Self>, request: NowExecutionRequest) -> anyhow::Result<NowOperation> {
@@ -212,21 +248,24 @@ impl NowClient {
             *guard = Some(active.clone());
         }
 
-        let (events_tx, events) = mpsc::unbounded_channel();
+        let (events_tx, events) = mpsc::channel(OPERATION_EVENT_QUEUE_CAPACITY);
+        let (stdin, stdin_rx) = mpsc::channel(OPERATION_EVENT_QUEUE_CAPACITY);
         let client = Arc::clone(self);
         tokio::spawn(async move {
             let result = {
                 let mut state = client.state.lock().await;
-                state.execute_streamed(request, &active, &events_tx).await
+                state.execute_streamed(request, &active, &events_tx, stdin_rx).await
             };
             match result {
                 Ok(exit_code) => {
-                    let _ = events_tx.send(NowOperationEvent::Finished { exit_code });
+                    let _ = events_tx.send(NowOperationEvent::Finished { exit_code }).await;
                 }
                 Err(error) => {
-                    let _ = events_tx.send(NowOperationEvent::Failed {
-                        message: format!("{error:#}"),
-                    });
+                    let _ = events_tx
+                        .send(NowOperationEvent::Failed {
+                            message: format!("{error:#}"),
+                        })
+                        .await;
                 }
             }
             let mut guard = client.active.lock().expect("NOW operation state poisoned");
@@ -235,7 +274,7 @@ impl NowClient {
             }
         });
 
-        Ok(NowOperation { id, events })
+        Ok(NowOperation { id, events, stdin })
     }
 
     /// Requests normal NOW cancellation. The active worker sends `CANCEL_REQ` while continuing to
@@ -400,6 +439,8 @@ impl NowState {
             minor: server.version().minor,
             system_capset: server.system_capset().bits(),
             session_capset: server.session_capset().bits(),
+            server_exec_capset: server.exec_capset().bits(),
+            client_exec_capset: requested.exec_capset().bits(),
             exec_capset: exec_capset.bits(),
             heartbeat_secs: server
                 .heartbeat_interval()
@@ -411,7 +452,8 @@ impl NowState {
         &mut self,
         request: NowExecutionRequest,
         active: &ActiveOperation,
-        events: &mpsc::UnboundedSender<NowOperationEvent>,
+        events: &mpsc::Sender<NowOperationEvent>,
+        mut stdin: mpsc::Receiver<NowStdinChunk>,
     ) -> anyhow::Result<u32> {
         self.ensure_connected().await?;
         self.negotiate().await?;
@@ -445,6 +487,7 @@ impl NowState {
         let mut cancellation_sent = false;
         let mut cancellation_requested = false;
         let mut stdin_sent = false;
+        let mut stdin_closed = false;
 
         loop {
             if active.cancellation_requested.load(Ordering::Acquire) && !cancellation_sent {
@@ -455,27 +498,42 @@ impl NowState {
                 cancellation_requested = true;
             }
 
-            let message = match deadline {
+            let event = match deadline {
                 Some(deadline) if !cancellation_sent => {
                     tokio::select! {
-                        message = self.read_message() => Some(message?),
-                        _ = active.cancellation.notified() => None,
+                        message = self.read_message() => StreamEvent::Message(message),
+                        _ = active.cancellation.notified() => StreamEvent::Cancellation,
                         _ = tokio::time::sleep_until(deadline) => {
-                            active.cancellation_requested.store(true, Ordering::Release);
-                            None
+                            StreamEvent::Timeout
                         }
+                        chunk = stdin.recv(), if stdin_sent && !stdin_closed => StreamEvent::Stdin(chunk),
                     }
                 }
                 _ if !cancellation_sent => {
                     tokio::select! {
-                        message = self.read_message() => Some(message?),
-                        _ = active.cancellation.notified() => None,
+                        message = self.read_message() => StreamEvent::Message(message),
+                        _ = active.cancellation.notified() => StreamEvent::Cancellation,
+                        chunk = stdin.recv(), if stdin_sent && !stdin_closed => StreamEvent::Stdin(chunk),
                     }
                 }
-                _ => Some(self.read_message().await?),
+                _ => StreamEvent::Message(self.read_message().await),
             };
-            let Some(message) = message else {
-                continue;
+            let message = match event {
+                StreamEvent::Message(message) => message?,
+                StreamEvent::Cancellation => continue,
+                StreamEvent::Timeout => {
+                    active.cancellation_requested.store(true, Ordering::Release);
+                    continue;
+                }
+                StreamEvent::Stdin(Some(chunk)) => {
+                    self.write_stdin_chunk(session_id, &chunk.data, chunk.last).await?;
+                    stdin_closed = chunk.last;
+                    continue;
+                }
+                StreamEvent::Stdin(None) => {
+                    stdin_closed = true;
+                    continue;
+                }
             };
 
             match message {
@@ -483,6 +541,7 @@ impl NowState {
                     if !stdin_sent {
                         if let Some(stdin) = request.stdin.as_deref() {
                             self.write_stdin(session_id, stdin).await?;
+                            stdin_closed = true;
                         }
                         stdin_sent = true;
                     }
@@ -498,7 +557,8 @@ impl NowState {
                             stream,
                             data: data.data().to_vec(),
                         })
-                        .map_err(|_| anyhow::anyhow!("NOW execution output consumer disconnected"))?;
+                        .await
+                        .map_err(|_| anyhow::anyhow!("NOW operation collector stopped"))?;
                 }
                 NowMessage::Exec(NowExecMessage::CancelRsp(response)) if response.session_id() == session_id => {
                     response
@@ -527,20 +587,20 @@ impl NowState {
     async fn write_stdin(&mut self, session_id: u32, stdin: &[u8]) -> anyhow::Result<()> {
         for (index, chunk) in stdin.chunks(IO_BUFFER_LEN).enumerate() {
             let is_last = (index + 1) * IO_BUFFER_LEN >= stdin.len();
-            self.write_message(NowMessage::from(
-                NowExecDataMsg::new(session_id, NowExecDataStreamKind::Stdin, is_last, chunk)
-                    .context("encode NOW standard input")?,
-            ))
-            .await?;
+            self.write_stdin_chunk(session_id, chunk, is_last).await?;
         }
         if stdin.is_empty() {
-            self.write_message(NowMessage::from(
-                NowExecDataMsg::new(session_id, NowExecDataStreamKind::Stdin, true, &[])
-                    .context("encode NOW empty standard input")?,
-            ))
-            .await?;
+            self.write_stdin_chunk(session_id, &[], true).await?;
         }
         Ok(())
+    }
+
+    async fn write_stdin_chunk(&mut self, session_id: u32, data: &[u8], is_last: bool) -> anyhow::Result<()> {
+        self.write_message(NowMessage::from(
+            NowExecDataMsg::new(session_id, NowExecDataStreamKind::Stdin, is_last, data)
+                .context("encode NOW standard input")?,
+        ))
+        .await
     }
 }
 

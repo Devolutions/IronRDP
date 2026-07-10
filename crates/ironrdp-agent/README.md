@@ -49,9 +49,11 @@ ironrdp-agent now capabilities
 ironrdp-agent now powershell '$PSVersionTable.PSVersion'
 ironrdp-agent now pwsh --directory C:\work --timeout 60 '$PSVersionTable.PSVersion'
 ironrdp-agent now pwsh --file ./script.ps1 --stdin ./input.bin
-ironrdp-agent now exec process C:\Tools\tool.exe --parameters '--json'
+ironrdp-agent now exec process C:\Tools\tool.exe --arg '--json' --arg 'value with spaces'
 ironrdp-agent now exec shell 'uname -a'
 ironrdp-agent now exec batch 'dir /b'
+ironrdp-agent now list --format json
+ironrdp-agent now attach 42 --after-sequence 17 --format ndjson
 ```
 
 `now capabilities` waits for the NOW DVC and prints the protocol version, named system/session
@@ -63,9 +65,26 @@ execution operations. Each command is capability-gated before it is sent.
 `powershell` and `pwsh` accept an inline command or a UTF-8 `--file` script. They use `-NoProfile`
 and `-NonInteractive` by default; use `--profile` and/or `--interactive` to opt out. All tracked
 execution modes accept `--directory`, `--timeout SECONDS`, `--stdin PATH` (or `--stdin -` for raw
-local stdin), and `--operation-id-file PATH`. Standard output and standard error are forwarded
+local stdin), and `--operation-id-file PATH`. `--stdin` buffers its complete source before
+execution; for live bounded input, start an operation, then pipe bytes into `now stdin ID` from a
+second CLI process. Standard output and standard error are forwarded
 unchanged, as individual byte chunks, to the matching local stream. A nonzero remote exit code from
 1 through 255 becomes the CLI process exit status; wider nonzero remote codes map to 255.
+
+NOW operations are daemon-owned, so losing a CLI connection does not terminate the remote process.
+Use `now list`, `now status ID`, and `now attach ID [--after-sequence N]` to inspect, replay bounded
+output, and continue following a running operation. Each operation retains at most 8 MiB of output;
+the daemon retains at most 32 completed records and 32 MiB total retained output, evicting the
+oldest terminal records first. Crossing an operation limit requests normal NOW cancellation rather
+than growing daemon memory without bound. Live stdin is fragmented into 64 KiB messages and retries
+explicit protocol backpressure. `now diagnostics` reports the local DVC endpoint, active operation,
+readiness deadlines, and these bounds.
+
+The default `--format text` preserves raw stdout and stderr bytes. Use `--format json` for one-shot
+NOW queries, or `--format ndjson` for streaming execution/attachment: every object has
+`schema: "ironrdp-agent.now.v1"` and output bytes are carried in `data_base64` with an operation
+sequence number. IPC failures include a stable category such as `not_found`, `session_not_ready`,
+`capability_unavailable`, `timeout`, or `cancelled`, plus human-readable detail.
 
 The CLI forwards the exit code carried by the terminal NOW result; it does not reinterpret a
 PowerShell script's `exit` statement. A remote NOW implementation can map script failures before
@@ -77,9 +96,10 @@ Output is not aggregated for the CLI, so long-running operations are not constra
 `--timeout` requests normal protocol cancellation with `NOW_EXEC_CANCEL_REQ` when the duration
 expires. To cancel a command from another process, supply `--operation-id-file PATH` and run
 `ironrdp-agent now cancel <OPERATION_ID>`. Cancellation waits for the remote terminal result to keep
-the NOW byte stream synchronized. `--detached` is explicit, cannot be combined with stdin or a
-timeout, and returns once the request has been written; it has no remote output or exit-status
-tracking.
+the NOW byte stream synchronized. The execution CLI also turns Ctrl-C into this same cancellation
+request and continues draining until its terminal result. `--detached` is explicit, cannot be
+combined with stdin or a timeout, and returns once the request has been written; it has no remote
+output or exit-status tracking.
 
 If the remote session does not open `Devolutions::Now::Agent`, the first command waits at most 30
 seconds for its local DVC proxy endpoint, allowing delayed post-logon channel startup, then exits

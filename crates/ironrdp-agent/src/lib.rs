@@ -18,6 +18,7 @@ pub mod transport;
 pub(crate) mod help;
 pub(crate) mod logbuf;
 pub(crate) mod now;
+pub(crate) mod operations;
 
 // The wire codec helpers are internal, but the `internal` feature exposes them (hidden from docs)
 // so they can be unit tested from the workspace test suite.
