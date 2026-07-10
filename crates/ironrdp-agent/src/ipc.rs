@@ -19,11 +19,10 @@ use ironrdp_input::MouseButton;
 use ironrdp_pdu::impl_pdu_pod;
 use ironrdp_propertyset::PropertySet;
 
-use crate::wire::propertyset;
 use crate::wire::{
-    bytes_size, opt_string_size, opt_u16_size, read_bool, read_bytes, read_char, read_mouse_button, read_opt_string,
-    read_opt_u16, read_string, string_size, write_bool, write_bytes, write_char, write_mouse_button, write_opt_string,
-    write_opt_u16, write_string,
+    bytes_size, opt_string_size, opt_u16_size, propertyset, read_bool, read_bytes, read_char, read_mouse_button,
+    read_opt_string, read_opt_u16, read_string, string_size, write_bool, write_bytes, write_char, write_mouse_button,
+    write_opt_string, write_opt_u16, write_string,
 };
 
 /// A request sent by the CLI to the daemon.
@@ -69,6 +68,19 @@ pub enum Request {
     KeyUnicode { ch: char, pressed: bool },
     /// Resize the remote desktop.
     Resize { width: u16, height: u16 },
+    /// Execute a PowerShell command through the negotiated NOW DVC channel.
+    PowerShell {
+        kind: PowerShellKind,
+        command: String,
+        no_profile: bool,
+        non_interactive: bool,
+    },
+    /// Report the NOW protocol capabilities negotiated with the remote agent.
+    NowCapabilities,
+    /// Start one capability-gated NOW execution and stream its events on this IPC connection.
+    NowExecute(NowExecutionRequest),
+    /// Request normal cancellation of a running NOW execution.
+    NowCancel { operation_id: u64 },
     // TODO: add clipboard support (CLIPRDR), e.g. requests to read the remote clipboard text and to
     // set it, so an LLM can copy/paste to and from the session.
 }
@@ -121,8 +133,114 @@ impl fmt::Debug for Request {
                 .field("width", width)
                 .field("height", height)
                 .finish(),
+            Self::PowerShell {
+                kind,
+                command,
+                no_profile,
+                non_interactive,
+            } => f
+                .debug_struct("PowerShell")
+                .field("kind", kind)
+                .field("command_len", &command.len())
+                .field("no_profile", no_profile)
+                .field("non_interactive", non_interactive)
+                .finish(),
+            Self::NowCapabilities => f.write_str("NowCapabilities"),
+            Self::NowExecute(request) => f.debug_tuple("NowExecute").field(request).finish(),
+            Self::NowCancel { operation_id } => {
+                f.debug_struct("NowCancel").field("operation_id", operation_id).finish()
+            }
         }
     }
+}
+
+/// The remote PowerShell implementation selected for a NOW execution request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerShellKind {
+    /// Windows PowerShell 5 (`powershell.exe`).
+    WindowsPowerShell,
+    /// PowerShell 7 (`pwsh.exe`).
+    PowerShell,
+}
+
+/// Execution style selected for a NOW request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NowExecutionKind {
+    /// Windows PowerShell 5 (`powershell.exe`).
+    WindowsPowerShell,
+    /// PowerShell 7 (`pwsh.exe`).
+    PowerShell,
+    /// A Windows CreateProcess invocation.
+    Process,
+    /// A command interpreted by the remote host's configured shell.
+    Shell,
+    /// A Windows batch command.
+    Batch,
+}
+
+/// Typed arguments shared by streamed NOW execution styles.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NowExecutionRequest {
+    /// The remote execution style.
+    pub kind: NowExecutionKind,
+    /// Command text or executable filename, depending on `kind`.
+    pub command: String,
+    /// Process parameters or an optional shell executable.
+    pub parameters: Option<String>,
+    /// Remote working directory.
+    pub directory: Option<String>,
+    /// Use `-NoProfile` for PowerShell styles.
+    pub no_profile: bool,
+    /// Use `-NonInteractive` for PowerShell styles.
+    pub non_interactive: bool,
+    /// Start without a terminal result or redirected output.
+    pub detached: bool,
+    /// Cancel the execution after this many seconds.
+    pub timeout_secs: Option<u32>,
+    /// Bytes to forward to the redirected remote standard input after the operation starts.
+    pub stdin: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for NowExecutionRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NowExecutionRequest")
+            .field("kind", &self.kind)
+            .field("command_len", &self.command.len())
+            .field("parameters_len", &self.parameters.as_ref().map(String::len))
+            .field("directory", &self.directory)
+            .field("no_profile", &self.no_profile)
+            .field("non_interactive", &self.non_interactive)
+            .field("detached", &self.detached)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("stdin_len", &self.stdin.as_ref().map(Vec::len))
+            .finish()
+    }
+}
+
+/// A redirected NOW execution stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NowStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+
+/// Snapshot of the remote NOW protocol capabilities after negotiation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NowCapabilities {
+    /// Negotiated NOW protocol major version.
+    pub major: u16,
+    /// Negotiated NOW protocol minor version.
+    pub minor: u16,
+    /// Server-advertised system capability bitset.
+    pub system_capset: u16,
+    /// Server-advertised session capability bitset.
+    pub session_capset: u16,
+    /// Execution capabilities available to this agent after intersection.
+    pub exec_capset: u16,
+    /// Negotiated channel heartbeat interval in seconds, if set.
+    pub heartbeat_secs: Option<u32>,
 }
 
 /// A [`PropertySet`] whose `Debug` output lists only the keys, never the (possibly secret) values.
@@ -173,6 +291,26 @@ pub enum Payload {
     Logs(Vec<String>),
     /// The most recent frame encoded as a PNG (cursor included), with its dimensions.
     Screenshot { width: u16, height: u16, png: Vec<u8> },
+    /// The byte streams and exit status returned by a NOW PowerShell invocation.
+    PowerShell {
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        exit_code: u32,
+    },
+    /// NOW capability snapshot.
+    NowCapabilities(NowCapabilities),
+    /// A streamed execution has been accepted with this local operation ID.
+    NowExecutionStarted { operation_id: u64 },
+    /// A raw stdout or stderr chunk emitted by a streamed execution.
+    NowExecutionData {
+        operation_id: u64,
+        stream: NowStream,
+        data: Vec<u8>,
+    },
+    /// Terminal result for a streamed execution.
+    NowExecutionResult { operation_id: u64, exit_code: u32 },
+    /// Cancellation was requested for a streamed execution.
+    NowCancelAccepted { operation_id: u64 },
 }
 
 impl fmt::Debug for Payload {
@@ -188,6 +326,43 @@ impl fmt::Debug for Payload {
                 .field("width", width)
                 .field("height", height)
                 .field("png_len", &png.len())
+                .finish(),
+            Self::PowerShell {
+                stdout,
+                stderr,
+                exit_code,
+            } => f
+                .debug_struct("PowerShell")
+                .field("stdout_len", &stdout.len())
+                .field("stderr_len", &stderr.len())
+                .field("exit_code", exit_code)
+                .finish(),
+            Self::NowCapabilities(capabilities) => f.debug_tuple("NowCapabilities").field(capabilities).finish(),
+            Self::NowExecutionStarted { operation_id } => f
+                .debug_struct("NowExecutionStarted")
+                .field("operation_id", operation_id)
+                .finish(),
+            Self::NowExecutionData {
+                operation_id,
+                stream,
+                data,
+            } => f
+                .debug_struct("NowExecutionData")
+                .field("operation_id", operation_id)
+                .field("stream", stream)
+                .field("data_len", &data.len())
+                .finish(),
+            Self::NowExecutionResult {
+                operation_id,
+                exit_code,
+            } => f
+                .debug_struct("NowExecutionResult")
+                .field("operation_id", operation_id)
+                .field("exit_code", exit_code)
+                .finish(),
+            Self::NowCancelAccepted { operation_id } => f
+                .debug_struct("NowCancelAccepted")
+                .field("operation_id", operation_id)
                 .finish(),
         }
     }
@@ -341,6 +516,266 @@ impl Decode<'_> for KeyFilter {
 }
 
 impl_pdu_pod!(KeyFilter);
+
+// ── PowerShellKind codec ─────────────────────────────────────────────────────
+
+impl Encode for PowerShellKind {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u8(match self {
+            Self::WindowsPowerShell => 0,
+            Self::PowerShell => 1,
+        });
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::PowerShellKind"
+    }
+
+    fn size(&self) -> usize {
+        1
+    }
+}
+
+impl Decode<'_> for PowerShellKind {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 1);
+        match src.read_u8() {
+            0 => Ok(Self::WindowsPowerShell),
+            1 => Ok(Self::PowerShell),
+            _ => Err(ironrdp_core::invalid_field_err!("PowerShell kind", "unknown tag")),
+        }
+    }
+}
+
+impl_pdu_pod!(PowerShellKind);
+
+// ── NOW streamed execution codec ────────────────────────────────────────────
+
+impl Encode for NowExecutionKind {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u8(match self {
+            Self::WindowsPowerShell => 0,
+            Self::PowerShell => 1,
+            Self::Process => 2,
+            Self::Shell => 3,
+            Self::Batch => 4,
+        });
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::NowExecutionKind"
+    }
+
+    fn size(&self) -> usize {
+        1
+    }
+}
+
+impl Decode<'_> for NowExecutionKind {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 1);
+        match src.read_u8() {
+            0 => Ok(Self::WindowsPowerShell),
+            1 => Ok(Self::PowerShell),
+            2 => Ok(Self::Process),
+            3 => Ok(Self::Shell),
+            4 => Ok(Self::Batch),
+            _ => Err(ironrdp_core::invalid_field_err!("NOW execution kind", "unknown tag")),
+        }
+    }
+}
+
+impl_pdu_pod!(NowExecutionKind);
+
+impl Encode for NowStream {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u8(match self {
+            Self::Stdout => 0,
+            Self::Stderr => 1,
+        });
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::NowStream"
+    }
+
+    fn size(&self) -> usize {
+        1
+    }
+}
+
+impl Decode<'_> for NowStream {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 1);
+        match src.read_u8() {
+            0 => Ok(Self::Stdout),
+            1 => Ok(Self::Stderr),
+            _ => Err(ironrdp_core::invalid_field_err!("NOW stream", "unknown tag")),
+        }
+    }
+}
+
+impl_pdu_pod!(NowStream);
+
+impl Encode for NowExecutionRequest {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.kind.encode(dst)?;
+        write_string(dst, &self.command)?;
+        write_opt_string(dst, self.parameters.as_deref())?;
+        write_opt_string(dst, self.directory.as_deref())?;
+        write_bool(dst, self.no_profile)?;
+        write_bool(dst, self.non_interactive)?;
+        write_bool(dst, self.detached)?;
+        match self.timeout_secs {
+            Some(timeout_secs) => {
+                dst.write_u8(1);
+                dst.write_u32(timeout_secs);
+            }
+            None => dst.write_u8(0),
+        }
+        match &self.stdin {
+            Some(stdin) => {
+                dst.write_u8(1);
+                write_bytes(dst, stdin)?;
+            }
+            None => dst.write_u8(0),
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::NowExecutionRequest"
+    }
+
+    fn size(&self) -> usize {
+        self.kind.size()
+            + string_size(&self.command)
+            + opt_string_size(self.parameters.as_deref())
+            + opt_string_size(self.directory.as_deref())
+            + 1 /* no_profile */
+            + 1 /* non_interactive */
+            + 1 /* detached */
+            + 1 /* timeout presence */
+            + self.timeout_secs.map_or(0, |_| 4)
+            + 1 /* stdin presence */
+            + self.stdin.as_ref().map_or(0, |stdin| bytes_size(stdin))
+    }
+}
+
+impl Decode<'_> for NowExecutionRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let kind = NowExecutionKind::decode(src)?;
+        let command = read_string(src)?;
+        let parameters = read_opt_string(src)?;
+        let directory = read_opt_string(src)?;
+        let no_profile = read_bool(src)?;
+        let non_interactive = read_bool(src)?;
+        let detached = read_bool(src)?;
+        ensure_size!(in: src, size: 1);
+        let timeout_secs = match src.read_u8() {
+            0 => None,
+            1 => {
+                ensure_size!(in: src, size: 4);
+                Some(src.read_u32())
+            }
+            _ => return Err(ironrdp_core::invalid_field_err!("NOW timeout", "invalid presence flag")),
+        };
+        ensure_size!(in: src, size: 1);
+        let stdin = match src.read_u8() {
+            0 => None,
+            1 => Some(read_bytes(src)?),
+            _ => return Err(ironrdp_core::invalid_field_err!("NOW stdin", "invalid presence flag")),
+        };
+        Ok(Self {
+            kind,
+            command,
+            parameters,
+            directory,
+            no_profile,
+            non_interactive,
+            detached,
+            timeout_secs,
+            stdin,
+        })
+    }
+}
+
+impl_pdu_pod!(NowExecutionRequest);
+
+impl Encode for NowCapabilities {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u16(self.major);
+        dst.write_u16(self.minor);
+        dst.write_u16(self.system_capset);
+        dst.write_u16(self.session_capset);
+        dst.write_u16(self.exec_capset);
+        match self.heartbeat_secs {
+            Some(heartbeat_secs) => {
+                dst.write_u8(1);
+                dst.write_u32(heartbeat_secs);
+            }
+            None => dst.write_u8(0),
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::NowCapabilities"
+    }
+
+    fn size(&self) -> usize {
+        2 /* major */
+            + 2 /* minor */
+            + 2 /* system_capset */
+            + 2 /* session_capset */
+            + 2 /* exec_capset */
+            + 1 /* heartbeat presence */
+            + self.heartbeat_secs.map_or(0, |_| 4)
+    }
+}
+
+impl Decode<'_> for NowCapabilities {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 10);
+        let major = src.read_u16();
+        let minor = src.read_u16();
+        let system_capset = src.read_u16();
+        let session_capset = src.read_u16();
+        let exec_capset = src.read_u16();
+        ensure_size!(in: src, size: 1);
+        let heartbeat_secs = match src.read_u8() {
+            0 => None,
+            1 => {
+                ensure_size!(in: src, size: 4);
+                Some(src.read_u32())
+            }
+            _ => {
+                return Err(ironrdp_core::invalid_field_err!(
+                    "NOW heartbeat",
+                    "invalid presence flag"
+                ));
+            }
+        };
+        Ok(Self {
+            major,
+            minor,
+            system_capset,
+            session_capset,
+            exec_capset,
+            heartbeat_secs,
+        })
+    }
+}
+
+impl_pdu_pod!(NowCapabilities);
 
 // ── PropValue / PropertyEntry / PropertyDump codec ──────────────────────────
 
@@ -527,6 +962,46 @@ impl Encode for Payload {
                 dst.write_u16(*height);
                 write_bytes(dst, png)?;
             }
+            Self::PowerShell {
+                stdout,
+                stderr,
+                exit_code,
+            } => {
+                dst.write_u8(5);
+                write_bytes(dst, stdout)?;
+                write_bytes(dst, stderr)?;
+                dst.write_u32(*exit_code);
+            }
+            Self::NowCapabilities(capabilities) => {
+                dst.write_u8(6);
+                capabilities.encode(dst)?;
+            }
+            Self::NowExecutionStarted { operation_id } => {
+                dst.write_u8(7);
+                dst.write_u64(*operation_id);
+            }
+            Self::NowExecutionData {
+                operation_id,
+                stream,
+                data,
+            } => {
+                dst.write_u8(8);
+                dst.write_u64(*operation_id);
+                stream.encode(dst)?;
+                write_bytes(dst, data)?;
+            }
+            Self::NowExecutionResult {
+                operation_id,
+                exit_code,
+            } => {
+                dst.write_u8(9);
+                dst.write_u64(*operation_id);
+                dst.write_u32(*exit_code);
+            }
+            Self::NowCancelAccepted { operation_id } => {
+                dst.write_u8(10);
+                dst.write_u64(*operation_id);
+            }
         }
         Ok(())
     }
@@ -543,6 +1018,15 @@ impl Encode for Payload {
                 Self::Properties(dump) => dump.size(),
                 Self::Logs(lines) => 4 + lines.iter().map(|line| string_size(line)).sum::<usize>(),
                 Self::Screenshot { png, .. } => 2 /* width */ + 2 /* height */ + bytes_size(png),
+                Self::PowerShell { stdout, stderr, .. } => {
+                    bytes_size(stdout) + bytes_size(stderr) + 4 /* exit_code */
+                }
+                Self::NowCapabilities(capabilities) => capabilities.size(),
+                Self::NowExecutionStarted { .. } | Self::NowCancelAccepted { .. } => 8 /* operation_id */,
+                Self::NowExecutionData { stream, data, .. } => {
+                    8 /* operation_id */ + stream.size() + bytes_size(data)
+                }
+                Self::NowExecutionResult { .. } => 8 /* operation_id */ + 4 /* exit_code */,
             }
     }
 }
@@ -569,6 +1053,48 @@ impl Decode<'_> for Payload {
                 let height = src.read_u16();
                 let png = read_bytes(src)?;
                 Ok(Self::Screenshot { width, height, png })
+            }
+            5 => {
+                let stdout = read_bytes(src)?;
+                let stderr = read_bytes(src)?;
+                ensure_size!(in: src, size: 4);
+                let exit_code = src.read_u32();
+                Ok(Self::PowerShell {
+                    stdout,
+                    stderr,
+                    exit_code,
+                })
+            }
+            6 => Ok(Self::NowCapabilities(NowCapabilities::decode(src)?)),
+            7 => {
+                ensure_size!(in: src, size: 8);
+                Ok(Self::NowExecutionStarted {
+                    operation_id: src.read_u64(),
+                })
+            }
+            8 => {
+                ensure_size!(in: src, size: 8);
+                let operation_id = src.read_u64();
+                let stream = NowStream::decode(src)?;
+                let data = read_bytes(src)?;
+                Ok(Self::NowExecutionData {
+                    operation_id,
+                    stream,
+                    data,
+                })
+            }
+            9 => {
+                ensure_size!(in: src, size: 12);
+                Ok(Self::NowExecutionResult {
+                    operation_id: src.read_u64(),
+                    exit_code: src.read_u32(),
+                })
+            }
+            10 => {
+                ensure_size!(in: src, size: 8);
+                Ok(Self::NowCancelAccepted {
+                    operation_id: src.read_u64(),
+                })
             }
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag")),
         }
@@ -688,6 +1214,27 @@ impl Encode for Request {
                 dst.write_u16(*width);
                 dst.write_u16(*height);
             }
+            Self::PowerShell {
+                kind,
+                command,
+                no_profile,
+                non_interactive,
+            } => {
+                dst.write_u8(12);
+                kind.encode(dst)?;
+                write_string(dst, command)?;
+                write_bool(dst, *no_profile)?;
+                write_bool(dst, *non_interactive)?;
+            }
+            Self::NowCapabilities => dst.write_u8(13),
+            Self::NowExecute(request) => {
+                dst.write_u8(14);
+                request.encode(dst)?;
+            }
+            Self::NowCancel { operation_id } => {
+                dst.write_u8(15);
+                dst.write_u64(*operation_id);
+            }
         }
         Ok(())
     }
@@ -713,6 +1260,15 @@ impl Encode for Request {
                 Self::KeyScancode { .. } => 2 /* scancode */ + 1 /* pressed */,
                 Self::KeyUnicode { .. } => 4 /* ch */ + 1 /* pressed */,
                 Self::Resize { .. } => 2 /* width */ + 2 /* height */,
+                Self::PowerShell {
+                    kind,
+                    command,
+                    no_profile: _,
+                    non_interactive: _,
+                } => kind.size() + string_size(command) + 1 /* no_profile */ + 1 /* non_interactive */,
+                Self::NowCapabilities => 0,
+                Self::NowExecute(request) => request.size(),
+                Self::NowCancel { .. } => 8 /* operation_id */,
             }
     }
 }
@@ -789,9 +1345,103 @@ impl Decode<'_> for Request {
                 let height = src.read_u16();
                 Ok(Self::Resize { width, height })
             }
+            12 => {
+                let kind = PowerShellKind::decode(src)?;
+                let command = read_string(src)?;
+                let no_profile = read_bool(src)?;
+                let non_interactive = read_bool(src)?;
+                Ok(Self::PowerShell {
+                    kind,
+                    command,
+                    no_profile,
+                    non_interactive,
+                })
+            }
+            13 => Ok(Self::NowCapabilities),
+            14 => Ok(Self::NowExecute(NowExecutionRequest::decode(src)?)),
+            15 => {
+                ensure_size!(in: src, size: 8);
+                Ok(Self::NowCancel {
+                    operation_id: src.read_u64(),
+                })
+            }
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag")),
         }
     }
 }
 
 impl_pdu_pod!(Request);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn powershell_request_roundtrips_without_exposing_command_in_debug() {
+        let request = Request::PowerShell {
+            kind: PowerShellKind::PowerShell,
+            command: "Write-Output secret".to_owned(),
+            no_profile: true,
+            non_interactive: true,
+        };
+        let bytes = ironrdp_core::encode_vec(&request).expect("encode request");
+        let decoded = ironrdp_core::decode_owned::<Request>(&bytes).expect("decode request");
+        assert_eq!(decoded, request);
+        assert!(!format!("{request:?}").contains("secret"));
+    }
+
+    #[test]
+    fn powershell_result_roundtrips_raw_stream_bytes() {
+        let response = Response::Ok(Payload::PowerShell {
+            stdout: vec![0, 0x80, b'a'],
+            stderr: vec![b'e', 0xff],
+            exit_code: 23,
+        });
+        let bytes = ironrdp_core::encode_vec(&response).expect("encode response");
+        let decoded = ironrdp_core::decode_owned::<Response>(&bytes).expect("decode response");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn streamed_now_execution_roundtrips_raw_stdin_and_output() {
+        let request = Request::NowExecute(NowExecutionRequest {
+            kind: NowExecutionKind::Process,
+            command: r"C:\Program Files\Tool\tool.exe".to_owned(),
+            parameters: Some("--input -".to_owned()),
+            directory: Some(r"C:\work".to_owned()),
+            no_profile: true,
+            non_interactive: true,
+            detached: false,
+            timeout_secs: Some(45),
+            stdin: Some(vec![0, 0x80, b'\n']),
+        });
+        let bytes = ironrdp_core::encode_vec(&request).expect("encode request");
+        let decoded = ironrdp_core::decode_owned::<Request>(&bytes).expect("decode request");
+        assert_eq!(decoded, request);
+        assert!(!format!("{request:?}").contains("tool.exe"));
+
+        let response = Response::Ok(Payload::NowExecutionData {
+            operation_id: 17,
+            stream: NowStream::Stderr,
+            data: vec![0, 0xff],
+        });
+        let bytes = ironrdp_core::encode_vec(&response).expect("encode response");
+        let decoded = ironrdp_core::decode_owned::<Response>(&bytes).expect("decode response");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn now_capabilities_roundtrip() {
+        let response = Response::Ok(Payload::NowCapabilities(NowCapabilities {
+            major: 1,
+            minor: 6,
+            system_capset: 1,
+            session_capset: 0x1f,
+            exec_capset: 0x107f,
+            heartbeat_secs: Some(60),
+        }));
+        let bytes = ironrdp_core::encode_vec(&response).expect("encode response");
+        let decoded = ironrdp_core::decode_owned::<Response>(&bytes).expect("decode response");
+        assert_eq!(decoded, response);
+    }
+}

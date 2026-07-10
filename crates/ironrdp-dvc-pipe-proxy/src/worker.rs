@@ -1,16 +1,18 @@
+use core::time::Duration;
 use std::sync::{Arc, mpsc};
 
 use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tokio::sync::Notify;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::error::DvcPipeProxyError;
 use crate::message::RawDataDvcMessage;
 use crate::os_pipe::OsPipe;
 
 const IO_BUFFER_SIZE: usize = 1024 * 64; // 64K
+const RECONNECT_DELAY: Duration = Duration::from_millis(100);
 
 pub(crate) type OnWriteDvcMessage = Box<dyn Fn(u32, Vec<SvcMessage>) -> PduResult<()> + Send>;
 
@@ -23,10 +25,12 @@ pub(crate) struct WorkerCtx {
     pub(crate) channel_id: u32,
 }
 
-pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) {
-    let _ = std::thread::spawn(move || {
+pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) -> std::io::Result<()> {
+    let thread_name = format!("ironrdp-dvc-pipe-{}", ctx.channel_id);
+    std::thread::Builder::new().name(thread_name).spawn(move || {
         let channel_name = ctx.channel_name.clone();
         let pipe_name = ctx.pipe_name.clone();
+        info!(%channel_name, %pipe_name, "DVC pipe proxy worker thread started");
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -54,7 +58,8 @@ pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) {
                 "DVC pipe proxy worker thread has failed"
             );
         }
-    });
+    })?;
+    Ok(())
 }
 
 enum NextWorkerState {
@@ -175,8 +180,18 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
         channel_id,
     };
     loop {
-        match process_client::<P>(&mut bridged_ctx).await? {
-            NextWorkerState::Abort => {
+        match process_client::<P>(&mut bridged_ctx).await {
+            Err(error) => {
+                error!(
+                    channel_name = %bridged_ctx.channel_name,
+                    pipe_name = %bridged_ctx.pipe_name,
+                    ?error,
+                    retry_delay_ms = RECONNECT_DELAY.as_millis(),
+                    "DVC pipe proxy connection failed; retrying"
+                );
+                std::thread::sleep(RECONNECT_DELAY);
+            }
+            Ok(NextWorkerState::Abort) => {
                 debug!(
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,
@@ -184,7 +199,7 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
                 );
                 break;
             }
-            NextWorkerState::Reconnect => {
+            Ok(NextWorkerState::Reconnect) => {
                 debug!(
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,

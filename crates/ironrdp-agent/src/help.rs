@@ -7,8 +7,8 @@ A CLI-driven, daemon-backed RDP client. One binary plays two roles:
 
 - DAEMON: `ironrdp-agent daemon-start` runs a long-lived foreground process that owns the RDP
   engine and one RDP session. Background it yourself (e.g. `ironrdp-agent daemon-start &`).
-- CLI: every other subcommand opens the local IPC endpoint, sends one request, prints the
-  response, and exits.
+- CLI: every other subcommand opens the local IPC endpoint, sends a request, prints the response,
+  and exits. NOW execution keeps this connection open to forward raw output chunks.
 
 The daemon stays alive across CLI invocations. One daemon serves one RDP session.
 
@@ -67,6 +67,42 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  as a PNG and write it to PATH (default `screenshot.png`). Prints
                                  `wrote PATH (WxH, N bytes)`. Errors with `no frame available yet`
                                  until the first frame arrives.
+
+## Remote NOW execution (requires an active session)
+
+- `now capabilities`                 Print the negotiated NOW version and named system, session,
+                                    and execution capabilities. System/session entries are
+                                    discovery-only; this release exposes the execution operations
+                                    below.
+- `now powershell [--profile] [--interactive] [--file PATH] [COMMAND]`
+                                 Execute COMMAND with the remote Windows PowerShell 5
+                                 (`powershell.exe`) through the `Devolutions::Now::Agent` DVC.
+- `now pwsh [--profile] [--interactive] [--file PATH] [COMMAND]`
+                                 Execute COMMAND with the remote PowerShell 7 (`pwsh.exe`) through
+                                 the `Devolutions::Now::Agent` DVC.
+- `now exec process FILE [--parameters ARGS]`
+                                 Execute FILE with the remote CreateProcess style.
+- `now exec shell COMMAND [--shell PATH]`
+                                 Execute COMMAND with the remote host's configured shell.
+- `now exec batch COMMAND`           Execute a remote Windows batch command.
+- `now cancel OPERATION_ID`          Request normal cancellation of a running operation.
+
+All tracked execution commands require their corresponding remote NOW capability and I/O
+redirection. They accept `--directory PATH`, `--timeout SECONDS`, `--stdin PATH` (or `-` for raw
+local stdin), and `--operation-id-file PATH`; use the written ID with `now cancel` from another
+process. PowerShell commands also accept `--profile` and `--interactive`, and accept an inline
+command or one UTF-8 `--file` script.
+
+Stdout/stderr are forwarded as raw bytes to the matching local stream as they arrive; the CLI does
+not aggregate output. A nonzero remote exit code from 1 through 255 is this CLI's exit status;
+wide nonzero codes map to 255. `--timeout` uses normal NOW cancellation and waits for the terminal
+result. `--detached` is explicit, cannot use stdin or a timeout, and does not provide remote output
+or exit tracking.
+
+The agent uses a fresh local DVC pipe endpoint for each RDP session, negotiates before its first
+NOW command, and handles fragmented or coalesced frames. If the NOW DVC is unavailable, the first
+command fails after a 30-second local proxy wait (later reconnects use 10 seconds); `status` and
+`disconnect` remain available.
 
 ## Input (require an active session)
 

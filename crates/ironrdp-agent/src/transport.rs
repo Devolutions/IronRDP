@@ -62,6 +62,26 @@ pub async fn send_request(endpoint: &Endpoint, request: &Request) -> anyhow::Res
     read_message(&mut stream).await
 }
 
+/// Opens the endpoint, sends one request, then delivers every response frame to `on_response`.
+///
+/// The callback returns `true` after the terminal frame. This is deliberately separate from
+/// [`send_request`]: only NOW execution produces multiple response frames.
+pub async fn send_streaming_request<F>(endpoint: &Endpoint, request: &Request, mut on_response: F) -> anyhow::Result<()>
+where
+    F: FnMut(Response) -> anyhow::Result<bool>,
+{
+    let mut stream = connect(endpoint)
+        .await
+        .with_context(|| format!("connect to daemon at {endpoint}"))?;
+    write_message(&mut stream, request).await?;
+    loop {
+        let response = read_message(&mut stream).await?;
+        if on_response(response)? {
+            return Ok(());
+        }
+    }
+}
+
 #[cfg(unix)]
 mod imp {
     use std::io;

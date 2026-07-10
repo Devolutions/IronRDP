@@ -4,7 +4,7 @@ use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::worker::{OnWriteDvcMessage, WorkerCtx, run_worker};
 
@@ -60,12 +60,14 @@ impl DvcProcessor for DvcNamedPipeProxy {
 
         let abort_event = Arc::new(tokio::sync::Notify::new());
 
+        let channel_name = self.channel_name.clone();
+        let pipe_name = self.named_pipe_name.clone();
         let ctx = WorkerCtx {
             on_write_dvc,
             to_pipe_rx,
             abort_event: Arc::clone(&abort_event),
-            pipe_name: self.named_pipe_name.clone(),
-            channel_name: self.channel_name.clone(),
+            pipe_name: pipe_name.clone(),
+            channel_name: channel_name.clone(),
             channel_id,
         };
 
@@ -75,10 +77,15 @@ impl DvcProcessor for DvcNamedPipeProxy {
         });
 
         #[cfg(not(target_os = "windows"))]
-        run_worker::<crate::platform::unix::UnixPipe>(ctx);
+        let worker = run_worker::<crate::platform::unix::UnixPipe>(ctx);
 
         #[cfg(target_os = "windows")]
-        run_worker::<crate::platform::windows::WindowsPipe>(ctx);
+        let worker = run_worker::<crate::platform::windows::WindowsPipe>(ctx);
+
+        if let Err(worker_error) = worker {
+            error!(%channel_name, %pipe_name, %worker_error, "DVC pipe proxy worker thread failed to start");
+            return Err(pdu_other_err!("start DVC pipe proxy worker: {worker_error}"));
+        }
 
         Ok(vec![])
     }

@@ -27,7 +27,7 @@ internal = []
 
 [dependencies]
 # RDP client engine: only the TLS backend is mandated
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls"] }
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls", "dvc-pipe-proxy"] }
 
 # Configuration model and codecs
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] }
@@ -36,6 +36,7 @@ ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
+now-proto-pdu = { version = "0.4.3", features = ["std"] }
 
 # Async runtime and IPC transport
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time", "signal"] }

@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
-use ironrdp_client::config::{ConfigBuilder, MissingField};
+use ironrdp_client::config::{ConfigBuilder, DvcProxyInfo, MissingField};
 use ironrdp_client::rdp::{RdpClient, RdpInputEvent, RdpOutputEvent};
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
@@ -18,9 +18,13 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc::{
-    ConnState, KeyFilter, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response, StatusInfo,
+    ConnState, KeyFilter, NowExecutionRequest, NowStream, Payload, PropValue, PropertyDump, PropertyEntry, Request,
+    Response, StatusInfo,
 };
 use crate::logbuf::{self, LogBuffer};
+use crate::now::{
+    DVC_CHANNEL_NAME, NowClient, NowOperationEvent, PowerShellKind as NowPowerShellKind, PowerShellRequest,
+};
 use crate::transport::{Endpoint, Listener, read_message, write_message};
 
 /// Binds the IPC endpoint and serves requests until a shutdown signal is received.
@@ -51,7 +55,7 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()>
     let logs = LogBuffer::new();
 
     let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
-    let daemon = Daemon::new(logs, overlay);
+    let daemon = Arc::new(Daemon::new(logs, overlay));
 
     info!(%endpoint, "Daemon listening");
 
@@ -59,9 +63,12 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()>
         tokio::select! {
             result = listener.accept() => {
                 let stream = result.context("accept IPC connection")?;
-                if let Err(error) = handle_connection(stream, &daemon).await {
-                    debug!(error = format!("{error:#}"), "IPC connection error");
-                }
+                let daemon = Arc::clone(&daemon);
+                tokio::spawn(async move {
+                    if let Err(error) = handle_connection(stream, &daemon).await {
+                        debug!(error = format!("{error:#}"), "IPC connection error");
+                    }
+                });
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("Received shutdown signal, stopping");
@@ -79,9 +86,13 @@ where
 {
     let request: Request = read_message(&mut stream).await?;
     trace!(?request, "Handling IPC request");
-    let response = daemon.handle(request);
-    trace!(ok = response.is_ok(), "Replying to IPC request");
-    write_message(&mut stream, &response).await?;
+    if let Request::NowExecute(request) = request {
+        daemon.stream_now_execution(request, &mut stream).await?;
+    } else {
+        let response = daemon.handle(request).await;
+        trace!(ok = response.is_ok(), "Replying to IPC request");
+        write_message(&mut stream, &response).await?;
+    }
     Ok(())
 }
 
@@ -103,6 +114,7 @@ struct Session {
     input_db: Database,
     destination: String,
     live: Arc<Mutex<Live>>,
+    now: Arc<NowClient>,
 }
 
 /// Per-session state shared with the output-consumer task.
@@ -137,7 +149,7 @@ impl Daemon {
         }
     }
 
-    fn handle(&self, request: Request) -> Response {
+    async fn handle(&self, request: Request) -> Response {
         match request {
             Request::Connect {
                 properties,
@@ -172,6 +184,27 @@ impl Daemon {
                 Operation::UnicodeKeyReleased(ch)
             }),
             Request::Resize { width, height } => self.resize(width, height),
+            Request::PowerShell {
+                kind,
+                command,
+                no_profile,
+                non_interactive,
+            } => {
+                let kind = match kind {
+                    crate::ipc::PowerShellKind::WindowsPowerShell => NowPowerShellKind::WindowsPowerShell,
+                    crate::ipc::PowerShellKind::PowerShell => NowPowerShellKind::PowerShell,
+                };
+                self.powershell(PowerShellRequest {
+                    kind,
+                    command,
+                    no_profile,
+                    non_interactive,
+                })
+                .await
+            }
+            Request::NowCapabilities => self.now_capabilities().await,
+            Request::NowExecute(_) => Response::error("NOW execution must use a streaming IPC connection"),
+            Request::NowCancel { operation_id } => self.cancel_now(operation_id),
         }
     }
 
@@ -204,6 +237,10 @@ impl Daemon {
 
         // Derive the headless client identity. These fields are never representable as `.rdp`
         // properties and are never prompted; the daemon supplies them itself.
+        let now = match NowClient::new() {
+            Ok(now) => Arc::new(now),
+            Err(error) => return Response::error(format!("create NOW endpoint: {error:#}")),
+        };
         let builder = builder
             .with_client_build(client_build())
             .with_client_dir("C:\\Windows\\System32\\mstscax.dll")
@@ -211,7 +248,11 @@ impl Daemon {
             .with_client_name(client_name())
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
-            .with_pointer_software_rendering(true);
+            .with_pointer_software_rendering(true)
+            .with_dvc_pipe_proxy(DvcProxyInfo {
+                channel_name: DVC_CHANNEL_NAME.to_owned(),
+                pipe_name: now.endpoint().to_owned(),
+            });
 
         let missing = builder.missing();
         if !missing.is_empty() {
@@ -275,6 +316,7 @@ impl Daemon {
             input_db: Database::new(),
             destination,
             live,
+            now,
         });
 
         Response::ok()
@@ -419,6 +461,122 @@ impl Daemon {
             Ok(()) => Response::ok(),
             Err(_) => Response::error("session input channel is closed"),
         }
+    }
+
+    async fn powershell(&self, request: PowerShellRequest) -> Response {
+        let now = match self.now_client() {
+            Ok(now) => now,
+            Err(response) => return response,
+        };
+
+        match now.execute(request).await {
+            Ok(result) => Response::Ok(Payload::PowerShell {
+                stdout: result.stdout,
+                stderr: result.stderr,
+                exit_code: result.exit_code,
+            }),
+            Err(error) => Response::error(format!("{error:#}")),
+        }
+    }
+
+    async fn now_capabilities(&self) -> Response {
+        let now = match self.now_client() {
+            Ok(now) => now,
+            Err(response) => return response,
+        };
+        match now.capabilities().await {
+            Ok(capabilities) => Response::Ok(Payload::NowCapabilities(capabilities)),
+            Err(error) => Response::error(format!("{error:#}")),
+        }
+    }
+
+    fn cancel_now(&self, operation_id: u64) -> Response {
+        let now = match self.now_client() {
+            Ok(now) => now,
+            Err(response) => return response,
+        };
+        match now.cancel(operation_id) {
+            Ok(()) => Response::Ok(Payload::NowCancelAccepted { operation_id }),
+            Err(error) => Response::error(format!("{error:#}")),
+        }
+    }
+
+    async fn stream_now_execution<S>(&self, request: NowExecutionRequest, stream: &mut S) -> anyhow::Result<()>
+    where
+        S: AsyncWrite + Unpin,
+    {
+        let now = match self.now_client() {
+            Ok(now) => now,
+            Err(response) => {
+                write_message(stream, &response).await?;
+                return Ok(());
+            }
+        };
+        let mut operation = match now.start_execution(request) {
+            Ok(operation) => operation,
+            Err(error) => {
+                write_message(stream, &Response::error(format!("{error:#}"))).await?;
+                return Ok(());
+            }
+        };
+        write_message(
+            stream,
+            &Response::Ok(Payload::NowExecutionStarted {
+                operation_id: operation.id,
+            }),
+        )
+        .await?;
+
+        while let Some(event) = operation.events.recv().await {
+            let response = match event {
+                NowOperationEvent::Data {
+                    stream: NowStream::Stdout,
+                    data,
+                } => Response::Ok(Payload::NowExecutionData {
+                    operation_id: operation.id,
+                    stream: NowStream::Stdout,
+                    data,
+                }),
+                NowOperationEvent::Data {
+                    stream: NowStream::Stderr,
+                    data,
+                } => Response::Ok(Payload::NowExecutionData {
+                    operation_id: operation.id,
+                    stream: NowStream::Stderr,
+                    data,
+                }),
+                NowOperationEvent::Finished { exit_code } => Response::Ok(Payload::NowExecutionResult {
+                    operation_id: operation.id,
+                    exit_code,
+                }),
+                NowOperationEvent::Failed { message } => Response::error(message),
+            };
+            let terminal = matches!(
+                response,
+                Response::Err(_) | Response::Ok(Payload::NowExecutionResult { .. })
+            );
+            write_message(stream, &response).await?;
+            if terminal {
+                return Ok(());
+            }
+        }
+
+        write_message(
+            stream,
+            &Response::error("NOW execution ended without a terminal result"),
+        )
+        .await
+    }
+
+    fn now_client(&self) -> Result<Arc<NowClient>, Response> {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Err(Response::error("no active session"));
+        };
+        if session.live.lock().expect("session live state poisoned").state != ConnState::Connected {
+            return Err(Response::error("NOW execution requires a connected RDP session"));
+        }
+        Ok(Arc::clone(&session.now))
     }
 
     fn input(&self, operation: Operation) -> Response {

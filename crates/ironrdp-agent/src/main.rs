@@ -6,5 +6,12 @@ use ironrdp_agent::cli::Cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    ironrdp_agent::cli::run(Cli::parse()).await
+    let result = ironrdp_agent::cli::run(Cli::parse()).await;
+    if let Err(error) = result {
+        if let Some(exit_code) = ironrdp_agent::cli::remote_exit_code(&error) {
+            std::process::exit(exit_code);
+        }
+        return Err(error);
+    }
+    Ok(())
 }

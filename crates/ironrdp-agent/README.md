@@ -9,7 +9,8 @@ The single `ironrdp-agent` binary bundles two roles:
   serves requests over a local IPC transport (a Unix domain socket on Unix, a named pipe on
   Windows).
 - **CLI** (`ironrdp-agent <op> …`): a short-lived invocation that opens the IPC endpoint, sends a
-  single request, prints the response, and exits.
+  request, prints the response, and exits. NOW execution keeps its local connection open to
+  forward raw output chunks until the remote operation reaches a terminal result.
 
 Run `ironrdp-agent --help-agent` for a structured, machine-readable description of every operation.
 
@@ -38,6 +39,52 @@ The daemon never exposes secrets to the IPC reader. `ConfigBuilder::build` strip
 token, …) before producing the `Config`, and the daemon seeds its live property bag from that
 post-build configuration. Secrets therefore never reach the live bag, so property dumps, status,
 and logs cannot leak them — no separate redaction pass is needed.
+
+## Remote NOW execution
+
+After connecting, run a command through the remote Devolutions NOW agent:
+
+```text
+ironrdp-agent now capabilities
+ironrdp-agent now powershell '$PSVersionTable.PSVersion'
+ironrdp-agent now pwsh --directory C:\work --timeout 60 '$PSVersionTable.PSVersion'
+ironrdp-agent now pwsh --file ./script.ps1 --stdin ./input.bin
+ironrdp-agent now exec process C:\Tools\tool.exe --parameters '--json'
+ironrdp-agent now exec shell 'uname -a'
+ironrdp-agent now exec batch 'dir /b'
+```
+
+`now capabilities` waits for the NOW DVC and prints the protocol version, named system/session
+capabilities, and the execution capability intersection available to IronRDP Agent. It is the
+recommended preflight for automation. The system and session entries are discovery-only in this
+release; `powershell`, `pwsh`, `exec process`, `exec shell`, and `exec batch` are the exposed
+execution operations. Each command is capability-gated before it is sent.
+
+`powershell` and `pwsh` accept an inline command or a UTF-8 `--file` script. They use `-NoProfile`
+and `-NonInteractive` by default; use `--profile` and/or `--interactive` to opt out. All tracked
+execution modes accept `--directory`, `--timeout SECONDS`, `--stdin PATH` (or `--stdin -` for raw
+local stdin), and `--operation-id-file PATH`. Standard output and standard error are forwarded
+unchanged, as individual byte chunks, to the matching local stream. A nonzero remote exit code from
+1 through 255 becomes the CLI process exit status; wider nonzero remote codes map to 255.
+
+The CLI forwards the exit code carried by the terminal NOW result; it does not reinterpret a
+PowerShell script's `exit` statement. A remote NOW implementation can map script failures before
+returning its result code.
+
+Output is not aggregated for the CLI, so long-running operations are not constrained by the former
+15 MiB aggregate response limit. Each individual local IPC and NOW frame remains bounded at 16 MiB.
+
+`--timeout` requests normal protocol cancellation with `NOW_EXEC_CANCEL_REQ` when the duration
+expires. To cancel a command from another process, supply `--operation-id-file PATH` and run
+`ironrdp-agent now cancel <OPERATION_ID>`. Cancellation waits for the remote terminal result to keep
+the NOW byte stream synchronized. `--detached` is explicit, cannot be combined with stdin or a
+timeout, and returns once the request has been written; it has no remote output or exit-status
+tracking.
+
+If the remote session does not open `Devolutions::Now::Agent`, the first command waits at most 30
+seconds for its local DVC proxy endpoint, allowing delayed post-logon channel startup, then exits
+with an error. Later reconnects wait at most 10 seconds. The daemon remains available for `status`
+and `disconnect` while either wait is in progress.
 
 ## Preloaded overlay
 

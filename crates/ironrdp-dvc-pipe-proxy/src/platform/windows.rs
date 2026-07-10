@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::windows::named_pipe;
+use tracing::{error, info};
 
 use crate::error::DvcPipeProxyError;
 use crate::os_pipe::OsPipe;
@@ -15,7 +16,8 @@ pub(crate) struct WindowsPipe {
 #[async_trait]
 impl OsPipe for WindowsPipe {
     async fn connect(pipe_name: &str) -> Result<Self, DvcPipeProxyError> {
-        let pipe_name = format!("\\\\.\\pipe\\{pipe_name}");
+        let pipe_path = format!("\\\\.\\pipe\\{pipe_name}");
+        info!(%pipe_name, %pipe_path, "Creating DVC proxy Windows named pipe");
 
         let pipe_server = named_pipe::ServerOptions::new()
             .first_pipe_instance(true)
@@ -25,10 +27,18 @@ impl OsPipe for WindowsPipe {
             .in_buffer_size(PIPE_BUFFER_SIZE)
             .out_buffer_size(PIPE_BUFFER_SIZE)
             .pipe_mode(named_pipe::PipeMode::Byte)
-            .create(pipe_name)
-            .map_err(DvcPipeProxyError::Io)?;
+            .create(&pipe_path)
+            .map_err(|error| {
+                error!(%pipe_name, %pipe_path, %error, "Failed to create DVC proxy Windows named pipe");
+                DvcPipeProxyError::Io(error)
+            })?;
 
-        pipe_server.connect().await.map_err(DvcPipeProxyError::Io)?;
+        info!(%pipe_name, %pipe_path, "Waiting for DVC proxy Windows named-pipe client");
+        pipe_server.connect().await.map_err(|error| {
+            error!(%pipe_name, %pipe_path, %error, "Failed to accept DVC proxy Windows named-pipe client");
+            DvcPipeProxyError::Io(error)
+        })?;
+        info!(%pipe_name, %pipe_path, "Connected DVC proxy Windows named-pipe client");
 
         Ok(Self { pipe_server })
     }

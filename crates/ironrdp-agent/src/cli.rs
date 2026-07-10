@@ -11,8 +11,9 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use core::str::FromStr;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use anyhow::Context as _;
 use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
@@ -20,7 +21,7 @@ use ironrdp_cfg::{PropertySetExt as _, TargetAddr};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
-use crate::ipc::{KeyFilter, Payload, PropValue, Request, Response};
+use crate::ipc::{KeyFilter, NowExecutionKind, NowExecutionRequest, NowStream, Payload, PropValue, Request, Response};
 use crate::transport::{self, Endpoint};
 
 /// IronRDP agent: a CLI-driven, daemon-backed RDP client.
@@ -97,6 +98,8 @@ enum Command {
         #[arg(long)]
         height: u16,
     },
+    /// Execute a PowerShell command through the remote NOW agent.
+    Now(NowArgs),
 }
 
 #[derive(Args, Debug)]
@@ -170,6 +173,112 @@ struct QueryLogsArgs {
 struct ScreenshotArgs {
     /// Destination PNG path (defaults to `screenshot.png` in the current directory).
     path: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct NowArgs {
+    #[command(subcommand)]
+    command: NowCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum NowCommand {
+    /// Report the NOW DVC protocol version and remote capability bitsets.
+    Capabilities,
+    /// Request normal cancellation of a streamed NOW operation.
+    Cancel {
+        /// Operation ID emitted through --operation-id-file.
+        operation_id: u64,
+    },
+    /// Execute with Windows PowerShell 5 (`powershell.exe`).
+    Powershell(NowPowerShellArgs),
+    /// Execute with PowerShell 7 (`pwsh.exe`).
+    Pwsh(NowPowerShellArgs),
+    /// Execute a capability-gated non-PowerShell NOW operation.
+    Exec(NowExecArgs),
+}
+
+#[derive(Args, Debug)]
+struct NowPowerShellArgs {
+    /// Load the remote user's PowerShell profile instead of the safe default `-NoProfile`.
+    #[arg(long)]
+    profile: bool,
+    /// Permit interactive PowerShell behavior instead of the safe default `-NonInteractive`.
+    #[arg(long)]
+    interactive: bool,
+    /// The PowerShell command to run. Quote it when it contains spaces or shell metacharacters.
+    #[arg(required_unless_present = "file", conflicts_with = "file")]
+    command: Option<String>,
+    /// Read the PowerShell command from a UTF-8 script file instead of the positional command.
+    #[arg(long, value_name = "PATH", conflicts_with = "command")]
+    file: Option<PathBuf>,
+    #[command(flatten)]
+    execution: NowExecutionOptions,
+}
+
+#[derive(Args, Debug)]
+struct NowExecutionOptions {
+    /// Remote working directory.
+    #[arg(long)]
+    directory: Option<String>,
+    /// Cancel after this many seconds.
+    #[arg(long, value_name = "SECONDS")]
+    timeout: Option<u32>,
+    /// Read raw bytes from PATH and forward them to the remote standard input. Use `-` for local stdin.
+    #[arg(long, value_name = "PATH")]
+    stdin: Option<PathBuf>,
+    /// Start without waiting for a remote result or receiving redirected output.
+    #[arg(long)]
+    detached: bool,
+    /// Write the locally assigned operation ID to PATH as soon as the daemon accepts it.
+    #[arg(long, value_name = "PATH")]
+    operation_id_file: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct NowExecArgs {
+    #[command(subcommand)]
+    command: NowExecCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum NowExecCommand {
+    /// Invoke a remote executable using CreateProcess.
+    Process(NowProcessArgs),
+    /// Invoke a command through the remote host's configured shell.
+    Shell(NowShellArgs),
+    /// Invoke a Windows batch command.
+    Batch(NowBatchArgs),
+}
+
+#[derive(Args, Debug)]
+struct NowProcessArgs {
+    /// Executable path.
+    filename: String,
+    /// Command-line parameters passed to the executable.
+    #[arg(long)]
+    parameters: Option<String>,
+    #[command(flatten)]
+    execution: NowExecutionOptions,
+}
+
+#[derive(Args, Debug)]
+struct NowShellArgs {
+    /// Shell command text.
+    command: String,
+    /// Optional remote shell executable.
+    #[arg(long)]
+    shell: Option<String>,
+    #[command(flatten)]
+    execution: NowExecutionOptions,
+}
+
+#[derive(Args, Debug)]
+struct NowBatchArgs {
+    /// Batch command text.
+    command: String,
+    #[command(flatten)]
+    execution: NowExecutionOptions,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -302,10 +411,116 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
         Command::Resize { width, height } => Request::Resize { width, height },
+        Command::Now(args) => {
+            return match args.command {
+                NowCommand::Capabilities => {
+                    print_response(transport::send_request(&endpoint, &Request::NowCapabilities).await?)
+                }
+                NowCommand::Cancel { operation_id } => {
+                    print_response(transport::send_request(&endpoint, &Request::NowCancel { operation_id }).await?)
+                }
+                NowCommand::Powershell(args) => {
+                    let command = read_powershell_command(args.command, args.file)?;
+                    execute_now(
+                        &endpoint,
+                        NowExecutionRequest {
+                            kind: NowExecutionKind::WindowsPowerShell,
+                            command,
+                            parameters: None,
+                            directory: args.execution.directory,
+                            no_profile: !args.profile,
+                            non_interactive: !args.interactive,
+                            detached: args.execution.detached,
+                            timeout_secs: args.execution.timeout,
+                            stdin: read_standard_input(args.execution.stdin.as_deref())?,
+                        },
+                        args.execution.operation_id_file.as_deref(),
+                    )
+                    .await
+                }
+                NowCommand::Pwsh(args) => {
+                    let command = read_powershell_command(args.command, args.file)?;
+                    execute_now(
+                        &endpoint,
+                        NowExecutionRequest {
+                            kind: NowExecutionKind::PowerShell,
+                            command,
+                            parameters: None,
+                            directory: args.execution.directory,
+                            no_profile: !args.profile,
+                            non_interactive: !args.interactive,
+                            detached: args.execution.detached,
+                            timeout_secs: args.execution.timeout,
+                            stdin: read_standard_input(args.execution.stdin.as_deref())?,
+                        },
+                        args.execution.operation_id_file.as_deref(),
+                    )
+                    .await
+                }
+                NowCommand::Exec(NowExecArgs { command }) => {
+                    let (kind, command, parameters, execution) = match command {
+                        NowExecCommand::Process(args) => (
+                            NowExecutionKind::Process,
+                            args.filename,
+                            args.parameters,
+                            args.execution,
+                        ),
+                        NowExecCommand::Shell(args) => {
+                            (NowExecutionKind::Shell, args.command, args.shell, args.execution)
+                        }
+                        NowExecCommand::Batch(args) => (NowExecutionKind::Batch, args.command, None, args.execution),
+                    };
+                    execute_now(
+                        &endpoint,
+                        NowExecutionRequest {
+                            kind,
+                            command,
+                            parameters,
+                            directory: execution.directory,
+                            no_profile: true,
+                            non_interactive: true,
+                            detached: execution.detached,
+                            timeout_secs: execution.timeout,
+                            stdin: read_standard_input(execution.stdin.as_deref())?,
+                        },
+                        execution.operation_id_file.as_deref(),
+                    )
+                    .await
+                }
+            };
+        }
     };
 
     let response = transport::send_request(&endpoint, &request).await?;
     print_response(response)
+}
+
+#[derive(Debug)]
+struct RemoteExit {
+    code: u32,
+}
+
+impl core::fmt::Display for RemoteExit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "remote NOW command exited with status {}", self.code)
+    }
+}
+
+impl core::error::Error for RemoteExit {}
+
+/// Returns a process exit status for a nonzero remote PowerShell exit, if this is such an error.
+pub fn remote_exit_code(error: &anyhow::Error) -> Option<i32> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<RemoteExit>())
+        .map(|exit| {
+            // Shells conventionally expose only 8-bit process statuses. Preserve the remote
+            // code where that is portable and map wider nonzero values to a nonzero failure.
+            i32::try_from(exit.code)
+                .ok()
+                .filter(|code| (1..=255).contains(code))
+                .unwrap_or(255)
+        })
 }
 
 /// Loads an operator-provided overlay [`PropertySet`] from an optional `.rdp` file, then layers
@@ -375,6 +590,108 @@ fn print_response(response: Response) -> anyhow::Result<()> {
     }
 }
 
+#[cfg(test)]
+fn write_powershell_response(response: Response) -> anyhow::Result<()> {
+    let payload = match response {
+        Response::Ok(payload) => payload,
+        Response::Err(message) => anyhow::bail!("{message}"),
+    };
+    let Payload::PowerShell {
+        stdout,
+        stderr,
+        exit_code,
+    } = payload
+    else {
+        anyhow::bail!("unexpected response to NOW PowerShell request");
+    };
+
+    std::io::stdout().write_all(&stdout).context("write remote stdout")?;
+    std::io::stdout().flush().context("flush remote stdout")?;
+    std::io::stderr().write_all(&stderr).context("write remote stderr")?;
+    std::io::stderr().flush().context("flush remote stderr")?;
+    if exit_code != 0 {
+        return Err(RemoteExit { code: exit_code }.into());
+    }
+    Ok(())
+}
+
+fn read_powershell_command(command: Option<String>, file: Option<PathBuf>) -> anyhow::Result<String> {
+    match (command, file) {
+        (Some(command), None) => Ok(command),
+        (None, Some(path)) => {
+            std::fs::read_to_string(&path).with_context(|| format!("read PowerShell script {}", path.display()))
+        }
+        (Some(_), Some(_)) => anyhow::bail!("provide either a PowerShell command or --file, not both"),
+        (None, None) => anyhow::bail!("provide a PowerShell command or --file"),
+    }
+}
+
+fn read_standard_input(path: Option<&Path>) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if path == Path::new("-") {
+        let mut stdin = std::io::stdin().lock();
+        let mut bytes = Vec::new();
+        stdin.read_to_end(&mut bytes).context("read local standard input")?;
+        return Ok(Some(bytes));
+    }
+    std::fs::read(path)
+        .map(Some)
+        .with_context(|| format!("read NOW standard input {}", path.display()))
+}
+
+async fn execute_now(
+    endpoint: &Endpoint,
+    request: NowExecutionRequest,
+    operation_id_file: Option<&Path>,
+) -> anyhow::Result<()> {
+    let mut exit_code = None;
+    transport::send_streaming_request(endpoint, &Request::NowExecute(request), |response| match response {
+        Response::Err(message) => anyhow::bail!("{message}"),
+        Response::Ok(Payload::NowExecutionStarted { operation_id }) => {
+            if let Some(path) = operation_id_file {
+                std::fs::write(path, operation_id.to_string())
+                    .with_context(|| format!("write NOW operation ID {}", path.display()))?;
+            }
+            Ok(false)
+        }
+        Response::Ok(Payload::NowExecutionData {
+            stream: NowStream::Stdout,
+            data,
+            ..
+        }) => {
+            std::io::stdout().write_all(&data).context("write remote stdout")?;
+            std::io::stdout().flush().context("flush remote stdout")?;
+            Ok(false)
+        }
+        Response::Ok(Payload::NowExecutionData {
+            stream: NowStream::Stderr,
+            data,
+            ..
+        }) => {
+            std::io::stderr().write_all(&data).context("write remote stderr")?;
+            std::io::stderr().flush().context("flush remote stderr")?;
+            Ok(false)
+        }
+        Response::Ok(Payload::NowExecutionResult {
+            exit_code: result_exit_code,
+            ..
+        }) => {
+            exit_code = Some(result_exit_code);
+            Ok(true)
+        }
+        Response::Ok(payload) => anyhow::bail!("unexpected response to streamed NOW execution: {payload:?}"),
+    })
+    .await?;
+
+    let exit_code = exit_code.context("NOW execution ended without an exit code")?;
+    if exit_code != 0 {
+        return Err(RemoteExit { code: exit_code }.into());
+    }
+    Ok(())
+}
+
 fn print_payload(payload: Payload) {
     match payload {
         Payload::Empty => println!("ok"),
@@ -412,6 +729,61 @@ fn print_payload(payload: Payload) {
         }
         // Screenshots are handled out-of-band by `write_screenshot`, never printed.
         Payload::Screenshot { width, height, .. } => println!("frame {width}x{height}"),
+        // NOW PowerShell byte streams are handled out-of-band by `write_powershell_response`.
+        Payload::PowerShell { .. } => {}
+        Payload::NowCapabilities(capabilities) => print_now_capabilities(&capabilities),
+        Payload::NowExecutionStarted { operation_id } => println!("NOW operation {operation_id} started"),
+        Payload::NowExecutionData { .. } => {}
+        Payload::NowExecutionResult {
+            operation_id,
+            exit_code,
+        } => println!("NOW operation {operation_id} exited with status {exit_code}"),
+        Payload::NowCancelAccepted { operation_id } => println!("NOW operation {operation_id} cancellation requested"),
+    }
+}
+
+fn print_now_capabilities(capabilities: &crate::ipc::NowCapabilities) {
+    let mut system = Vec::new();
+    if capabilities.system_capset & 0x0001 != 0 {
+        system.push("shutdown");
+    }
+    let mut session = Vec::new();
+    for (flag, name) in [
+        (0x0001, "lock"),
+        (0x0002, "logoff"),
+        (0x0004, "message-box"),
+        (0x0008, "set-keyboard-layout"),
+        (0x0010, "window-recording"),
+    ] {
+        if capabilities.session_capset & flag != 0 {
+            session.push(name);
+        }
+    }
+    let mut execution = Vec::new();
+    for (flag, name) in [
+        (0x0001, "run"),
+        (0x0002, "process"),
+        (0x0004, "shell"),
+        (0x0008, "batch"),
+        (0x0010, "powershell"),
+        (0x0020, "pwsh"),
+        (0x0040, "unicode-console"),
+        (0x1000, "io-redirection"),
+    ] {
+        if capabilities.exec_capset & flag != 0 {
+            execution.push(name);
+        }
+    }
+
+    println!("version: {}.{}", capabilities.major, capabilities.minor);
+    println!("system: {}", system.join(", "));
+    println!("session: {}", session.join(", "));
+    println!("execution: {}", execution.join(", "));
+    println!("system capset: 0x{:04x}", capabilities.system_capset);
+    println!("session capset: 0x{:04x}", capabilities.session_capset);
+    println!("exec capset: 0x{:04x}", capabilities.exec_capset);
+    if let Some(heartbeat_secs) = capabilities.heartbeat_secs {
+        println!("heartbeat seconds: {heartbeat_secs}");
     }
 }
 
@@ -497,4 +869,34 @@ fn property_description(key: &str) -> Option<&'static str> {
         _ => return None,
     };
     Some(description)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_exit_status_is_preserved() {
+        let error = anyhow::Error::new(RemoteExit { code: 37 });
+        assert_eq!(remote_exit_code(&error), Some(37));
+    }
+
+    #[test]
+    fn remote_exit_status_is_preserved_through_anyhow_context() {
+        let error = anyhow::Error::new(RemoteExit { code: 7 }).context("write NOW PowerShell response");
+        assert_eq!(remote_exit_code(&error), Some(7));
+    }
+
+    #[test]
+    fn wide_remote_exit_status_maps_to_portable_failure() {
+        let error = anyhow::Error::new(RemoteExit { code: 256 });
+        assert_eq!(remote_exit_code(&error), Some(255));
+    }
+
+    #[test]
+    fn powershell_agent_errors_are_returned_to_the_cli() {
+        let error = write_powershell_response(Response::error("NOW DVC pipe unavailable"))
+            .expect_err("agent error must fail the CLI command");
+        assert_eq!(error.to_string(), "NOW DVC pipe unavailable");
+    }
 }
