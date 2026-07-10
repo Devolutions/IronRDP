@@ -2696,7 +2696,7 @@ dependencies = [
  "ironrdp-pdu",
  "num-derive",
  "num-traits",
- "wide",
+ "wide 0.7.33",
  "yuv",
 ]
 
@@ -3947,7 +3947,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6b2b561d2103303e233779545da757ecd35bad82188d619a6d8901f3007e1ff"
 dependencies = [
  "openh264-sys2",
- "wide",
+ "wide 1.5.0",
 ]
 
 [[package]]
@@ -5131,6 +5131,15 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe_arch"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "safe_arch"
@@ -6620,12 +6629,22 @@ dependencies = [
 
 [[package]]
 name = "wide"
+version = "0.7.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+dependencies = [
+ "bytemuck",
+ "safe_arch 0.7.4",
+]
+
+[[package]]
+name = "wide"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfdfe6a32973f2d1b268b8895845a8a96cac2f0191e72c27cc929036060dbf89"
 dependencies = [
  "bytemuck",
- "safe_arch",
+ "safe_arch 1.0.0",
 ]
 
 [[package]]
