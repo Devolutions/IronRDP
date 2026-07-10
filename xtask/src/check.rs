@@ -66,13 +66,19 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
             .output()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let expected_no_match = format!("package ID specification `{banned}` did not match any packages");
 
         if output.status.success() && !stdout.trim().is_empty() {
             println!("Forbidden dependency edge: `{package}` depends on `{banned}`");
             print!("{stdout}");
             violations.push((package, banned));
-        } else {
+        } else if output.status.success() || stderr.contains(expected_no_match.as_str()) {
             println!("`{package}` has no dependency on `{banned}` (good)");
+        } else {
+            print!("{stdout}");
+            eprint!("{stderr}");
+            anyhow::bail!("failed to inspect dependency edge `{package}` -> `{banned}`");
         }
     }
 
