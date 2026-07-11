@@ -77,14 +77,29 @@ fn set_bitmap_desktop_size(capabilities: &mut [CapabilitySet], size: DesktopSize
     }
 }
 
+/// Protocol source and handshake-authentication status of received credentials.
+///
+/// Servers must not infer this from their configured security mode: the origin
+/// records what the acceptor actually received during negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialOrigin {
-    /// Received in the ClientInfoPdu (MS-RDPBCGR 2.2.1.11); not authenticated by the handshake.
+    /// Received in the ClientInfoPdu (MS-RDPBCGR 2.2.1.11).
+    ///
+    /// These credentials are client-supplied and have not been authenticated by
+    /// the protocol handshake. A server should validate them before using them
+    /// to select identity-bound resources.
     ClientInfo,
-    /// Delegated TSPasswordCreds decrypted by CredSSP (MS-CSSP); authenticated by the exchange.
+    /// Delegated TSPasswordCreds decrypted by CredSSP (MS-CSSP).
+    ///
+    /// CredSSP authenticated the principal during the exchange. A server may
+    /// still run authorization policy before starting or selecting a session.
     CredSspDelegated,
 }
 
+/// Credentials received by the acceptor together with their protocol origin.
+///
+/// Keeping both values in one type makes it impossible to expose credentials
+/// without the provenance required to interpret their authentication status.
 #[derive(Debug)]
 pub struct ReceivedCredentials {
     pub credentials: Credentials,
@@ -123,14 +138,14 @@ pub struct AcceptorResult {
     pub multitransport_flags: gcc::MultiTransportFlags,
     /// Credentials received from the client together with their origin.
     ///
-    /// Present for TLS-mode connections where the client sends credentials
-    /// in the ClientInfoPdu, and for CredSSP/Hybrid connections once the
-    /// delegated TSPasswordCreds have been decrypted by CredSSP.
+    /// For TLS/Standard connections, this contains credentials sent later in
+    /// the ClientInfoPdu and marks them as unauthenticated by the handshake.
+    /// For CredSSP/Hybrid connections, it contains the delegated TSPasswordCreds
+    /// decrypted by the CredSSP state machine and marks them as authenticated by
+    /// that exchange.
     ///
-    /// Servers that need to validate credentials (e.g., via PAM or LDAP)
-    /// can use this field for post-handshake validation. The origin distinguishes
-    /// unauthenticated ClientInfo credentials from CredSSP-delegated credentials
-    /// authenticated by the exchange.
+    /// Embedding servers can use the value for post-handshake validation or
+    /// authorization and for selecting per-user session resources.
     pub received_credentials: Option<ReceivedCredentials>,
     /// Client Auto-Reconnect Packet received in the Client Info PDU.
     ///

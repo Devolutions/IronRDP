@@ -150,7 +150,9 @@ impl core::error::Error for CredentialValidationError {
 /// credentials from CredSSP-delegated credentials authenticated by the exchange.
 ///
 /// Implement this trait to validate or authorize credentials against external systems
-/// (PAM, LDAP, database, etc.). For blocking backends, wrap the call in
+/// (PAM, LDAP, database, etc.). ClientInfo credentials require authentication;
+/// CredSSP-delegated credentials may still require server-specific authorization.
+/// For blocking backends, wrap the call in
 /// `tokio::task::spawn_blocking` to avoid stalling the async runtime.
 ///
 /// # Example
@@ -168,6 +170,7 @@ impl core::error::Error for CredentialValidationError {
 ///     async fn validate(
 ///         &self,
 ///         creds: &Credentials,
+///         _origin: CredentialOrigin,
 ///     ) -> Result<CredentialDecision, CredentialValidationError> {
 ///         if creds.username == self.expected_user && creds.password == self.expected_password {
 ///             Ok(CredentialDecision::Accept)
@@ -208,12 +211,18 @@ pub struct BoundConnection {
     pub input: Box<dyn RdpServerInputHandler>,
 }
 
-/// Async post-auth connection binder.
+/// Async post-auth connection binder for identity-bound display and input resources.
 ///
-/// This hook runs once authenticated credentials are available and before
-/// static channels, display updates, or input dispatch begin. It lets a server
-/// bind display/input resources to the authenticated identity without creating
-/// per-user resources before authentication.
+/// A multi-user server can keep protocol ownership inside IronRDP while keeping
+/// account authorization and session lifecycle outside the RDP state machine.
+/// It may start with placeholder handlers, authenticate or authorize the received
+/// credentials, then use this hook to start or locate the user's session and
+/// install the returned handlers before static channels, display updates, or
+/// input dispatch begin.
+///
+/// The binder runs once for the initial acceptance of a TCP connection. During
+/// Deactivation-Reactivation (for example, a client resize), the existing bound
+/// handlers remain installed and the binder is not called again.
 #[async_trait::async_trait]
 pub trait ConnectionBinder: Send + Sync {
     async fn bind_connection(&self, credentials: &Credentials) -> Result<BoundConnection>;
