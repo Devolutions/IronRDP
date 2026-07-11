@@ -4366,7 +4366,6 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Client accepted");
-        self.clear_bound_connection().await;
 
         // MS-RDPBCGR 3.3.5.7.1: a Set Error Info PDU MUST NOT be sent to a client that did not
         // set `SUPPORT_ERR_INFO_PDU`; such a client is just disconnected.
@@ -5026,6 +5025,10 @@ impl RdpServer {
         // synchronously as part of finalize, so establishing it must never
         // block the RDP handshake finalize itself is driving.
         let mut pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>> = None;
+        // Clear per-user resources once for this TCP connection. Do not clear
+        // inside the loop: reactivation re-enters client_accepted without
+        // rebinding, and must keep the existing display/input handlers.
+        self.clear_bound_connection().await;
 
         loop {
             // Bounded: see `FINALIZE_TIMEOUT`. The bound belongs on THIS call
