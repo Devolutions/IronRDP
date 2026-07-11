@@ -1094,18 +1094,12 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpsndServer::new(backend));
         }
 
-        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
-        let dvc = dvc::DrdynvcServer::new()
-            .with_dynamic_channel(AInputHandler {
-                handler: Arc::clone(&self.handler),
-            })
-            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
-
-        let dvc = {
-            let echo_handle = self.echo_handle.clone();
-            dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
-        };
-
+        // Register the graphics channel first. Microsoft mobile clients can
+        // stop processing a burst of server-created DVCs after encountering an
+        // optional channel they do not implement. Keeping rdpgfx at channel ID
+        // zero ensures its create request and capability exchange cannot be
+        // starved by Advanced Input, DisplayControl, or ECHO negotiation.
+        let dvc = dvc::DrdynvcServer::new();
         #[cfg(feature = "egfx")]
         let dvc = {
             let mut dvc = dvc;
@@ -1121,6 +1115,15 @@ impl RdpServer {
             }
             dvc
         };
+
+        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
+        let dvc = dvc
+            .with_dynamic_channel(AInputHandler {
+                handler: Arc::clone(&self.handler),
+            })
+            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+        let echo_handle = self.echo_handle.clone();
+        let dvc = dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle));
 
         acceptor.attach_static_channel(dvc);
     }
