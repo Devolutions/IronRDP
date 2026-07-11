@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use anyhow::{Context as _, Result, bail};
-use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, CredentialOrigin, DesktopSize};
+use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, CredentialOrigin, DesktopSize, ReceivedCredentials};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::ClipboardMessage;
@@ -1816,8 +1816,7 @@ impl RdpServer {
         };
         let authenticated_credentials = match resolve_authenticated_credentials(
             credential_validator,
-            result.credentials.as_ref(),
-            result.credentials_origin,
+            result.received_credentials.as_ref(),
             result.reactivation,
         )
         .await
@@ -1832,7 +1831,8 @@ impl RdpServer {
         if !result.reactivation {
             if let Some(binder) = self.connection_binder.clone() {
                 if self.credential_validator.is_none()
-                    && result.credentials_origin != Some(CredentialOrigin::CredSspDelegated)
+                    && result.received_credentials.as_ref().map(|received| received.origin)
+                        != Some(CredentialOrigin::CredSspDelegated)
                 {
                     warn!("Connection binder requires authenticated credentials from a validator or CredSSP");
                     send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
@@ -2265,17 +2265,13 @@ impl RdpServer {
 
 async fn resolve_authenticated_credentials(
     credential_validator: Option<Arc<dyn CredentialValidator>>,
-    result_credentials: Option<&Credentials>,
-    credentials_origin: Option<CredentialOrigin>,
+    received_credentials: Option<&ReceivedCredentials>,
     reactivation: bool,
 ) -> Result<Option<&Credentials>> {
-    if let Some(creds) = result_credentials {
-        let Some(origin) = credentials_origin else {
-            bail!("credentials provided without an origin");
-        };
-
+    if let Some(received) = received_credentials {
+        let creds = &received.credentials;
         if let Some(validator) = credential_validator {
-            match validator.validate(creds, origin).await {
+            match validator.validate(creds, received.origin).await {
                 Ok(CredentialDecision::Accept) => {
                     debug!("Credential validation accepted");
                     Ok(Some(creds))
@@ -2472,20 +2468,18 @@ mod wrdp_reactivation_tests {
     #[tokio::test]
     async fn reactivation_without_credentials_does_not_retain_validated_identity() {
         let validator: Arc<dyn CredentialValidator> = Arc::new(AllowUserValidator("alice"));
-        let initial_credentials = creds("alice");
+        let initial_credentials = ReceivedCredentials {
+            credentials: creds("alice"),
+            origin: CredentialOrigin::ClientInfo,
+        };
 
-        let first = resolve_authenticated_credentials(
-            Some(Arc::clone(&validator)),
-            Some(&initial_credentials),
-            Some(CredentialOrigin::ClientInfo),
-            false,
-        )
-        .await
-        .expect("initial validation should succeed")
-        .expect("initial validation should produce credentials");
+        let first = resolve_authenticated_credentials(Some(Arc::clone(&validator)), Some(&initial_credentials), false)
+            .await
+            .expect("initial validation should succeed")
+            .expect("initial validation should produce credentials");
         assert_eq!(first.username, "alice");
 
-        let reactivated = resolve_authenticated_credentials(Some(validator), None, None, true)
+        let reactivated = resolve_authenticated_credentials(Some(validator), None, true)
             .await
             .expect("missing reactivation credentials is not a backend error");
         assert!(reactivated.is_none());
@@ -2494,17 +2488,15 @@ mod wrdp_reactivation_tests {
     #[tokio::test]
     async fn reactivation_with_credentials_revalidates_resent_identity() {
         let validator = Arc::new(AllowUserValidator("alice"));
-        let reactivation_credentials = creds("alice");
+        let reactivation_credentials = ReceivedCredentials {
+            credentials: creds("alice"),
+            origin: CredentialOrigin::ClientInfo,
+        };
 
-        let reactivated = resolve_authenticated_credentials(
-            Some(validator),
-            Some(&reactivation_credentials),
-            Some(CredentialOrigin::ClientInfo),
-            true,
-        )
-        .await
-        .expect("resent reactivation credentials should be validated")
-        .expect("resent reactivation credentials should remain available");
+        let reactivated = resolve_authenticated_credentials(Some(validator), Some(&reactivation_credentials), true)
+            .await
+            .expect("resent reactivation credentials should be validated")
+            .expect("resent reactivation credentials should remain available");
         assert_eq!(reactivated.username, "alice");
     }
 }

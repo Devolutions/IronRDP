@@ -39,8 +39,7 @@ pub struct Acceptor {
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
-    received_credentials: Option<Credentials>,
-    received_credentials_origin: Option<CredentialOrigin>,
+    received_credentials: Option<ReceivedCredentials>,
     received_auto_reconnect: Option<ClientAutoReconnect>,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
@@ -87,6 +86,12 @@ pub enum CredentialOrigin {
 }
 
 #[derive(Debug)]
+pub struct ReceivedCredentials {
+    pub credentials: Credentials,
+    pub origin: CredentialOrigin,
+}
+
+#[derive(Debug)]
 pub struct AcceptorResult {
     pub static_channels: StaticChannelSet,
     pub capabilities: Vec<CapabilitySet>,
@@ -116,18 +121,17 @@ pub struct AcceptorResult {
     /// implement UDP multitransport can use it to decide whether to send a
     /// Server Initiate Multitransport Request.
     pub multitransport_flags: gcc::MultiTransportFlags,
-    /// Credentials received from the client.
+    /// Credentials received from the client together with their origin.
     ///
     /// Present for TLS-mode connections where the client sends credentials
     /// in the ClientInfoPdu, and for CredSSP/Hybrid connections once the
     /// delegated TSPasswordCreds have been decrypted by CredSSP.
     ///
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
-    /// can use this field for post-handshake validation. Check
-    /// [`Self::credentials_origin`] to distinguish unauthenticated ClientInfo
-    /// credentials from CredSSP-delegated credentials authenticated by the exchange.
-    pub credentials: Option<Credentials>,
-    pub credentials_origin: Option<CredentialOrigin>,
+    /// can use this field for post-handshake validation. The origin distinguishes
+    /// unauthenticated ClientInfo credentials from CredSSP-delegated credentials
+    /// authenticated by the exchange.
+    pub received_credentials: Option<ReceivedCredentials>,
     /// Client Auto-Reconnect Packet received in the Client Info PDU.
     ///
     /// This is present when the client resumes a session using an
@@ -158,7 +162,6 @@ impl Acceptor {
             saved_for_reactivation: Default::default(),
             creds,
             received_credentials: None,
-            received_credentials_origin: None,
             received_auto_reconnect: None,
             reactivation: false,
             honor_client_desktop_size: None,
@@ -245,7 +248,6 @@ impl Acceptor {
             saved_for_reactivation,
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
-            received_credentials_origin: consumed.received_credentials_origin,
             received_auto_reconnect: consumed.received_auto_reconnect,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
@@ -314,12 +316,14 @@ impl Acceptor {
     /// same post-handshake validation and binding path as TLS ClientInfo
     /// credentials.
     pub(crate) fn set_received_credssp_credentials(&mut self, identity: AuthIdentity) {
-        self.received_credentials = Some(Credentials {
-            username: identity.username.account_name().to_owned(),
-            password: identity.password.as_ref().clone(),
-            domain: identity.username.domain_name().map(str::to_owned),
+        self.received_credentials = Some(ReceivedCredentials {
+            credentials: Credentials {
+                username: identity.username.account_name().to_owned(),
+                password: identity.password.as_ref().clone(),
+                domain: identity.username.domain_name().map(str::to_owned),
+            },
+            origin: CredentialOrigin::CredSspDelegated,
         });
-        self.received_credentials_origin = Some(CredentialOrigin::CredSspDelegated);
     }
 
     /// # Panics
@@ -348,8 +352,7 @@ impl Acceptor {
                 keyboard_layout: self.keyboard_layout,
                 multitransport_flags: self.multitransport_flags,
                 reactivation: self.reactivation,
-                credentials: self.received_credentials.take(),
-                credentials_origin: self.received_credentials_origin.take(),
+                received_credentials: self.received_credentials.take(),
                 auto_reconnect: self.received_auto_reconnect.take(),
             }),
             previous_state => {
@@ -827,8 +830,10 @@ impl Sequence for Acceptor {
                     }
 
                     // Store credentials for later retrieval via AcceptorResult.
-                    self.received_credentials = Some(creds);
-                    self.received_credentials_origin = Some(CredentialOrigin::ClientInfo);
+                    self.received_credentials = Some(ReceivedCredentials {
+                        credentials: creds,
+                        origin: CredentialOrigin::ClientInfo,
+                    });
                 }
 
                 (
