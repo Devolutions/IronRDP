@@ -1789,7 +1789,6 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Client accepted");
-        self.clear_bound_connection().await;
 
         let is_auto_reconnect = if let Some(reconnect) = result.auto_reconnect.as_ref() {
             if !self.verify_auto_reconnect_cookie(reconnect) {
@@ -2221,6 +2220,11 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
+        // Clear per-user resources once for this TCP connection. Do not clear
+        // inside the loop: reactivation re-enters client_accepted without
+        // rebinding, and must keep the existing display/input handlers.
+        self.clear_bound_connection().await;
+
         loop {
             let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
                 .await
