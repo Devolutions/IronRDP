@@ -1,8 +1,3 @@
-#![expect(
-    unused_crate_dependencies,
-    reason = "the package's library dependencies are also linked into this integration test"
-)]
-
 #[cfg(windows)]
 use core::time::Duration;
 #[cfg(windows)]

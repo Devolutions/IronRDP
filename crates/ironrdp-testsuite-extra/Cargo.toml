@@ -29,6 +29,8 @@ ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent = { path = "../ironrdp-agent", features = ["internal"] }
 ironrdp-client.path = "../ironrdp-client"
 ironrdp-core.path = "../ironrdp-core"
+ironrdp-dvc.path = "../ironrdp-dvc"
+ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-viewer.path = "../ironrdp-viewer"
@@ -37,7 +39,7 @@ ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 semver = "1.0"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["sync", "time", "net", "rt", "macros", "io-util"] }
 uuid = { version = "1", features = ["v4"] }
 
 [lints]

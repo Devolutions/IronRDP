@@ -2965,6 +2965,8 @@ dependencies = [
  "ironrdp-async",
  "ironrdp-client",
  "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
  "ironrdp-propertyset",
  "ironrdp-tls",
