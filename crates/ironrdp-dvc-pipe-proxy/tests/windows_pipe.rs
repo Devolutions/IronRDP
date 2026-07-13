@@ -1,17 +1,23 @@
-#![cfg(windows)]
 #![expect(
     unused_crate_dependencies,
     reason = "the package's library dependencies are also linked into this integration test"
 )]
 
+#[cfg(windows)]
 use core::time::Duration;
+#[cfg(windows)]
 use std::sync::mpsc;
 
+#[cfg(windows)]
 use ironrdp_dvc::DvcProcessor as _;
+#[cfg(windows)]
 use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
+#[cfg(windows)]
 use tokio::io::AsyncWriteExt as _;
+#[cfg(windows)]
 use tokio::net::windows::named_pipe::ClientOptions;
 
+#[cfg(windows)]
 #[tokio::test]
 async fn connects_and_forwards_windows_pipe_data() {
     let name = format!("ironrdp-dvc-pipe-proxy-test-{}", std::process::id());

@@ -12,7 +12,8 @@ use crate::message::RawDataDvcMessage;
 use crate::os_pipe::OsPipe;
 
 const IO_BUFFER_SIZE: usize = 1024 * 64; // 64K
-const RECONNECT_DELAY: Duration = Duration::from_millis(100);
+const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(100);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 pub(crate) type OnWriteDvcMessage = Box<dyn Fn(u32, Vec<SvcMessage>) -> PduResult<()> + Send>;
 
@@ -27,41 +28,83 @@ pub(crate) struct WorkerCtx {
 
 pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) -> std::io::Result<()> {
     let thread_name = format!("ironrdp-dvc-pipe-{}", ctx.channel_id);
+    let (startup_tx, startup_rx) = mpsc::sync_channel(1);
 
     std::thread::Builder::new().name(thread_name).spawn(move || {
         let channel_name = ctx.channel_name.clone();
         let pipe_name = ctx.pipe_name.clone();
-        debug!(%channel_name, %pipe_name, "Started DVC pipe proxy worker thread");
+        debug!(%channel_name, %pipe_name, "Starting DVC pipe proxy worker thread");
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(DvcPipeProxyError::Io);
-
-        let runtime = match runtime {
+        let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
             Err(error) => {
                 error!(
                     %channel_name,
                     %pipe_name,
-                    ?error,
-                    "DVC pipe proxy worker thread initialization failed"
+                    %error,
+                    "Failed to initialize DVC pipe proxy worker thread"
                 );
+                let _ = startup_tx.send(Err(error));
                 return;
             }
         };
 
-        if let Err(error) = runtime.block_on(worker::<P>(ctx)) {
+        let (async_tx, async_rx) = tokio::sync::mpsc::unbounded_channel();
+        let WorkerCtx {
+            on_write_dvc,
+            to_pipe_rx: std_rx,
+            abort_event,
+            pipe_name,
+            channel_name,
+            channel_id,
+        } = ctx;
+
+        let bridge_thread_name = format!("ironrdp-dvc-pipe-{channel_id}-bridge");
+        if let Err(error) = std::thread::Builder::new().name(bridge_thread_name).spawn(move || {
+            while let Ok(data) = std_rx.recv() {
+                if async_tx.send(data).is_err() {
+                    break; // Receiver dropped
+                }
+            }
+        }) {
             error!(
                 %channel_name,
                 %pipe_name,
-                ?error,
-                "DVC pipe proxy worker thread has failed"
+                %error,
+                "Failed to start DVC pipe proxy bridge thread"
             );
+            let _ = startup_tx.send(Err(error));
+            return;
+        }
+
+        let ctx = BridgedWorkerCtx {
+            on_write_dvc,
+            to_pipe_rx: async_rx,
+            abort_event,
+            pipe_name,
+            channel_name,
+            channel_id,
+        };
+
+        if startup_tx.send(Ok(())).is_err() {
+            return;
+        }
+
+        debug!(
+            channel_name = %ctx.channel_name,
+            pipe_name = %ctx.pipe_name,
+            "Started DVC pipe proxy worker thread"
+        );
+        if let Err(error) = runtime.block_on(worker::<P>(ctx)) {
+            error!(?error, "DVC pipe proxy worker thread has failed");
         }
     })?;
 
-    Ok(())
+    startup_rx.recv().unwrap_or_else(|_| {
+        Err(std::io::Error::other(
+            "dvc pipe proxy worker stopped before startup completed",
+        ))
+    })
 }
 
 enum NextWorkerState {
@@ -148,39 +191,9 @@ async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWor
     }
 }
 
-async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
-    // Create a bridge between std::sync::mpsc and tokio for async compatibility.
-    // It is fine to use unbounded channel here because we are using it only to
-    // forward data from a bounded channel (with size IO_MPSC_CHANNEL_SIZE),
-    // so we will never have unbounded memory growth.
-    let (async_tx, async_rx) = tokio::sync::mpsc::unbounded_channel();
+async fn worker<P: OsPipe>(mut bridged_ctx: BridgedWorkerCtx) -> Result<(), DvcPipeProxyError> {
+    let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
 
-    let WorkerCtx {
-        on_write_dvc,
-        to_pipe_rx: std_rx,
-        abort_event,
-        pipe_name,
-        channel_name,
-        channel_id,
-    } = ctx;
-
-    // Spawn a thread to bridge std::sync::mpsc to tokio::sync::mpsc.
-    std::thread::spawn(move || {
-        while let Ok(data) = std_rx.recv() {
-            if async_tx.send(data).is_err() {
-                break; // Receiver dropped
-            }
-        }
-    });
-
-    let mut bridged_ctx = BridgedWorkerCtx {
-        on_write_dvc,
-        to_pipe_rx: async_rx,
-        abort_event,
-        pipe_name,
-        channel_name,
-        channel_id,
-    };
     loop {
         match process_client::<P>(&mut bridged_ctx).await {
             Err(error) => {
@@ -188,10 +201,11 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,
                     ?error,
-                    retry_delay_ms = RECONNECT_DELAY.as_millis(),
+                    retry_delay_ms = reconnect_delay.as_millis(),
                     "DVC pipe proxy connection failed; retrying"
                 );
-                std::thread::sleep(RECONNECT_DELAY);
+                std::thread::sleep(reconnect_delay);
+                reconnect_delay = reconnect_delay.saturating_mul(2).min(MAX_RECONNECT_DELAY);
             }
             Ok(NextWorkerState::Abort) => {
                 debug!(
@@ -202,6 +216,7 @@ async fn worker<P: OsPipe>(ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
                 break;
             }
             Ok(NextWorkerState::Reconnect) => {
+                reconnect_delay = INITIAL_RECONNECT_DELAY;
                 debug!(
                     channel_name = %bridged_ctx.channel_name,
                     pipe_name = %bridged_ctx.pipe_name,

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::windows::named_pipe;
-use tracing::{debug, error};
+use tracing::debug;
 
 use crate::error::DvcPipeProxyError;
 use crate::os_pipe::OsPipe;
@@ -31,7 +31,7 @@ impl OsPipe for WindowsPipe {
             .pipe_mode(named_pipe::PipeMode::Byte)
             .create(&pipe_path)
             .map_err(|error| {
-                error!(%pipe_name, %pipe_path, %error, "Failed to create DVC proxy Windows named pipe");
+                debug!(%pipe_name, %pipe_path, %error, "Failed to create DVC proxy Windows named pipe");
                 DvcPipeProxyError::Io(error)
             })?;
 
@@ -46,7 +46,7 @@ impl OsPipe for WindowsPipe {
                 );
             }
             Err(error) => {
-                error!(%pipe_name, %pipe_path, %error, "Failed to accept DVC proxy Windows named-pipe client");
+                debug!(%pipe_name, %pipe_path, %error, "Failed to accept DVC proxy Windows named-pipe client");
                 return Err(DvcPipeProxyError::Io(error));
             }
         }
