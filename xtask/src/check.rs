@@ -96,6 +96,54 @@ pub fn install(sh: &Shell) -> anyhow::Result<()> {
 
     cargo_install(sh, &TYPOS_CLI)?;
     cargo_install(sh, &CARGO_HACK)?;
+    cargo_install(sh, &CARGO_ABOUT)?;
+
+    Ok(())
+}
+
+/// Crates shipping an embedded third-party license bundle, paired with the generated file.
+const LICENSE_BUNDLES: &[(&str, &str)] = &[
+    (
+        "crates/ironrdp-viewer/Cargo.toml",
+        "crates/ironrdp-viewer/THIRDPARTY.md",
+    ),
+    ("crates/ironrdp-agent/Cargo.toml", "crates/ironrdp-agent/THIRDPARTY.md"),
+];
+
+pub fn licenses(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("LICENSES");
+
+    if !is_installed(sh, &CARGO_ABOUT) {
+        anyhow::bail!("`cargo-about` binary is missing. Please run `cargo xtask check install`.");
+    }
+
+    // Fetch every crate source across all target platforms up front so `cargo about` can run fully
+    // offline below. This keeps the generated bundle a stable cross-platform union regardless of the
+    // host it runs on (e.g. Windows-only crates are still included when generating on Linux).
+    cmd!(sh, "{CARGO} fetch --locked").run()?;
+
+    for &(manifest, output) in LICENSE_BUNDLES {
+        cmd!(
+            sh,
+            "{CARGO} about generate --frozen -c about.toml -m {manifest} -o {output} about.hbs"
+        )
+        .run()?;
+    }
+
+    // As with `check locks`: generation is deterministic, so a non-empty git status means the
+    // committed bundle drifted from the current dependency set and must be regenerated and committed.
+    let output = cmd!(sh, "git status --porcelain --untracked-files=no")
+        .args(LICENSE_BUNDLES.iter().map(|&(_, out)| out))
+        .read()?;
+
+    if !output.is_empty() {
+        cmd!(sh, "git status").run()?;
+        anyhow::bail!(
+            "third-party license bundles are out of date; run `cargo xtask check licenses` and commit the result"
+        );
+    }
+
+    println!("All good!");
 
     Ok(())
 }

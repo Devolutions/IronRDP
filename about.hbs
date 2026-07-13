@@ -1,0 +1,22 @@
+IronRDP third-party software notices
+====================================
+
+This binary statically links the third-party open source components listed
+below. They are grouped by license; each license text is reproduced once,
+followed by the bundled crates distributed under it.
+
+This file is generated. Do not edit it by hand; run `cargo xtask check licenses`.
+
+{{#each licenses}}
+================================================================================
+{{{name}}}
+================================================================================
+
+Applies to:
+{{#each used_by}}
+  * {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

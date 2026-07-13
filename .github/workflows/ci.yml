@@ -100,6 +100,15 @@ jobs:
       - name: Dependencies
         run: cargo xtask check dependencies -v
 
+      # Runs once (Linux): the generated bundle is a host-independent cross-platform union.
+      - name: Licenses (prepare)
+        if: runner.os == 'Linux'
+        run: cargo xtask check install -v
+
+      - name: Licenses (check)
+        if: runner.os == 'Linux'
+        run: cargo xtask check licenses -v
+
       - name: WASM (prepare)
         run: cargo xtask wasm install -v
 

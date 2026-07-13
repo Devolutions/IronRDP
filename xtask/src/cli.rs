@@ -14,6 +14,7 @@ TASKS:
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
   check dependencies      Check dependency-graph invariants between crates
+  check licenses          Regenerate embedded third-party license bundles and check for drift
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
   check typos             Check for typos in the codebase
   check features          Run every feature-matrix case sequentially
@@ -82,6 +83,7 @@ pub enum Action {
     CheckLints,
     CheckLocks,
     CheckDependencies,
+    CheckLicenses,
     CheckTests {
         no_run: bool,
     },
@@ -135,6 +137,7 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("lints") => Action::CheckLints,
                 Some("locks") => Action::CheckLocks,
                 Some("dependencies") => Action::CheckDependencies,
+                Some("licenses") => Action::CheckLicenses,
                 Some("tests") => Action::CheckTests {
                     no_run: args.contains("--no-run"),
                 },

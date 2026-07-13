@@ -58,6 +58,10 @@ impl KeyboardType {
 #[clap(author = "Devolutions", about = "Devolutions-IronRDP viewer")]
 #[clap(version, long_about = None)]
 struct Args {
+    /// Print third-party open source license notices and exit
+    #[clap(long)]
+    licenses: bool,
+
     /// A file with IronRDP viewer logs
     #[clap(short, long, value_parser)]
     log_file: Option<String>,
@@ -238,6 +242,11 @@ impl ViewerConfig {
         T: Into<std::ffi::OsString> + Clone,
     {
         let args = Args::parse_from(args);
+
+        if args.licenses {
+            print!("{}", crate::THIRDPARTY_LICENSES);
+            std::process::exit(0);
+        }
 
         let mut properties = ironrdp_propertyset::PropertySet::new();
 

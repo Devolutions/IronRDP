@@ -1,0 +1,34 @@
+# Configuration for `cargo about`, used to generate the embedded third-party
+# license bundles (`THIRDPARTY.md`) shipped inside the IronRDP binaries.
+#
+# Regenerate/verify with: `cargo xtask check licenses`
+
+# Every accepted license must be permissive and compatible with the workspace's
+# `MIT OR Apache-2.0` licensing. A dependency introducing a license absent from
+# this list fails generation, surfacing it for review.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "Unlicense",
+    "CC0-1.0",
+    "OpenSSL",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+]
+
+# `libopus_sys` declares only its own wrapper license (MIT) in its crate
+# metadata, but it vendors and statically links the Opus C sources, which are
+# BSD-3-Clause. Without this clarification the Opus notice (Xiph.Org et al.)
+# would be missing from the generated bundle. Reproduce both.
+[libopus_sys.clarify]
+license = "MIT AND BSD-3-Clause"
+files = [
+    { path = "LICENSE", checksum = "c5512e4899a9b06c3a286bf69444ebc5314d506e437c334bfd66a2eac7bca3ef", license = "MIT" },
+    { path = "opus/COPYING", checksum = "01e1167d54a096d123cf6dfbbeb19587278845c6481d2d66d545669846079551", license = "BSD-3-Clause" },
+]

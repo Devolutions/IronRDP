@@ -31,6 +31,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     help_agent: bool,
 
+    /// Print third-party open source license notices and exit.
+    #[arg(long, global = true)]
+    licenses: bool,
+
     /// Override the IPC endpoint (defaults to the per-user socket/pipe).
     #[arg(long, global = true)]
     endpoint: Option<String>,
@@ -252,6 +256,11 @@ fn parse_scancode(input: &str) -> Result<u16, core::num::ParseIntError> {
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     if cli.help_agent {
         print!("{}", crate::help::AGENT_GUIDE);
+        return Ok(());
+    }
+
+    if cli.licenses {
+        print!("{}", crate::THIRDPARTY_LICENSES);
         return Ok(());
     }
 
