@@ -58,6 +58,7 @@ use std::collections::BTreeMap;
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_graphics::clearcodec::ClearCodecDecoder;
+use ironrdp_graphics::progressive::ProgressiveDecoder;
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::zgfx;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
@@ -398,6 +399,7 @@ pub struct GraphicsPipelineClient {
 
     decompressor: zgfx::Decompressor,
     decompressed_buffer: Vec<u8>,
+    progressive_decoder: ProgressiveDecoder,
 
     state: ClientState,
     negotiated_caps: Option<CapabilitySet>,
@@ -423,6 +425,7 @@ impl GraphicsPipelineClient {
             planar_decoder: BitmapStreamDecoder::default(),
             decompressor: zgfx::Decompressor::new(),
             decompressed_buffer: Vec::new(),
+            progressive_decoder: ProgressiveDecoder::new(),
             state: ClientState::WaitingForConfirm,
             negotiated_caps: None,
             codec_caps: CodecCapabilities::default(),
@@ -519,6 +522,7 @@ impl GraphicsPipelineClient {
             GfxPdu::WireToSurface2(pdu) => {
                 trace!("WireToSurface2 (progressive codec)");
                 self.handler.on_wire_to_surface2(&pdu);
+                self.handle_wire_to_surface2(pdu)?;
                 Ok(vec![])
             }
             GfxPdu::EndFrame(end) => self.handle_end_frame(end.frame_id),
@@ -610,6 +614,7 @@ impl GraphicsPipelineClient {
                     codec_context_id = pdu.codec_context_id,
                     "DeleteEncodingContext"
                 );
+                self.progressive_decoder.delete_context(pdu.codec_context_id);
                 self.handler.on_delete_encoding_context(&pdu);
                 Ok(vec![])
             }
@@ -675,6 +680,7 @@ impl GraphicsPipelineClient {
         if let Some(ref mut decoder) = self.h264_decoder {
             decoder.reset();
         }
+        self.progressive_decoder.reset();
         // The ClearCodec decoder is deliberately NOT reset here. MS-RDPEGFX 3.3.5.14 only
         // resizes the Graphics Output Buffer; cache lifetime is driven by the stream instead,
         // through CLEARCODEC_FLAG_CACHE_RESET (2.2.4.1), which ClearCodecDecoder::decode
@@ -787,6 +793,49 @@ impl GraphicsPipelineClient {
             }
         }
 
+        Ok(())
+    }
+
+    /// Decode a RemoteFX Progressive (`WireToSurface2`) bitmap stream and emit each
+    /// updated 64x64 tile through `on_bitmap_updated`.
+    fn handle_wire_to_surface2(&mut self, pdu: WireToSurface2Pdu) -> PduResult<()> {
+        let Some(surface) = self.surfaces.get(&pdu.surface_id) else {
+            warn!(surface_id = pdu.surface_id, "WireToSurface2 for unknown surface");
+            return Ok(());
+        };
+        let (surface_width, surface_height) = (surface.width, surface.height);
+
+        let tiles = match self.progressive_decoder.decode_bitmap(
+            pdu.codec_context_id,
+            surface_width,
+            surface_height,
+            &pdu.bitmap_data,
+        ) {
+            Ok(tiles) => tiles,
+            Err(e) => {
+                warn!(error = ?e, "RFX progressive decode failed");
+                return Err(pdu_other_err!("RFX progressive decode failed"));
+            }
+        };
+
+        for tile in tiles {
+            let left = tile.x_idx.saturating_mul(64);
+            let top = tile.y_idx.saturating_mul(64);
+            let update = BitmapUpdate {
+                surface_id: pdu.surface_id,
+                destination_rectangle: ExclusiveRectangle {
+                    left,
+                    top,
+                    right: left.saturating_add(64),
+                    bottom: top.saturating_add(64),
+                },
+                codec_id: Codec1Type::Uncompressed,
+                data: tile.pixels,
+                width: 64,
+                height: 64,
+            };
+            self.handler.on_bitmap_updated(&update);
+        }
         Ok(())
     }
 
@@ -1406,6 +1455,167 @@ mod tests {
                 .iter()
                 .any(|cap| CodecCapabilities::from_capability_set(cap).avc420),
             "no advertised set enables AVC420"
+        );
+    }
+
+    /// Builds a minimal single-tile RFX Progressive stream, optionally opening a codec
+    /// context (SYNC+CONTEXT) first.
+    fn build_progressive_stream(with_context: bool) -> Vec<u8> {
+        use ironrdp_pdu::codecs::rfx::RfxRectangle;
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
+            ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
+        };
+
+        let region = ProgressiveRegion {
+            tile_size: 0x40,
+            rects: vec![RfxRectangle {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            }],
+            quant_vals: vec![],
+            quant_prog_vals: vec![],
+            flags: 0,
+            tiles: vec![],
+        };
+
+        let mut blocks = Vec::new();
+        if with_context {
+            blocks.push(ProgressiveBlock::Sync(ProgressiveSyncPdu));
+            blocks.push(ProgressiveBlock::Context(ProgressiveContextPdu {
+                context_id: 0,
+                tile_size: 0x0040,
+                flags: 0,
+            }));
+        }
+        blocks.push(ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+            frame_index: 0,
+            region_count: 1,
+        }));
+        blocks.push(ProgressiveBlock::Region(region));
+        blocks.push(ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu));
+
+        encode_progressive_stream(&blocks).unwrap()
+    }
+
+    #[test]
+    fn wire_to_surface2_decode_failure_propagates_error() {
+        use crate::pdu::Codec2Type;
+
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+            surface_id: 1,
+            width: 640,
+            height: 480,
+            pixel_format: PixelFormat::XRgb,
+        }));
+
+        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+            surface_id: 1,
+            codec_id: Codec2Type::RemoteFxProgressive,
+            codec_context_id: 7,
+            pixel_format: PixelFormat::XRgb,
+            bitmap_data: build_progressive_stream(false),
+        }));
+
+        assert!(
+            result.is_err(),
+            "a progressive decode failure must propagate as a terminal error, not be silently dropped"
+        );
+    }
+
+    #[test]
+    fn reset_graphics_clears_progressive_decoder_context() {
+        use crate::pdu::Codec2Type;
+
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+            surface_id: 1,
+            width: 640,
+            height: 480,
+            pixel_format: PixelFormat::XRgb,
+        }));
+
+        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+            surface_id: 1,
+            codec_id: Codec2Type::RemoteFxProgressive,
+            codec_context_id: 7,
+            pixel_format: PixelFormat::XRgb,
+            bitmap_data: build_progressive_stream(true),
+        }));
+        assert!(
+            result.is_ok(),
+            "establishing the context should succeed: {:?}",
+            result.as_ref().err()
+        );
+
+        let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+            width: 1920,
+            height: 1080,
+            monitors: vec![],
+        }));
+        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+            surface_id: 1,
+            width: 640,
+            height: 480,
+            pixel_format: PixelFormat::XRgb,
+        }));
+
+        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+            surface_id: 1,
+            codec_id: Codec2Type::RemoteFxProgressive,
+            codec_context_id: 7,
+            pixel_format: PixelFormat::XRgb,
+            bitmap_data: build_progressive_stream(false),
+        }));
+        assert!(
+            result.is_err(),
+            "progressive decoder context must not survive ResetGraphics"
+        );
+    }
+
+    #[test]
+    fn delete_encoding_context_clears_progressive_decoder_context() {
+        use crate::pdu::Codec2Type;
+
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+            surface_id: 1,
+            width: 640,
+            height: 480,
+            pixel_format: PixelFormat::XRgb,
+        }));
+
+        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+            surface_id: 1,
+            codec_id: Codec2Type::RemoteFxProgressive,
+            codec_context_id: 7,
+            pixel_format: PixelFormat::XRgb,
+            bitmap_data: build_progressive_stream(true),
+        }));
+        assert!(
+            result.is_ok(),
+            "establishing the context should succeed: {:?}",
+            result.as_ref().err()
+        );
+
+        let _ = client.handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
+            surface_id: 1,
+            codec_context_id: 7,
+        }));
+
+        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+            surface_id: 1,
+            codec_id: Codec2Type::RemoteFxProgressive,
+            codec_context_id: 7,
+            pixel_format: PixelFormat::XRgb,
+            bitmap_data: build_progressive_stream(false),
+        }));
+        assert!(
+            result.is_err(),
+            "progressive decoder context must not survive DeleteEncodingContext"
         );
     }
 }
