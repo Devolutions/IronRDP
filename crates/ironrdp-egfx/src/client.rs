@@ -799,10 +799,10 @@ impl GraphicsPipelineClient {
     /// Decode a RemoteFX Progressive (`WireToSurface2`) bitmap stream and emit each
     /// updated 64x64 tile through `on_bitmap_updated`.
     fn handle_wire_to_surface2(&mut self, pdu: WireToSurface2Pdu) -> PduResult<()> {
-        let Some(surface) = self.surfaces.get(&pdu.surface_id) else {
-            warn!(surface_id = pdu.surface_id, "WireToSurface2 for unknown surface");
-            return Ok(());
-        };
+        let surface = self
+            .surfaces
+            .get(&pdu.surface_id)
+            .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface2"))?;
         let (surface_width, surface_height) = (surface.width, surface.height);
 
         let tiles = match self.progressive_decoder.decode_bitmap(
@@ -813,26 +813,36 @@ impl GraphicsPipelineClient {
         ) {
             Ok(tiles) => tiles,
             Err(e) => {
-                warn!(error = ?e, "RFX progressive decode failed");
-                return Err(pdu_other_err!("RFX progressive decode failed"));
+                warn!(error = ?e, "rfx progressive decode failed");
+                return Err(pdu_other_err!("rfx progressive decode failed"));
             }
         };
 
         for tile in tiles {
             let left = tile.x_idx.saturating_mul(64);
             let top = tile.y_idx.saturating_mul(64);
+            let width = surface_width.saturating_sub(left).min(64);
+            let height = surface_height.saturating_sub(top).min(64);
+            if width == 0 || height == 0 {
+                continue;
+            }
+            let data = if width == 64 && height == 64 {
+                tile.pixels
+            } else {
+                crop_decoded_frame(&tile.pixels, 64, 64, width, height)
+            };
             let update = BitmapUpdate {
                 surface_id: pdu.surface_id,
                 destination_rectangle: ExclusiveRectangle {
                     left,
                     top,
-                    right: left.saturating_add(64),
-                    bottom: top.saturating_add(64),
+                    right: left + width,
+                    bottom: top + height,
                 },
                 codec_id: Codec1Type::Uncompressed,
-                data: tile.pixels,
-                width: 64,
-                height: 64,
+                data,
+                width,
+                height,
             };
             self.handler.on_bitmap_updated(&update);
         }
