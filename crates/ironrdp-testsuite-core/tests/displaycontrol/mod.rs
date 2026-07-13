@@ -199,3 +199,21 @@ fn client_process_rejects_caps_with_mismatched_length() {
     );
     assert!(!client.ready());
 }
+
+#[test]
+fn client_process_rejects_trailing_bytes_after_caps() {
+    let mut client = DisplayControlClient::new(|_caps| Ok(Vec::new()));
+
+    let trailing_bytes = [
+        // Header: Type = Caps, Length = 24 (matches the 16-byte payload below)
+        0x05, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, // Payload: valid 12-byte caps body
+        0x03, 0x00, 0x00, 0x00, 0x80, 0x07, 0x00, 0x00, 0x38, 0x04, 0x00, 0x00, // + 4 trailing bytes
+        0xAA, 0xAA, 0xAA, 0xAA,
+    ];
+
+    assert!(
+        client.process(0, &trailing_bytes).is_err(),
+        "bytes left over after decoding the caps body should be rejected"
+    );
+    assert!(!client.ready());
+}

@@ -98,17 +98,22 @@ impl<'de> Decode<'de> for DisplayControlPdu {
             ));
         }
 
-        match kind {
-            DISPLAYCONTROL_PDU_TYPE_CAPS => {
-                let caps = DisplayControlCapabilities::decode(src)?;
-                Ok(DisplayControlPdu::Caps(caps))
-            }
+        let pdu = match kind {
+            DISPLAYCONTROL_PDU_TYPE_CAPS => DisplayControlPdu::Caps(DisplayControlCapabilities::decode(src)?),
             DISPLAYCONTROL_PDU_TYPE_MONITOR_LAYOUT => {
-                let layout = DisplayControlMonitorLayout::decode(src)?;
-                Ok(DisplayControlPdu::MonitorLayout(layout))
+                DisplayControlPdu::MonitorLayout(DisplayControlMonitorLayout::decode(src)?)
             }
-            _ => Err(invalid_field_err!("Type", "Unknown display control PDU type")),
+            _ => return Err(invalid_field_err!("Type", "Unknown display control PDU type")),
+        };
+
+        if !src.is_empty() {
+            return Err(invalid_field_err!(
+                "Length",
+                "trailing bytes after display control PDU body"
+            ));
         }
+
+        Ok(pdu)
     }
 }
 
