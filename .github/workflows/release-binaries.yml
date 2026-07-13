@@ -103,6 +103,18 @@ jobs:
         run: |
           if ($env:RUNNER_OS -eq 'Windows') {
             $env:RUSTFLAGS = '-C target-feature=+crt-static'
+
+            # `+crt-static` links the Rust side against the static MSVC CRT, but `libopus_sys`
+            # (pulled in via rdpsnd-native) builds Opus through CMake, which defaults to the dynamic
+            # runtime (/MD). On aarch64-pc-windows-msvc the CRT math functions Opus calls (floor,
+            # lrintf) are not compiler intrinsics, so they become dynamic imports (__imp_floor,
+            # __imp_lrintf) that fail to resolve against the static CRT (LNK2019/LNK1120). On x64
+            # they are intrinsics and the mismatch stays silent. Force Opus onto the static runtime
+            # so both sides agree. libopus_sys doesn't expose this knob, so inject it through a CMake
+            # toolchain file, which the `cmake` crate honors via CMAKE_TOOLCHAIN_FILE.
+            $toolchain = (Join-Path $env:RUNNER_TEMP 'opus-static-runtime.cmake') -replace '\\', '/'
+            Set-Content -Path $toolchain -Value 'set(OPUS_STATIC_RUNTIME ON CACHE BOOL "" FORCE)'
+            $env:CMAKE_TOOLCHAIN_FILE = $toolchain
           }
 
           if ($env:RUNNER_OS -eq 'macOS') {
