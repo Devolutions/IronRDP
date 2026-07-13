@@ -1102,16 +1102,19 @@ impl From<RlgrError> for ProgressiveDecodeError {
     }
 }
 
-/// Per-context progressive state, identified by codec_context_id.
+/// Per-context progressive state, identified by (surface_id, codec_context_id).
 struct ProgressiveContext {
     surface: SurfaceTiles,
 }
 
 /// High-level progressive bitmap decoder for EGFX WireToSurface2 processing.
 ///
-/// Maintains per-context tile state across frames, keyed by `codec_context_id`.
-/// Feed it progressive bitmap data from `WireToSurface2Pdu.bitmap_data` and
-/// get back decoded RGBA tiles for compositing.
+/// Maintains per-context tile state across frames, keyed by
+/// `(surface_id, codec_context_id)`. Per MS-RDPEGFX, `codec_context_id` is scoped to
+/// the surface that owns it (`RDPGFX_DELETE_ENCODING_CONTEXT_PDU` carries both), so two
+/// surfaces may reuse the same `codec_context_id` value independently. Feed it
+/// progressive bitmap data from `WireToSurface2Pdu.bitmap_data` and get back decoded
+/// RGBA tiles for compositing.
 ///
 /// # Usage
 ///
@@ -1120,6 +1123,7 @@ struct ProgressiveContext {
 ///
 /// // On receiving WireToSurface2Pdu:
 /// let tiles = decoder.decode_bitmap(
+///     pdu.surface_id,
 ///     pdu.codec_context_id,
 ///     surface_width, surface_height,
 ///     &pdu.bitmap_data,
@@ -1130,7 +1134,7 @@ struct ProgressiveContext {
 /// }
 /// ```
 pub struct ProgressiveDecoder {
-    contexts: BTreeMap<u32, ProgressiveContext>,
+    contexts: BTreeMap<(u16, u32), ProgressiveContext>,
 }
 
 impl ProgressiveDecoder {
@@ -1147,12 +1151,15 @@ impl ProgressiveDecoder {
     /// returns RGBA pixel data for each tile that was updated.
     ///
     /// # Arguments
+    /// - `surface_id`: surface ID from the WireToSurface2Pdu; `codec_context_id` is scoped
+    ///   to this surface
     /// - `codec_context_id`: context ID from the WireToSurface2Pdu
     /// - `surface_width`: surface width in pixels (for tile grid sizing)
     /// - `surface_height`: surface height in pixels
     /// - `bitmap_data`: raw progressive block stream from the PDU
     pub fn decode_bitmap(
         &mut self,
+        surface_id: u16,
         codec_context_id: u32,
         surface_width: u16,
         surface_height: u16,
@@ -1182,13 +1189,13 @@ impl ProgressiveDecoder {
             Some(v) => v,
             None => self
                 .contexts
-                .get(&codec_context_id)
+                .get(&(surface_id, codec_context_id))
                 .map(|c| c.surface.use_reduce_extrapolate)
                 .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?,
         };
 
-        // Get or create the context for this codec_context_id
-        let context = match self.contexts.entry(codec_context_id) {
+        // Get or create the context for this (surface_id, codec_context_id)
+        let context = match self.contexts.entry((surface_id, codec_context_id)) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => {
                 let surface = SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate)?;
@@ -1233,9 +1240,10 @@ impl ProgressiveDecoder {
 
     /// Delete a codec context, freeing its tile state.
     ///
-    /// Called when the server sends RDPGFX_DELETE_ENCODING_CONTEXT.
-    pub fn delete_context(&mut self, codec_context_id: u32) {
-        self.contexts.remove(&codec_context_id);
+    /// Called when the server sends RDPGFX_DELETE_ENCODING_CONTEXT, which carries both
+    /// `surface_id` and `codec_context_id`.
+    pub fn delete_context(&mut self, surface_id: u16, codec_context_id: u32) {
+        self.contexts.remove(&(surface_id, codec_context_id));
     }
 
     /// Reset all contexts (e.g., on EGFX channel reset).
@@ -1685,7 +1693,7 @@ mod tests {
     fn decoder_delete_nonexistent_context() {
         let mut decoder = ProgressiveDecoder::new();
         // Should not panic on non-existent context
-        decoder.delete_context(42);
+        decoder.delete_context(1, 42);
     }
 
     #[test]
@@ -1729,12 +1737,66 @@ mod tests {
         ];
 
         let encoded = encode_progressive_stream(&blocks).unwrap();
-        let result = decoder.decode_bitmap(1, 640, 480, &encoded);
+        let result = decoder.decode_bitmap(1, 1, 640, 480, &encoded);
         assert!(result.is_ok());
         assert_eq!(decoder.contexts.len(), 1);
 
         decoder.reset();
         assert!(decoder.contexts.is_empty());
+    }
+
+    #[test]
+    fn decoder_contexts_scoped_by_surface() {
+        use ironrdp_pdu::codecs::rfx::RfxRectangle;
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
+            ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
+        };
+
+        fn minimal_stream() -> Vec<u8> {
+            let region = ProgressiveRegion {
+                tile_size: 0x40,
+                rects: vec![RfxRectangle {
+                    x: 0,
+                    y: 0,
+                    width: 64,
+                    height: 64,
+                }],
+                quant_vals: vec![],
+                quant_prog_vals: vec![],
+                flags: 0,
+                tiles: vec![],
+            };
+            let blocks = vec![
+                ProgressiveBlock::Sync(ProgressiveSyncPdu),
+                ProgressiveBlock::Context(ProgressiveContextPdu {
+                    context_id: 0,
+                    tile_size: 0x0040,
+                    flags: 0,
+                }),
+                ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                    frame_index: 0,
+                    region_count: 1,
+                }),
+                ProgressiveBlock::Region(region),
+                ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+            ];
+            encode_progressive_stream(&blocks).unwrap()
+        }
+
+        let mut decoder = ProgressiveDecoder::new();
+
+        // Two different surfaces reusing the same codec_context_id must not collide.
+        let result_a = decoder.decode_bitmap(1, 0, 640, 480, &minimal_stream());
+        let result_b = decoder.decode_bitmap(2, 0, 800, 600, &minimal_stream());
+        assert!(result_a.is_ok());
+        assert!(result_b.is_ok());
+        assert_eq!(decoder.contexts.len(), 2);
+
+        // Deleting surface 1's context must leave surface 2's context intact.
+        decoder.delete_context(1, 0);
+        assert_eq!(decoder.contexts.len(), 1);
+        assert!(decoder.contexts.contains_key(&(2, 0)));
     }
 
     #[test]

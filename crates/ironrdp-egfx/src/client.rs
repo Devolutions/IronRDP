@@ -614,7 +614,8 @@ impl GraphicsPipelineClient {
                     codec_context_id = pdu.codec_context_id,
                     "DeleteEncodingContext"
                 );
-                self.progressive_decoder.delete_context(pdu.codec_context_id);
+                self.progressive_decoder
+                    .delete_context(pdu.surface_id, pdu.codec_context_id);
                 self.handler.on_delete_encoding_context(&pdu);
                 Ok(vec![])
             }
@@ -806,6 +807,7 @@ impl GraphicsPipelineClient {
         let (surface_width, surface_height) = (surface.width, surface.height);
 
         let tiles = match self.progressive_decoder.decode_bitmap(
+            pdu.surface_id,
             pdu.codec_context_id,
             surface_width,
             surface_height,
