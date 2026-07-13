@@ -4,7 +4,7 @@ use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::worker::{OnWriteDvcMessage, WorkerCtx, run_worker};
 
@@ -69,16 +69,26 @@ impl DvcProcessor for DvcNamedPipeProxy {
             channel_id,
         };
 
+        #[cfg(not(target_os = "windows"))]
+        let worker = run_worker::<crate::platform::unix::UnixPipe>(ctx);
+
+        #[cfg(target_os = "windows")]
+        let worker = run_worker::<crate::platform::windows::WindowsPipe>(ctx);
+
+        if let Err(worker_error) = worker {
+            error!(
+                channel_name = %self.channel_name,
+                pipe_name = %self.named_pipe_name,
+                %worker_error,
+                "Failed to start DVC pipe proxy worker thread"
+            );
+            return Err(pdu_other_err!("start DVC pipe proxy worker: {worker_error}"));
+        }
+
         self.worker = Some(WorkerControlCtx {
             to_pipe_tx,
             abort_event,
         });
-
-        #[cfg(not(target_os = "windows"))]
-        run_worker::<crate::platform::unix::UnixPipe>(ctx);
-
-        #[cfg(target_os = "windows")]
-        run_worker::<crate::platform::windows::WindowsPipe>(ctx);
 
         Ok(vec![])
     }
