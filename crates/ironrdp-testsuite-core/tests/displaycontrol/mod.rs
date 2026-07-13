@@ -182,3 +182,20 @@ fn client_process_rejects_monitor_layout_from_server() {
     );
     assert!(!client.ready());
 }
+
+#[test]
+fn client_process_rejects_caps_with_mismatched_length() {
+    let mut client = DisplayControlClient::new(|_caps| Ok(Vec::new()));
+
+    let mismatched_length = [
+        // Header: Type = Caps, Length = 0xffff_ffff
+        0x05, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, // Payload
+        0x03, 0x00, 0x00, 0x00, 0x80, 0x07, 0x00, 0x00, 0x38, 0x04, 0x00, 0x00,
+    ];
+
+    assert!(
+        client.process(0, &mismatched_length).is_err(),
+        "a Length that doesn't match the actual payload size should be rejected"
+    );
+    assert!(!client.ready());
+}

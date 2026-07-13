@@ -87,9 +87,16 @@ impl<'de> Decode<'de> for DisplayControlPdu {
         let kind = src.read_u32();
         let pdu_length = src.read_u32();
 
-        let _payload_length = pdu_length
+        let payload_length = pdu_length
             .checked_sub(Self::FIXED_PART_SIZE.try_into().expect("always in range"))
             .ok_or_else(|| invalid_field_err!("Length", "Display control PDU length is too small"))?;
+
+        if usize::try_from(payload_length).unwrap_or(usize::MAX) != src.len() {
+            return Err(invalid_field_err!(
+                "Length",
+                "Display control PDU length does not match the payload size"
+            ));
+        }
 
         match kind {
             DISPLAYCONTROL_PDU_TYPE_CAPS => {
