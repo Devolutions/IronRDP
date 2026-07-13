@@ -1,8 +1,10 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::collections::btree_map::Entry;
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
+use core::sync::atomic::AtomicUsize;
 
 use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any, invalid_field_err};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
@@ -42,6 +44,54 @@ impl Drop for DynamicChannel {
     }
 }
 
+/// A reserved dynamic channel ID awaiting a channel processor.
+///
+/// The ID is provisional until [`Self::create`] is called. Reserved IDs increase
+/// monotonically and are never reused for the lifetime of the server. Dropping a
+/// reservation without creating the channel permanently skips its ID.
+#[derive(Debug)]
+pub struct DynamicChannelReservation {
+    server_id: usize,
+    channel_id: u32,
+}
+
+impl DynamicChannelReservation {
+    /// Returns the reserved dynamic channel ID.
+    pub fn channel_id(&self) -> u32 {
+        self.channel_id
+    }
+
+    /// Registers the channel and returns its DVC Create Request message.
+    ///
+    /// # Panics
+    ///
+    /// Panics if reservation finalized on a different DrdynvcServer than the one that minted it.
+    pub fn create<T>(self, server: &mut DrdynvcServer, channel: T) -> PduResult<SvcMessage>
+    where
+        T: DvcServerProcessor + 'static,
+    {
+        assert_eq!(
+            self.server_id, server.id,
+            "reservation finalized on a different DrdynvcServer than the one that minted it"
+        );
+        let channel_name = channel.channel_name().into();
+        let channel_id = self.channel_id();
+        server
+            .dynamic_channels
+            .insert_reserved(channel_id, channel, ChannelState::Creation);
+
+        // TODO: Align the TypeId lookup semantics of DrdynvcServer::create_channel and
+        // DrdynvcServer::with_dynamic_channel in a separate public-contract PR, then make
+        // DrdynvcServer::create_channel use the reservation path.
+        server
+            .type_id_to_channel_id
+            .entry(TypeId::of::<T>())
+            .or_insert(channel_id);
+        let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(channel_id, channel_name));
+        as_svc_msg_with_flag(req)
+    }
+}
+
 struct DynamicChannelAllocator {
     dynamic_channels: BTreeMap<u32, DynamicChannel>,
     next_channel_id: u32,
@@ -77,13 +127,27 @@ impl DynamicChannelAllocator {
     where
         T: DvcServerProcessor + 'static,
     {
+        let channel_id = self.reserve_channel();
+        self.insert_reserved(channel_id, processor, state);
+        channel_id
+    }
+
+    fn insert_reserved<T>(&mut self, channel_id: u32, processor: T, state: ChannelState)
+    where
+        T: DvcServerProcessor + 'static,
+    {
+        let Entry::Vacant(entry) = self.dynamic_channels.entry(channel_id) else {
+            unreachable!("reserved dynamic channel ID must be vacant")
+        };
+        entry.insert(DynamicChannel::new(processor, channel_id, state));
+    }
+
+    fn reserve_channel(&mut self) -> u32 {
         let channel_id = self.next_channel_id;
-        self.dynamic_channels
-            .insert(channel_id, DynamicChannel::new(processor, channel_id, state));
         self.next_channel_id = self
             .next_channel_id
             .checked_add(1)
-            .expect("dynamic channels reaches `u32::MAX`");
+            .expect("dynamic channels reached `u32::MAX`");
         channel_id
     }
 
@@ -117,10 +181,14 @@ impl DynamicChannel {
         self.processor.as_any().type_id()
     }
 }
+
+static NEXT_SERVER_ID: AtomicUsize = AtomicUsize::new(0);
+
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcServer {
+    id: usize,
     dynamic_channels: DynamicChannelAllocator,
     type_id_to_channel_id: BTreeMap<TypeId, u32>,
 }
@@ -145,6 +213,7 @@ impl DrdynvcServer {
 
     pub fn new() -> Self {
         Self {
+            id: NEXT_SERVER_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
             dynamic_channels: DynamicChannelAllocator::new(),
             type_id_to_channel_id: BTreeMap::new(),
         }
@@ -169,7 +238,7 @@ impl DrdynvcServer {
     ///
     /// # Panics
     ///
-    /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
+    /// Panics if the number of registered dynamic channels reached `u32::MAX`.
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
@@ -221,9 +290,28 @@ impl DrdynvcServer {
     {
         let channel_name = channel.channel_name().into();
 
+        // TODO: Reuse self.reserve_channel() after the TypeId lookup contract is aligned
+        // in a separate PR.
         let channel_id = self.dynamic_channels.insert_channel(channel, ChannelState::Creation);
         let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(channel_id, channel_name));
         as_svc_msg_with_flag(req)
+    }
+
+    /// Reserves the next dynamic channel ID without creating the channel.
+    ///
+    /// Reserved IDs increase monotonically and are never reused. Dropping the returned
+    /// reservation without creating the channel skips its ID, preventing ABA issues.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the dynamic channel ID space is exhausted.
+    #[must_use]
+    pub fn reserve_channel(&mut self) -> DynamicChannelReservation {
+        let channel_id = self.dynamic_channels.reserve_channel();
+        DynamicChannelReservation {
+            channel_id,
+            server_id: self.id,
+        }
     }
 
     fn remove_by_channel_id(&mut self, id: u32) -> Option<DynamicChannel> {
@@ -231,7 +319,7 @@ impl DrdynvcServer {
             let type_id = dvc.processor_type_id();
 
             // Only matters for pre-registered channels
-            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
+            if let Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
                 && entry.get() == &id
             {
                 entry.remove();
