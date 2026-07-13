@@ -1,8 +1,10 @@
+use alloc::boxed::Box;
 use alloc::collections::btree_map::{BTreeMap, Entry};
+use alloc::vec;
 use alloc::vec::Vec;
-use alloc::{boxed::Box, vec};
+
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
-use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
+use ironrdp_dvc::{DvcChannelCardinality, DvcMessage, DvcProcessor, DvcServerProcessor, Multi, Singleton};
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 
 use crate::io::{
@@ -153,6 +155,10 @@ impl DvcProcessor for UrbdrcControlServer {
 impl_as_any!(UrbdrcControlServer);
 
 impl DvcServerProcessor for UrbdrcControlServer {}
+
+impl DvcChannelCardinality for UrbdrcControlServer {
+    type Cardinality = Singleton;
+}
 
 pub trait UrbdrcDeviceServerBackend: Send {
     /// [Add Device Message][2.2.4.2]:
@@ -648,3 +654,7 @@ impl DvcProcessor for UrbdrcDeviceServer {
 impl_as_any!(UrbdrcDeviceServer);
 
 impl DvcServerProcessor for UrbdrcDeviceServer {}
+
+impl DvcChannelCardinality for UrbdrcDeviceServer {
+    type Cardinality = Multi;
+}

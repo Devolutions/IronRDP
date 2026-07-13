@@ -339,6 +339,10 @@ impl dvc::DvcProcessor for AInputHandler {
 
 impl dvc::DvcServerProcessor for AInputHandler {}
 
+impl dvc::DvcChannelCardinality for AInputHandler {
+    type Cardinality = dvc::Singleton;
+}
+
 struct DisplayControlBackend {
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
 }

@@ -13,7 +13,7 @@ use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread;
 
 use ironrdp_core::impl_as_any;
-use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
+use ironrdp_dvc::{DvcChannelCardinality, DvcClientProcessor, DvcMessage, DvcProcessor, Singleton};
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
 use tracing::{debug, error, trace, warn};
@@ -131,6 +131,10 @@ impl DvcProcessor for DvcComChannel {
 }
 
 impl DvcClientProcessor for DvcComChannel {}
+
+impl DvcChannelCardinality for DvcComChannel {
+    type Cardinality = Singleton;
+}
 
 impl Drop for DvcComChannel {
     fn drop(&mut self) {

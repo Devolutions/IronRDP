@@ -4,11 +4,10 @@
 
 extern crate alloc;
 
-use core::any::TypeId;
-
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::any::TypeId;
 
 use pdu::DrdynvcDataPdu;
 
@@ -21,6 +20,9 @@ use ironrdp_svc::SvcMessage;
 
 mod complete_data;
 use complete_data::CompleteData;
+
+mod cardinality;
+pub use cardinality::{ChannelCardinality, DvcChannelCardinality, Multi, Singleton};
 
 mod client;
 pub use client::*;

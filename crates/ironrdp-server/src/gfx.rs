@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex};
 
 use ironrdp_core::impl_as_any;
-use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
+use ironrdp_dvc::{DvcChannelCardinality, DvcMessage, DvcProcessor, DvcServerProcessor, Singleton};
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer};
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::SvcMessage;
@@ -89,6 +89,10 @@ impl DvcProcessor for GfxDvcBridge {
 }
 
 impl DvcServerProcessor for GfxDvcBridge {}
+
+impl DvcChannelCardinality for GfxDvcBridge {
+    type Cardinality = Singleton;
+}
 
 /// Message for routing EGFX PDUs to the wire via `ServerEvent`.
 #[derive(Debug)]

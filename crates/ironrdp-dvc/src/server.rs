@@ -4,13 +4,14 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
 
-use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any, invalid_field_err};
+use ironrdp_core::{Decode as _, DecodeResult, NonEmpty, ReadCursor, impl_as_any, invalid_field_err};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
 use tracing::debug;
 
+use crate::cardinality::{CardinalityKind, ChannelIds, DvcChannelCardinality, Multi, Singleton, kind_of};
 use crate::pdu::{
     CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu,
 };
@@ -122,7 +123,7 @@ impl DynamicChannel {
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcServer {
     dynamic_channels: DynamicChannelAllocator,
-    type_id_to_channel_id: BTreeMap<TypeId, u32>,
+    type_id_to_channel_id: BTreeMap<TypeId, ChannelIds>,
 }
 
 impl fmt::Debug for DrdynvcServer {
@@ -150,11 +151,70 @@ impl DrdynvcServer {
         }
     }
 
+    /// Returns the channel id registered for the singleton processor type `T`, or `None` if
+    /// no channel of that type has been registered.
+    ///
+    /// This accessor is only available for [`Singleton`] channel types (at most one channel
+    /// per type). Calling it on a [`Multi`] type is a compile error; use
+    /// [`get_channel_ids_by_type`](Self::get_channel_ids_by_type) for those instead.
     pub fn get_channel_id_by_type<T>(&self) -> Option<u32>
     where
-        T: DvcServerProcessor + 'static,
+        T: DvcServerProcessor + DvcChannelCardinality<Cardinality = Singleton> + 'static,
     {
-        self.type_id_to_channel_id.get(&TypeId::of::<T>()).copied()
+        match self.type_id_to_channel_id.get(&TypeId::of::<T>()) {
+            Some(ChannelIds::Singleton(id)) => Some(*id),
+            // A given type is always stored with the variant matching its cardinality, so a
+            // singleton type never maps to a `Multi` entry.
+            Some(ChannelIds::Multi(_)) => unreachable!("singleton type stored as Multi"),
+            None => None,
+        }
+    }
+
+    /// Returns every channel id registered for the multi-instance processor type `T`, in
+    /// registration order, or `None` if no channel of that type has been registered.
+    ///
+    /// This accessor is only available for [`Multi`] channel types (several channels may
+    /// share the same processor type, e.g. one channel per USB device). Calling it on a
+    /// [`Singleton`] type is a compile error; use
+    /// [`get_channel_id_by_type`](Self::get_channel_id_by_type) for those instead.
+    pub fn get_channel_ids_by_type<T>(&self) -> Option<&NonEmpty<u32>>
+    where
+        T: DvcServerProcessor + DvcChannelCardinality<Cardinality = Multi> + 'static,
+    {
+        match self.type_id_to_channel_id.get(&TypeId::of::<T>()) {
+            Some(ChannelIds::Multi(ids)) => Some(ids),
+            // A given type is always stored with the variant matching its cardinality, so a
+            // multi type never maps to a `Singleton` entry.
+            Some(ChannelIds::Singleton(_)) => unreachable!("multi type stored as Singleton"),
+            None => None,
+        }
+    }
+
+    /// Returns `true` when registering another channel for type `T` would violate its
+    /// [`Singleton`] cardinality (i.e. `T` is a singleton and already has a channel).
+    fn would_violate_singleton<T>(&self) -> bool
+    where
+        T: DvcChannelCardinality + 'static,
+    {
+        matches!(kind_of::<T::Cardinality>(), CardinalityKind::Singleton)
+            && self.type_id_to_channel_id.contains_key(&TypeId::of::<T>())
+    }
+
+    /// Records that the channel with id `channel_id` is backed by processor type `T`, using
+    /// the storage variant dictated by `T`'s cardinality.
+    ///
+    /// Callers must ensure [`would_violate_singleton`](Self::would_violate_singleton) is
+    /// `false` beforehand; this method assumes the registration is legal.
+    fn register_type_mapping<T>(&mut self, channel_id: u32)
+    where
+        T: DvcChannelCardinality + 'static,
+    {
+        ChannelIds::insert_into(
+            &mut self.type_id_to_channel_id,
+            kind_of::<T::Cardinality>(),
+            TypeId::of::<T>(),
+            channel_id,
+        );
     }
 
     /// Returns `true` if the DVC channel with the given ID has completed
@@ -170,13 +230,20 @@ impl DrdynvcServer {
     /// # Panics
     ///
     /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
+    ///
+    /// Panics if `T` is a [`Singleton`](crate::Singleton) channel type and a channel of that
+    /// type has already been registered (a singleton type must back at most one channel).
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
-        T: DvcServerProcessor + 'static,
+        T: DvcServerProcessor + DvcChannelCardinality + 'static,
     {
+        assert!(
+            !self.would_violate_singleton::<T>(),
+            "a singleton dynamic channel type cannot be registered more than once"
+        );
         let channel_id = self.dynamic_channels.insert_channel(channel, ChannelState::Pending);
-        self.type_id_to_channel_id.insert(TypeId::of::<T>(), channel_id);
+        self.register_type_mapping::<T>(channel_id);
         self
     }
 
@@ -212,16 +279,27 @@ impl DrdynvcServer {
 
     /// Creates a new DVC, returns CreateRequest PDU to send to client.
     ///
+    /// Returns an error if `T` is a [`Singleton`](crate::Singleton) channel type and a channel
+    /// of that type has already been registered (a singleton type must back at most one
+    /// channel).
+    ///
     /// # Panics
     ///
     /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
     pub fn create_channel<T>(&mut self, channel: T) -> PduResult<SvcMessage>
     where
-        T: DvcServerProcessor + 'static,
+        T: DvcServerProcessor + DvcChannelCardinality + 'static,
     {
+        if self.would_violate_singleton::<T>() {
+            return Err(pdu_other_err!(
+                "a singleton dynamic channel type cannot be registered more than once"
+            ));
+        }
+
         let channel_name = channel.channel_name().into();
 
         let channel_id = self.dynamic_channels.insert_channel(channel, ChannelState::Creation);
+        self.register_type_mapping::<T>(channel_id);
         let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(channel_id, channel_name));
         as_svc_msg_with_flag(req)
     }
@@ -230,11 +308,14 @@ impl DrdynvcServer {
         self.dynamic_channels.remove(id).inspect(|dvc| {
             let type_id = dvc.processor_type_id();
 
-            // Only matters for pre-registered channels
-            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
-                && entry.get() == &id
-            {
-                entry.remove();
+            // Drop only the id being removed from the type mapping, keeping any sibling
+            // channels of the same type discoverable. The map entry is removed only when no
+            // channel of that type remains.
+            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id) {
+                let channel_ids = entry.remove();
+                if let Some(remaining) = channel_ids.without(id) {
+                    self.type_id_to_channel_id.insert(type_id, remaining);
+                }
             }
         })
     }
@@ -337,4 +418,114 @@ fn decode_dvc_message(user_data: &[u8]) -> DecodeResult<DrdynvcClientPdu> {
 
 fn as_svc_msg_with_flag(pdu: DrdynvcServerPdu) -> PduResult<SvcMessage> {
     Ok(SvcMessage::from(pdu).with_flags(ChannelFlags::SHOW_PROTOCOL))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DvcMessage;
+
+    struct SingletonProc;
+
+    impl_as_any!(SingletonProc);
+
+    impl DvcProcessor for SingletonProc {
+        fn channel_name(&self) -> &str {
+            "singleton"
+        }
+
+        fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl DvcServerProcessor for SingletonProc {}
+
+    impl DvcChannelCardinality for SingletonProc {
+        type Cardinality = Singleton;
+    }
+
+    struct MultiProc;
+
+    impl_as_any!(MultiProc);
+
+    impl DvcProcessor for MultiProc {
+        fn channel_name(&self) -> &str {
+            "multi"
+        }
+
+        fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl DvcServerProcessor for MultiProc {}
+
+    impl DvcChannelCardinality for MultiProc {
+        type Cardinality = Multi;
+    }
+
+    #[test]
+    fn singleton_is_discoverable_after_create() {
+        let mut server = DrdynvcServer::new();
+        server.create_channel(SingletonProc).unwrap();
+        assert_eq!(server.get_channel_id_by_type::<SingletonProc>(), Some(0));
+    }
+
+    #[test]
+    fn singleton_second_create_is_rejected() {
+        let mut server = DrdynvcServer::new();
+        server.create_channel(SingletonProc).unwrap();
+        assert!(server.create_channel(SingletonProc).is_err());
+        // The first registration is preserved.
+        assert_eq!(server.get_channel_id_by_type::<SingletonProc>(), Some(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "singleton")]
+    fn singleton_second_with_dynamic_channel_panics() {
+        let _ = DrdynvcServer::new()
+            .with_dynamic_channel(SingletonProc)
+            .with_dynamic_channel(SingletonProc);
+    }
+
+    #[test]
+    fn multi_registers_every_channel() {
+        let mut server = DrdynvcServer::new();
+        server.create_channel(MultiProc).unwrap();
+        server.create_channel(MultiProc).unwrap();
+
+        let ids = server.get_channel_ids_by_type::<MultiProc>().expect("registered");
+        assert_eq!(ids.len().get(), 2);
+        assert_eq!(ids.iter().copied().collect::<Vec<_>>(), alloc::vec![0, 1]);
+    }
+
+    #[test]
+    fn multi_remove_first_keeps_sibling_discoverable() {
+        let mut server = DrdynvcServer::new();
+        server.create_channel(MultiProc).unwrap();
+        server.create_channel(MultiProc).unwrap();
+
+        // Removing the first channel must not orphan the second.
+        server.close_channel(0).expect("channel exists");
+
+        let ids = server.get_channel_ids_by_type::<MultiProc>().expect("sibling remains");
+        assert_eq!(ids.iter().copied().collect::<Vec<_>>(), alloc::vec![1]);
+    }
+
+    #[test]
+    fn multi_remove_last_drops_mapping() {
+        let mut server = DrdynvcServer::new();
+        server.create_channel(MultiProc).unwrap();
+        server.close_channel(0).expect("channel exists");
+        assert!(server.get_channel_ids_by_type::<MultiProc>().is_none());
+    }
 }

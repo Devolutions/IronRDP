@@ -74,7 +74,7 @@ pub mod ffi {
 
         fn with_dvc<T>(&mut self, processor: T) -> Result<(), Box<IronRdpError>>
         where
-            T: DvcProcessor + 'static,
+            T: DvcProcessor + ironrdp::dvc::DvcChannelCardinality + 'static,
         {
             let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());

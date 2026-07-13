@@ -1,27 +1,29 @@
+use alloc::boxed::Box;
 use alloc::collections::btree_map::{BTreeMap, Entry};
 use alloc::vec;
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
+
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
-use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DvcMessage, DvcProcessor};
+use ironrdp_dvc::{
+    CreatedChannel, DvcChannelCardinality, DvcChannelListener, DvcClientProcessor, DvcMessage, DvcProcessor, Multi,
+    Singleton,
+};
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 
-use crate::io::device::add_device_from_info;
+use crate::io::device::{DeviceInfo, add_device_from_info};
 use crate::io::{
     DeviceText, InternalIoControlPacket, IoControlCompletionResult, IoControlPacket, TransferInCompletionResult,
-    TransferInPacket, TransferOutCompletionResult, TransferOutPacket, device::DeviceInfo,
+    TransferInPacket, TransferOutCompletionResult, TransferOutPacket,
 };
-use crate::pdu::UrbdrcServerDevicePdu;
+use crate::pdu::caps::{Capability, RimExchangeCapabilityResponse};
 use crate::pdu::completion::{IoControlCompletion, UrbCompletion, UrbCompletionNoData};
 use crate::pdu::header::{InterfaceId, Mask, MessageId};
 use crate::pdu::iface_manipulation::{InterfaceRelease, QueryInterfaceFailureResponse};
+use crate::pdu::notify::ChannelCreated;
 use crate::pdu::sink::AddVirtualChannel;
 use crate::pdu::usb_dev::QueryDeviceTextRsp;
 use crate::pdu::utils::{RequestId, RequestIdTransferInOut};
-use crate::pdu::{
-    UrbdrcServerControlPdu,
-    caps::{Capability, RimExchangeCapabilityResponse},
-    notify::ChannelCreated,
-};
+use crate::pdu::{UrbdrcServerControlPdu, UrbdrcServerDevicePdu};
 use crate::{CHANNEL_NAME, InvalidDeviceInterfaceId};
 
 const ADD_VIRTUAL_CHANNEL_MSG_ID: u32 = 0;
@@ -80,16 +82,14 @@ impl DvcChannelListener for UrbdrcListener {
         CHANNEL_NAME
     }
 
-    fn create(&mut self, channel_id: u32) -> Option<Box<dyn DvcProcessor>> {
+    fn create(&mut self, channel_id: u32) -> Option<CreatedChannel> {
         if let Some(callback) = self.on_capability_exchanged.take() {
             self.device_man.control_channel_assigned(channel_id);
-            Some(Box::new(UrbdrcControlClient::new(callback)))
+            Some(CreatedChannel::new(UrbdrcControlClient::new(callback)))
         } else {
             let udev_iface = self.iface_man.alloc()?;
-            #[expect(clippy::as_conversions)]
             self.device_man.take_device_for_channel(channel_id).map(|backend| {
-                Box::new(UrbdrcDeviceClient::new(udev_iface, backend).expect("invalid interface id"))
-                    as Box<dyn DvcProcessor>
+                CreatedChannel::new(UrbdrcDeviceClient::new(udev_iface, backend).expect("invalid interface id"))
             })
         }
     }
@@ -192,6 +192,10 @@ impl DvcProcessor for UrbdrcControlClient {
 impl_as_any!(UrbdrcControlClient);
 
 impl DvcClientProcessor for UrbdrcControlClient {}
+
+impl DvcChannelCardinality for UrbdrcControlClient {
+    type Cardinality = Singleton;
+}
 
 pub trait UrbdrcDeviceBackend: Send {
     /// Get the USB device information.
@@ -723,6 +727,10 @@ impl DvcProcessor for UrbdrcDeviceClient {
 impl_as_any!(UrbdrcDeviceClient);
 
 impl DvcClientProcessor for UrbdrcDeviceClient {}
+
+impl DvcChannelCardinality for UrbdrcDeviceClient {
+    type Cardinality = Multi;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingKind {

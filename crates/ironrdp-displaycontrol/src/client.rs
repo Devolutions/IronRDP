@@ -1,5 +1,7 @@
 use ironrdp_core::{Decode as _, EncodeResult, ReadCursor, impl_as_any};
-use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
+use ironrdp_dvc::{
+    DvcChannelCardinality, DvcClientProcessor, DvcMessage, DvcProcessor, Singleton, encode_dvc_messages,
+};
 use ironrdp_pdu::{PduResult, decode_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::debug;
@@ -84,5 +86,9 @@ impl DvcProcessor for DisplayControlClient {
 }
 
 impl DvcClientProcessor for DisplayControlClient {}
+
+impl DvcChannelCardinality for DisplayControlClient {
+    type Cardinality = Singleton;
+}
 
 type OnCapabilitiesReceived = Box<dyn Fn(DisplayControlCapabilities) -> PduResult<Vec<DvcMessage>> + Send>;

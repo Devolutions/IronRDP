@@ -1,5 +1,5 @@
-use ironrdp_core::{WriteBuf, decode};
-use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
+use ironrdp_core::{NonEmpty, WriteBuf, decode};
+use ironrdp_dvc::{DrdynvcClient, DvcChannelCardinality, DynamicVirtualChannel, Multi, Singleton};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
@@ -114,8 +114,20 @@ impl Processor {
         process_svc_messages(messages.into(), channel_id, self.user_channel_id)
     }
 
-    pub fn get_dvc<T: DvcProcessor + 'static>(&self) -> Option<&DynamicVirtualChannel> {
+    pub fn get_dvc<T>(&self) -> Option<&DynamicVirtualChannel>
+    where
+        T: DvcChannelCardinality<Cardinality = Singleton> + 'static,
+    {
         self.get_svc_processor::<DrdynvcClient>()?.get_dvc_by_type_id::<T>()
+    }
+
+    /// Returns every active dynamic virtual channel backed by the multi-instance processor
+    /// type `T`, in creation order, or `None` if none is currently active.
+    pub fn get_dvcs<T>(&self) -> Option<NonEmpty<&DynamicVirtualChannel>>
+    where
+        T: DvcChannelCardinality<Cardinality = Multi> + 'static,
+    {
+        self.get_svc_processor::<DrdynvcClient>()?.get_dvcs_by_type_id::<T>()
     }
 
     pub fn get_dvc_by_channel_id(&self, channel_id: u32) -> Option<&DynamicVirtualChannel> {

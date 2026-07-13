@@ -59,7 +59,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use ironrdp_core::{Encode, EncodeResult, WriteCursor, decode, impl_as_any};
-use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
+use ironrdp_dvc::{DvcChannelCardinality, DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor, Singleton};
 use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
 use ironrdp_pdu::gcc::Monitor;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
@@ -1762,6 +1762,10 @@ impl DvcProcessor for GraphicsPipelineServer {
 }
 
 impl DvcServerProcessor for GraphicsPipelineServer {}
+
+impl DvcChannelCardinality for GraphicsPipelineServer {
+    type Cardinality = Singleton;
+}
 
 // ============================================================================
 // AVC444 Encoding Helper

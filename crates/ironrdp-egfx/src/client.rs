@@ -56,7 +56,7 @@
 use std::collections::BTreeMap;
 
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
-use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
+use ironrdp_dvc::{DvcChannelCardinality, DvcClientProcessor, DvcMessage, DvcProcessor, Singleton};
 use ironrdp_graphics::zgfx;
 use ironrdp_pdu::geometry::{ExclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::{PduResult, decode_cursor, decode_err, pdu_other_err};
@@ -891,6 +891,10 @@ impl DvcProcessor for GraphicsPipelineClient {
 }
 
 impl DvcClientProcessor for GraphicsPipelineClient {}
+
+impl DvcChannelCardinality for GraphicsPipelineClient {
+    type Cardinality = Singleton;
+}
 
 // ============================================================================
 // Frame Cropping

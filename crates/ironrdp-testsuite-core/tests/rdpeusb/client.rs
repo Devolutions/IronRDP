@@ -203,6 +203,7 @@ fn channel_setup_sequence() {
         .expect("first URBDRC create should return control client");
 
     let control = &mut control
+        .processor_mut()
         .as_any_mut()
         .downcast_mut::<UrbdrcControlClient>()
         .expect("first processor should be a control client");
@@ -270,12 +271,24 @@ fn channel_setup_sequence() {
     let device = listener
         .create(11)
         .expect("second URBDRC create should return device client");
-    assert!(device.as_any().downcast_ref::<UrbdrcDeviceClient>().is_some());
+    assert!(
+        device
+            .processor()
+            .as_any()
+            .downcast_ref::<UrbdrcDeviceClient>()
+            .is_some()
+    );
 
     let device = listener
         .create(12)
         .expect("third URBDRC create should return device client");
-    assert!(device.as_any().downcast_ref::<UrbdrcDeviceClient>().is_some());
+    assert!(
+        device
+            .processor()
+            .as_any()
+            .downcast_ref::<UrbdrcDeviceClient>()
+            .is_some()
+    );
 
     assert!(
         listener.create(13).is_none(),

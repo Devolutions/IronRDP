@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use ironrdp_bulk::BulkCompressor;
-use ironrdp_core::{ReadCursor, WriteBuf};
+use ironrdp_core::{NonEmpty, ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
-use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
+use ironrdp_dvc::{DrdynvcClient, DvcChannelCardinality, DynamicVirtualChannel, Multi, Singleton};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -266,8 +266,20 @@ impl ActiveStage {
         self.x224_processor.get_svc_processor_mut()
     }
 
-    pub fn get_dvc<T: DvcProcessor + 'static>(&mut self) -> Option<&DynamicVirtualChannel> {
+    pub fn get_dvc<T>(&mut self) -> Option<&DynamicVirtualChannel>
+    where
+        T: DvcChannelCardinality<Cardinality = Singleton> + 'static,
+    {
         self.x224_processor.get_dvc::<T>()
+    }
+
+    /// Returns every active dynamic virtual channel backed by the multi-instance processor
+    /// type `T`, in creation order, or `None` if none is currently active.
+    pub fn get_dvcs<T>(&mut self) -> Option<NonEmpty<&DynamicVirtualChannel>>
+    where
+        T: DvcChannelCardinality<Cardinality = Multi> + 'static,
+    {
+        self.x224_processor.get_dvcs::<T>()
     }
 
     pub fn get_dvc_by_channel_id(&mut self, channel_id: u32) -> Option<&DynamicVirtualChannel> {

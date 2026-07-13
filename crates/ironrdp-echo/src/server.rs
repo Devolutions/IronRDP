@@ -1,5 +1,5 @@
 use ironrdp_core::{decode, impl_as_any};
-use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
+use ironrdp_dvc::{DvcChannelCardinality, DvcMessage, DvcProcessor, DvcServerProcessor, Singleton};
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use tracing::debug;
 
@@ -61,3 +61,7 @@ impl DvcProcessor for EchoServer {
 }
 
 impl DvcServerProcessor for EchoServer {}
+
+impl DvcChannelCardinality for EchoServer {
+    type Cardinality = Singleton;
+}

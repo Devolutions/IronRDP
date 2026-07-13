@@ -4,14 +4,15 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
 
-use crate::alloc::borrow::ToOwned as _;
-use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any};
+use ironrdp_core::{Decode as _, DecodeResult, NonEmpty, ReadCursor, impl_as_any};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
 use tracing::debug;
 
+use crate::alloc::borrow::ToOwned as _;
+use crate::cardinality::{CardinalityKind, ChannelIds, DvcChannelCardinality, Multi, Singleton, kind_of};
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
     DrdynvcServerPdu,
@@ -20,25 +21,99 @@ use crate::{DvcProcessor, DynamicChannelId, DynamicChannelName, DynamicVirtualCh
 
 pub trait DvcClientProcessor: DvcProcessor {}
 
+/// How a channel produced by a [`DvcChannelListener`] should be tracked for type-based lookup.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Produced {
+    /// The produced processor is not discoverable by type (e.g. a bespoke listener).
+    Untracked,
+    /// The produced processor is a singleton (at most one channel for its type).
+    Singleton(TypeId),
+    /// The produced processor is multi-instance (several channels may share its type).
+    Multi(TypeId),
+}
+
+impl Produced {
+    /// The tracking that matches processor type `T`'s [`cardinality`](DvcChannelCardinality).
+    fn for_type<T>() -> Self
+    where
+        T: DvcChannelCardinality + 'static,
+    {
+        match kind_of::<T::Cardinality>() {
+            CardinalityKind::Singleton => Self::Singleton(TypeId::of::<T>()),
+            CardinalityKind::Multi => Self::Multi(TypeId::of::<T>()),
+        }
+    }
+}
+
+/// A dynamic virtual channel processor produced by a [`DvcChannelListener`], together with the
+/// information needed to make it discoverable by type.
+///
+/// Build one with [`CreatedChannel::new`] (which records the processor's cardinality so it can
+/// be looked up via [`DrdynvcClient::get_dvc_by_type_id`] /
+/// [`DrdynvcClient::get_dvcs_by_type_id`]) or [`CreatedChannel::untracked`] for a processor
+/// that should not be discoverable by type.
+pub struct CreatedChannel {
+    processor: Box<dyn DvcProcessor>,
+    tracking: Produced,
+}
+
+impl CreatedChannel {
+    /// Wraps `processor`, recording its type and cardinality for type-based lookup.
+    #[must_use]
+    pub fn new<T>(processor: T) -> Self
+    where
+        T: DvcChannelCardinality + 'static,
+    {
+        Self {
+            processor: Box::new(processor),
+            tracking: Produced::for_type::<T>(),
+        }
+    }
+
+    /// Wraps an already-boxed `processor` that should not be discoverable by type.
+    #[must_use]
+    pub fn untracked(processor: Box<dyn DvcProcessor>) -> Self {
+        Self {
+            processor,
+            tracking: Produced::Untracked,
+        }
+    }
+
+    /// Returns a shared reference to the wrapped processor.
+    #[must_use]
+    pub fn processor(&self) -> &dyn DvcProcessor {
+        self.processor.as_ref()
+    }
+
+    /// Returns a mutable reference to the wrapped processor.
+    #[must_use]
+    pub fn processor_mut(&mut self) -> &mut dyn DvcProcessor {
+        self.processor.as_mut()
+    }
+}
+
 pub trait DvcChannelListener: Send {
     fn channel_name(&self) -> &str;
 
     /// Called for each incoming DYNVC_CREATE_REQ matching this name.
     /// Return `None` to reject (NO_LISTENER).
-    fn create(&mut self, channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>>;
+    fn create(&mut self, channel_id: DynamicChannelId) -> Option<CreatedChannel>;
 }
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
 
 /// For pre-registered DVC
 struct OnceListener {
-    inner: Option<Box<dyn DvcProcessor>>,
+    inner: Option<CreatedChannel>,
 }
 
 impl OnceListener {
-    fn new(dvc_processor: impl DvcProcessor + 'static) -> Self {
+    fn new<T>(dvc_processor: T) -> Self
+    where
+        T: DvcChannelCardinality + 'static,
+    {
         Self {
-            inner: Some(Box::new(dvc_processor)),
+            inner: Some(CreatedChannel::new(dvc_processor)),
         }
     }
 }
@@ -48,10 +123,11 @@ impl DvcChannelListener for OnceListener {
         self.inner
             .as_ref()
             .expect("channel name called after created")
+            .processor
             .channel_name()
     }
 
-    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>> {
+    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<CreatedChannel> {
         self.inner.take()
     }
 }
@@ -100,7 +176,7 @@ impl DrdynvcClient {
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
-        T: DvcProcessor + 'static,
+        T: DvcProcessor + DvcChannelCardinality + 'static,
     {
         self.dynamic_channels.register_once(channel);
         self
@@ -115,7 +191,7 @@ impl DrdynvcClient {
     /// it will be silently overwritten.
     pub fn attach_dynamic_channel<T>(&mut self, channel: T)
     where
-        T: DvcProcessor + 'static,
+        T: DvcProcessor + DvcChannelCardinality + 'static,
     {
         self.dynamic_channels.register_once(channel);
     }
@@ -150,11 +226,30 @@ impl DrdynvcClient {
         self.dynamic_channels.register_listener(listener);
     }
 
+    /// Returns the dynamic virtual channel backed by the singleton processor type `T`, or
+    /// `None` if no such channel is currently active.
+    ///
+    /// This accessor is only available for [`Singleton`](crate::Singleton) channel types;
+    /// calling it on a [`Multi`](crate::Multi) type is a compile error, use
+    /// [`get_dvcs_by_type_id`](Self::get_dvcs_by_type_id) instead.
     pub fn get_dvc_by_type_id<T>(&self) -> Option<&DynamicVirtualChannel>
     where
-        T: DvcProcessor,
+        T: DvcChannelCardinality<Cardinality = Singleton> + 'static,
     {
         self.dynamic_channels.get_by_type_id(TypeId::of::<T>())
+    }
+
+    /// Returns every active dynamic virtual channel backed by the multi-instance processor
+    /// type `T`, in creation order, or `None` if no such channel is currently active.
+    ///
+    /// This accessor is only available for [`Multi`](crate::Multi) channel types; calling it
+    /// on a [`Singleton`](crate::Singleton) type is a compile error, use
+    /// [`get_dvc_by_type_id`](Self::get_dvc_by_type_id) instead.
+    pub fn get_dvcs_by_type_id<T>(&self) -> Option<NonEmpty<&DynamicVirtualChannel>>
+    where
+        T: DvcChannelCardinality<Cardinality = Multi> + 'static,
+    {
+        self.dynamic_channels.get_all_by_type_id(TypeId::of::<T>())
     }
 
     pub fn get_dvc_by_channel_id(&self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
@@ -276,14 +371,12 @@ impl SvcProcessor for DrdynvcClient {
 
 struct ListenerEntry {
     listener: DynamicChannelListener,
-    /// `Some` only for channels registered via `with_dynamic_channel<T>()`.
-    type_id: Option<TypeId>,
 }
 
 struct DynamicChannelSet {
     listeners: BTreeMap<DynamicChannelName, ListenerEntry>,
     active_channels: BTreeMap<DynamicChannelId, DynamicVirtualChannel>,
-    type_id_to_channel_id: BTreeMap<TypeId, DynamicChannelId>,
+    type_id_to_channel_id: BTreeMap<TypeId, ChannelIds>,
 }
 
 impl DynamicChannelSet {
@@ -302,18 +395,16 @@ impl DynamicChannelSet {
             name,
             ListenerEntry {
                 listener: Box::new(listener),
-                type_id: None,
             },
         );
     }
 
-    fn register_once<T: DvcProcessor + 'static>(&mut self, channel: T) {
+    fn register_once<T: DvcProcessor + DvcChannelCardinality + 'static>(&mut self, channel: T) {
         let name = channel.channel_name().to_owned();
         self.listeners.insert(
             name,
             ListenerEntry {
                 listener: Box::new(OnceListener::new(channel)),
-                type_id: Some(TypeId::of::<T>()),
             },
         );
     }
@@ -324,13 +415,29 @@ impl DynamicChannelSet {
         channel_id: DynamicChannelId,
     ) -> Option<&mut DynamicVirtualChannel> {
         let entry = self.listeners.get_mut(name)?;
-        let processor = entry.listener.create(channel_id)?;
+        let created = entry.listener.create(channel_id)?;
 
-        if let Some(type_id) = entry.type_id {
-            self.type_id_to_channel_id.insert(type_id, channel_id);
+        match created.tracking {
+            Produced::Untracked => {}
+            Produced::Singleton(type_id) => {
+                ChannelIds::insert_into(
+                    &mut self.type_id_to_channel_id,
+                    CardinalityKind::Singleton,
+                    type_id,
+                    channel_id,
+                );
+            }
+            Produced::Multi(type_id) => {
+                ChannelIds::insert_into(
+                    &mut self.type_id_to_channel_id,
+                    CardinalityKind::Multi,
+                    type_id,
+                    channel_id,
+                );
+            }
         }
 
-        let dvc = DynamicVirtualChannel::from_boxed(processor);
+        let dvc = DynamicVirtualChannel::from_boxed(created.processor);
         // `dvc.channel_id` stays `None` here — it is set by `DynamicVirtualChannel::start`
         // on success, so `Drop` only invokes `close` for channels that were actually opened.
         let dvc = match self.active_channels.entry(channel_id) {
@@ -344,9 +451,32 @@ impl DynamicChannelSet {
     }
 
     fn get_by_type_id(&self, type_id: TypeId) -> Option<&DynamicVirtualChannel> {
-        self.type_id_to_channel_id
-            .get(&type_id)
-            .and_then(|id| self.active_channels.get(id))
+        match self.type_id_to_channel_id.get(&type_id) {
+            Some(ChannelIds::Singleton(id)) => self.active_channels.get(id),
+            // A given type is always stored with the variant matching its cardinality, so a
+            // singleton type never maps to a `Multi` entry.
+            Some(ChannelIds::Multi(_)) => unreachable!("singleton type stored as Multi"),
+            None => None,
+        }
+    }
+
+    fn get_all_by_type_id(&self, type_id: TypeId) -> Option<NonEmpty<&DynamicVirtualChannel>> {
+        let ids = match self.type_id_to_channel_id.get(&type_id) {
+            Some(ChannelIds::Multi(ids)) => ids,
+            // A given type is always stored with the variant matching its cardinality, so a
+            // multi type never maps to a `Singleton` entry.
+            Some(ChannelIds::Singleton(_)) => unreachable!("multi type stored as Singleton"),
+            None => return None,
+        };
+
+        // The type mapping and `active_channels` are kept in sync, so every registered id
+        // resolves to an active channel and the result is non-empty.
+        let mut channels = ids.iter().filter_map(|id| self.active_channels.get(id));
+        let mut result = NonEmpty::new(channels.next()?);
+        for channel in channels {
+            result.push(channel);
+        }
+        Some(result)
     }
 
     fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {
@@ -361,11 +491,14 @@ impl DynamicChannelSet {
         self.active_channels.remove(&id).inspect(|dvc| {
             let type_id = dvc.processor_type_id();
 
-            // Only matters for pre-registered channels
-            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
-                && entry.get() == &id
-            {
-                entry.remove();
+            // Drop only the id being removed from the type mapping, keeping any sibling
+            // channels of the same type discoverable. The map entry is removed only when no
+            // channel of that type remains.
+            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id) {
+                let channel_ids = entry.remove();
+                if let Some(remaining) = channel_ids.without(id) {
+                    self.type_id_to_channel_id.insert(type_id, remaining);
+                }
             }
         })
     }
