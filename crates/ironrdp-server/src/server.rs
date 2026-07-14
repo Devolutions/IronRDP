@@ -5166,7 +5166,7 @@ async fn resolve_authenticated_credentials(
                 }
                 Err(e) => {
                     error!(error = %e, "Credential validator backend error");
-                    bail!("credential validation backend error");
+                    Err(e.into())
                 }
             }
         } else {
@@ -6225,7 +6225,6 @@ mod cliprdr_error_tests {
     }
 }
 
-
 #[cfg(test)]
 mod wrdp_reactivation_tests {
     use super::*;
@@ -6244,6 +6243,21 @@ mod wrdp_reactivation_tests {
             } else {
                 Ok(CredentialDecision::Reject)
             }
+        }
+    }
+
+    struct FailingValidator;
+
+    #[async_trait::async_trait]
+    impl CredentialValidator for FailingValidator {
+        async fn validate(
+            &self,
+            _credentials: &Credentials,
+            _origin: CredentialOrigin,
+        ) -> Result<CredentialDecision, CredentialValidationError> {
+            Err(CredentialValidationError::new(std::io::Error::other(
+                "backend unavailable",
+            )))
         }
     }
 
@@ -6288,5 +6302,23 @@ mod wrdp_reactivation_tests {
             .expect("resent reactivation credentials should be validated")
             .expect("resent reactivation credentials should remain available");
         assert_eq!(reactivated.username, "alice");
+    }
+
+    #[tokio::test]
+    async fn credential_validator_backend_error_is_preserved() {
+        let validator: Arc<dyn CredentialValidator> = Arc::new(FailingValidator);
+        let received_credentials = ReceivedCredentials {
+            credentials: creds("alice"),
+            origin: CredentialOrigin::ClientInfo,
+        };
+
+        let error = resolve_authenticated_credentials(Some(validator), Some(&received_credentials), false)
+            .await
+            .expect_err("backend failure should be returned");
+        let validation_error = error
+            .downcast_ref::<CredentialValidationError>()
+            .expect("credential validation error should remain downcastable");
+        let source = core::error::Error::source(validation_error).expect("backend source should be preserved");
+        assert_eq!(source.to_string(), "backend unavailable");
     }
 }
