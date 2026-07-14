@@ -19,11 +19,10 @@ use ironrdp_input::MouseButton;
 use ironrdp_pdu::impl_pdu_pod;
 use ironrdp_propertyset::PropertySet;
 
-use crate::wire::propertyset;
 use crate::wire::{
-    bytes_size, opt_string_size, opt_u16_size, read_bool, read_bytes, read_char, read_mouse_button, read_opt_string,
-    read_opt_u16, read_string, string_size, write_bool, write_bytes, write_char, write_mouse_button, write_opt_string,
-    write_opt_u16, write_string,
+    bytes_size, opt_string_size, opt_u16_size, opt_u64_size, propertyset, read_bool, read_bytes, read_char,
+    read_mouse_button, read_opt_string, read_opt_u16, read_opt_u64, read_string, string_size, write_bool, write_bytes,
+    write_char, write_mouse_button, write_opt_string, write_opt_u16, write_opt_u64, write_string,
 };
 
 /// A request sent by the CLI to the daemon.
@@ -69,6 +68,36 @@ pub enum Request {
     KeyUnicode { ch: char, pressed: bool },
     /// Resize the remote desktop.
     Resize { width: u16, height: u16 },
+    /// Query and negotiate the capabilities of the session's NOW endpoint.
+    NowCapabilities,
+    /// Submit an untracked generic NOW Run request.
+    NowRun {
+        /// Command line interpreted by the remote NOW agent.
+        command: String,
+        /// Optional remote working directory.
+        directory: Option<String>,
+    },
+    /// Submit a NOW operation that is tracked by the daemon unless `detached` is set.
+    NowExecute(NowExecutionRequest),
+    /// Request cancellation of the active tracked NOW operation.
+    NowCancel { operation_id: u64 },
+    /// List daemon-retained NOW operations.
+    NowList,
+    /// Inspect a retained NOW operation.
+    NowStatus { operation_id: u64 },
+    /// Replay retained operation events after `after_sequence` and then follow live output.
+    NowAttach {
+        operation_id: u64,
+        after_sequence: Option<u64>,
+    },
+    /// Forward a bounded raw stdin chunk to a tracked operation.
+    NowStdin {
+        operation_id: u64,
+        data: Vec<u8>,
+        last: bool,
+    },
+    /// Inspect the local NOW endpoint without exposing protocol internals.
+    NowDiagnostics,
     // TODO: add clipboard support (CLIPRDR), e.g. requests to read the remote clipboard text and to
     // set it, so an LLM can copy/paste to and from the session.
 }
@@ -121,6 +150,39 @@ impl fmt::Debug for Request {
                 .field("width", width)
                 .field("height", height)
                 .finish(),
+            Self::NowCapabilities => f.write_str("NowCapabilities"),
+            Self::NowRun { command, directory } => f
+                .debug_struct("NowRun")
+                .field("command_len", &command.len())
+                .field("directory", directory)
+                .finish(),
+            Self::NowExecute(request) => f.debug_tuple("NowExecute").field(request).finish(),
+            Self::NowCancel { operation_id } => {
+                f.debug_struct("NowCancel").field("operation_id", operation_id).finish()
+            }
+            Self::NowList => f.write_str("NowList"),
+            Self::NowStatus { operation_id } => {
+                f.debug_struct("NowStatus").field("operation_id", operation_id).finish()
+            }
+            Self::NowAttach {
+                operation_id,
+                after_sequence,
+            } => f
+                .debug_struct("NowAttach")
+                .field("operation_id", operation_id)
+                .field("after_sequence", after_sequence)
+                .finish(),
+            Self::NowStdin {
+                operation_id,
+                data,
+                last,
+            } => f
+                .debug_struct("NowStdin")
+                .field("operation_id", operation_id)
+                .field("data_len", &data.len())
+                .field("last", last)
+                .finish(),
+            Self::NowDiagnostics => f.write_str("NowDiagnostics"),
         }
     }
 }
@@ -140,7 +202,7 @@ pub enum Response {
     /// Success, carrying an operation-specific [`Payload`].
     Ok(Payload),
     /// Failure. The message is lowercase with no trailing punctuation.
-    Err(String),
+    Err(AgentError),
 }
 
 impl Response {
@@ -151,7 +213,15 @@ impl Response {
 
     /// A failure response.
     pub fn error(message: impl Into<String>) -> Self {
-        Self::Err(message.into())
+        Self::Err(AgentError::internal(message))
+    }
+
+    /// A typed failure response.
+    pub fn typed_error(category: AgentErrorCategory, message: impl Into<String>) -> Self {
+        Self::Err(AgentError {
+            category,
+            message: message.into(),
+        })
     }
 
     /// Whether this is a success response.
@@ -173,6 +243,16 @@ pub enum Payload {
     Logs(Vec<String>),
     /// The most recent frame encoded as a PNG (cursor included), with its dimensions.
     Screenshot { width: u16, height: u16, png: Vec<u8> },
+    /// Negotiated NOW capabilities.
+    NowCapabilities(NowCapabilities),
+    /// One durable NOW operation.
+    NowOperation(OperationInfo),
+    /// Retained NOW operations.
+    NowOperations(Vec<OperationInfo>),
+    /// A sequenced NOW operation event. Streaming requests receive one response per event.
+    NowEvent(OperationEvent),
+    /// Local NOW endpoint diagnostic state.
+    NowDiagnostics(NowDiagnostics),
 }
 
 impl fmt::Debug for Payload {
@@ -189,8 +269,256 @@ impl fmt::Debug for Payload {
                 .field("height", height)
                 .field("png_len", &png.len())
                 .finish(),
+            Self::NowCapabilities(capabilities) => f.debug_tuple("NowCapabilities").field(capabilities).finish(),
+            Self::NowOperation(operation) => f.debug_tuple("NowOperation").field(operation).finish(),
+            Self::NowOperations(operations) => f.debug_tuple("NowOperations").field(operations).finish(),
+            Self::NowEvent(event) => f.debug_tuple("NowEvent").field(event).finish(),
+            Self::NowDiagnostics(diagnostics) => f.debug_tuple("NowDiagnostics").field(diagnostics).finish(),
         }
     }
+}
+
+/// Machine-readable error category. The message is safe for display but must not include request
+/// command text or stdin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentErrorCategory {
+    /// The caller supplied an invalid request.
+    InvalidRequest,
+    /// No suitable connected RDP/NOW session exists.
+    Unavailable,
+    /// A tracked operation conflicts with another active tracked operation.
+    Conflict,
+    /// The local transport or NOW worker failed.
+    Transport,
+    /// The remote peer rejected or failed an operation.
+    Remote,
+    /// An internal daemon operation failed.
+    Internal,
+}
+
+/// Typed IPC error response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentError {
+    /// Error category for JSON/NDJSON clients.
+    pub category: AgentErrorCategory,
+    /// Display-safe lowercase error message.
+    pub message: String,
+}
+
+impl AgentError {
+    /// Creates an internal error.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            category: AgentErrorCategory::Internal,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for AgentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl core::error::Error for AgentError {}
+
+/// NOW execution style intentionally exposed by the agent. Shell is not an option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NowExecutionKind {
+    /// Windows CreateProcess.
+    Process,
+    /// Windows Batch.
+    Batch,
+    /// Windows PowerShell.
+    PowerShell,
+    /// PowerShell 7.
+    Pwsh,
+}
+
+/// Request for a supported NOW tracked or detached execution.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NowExecutionRequest {
+    /// Exposed NOW execution style.
+    pub kind: NowExecutionKind,
+    /// Program path for Process, or script/command for the other styles.
+    pub command: String,
+    /// Process command-line parameters.
+    pub parameters: Option<String>,
+    /// Optional remote working directory.
+    pub directory: Option<String>,
+    /// Optional initial stdin.
+    pub stdin: Option<Vec<u8>>,
+    /// Optional command deadline in milliseconds.
+    pub timeout_ms: Option<u64>,
+    /// Ask the peer to detach. Detached commands have no retained output or result.
+    pub detached: bool,
+    /// Request PowerShell's `-NoProfile` mode.
+    pub no_profile: bool,
+    /// Request PowerShell's `-NonInteractive` mode.
+    pub non_interactive: bool,
+}
+
+impl fmt::Debug for NowExecutionRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NowExecutionRequest")
+            .field("kind", &self.kind)
+            .field("command_len", &self.command.len())
+            .field("parameters_len", &self.parameters.as_ref().map(String::len))
+            .field("directory", &self.directory)
+            .field("stdin_len", &self.stdin.as_ref().map(Vec::len))
+            .field("timeout_ms", &self.timeout_ms)
+            .field("detached", &self.detached)
+            .field("no_profile", &self.no_profile)
+            .field("non_interactive", &self.non_interactive)
+            .finish()
+    }
+}
+
+/// Durable operation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationState {
+    /// The remote operation is active.
+    Running,
+    /// Cancellation has been sent and accepted or is awaiting a terminal result.
+    Cancelling,
+    /// The remote operation completed normally.
+    Completed,
+    /// The remote operation was cancelled.
+    Cancelled,
+    /// The operation failed locally or remotely.
+    Failed,
+    /// A detached operation was submitted and cannot report further state.
+    Detached,
+}
+
+/// A stream associated with a raw output chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NowStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+
+/// Daemon-retained metadata for one NOW operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationInfo {
+    /// Daemon-generated operation identity.
+    pub id: u64,
+    /// Submitted NOW style.
+    pub kind: NowExecutionKind,
+    /// Current or terminal state.
+    pub state: OperationState,
+    /// Whether this was submitted detached.
+    pub detached: bool,
+    /// Remote exit code, including nonzero values.
+    pub exit_code: Option<u32>,
+    /// Typed terminal failure, when any.
+    pub error: Option<AgentError>,
+    /// Bytes of raw stdout/stderr currently retained for this operation.
+    pub retained_output_bytes: u64,
+    /// Sequence assigned to the next operation event.
+    pub next_sequence: u64,
+}
+
+/// A replayable NOW operation event.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OperationEvent {
+    /// Daemon-generated operation identity.
+    pub operation_id: u64,
+    /// Monotonically increasing sequence number scoped to the operation.
+    pub sequence: u64,
+    /// Event content.
+    pub kind: OperationEventKind,
+}
+
+impl fmt::Debug for OperationEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OperationEvent")
+            .field("operation_id", &self.operation_id)
+            .field("sequence", &self.sequence)
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+/// Content of a replayable NOW operation event.
+#[derive(Clone, PartialEq, Eq)]
+pub enum OperationEventKind {
+    /// The remote peer started the command.
+    Started,
+    /// A raw output chunk.
+    Output {
+        /// Output stream.
+        stream: NowStream,
+        /// Exact bytes received from NOW.
+        data: Vec<u8>,
+        /// Whether this is the final chunk on this stream.
+        last: bool,
+    },
+    /// The remote peer accepted a cancellation request.
+    CancelAccepted,
+    /// The command completed with an exit code.
+    Completed { exit_code: u32 },
+    /// The command was cancelled.
+    Cancelled,
+    /// The command terminated with a typed error.
+    Failed(AgentError),
+}
+
+impl fmt::Debug for OperationEventKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Started => f.write_str("Started"),
+            Self::Output { stream, data, last } => f
+                .debug_struct("Output")
+                .field("stream", stream)
+                .field("data_len", &data.len())
+                .field("last", last)
+                .finish(),
+            Self::CancelAccepted => f.write_str("CancelAccepted"),
+            Self::Completed { exit_code } => f.debug_struct("Completed").field("exit_code", exit_code).finish(),
+            Self::Cancelled => f.write_str("Cancelled"),
+            Self::Failed(error) => f.debug_tuple("Failed").field(error).finish(),
+        }
+    }
+}
+
+/// Local NOW endpoint diagnostic snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NowDiagnostics {
+    /// Whether the RDP session has allocated a NOW DVC endpoint.
+    pub endpoint_allocated: bool,
+    /// Whether a NOW client handle is currently cached.
+    pub connected: bool,
+    /// Current cached capabilities, if a connection has already been established.
+    pub capabilities: Option<NowCapabilities>,
+}
+
+/// Negotiated NOW capabilities exposed without leaking the NOW PDU types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NowCapabilities {
+    /// NOW protocol major version.
+    pub version_major: u16,
+    /// NOW protocol minor version.
+    pub version_minor: u16,
+    /// Negotiated heartbeat in milliseconds, if any.
+    pub heartbeat_ms: Option<u64>,
+    /// Generic Run support.
+    pub run: bool,
+    /// CreateProcess support.
+    pub process: bool,
+    /// Batch support.
+    pub batch: bool,
+    /// Windows PowerShell support.
+    pub powershell: bool,
+    /// PowerShell 7 support.
+    pub pwsh: bool,
+    /// Tracked I/O redirection support.
+    pub io_redirection: bool,
+    /// Unicode console support.
+    pub unicode_console: bool,
 }
 
 /// Coarse connection state reported by [`Request::Status`].
@@ -527,6 +855,30 @@ impl Encode for Payload {
                 dst.write_u16(*height);
                 write_bytes(dst, png)?;
             }
+            Self::NowCapabilities(capabilities) => {
+                dst.write_u8(5);
+                capabilities.encode(dst)?;
+            }
+            Self::NowOperation(operation) => {
+                dst.write_u8(6);
+                operation.encode(dst)?;
+            }
+            Self::NowOperations(operations) => {
+                dst.write_u8(7);
+                let count: u32 = cast_length!("operation count", operations.len())?;
+                dst.write_u32(count);
+                for operation in operations {
+                    operation.encode(dst)?;
+                }
+            }
+            Self::NowEvent(event) => {
+                dst.write_u8(8);
+                event.encode(dst)?;
+            }
+            Self::NowDiagnostics(diagnostics) => {
+                dst.write_u8(9);
+                diagnostics.encode(dst)?;
+            }
         }
         Ok(())
     }
@@ -543,6 +895,11 @@ impl Encode for Payload {
                 Self::Properties(dump) => dump.size(),
                 Self::Logs(lines) => 4 + lines.iter().map(|line| string_size(line)).sum::<usize>(),
                 Self::Screenshot { png, .. } => 2 /* width */ + 2 /* height */ + bytes_size(png),
+                Self::NowCapabilities(capabilities) => capabilities.size(),
+                Self::NowOperation(operation) => operation.size(),
+                Self::NowOperations(operations) => 4 + operations.iter().map(Encode::size).sum::<usize>(),
+                Self::NowEvent(event) => event.size(),
+                Self::NowDiagnostics(diagnostics) => diagnostics.size(),
             }
     }
 }
@@ -570,6 +927,19 @@ impl Decode<'_> for Payload {
                 let png = read_bytes(src)?;
                 Ok(Self::Screenshot { width, height, png })
             }
+            5 => Ok(Self::NowCapabilities(NowCapabilities::decode(src)?)),
+            6 => Ok(Self::NowOperation(OperationInfo::decode(src)?)),
+            7 => {
+                ensure_size!(in: src, size: 4);
+                let count = src.read_u32();
+                let mut operations = Vec::new();
+                for _ in 0..count {
+                    operations.push(OperationInfo::decode(src)?);
+                }
+                Ok(Self::NowOperations(operations))
+            }
+            8 => Ok(Self::NowEvent(OperationEvent::decode(src)?)),
+            9 => Ok(Self::NowDiagnostics(NowDiagnostics::decode(src)?)),
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag")),
         }
     }
@@ -589,7 +959,7 @@ impl Encode for Response {
             }
             Self::Err(message) => {
                 dst.write_u8(1);
-                write_string(dst, message)
+                message.encode(dst)
             }
         }
     }
@@ -602,7 +972,7 @@ impl Encode for Response {
         1 /* tag */
             + match self {
                 Self::Ok(payload) => payload.size(),
-                Self::Err(message) => string_size(message),
+                Self::Err(error) => error.size(),
             }
     }
 }
@@ -612,7 +982,7 @@ impl Decode<'_> for Response {
         ensure_size!(in: src, size: 1);
         match src.read_u8() {
             0 => Ok(Self::Ok(Payload::decode(src)?)),
-            1 => Ok(Self::Err(read_string(src)?)),
+            1 => Ok(Self::Err(AgentError::decode(src)?)),
             _ => Err(ironrdp_core::invalid_field_err!("response", "unknown tag")),
         }
     }
@@ -688,6 +1058,44 @@ impl Encode for Request {
                 dst.write_u16(*width);
                 dst.write_u16(*height);
             }
+            Self::NowCapabilities => dst.write_u8(12),
+            Self::NowRun { command, directory } => {
+                dst.write_u8(13);
+                write_string(dst, command)?;
+                write_opt_string(dst, directory.as_deref())?;
+            }
+            Self::NowExecute(request) => {
+                dst.write_u8(14);
+                request.encode(dst)?;
+            }
+            Self::NowCancel { operation_id } => {
+                dst.write_u8(15);
+                dst.write_u64(*operation_id);
+            }
+            Self::NowList => dst.write_u8(16),
+            Self::NowStatus { operation_id } => {
+                dst.write_u8(17);
+                dst.write_u64(*operation_id);
+            }
+            Self::NowAttach {
+                operation_id,
+                after_sequence,
+            } => {
+                dst.write_u8(18);
+                dst.write_u64(*operation_id);
+                write_opt_u64(dst, *after_sequence)?;
+            }
+            Self::NowStdin {
+                operation_id,
+                data,
+                last,
+            } => {
+                dst.write_u8(19);
+                dst.write_u64(*operation_id);
+                write_bytes(dst, data)?;
+                write_bool(dst, *last)?;
+            }
+            Self::NowDiagnostics => dst.write_u8(20),
         }
         Ok(())
     }
@@ -702,7 +1110,12 @@ impl Encode for Request {
                 Self::Connect { properties, log_directive } => {
                     propertyset::size(properties) + opt_string_size(log_directive.as_deref())
                 }
-                Self::Disconnect | Self::Status | Self::Screenshot => 0,
+                Self::Disconnect
+                | Self::Status
+                | Self::Screenshot
+                | Self::NowCapabilities
+                | Self::NowList
+                | Self::NowDiagnostics => 0,
                 Self::QueryProps { filter } => 1 /* presence */ + filter.as_ref().map_or(0, Encode::size),
                 Self::QueryLogs { substring, last } => {
                     opt_string_size(substring.as_deref()) + 1 /* presence */ + last.map_or(0, |_| 4)
@@ -713,6 +1126,11 @@ impl Encode for Request {
                 Self::KeyScancode { .. } => 2 /* scancode */ + 1 /* pressed */,
                 Self::KeyUnicode { .. } => 4 /* ch */ + 1 /* pressed */,
                 Self::Resize { .. } => 2 /* width */ + 2 /* height */,
+                Self::NowRun { command, directory } => string_size(command) + opt_string_size(directory.as_deref()),
+                Self::NowExecute(request) => request.size(),
+                Self::NowCancel { .. } | Self::NowStatus { .. } => 8,
+                Self::NowAttach { after_sequence, .. } => 8 /* operation_id */ + opt_u64_size(*after_sequence),
+                Self::NowStdin { data, .. } => 8 /* operation_id */ + bytes_size(data) + 1 /* last */,
             }
     }
 }
@@ -789,9 +1207,517 @@ impl Decode<'_> for Request {
                 let height = src.read_u16();
                 Ok(Self::Resize { width, height })
             }
+            12 => Ok(Self::NowCapabilities),
+            13 => Ok(Self::NowRun {
+                command: read_string(src)?,
+                directory: read_opt_string(src)?,
+            }),
+            14 => Ok(Self::NowExecute(NowExecutionRequest::decode(src)?)),
+            15 => {
+                ensure_size!(in: src, size: 8);
+                Ok(Self::NowCancel {
+                    operation_id: src.read_u64(),
+                })
+            }
+            16 => Ok(Self::NowList),
+            17 => {
+                ensure_size!(in: src, size: 8);
+                Ok(Self::NowStatus {
+                    operation_id: src.read_u64(),
+                })
+            }
+            18 => {
+                ensure_size!(in: src, size: 8);
+                let operation_id = src.read_u64();
+                let after_sequence = read_opt_u64(src)?;
+                Ok(Self::NowAttach {
+                    operation_id,
+                    after_sequence,
+                })
+            }
+            19 => {
+                ensure_size!(in: src, size: 8);
+                let operation_id = src.read_u64();
+                let data = read_bytes(src)?;
+                let last = read_bool(src)?;
+                Ok(Self::NowStdin {
+                    operation_id,
+                    data,
+                    last,
+                })
+            }
+            20 => Ok(Self::NowDiagnostics),
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag")),
         }
     }
 }
 
 impl_pdu_pod!(Request);
+
+// ── NOW IPC codec ──────────────────────────────────────────────────────────
+
+fn write_error_category(dst: &mut WriteCursor<'_>, category: AgentErrorCategory) {
+    dst.write_u8(match category {
+        AgentErrorCategory::InvalidRequest => 0,
+        AgentErrorCategory::Unavailable => 1,
+        AgentErrorCategory::Conflict => 2,
+        AgentErrorCategory::Transport => 3,
+        AgentErrorCategory::Remote => 4,
+        AgentErrorCategory::Internal => 5,
+    });
+}
+
+fn read_error_category(src: &mut ReadCursor<'_>) -> DecodeResult<AgentErrorCategory> {
+    ensure_size!(in: src, size: 1);
+    match src.read_u8() {
+        0 => Ok(AgentErrorCategory::InvalidRequest),
+        1 => Ok(AgentErrorCategory::Unavailable),
+        2 => Ok(AgentErrorCategory::Conflict),
+        3 => Ok(AgentErrorCategory::Transport),
+        4 => Ok(AgentErrorCategory::Remote),
+        5 => Ok(AgentErrorCategory::Internal),
+        _ => Err(ironrdp_core::invalid_field_err!("agent error category", "unknown tag")),
+    }
+}
+
+impl Encode for AgentError {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        write_error_category(dst, self.category);
+        write_string(dst, &self.message)
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::AgentError"
+    }
+
+    fn size(&self) -> usize {
+        1 /* category */ + string_size(&self.message)
+    }
+}
+
+impl Decode<'_> for AgentError {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        Ok(Self {
+            category: read_error_category(src)?,
+            message: read_string(src)?,
+        })
+    }
+}
+
+impl_pdu_pod!(AgentError);
+
+fn write_execution_kind(dst: &mut WriteCursor<'_>, kind: NowExecutionKind) {
+    dst.write_u8(match kind {
+        NowExecutionKind::Process => 0,
+        NowExecutionKind::Batch => 1,
+        NowExecutionKind::PowerShell => 2,
+        NowExecutionKind::Pwsh => 3,
+    });
+}
+
+fn read_execution_kind(src: &mut ReadCursor<'_>) -> DecodeResult<NowExecutionKind> {
+    ensure_size!(in: src, size: 1);
+    match src.read_u8() {
+        0 => Ok(NowExecutionKind::Process),
+        1 => Ok(NowExecutionKind::Batch),
+        2 => Ok(NowExecutionKind::PowerShell),
+        3 => Ok(NowExecutionKind::Pwsh),
+        _ => Err(ironrdp_core::invalid_field_err!("NOW execution kind", "unknown tag")),
+    }
+}
+
+impl Encode for NowExecutionRequest {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        write_execution_kind(dst, self.kind);
+        write_string(dst, &self.command)?;
+        write_opt_string(dst, self.parameters.as_deref())?;
+        write_opt_string(dst, self.directory.as_deref())?;
+        match &self.stdin {
+            Some(data) => {
+                dst.write_u8(1);
+                write_bytes(dst, data)?;
+            }
+            None => dst.write_u8(0),
+        }
+        write_opt_u64(dst, self.timeout_ms)?;
+        write_bool(dst, self.detached)?;
+        write_bool(dst, self.no_profile)?;
+        write_bool(dst, self.non_interactive)
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::NowExecutionRequest"
+    }
+
+    fn size(&self) -> usize {
+        1 /* kind */
+            + string_size(&self.command)
+            + opt_string_size(self.parameters.as_deref())
+            + opt_string_size(self.directory.as_deref())
+            + 1 /* stdin presence */
+            + self.stdin.as_ref().map_or(0, |data| bytes_size(data))
+            + opt_u64_size(self.timeout_ms)
+            + 1 /* detached */
+            + 1 /* no_profile */
+            + 1 /* non_interactive */
+    }
+}
+
+impl Decode<'_> for NowExecutionRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let kind = read_execution_kind(src)?;
+        let command = read_string(src)?;
+        let parameters = read_opt_string(src)?;
+        let directory = read_opt_string(src)?;
+        ensure_size!(in: src, size: 1);
+        let stdin = match src.read_u8() {
+            0 => None,
+            1 => Some(read_bytes(src)?),
+            _ => return Err(ironrdp_core::invalid_field_err!("NOW stdin", "invalid presence flag")),
+        };
+        Ok(Self {
+            kind,
+            command,
+            parameters,
+            directory,
+            stdin,
+            timeout_ms: read_opt_u64(src)?,
+            detached: read_bool(src)?,
+            no_profile: read_bool(src)?,
+            non_interactive: read_bool(src)?,
+        })
+    }
+}
+
+impl_pdu_pod!(NowExecutionRequest);
+
+fn write_operation_state(dst: &mut WriteCursor<'_>, state: OperationState) {
+    dst.write_u8(match state {
+        OperationState::Running => 0,
+        OperationState::Cancelling => 1,
+        OperationState::Completed => 2,
+        OperationState::Cancelled => 3,
+        OperationState::Failed => 4,
+        OperationState::Detached => 5,
+    });
+}
+
+fn read_operation_state(src: &mut ReadCursor<'_>) -> DecodeResult<OperationState> {
+    ensure_size!(in: src, size: 1);
+    match src.read_u8() {
+        0 => Ok(OperationState::Running),
+        1 => Ok(OperationState::Cancelling),
+        2 => Ok(OperationState::Completed),
+        3 => Ok(OperationState::Cancelled),
+        4 => Ok(OperationState::Failed),
+        5 => Ok(OperationState::Detached),
+        _ => Err(ironrdp_core::invalid_field_err!("operation state", "unknown tag")),
+    }
+}
+
+impl Encode for OperationInfo {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.id);
+        write_execution_kind(dst, self.kind);
+        write_operation_state(dst, self.state);
+        write_bool(dst, self.detached)?;
+        match self.exit_code {
+            Some(exit_code) => {
+                dst.write_u8(1);
+                dst.write_u32(exit_code);
+            }
+            None => dst.write_u8(0),
+        }
+        match &self.error {
+            Some(error) => {
+                dst.write_u8(1);
+                error.encode(dst)?;
+            }
+            None => dst.write_u8(0),
+        }
+        dst.write_u64(self.retained_output_bytes);
+        dst.write_u64(self.next_sequence);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::OperationInfo"
+    }
+
+    fn size(&self) -> usize {
+        8 /* id */
+            + 1 /* kind */
+            + 1 /* state */
+            + 1 /* detached */
+            + 1 /* exit-code presence */
+            + self.exit_code.map_or(0, |_| 4)
+            + 1 /* error presence */
+            + self.error.as_ref().map_or(0, Encode::size)
+            + 8 /* retained_output_bytes */
+            + 8 /* next_sequence */
+    }
+}
+
+impl Decode<'_> for OperationInfo {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 8);
+        let id = src.read_u64();
+        let kind = read_execution_kind(src)?;
+        let state = read_operation_state(src)?;
+        let detached = read_bool(src)?;
+        ensure_size!(in: src, size: 1);
+        let exit_code = match src.read_u8() {
+            0 => None,
+            1 => {
+                ensure_size!(in: src, size: 4);
+                Some(src.read_u32())
+            }
+            _ => return Err(ironrdp_core::invalid_field_err!("exit code", "invalid presence flag")),
+        };
+        ensure_size!(in: src, size: 1);
+        let error = match src.read_u8() {
+            0 => None,
+            1 => Some(AgentError::decode(src)?),
+            _ => {
+                return Err(ironrdp_core::invalid_field_err!(
+                    "operation error",
+                    "invalid presence flag"
+                ));
+            }
+        };
+        ensure_size!(in: src, size: 16);
+        Ok(Self {
+            id,
+            kind,
+            state,
+            detached,
+            exit_code,
+            error,
+            retained_output_bytes: src.read_u64(),
+            next_sequence: src.read_u64(),
+        })
+    }
+}
+
+impl_pdu_pod!(OperationInfo);
+
+fn write_stream(dst: &mut WriteCursor<'_>, stream: NowStream) {
+    dst.write_u8(match stream {
+        NowStream::Stdout => 0,
+        NowStream::Stderr => 1,
+    });
+}
+
+fn read_stream(src: &mut ReadCursor<'_>) -> DecodeResult<NowStream> {
+    ensure_size!(in: src, size: 1);
+    match src.read_u8() {
+        0 => Ok(NowStream::Stdout),
+        1 => Ok(NowStream::Stderr),
+        _ => Err(ironrdp_core::invalid_field_err!("NOW output stream", "unknown tag")),
+    }
+}
+
+impl Encode for OperationEventKind {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        match self {
+            Self::Started => dst.write_u8(0),
+            Self::Output { stream, data, last } => {
+                dst.write_u8(1);
+                write_stream(dst, *stream);
+                write_bytes(dst, data)?;
+                write_bool(dst, *last)?;
+            }
+            Self::CancelAccepted => dst.write_u8(2),
+            Self::Completed { exit_code } => {
+                dst.write_u8(3);
+                dst.write_u32(*exit_code);
+            }
+            Self::Cancelled => dst.write_u8(4),
+            Self::Failed(error) => {
+                dst.write_u8(5);
+                error.encode(dst)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::OperationEventKind"
+    }
+
+    fn size(&self) -> usize {
+        1 /* tag */
+            + match self {
+                Self::Started | Self::CancelAccepted | Self::Cancelled => 0,
+                Self::Output { data, .. } => 1 /* stream */ + bytes_size(data) + 1 /* last */,
+                Self::Completed { .. } => 4,
+                Self::Failed(error) => error.size(),
+            }
+    }
+}
+
+impl Decode<'_> for OperationEventKind {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 1);
+        match src.read_u8() {
+            0 => Ok(Self::Started),
+            1 => Ok(Self::Output {
+                stream: read_stream(src)?,
+                data: read_bytes(src)?,
+                last: read_bool(src)?,
+            }),
+            2 => Ok(Self::CancelAccepted),
+            3 => {
+                ensure_size!(in: src, size: 4);
+                Ok(Self::Completed {
+                    exit_code: src.read_u32(),
+                })
+            }
+            4 => Ok(Self::Cancelled),
+            5 => Ok(Self::Failed(AgentError::decode(src)?)),
+            _ => Err(ironrdp_core::invalid_field_err!("operation event", "unknown tag")),
+        }
+    }
+}
+
+impl_pdu_pod!(OperationEventKind);
+
+impl Encode for OperationEvent {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.operation_id);
+        dst.write_u64(self.sequence);
+        self.kind.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::OperationEvent"
+    }
+
+    fn size(&self) -> usize {
+        8 /* operation_id */ + 8 /* sequence */ + self.kind.size()
+    }
+}
+
+impl Decode<'_> for OperationEvent {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 16);
+        Ok(Self {
+            operation_id: src.read_u64(),
+            sequence: src.read_u64(),
+            kind: OperationEventKind::decode(src)?,
+        })
+    }
+}
+
+impl_pdu_pod!(OperationEvent);
+
+impl Encode for NowCapabilities {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u16(self.version_major);
+        dst.write_u16(self.version_minor);
+        write_opt_u64(dst, self.heartbeat_ms)?;
+        for value in [
+            self.run,
+            self.process,
+            self.batch,
+            self.powershell,
+            self.pwsh,
+            self.io_redirection,
+            self.unicode_console,
+        ] {
+            write_bool(dst, value)?;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::NowCapabilities"
+    }
+
+    fn size(&self) -> usize {
+        2 /* version major */
+            + 2 /* version minor */
+            + opt_u64_size(self.heartbeat_ms)
+            + 7 /* feature flags */
+    }
+}
+
+impl Decode<'_> for NowCapabilities {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 4);
+        let version_major = src.read_u16();
+        let version_minor = src.read_u16();
+        Ok(Self {
+            version_major,
+            version_minor,
+            heartbeat_ms: read_opt_u64(src)?,
+            run: read_bool(src)?,
+            process: read_bool(src)?,
+            batch: read_bool(src)?,
+            powershell: read_bool(src)?,
+            pwsh: read_bool(src)?,
+            io_redirection: read_bool(src)?,
+            unicode_console: read_bool(src)?,
+        })
+    }
+}
+
+impl_pdu_pod!(NowCapabilities);
+
+impl Encode for NowDiagnostics {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        write_bool(dst, self.endpoint_allocated)?;
+        write_bool(dst, self.connected)?;
+        match &self.capabilities {
+            Some(capabilities) => {
+                dst.write_u8(1);
+                capabilities.encode(dst)?;
+            }
+            None => dst.write_u8(0),
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::NowDiagnostics"
+    }
+
+    fn size(&self) -> usize {
+        1 /* endpoint_allocated */
+            + 1 /* connected */
+            + 1 /* capabilities presence */
+            + self.capabilities.as_ref().map_or(0, Encode::size)
+    }
+}
+
+impl Decode<'_> for NowDiagnostics {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let endpoint_allocated = read_bool(src)?;
+        let connected = read_bool(src)?;
+        ensure_size!(in: src, size: 1);
+        let capabilities = match src.read_u8() {
+            0 => None,
+            1 => Some(NowCapabilities::decode(src)?),
+            _ => {
+                return Err(ironrdp_core::invalid_field_err!(
+                    "NOW capabilities",
+                    "invalid presence flag"
+                ));
+            }
+        };
+        Ok(Self {
+            endpoint_allocated,
+            connected,
+            capabilities,
+        })
+    }
+}
+
+impl_pdu_pod!(NowDiagnostics);

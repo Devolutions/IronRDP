@@ -7,8 +7,11 @@
 use core::fmt::Debug;
 
 use ironrdp_agent::ipc::{
-    ConnState, KeyFilter, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response, StatusInfo,
+    AgentError, AgentErrorCategory, ConnState, KeyFilter, NowCapabilities, NowDiagnostics, NowExecutionKind,
+    NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload,
+    PropValue, PropertyDump, PropertyEntry, Request, Response, StatusInfo,
 };
+use ironrdp_agent::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoint, RECONNECT_ENDPOINT_TIMEOUT};
 use ironrdp_agent::wire;
 use ironrdp_core::{Decode, DecodeOwned, Encode, decode, decode_owned, encode_vec};
 use ironrdp_input::MouseButton;
@@ -81,6 +84,35 @@ fn request_variants_round_trip() {
             ch: '\u{00e9}',
             pressed: true,
         },
+        Request::NowCapabilities,
+        Request::NowRun {
+            command: "echo secret".to_owned(),
+            directory: Some("C:\\Temp".to_owned()),
+        },
+        Request::NowExecute(NowExecutionRequest {
+            kind: NowExecutionKind::PowerShell,
+            command: "$env:SECRET".to_owned(),
+            parameters: None,
+            directory: None,
+            stdin: Some(vec![0, 0xFF]),
+            timeout_ms: Some(3_000),
+            detached: false,
+            no_profile: true,
+            non_interactive: true,
+        }),
+        Request::NowCancel { operation_id: 42 },
+        Request::NowList,
+        Request::NowStatus { operation_id: 42 },
+        Request::NowAttach {
+            operation_id: 42,
+            after_sequence: Some(7),
+        },
+        Request::NowStdin {
+            operation_id: 42,
+            data: vec![0, 0xFF],
+            last: true,
+        },
+        Request::NowDiagnostics,
     ];
 
     for request in &requests {
@@ -128,6 +160,59 @@ fn response_variants_round_trip() {
             png: vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
         }),
         Response::Ok(Payload::Empty),
+        Response::Err(AgentError {
+            category: AgentErrorCategory::Remote,
+            message: "remote command failed".to_owned(),
+        }),
+        Response::Ok(Payload::NowCapabilities(NowCapabilities {
+            version_major: 1,
+            version_minor: 4,
+            heartbeat_ms: Some(60_000),
+            run: true,
+            process: true,
+            batch: true,
+            powershell: true,
+            pwsh: true,
+            io_redirection: true,
+            unicode_console: true,
+        })),
+        Response::Ok(Payload::NowOperation(OperationInfo {
+            id: 7,
+            kind: NowExecutionKind::Batch,
+            state: OperationState::Completed,
+            detached: false,
+            exit_code: Some(17),
+            error: None,
+            retained_output_bytes: 3,
+            next_sequence: 2,
+        })),
+        Response::Ok(Payload::NowOperations(vec![OperationInfo {
+            id: 8,
+            kind: NowExecutionKind::Process,
+            state: OperationState::Failed,
+            detached: false,
+            exit_code: None,
+            error: Some(AgentError {
+                category: AgentErrorCategory::Transport,
+                message: "now worker closed".to_owned(),
+            }),
+            retained_output_bytes: 0,
+            next_sequence: 1,
+        }])),
+        Response::Ok(Payload::NowEvent(OperationEvent {
+            operation_id: 7,
+            sequence: 1,
+            kind: OperationEventKind::Output {
+                stream: NowStream::Stderr,
+                data: vec![0, 0xFF],
+                last: true,
+            },
+        })),
+        Response::Ok(Payload::NowDiagnostics(NowDiagnostics {
+            endpoint_allocated: true,
+            connected: false,
+            capabilities: None,
+        })),
     ];
 
     for response in &responses {
@@ -173,4 +258,43 @@ fn bytes_wire_round_trips() {
     let mut read_cursor = ironrdp_core::ReadCursor::new(&buf);
     let decoded = wire::read_bytes(&mut read_cursor).expect("read_bytes");
     assert_eq!(original, decoded, "bytes wire round-trip mismatch");
+}
+
+#[test]
+fn now_request_debug_redacts_command_and_stdin() {
+    let request = Request::NowExecute(NowExecutionRequest {
+        kind: NowExecutionKind::Batch,
+        command: "secret-command".to_owned(),
+        parameters: None,
+        directory: None,
+        stdin: Some(b"secret-stdin".to_vec()),
+        timeout_ms: None,
+        detached: false,
+        no_profile: false,
+        non_interactive: false,
+    });
+
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("secret-command"));
+    assert!(!debug.contains("secret-stdin"));
+}
+
+#[test]
+fn remote_exit_codes_follow_the_cli_contract() {
+    assert_eq!(ironrdp_agent::cli::remote_exit_status(0), 0);
+    assert_eq!(ironrdp_agent::cli::remote_exit_status(1), 1);
+    assert_eq!(ironrdp_agent::cli::remote_exit_status(255), 255);
+    assert_eq!(ironrdp_agent::cli::remote_exit_status(256), 255);
+    assert_eq!(ironrdp_agent::cli::remote_exit_status(u32::MAX), 255);
+}
+
+#[test]
+fn now_endpoint_is_per_session_and_uses_documented_deadlines() {
+    let first = NowEndpoint::new();
+    let second = NowEndpoint::new();
+
+    assert_ne!(first.pipe_name(), second.pipe_name());
+    assert_eq!(first.dvc_proxy_info().channel_name, DVC_CHANNEL_NAME);
+    assert_eq!(INITIAL_ENDPOINT_TIMEOUT.as_secs(), 30);
+    assert_eq!(RECONNECT_ENDPOINT_TIMEOUT.as_secs(), 10);
 }

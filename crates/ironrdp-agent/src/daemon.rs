@@ -18,9 +18,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc::{
-    ConnState, KeyFilter, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response, StatusInfo,
+    ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response,
+    StatusInfo,
 };
 use crate::logbuf::{self, LogBuffer};
+use crate::now::NowEndpoint;
+use crate::operations::{OperationAttachment, OperationManager};
 use crate::transport::{Endpoint, Listener, read_message, write_message};
 
 /// Binds the IPC endpoint and serves requests until a shutdown signal is received.
@@ -51,7 +54,7 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()>
     let logs = LogBuffer::new();
 
     let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
-    let daemon = Daemon::new(logs, overlay);
+    let daemon = Arc::new(Daemon::new(logs, overlay));
 
     info!(%endpoint, "Daemon listening");
 
@@ -59,9 +62,12 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()>
         tokio::select! {
             result = listener.accept() => {
                 let stream = result.context("accept IPC connection")?;
-                if let Err(error) = handle_connection(stream, &daemon).await {
-                    debug!(error = format!("{error:#}"), "IPC connection error");
-                }
+                let daemon = Arc::clone(&daemon);
+                tokio::spawn(async move {
+                    if let Err(error) = handle_connection(stream, daemon.as_ref()).await {
+                        debug!(error = format!("{error:#}"), "IPC connection error");
+                    }
+                });
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("Received shutdown signal, stopping");
@@ -79,10 +85,34 @@ where
 {
     let request: Request = read_message(&mut stream).await?;
     trace!(?request, "Handling IPC request");
-    let response = daemon.handle(request);
-    trace!(ok = response.is_ok(), "Replying to IPC request");
-    write_message(&mut stream, &response).await?;
+    let response = daemon.handle(request).await;
+    trace!(ok = response.response().is_ok(), "Replying to IPC request");
+    match response {
+        DaemonResponse::Single(response) => write_message(&mut stream, &response).await?,
+        DaemonResponse::Stream(response, mut attachment) => {
+            write_message(&mut stream, &response).await?;
+            for event in attachment.replay {
+                write_message(&mut stream, &Response::Ok(Payload::NowEvent(event))).await?;
+            }
+            while let Some(event) = attachment.live.recv().await {
+                write_message(&mut stream, &Response::Ok(Payload::NowEvent(event))).await?;
+            }
+        }
+    }
     Ok(())
+}
+
+enum DaemonResponse {
+    Single(Response),
+    Stream(Response, OperationAttachment),
+}
+
+impl DaemonResponse {
+    fn response(&self) -> &Response {
+        match self {
+            Self::Single(response) | Self::Stream(response, _) => response,
+        }
+    }
 }
 
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
@@ -103,6 +133,8 @@ struct Session {
     input_db: Database,
     destination: String,
     live: Arc<Mutex<Live>>,
+    now_endpoint: Arc<NowEndpoint>,
+    operations: OperationManager,
 }
 
 /// Per-session state shared with the output-consumer task.
@@ -137,41 +169,63 @@ impl Daemon {
         }
     }
 
-    fn handle(&self, request: Request) -> Response {
+    async fn handle(&self, request: Request) -> DaemonResponse {
         match request {
             Request::Connect {
                 properties,
                 log_directive,
-            } => self.connect(properties, log_directive),
-            Request::Disconnect => self.disconnect(),
-            Request::Status => self.status(),
-            Request::QueryProps { filter } => self.query_props(filter.as_ref()),
-            Request::QueryLogs { substring, last } => self.query_logs(substring.as_deref(), last),
-            Request::Screenshot => self.screenshot(),
-            Request::MouseMove { x, y } => self.input(Operation::MouseMove(MousePosition { x, y })),
-            Request::MouseButton { button, pressed } => self.input(if pressed {
+            } => DaemonResponse::Single(self.connect(properties, log_directive)),
+            Request::Disconnect => DaemonResponse::Single(self.disconnect()),
+            Request::Status => DaemonResponse::Single(self.status()),
+            Request::QueryProps { filter } => DaemonResponse::Single(self.query_props(filter.as_ref())),
+            Request::QueryLogs { substring, last } => {
+                DaemonResponse::Single(self.query_logs(substring.as_deref(), last))
+            }
+            Request::Screenshot => DaemonResponse::Single(self.screenshot()),
+            Request::MouseMove { x, y } => {
+                DaemonResponse::Single(self.input(Operation::MouseMove(MousePosition { x, y })))
+            }
+            Request::MouseButton { button, pressed } => DaemonResponse::Single(self.input(if pressed {
                 Operation::MouseButtonPressed(button)
             } else {
                 Operation::MouseButtonReleased(button)
-            }),
-            Request::Wheel { delta, horizontal } => self.input(Operation::WheelRotations(WheelRotations {
-                is_vertical: !horizontal,
-                rotation_units: delta,
             })),
+            Request::Wheel { delta, horizontal } => {
+                DaemonResponse::Single(self.input(Operation::WheelRotations(WheelRotations {
+                    is_vertical: !horizontal,
+                    rotation_units: delta,
+                })))
+            }
             Request::KeyScancode { scancode, pressed } => {
                 let scancode = Scancode::from_u16(scancode);
-                self.input(if pressed {
+                DaemonResponse::Single(self.input(if pressed {
                     Operation::KeyPressed(scancode)
                 } else {
                     Operation::KeyReleased(scancode)
-                })
+                }))
             }
-            Request::KeyUnicode { ch, pressed } => self.input(if pressed {
+            Request::KeyUnicode { ch, pressed } => DaemonResponse::Single(self.input(if pressed {
                 Operation::UnicodeKeyPressed(ch)
             } else {
                 Operation::UnicodeKeyReleased(ch)
-            }),
-            Request::Resize { width, height } => self.resize(width, height),
+            })),
+            Request::Resize { width, height } => DaemonResponse::Single(self.resize(width, height)),
+            Request::NowCapabilities => DaemonResponse::Single(self.now_capabilities().await),
+            Request::NowRun { command, directory } => DaemonResponse::Single(self.now_run(command, directory).await),
+            Request::NowExecute(request) => self.now_execute(request).await,
+            Request::NowCancel { operation_id } => DaemonResponse::Single(self.now_cancel(operation_id).await),
+            Request::NowList => DaemonResponse::Single(self.now_list()),
+            Request::NowStatus { operation_id } => DaemonResponse::Single(self.now_status(operation_id)),
+            Request::NowAttach {
+                operation_id,
+                after_sequence,
+            } => self.now_attach(operation_id, after_sequence),
+            Request::NowStdin {
+                operation_id,
+                data,
+                last,
+            } => DaemonResponse::Single(self.now_stdin(operation_id, data, last).await),
+            Request::NowDiagnostics => DaemonResponse::Single(self.now_diagnostics().await),
         }
     }
 
@@ -197,6 +251,9 @@ impl Daemon {
         // in particular — can be preconfigured without the (possibly untrusted) caller supplying it.
         properties.merge(&self.overlay);
 
+        // Each RDP session receives a distinct DVC endpoint. It is only contacted later by a NOW
+        // request, after the RDP engine has connected and the proxy has opened its local listener.
+        let now_endpoint = Arc::new(NowEndpoint::new());
         let builder = match ConfigBuilder::from_property_set(&properties) {
             Ok(builder) => builder,
             Err(error) => return Response::error(format!("invalid configuration: {error:#}")),
@@ -209,6 +266,7 @@ impl Daemon {
             .with_client_dir("C:\\Windows\\System32\\mstscax.dll")
             .with_platform(current_platform())
             .with_client_name(client_name())
+            .with_dvc_pipe_proxy(now_endpoint.dvc_proxy_info())
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
@@ -275,6 +333,8 @@ impl Daemon {
             input_db: Database::new(),
             destination,
             live,
+            operations: OperationManager::new(Arc::clone(&now_endpoint)),
+            now_endpoint,
         });
 
         Response::ok()
@@ -434,6 +494,141 @@ impl Daemon {
             Ok(()) => Response::ok(),
             Err(_) => Response::error("session input channel is closed"),
         }
+    }
+
+    fn operations(&self) -> Result<OperationManager, Response> {
+        self.state
+            .lock()
+            .expect("daemon state poisoned")
+            .as_ref()
+            .map(|session| session.operations.clone())
+            .ok_or_else(|| Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active RDP session"))
+    }
+
+    async fn now_capabilities(&self) -> Response {
+        let operations = match self.operations() {
+            Ok(operations) => operations,
+            Err(response) => return response,
+        };
+        match operations.capabilities().await {
+            Ok(capabilities) => Response::Ok(Payload::NowCapabilities(capabilities)),
+            Err(error) => Response::Err(error),
+        }
+    }
+
+    async fn now_run(&self, command: String, directory: Option<String>) -> Response {
+        let operations = match self.operations() {
+            Ok(operations) => operations,
+            Err(response) => return response,
+        };
+        match operations.run(command, directory).await {
+            Ok(()) => Response::ok(),
+            Err(error) => Response::Err(error),
+        }
+    }
+
+    async fn now_execute(&self, request: crate::ipc::NowExecutionRequest) -> DaemonResponse {
+        let operations = match self.operations() {
+            Ok(operations) => operations,
+            Err(response) => return DaemonResponse::Single(response),
+        };
+        match operations.execute(request).await {
+            Ok(info) if info.detached => DaemonResponse::Single(Response::Ok(Payload::NowOperation(info))),
+            Ok(info) => match operations.attach(info.id, None) {
+                Ok(attachment) => DaemonResponse::Stream(Response::Ok(Payload::NowOperation(info)), attachment),
+                Err(error) => DaemonResponse::Single(Response::Err(error)),
+            },
+            Err(error) => DaemonResponse::Single(Response::Err(error)),
+        }
+    }
+
+    async fn now_cancel(&self, operation_id: u64) -> Response {
+        let operations = match self.operations() {
+            Ok(operations) => operations,
+            Err(response) => return response,
+        };
+        match operations.cancel(operation_id).await {
+            Ok(()) => Response::ok(),
+            Err(error) => Response::Err(error),
+        }
+    }
+
+    fn now_list(&self) -> Response {
+        match self.operations() {
+            Ok(operations) => Response::Ok(Payload::NowOperations(operations.list())),
+            Err(response) => response,
+        }
+    }
+
+    fn now_status(&self, operation_id: u64) -> Response {
+        match self.operations().and_then(|operations| {
+            operations
+                .status(operation_id)
+                .map(|operation| Response::Ok(Payload::NowOperation(operation)))
+                .map_err(Response::Err)
+        }) {
+            Ok(response) | Err(response) => response,
+        }
+    }
+
+    fn now_attach(&self, operation_id: u64, after_sequence: Option<u64>) -> DaemonResponse {
+        match self.operations().and_then(|operations| {
+            operations
+                .attach(operation_id, after_sequence)
+                .map(|attachment| (attachment.info.clone(), attachment))
+                .map_err(Response::Err)
+        }) {
+            Ok((info, attachment)) => DaemonResponse::Stream(Response::Ok(Payload::NowOperation(info)), attachment),
+            Err(response) => DaemonResponse::Single(response),
+        }
+    }
+
+    async fn now_stdin(&self, operation_id: u64, data: Vec<u8>, last: bool) -> Response {
+        let operations = match self.operations() {
+            Ok(operations) => operations,
+            Err(response) => return response,
+        };
+        match operations.send_stdin(operation_id, data, last).await {
+            Ok(()) => Response::ok(),
+            Err(error) => Response::Err(error),
+        }
+    }
+
+    async fn now_diagnostics(&self) -> Response {
+        let endpoint = match self
+            .state
+            .lock()
+            .expect("daemon state poisoned")
+            .as_ref()
+            .map(|session| Arc::clone(&session.now_endpoint))
+        {
+            Some(endpoint) => endpoint,
+            None => {
+                return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active RDP session");
+            }
+        };
+        let connected = endpoint.is_connected().await;
+        let capabilities = endpoint.cached_capabilities().await.map(|capabilities| NowDiagnostics {
+            endpoint_allocated: true,
+            connected,
+            capabilities: Some(crate::ipc::NowCapabilities {
+                version_major: capabilities.version_major,
+                version_minor: capabilities.version_minor,
+                heartbeat_ms: capabilities.heartbeat_ms,
+                run: capabilities.run,
+                process: capabilities.process,
+                batch: capabilities.batch,
+                powershell: capabilities.powershell,
+                pwsh: capabilities.pwsh,
+                io_redirection: capabilities.io_redirection,
+                unicode_console: capabilities.unicode_console,
+            }),
+        });
+        Response::Ok(Payload::NowDiagnostics(capabilities.unwrap_or(NowDiagnostics {
+            endpoint_allocated: true,
+            connected,
+            capabilities: None,
+        })))
     }
 }
 

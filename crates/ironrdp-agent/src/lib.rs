@@ -13,6 +13,8 @@
 pub mod cli;
 pub mod daemon;
 pub mod ipc;
+pub mod now;
+pub mod operations;
 pub mod transport;
 
 pub(crate) mod help;

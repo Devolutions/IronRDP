@@ -11,8 +11,9 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use core::str::FromStr;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use anyhow::Context as _;
 use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
@@ -20,7 +21,10 @@ use ironrdp_cfg::{PropertySetExt as _, TargetAddr};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
-use crate::ipc::{KeyFilter, Payload, PropValue, Request, Response};
+use crate::ipc::{
+    KeyFilter, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
+    Payload, PropValue, Request, Response,
+};
 use crate::transport::{self, Endpoint};
 
 /// IronRDP agent: a CLI-driven, daemon-backed RDP client.
@@ -97,6 +101,145 @@ enum Command {
         #[arg(long)]
         height: u16,
     },
+    /// Execute commands over the session's NOW DVC endpoint.
+    Now(NowArgs),
+}
+
+#[derive(Args, Debug)]
+struct NowArgs {
+    /// Output format for NOW metadata and events. Human output preserves stdout/stderr bytes.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    format: OutputFormat,
+    #[command(subcommand)]
+    command: NowCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum NowCommand {
+    /// Negotiate and display supported NOW capabilities.
+    Capabilities,
+    /// Submit an untracked generic Run request.
+    Run(NowRunArgs),
+    /// Execute a Windows PowerShell command.
+    Powershell(PowerShellArgs),
+    /// Execute a PowerShell 7 command.
+    Pwsh(PowerShellArgs),
+    /// Execute a Process or Batch request.
+    Exec(NowExecArgs),
+    /// Cancel an active tracked operation.
+    Cancel { operation_id: u64 },
+    /// List retained daemon-owned operations.
+    List,
+    /// Show one retained operation.
+    Status { operation_id: u64 },
+    /// Replay retained output and follow a running operation.
+    Attach {
+        operation_id: u64,
+        /// Only replay events with a sequence greater than this value.
+        #[arg(long)]
+        after_sequence: Option<u64>,
+    },
+    /// Forward a raw stdin chunk to an active operation.
+    Stdin(NowStdinArgs),
+    /// Display the local NOW endpoint state without making a new connection.
+    Diagnostics,
+}
+
+#[derive(Args, Debug)]
+struct NowRunArgs {
+    /// Command line for the remote agent.
+    command: String,
+    /// Optional remote working directory.
+    #[arg(long)]
+    directory: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct NowExecArgs {
+    #[command(subcommand)]
+    command: NowExecCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum NowExecCommand {
+    /// Execute a program via Windows CreateProcess.
+    Process(ProcessArgs),
+    /// Execute a Windows batch command.
+    Batch(CommandArgs),
+}
+
+#[derive(Args, Debug)]
+struct ProcessArgs {
+    /// Program filename.
+    filename: String,
+    /// Command-line parameters passed to the program.
+    #[arg(long)]
+    parameters: Option<String>,
+    #[command(flatten)]
+    common: CommonExecutionArgs,
+}
+
+#[derive(Args, Debug)]
+struct PowerShellArgs {
+    /// PowerShell script or command.
+    command: String,
+    /// Opt out of the default `-NoProfile` behavior.
+    #[arg(long)]
+    profile: bool,
+    /// Opt out of the default `-NonInteractive` behavior.
+    #[arg(long)]
+    interactive: bool,
+    #[command(flatten)]
+    common: CommonExecutionArgs,
+}
+
+#[derive(Args, Debug)]
+struct CommandArgs {
+    /// Batch command.
+    command: String,
+    #[command(flatten)]
+    common: CommonExecutionArgs,
+}
+
+#[derive(Args, Debug)]
+struct CommonExecutionArgs {
+    /// Optional remote working directory.
+    #[arg(long)]
+    directory: Option<String>,
+    /// Read initial stdin bytes from this file. Use `-` for this CLI's standard input.
+    #[arg(long, value_name = "FILE")]
+    stdin: Option<PathBuf>,
+    /// Remote execution timeout in seconds.
+    #[arg(long)]
+    timeout: Option<u64>,
+    /// Submit the command detached. Detached commands cannot receive stdin, output, or results.
+    #[arg(long)]
+    detached: bool,
+    /// Write the daemon-owned operation ID to this file after local submission.
+    #[arg(long)]
+    operation_id_file: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct NowStdinArgs {
+    /// Daemon-owned operation identity.
+    operation_id: u64,
+    /// Read raw bytes from this file. Use `-` for this CLI's standard input.
+    #[arg(long, value_name = "FILE")]
+    input: PathBuf,
+    /// Mark this chunk as the final stdin chunk.
+    #[arg(long)]
+    last: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum OutputFormat {
+    /// Human-readable metadata; raw stdout/stderr are written unchanged.
+    Human,
+    /// One JSON document for the reply or completed stream.
+    Json,
+    /// One JSON object per reply/event.
+    Ndjson,
 }
 
 #[derive(Args, Debug)]
@@ -268,6 +411,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
             return crate::daemon::run(endpoint, overlay).await;
         }
+        Command::Now(args) => {
+            if let Some(exit_code) = run_now(&endpoint, args).await? {
+                if exit_code != 0 {
+                    std::process::exit(remote_exit_status(exit_code));
+                }
+            }
+            return Ok(());
+        }
         Command::Connect(args) => build_connect_request(args)?,
         Command::Disconnect => Request::Disconnect,
         Command::Status => Request::Status,
@@ -365,6 +516,435 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
     })
 }
 
+async fn run_now(endpoint: &Endpoint, args: NowArgs) -> anyhow::Result<Option<u32>> {
+    let NowArgs { format, command } = args;
+    match command {
+        NowCommand::Capabilities => now_single(endpoint, Request::NowCapabilities, format).await,
+        NowCommand::Run(args) => {
+            now_single(
+                endpoint,
+                Request::NowRun {
+                    command: args.command,
+                    directory: args.directory,
+                },
+                format,
+            )
+            .await
+        }
+        NowCommand::Powershell(args) => {
+            let operation_id_file = args.common.operation_id_file.clone();
+            let request = build_now_execution(
+                NowExecutionKind::PowerShell,
+                args.command,
+                None,
+                args.common,
+                !args.profile,
+                !args.interactive,
+            )?;
+            now_execution(endpoint, request, format, operation_id_file).await
+        }
+        NowCommand::Pwsh(args) => {
+            let operation_id_file = args.common.operation_id_file.clone();
+            let request = build_now_execution(
+                NowExecutionKind::Pwsh,
+                args.command,
+                None,
+                args.common,
+                !args.profile,
+                !args.interactive,
+            )?;
+            now_execution(endpoint, request, format, operation_id_file).await
+        }
+        NowCommand::Exec(NowExecArgs {
+            command: NowExecCommand::Process(args),
+        }) => {
+            let operation_id_file = args.common.operation_id_file.clone();
+            let request = build_now_execution(
+                NowExecutionKind::Process,
+                args.filename,
+                args.parameters,
+                args.common,
+                false,
+                false,
+            )?;
+            now_execution(endpoint, request, format, operation_id_file).await
+        }
+        NowCommand::Exec(NowExecArgs {
+            command: NowExecCommand::Batch(args),
+        }) => {
+            let operation_id_file = args.common.operation_id_file.clone();
+            let request = build_now_execution(NowExecutionKind::Batch, args.command, None, args.common, false, false)?;
+            now_execution(endpoint, request, format, operation_id_file).await
+        }
+        NowCommand::Cancel { operation_id } => now_single(endpoint, Request::NowCancel { operation_id }, format).await,
+        NowCommand::List => now_single(endpoint, Request::NowList, format).await,
+        NowCommand::Status { operation_id } => now_single(endpoint, Request::NowStatus { operation_id }, format).await,
+        NowCommand::Attach {
+            operation_id,
+            after_sequence,
+        } => {
+            now_stream(
+                endpoint,
+                Request::NowAttach {
+                    operation_id,
+                    after_sequence,
+                },
+                format,
+                None,
+                true,
+            )
+            .await
+        }
+        NowCommand::Stdin(args) => {
+            now_single(
+                endpoint,
+                Request::NowStdin {
+                    operation_id: args.operation_id,
+                    data: read_input(&args.input)?,
+                    last: args.last,
+                },
+                format,
+            )
+            .await
+        }
+        NowCommand::Diagnostics => now_single(endpoint, Request::NowDiagnostics, format).await,
+    }
+}
+
+fn build_now_execution(
+    kind: NowExecutionKind,
+    command: String,
+    parameters: Option<String>,
+    args: CommonExecutionArgs,
+    no_profile: bool,
+    non_interactive: bool,
+) -> anyhow::Result<NowExecutionRequest> {
+    let timeout_ms = args
+        .timeout
+        .map(|seconds| {
+            seconds
+                .checked_mul(1_000)
+                .ok_or_else(|| anyhow::anyhow!("timeout is too large"))
+        })
+        .transpose()?;
+    Ok(NowExecutionRequest {
+        kind,
+        command,
+        parameters,
+        directory: args.directory,
+        stdin: args.stdin.as_deref().map(read_input).transpose()?,
+        timeout_ms,
+        detached: args.detached,
+        no_profile,
+        non_interactive,
+    })
+}
+
+fn read_input(path: &Path) -> anyhow::Result<Vec<u8>> {
+    if path == Path::new("-") {
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut data).context("read standard input")?;
+        Ok(data)
+    } else {
+        std::fs::read(path).with_context(|| format!("read {}", path.display()))
+    }
+}
+
+async fn now_execution(
+    endpoint: &Endpoint,
+    request: NowExecutionRequest,
+    format: OutputFormat,
+    operation_id_file: Option<PathBuf>,
+) -> anyhow::Result<Option<u32>> {
+    if request.detached {
+        if let Some(path) = operation_id_file {
+            let response = transport::send_request(endpoint, &Request::NowExecute(request)).await?;
+            let payload = match response {
+                Response::Ok(payload) => payload,
+                Response::Err(error) => anyhow::bail!("{error}"),
+            };
+            let Payload::NowOperation(operation) = &payload else {
+                anyhow::bail!("unexpected response while writing operation ID");
+            };
+            std::fs::write(&path, format!("{}\n", operation.id))
+                .with_context(|| format!("write {}", path.display()))?;
+            print_now_payload(&payload, format)?;
+            return Ok(payload_remote_exit(&payload));
+        }
+        return now_single(endpoint, Request::NowExecute(request), format).await;
+    }
+    now_stream(endpoint, Request::NowExecute(request), format, operation_id_file, false).await
+}
+
+async fn now_single(endpoint: &Endpoint, request: Request, format: OutputFormat) -> anyhow::Result<Option<u32>> {
+    let response = transport::send_request(endpoint, &request).await?;
+    let payload = match response {
+        Response::Ok(payload) => payload,
+        Response::Err(error) => anyhow::bail!("{error}"),
+    };
+    print_now_payload(&payload, format)?;
+    Ok(payload_remote_exit(&payload))
+}
+
+async fn now_stream(
+    endpoint: &Endpoint,
+    request: Request,
+    format: OutputFormat,
+    operation_id_file: Option<PathBuf>,
+    print_initial_human: bool,
+) -> anyhow::Result<Option<u32>> {
+    let mut stream = transport::open_stream(endpoint, &request).await?;
+    let first: Response = transport::read_message(&mut stream).await?;
+    let first = match first {
+        Response::Ok(payload) => payload,
+        Response::Err(error) => anyhow::bail!("{error}"),
+    };
+
+    let mut exit_code = payload_remote_exit(&first);
+    if let Some(path) = operation_id_file {
+        let Payload::NowOperation(operation) = &first else {
+            anyhow::bail!("unexpected response while writing operation ID");
+        };
+        std::fs::write(&path, format!("{}\n", operation.id)).with_context(|| format!("write {}", path.display()))?;
+    }
+    let mut json_values = Vec::new();
+    match format {
+        OutputFormat::Human if print_initial_human => print_now_human(&first)?,
+        OutputFormat::Human => {}
+        OutputFormat::Ndjson => print_now_ndjson(&first)?,
+        OutputFormat::Json => json_values.push(now_payload_json(&first)),
+    }
+
+    loop {
+        let response: Response = match transport::read_message(&mut stream).await {
+            Ok(response) => response,
+            Err(error)
+                if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                    )
+                }) =>
+            {
+                break;
+            }
+            Err(error) => return Err(error),
+        };
+        let payload = match response {
+            Response::Ok(payload) => payload,
+            Response::Err(error) => anyhow::bail!("{error}"),
+        };
+        if let Payload::NowEvent(event) = &payload {
+            match &event.kind {
+                OperationEventKind::Completed { exit_code: code } => exit_code = Some(*code),
+                OperationEventKind::Cancelled | OperationEventKind::Failed(_) => exit_code = Some(1),
+                OperationEventKind::Started
+                | OperationEventKind::Output { .. }
+                | OperationEventKind::CancelAccepted => {}
+            }
+        }
+        match format {
+            OutputFormat::Human => print_now_human(&payload)?,
+            OutputFormat::Ndjson => print_now_ndjson(&payload)?,
+            OutputFormat::Json => json_values.push(now_payload_json(&payload)),
+        }
+    }
+
+    if matches!(format, OutputFormat::Json) {
+        println!(
+            "{}",
+            serde_json::to_string(&json_values).context("serialize JSON output")?
+        );
+    }
+    Ok(exit_code)
+}
+
+fn print_now_payload(payload: &Payload, format: OutputFormat) -> anyhow::Result<()> {
+    match format {
+        OutputFormat::Human => print_now_human(payload),
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string(&now_payload_json(payload)).context("serialize JSON output")?
+            );
+            Ok(())
+        }
+        OutputFormat::Ndjson => print_now_ndjson(payload),
+    }
+}
+
+fn print_now_human(payload: &Payload) -> anyhow::Result<()> {
+    match payload {
+        Payload::Empty => println!("ok"),
+        Payload::NowCapabilities(capabilities) => {
+            println!("version: {}.{}", capabilities.version_major, capabilities.version_minor);
+            println!("run: {}", capabilities.run);
+            println!("process: {}", capabilities.process);
+            println!("batch: {}", capabilities.batch);
+            println!("powershell: {}", capabilities.powershell);
+            println!("pwsh: {}", capabilities.pwsh);
+            println!("io redirection: {}", capabilities.io_redirection);
+        }
+        Payload::NowOperation(operation) => print_operation_info(operation),
+        Payload::NowOperations(operations) => {
+            for operation in operations {
+                print_operation_info(operation);
+            }
+        }
+        Payload::NowEvent(event) => print_operation_event(event)?,
+        Payload::NowDiagnostics(diagnostics) => {
+            println!("endpoint allocated: {}", diagnostics.endpoint_allocated);
+            println!("connected: {}", diagnostics.connected);
+            if let Some(capabilities) = &diagnostics.capabilities {
+                println!("version: {}.{}", capabilities.version_major, capabilities.version_minor);
+            }
+        }
+        _ => print_payload(payload.clone()),
+    }
+    Ok(())
+}
+
+fn print_operation_info(operation: &OperationInfo) {
+    println!(
+        "operation {}: {:?} ({:?})",
+        operation.id, operation.kind, operation.state
+    );
+    if let Some(exit_code) = operation.exit_code {
+        println!("exit code: {exit_code}");
+    }
+    if let Some(error) = &operation.error {
+        eprintln!("{}", error.message);
+    }
+}
+
+fn print_operation_event(event: &OperationEvent) -> anyhow::Result<()> {
+    match &event.kind {
+        OperationEventKind::Output {
+            stream: NowStream::Stdout,
+            data,
+            ..
+        } => {
+            let mut stdout = std::io::stdout();
+            stdout.write_all(data).context("write remote stdout")?;
+            stdout.flush().context("flush remote stdout")?;
+        }
+        OperationEventKind::Output {
+            stream: NowStream::Stderr,
+            data,
+            ..
+        } => {
+            let mut stderr = std::io::stderr();
+            stderr.write_all(data).context("write remote stderr")?;
+            stderr.flush().context("flush remote stderr")?;
+        }
+        OperationEventKind::Failed(error) => eprintln!("{}", error.message),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn print_now_ndjson(payload: &Payload) -> anyhow::Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string(&now_payload_json(payload)).context("serialize NDJSON output")?
+    );
+    Ok(())
+}
+
+fn now_payload_json(payload: &Payload) -> serde_json::Value {
+    use serde_json::json;
+
+    match payload {
+        Payload::Empty => json!({"type": "ok"}),
+        Payload::NowCapabilities(capabilities) => json!({
+            "type": "capabilities",
+            "version": {"major": capabilities.version_major, "minor": capabilities.version_minor},
+            "heartbeat_ms": capabilities.heartbeat_ms,
+            "run": capabilities.run,
+            "process": capabilities.process,
+            "batch": capabilities.batch,
+            "powershell": capabilities.powershell,
+            "pwsh": capabilities.pwsh,
+            "io_redirection": capabilities.io_redirection,
+            "unicode_console": capabilities.unicode_console,
+        }),
+        Payload::NowOperation(operation) => operation_json(operation),
+        Payload::NowOperations(operations) => {
+            json!({"type": "operations", "operations": operations.iter().map(operation_json).collect::<Vec<_>>()})
+        }
+        Payload::NowEvent(event) => match &event.kind {
+            OperationEventKind::Output { stream, data, last } => json!({
+                "type": "output",
+                "operation_id": event.operation_id,
+                "sequence": event.sequence,
+                "stream": format!("{stream:?}").to_ascii_lowercase(),
+                "data": data,
+                "last": last,
+            }),
+            OperationEventKind::Completed { exit_code } => json!({
+                "type": "completed", "operation_id": event.operation_id, "sequence": event.sequence, "exit_code": exit_code
+            }),
+            OperationEventKind::Started => {
+                json!({"type": "started", "operation_id": event.operation_id, "sequence": event.sequence})
+            }
+            OperationEventKind::CancelAccepted => {
+                json!({"type": "cancel_accepted", "operation_id": event.operation_id, "sequence": event.sequence})
+            }
+            OperationEventKind::Cancelled => {
+                json!({"type": "cancelled", "operation_id": event.operation_id, "sequence": event.sequence})
+            }
+            OperationEventKind::Failed(error) => json!({
+                "type": "failed",
+                "operation_id": event.operation_id,
+                "sequence": event.sequence,
+                "error": {"category": format!("{:?}", error.category).to_ascii_lowercase(), "message": error.message},
+            }),
+        },
+        Payload::NowDiagnostics(diagnostics) => json!({
+            "type": "diagnostics",
+            "endpoint_allocated": diagnostics.endpoint_allocated,
+            "connected": diagnostics.connected,
+            "capabilities": diagnostics.capabilities.as_ref().map(|capabilities| json!({
+                "version": {"major": capabilities.version_major, "minor": capabilities.version_minor}
+            })),
+        }),
+        _ => json!({"type": "unsupported_payload"}),
+    }
+}
+
+fn operation_json(operation: &OperationInfo) -> serde_json::Value {
+    serde_json::json!({
+        "type": "operation",
+        "id": operation.id,
+        "kind": format!("{:?}", operation.kind).to_ascii_lowercase(),
+        "state": format!("{:?}", operation.state).to_ascii_lowercase(),
+        "detached": operation.detached,
+        "exit_code": operation.exit_code,
+        "retained_output_bytes": operation.retained_output_bytes,
+        "next_sequence": operation.next_sequence,
+        "error": operation.error.as_ref().map(|error| serde_json::json!({
+            "category": format!("{:?}", error.category).to_ascii_lowercase(),
+            "message": error.message,
+        })),
+    })
+}
+
+fn payload_remote_exit(payload: &Payload) -> Option<u32> {
+    match payload {
+        Payload::NowOperation(operation) => operation.exit_code,
+        _ => None,
+    }
+}
+
+/// Maps a remote `u32` process code to the CLI's platform process code contract.
+pub fn remote_exit_status(exit_code: u32) -> i32 {
+    match exit_code {
+        0 => 0,
+        1..=255 => i32::try_from(exit_code).unwrap_or(255),
+        _ => 255,
+    }
+}
+
 fn print_response(response: Response) -> anyhow::Result<()> {
     match response {
         Response::Ok(payload) => {
@@ -412,6 +992,22 @@ fn print_payload(payload: Payload) {
         }
         // Screenshots are handled out-of-band by `write_screenshot`, never printed.
         Payload::Screenshot { width, height, .. } => println!("frame {width}x{height}"),
+        Payload::NowCapabilities(capabilities) => {
+            println!("NOW {}.{}", capabilities.version_major, capabilities.version_minor);
+        }
+        Payload::NowOperation(operation) => print_operation_info(&operation),
+        Payload::NowOperations(operations) => {
+            for operation in &operations {
+                print_operation_info(operation);
+            }
+        }
+        Payload::NowEvent(event) => {
+            let _ = print_operation_event(&event);
+        }
+        Payload::NowDiagnostics(diagnostics) => {
+            println!("NOW endpoint allocated: {}", diagnostics.endpoint_allocated);
+            println!("NOW connected: {}", diagnostics.connected);
+        }
     }
 }
 
@@ -497,4 +1093,38 @@ fn property_description(key: &str) -> Option<&'static str> {
         _ => return None,
     };
     Some(description)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use super::{Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution};
+
+    #[test]
+    fn shell_is_not_an_agent_command() {
+        assert!(Cli::try_parse_from(["ironrdp-agent", "now", "shell"]).is_err());
+    }
+
+    #[test]
+    fn powershell_request_defaults_are_safe() {
+        let request = build_now_execution(
+            NowExecutionKind::PowerShell,
+            "Get-Date".to_owned(),
+            None,
+            CommonExecutionArgs {
+                directory: None,
+                stdin: None,
+                timeout: None,
+                detached: false,
+                operation_id_file: None,
+            },
+            true,
+            true,
+        )
+        .expect("valid request");
+
+        assert!(request.no_profile);
+        assert!(request.non_interactive);
+    }
 }
