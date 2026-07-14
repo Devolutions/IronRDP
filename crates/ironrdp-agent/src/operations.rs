@@ -24,6 +24,7 @@ const MAX_TERMINAL_OPERATIONS: usize = 32;
 const MAX_TOTAL_OUTPUT: usize = 32 * 1024 * 1024;
 const MAX_STDIN_CHUNK: usize = 1024 * 1024;
 const MAX_IPC_OUTPUT_CHUNK: usize = 1024 * 1024;
+const MAX_OPERATION_EVENTS: usize = 8 * 1024;
 const MAX_LIVE_SUBSCRIBERS: usize = 8;
 const LIVE_SUBSCRIBER_QUEUE_CAPACITY: usize = 1;
 
@@ -129,17 +130,30 @@ impl OperationManager {
             return self.execute_detached(request).await;
         }
 
+        let kind = request.kind;
         self.reserve_submission()?;
-        let result = self.start_tracked(request.clone()).await;
-        self.release_submission();
+        let result = self.start_tracked(request).await;
         let mut state = lock(&self.state);
-        let (execution, info) = match result {
-            Ok(value) => value,
-            Err(error) => return Err(error),
+        let execution = match result {
+            Ok(execution) => execution,
+            Err(error) => {
+                state.starting = false;
+                return Err(error);
+            }
         };
 
         let (control_tx, control_rx) = mpsc::channel(32);
-        let id = info.id;
+        let id = next_id(&mut state);
+        let info = OperationInfo {
+            id,
+            kind,
+            state: OperationState::Running,
+            detached: false,
+            exit_code: None,
+            error: None,
+            retained_output_bytes: 0,
+            next_sequence: 0,
+        };
         state.records.insert(
             id,
             OperationRecord {
@@ -153,6 +167,7 @@ impl OperationManager {
             control: control_tx,
             cancellation_requested: false,
         });
+        state.starting = false;
         drop(state);
 
         let manager = self.clone();
@@ -328,7 +343,7 @@ impl OperationManager {
         Ok(info)
     }
 
-    async fn start_tracked(&self, request: NowExecutionRequest) -> Result<(Execution, OperationInfo), AgentError> {
+    async fn start_tracked(&self, request: NowExecutionRequest) -> Result<Execution, AgentError> {
         let handle = self.endpoint.handle().await.map_err(endpoint_error)?;
         let kind = request.kind;
         let result = match kind {
@@ -344,23 +359,7 @@ impl OperationManager {
                 return Err(client_error(error));
             }
         };
-        let id = {
-            let mut state = lock(&self.state);
-            next_id(&mut state)
-        };
-        Ok((
-            execution,
-            OperationInfo {
-                id,
-                kind,
-                state: OperationState::Running,
-                detached: false,
-                exit_code: None,
-                error: None,
-                retained_output_bytes: 0,
-                next_sequence: 0,
-            },
-        ))
+        Ok(execution)
     }
 
     async fn drive_execution(
@@ -443,7 +442,9 @@ impl OperationManager {
 
     fn emit_output(&self, operation_id: u64, stream: NowStream, data: Vec<u8>, last: bool) {
         if data.is_empty() {
-            self.emit(operation_id, OperationEventKind::Output { stream, data, last });
+            if last {
+                self.emit(operation_id, OperationEventKind::Output { stream, data, last });
+            }
             return;
         }
 
@@ -491,7 +492,7 @@ impl OperationManager {
             (event, output_len)
         };
         state.total_output = state.total_output.saturating_add(output_len);
-        trim_operation_output(&mut state, operation_id);
+        trim_operation_events(&mut state, operation_id);
         trim_retention(&mut state);
         let _ = event;
     }
@@ -698,12 +699,18 @@ fn output_size(kind: &OperationEventKind) -> usize {
     }
 }
 
-fn trim_operation_output(state: &mut OperationStateStore, operation_id: u64) {
+fn trim_operation_events(state: &mut OperationStateStore, operation_id: u64) {
     let Some(record) = state.records.get_mut(&operation_id) else {
         return;
     };
-    while usize::try_from(record.info.retained_output_bytes).unwrap_or(usize::MAX) > MAX_OPERATION_OUTPUT {
-        let Some(position) = record.events.iter().position(|event| output_size(&event.kind) != 0) else {
+    while usize::try_from(record.info.retained_output_bytes).unwrap_or(usize::MAX) > MAX_OPERATION_OUTPUT
+        || record.events.len() > MAX_OPERATION_EVENTS
+    {
+        let Some(position) = record
+            .events
+            .iter()
+            .position(|event| matches!(event.kind, OperationEventKind::Output { .. }))
+        else {
             break;
         };
         let Some(event) = record.events.remove(position) else {
@@ -777,7 +784,7 @@ mod tests {
             },
         );
 
-        trim_operation_output(&mut state, id);
+        trim_operation_events(&mut state, id);
         let record = state.records.get(&id).expect("record remains");
         assert_eq!(record.info.retained_output_bytes, 0);
         assert!(record.events.is_empty());
@@ -822,7 +829,7 @@ mod tests {
 
     #[tokio::test]
     async fn slow_subscribers_are_disconnected_instead_of_buffering_output() {
-        let manager = OperationManager::new(Arc::new(NowEndpoint::new()));
+        let manager = OperationManager::new(Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed")));
         let id = 1;
         lock(&manager.state).records.insert(
             id,
@@ -865,7 +872,7 @@ mod tests {
 
     #[test]
     fn output_is_split_to_fit_the_ipc_message_limit() {
-        let manager = OperationManager::new(Arc::new(NowEndpoint::new()));
+        let manager = OperationManager::new(Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed")));
         let id = 1;
         lock(&manager.state).records.insert(
             id,
@@ -903,5 +910,78 @@ mod tests {
             OperationEventKind::Output { last: false, .. }
         ));
         assert!(matches!(&events[1].kind, OperationEventKind::Output { last: true, .. }));
+    }
+
+    #[test]
+    fn non_final_empty_output_is_not_retained() {
+        let manager = OperationManager::new(Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed")));
+        let id = 1;
+        lock(&manager.state).records.insert(
+            id,
+            OperationRecord {
+                info: OperationInfo {
+                    id,
+                    kind: NowExecutionKind::Process,
+                    state: OperationState::Running,
+                    detached: false,
+                    exit_code: None,
+                    error: None,
+                    retained_output_bytes: 0,
+                    next_sequence: 0,
+                },
+                events: VecDeque::new(),
+                subscribers: Vec::new(),
+            },
+        );
+
+        for _ in 0..=MAX_OPERATION_EVENTS {
+            manager.emit_output(id, NowStream::Stdout, Vec::new(), false);
+        }
+
+        assert!(
+            lock(&manager.state)
+                .records
+                .get(&id)
+                .expect("operation remains")
+                .events
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn output_event_count_is_bounded() {
+        let manager = OperationManager::new(Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed")));
+        let id = 1;
+        lock(&manager.state).records.insert(
+            id,
+            OperationRecord {
+                info: OperationInfo {
+                    id,
+                    kind: NowExecutionKind::Process,
+                    state: OperationState::Running,
+                    detached: false,
+                    exit_code: None,
+                    error: None,
+                    retained_output_bytes: 0,
+                    next_sequence: 0,
+                },
+                events: VecDeque::new(),
+                subscribers: Vec::new(),
+            },
+        );
+
+        for _ in 0..=MAX_OPERATION_EVENTS {
+            manager.emit_output(id, NowStream::Stdout, Vec::new(), true);
+        }
+
+        assert_eq!(
+            lock(&manager.state)
+                .records
+                .get(&id)
+                .expect("operation remains")
+                .events
+                .len(),
+            MAX_OPERATION_EVENTS
+        );
     }
 }

@@ -290,8 +290,8 @@ fn remote_exit_codes_follow_the_cli_contract() {
 
 #[test]
 fn now_endpoint_is_per_session_and_uses_documented_deadlines() {
-    let first = NowEndpoint::new();
-    let second = NowEndpoint::new();
+    let first = NowEndpoint::new().expect("endpoint allocation must succeed");
+    let second = NowEndpoint::new().expect("endpoint allocation must succeed");
 
     assert_ne!(first.pipe_name(), second.pipe_name());
     assert_eq!(first.dvc_proxy_info().channel_name, DVC_CHANNEL_NAME);

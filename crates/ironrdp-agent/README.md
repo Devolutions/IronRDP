@@ -109,7 +109,8 @@ terminal records, and 32 MiB across retained records. `now attach --after-sequen
 bounded output then follows a running operation. Live attachments are bounded and disconnect when
 they cannot keep up; attach again with the last sequence number to resume from retained output. Use
 `now --format human|json|ndjson` for raw human streaming, a JSON result, or JSON event lines; JSON
-represents output bytes as arrays.
+represents output bytes as arrays and is bounded to 8,192 events and 2 MiB of output. Use NDJSON
+for unbounded streaming.
 
 The local DVC endpoint is connected only on a NOW request. Its first readiness deadline is 30
 seconds; a replacement after a worker/transport failure has a 10-second deadline. No Shell command,

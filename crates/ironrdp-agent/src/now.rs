@@ -4,7 +4,6 @@
 //! `now-client`. This module deliberately only creates a per-session local endpoint, waits for the
 //! DVC proxy to expose it, and caches a connected client handle.
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::fmt;
 
@@ -13,6 +12,7 @@ use now_client::{NowCapabilities, NowClient, NowClientConfig, NowClientError, No
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep};
+use uuid::Uuid;
 
 /// The fixed DVC channel exposed by the NOW agent plugin.
 pub const DVC_CHANNEL_NAME: &str = "Devolutions::Now::Agent";
@@ -21,7 +21,6 @@ pub const INITIAL_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Replacement local DVC endpoint readiness deadline after a previous connection.
 pub const RECONNECT_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_DELAY: Duration = Duration::from_millis(100);
-static NEXT_ENDPOINT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A summarized capability snapshot suitable for agent IPC.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,28 +139,23 @@ impl fmt::Debug for NowEndpoint {
 
 impl NowEndpoint {
     /// Allocates a unique endpoint for one RDP session.
-    pub fn new() -> Self {
-        let id = NEXT_ENDPOINT_ID.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
+    pub fn new() -> std::io::Result<Self> {
+        let id = Uuid::new_v4();
         #[cfg(unix)]
         let pipe_name = {
-            let root = std::env::var_os("XDG_RUNTIME_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(std::env::temp_dir);
-            root.join(format!("ironrdp-now-agent-{pid}-{id}.sock"))
-                .to_string_lossy()
-                .into_owned()
+            let root = private_runtime_directory()?;
+            root.join(format!("now-agent-{id}.sock")).to_string_lossy().into_owned()
         };
         #[cfg(windows)]
-        let pipe_name = format!("ironrdp-now-agent-{pid}-{id}");
+        let pipe_name = format!("ironrdp-now-agent-{id}");
 
-        Self {
+        Ok(Self {
             pipe_name,
             state: Mutex::new(EndpointState {
                 handle: None,
                 connected_once: false,
             }),
-        }
+        })
     }
 
     /// Returns the agent's DVC proxy mapping for this endpoint.
@@ -204,19 +198,11 @@ impl NowEndpoint {
         self.state.lock().await.handle = None;
     }
 
-    /// Returns the currently cached capability snapshot without initiating a local connection.
-    pub async fn cached_capabilities(&self) -> Option<Capabilities> {
-        self.state
-            .lock()
-            .await
-            .handle
-            .as_ref()
-            .map(|handle| handle.capabilities().into())
-    }
-
-    /// Whether a negotiated NOW client is currently cached.
-    pub async fn is_connected(&self) -> bool {
-        self.state.lock().await.handle.is_some()
+    /// Returns a consistent local diagnostic snapshot without initiating a connection.
+    pub async fn diagnostic_snapshot(&self) -> (bool, Option<Capabilities>) {
+        let state = self.state.lock().await;
+        let capabilities = state.handle.as_ref().map(|handle| handle.capabilities().into());
+        (state.handle.is_some(), capabilities)
     }
 
     async fn connect(&self, timeout: Duration) -> Result<NowClientHandle, NowEndpointError> {
@@ -263,15 +249,48 @@ where
     NowClient::connect(stream, NowClientConfig::default()).await
 }
 
-impl Default for NowEndpoint {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 enum ConnectAttemptError {
     Io(std::io::Error),
     Client(NowClientError),
+}
+
+#[cfg(unix)]
+fn private_runtime_directory() -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let root = match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(root) => std::path::PathBuf::from(root),
+        None => {
+            let home = std::env::var_os("HOME").ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "HOME is required when XDG_RUNTIME_DIR is unset",
+                )
+            })?;
+            std::path::PathBuf::from(home).join(".local").join("state")
+        }
+    };
+    let directory = root.join("ironrdp-agent");
+    std::fs::create_dir_all(&directory)?;
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+
+    let metadata = std::fs::symlink_metadata(&directory)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "NOW runtime path is not a directory",
+        ));
+    }
+    // SAFETY: `getuid` has no preconditions and is always safe to call.
+    let uid = unsafe { libc::getuid() };
+    if metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "NOW runtime directory is not private to the current user",
+        ));
+    }
+
+    Ok(directory)
 }
 
 /// Whether an error means the cached client must be replaced before another request.
@@ -342,8 +361,8 @@ mod tests {
 
     #[test]
     fn endpoint_names_are_unique_and_use_the_agent_channel() {
-        let first = NowEndpoint::new();
-        let second = NowEndpoint::new();
+        let first = NowEndpoint::new().expect("endpoint allocation must succeed");
+        let second = NowEndpoint::new().expect("endpoint allocation must succeed");
 
         assert_ne!(first.pipe_name(), second.pipe_name());
         assert_eq!(first.dvc_proxy_info().channel_name, DVC_CHANNEL_NAME);

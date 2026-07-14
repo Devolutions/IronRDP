@@ -116,7 +116,8 @@ Live `now attach` output is bounded. If an attachment cannot keep up, it closes;
 the last sequence number to resume from retained output.
 
 Use `--format human|json|ndjson` with `now` for human-readable output, one JSON result, or JSON
-event lines. JSON output represents raw bytes as byte arrays.
+event lines. JSON output represents raw bytes as byte arrays and is bounded to 8,192 events and
+2 MiB of output. Use NDJSON for unbounded streaming.
 
 Shell execution is intentionally not exposed: there is no `now shell` command, IPC request,
 capability, or mapping, even if a peer advertises it.

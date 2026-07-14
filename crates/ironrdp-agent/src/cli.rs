@@ -11,6 +11,7 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use core::fmt;
 use core::str::FromStr;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -22,8 +23,8 @@ use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
 use crate::ipc::{
-    KeyFilter, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
-    Payload, PropValue, Request, Response,
+    AgentError, KeyFilter, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
+    OperationInfo, OperationState, Payload, PropValue, Request, Response,
 };
 use crate::transport::{self, Endpoint};
 
@@ -242,6 +243,21 @@ enum OutputFormat {
     Ndjson,
 }
 
+const MAX_JSON_STREAM_EVENTS: usize = 8 * 1024;
+const MAX_JSON_STREAM_OUTPUT: usize = 2 * 1024 * 1024;
+
+/// A daemon-provided error that must be rendered according to the selected NOW output format.
+#[derive(Debug)]
+struct NowRequestError(AgentError);
+
+impl fmt::Display for NowRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0.message)
+    }
+}
+
+impl core::error::Error for NowRequestError {}
+
 #[derive(Args, Debug)]
 struct DaemonArgs {
     /// Path to a .rdp file whose properties are preloaded as an overlay applied to every `connect`
@@ -412,7 +428,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             return crate::daemon::run(endpoint, overlay).await;
         }
         Command::Now(args) => {
-            if let Some(exit_code) = run_now(&endpoint, args).await? {
+            let format = args.format;
+            let exit_code = match run_now(&endpoint, args).await {
+                Ok(exit_code) => exit_code,
+                Err(error) => {
+                    if let Some(error) = error.downcast_ref::<NowRequestError>() {
+                        print_now_error(&error.0, format)?;
+                        std::process::exit(1);
+                    }
+                    return Err(error);
+                }
+            };
+            if let Some(exit_code) = exit_code {
                 if exit_code != 0 {
                     std::process::exit(remote_exit_status(exit_code));
                 }
@@ -661,7 +688,7 @@ async fn now_execution(
             let response = transport::send_request(endpoint, &Request::NowExecute(request)).await?;
             let payload = match response {
                 Response::Ok(payload) => payload,
-                Response::Err(error) => anyhow::bail!("{error}"),
+                Response::Err(error) => return Err(NowRequestError(error).into()),
             };
             let Payload::NowOperation(operation) = &payload else {
                 anyhow::bail!("unexpected response while writing operation ID");
@@ -680,7 +707,7 @@ async fn now_single(endpoint: &Endpoint, request: Request, format: OutputFormat)
     let response = transport::send_request(endpoint, &request).await?;
     let payload = match response {
         Response::Ok(payload) => payload,
-        Response::Err(error) => anyhow::bail!("{error}"),
+        Response::Err(error) => return Err(NowRequestError(error).into()),
     };
     print_now_payload(&payload, format)?;
     Ok(payload_remote_exit(&payload))
@@ -697,10 +724,11 @@ async fn now_stream(
     let first: Response = transport::read_message(&mut stream).await?;
     let first = match first {
         Response::Ok(payload) => payload,
-        Response::Err(error) => anyhow::bail!("{error}"),
+        Response::Err(error) => return Err(NowRequestError(error).into()),
     };
 
     let mut exit_code = payload_remote_exit(&first);
+    let mut terminal_observed = payload_is_terminal_operation(&first);
     if let Some(path) = operation_id_file {
         let Payload::NowOperation(operation) = &first else {
             anyhow::bail!("unexpected response while writing operation ID");
@@ -708,11 +736,12 @@ async fn now_stream(
         std::fs::write(&path, format!("{}\n", operation.id)).with_context(|| format!("write {}", path.display()))?;
     }
     let mut json_values = Vec::new();
+    let mut json_output_bytes = 0;
     match format {
         OutputFormat::Human if print_initial_human => print_now_human(&first)?,
         OutputFormat::Human => {}
         OutputFormat::Ndjson => print_now_ndjson(&first)?,
-        OutputFormat::Json => json_values.push(now_payload_json(&first)),
+        OutputFormat::Json => push_json_payload(&mut json_values, &mut json_output_bytes, &first)?,
     }
 
     loop {
@@ -726,18 +755,27 @@ async fn now_stream(
                     )
                 }) =>
             {
+                if !terminal_observed {
+                    anyhow::bail!("NOW operation stream closed before a terminal event");
+                }
                 break;
             }
             Err(error) => return Err(error),
         };
         let payload = match response {
             Response::Ok(payload) => payload,
-            Response::Err(error) => anyhow::bail!("{error}"),
+            Response::Err(error) => return Err(NowRequestError(error).into()),
         };
         if let Payload::NowEvent(event) = &payload {
             match &event.kind {
-                OperationEventKind::Completed { exit_code: code } => exit_code = Some(*code),
-                OperationEventKind::Cancelled | OperationEventKind::Failed(_) => exit_code = Some(1),
+                OperationEventKind::Completed { exit_code: code } => {
+                    terminal_observed = true;
+                    exit_code = Some(*code);
+                }
+                OperationEventKind::Cancelled | OperationEventKind::Failed(_) => {
+                    terminal_observed = true;
+                    exit_code = Some(1);
+                }
                 OperationEventKind::Started
                 | OperationEventKind::Output { .. }
                 | OperationEventKind::CancelAccepted => {}
@@ -746,7 +784,7 @@ async fn now_stream(
         match format {
             OutputFormat::Human => print_now_human(&payload)?,
             OutputFormat::Ndjson => print_now_ndjson(&payload)?,
-            OutputFormat::Json => json_values.push(now_payload_json(&payload)),
+            OutputFormat::Json => push_json_payload(&mut json_values, &mut json_output_bytes, &payload)?,
         }
     }
 
@@ -757,6 +795,69 @@ async fn now_stream(
         );
     }
     Ok(exit_code)
+}
+
+fn print_now_error(error: &AgentError, format: OutputFormat) -> anyhow::Result<()> {
+    match format {
+        OutputFormat::Human => {
+            eprintln!("{}", error.message);
+            Ok(())
+        }
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "type": "error",
+                    "category": error.category.as_str(),
+                    "message": error.message,
+                }))
+                .context("serialize NOW error")?
+            );
+            Ok(())
+        }
+    }
+}
+
+fn push_json_payload(
+    values: &mut Vec<serde_json::Value>,
+    output_bytes: &mut usize,
+    payload: &Payload,
+) -> anyhow::Result<()> {
+    if values.len() == MAX_JSON_STREAM_EVENTS {
+        anyhow::bail!("JSON stream exceeds the {MAX_JSON_STREAM_EVENTS}-event limit; use --format ndjson");
+    }
+    let bytes = payload_output_size(payload);
+    *output_bytes = output_bytes
+        .checked_add(bytes)
+        .ok_or_else(|| anyhow::anyhow!("JSON stream output length overflow"))?;
+    if *output_bytes > MAX_JSON_STREAM_OUTPUT {
+        anyhow::bail!("JSON stream exceeds the {MAX_JSON_STREAM_OUTPUT}-byte output limit; use --format ndjson");
+    }
+    values.push(now_payload_json(payload));
+    Ok(())
+}
+
+fn payload_output_size(payload: &Payload) -> usize {
+    match payload {
+        Payload::NowEvent(OperationEvent {
+            kind: OperationEventKind::Output { data, .. },
+            ..
+        }) => data.len(),
+        _ => 0,
+    }
+}
+
+fn payload_is_terminal_operation(payload: &Payload) -> bool {
+    matches!(
+        payload,
+        Payload::NowOperation(OperationInfo {
+            state: OperationState::Completed
+                | OperationState::Cancelled
+                | OperationState::Failed
+                | OperationState::Detached,
+            ..
+        })
+    )
 }
 
 fn print_now_payload(payload: &Payload, format: OutputFormat) -> anyhow::Result<()> {

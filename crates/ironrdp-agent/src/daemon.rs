@@ -118,6 +118,9 @@ impl DaemonResponse {
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
 struct Daemon {
     state: Mutex<Option<Session>>,
+    /// Serializes synchronous RDP session construction so concurrent IPC `connect` requests cannot
+    /// both observe an empty session slot before either one installs its session.
+    connect_lock: Mutex<()>,
     logs: Arc<LogBuffer>,
     /// Operator-provided overlay layered on top of every `Connect` (overlay wins). Holds any
     /// preconfigured settings, credentials in particular.
@@ -163,6 +166,7 @@ impl Daemon {
         let credentials_loaded = overlay.iter().any(|(key, _)| ironrdp_cfg::is_secret_key(key));
         Self {
             state: Mutex::new(None),
+            connect_lock: Mutex::new(()),
             logs,
             overlay,
             credentials_loaded,
@@ -230,6 +234,7 @@ impl Daemon {
     }
 
     fn connect(&self, mut properties: PropertySet, log_directive: Option<String>) -> Response {
+        let _connect_guard = self.connect_lock.lock().expect("connect state poisoned");
         debug!(?log_directive, "Received connect request");
         // Refuse to clobber a live session: the previous RDP engine runs on its own thread and is
         // not torn down by simply replacing the session slot. Require an explicit `disconnect` first.
@@ -242,7 +247,10 @@ impl Daemon {
                     ConnState::Connecting | ConnState::Connected | ConnState::Disconnecting
                 ) {
                     debug!("Refusing connect: a session is already active");
-                    return Response::error("a session is already active; disconnect first");
+                    return Response::typed_error(
+                        crate::ipc::AgentErrorCategory::Conflict,
+                        "a session is already active; disconnect first",
+                    );
                 }
             }
         }
@@ -253,10 +261,23 @@ impl Daemon {
 
         // Each RDP session receives a distinct DVC endpoint. It is only contacted later by a NOW
         // request, after the RDP engine has connected and the proxy has opened its local listener.
-        let now_endpoint = Arc::new(NowEndpoint::new());
+        let now_endpoint = match NowEndpoint::new() {
+            Ok(endpoint) => Arc::new(endpoint),
+            Err(error) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Internal,
+                    format!("failed to allocate NOW endpoint: {error}"),
+                );
+            }
+        };
         let builder = match ConfigBuilder::from_property_set(&properties) {
             Ok(builder) => builder,
-            Err(error) => return Response::error(format!("invalid configuration: {error:#}")),
+            Err(error) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    format!("invalid configuration: {error:#}"),
+                );
+            }
         };
 
         // Derive the headless client identity. These fields are never representable as `.rdp`
@@ -273,19 +294,24 @@ impl Daemon {
 
         let missing = builder.missing();
         if !missing.is_empty() {
-            return Response::error(format!(
-                "missing required fields: {}",
-                missing
-                    .iter()
-                    .map(MissingField::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!(
+                    "missing required fields: {}",
+                    missing
+                        .iter()
+                        .map(MissingField::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
         }
 
         let config = match builder.build() {
             Ok(config) => config,
-            Err(error) => return Response::error(format!("{error:#}")),
+            Err(error) => {
+                return Response::typed_error(crate::ipc::AgentErrorCategory::InvalidRequest, format!("{error:#}"));
+            }
         };
 
         // `ConfigBuilder::build` strips every secret property, so the live bag carries no secrets.
@@ -321,7 +347,10 @@ impl Daemon {
                 });
             });
         if let Err(error) = spawn_result {
-            return Response::error(format!("failed to spawn session thread: {error}"));
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::Internal,
+                format!("failed to spawn session thread: {error}"),
+            );
         }
 
         tokio::spawn(consume_output(output_rx, Arc::clone(&live)));
@@ -345,7 +374,7 @@ impl Daemon {
         match guard.as_mut() {
             None => {
                 debug!("Disconnect requested but no session is active");
-                Response::error("no active session")
+                Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session")
             }
             Some(session) => {
                 let mut live = session.live.lock().expect("session live state poisoned");
@@ -400,7 +429,7 @@ impl Daemon {
     fn query_props(&self, filter: Option<&KeyFilter>) -> Response {
         let guard = self.state.lock().expect("daemon state poisoned");
         let Some(session) = guard.as_ref() else {
-            return Response::error("no active session");
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
         };
         let live = session.live.lock().expect("session live state poisoned");
 
@@ -437,11 +466,11 @@ impl Daemon {
     fn screenshot(&self) -> Response {
         let guard = self.state.lock().expect("daemon state poisoned");
         let Some(session) = guard.as_ref() else {
-            return Response::error("no active session");
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
         };
         let live = session.live.lock().expect("session live state poisoned");
         let Some(frame) = live.frame.as_ref() else {
-            return Response::error("no frame available yet");
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no frame available yet");
         };
         match encode_png(frame.width, frame.height, &frame.pixels) {
             Ok(png) => {
@@ -457,17 +486,23 @@ impl Daemon {
                     png,
                 })
             }
-            Err(error) => Response::error(format!("failed to encode screenshot: {error:#}")),
+            Err(error) => Response::typed_error(
+                crate::ipc::AgentErrorCategory::Internal,
+                format!("failed to encode screenshot: {error:#}"),
+            ),
         }
     }
 
     fn resize(&self, width: u16, height: u16) -> Response {
         if width == 0 || height == 0 {
-            return Response::error("width and height must be non-zero");
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                "width and height must be non-zero",
+            );
         }
         let guard = self.state.lock().expect("daemon state poisoned");
         let Some(session) = guard.as_ref() else {
-            return Response::error("no active session");
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
         };
         match session.input_tx.send(RdpInputEvent::Resize {
             width,
@@ -477,14 +512,17 @@ impl Daemon {
             physical_size: None,
         }) {
             Ok(()) => Response::ok(),
-            Err(_) => Response::error("session input channel is closed"),
+            Err(_) => Response::typed_error(
+                crate::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is closed",
+            ),
         }
     }
 
     fn input(&self, operation: Operation) -> Response {
         let mut guard = self.state.lock().expect("daemon state poisoned");
         let Some(session) = guard.as_mut() else {
-            return Response::error("no active session");
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
         };
         let events = session.input_db.apply([operation]);
         if events.is_empty() {
@@ -492,7 +530,10 @@ impl Daemon {
         }
         match session.input_tx.send(RdpInputEvent::FastPath(events)) {
             Ok(()) => Response::ok(),
-            Err(_) => Response::error("session input channel is closed"),
+            Err(_) => Response::typed_error(
+                crate::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is closed",
+            ),
         }
     }
 
@@ -607,8 +648,8 @@ impl Daemon {
                 return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active RDP session");
             }
         };
-        let connected = endpoint.is_connected().await;
-        let capabilities = endpoint.cached_capabilities().await.map(|capabilities| NowDiagnostics {
+        let (connected, capabilities) = endpoint.diagnostic_snapshot().await;
+        let capabilities = capabilities.map(|capabilities| NowDiagnostics {
             endpoint_allocated: true,
             connected,
             capabilities: Some(crate::ipc::NowCapabilities {

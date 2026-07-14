@@ -296,6 +296,20 @@ pub enum AgentErrorCategory {
     Internal,
 }
 
+impl AgentErrorCategory {
+    /// Stable lowercase category used by structured CLI output.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::Unavailable => "unavailable",
+            Self::Conflict => "conflict",
+            Self::Transport => "transport",
+            Self::Remote => "remote",
+            Self::Internal => "internal",
+        }
+    }
+}
+
 /// Typed IPC error response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentError {
