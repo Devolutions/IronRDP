@@ -662,6 +662,7 @@ fn property_description(key: &str) -> Option<&'static str> {
         "ironrdp_rdcleanpathtoken" => "RDCleanPath authentication token (secret)",
         "ironrdp_rdcleanpathurl" => "RDCleanPath proxy URL",
         "ironrdp_serverpointer" => "render the server-side pointer instead of a client-drawn pointer (0/1)",
+        "ironrdp_now" => "enable the NOW agent execution DVC channel (0/1, default on)",
         _ => return None,
     };
     Some(description)

@@ -89,17 +89,7 @@ where
 {
     let request: Request = read_message(&mut stream).await?;
     trace!(?request, "Handling IPC request");
-    // NOW requests must await the `now-client` worker, so they take an async path; everything else
-    // is handled synchronously.
-    let is_now = matches!(
-        request,
-        Request::NowCapabilities | Request::NowExec { .. } | Request::NowProcess { .. }
-    );
-    let response = if is_now {
-        daemon.handle_now(request).await
-    } else {
-        daemon.handle(request)
-    };
+    let response = daemon.handle(request).await;
     trace!(ok = response.is_ok(), "Replying to IPC request");
     write_message(&mut stream, &response).await?;
     Ok(())
@@ -123,6 +113,8 @@ struct Session {
     input_db: Database,
     destination: String,
     live: Arc<Mutex<Live>>,
+    /// Whether the NOW channel is enabled for this session (on unless `ironrdp_now` is `0`).
+    now_enabled: bool,
     /// Inbound NOW bytes from the session-thread DVC processor, taken by the stream adapter when the
     /// NOW client is first established. `None` once taken.
     now_inbound: Option<mpsc::UnboundedReceiver<NowInbound>>,
@@ -149,6 +141,18 @@ struct Frame {
     pixels: Vec<u32>,
 }
 
+/// Parameters of a NOW `exec` request, bundled so [`Daemon::now_exec`] stays under the argument-count
+/// limit. Mirrors the fields of [`Request::NowExec`].
+struct NowExecRequest {
+    shell: Option<NowShell>,
+    command: String,
+    profile: bool,
+    interactive: bool,
+    directory: Option<String>,
+    stdin: Option<Vec<u8>>,
+    timeout_secs: Option<u32>,
+}
+
 impl Daemon {
     fn new(logs: Arc<LogBuffer>, overlay: PropertySet) -> Self {
         // Credentials are considered "loaded" when the overlay provides at least one secret value,
@@ -162,7 +166,7 @@ impl Daemon {
         }
     }
 
-    fn handle(&self, request: Request) -> Response {
+    async fn handle(&self, request: Request) -> Response {
         match request {
             Request::Connect {
                 properties,
@@ -197,9 +201,37 @@ impl Daemon {
                 Operation::UnicodeKeyReleased(ch)
             }),
             Request::Resize { width, height } => self.resize(width, height),
-            // NOW requests are async and routed to `handle_now` before reaching here.
-            Request::NowCapabilities | Request::NowExec { .. } | Request::NowProcess { .. } => {
-                Response::error("internal error: NOW request routed to the synchronous handler")
+            // NOW requests await the `now-client` worker; hence `handle` is async.
+            Request::NowCapabilities => self.now_capabilities().await,
+            Request::NowExec {
+                shell,
+                command,
+                profile,
+                interactive,
+                directory,
+                stdin,
+                timeout_secs,
+            } => {
+                self.now_exec(NowExecRequest {
+                    shell,
+                    command,
+                    profile,
+                    interactive,
+                    directory,
+                    stdin,
+                    timeout_secs,
+                })
+                .await
+            }
+            Request::NowProcess {
+                filename,
+                parameters,
+                directory,
+                stdin,
+                timeout_secs,
+            } => {
+                self.now_process(filename, parameters, directory, stdin, timeout_secs)
+                    .await
             }
         }
     }
@@ -231,9 +263,12 @@ impl Daemon {
             Err(error) => return Response::error(format!("invalid configuration: {error:#}")),
         };
 
-        // Attach the NOW execution DVC channel. The processor runs on the session thread and forwards
-        // inbound bytes to the daemon over this unbounded channel; the outbound side rides `input_tx`
-        // (see `crate::now`). The factory is `Fn` (re-run per reconnect), so it clones the sender.
+        // Attach the NOW execution DVC channel unless the session opts out via `ironrdp_now:i:0`
+        // (on by default, like the other always-registered DVC channels). The processor runs on the
+        // session thread and forwards inbound bytes to the daemon over this unbounded channel; the
+        // outbound side rides `input_tx` (see `crate::now`). The factory is `Fn` (re-run per
+        // reconnect), so it clones the sender and re-checks the property each time.
+        let now_enabled = now::is_enabled(&properties);
         let (now_inbound_tx, now_inbound_rx) = mpsc::unbounded_channel();
 
         // Derive the headless client identity. These fields are never representable as `.rdp`
@@ -246,7 +281,9 @@ impl Daemon {
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true)
-            .with_dvc(move |_properties| Some(now::NowDvcProcessor::new(now_inbound_tx.clone())));
+            .with_dvc(move |properties| {
+                now::is_enabled(properties).then(|| now::NowDvcProcessor::new(now_inbound_tx.clone()))
+            });
 
         let missing = builder.missing();
         if !missing.is_empty() {
@@ -310,6 +347,7 @@ impl Daemon {
             input_db: Database::new(),
             destination,
             live,
+            now_enabled,
             now_inbound: Some(now_inbound_rx),
             now_handle: None,
         });
@@ -473,108 +511,117 @@ impl Daemon {
         }
     }
 
-    /// Async handler for the NOW requests (they must await the `now-client` worker).
-    async fn handle_now(&self, request: Request) -> Response {
-        let handle = match self.now_handle().await {
-            Ok(handle) => handle,
+    /// Ensures the NOW client is established and reflects its capabilities into the live property bag
+    /// (idempotent). Shared prelude for every NOW request.
+    async fn now_ready(&self) -> Result<(NowClientHandle, NowCaps), String> {
+        let handle = self.now_handle().await?;
+        let caps = NowCaps::from_client(&handle.capabilities());
+        self.store_now_props(&now::flatten_caps(&caps));
+        Ok((handle, caps))
+    }
+
+    async fn now_capabilities(&self) -> Response {
+        match self.now_ready().await {
+            Ok((_handle, caps)) => Response::Ok(Payload::NowCapabilities(now::flatten_caps(&caps))),
+            Err(message) => Response::error(message),
+        }
+    }
+
+    async fn now_exec(&self, request: NowExecRequest) -> Response {
+        let NowExecRequest {
+            shell,
+            command,
+            profile,
+            interactive,
+            directory,
+            stdin,
+            timeout_secs,
+        } = request;
+        let (handle, caps) = match self.now_ready().await {
+            Ok(ready) => ready,
             Err(message) => return Response::error(message),
         };
-
-        // Reflect the negotiated capabilities into the live bag on every NOW request (idempotent).
-        let caps = NowCaps::from_client(&handle.capabilities());
-        let entries = now::flatten_caps(&caps);
-        self.store_now_props(&entries);
-
-        match request {
-            Request::NowCapabilities => Response::Ok(Payload::NowCapabilities(entries)),
-            Request::NowExec {
-                shell,
-                command,
-                profile,
-                interactive,
-                directory,
-                stdin,
-                timeout_secs,
-            } => {
-                let shell = match now::resolve_shell(&caps, shell) {
-                    Ok(shell) => shell,
-                    Err(message) => return Response::error(message),
-                };
-                let timeout = timeout_secs.map(|secs| Duration::from_secs(u64::from(secs)));
-                let execution = match shell {
-                    NowShell::Batch => {
-                        let mut request = BatchRequest::new(command);
-                        if let Some(directory) = directory {
-                            request = request.with_directory(directory);
-                        }
-                        if let Some(stdin) = stdin {
-                            request = request.with_stdin(stdin);
-                        }
-                        if let Some(timeout) = timeout {
-                            request = request.with_timeout(timeout);
-                        }
-                        handle.batch(request).await
-                    }
-                    NowShell::Pwsh | NowShell::Powershell => {
-                        let mut request = PowerShellRequest::new(command);
-                        if let Some(directory) = directory {
-                            request = request.with_directory(directory);
-                        }
-                        if let Some(stdin) = stdin {
-                            request = request.with_stdin(stdin);
-                        }
-                        if let Some(timeout) = timeout {
-                            request = request.with_timeout(timeout);
-                        }
-                        // Safe defaults unless the caller opts out; ignored for batch (handled above).
-                        if !profile {
-                            request = request.with_no_profile();
-                        }
-                        if !interactive {
-                            request = request.with_non_interactive();
-                        }
-                        if matches!(shell, NowShell::Pwsh) {
-                            handle.pwsh(request).await
-                        } else {
-                            handle.win_ps(request).await
-                        }
-                    }
-                };
-                match execution {
-                    Ok(execution) => drain_execution(execution).await,
-                    Err(error) => Response::error(format!("failed to start NOW execution: {error}")),
-                }
-            }
-            Request::NowProcess {
-                filename,
-                parameters,
-                directory,
-                stdin,
-                timeout_secs,
-            } => {
-                if !caps.process {
-                    return Response::error("process execution is not available on this session");
-                }
-                let mut request = ProcessRequest::new(filename);
-                if let Some(parameters) = parameters {
-                    request = request.with_parameters(parameters);
-                }
+        let shell = match now::resolve_shell(&caps, shell) {
+            Ok(shell) => shell,
+            Err(message) => return Response::error(message),
+        };
+        let timeout = timeout_secs.map(|secs| Duration::from_secs(u64::from(secs)));
+        let execution = match shell {
+            NowShell::Batch => {
+                let mut request = BatchRequest::new(command);
                 if let Some(directory) = directory {
                     request = request.with_directory(directory);
                 }
                 if let Some(stdin) = stdin {
                     request = request.with_stdin(stdin);
                 }
-                if let Some(secs) = timeout_secs {
-                    request = request.with_timeout(Duration::from_secs(u64::from(secs)));
+                if let Some(timeout) = timeout {
+                    request = request.with_timeout(timeout);
                 }
-                match handle.process(request).await {
-                    Ok(execution) => drain_execution(execution).await,
-                    Err(error) => Response::error(format!("failed to start NOW execution: {error}")),
+                handle.batch(request).await
+            }
+            NowShell::Pwsh | NowShell::Powershell => {
+                let mut request = PowerShellRequest::new(command);
+                if let Some(directory) = directory {
+                    request = request.with_directory(directory);
+                }
+                if let Some(stdin) = stdin {
+                    request = request.with_stdin(stdin);
+                }
+                if let Some(timeout) = timeout {
+                    request = request.with_timeout(timeout);
+                }
+                // Safe defaults unless the caller opts out; ignored for batch (handled above).
+                if !profile {
+                    request = request.with_no_profile();
+                }
+                if !interactive {
+                    request = request.with_non_interactive();
+                }
+                if matches!(shell, NowShell::Pwsh) {
+                    handle.pwsh(request).await
+                } else {
+                    handle.win_ps(request).await
                 }
             }
-            // Unreachable: `handle_connection` only routes NOW requests here.
-            _ => Response::error("internal error: non-NOW request routed to the NOW handler"),
+        };
+        match execution {
+            Ok(execution) => drain_execution(execution).await,
+            Err(error) => Response::error(format!("failed to start NOW execution: {error}")),
+        }
+    }
+
+    async fn now_process(
+        &self,
+        filename: String,
+        parameters: Option<String>,
+        directory: Option<String>,
+        stdin: Option<Vec<u8>>,
+        timeout_secs: Option<u32>,
+    ) -> Response {
+        let (handle, caps) = match self.now_ready().await {
+            Ok(ready) => ready,
+            Err(message) => return Response::error(message),
+        };
+        if !caps.process {
+            return Response::error("process execution is not available on this session");
+        }
+        let mut request = ProcessRequest::new(filename);
+        if let Some(parameters) = parameters {
+            request = request.with_parameters(parameters);
+        }
+        if let Some(directory) = directory {
+            request = request.with_directory(directory);
+        }
+        if let Some(stdin) = stdin {
+            request = request.with_stdin(stdin);
+        }
+        if let Some(secs) = timeout_secs {
+            request = request.with_timeout(Duration::from_secs(u64::from(secs)));
+        }
+        match handle.process(request).await {
+            Ok(execution) => drain_execution(execution).await,
+            Err(error) => Response::error(format!("failed to start NOW execution: {error}")),
         }
     }
 
@@ -589,6 +636,7 @@ impl Daemon {
                 mpsc::UnboundedReceiver<NowInbound>,
                 mpsc::UnboundedSender<RdpInputEvent>,
             ),
+            Disabled,
             Unavailable,
             NoSession,
         }
@@ -598,6 +646,7 @@ impl Daemon {
             let mut guard = self.state.lock().expect("daemon state poisoned");
             match guard.as_mut() {
                 None => Step::NoSession,
+                Some(session) if !session.now_enabled => Step::Disabled,
                 Some(session) => {
                     if let Some(handle) = &session.now_handle {
                         Step::Ready(handle.clone())
@@ -613,6 +662,9 @@ impl Daemon {
         match step {
             Step::Ready(handle) => Ok(handle),
             Step::NoSession => Err("no active session".to_owned()),
+            Step::Disabled => {
+                Err("NOW is disabled on this session (the `ironrdp_now` property is set to 0)".to_owned())
+            }
             Step::Unavailable => Err("NOW channel is unavailable on this session".to_owned()),
             Step::Establish(inbound, input_tx) => {
                 let handle = now::establish(inbound, input_tx)

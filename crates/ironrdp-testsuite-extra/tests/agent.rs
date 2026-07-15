@@ -262,6 +262,16 @@ fn now_request_debug_redacts_command_parameters_and_stdin() {
 }
 
 #[test]
+fn now_is_enabled_reads_the_property() {
+    let mut props = PropertySet::new();
+    assert!(now::is_enabled(&props), "absent property must default to enabled");
+    props.insert("ironrdp_now", 0i64);
+    assert!(!now::is_enabled(&props), "0 must be disabled");
+    props.insert("ironrdp_now", 1i64);
+    assert!(now::is_enabled(&props), "1 must be enabled");
+}
+
+#[test]
 fn now_remote_exit_status_maps_codes() {
     assert_eq!(now::remote_exit_status(0), 0);
     assert_eq!(now::remote_exit_status(1), 1);

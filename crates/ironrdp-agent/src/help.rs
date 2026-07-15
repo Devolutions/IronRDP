@@ -79,9 +79,10 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## NOW remote execution (require an active session)
 
-Run commands on the remote host over the `Devolutions::Now::Agent` DVC channel. Capabilities are
-negotiated on first use and reflected into the property bag under `now.*` (visible via
-`query-props --prefix now.`).
+Run commands on the remote host over the `Devolutions::Now::Agent` DVC channel. The channel is ON by
+default; disable it per session by setting the `ironrdp_now` property to 0 (e.g. `connect --prop
+ironrdp_now:i:0`). Capabilities are negotiated on first use and reflected into the property bag under
+`now.*` (visible via `query-props --prefix now.`).
 
 - `now capabilities`             Report negotiated NOW capabilities as `key: value` lines on stdout
                                  (version, heartbeat_ms, run/process/batch/powershell/pwsh,

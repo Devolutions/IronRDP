@@ -25,6 +25,7 @@ use ironrdp_client::rdp::RdpInputEvent;
 use ironrdp_core::{Encode, EncodeResult, WriteCursor, ensure_size, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcEncode, DvcMessage, DvcProcessor, encode_dvc_messages};
 use ironrdp_pdu::PduResult;
+use ironrdp_propertyset::PropertySet;
 use ironrdp_svc::ChannelFlags;
 use now_client::{NowClient, NowClientConfig, NowClientHandle};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -34,6 +35,16 @@ use crate::ipc::{NowShell, PropValue};
 
 /// The NOW execution DVC channel name.
 pub(crate) const DVC_CHANNEL_NAME: &str = "Devolutions::Now::Agent";
+
+/// The property that toggles the NOW DVC channel. On unless explicitly set to `0`.
+pub(crate) const ENABLE_PROPERTY: &str = "ironrdp_now";
+
+/// Whether the NOW DVC channel is enabled for a session. Enabled by default (like the other
+/// always-registered DVC channels); disable it by setting the [`ENABLE_PROPERTY`] (`ironrdp_now`)
+/// property to `0`.
+pub fn is_enabled(properties: &PropertySet) -> bool {
+    properties.get::<bool>(ENABLE_PROPERTY).unwrap_or(true)
+}
 
 /// How long to wait for the DVC channel to open before failing a NOW request.
 pub(crate) const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
