@@ -20,7 +20,7 @@ use ironrdp_cfg::{PropertySetExt as _, TargetAddr};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
-use crate::ipc::{KeyFilter, Payload, PropValue, Request, Response};
+use crate::ipc::{KeyFilter, NowShell, NowTerminal, Payload, PropValue, Request, Response};
 use crate::transport::{self, Endpoint};
 
 /// IronRDP agent: a CLI-driven, daemon-backed RDP client.
@@ -97,6 +97,80 @@ enum Command {
         #[arg(long)]
         height: u16,
     },
+    /// Remote command execution over the `Devolutions::Now::Agent` channel.
+    Now {
+        #[command(subcommand)]
+        command: NowCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum NowCommand {
+    /// Negotiate (if needed) and report the NOW execution capabilities as `key: value` lines.
+    Capabilities,
+    /// Run a command string in a remote shell; stream its output and propagate its exit code.
+    Exec(NowExecArgs),
+    /// Run an executable directly (CreateProcess-style); stream its output and propagate its exit code.
+    Process(NowProcessArgs),
+}
+
+#[derive(Args, Debug)]
+struct NowExecArgs {
+    /// The command string to run in the shell.
+    command: String,
+    /// Shell style. Omitted → the session's default (preference pwsh → powershell → batch).
+    #[arg(long, value_enum)]
+    shell: Option<CliShell>,
+    /// Keep the PowerShell profile (default is `-NoProfile`); ignored for `--shell batch`.
+    #[arg(long)]
+    profile: bool,
+    /// Run PowerShell interactively (default is `-NonInteractive`); ignored for `--shell batch`.
+    #[arg(long)]
+    interactive: bool,
+    /// Remote working directory.
+    #[arg(long)]
+    directory: Option<String>,
+    /// Feed remote stdin from FILE, or `-` for this CLI's own stdin.
+    #[arg(long, value_name = "FILE")]
+    stdin: Option<String>,
+    /// Abort the command after this many seconds.
+    #[arg(long, value_name = "SECS")]
+    timeout: Option<u32>,
+}
+
+#[derive(Args, Debug)]
+struct NowProcessArgs {
+    /// The executable to run.
+    filename: String,
+    /// Command-line parameters passed to the executable.
+    #[arg(long)]
+    parameters: Option<String>,
+    /// Remote working directory.
+    #[arg(long)]
+    directory: Option<String>,
+    /// Feed remote stdin from FILE, or `-` for this CLI's own stdin.
+    #[arg(long, value_name = "FILE")]
+    stdin: Option<String>,
+    /// Abort the process after this many seconds.
+    #[arg(long, value_name = "SECS")]
+    timeout: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliShell {
+    Pwsh,
+    Powershell,
+    Batch,
+}
+
+impl CliShell {
+    fn into_shell(self) -> NowShell {
+        match self {
+            Self::Pwsh => NowShell::Pwsh,
+            Self::Powershell => NowShell::Powershell,
+            Self::Batch => NowShell::Batch,
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -302,6 +376,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
         Command::Resize { width, height } => Request::Resize { width, height },
+        // NOW commands have their own stdout/stderr/exit-code contract, handled out-of-band.
+        Command::Now { command } => return run_now(&endpoint, command).await,
     };
 
     let response = transport::send_request(&endpoint, &request).await?;
@@ -412,6 +488,9 @@ fn print_payload(payload: Payload) {
         }
         // Screenshots are handled out-of-band by `write_screenshot`, never printed.
         Payload::Screenshot { width, height, .. } => println!("frame {width}x{height}"),
+        // NOW payloads are handled out-of-band by `run_now`; these arms exist only for exhaustiveness.
+        Payload::NowCapabilities(entries) => print!("{}", crate::now::render_capabilities(&entries)),
+        Payload::NowOutput { .. } => {}
     }
 }
 
@@ -420,6 +499,95 @@ fn write_screenshot(width: u16, height: u16, png: &[u8], path: &Path) -> anyhow:
     std::fs::write(path, png).with_context(|| format!("write {}", path.display()))?;
     println!("wrote {} ({width}x{height}, {} bytes)", path.display(), png.len());
     Ok(())
+}
+
+/// Drives a NOW command. `capabilities` prints `key: value` data to stdout; `exec`/`process` replay
+/// the remote byte streams and exit with the mapped process code. CLI-level failures are reported as
+/// `ironrdp-agent: <message>` on stderr with a reserved exit code (see [`now_error_exit`]).
+async fn run_now(endpoint: &Endpoint, command: NowCommand) -> anyhow::Result<()> {
+    let request = match command {
+        NowCommand::Capabilities => Request::NowCapabilities,
+        NowCommand::Exec(args) => {
+            let stdin = read_stdin_arg(args.stdin.as_deref())?;
+            Request::NowExec {
+                shell: args.shell.map(CliShell::into_shell),
+                command: args.command,
+                profile: args.profile,
+                interactive: args.interactive,
+                directory: args.directory,
+                stdin,
+                timeout_secs: args.timeout,
+            }
+        }
+        NowCommand::Process(args) => {
+            let stdin = read_stdin_arg(args.stdin.as_deref())?;
+            Request::NowProcess {
+                filename: args.filename,
+                parameters: args.parameters,
+                directory: args.directory,
+                stdin,
+                timeout_secs: args.timeout,
+            }
+        }
+    };
+
+    let response = match transport::send_request(endpoint, &request).await {
+        Ok(response) => response,
+        Err(error) => now_error_exit(&format!("{error:#}")),
+    };
+
+    match response {
+        Response::Err(message) => now_error_exit(&message),
+        Response::Ok(Payload::NowCapabilities(entries)) => {
+            print!("{}", crate::now::render_capabilities(&entries));
+            Ok(())
+        }
+        Response::Ok(Payload::NowOutput {
+            stdout,
+            stderr,
+            exit_code,
+            terminal,
+        }) => {
+            use std::io::Write as _;
+            // Replay the remote streams byte-exact; nothing else is written to them on success.
+            let mut out = std::io::stdout();
+            let mut err = std::io::stderr();
+            let _ = out.write_all(&stdout);
+            let _ = out.flush();
+            let _ = err.write_all(&stderr);
+            let _ = err.flush();
+            let code = match terminal {
+                NowTerminal::Completed => crate::now::remote_exit_status(exit_code),
+                NowTerminal::Cancelled => 130,
+            };
+            std::process::exit(code);
+        }
+        Response::Ok(_) => now_error_exit("unexpected response to a NOW request"),
+    }
+}
+
+/// Reads a `--stdin` argument: `None` → no stdin, `Some("-")` → this CLI's stdin, else a file path.
+fn read_stdin_arg(spec: Option<&str>) -> anyhow::Result<Option<Vec<u8>>> {
+    match spec {
+        None => Ok(None),
+        Some("-") => {
+            use std::io::Read as _;
+            let mut buffer = Vec::new();
+            std::io::stdin().read_to_end(&mut buffer).context("read stdin")?;
+            Ok(Some(buffer))
+        }
+        Some(path) => {
+            let data = std::fs::read(path).with_context(|| format!("read {path}"))?;
+            Ok(Some(data))
+        }
+    }
+}
+
+/// Reports a CLI-level NOW failure as `ironrdp-agent: <message>` on stderr and exits with the
+/// reserved agent/protocol-failure code (125).
+fn now_error_exit(message: &str) -> ! {
+    eprintln!("ironrdp-agent: {message}");
+    std::process::exit(125);
 }
 
 #[cfg(unix)]

@@ -7,8 +7,10 @@
 use core::fmt::Debug;
 
 use ironrdp_agent::ipc::{
-    ConnState, KeyFilter, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response, StatusInfo,
+    ConnState, KeyFilter, NowShell, NowTerminal, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response,
+    StatusInfo,
 };
+use ironrdp_agent::now::{self, NowCaps};
 use ironrdp_agent::wire;
 use ironrdp_core::{Decode, DecodeOwned, Encode, decode, decode_owned, encode_vec};
 use ironrdp_input::MouseButton;
@@ -81,10 +83,47 @@ fn request_variants_round_trip() {
             ch: '\u{00e9}',
             pressed: true,
         },
+        Request::NowCapabilities,
+        Request::NowExec {
+            shell: Some(NowShell::Pwsh),
+            command: "Get-Process".to_owned(),
+            profile: false,
+            interactive: false,
+            directory: Some("C:\\Temp".to_owned()),
+            stdin: Some(vec![1, 2, 3, 4]),
+            timeout_secs: Some(30),
+        },
+        Request::NowExec {
+            shell: None,
+            command: "echo hi".to_owned(),
+            profile: true,
+            interactive: true,
+            directory: None,
+            stdin: None,
+            timeout_secs: None,
+        },
+        Request::NowProcess {
+            filename: "notepad.exe".to_owned(),
+            parameters: Some("C:\\file.txt".to_owned()),
+            directory: None,
+            stdin: None,
+            timeout_secs: Some(5),
+        },
+        Request::NowProcess {
+            filename: "cmd.exe".to_owned(),
+            parameters: None,
+            directory: Some("C:\\".to_owned()),
+            stdin: Some(vec![0xFF, 0x00]),
+            timeout_secs: None,
+        },
     ];
 
     for request in &requests {
         round_trip(request);
+    }
+
+    for shell in [NowShell::Pwsh, NowShell::Powershell, NowShell::Batch] {
+        round_trip(&shell);
     }
 }
 
@@ -126,6 +165,23 @@ fn response_variants_round_trip() {
             width: 800,
             height: 600,
             png: vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+        }),
+        Response::Ok(Payload::NowCapabilities(vec![
+            ("now.version".to_owned(), PropValue::Str("1.6".to_owned())),
+            ("now.pwsh".to_owned(), PropValue::Int(1)),
+            ("now.default_shell".to_owned(), PropValue::Str("pwsh".to_owned())),
+        ])),
+        Response::Ok(Payload::NowOutput {
+            stdout: b"hello\n".to_vec(),
+            stderr: Vec::new(),
+            exit_code: 0,
+            terminal: NowTerminal::Completed,
+        }),
+        Response::Ok(Payload::NowOutput {
+            stdout: Vec::new(),
+            stderr: b"boom".to_vec(),
+            exit_code: 3,
+            terminal: NowTerminal::Cancelled,
         }),
         Response::Ok(Payload::Empty),
     ];
@@ -173,4 +229,127 @@ fn bytes_wire_round_trips() {
     let mut read_cursor = ironrdp_core::ReadCursor::new(&buf);
     let decoded = wire::read_bytes(&mut read_cursor).expect("read_bytes");
     assert_eq!(original, decoded, "bytes wire round-trip mismatch");
+}
+
+#[test]
+fn now_request_debug_redacts_command_parameters_and_stdin() {
+    let exec = Request::NowExec {
+        shell: Some(NowShell::Pwsh),
+        command: "SUPER-SECRET-COMMAND".to_owned(),
+        profile: false,
+        interactive: false,
+        directory: None,
+        stdin: Some(b"SUPER-SECRET-STDIN".to_vec()),
+        timeout_secs: None,
+    };
+    let rendered = format!("{exec:?}");
+    assert!(!rendered.contains("SUPER-SECRET-COMMAND"), "command leaked: {rendered}");
+    assert!(!rendered.contains("SUPER-SECRET-STDIN"), "stdin leaked: {rendered}");
+
+    let process = Request::NowProcess {
+        filename: "notepad.exe".to_owned(),
+        parameters: Some("SUPER-SECRET-PARAMS".to_owned()),
+        directory: None,
+        stdin: Some(b"SUPER-SECRET-STDIN".to_vec()),
+        timeout_secs: None,
+    };
+    let rendered = format!("{process:?}");
+    assert!(
+        !rendered.contains("SUPER-SECRET-PARAMS"),
+        "parameters leaked: {rendered}"
+    );
+    assert!(!rendered.contains("SUPER-SECRET-STDIN"), "stdin leaked: {rendered}");
+}
+
+#[test]
+fn now_remote_exit_status_maps_codes() {
+    assert_eq!(now::remote_exit_status(0), 0);
+    assert_eq!(now::remote_exit_status(1), 1);
+    assert_eq!(now::remote_exit_status(255), 255);
+    assert_eq!(now::remote_exit_status(256), 255);
+    assert_eq!(now::remote_exit_status(1000), 255);
+}
+
+fn test_caps(pwsh: bool, powershell: bool, batch: bool) -> NowCaps {
+    NowCaps {
+        version: (1, 6),
+        heartbeat_ms: Some(60_000),
+        run: true,
+        process: true,
+        batch,
+        powershell,
+        pwsh,
+        io_redirection: true,
+        unicode_console: true,
+    }
+}
+
+#[test]
+fn now_default_shell_prefers_pwsh_then_powershell_then_batch() {
+    assert_eq!(now::default_shell(&test_caps(true, true, true)), Some(NowShell::Pwsh));
+    assert_eq!(
+        now::default_shell(&test_caps(false, true, true)),
+        Some(NowShell::Powershell)
+    );
+    assert_eq!(
+        now::default_shell(&test_caps(false, false, true)),
+        Some(NowShell::Batch)
+    );
+    assert_eq!(now::default_shell(&test_caps(false, false, false)), None);
+}
+
+#[test]
+fn now_resolve_shell_validates_and_defaults() {
+    // Auto-resolution follows the preference order.
+    assert_eq!(
+        now::resolve_shell(&test_caps(false, true, true), None),
+        Ok(NowShell::Powershell)
+    );
+    // An available explicit choice is accepted.
+    assert_eq!(
+        now::resolve_shell(&test_caps(false, true, true), Some(NowShell::Batch)),
+        Ok(NowShell::Batch)
+    );
+    // An unavailable explicit choice is rejected with the available list.
+    let error = now::resolve_shell(&test_caps(false, true, true), Some(NowShell::Pwsh)).unwrap_err();
+    assert!(error.contains("pwsh"), "message: {error}");
+    assert!(error.contains("powershell"), "message: {error}");
+    assert!(error.contains("batch"), "message: {error}");
+    // No shell available at all.
+    let error = now::resolve_shell(&test_caps(false, false, false), None).unwrap_err();
+    assert!(error.contains("no shell available"), "message: {error}");
+}
+
+#[test]
+fn now_flatten_caps_produces_expected_entries() {
+    let entries = now::flatten_caps(&test_caps(true, false, true));
+    let get = |key: &str| entries.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+
+    assert_eq!(get("now.version"), Some(PropValue::Str("1.6".to_owned())));
+    assert_eq!(get("now.heartbeat_ms"), Some(PropValue::Int(60_000)));
+    assert_eq!(get("now.pwsh"), Some(PropValue::Int(1)));
+    assert_eq!(get("now.powershell"), Some(PropValue::Int(0)));
+    assert_eq!(get("now.batch"), Some(PropValue::Int(1)));
+    assert_eq!(get("now.default_shell"), Some(PropValue::Str("pwsh".to_owned())));
+
+    // `heartbeat_ms` is omitted when no heartbeat was negotiated.
+    let mut caps = test_caps(false, false, false);
+    caps.heartbeat_ms = None;
+    let entries = now::flatten_caps(&caps);
+    assert!(entries.iter().all(|(key, _)| key != "now.heartbeat_ms"));
+    let default_shell = entries
+        .iter()
+        .find(|(k, _)| k == "now.default_shell")
+        .map(|(_, v)| v.clone());
+    assert_eq!(default_shell, Some(PropValue::Str("none".to_owned())));
+}
+
+#[test]
+fn now_render_capabilities_formats_key_value_lines() {
+    let rendered = now::render_capabilities(&now::flatten_caps(&test_caps(true, false, true)));
+    assert!(rendered.contains("version: 1.6\n"), "rendered: {rendered}");
+    assert!(rendered.contains("heartbeat_ms: 60000\n"), "rendered: {rendered}");
+    assert!(rendered.contains("pwsh: true\n"), "rendered: {rendered}");
+    assert!(rendered.contains("powershell: false\n"), "rendered: {rendered}");
+    assert!(rendered.contains("default_shell: pwsh\n"), "rendered: {rendered}");
 }

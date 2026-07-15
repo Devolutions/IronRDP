@@ -5,6 +5,7 @@
 //! explicitly with `daemon-start` and runs in the foreground; the caller is expected to background
 //! it. On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
 
+use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
@@ -13,15 +14,24 @@ use ironrdp_client::rdp::{RdpClient, RdpInputEvent, RdpOutputEvent};
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
+use now_client::{
+    BatchRequest, Execution, ExecutionEvent, ExecutionStatus, NowClientHandle, PowerShellRequest, ProcessRequest,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::ipc::{
-    ConnState, KeyFilter, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response, StatusInfo,
+    ConnState, KeyFilter, NowShell, NowTerminal, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response,
+    StatusInfo,
 };
 use crate::logbuf::{self, LogBuffer};
+use crate::now::{self, NowCaps, NowInbound};
 use crate::transport::{Endpoint, Listener, read_message, write_message};
+
+/// Cap on total buffered NOW output, kept safely under [`crate::transport`]'s 16 MiB frame limit to
+/// leave room for response framing.
+const MAX_NOW_OUTPUT: usize = 15 * 1024 * 1024;
 
 /// Binds the IPC endpoint and serves requests until a shutdown signal is received.
 ///
@@ -79,7 +89,17 @@ where
 {
     let request: Request = read_message(&mut stream).await?;
     trace!(?request, "Handling IPC request");
-    let response = daemon.handle(request);
+    // NOW requests must await the `now-client` worker, so they take an async path; everything else
+    // is handled synchronously.
+    let is_now = matches!(
+        request,
+        Request::NowCapabilities | Request::NowExec { .. } | Request::NowProcess { .. }
+    );
+    let response = if is_now {
+        daemon.handle_now(request).await
+    } else {
+        daemon.handle(request)
+    };
     trace!(ok = response.is_ok(), "Replying to IPC request");
     write_message(&mut stream, &response).await?;
     Ok(())
@@ -103,6 +123,11 @@ struct Session {
     input_db: Database,
     destination: String,
     live: Arc<Mutex<Live>>,
+    /// Inbound NOW bytes from the session-thread DVC processor, taken by the stream adapter when the
+    /// NOW client is first established. `None` once taken.
+    now_inbound: Option<mpsc::UnboundedReceiver<NowInbound>>,
+    /// The established NOW client handle, cached after the first successful NOW request.
+    now_handle: Option<NowClientHandle>,
 }
 
 /// Per-session state shared with the output-consumer task.
@@ -172,6 +197,10 @@ impl Daemon {
                 Operation::UnicodeKeyReleased(ch)
             }),
             Request::Resize { width, height } => self.resize(width, height),
+            // NOW requests are async and routed to `handle_now` before reaching here.
+            Request::NowCapabilities | Request::NowExec { .. } | Request::NowProcess { .. } => {
+                Response::error("internal error: NOW request routed to the synchronous handler")
+            }
         }
     }
 
@@ -202,6 +231,11 @@ impl Daemon {
             Err(error) => return Response::error(format!("invalid configuration: {error:#}")),
         };
 
+        // Attach the NOW execution DVC channel. The processor runs on the session thread and forwards
+        // inbound bytes to the daemon over this unbounded channel; the outbound side rides `input_tx`
+        // (see `crate::now`). The factory is `Fn` (re-run per reconnect), so it clones the sender.
+        let (now_inbound_tx, now_inbound_rx) = mpsc::unbounded_channel();
+
         // Derive the headless client identity. These fields are never representable as `.rdp`
         // properties and are never prompted; the daemon supplies them itself.
         let builder = builder
@@ -211,7 +245,8 @@ impl Daemon {
             .with_client_name(client_name())
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
-            .with_pointer_software_rendering(true);
+            .with_pointer_software_rendering(true)
+            .with_dvc(move |_properties| Some(now::NowDvcProcessor::new(now_inbound_tx.clone())));
 
         let missing = builder.missing();
         if !missing.is_empty() {
@@ -275,6 +310,8 @@ impl Daemon {
             input_db: Database::new(),
             destination,
             live,
+            now_inbound: Some(now_inbound_rx),
+            now_handle: None,
         });
 
         Response::ok()
@@ -434,6 +471,208 @@ impl Daemon {
             Ok(()) => Response::ok(),
             Err(_) => Response::error("session input channel is closed"),
         }
+    }
+
+    /// Async handler for the NOW requests (they must await the `now-client` worker).
+    async fn handle_now(&self, request: Request) -> Response {
+        let handle = match self.now_handle().await {
+            Ok(handle) => handle,
+            Err(message) => return Response::error(message),
+        };
+
+        // Reflect the negotiated capabilities into the live bag on every NOW request (idempotent).
+        let caps = NowCaps::from_client(&handle.capabilities());
+        let entries = now::flatten_caps(&caps);
+        self.store_now_props(&entries);
+
+        match request {
+            Request::NowCapabilities => Response::Ok(Payload::NowCapabilities(entries)),
+            Request::NowExec {
+                shell,
+                command,
+                profile,
+                interactive,
+                directory,
+                stdin,
+                timeout_secs,
+            } => {
+                let shell = match now::resolve_shell(&caps, shell) {
+                    Ok(shell) => shell,
+                    Err(message) => return Response::error(message),
+                };
+                let timeout = timeout_secs.map(|secs| Duration::from_secs(u64::from(secs)));
+                let execution = match shell {
+                    NowShell::Batch => {
+                        let mut request = BatchRequest::new(command);
+                        if let Some(directory) = directory {
+                            request = request.with_directory(directory);
+                        }
+                        if let Some(stdin) = stdin {
+                            request = request.with_stdin(stdin);
+                        }
+                        if let Some(timeout) = timeout {
+                            request = request.with_timeout(timeout);
+                        }
+                        handle.batch(request).await
+                    }
+                    NowShell::Pwsh | NowShell::Powershell => {
+                        let mut request = PowerShellRequest::new(command);
+                        if let Some(directory) = directory {
+                            request = request.with_directory(directory);
+                        }
+                        if let Some(stdin) = stdin {
+                            request = request.with_stdin(stdin);
+                        }
+                        if let Some(timeout) = timeout {
+                            request = request.with_timeout(timeout);
+                        }
+                        // Safe defaults unless the caller opts out; ignored for batch (handled above).
+                        if !profile {
+                            request = request.with_no_profile();
+                        }
+                        if !interactive {
+                            request = request.with_non_interactive();
+                        }
+                        if matches!(shell, NowShell::Pwsh) {
+                            handle.pwsh(request).await
+                        } else {
+                            handle.win_ps(request).await
+                        }
+                    }
+                };
+                match execution {
+                    Ok(execution) => drain_execution(execution).await,
+                    Err(error) => Response::error(format!("failed to start NOW execution: {error}")),
+                }
+            }
+            Request::NowProcess {
+                filename,
+                parameters,
+                directory,
+                stdin,
+                timeout_secs,
+            } => {
+                if !caps.process {
+                    return Response::error("process execution is not available on this session");
+                }
+                let mut request = ProcessRequest::new(filename);
+                if let Some(parameters) = parameters {
+                    request = request.with_parameters(parameters);
+                }
+                if let Some(directory) = directory {
+                    request = request.with_directory(directory);
+                }
+                if let Some(stdin) = stdin {
+                    request = request.with_stdin(stdin);
+                }
+                if let Some(secs) = timeout_secs {
+                    request = request.with_timeout(Duration::from_secs(u64::from(secs)));
+                }
+                match handle.process(request).await {
+                    Ok(execution) => drain_execution(execution).await,
+                    Err(error) => Response::error(format!("failed to start NOW execution: {error}")),
+                }
+            }
+            // Unreachable: `handle_connection` only routes NOW requests here.
+            _ => Response::error("internal error: non-NOW request routed to the NOW handler"),
+        }
+    }
+
+    /// Returns the NOW client handle, establishing it lazily on first use.
+    ///
+    /// Establishment consumes the inbound receiver; if it fails (e.g. the channel never opened),
+    /// NOW is unavailable for the rest of this session (reconnect to retry).
+    async fn now_handle(&self) -> Result<NowClientHandle, String> {
+        enum Step {
+            Ready(NowClientHandle),
+            Establish(
+                mpsc::UnboundedReceiver<NowInbound>,
+                mpsc::UnboundedSender<RdpInputEvent>,
+            ),
+            Unavailable,
+            NoSession,
+        }
+
+        // Take what we need under a brief lock; never hold the guard across an `.await`.
+        let step = {
+            let mut guard = self.state.lock().expect("daemon state poisoned");
+            match guard.as_mut() {
+                None => Step::NoSession,
+                Some(session) => {
+                    if let Some(handle) = &session.now_handle {
+                        Step::Ready(handle.clone())
+                    } else if let Some(inbound) = session.now_inbound.take() {
+                        Step::Establish(inbound, session.input_tx.clone())
+                    } else {
+                        Step::Unavailable
+                    }
+                }
+            }
+        };
+
+        match step {
+            Step::Ready(handle) => Ok(handle),
+            Step::NoSession => Err("no active session".to_owned()),
+            Step::Unavailable => Err("NOW channel is unavailable on this session".to_owned()),
+            Step::Establish(inbound, input_tx) => {
+                let handle = now::establish(inbound, input_tx)
+                    .await
+                    .map_err(|error| format!("{error:#}"))?;
+                if let Some(session) = self.state.lock().expect("daemon state poisoned").as_mut() {
+                    session.now_handle = Some(handle.clone());
+                }
+                Ok(handle)
+            }
+        }
+    }
+
+    /// Writes flattened NOW capability entries into the live property bag (overwrite; idempotent).
+    fn store_now_props(&self, entries: &[(String, PropValue)]) {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return;
+        };
+        let mut live = session.live.lock().expect("session live state poisoned");
+        for (key, value) in entries {
+            let value = match value {
+                PropValue::Int(value) => Value::Int(*value),
+                PropValue::Str(value) => Value::Str(value.clone()),
+            };
+            live.properties.insert(key.clone(), value);
+        }
+    }
+}
+
+/// Drains a tracked NOW execution to completion, buffering stdout/stderr, and maps the terminal
+/// result to a [`Payload::NowOutput`]. Bounds total output to avoid overflowing the IPC frame.
+async fn drain_execution(mut execution: Execution) -> Response {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    while let Some(event) = execution.next_event().await {
+        match event {
+            ExecutionEvent::Stdout { data, .. } => stdout.extend_from_slice(&data),
+            ExecutionEvent::Stderr { data, .. } => stderr.extend_from_slice(&data),
+            ExecutionEvent::Started | ExecutionEvent::CancelAccepted => {}
+        }
+        if MAX_NOW_OUTPUT < stdout.len() + stderr.len() {
+            let _ = execution.cancel().await;
+            return Response::error(format!("output exceeded {} MiB", MAX_NOW_OUTPUT / (1024 * 1024)));
+        }
+    }
+    match execution.wait().await {
+        Ok(ExecutionStatus::Completed { exit_code }) => Response::Ok(Payload::NowOutput {
+            stdout,
+            stderr,
+            exit_code,
+            terminal: NowTerminal::Completed,
+        }),
+        Ok(ExecutionStatus::Cancelled) => Response::Ok(Payload::NowOutput {
+            stdout,
+            stderr,
+            exit_code: 0,
+            terminal: NowTerminal::Cancelled,
+        }),
+        Err(error) => Response::error(format!("NOW execution failed: {error}")),
     }
 }
 

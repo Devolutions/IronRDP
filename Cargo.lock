@@ -1609,7 +1609,7 @@ dependencies = [
  "embed-resource",
  "ironrdp",
  "ironrdp-cliprdr-native",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-rdcleanpath",
  "sspi",
@@ -2376,7 +2376,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-echo",
@@ -2405,7 +2405,7 @@ version = "0.10.0"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2419,12 +2419,15 @@ dependencies = [
  "clap",
  "ironrdp-cfg",
  "ironrdp-client",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
+ "ironrdp-svc",
  "libc",
+ "now-client",
  "png",
  "tokio",
  "tracing",
@@ -2437,7 +2440,7 @@ name = "ironrdp-ainput"
 version = "0.8.0"
 dependencies = [
  "bitflags 2.13.0",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-dvc",
  "num-derive",
  "num-traits",
@@ -2449,7 +2452,7 @@ version = "0.10.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "tracing",
 ]
@@ -2470,7 +2473,7 @@ version = "0.10.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "tracing",
 ]
@@ -2499,7 +2502,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-dvc-com-plugin",
@@ -2530,7 +2533,7 @@ name = "ironrdp-cliprdr"
 version = "0.7.0"
 dependencies = [
  "bitflags 2.13.0",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2541,7 +2544,7 @@ dependencies = [
 name = "ironrdp-cliprdr-format"
 version = "0.2.0"
 dependencies = [
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "png",
 ]
 
@@ -2550,7 +2553,7 @@ name = "ironrdp-cliprdr-native"
 version = "0.7.0"
 dependencies = [
  "ironrdp-cliprdr",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "tracing",
  "windows",
 ]
@@ -2559,8 +2562,8 @@ dependencies = [
 name = "ironrdp-connector"
 version = "0.10.0"
 dependencies = [
- "ironrdp-core",
- "ironrdp-error",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.0",
  "ironrdp-pdu",
  "ironrdp-svc",
  "picky",
@@ -2574,16 +2577,25 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-core"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2db60a59716a84d09040d29c9e75e81545842510fccb0934c09b28e78b46680"
+dependencies = [
+ "ironrdp-error 0.1.3",
+]
+
+[[package]]
+name = "ironrdp-core"
 version = "0.2.1"
 dependencies = [
- "ironrdp-error",
+ "ironrdp-error 0.2.0",
 ]
 
 [[package]]
 name = "ironrdp-displaycontrol"
 version = "0.8.0"
 dependencies = [
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2594,7 +2606,7 @@ dependencies = [
 name = "ironrdp-dvc"
 version = "0.8.0"
 dependencies = [
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2604,7 +2616,7 @@ dependencies = [
 name = "ironrdp-dvc-com-plugin"
 version = "0.1.3"
 dependencies = [
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2618,7 +2630,7 @@ name = "ironrdp-dvc-pipe-proxy"
 version = "0.5.0"
 dependencies = [
  "async-trait",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2630,7 +2642,7 @@ dependencies = [
 name = "ironrdp-echo"
 version = "0.4.0"
 dependencies = [
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "tracing",
@@ -2643,13 +2655,19 @@ dependencies = [
  "arbitrary",
  "bit_field",
  "bitflags 2.13.0",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-dvc",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "openh264",
  "tracing",
 ]
+
+[[package]]
+name = "ironrdp-error"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a9d7794e854eef2f13fdf79c8502bcc567a75a15fd0522885f37739386a4cef"
 
 [[package]]
 name = "ironrdp-error"
@@ -2671,7 +2689,7 @@ dependencies = [
  "ironrdp-bulk",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
  "ironrdp-egfx",
  "ironrdp-graphics",
@@ -2692,7 +2710,7 @@ dependencies = [
  "bytemuck",
  "byteorder",
  "expect-test",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "num-derive",
  "num-traits",
@@ -2718,8 +2736,8 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "ironrdp-core",
- "ironrdp-error",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.0",
  "ironrdp-tls",
  "log",
  "tokio",
@@ -2745,8 +2763,8 @@ dependencies = [
  "byteorder",
  "der-parser",
  "expect-test",
- "ironrdp-core",
- "ironrdp-error",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.0",
  "md-5 0.10.6",
  "num-bigint 0.4.8",
  "num-derive",
@@ -2778,8 +2796,8 @@ name = "ironrdp-rdpdr"
 version = "0.7.0"
 dependencies = [
  "bitflags 2.13.0",
- "ironrdp-core",
- "ironrdp-error",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.0",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2789,7 +2807,7 @@ dependencies = [
 name = "ironrdp-rdpdr-native"
 version = "0.7.0"
 dependencies = [
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
  "ironrdp-svc",
@@ -2801,7 +2819,7 @@ dependencies = [
 name = "ironrdp-rdpeusb"
 version = "0.1.0"
 dependencies = [
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-str",
@@ -2819,7 +2837,7 @@ name = "ironrdp-rdpsnd"
 version = "0.9.0"
 dependencies = [
  "bitflags 2.13.0",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2833,7 +2851,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "cpal",
- "ironrdp-error",
+ "ironrdp-error 0.2.0",
  "ironrdp-rdpsnd",
  "opus2",
  "tracing",
@@ -2851,7 +2869,7 @@ dependencies = [
  "ironrdp-ainput",
  "ironrdp-async",
  "ironrdp-cliprdr",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-echo",
@@ -2878,10 +2896,10 @@ name = "ironrdp-session"
 version = "0.11.0"
 dependencies = [
  "ironrdp-bulk",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
- "ironrdp-error",
+ "ironrdp-error 0.2.0",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2899,7 +2917,7 @@ name = "ironrdp-str"
 version = "0.1.1"
 dependencies = [
  "bytemuck",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
 ]
 
 [[package]]
@@ -2907,7 +2925,7 @@ name = "ironrdp-svc"
 version = "0.8.0"
 dependencies = [
  "bitflags 2.13.0",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
 ]
 
@@ -2925,7 +2943,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
  "ironrdp-connector",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-echo",
@@ -2964,7 +2982,7 @@ dependencies = [
  "ironrdp-agent",
  "ironrdp-async",
  "ironrdp-client",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-dvc",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
@@ -3042,7 +3060,7 @@ dependencies = [
  "iron-remote-desktop",
  "ironrdp",
  "ironrdp-cliprdr-format",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-futures",
  "ironrdp-pdu",
  "ironrdp-propertyset",
@@ -3492,6 +3510,29 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "now-client"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8e4f1efbc5536f3e43f40e089abc7562b3e0bc48dfee57444558d45c31dee20"
+dependencies = [
+ "now-proto-pdu",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "now-proto-pdu"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bc774bac11db918c7a66a05e26771567f0968e0e0bf69c116fa8a5ae91f06b8"
+dependencies = [
+ "bitflags 2.13.0",
+ "ironrdp-core 0.1.5",
+ "ironrdp-error 0.1.3",
+ "uuid",
 ]
 
 [[package]]

@@ -21,9 +21,10 @@ use ironrdp_propertyset::PropertySet;
 
 use crate::wire::propertyset;
 use crate::wire::{
-    bytes_size, opt_string_size, opt_u16_size, read_bool, read_bytes, read_char, read_mouse_button, read_opt_string,
-    read_opt_u16, read_string, string_size, write_bool, write_bytes, write_char, write_mouse_button, write_opt_string,
-    write_opt_u16, write_string,
+    bytes_size, opt_bytes_size, opt_string_size, opt_u16_size, opt_u32_size, read_bool, read_bytes, read_char,
+    read_mouse_button, read_opt_bytes, read_opt_string, read_opt_u16, read_opt_u32, read_string, string_size,
+    write_bool, write_bytes, write_char, write_mouse_button, write_opt_bytes, write_opt_string, write_opt_u16,
+    write_opt_u32, write_string,
 };
 
 /// A request sent by the CLI to the daemon.
@@ -71,6 +72,30 @@ pub enum Request {
     Resize { width: u16, height: u16 },
     // TODO: add clipboard support (CLIPRDR), e.g. requests to read the remote clipboard text and to
     // set it, so an LLM can copy/paste to and from the session.
+    /// Negotiate (if needed) and report the NOW execution capabilities of the session.
+    NowCapabilities,
+    /// Run a command string in a remote shell and return its buffered output and exit code.
+    ///
+    /// `shell` selects the shell style; `None` lets the daemon pick the default from negotiated
+    /// capabilities. `profile`/`interactive` opt out of the safe PowerShell defaults (`-NoProfile`
+    /// / `-NonInteractive`) and are ignored for `batch`.
+    NowExec {
+        shell: Option<NowShell>,
+        command: String,
+        profile: bool,
+        interactive: bool,
+        directory: Option<String>,
+        stdin: Option<Vec<u8>>,
+        timeout_secs: Option<u32>,
+    },
+    /// Run an executable directly (CreateProcess-style) and return its buffered output and exit code.
+    NowProcess {
+        filename: String,
+        parameters: Option<String>,
+        directory: Option<String>,
+        stdin: Option<Vec<u8>>,
+        timeout_secs: Option<u32>,
+    },
 }
 
 // Manual `Debug` so the `Connect` payload's property *values* (which may include a password before
@@ -121,6 +146,35 @@ impl fmt::Debug for Request {
                 .field("width", width)
                 .field("height", height)
                 .finish(),
+            Self::NowCapabilities => f.write_str("NowCapabilities"),
+            // `command` and `stdin` are omitted: they may carry secrets or large payloads.
+            Self::NowExec {
+                shell,
+                profile,
+                interactive,
+                directory,
+                timeout_secs,
+                ..
+            } => f
+                .debug_struct("NowExec")
+                .field("shell", shell)
+                .field("profile", profile)
+                .field("interactive", interactive)
+                .field("directory", directory)
+                .field("timeout_secs", timeout_secs)
+                .finish_non_exhaustive(),
+            // `parameters` and `stdin` are omitted: they may carry secrets or large payloads.
+            Self::NowProcess {
+                filename,
+                directory,
+                timeout_secs,
+                ..
+            } => f
+                .debug_struct("NowProcess")
+                .field("filename", filename)
+                .field("directory", directory)
+                .field("timeout_secs", timeout_secs)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -173,6 +227,15 @@ pub enum Payload {
     Logs(Vec<String>),
     /// The most recent frame encoded as a PNG (cursor included), with its dimensions.
     Screenshot { width: u16, height: u16, png: Vec<u8> },
+    /// Flattened NOW capabilities, as `(key, value)` entries under the `now.` prefix.
+    NowCapabilities(Vec<(String, PropValue)>),
+    /// Buffered output of a completed NOW execution, plus its exit code and terminal state.
+    NowOutput {
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+        exit_code: u32,
+        terminal: NowTerminal,
+    },
 }
 
 impl fmt::Debug for Payload {
@@ -188,6 +251,20 @@ impl fmt::Debug for Payload {
                 .field("width", width)
                 .field("height", height)
                 .field("png_len", &png.len())
+                .finish(),
+            Self::NowCapabilities(entries) => f.debug_tuple("NowCapabilities").field(entries).finish(),
+            // Print stream byte lengths rather than the (possibly large or sensitive) blobs.
+            Self::NowOutput {
+                stdout,
+                stderr,
+                exit_code,
+                terminal,
+            } => f
+                .debug_struct("NowOutput")
+                .field("stdout_len", &stdout.len())
+                .field("stderr_len", &stderr.len())
+                .field("exit_code", exit_code)
+                .field("terminal", terminal)
                 .finish(),
         }
     }
@@ -278,6 +355,53 @@ pub enum PropValue {
     Int(i64),
     /// String value.
     Str(String),
+}
+
+/// A NOW shell style for [`Request::NowExec`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NowShell {
+    /// PowerShell 7 (`pwsh`).
+    Pwsh,
+    /// Windows PowerShell (`powershell.exe`).
+    Powershell,
+    /// Windows Batch (`cmd.exe`).
+    Batch,
+}
+
+impl fmt::Display for NowShell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Pwsh => "pwsh",
+            Self::Powershell => "powershell",
+            Self::Batch => "batch",
+        })
+    }
+}
+
+/// Terminal state of a NOW execution, carried by [`Payload::NowOutput`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NowTerminal {
+    /// The command ran to completion (the exit code is authoritative).
+    Completed,
+    /// The command was cancelled (e.g. by timeout).
+    Cancelled,
+}
+
+impl NowTerminal {
+    fn tag(self) -> u8 {
+        match self {
+            Self::Completed => 0,
+            Self::Cancelled => 1,
+        }
+    }
+
+    fn from_tag(tag: u8) -> DecodeResult<Self> {
+        match tag {
+            0 => Ok(Self::Completed),
+            1 => Ok(Self::Cancelled),
+            _ => Err(ironrdp_core::invalid_field_err!("now terminal", "unknown tag")),
+        }
+    }
 }
 
 /// A small key filter for [`Request::QueryProps`]. Matching is case-insensitive.
@@ -388,6 +512,42 @@ impl Decode<'_> for PropValue {
 }
 
 impl_pdu_pod!(PropValue);
+
+// ── NowShell codec ──────────────────────────────────────────────────────────
+
+impl Encode for NowShell {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u8(match self {
+            Self::Pwsh => 0,
+            Self::Powershell => 1,
+            Self::Batch => 2,
+        });
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_agent::NowShell"
+    }
+
+    fn size(&self) -> usize {
+        1 /* tag */
+    }
+}
+
+impl Decode<'_> for NowShell {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 1);
+        match src.read_u8() {
+            0 => Ok(Self::Pwsh),
+            1 => Ok(Self::Powershell),
+            2 => Ok(Self::Batch),
+            _ => Err(ironrdp_core::invalid_field_err!("now shell", "unknown tag")),
+        }
+    }
+}
+
+impl_pdu_pod!(NowShell);
 
 impl Encode for PropertyEntry {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -527,6 +687,27 @@ impl Encode for Payload {
                 dst.write_u16(*height);
                 write_bytes(dst, png)?;
             }
+            Self::NowCapabilities(entries) => {
+                dst.write_u8(5);
+                let count: u32 = cast_length!("now capability count", entries.len())?;
+                dst.write_u32(count);
+                for (key, value) in entries {
+                    write_string(dst, key)?;
+                    value.encode(dst)?;
+                }
+            }
+            Self::NowOutput {
+                stdout,
+                stderr,
+                exit_code,
+                terminal,
+            } => {
+                dst.write_u8(6);
+                write_bytes(dst, stdout)?;
+                write_bytes(dst, stderr)?;
+                dst.write_u32(*exit_code);
+                dst.write_u8(terminal.tag());
+            }
         }
         Ok(())
     }
@@ -543,6 +724,16 @@ impl Encode for Payload {
                 Self::Properties(dump) => dump.size(),
                 Self::Logs(lines) => 4 + lines.iter().map(|line| string_size(line)).sum::<usize>(),
                 Self::Screenshot { png, .. } => 2 /* width */ + 2 /* height */ + bytes_size(png),
+                Self::NowCapabilities(entries) => {
+                    4 /* count */
+                        + entries
+                            .iter()
+                            .map(|(key, value)| string_size(key) + value.size())
+                            .sum::<usize>()
+                }
+                Self::NowOutput { stdout, stderr, .. } => {
+                    bytes_size(stdout) + bytes_size(stderr) + 4 /* exit_code */ + 1 /* terminal */
+                }
             }
     }
 }
@@ -569,6 +760,30 @@ impl Decode<'_> for Payload {
                 let height = src.read_u16();
                 let png = read_bytes(src)?;
                 Ok(Self::Screenshot { width, height, png })
+            }
+            5 => {
+                ensure_size!(in: src, size: 4);
+                let count = src.read_u32();
+                let mut entries = Vec::new();
+                for _ in 0..count {
+                    let key = read_string(src)?;
+                    let value = PropValue::decode(src)?;
+                    entries.push((key, value));
+                }
+                Ok(Self::NowCapabilities(entries))
+            }
+            6 => {
+                let stdout = read_bytes(src)?;
+                let stderr = read_bytes(src)?;
+                ensure_size!(in: src, size: 5);
+                let exit_code = src.read_u32();
+                let terminal = NowTerminal::from_tag(src.read_u8())?;
+                Ok(Self::NowOutput {
+                    stdout,
+                    stderr,
+                    exit_code,
+                    terminal,
+                })
             }
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag")),
         }
@@ -688,6 +903,45 @@ impl Encode for Request {
                 dst.write_u16(*width);
                 dst.write_u16(*height);
             }
+            Self::NowCapabilities => dst.write_u8(12),
+            Self::NowExec {
+                shell,
+                command,
+                profile,
+                interactive,
+                directory,
+                stdin,
+                timeout_secs,
+            } => {
+                dst.write_u8(13);
+                match shell {
+                    Some(shell) => {
+                        dst.write_u8(1);
+                        shell.encode(dst)?;
+                    }
+                    None => dst.write_u8(0),
+                }
+                write_string(dst, command)?;
+                write_bool(dst, *profile)?;
+                write_bool(dst, *interactive)?;
+                write_opt_string(dst, directory.as_deref())?;
+                write_opt_bytes(dst, stdin.as_deref())?;
+                write_opt_u32(dst, *timeout_secs)?;
+            }
+            Self::NowProcess {
+                filename,
+                parameters,
+                directory,
+                stdin,
+                timeout_secs,
+            } => {
+                dst.write_u8(14);
+                write_string(dst, filename)?;
+                write_opt_string(dst, parameters.as_deref())?;
+                write_opt_string(dst, directory.as_deref())?;
+                write_opt_bytes(dst, stdin.as_deref())?;
+                write_opt_u32(dst, *timeout_secs)?;
+            }
         }
         Ok(())
     }
@@ -713,6 +967,36 @@ impl Encode for Request {
                 Self::KeyScancode { .. } => 2 /* scancode */ + 1 /* pressed */,
                 Self::KeyUnicode { .. } => 4 /* ch */ + 1 /* pressed */,
                 Self::Resize { .. } => 2 /* width */ + 2 /* height */,
+                Self::NowCapabilities => 0,
+                Self::NowExec {
+                    shell,
+                    command,
+                    directory,
+                    stdin,
+                    timeout_secs,
+                    ..
+                } => {
+                    1 /* shell presence */ + shell.map_or(0, |_| 1)
+                        + string_size(command)
+                        + 1 /* profile */
+                        + 1 /* interactive */
+                        + opt_string_size(directory.as_deref())
+                        + opt_bytes_size(stdin.as_deref())
+                        + opt_u32_size(*timeout_secs)
+                }
+                Self::NowProcess {
+                    filename,
+                    parameters,
+                    directory,
+                    stdin,
+                    timeout_secs,
+                } => {
+                    string_size(filename)
+                        + opt_string_size(parameters.as_deref())
+                        + opt_string_size(directory.as_deref())
+                        + opt_bytes_size(stdin.as_deref())
+                        + opt_u32_size(*timeout_secs)
+                }
             }
     }
 }
@@ -788,6 +1072,44 @@ impl Decode<'_> for Request {
                 let width = src.read_u16();
                 let height = src.read_u16();
                 Ok(Self::Resize { width, height })
+            }
+            12 => Ok(Self::NowCapabilities),
+            13 => {
+                ensure_size!(in: src, size: 1);
+                let shell = match src.read_u8() {
+                    0 => None,
+                    1 => Some(NowShell::decode(src)?),
+                    _ => return Err(ironrdp_core::invalid_field_err!("now shell", "invalid presence flag")),
+                };
+                let command = read_string(src)?;
+                let profile = read_bool(src)?;
+                let interactive = read_bool(src)?;
+                let directory = read_opt_string(src)?;
+                let stdin = read_opt_bytes(src)?;
+                let timeout_secs = read_opt_u32(src)?;
+                Ok(Self::NowExec {
+                    shell,
+                    command,
+                    profile,
+                    interactive,
+                    directory,
+                    stdin,
+                    timeout_secs,
+                })
+            }
+            14 => {
+                let filename = read_string(src)?;
+                let parameters = read_opt_string(src)?;
+                let directory = read_opt_string(src)?;
+                let stdin = read_opt_bytes(src)?;
+                let timeout_secs = read_opt_u32(src)?;
+                Ok(Self::NowProcess {
+                    filename,
+                    parameters,
+                    directory,
+                    stdin,
+                    timeout_secs,
+                })
             }
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag")),
         }

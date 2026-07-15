@@ -37,6 +37,13 @@ ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 
+# Dynamic virtual channel plumbing for the NOW execution channel (in-process DVC bridge)
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" }
+
+# NOW protocol client (remote command execution over the Devolutions::Now::Agent DVC channel)
+now-client = "0.1"
+
 # Async runtime and IPC transport
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time", "signal"] }
 

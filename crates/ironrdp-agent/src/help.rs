@@ -77,6 +77,29 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `key-unicode --char C --pressed <true|false>`  Type by Unicode character.
 - `resize --width W --height H`                  Resize the remote desktop.
 
+## NOW remote execution (require an active session)
+
+Run commands on the remote host over the `Devolutions::Now::Agent` DVC channel. Capabilities are
+negotiated on first use and reflected into the property bag under `now.*` (visible via
+`query-props --prefix now.`).
+
+- `now capabilities`             Report negotiated NOW capabilities as `key: value` lines on stdout
+                                 (version, heartbeat_ms, run/process/batch/powershell/pwsh,
+                                 io_redirection, unicode_console, default_shell). Also triggers
+                                 negotiation without running anything.
+- `now exec <COMMAND> [--shell <pwsh|powershell|batch>] [--profile] [--interactive] [--directory DIR] [--stdin FILE] [--timeout SECS]`
+                                 Run COMMAND in a remote shell. `--shell` omitted picks the default
+                                 (preference pwsh -> powershell -> batch). PowerShell defaults to
+                                 `-NoProfile -NonInteractive`; `--profile`/`--interactive` opt out
+                                 (ignored for batch). `--stdin -` reads this CLI's stdin, else a file.
+- `now process <FILENAME> [--parameters STR] [--directory DIR] [--stdin FILE] [--timeout SECS]`
+                                 Run an executable directly (CreateProcess-style).
+
+Output contract for `exec`/`process`: remote stdout -> this CLI's stdout and remote stderr -> this
+CLI's stderr, byte-exact. The remote exit code becomes this CLI's exit code (0 -> 0, 1-255 -> that
+value, >255 -> 255). CLI-level problems (no shell, connection lost, output too large) print
+`ironrdp-agent: <message>` to stderr and exit 125; a cancelled/timed-out command exits 130.
+
 ## Errors
 
 Failures print a single lowercase message (no trailing punctuation) and exit non-zero. A failed
