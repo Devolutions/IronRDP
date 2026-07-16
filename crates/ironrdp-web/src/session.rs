@@ -1614,7 +1614,7 @@ async fn connect(
                 &mut framed,
                 (&destination).into(),
                 server_public_key,
-                Some(&mut WasmNetworkClient),
+                &mut WasmNetworkClient,
                 None, // vmconnect CredSSP is NTLM-only
             )
             .await?;
@@ -1633,7 +1633,7 @@ async fn connect(
                 &mut framed,
                 (&destination).into(),
                 server_public_key,
-                Some(&mut WasmNetworkClient),
+                &mut WasmNetworkClient,
                 url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
                     .ok()
                     .map(|url| KerberosConfig {
@@ -1800,6 +1800,13 @@ where
             .as_bytes()
             .context("subject public key BIT STRING is not aligned")?
             .to_owned();
+
+        // A well-formed RDCleanPath response for the standard path carries the X.224 confirm, which
+        // advances the connector to the security upgrade. A response missing it (accepted by the
+        // PDU layer) would otherwise trip skip_connect_begin's assertion, so reject it cleanly.
+        if !connector.should_perform_security_upgrade() {
+            return Err(anyhow::Error::msg("RDCleanPath response is missing the X.224 connection confirmation").into());
+        }
 
         let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
 

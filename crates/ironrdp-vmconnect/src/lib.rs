@@ -8,4 +8,4 @@
 
 mod connector;
 
-pub use connector::*;
+pub use connector::{VmClientConnector, run_until_handover};

@@ -3,7 +3,7 @@ use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
     ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, SecurityConnector,
-    ServerName, custom_err, general_err,
+    ServerName, general_err,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
@@ -51,8 +51,11 @@ pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut dyn SecurityConnector)
     Upgraded
 }
 
-#[non_exhaustive]
-pub struct CredSSPFinished {
+/// Move-only token proving CredSSP finished, threaded into [`connect_finalize`].
+///
+/// The `write_buf` it carries is only kept so [`connect_finalize`] can reuse the allocation; its
+/// contents are not meaningful (the buffer is cleared on entry).
+pub struct CredsspFinished {
     pub(crate) write_buf: WriteBuf,
 }
 
@@ -63,9 +66,9 @@ pub async fn perform_credssp<S, N>(
     framed: &mut Framed<S>,
     server_name: ServerName,
     server_public_key: Vec<u8>,
-    network_client: Option<&mut N>,
+    network_client: &mut N,
     kerberos_config: Option<KerberosConfig>,
-) -> ConnectorResult<CredSSPFinished>
+) -> ConnectorResult<CredsspFinished>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
@@ -85,12 +88,12 @@ where
         .await?;
     }
 
-    Ok(CredSSPFinished { write_buf: buf })
+    Ok(CredsspFinished { write_buf: buf })
 }
 
 #[instrument(skip_all)]
 pub async fn connect_finalize<S>(
-    CredSSPFinished { write_buf: mut buf }: CredSSPFinished,
+    CredsspFinished { write_buf: mut buf }: CredsspFinished,
     framed: &mut Framed<S>,
     mut connector: ClientConnector,
 ) -> ConnectorResult<ConnectionResult>
@@ -135,7 +138,7 @@ async fn resolve_generator<N: NetworkClient>(
 async fn perform_credssp_step<S, N>(
     connector: &mut dyn SecurityConnector,
     framed: &mut Framed<S>,
-    mut network_client: Option<&mut N>,
+    network_client: &mut N,
     buf: &mut WriteBuf,
     server_name: ServerName,
     server_public_key: Vec<u8>,
@@ -163,15 +166,7 @@ where
     loop {
         let client_state = {
             let mut generator = sequence.process_ts_request(ts_request);
-
-            if let Some(network_client_ref) = network_client.as_deref_mut() {
-                trace!("resolving network");
-                resolve_generator(&mut generator, network_client_ref).await?
-            } else {
-                generator
-                    .resolve_to_result()
-                    .map_err(|e| custom_err!("resolve without network client", e))?
-            }
+            resolve_generator(&mut generator, network_client).await?
         }; // drop generator
 
         buf.clear();

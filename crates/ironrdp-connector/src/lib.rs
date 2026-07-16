@@ -468,6 +468,9 @@ where
 pub trait SecurityConnector: Sequence {
     fn should_perform_security_upgrade(&self) -> bool;
 
+    /// # Panics
+    ///
+    /// Panics if the connector is not waiting for the enhanced security upgrade.
     fn mark_security_upgrade_as_done(&mut self);
 
     fn should_perform_credssp(&self) -> bool;
@@ -478,6 +481,9 @@ pub trait SecurityConnector: Sequence {
     /// before negotiation, so this is the plain HYBRID semantics the host expects there.
     fn credssp_protocol(&self) -> Option<SecurityProtocol>;
 
+    /// # Panics
+    ///
+    /// Panics if the connector is not waiting for CredSSP.
     fn mark_credssp_as_done(&mut self);
 
     fn config(&self) -> &Config;
@@ -489,6 +495,7 @@ pub trait SecurityConnector: Sequence {
 /// preconnection PDU, or forwarded by a gateway) so the host routes the connection to that
 /// VM's console.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PreconnectionBlobPayload {
     General(String),
     VmConnect(String),
@@ -499,13 +506,6 @@ impl PreconnectionBlobPayload {
         match self {
             PreconnectionBlobPayload::General(pcb) => Some(pcb),
             PreconnectionBlobPayload::VmConnect(_) => None,
-        }
-    }
-
-    pub fn vmconnect(&self) -> Option<&str> {
-        match self {
-            PreconnectionBlobPayload::VmConnect(vm_id) => Some(vm_id),
-            PreconnectionBlobPayload::General(_) => None,
         }
     }
 }

@@ -461,12 +461,12 @@ async fn connect_gateway(
     use ironrdp_mstsgu::GwConnectTarget;
 
     // Build the GwConnectTarget.  `server` is the RDP target derived from `config.destination`.
-    // TODO: preserve the destination port; ironrdp-mstsgu may currently hard-code 3389.
     let gw_target = GwConnectTarget {
         gw_endpoint: gw.endpoint.clone(),
         gw_user: gw.username.clone(),
         gw_pass: gw.password.clone(),
         server: config.destination.name().to_owned(),
+        port: config.destination.port(),
     };
 
     let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect(&gw_target, &config.connector.client_name)
@@ -530,7 +530,7 @@ async fn connect_rdcleanpath_transport(
                 &mut upgraded_framed,
                 (&config.destination).into(),
                 server_public_key,
-                Some(&mut ReqwestNetworkClient::new()),
+                &mut ReqwestNetworkClient::new(),
                 None, // vmconnect CredSSP is NTLM-only
             )
             .await?;
@@ -560,7 +560,7 @@ async fn connect_rdcleanpath_transport(
                 &mut upgraded_framed,
                 (&config.destination).into(),
                 server_public_key,
-                Some(&mut ReqwestNetworkClient::new()),
+                &mut ReqwestNetworkClient::new(),
                 config.kerberos_config.clone(),
             )
             .await?;
@@ -598,7 +598,7 @@ where
                 &mut upgraded_framed,
                 (&config.destination).into(),
                 server_public_key,
-                Some(&mut ReqwestNetworkClient::new()),
+                &mut ReqwestNetworkClient::new(),
                 None, // vmconnect CredSSP is NTLM-only
             )
             .await?;
@@ -611,6 +611,11 @@ where
             Ok((connection_result, upgraded_framed))
         }
         _ => {
+            // A general preconnection blob is a routing hint sent before the X.224 handshake.
+            if let Some(PreconnectionBlobPayload::General(pcb)) = config.pcb() {
+                send_pcb(&mut framed, pcb.to_owned()).await?;
+            }
+
             let (upgraded, mut upgraded_framed, server_public_key) =
                 security_upgrade(framed, &mut connector, config).await?;
 
@@ -620,7 +625,7 @@ where
                 &mut upgraded_framed,
                 (&config.destination).into(),
                 server_public_key,
-                Some(&mut ReqwestNetworkClient::new()),
+                &mut ReqwestNetworkClient::new(),
                 config.kerberos_config.clone(),
             )
             .await?;
@@ -806,6 +811,15 @@ where
         .as_bytes()
         .ok_or_else(|| ironrdp_connector::general_err!("subject public key BIT STRING is not aligned"))?
         .to_owned();
+
+    // A well-formed RDCleanPath response for the standard path carries the X.224 confirm, which
+    // advances the connector to the security upgrade. A response missing it (accepted by the PDU
+    // layer) would otherwise trip skip_connect_begin's assertion, so reject it cleanly instead.
+    if !connector.should_perform_security_upgrade() {
+        return Err(ironrdp_connector::general_err!(
+            "RDCleanPath response is missing the X.224 connection confirmation"
+        ));
+    }
 
     let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, connector);

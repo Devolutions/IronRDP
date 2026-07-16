@@ -2,8 +2,8 @@ use core::mem;
 
 use ironrdp_async::{Framed, FramedRead, FramedWrite, PcbSent, single_sequence_step};
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorExt as _, ConnectorResult, SecurityConnector,
-    Sequence, State, Written, general_err, reason_err,
+    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult,
+    NegotiationFailure, SecurityConnector, Sequence, State, Written, general_err, reason_err,
 };
 use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu::nego::SecurityProtocol;
@@ -12,7 +12,7 @@ use ironrdp_pdu::{PduHint, nego};
 use tracing::{debug, error, info};
 
 /// Protocols advertised in the X.224 connection request of a vmconnect session.
-pub const HYPERV_SECURITY_PROTOCOL: SecurityProtocol = SecurityProtocol::HYBRID_EX
+const HYPERV_SECURITY_PROTOCOL: SecurityProtocol = SecurityProtocol::HYBRID_EX
     .union(SecurityProtocol::SSL)
     .union(SecurityProtocol::HYBRID);
 
@@ -20,11 +20,10 @@ pub const HYPERV_SECURITY_PROTOCOL: SecurityProtocol = SecurityProtocol::HYBRID_
 ///
 /// CredSSP runs before X.224 negotiation, so no protocol has been selected yet; the host expects
 /// plain HYBRID-style CredSSP (no Early User Authorization Result).
-pub const VMCONNECT_CREDSSP_PROTOCOL: SecurityProtocol = SecurityProtocol::HYBRID;
+const VMCONNECT_CREDSSP_PROTOCOL: SecurityProtocol = SecurityProtocol::HYBRID;
 
 #[derive(Default, Debug)]
-#[non_exhaustive]
-pub enum VmConnectorState {
+enum VmConnectorState {
     #[default]
     Consumed,
     EnhancedSecurityUpgrade,
@@ -63,8 +62,6 @@ impl State for VmConnectorState {
 /// positioned at the Basic Settings Exchange with the protocol negotiated here.
 #[derive(Debug)]
 pub struct VmClientConnector {
-    username: String,
-    request_data: Option<nego::NegoRequestData>,
     state: VmConnectorState,
     client_connector: ClientConnector,
 }
@@ -86,11 +83,16 @@ impl Sequence for VmClientConnector {
             VmConnectorState::ConnectionInitiationSendRequest => {
                 debug!("Connection Initiation");
 
+                let config = &self.client_connector.config;
+                let ironrdp_connector::Credentials::UsernamePassword { username, .. } = &config.credentials else {
+                    return Err(general_err!("vmconnect requires username/password credentials"));
+                };
+
                 let connection_request = nego::ConnectionRequest {
-                    nego_data: self
+                    nego_data: config
                         .request_data
                         .clone()
-                        .or_else(|| Some(nego::NegoRequestData::cookie(self.username.clone()))),
+                        .or_else(|| Some(nego::NegoRequestData::cookie(username.clone()))),
                     flags: nego::RequestFlags::empty(),
                     protocol: HYPERV_SECURITY_PROTOCOL,
                 };
@@ -116,11 +118,25 @@ impl Sequence for VmClientConnector {
                     nego::ConnectionConfirm::Response { flags, protocol } => (flags, protocol),
                     nego::ConnectionConfirm::Failure { code } => {
                         error!(?code, "Received connection failure code");
-                        return Err(reason_err!("Initiation", "{code}"));
+                        return Err(ConnectorError::new(
+                            "negotiation failure",
+                            ConnectorErrorKind::Negotiation(NegotiationFailure::from(code)),
+                        ));
                     }
                 };
 
                 info!(?selected_protocol, ?flags, "Server confirmed connection");
+
+                // Direct Approach ran plain HYBRID CredSSP before this exchange, so the host must
+                // select exactly HYBRID here (MS-RDPBCGR 5.4.2.2). Anything else — SSL, or HYBRID_EX
+                // which would imply an Early User Authorization Result we never negotiated — would
+                // be echoed into Client Core Data as a protocol we did not actually perform.
+                if selected_protocol != VMCONNECT_CREDSSP_PROTOCOL {
+                    return Err(reason_err!(
+                        "Initiation",
+                        "vmconnect requires the server to select {VMCONNECT_CREDSSP_PROTOCOL}, but it selected {selected_protocol}",
+                    ));
+                }
 
                 (Written::Nothing, VmConnectorState::Handover { selected_protocol })
             }
@@ -153,24 +169,25 @@ impl VmClientConnector {
 
         debug!("Taking over VM connector");
 
-        let ironrdp_connector::Credentials::UsernamePassword { username, .. } = &connector.config.credentials else {
+        if !matches!(
+            connector.config.credentials,
+            ironrdp_connector::Credentials::UsernamePassword { .. }
+        ) {
             return Err(general_err!("vmconnect requires username/password credentials"));
-        };
+        }
 
         Ok(VmClientConnector {
-            username: username.clone(),
-            request_data: connector.config.request_data.clone(),
             state: VmConnectorState::EnhancedSecurityUpgrade,
             client_connector: connector,
         })
     }
 
-    pub fn should_hand_over(&self) -> bool {
+    pub(crate) fn should_hand_over(&self) -> bool {
         matches!(self.state, VmConnectorState::Handover { .. })
     }
 
     /// Hands the wrapped [`ClientConnector`] back once the vmconnect sequence is done.
-    pub fn hand_over(self) -> ConnectorResult<ClientConnector> {
+    pub(crate) fn hand_over(self) -> ConnectorResult<ClientConnector> {
         let VmConnectorState::Handover { selected_protocol } = self.state else {
             return Err(general_err!("invalid state for handover, expected Handover"));
         };

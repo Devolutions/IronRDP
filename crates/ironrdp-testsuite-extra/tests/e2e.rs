@@ -315,7 +315,7 @@ where
                     &mut upgraded_framed,
                     "localhost".into(),
                     server_public_key.to_owned(),
-                    Some(&mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new()),
+                    &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
                     None,
                 )
                 .await

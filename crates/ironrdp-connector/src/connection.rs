@@ -7,7 +7,7 @@ use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_activation::{
@@ -166,6 +166,7 @@ impl ClientConnector {
     {
         self.static_channels.insert(channel);
     }
+
     pub fn get_static_channel_processor<T>(&mut self) -> Option<&T>
     where
         T: SvcClientProcessor + 'static,
@@ -414,8 +415,6 @@ impl Sequence for ClientConnector {
                 debug!(message = ?connect_initial, "Send");
 
                 let written = encode_x224_packet(&connect_initial, output)?;
-
-                trace!(written, "Written");
 
                 (
                     Written::from_size(written)?,
