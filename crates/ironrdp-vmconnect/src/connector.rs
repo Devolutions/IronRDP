@@ -1,8 +1,9 @@
 use core::mem;
 
+use ironrdp_async::{Framed, FramedRead, FramedWrite, PcbSent, single_sequence_step};
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorExt as _, ConnectorResult,
-    CredsspSequenceFactory, Sequence, State, Written, general_err, reason_err,
+    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorExt as _, ConnectorResult, SecurityConnector,
+    Sequence, State, Written, general_err, reason_err,
 };
 use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu::nego::SecurityProtocol;
@@ -10,15 +11,19 @@ use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, nego};
 use tracing::{debug, error, info};
 
-use crate::config::VmConnectorConfig;
-
+/// Protocols advertised in the X.224 connection request of a vmconnect session.
 pub const HYPERV_SECURITY_PROTOCOL: SecurityProtocol = SecurityProtocol::HYBRID_EX
     .union(SecurityProtocol::SSL)
     .union(SecurityProtocol::HYBRID);
 
+/// CredSSP semantics used by vmconnect.
+///
+/// CredSSP runs before X.224 negotiation, so no protocol has been selected yet; the host expects
+/// plain HYBRID-style CredSSP (no Early User Authorization Result).
+pub const VMCONNECT_CREDSSP_PROTOCOL: SecurityProtocol = SecurityProtocol::HYBRID;
+
 #[derive(Default, Debug)]
 #[non_exhaustive]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum VmConnectorState {
     #[default]
     Consumed,
@@ -35,10 +40,10 @@ impl State for VmConnectorState {
     fn name(&self) -> &'static str {
         match self {
             Self::Consumed => "Consumed",
-            Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
-            Self::ConnectionInitiationWaitConfirm => "ConnectionInitiationWaitResponse",
             Self::EnhancedSecurityUpgrade => "EnhancedSecurityUpgrade",
             Self::Credssp => "Credssp",
+            Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
+            Self::ConnectionInitiationWaitConfirm => "ConnectionInitiationWaitConfirm",
             Self::Handover { .. } => "Handover",
         }
     }
@@ -52,23 +57,23 @@ impl State for VmConnectorState {
     }
 }
 
+/// Drives the vmconnect pre-connection sequence, wrapping the standard [`ClientConnector`].
+///
+/// The wrapped connector is held untouched until [`hand_over`](Self::hand_over), which returns it
+/// positioned at the Basic Settings Exchange with the protocol negotiated here.
 #[derive(Debug)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct VmClientConnector {
-    config: VmConnectorConfig,
+    username: String,
+    request_data: Option<nego::NegoRequestData>,
     state: VmConnectorState,
-    client_connector: ClientConnector, // hold it hostage, can't do anything with it until VMConnector handover
+    client_connector: ClientConnector,
 }
 
 impl Sequence for VmClientConnector {
     fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
         match &self.state {
-            VmConnectorState::Consumed => None,
-            VmConnectorState::ConnectionInitiationSendRequest => None,
             VmConnectorState::ConnectionInitiationWaitConfirm => Some(&ironrdp_pdu::X224_HINT),
-            VmConnectorState::EnhancedSecurityUpgrade => None,
-            VmConnectorState::Credssp => None,
-            VmConnectorState::Handover { .. } => None,
+            _ => None,
         }
     }
 
@@ -78,25 +83,14 @@ impl Sequence for VmClientConnector {
 
     fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
-            // Invalid state
-            VmConnectorState::Consumed => {
-                return Err(general_err!("connector sequence state is consumed (this is a bug)",));
-            }
-
-            //== Connection Initiation ==//
-            // Exchange supported security protocols and a few other connection flags.
-            VmConnectorState::EnhancedSecurityUpgrade => (Written::Nothing, VmConnectorState::Credssp),
-
-            VmConnectorState::Credssp => (Written::Nothing, VmConnectorState::ConnectionInitiationSendRequest),
             VmConnectorState::ConnectionInitiationSendRequest => {
                 debug!("Connection Initiation");
 
                 let connection_request = nego::ConnectionRequest {
                     nego_data: self
-                        .config
                         .request_data
                         .clone()
-                        .or_else(|| Some(nego::NegoRequestData::cookie(self.config.credentials.username.clone()))),
+                        .or_else(|| Some(nego::NegoRequestData::cookie(self.username.clone()))),
                     flags: nego::RequestFlags::empty(),
                     protocol: HYPERV_SECURITY_PROTOCOL,
                 };
@@ -130,10 +124,11 @@ impl Sequence for VmClientConnector {
 
                 (Written::Nothing, VmConnectorState::Handover { selected_protocol })
             }
-
-            VmConnectorState::Handover { .. } => {
-                return Err(general_err!(
-                    "connector sequence state is already in handover (this is a bug)",
+            invalid => {
+                return Err(reason_err!(
+                    "VmConnect",
+                    "invalid connector state for step: {}",
+                    invalid.name()
                 ));
             }
         };
@@ -145,104 +140,96 @@ impl Sequence for VmClientConnector {
 }
 
 impl VmClientConnector {
-    /// Takes over an existing `ClientConnector` and transitions it into a VM-specific connector.
+    /// Takes over a fresh [`ClientConnector`] to run the vmconnect pre-connection sequence.
     ///
-    /// # Panics
-    ///
-    /// Panics if the provided `connector` is not in the
-    /// [`ClientConnectorState::ConnectionInitiationSendRequest`] state.
-    pub fn take_over(connector: ClientConnector) -> ConnectorResult<Self> {
-        assert!(
-            matches!(connector.state, ClientConnectorState::ConnectionInitiationSendRequest),
-            "Invalid connector state for VM connection, expected ConnectionInitiationSendRequest, got: {}",
-            connector.state.name()
-        );
+    /// Requires proof that the preconnection blob was already sent ([`PcbSent`]), and that the
+    /// wrapped connector has not started its own connection initiation yet.
+    pub fn take_over(_: PcbSent, connector: ClientConnector) -> ConnectorResult<Self> {
+        if !matches!(connector.state, ClientConnectorState::ConnectionInitiationSendRequest) {
+            return Err(general_err!(
+                "invalid connector state for VM connection, expected ConnectionInitiationSendRequest"
+            ));
+        }
 
         debug!("Taking over VM connector");
 
-        let vm_connector_config = VmConnectorConfig::try_from(&connector.config)?;
-        let vm_connector = VmClientConnector {
-            config: vm_connector_config,
-            state: VmConnectorState::EnhancedSecurityUpgrade,
-            client_connector: connector,
+        let ironrdp_connector::Credentials::UsernamePassword { username, .. } = &connector.config.credentials else {
+            return Err(general_err!("vmconnect requires username/password credentials"));
         };
 
-        Ok(vm_connector)
+        Ok(VmClientConnector {
+            username: username.clone(),
+            request_data: connector.config.request_data.clone(),
+            state: VmConnectorState::EnhancedSecurityUpgrade,
+            client_connector: connector,
+        })
     }
 
     pub fn should_hand_over(&self) -> bool {
         matches!(self.state, VmConnectorState::Handover { .. })
     }
 
-    /// Hands the underlying `ClientConnector` back once the VM-specific handshake is done.
+    /// Hands the wrapped [`ClientConnector`] back once the vmconnect sequence is done.
     pub fn hand_over(self) -> ConnectorResult<ClientConnector> {
         let VmConnectorState::Handover { selected_protocol } = self.state else {
-            return Err(general_err!("Invalid state for handover, expected Handover"));
+            return Err(general_err!("invalid state for handover, expected Handover"));
         };
-        let VmClientConnector {
-            mut client_connector, ..
-        } = self;
 
+        let mut client_connector = self.client_connector;
         client_connector.state = ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol };
 
         Ok(client_connector)
     }
 }
 
-impl ironrdp_connector::SecurityConnector for VmClientConnector {
+impl SecurityConnector for VmClientConnector {
     fn should_perform_security_upgrade(&self) -> bool {
         matches!(self.state, VmConnectorState::EnhancedSecurityUpgrade)
     }
 
     fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.should_perform_security_upgrade());
-        self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
-        debug_assert!(!self.should_perform_security_upgrade());
+        self.state = VmConnectorState::Credssp;
     }
 
     fn should_perform_credssp(&self) -> bool {
         matches!(self.state, VmConnectorState::Credssp)
     }
 
-    fn selected_protocol(&self) -> Option<SecurityProtocol> {
-        if self.should_perform_credssp() {
-            Some(HYPERV_SECURITY_PROTOCOL)
-        } else {
-            None
-        }
+    fn credssp_protocol(&self) -> Option<SecurityProtocol> {
+        self.should_perform_credssp().then_some(VMCONNECT_CREDSSP_PROTOCOL)
     }
 
     fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
-        self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
-        debug_assert!(!self.should_perform_credssp());
+        self.state = VmConnectorState::ConnectionInitiationSendRequest;
     }
 
     fn config(&self) -> &ironrdp_connector::Config {
-        self.client_connector.config()
+        &self.client_connector.config
     }
 }
 
-impl CredsspSequenceFactory for VmClientConnector {
-    fn init_credssp(
-        &self,
-        credentials: ironrdp_connector::Credentials,
-        domain: Option<&str>,
-        _protocol: SecurityProtocol,
-        server_name: ironrdp_connector::ServerName,
-        server_public_key: Vec<u8>,
-        _kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
-    ) -> ConnectorResult<(
-        Box<dyn ironrdp_connector::credssp::CredsspSequenceTrait>,
-        sspi::credssp::TsRequest,
-    )> {
-        let credentials = crate::config::Credentials::try_from(&credentials)?;
+/// Runs the vmconnect X.224 negotiation to completion and hands the session back to the standard
+/// [`ClientConnector`], ready for [`connect_finalize`](ironrdp_async::connect_finalize).
+pub async fn run_until_handover<S>(
+    framed: &mut Framed<S>,
+    mut connector: VmClientConnector,
+) -> ConnectorResult<ClientConnector>
+where
+    S: FramedRead + FramedWrite,
+{
+    let mut buf = WriteBuf::new();
 
-        let (credssp, ts_request) =
-            crate::credssp::VmCredsspSequence::init(credentials, domain, server_name, server_public_key)?;
+    let connector = loop {
+        single_sequence_step(framed, &mut connector, &mut buf).await?;
 
-        let credssp: Box<dyn ironrdp_connector::credssp::CredsspSequenceTrait> = Box::new(credssp);
+        if connector.should_hand_over() {
+            break connector.hand_over()?;
+        }
+    };
 
-        Ok((credssp, ts_request))
-    }
+    info!("Handover to client connector");
+
+    Ok(connector)
 }

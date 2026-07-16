@@ -464,31 +464,7 @@ const RDP_DEFAULT_PORT: u16 = 3389;
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
 
-/// How the preconnection blob payload should be interpreted.
-///
-/// `VmConnect` carries a Hyper-V VM ID, which the vmconnect connector wraps in the
-/// MS-RDPBCGR preconnection PDU before the RDP handshake.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PreconnectionBlobPayload {
-    General(String),
-    VmConnect(String),
-}
-
-impl PreconnectionBlobPayload {
-    pub fn general(&self) -> Option<&str> {
-        match self {
-            PreconnectionBlobPayload::General(pcb) => Some(pcb),
-            PreconnectionBlobPayload::VmConnect(_) => None,
-        }
-    }
-
-    pub fn vmconnect(&self) -> Option<&str> {
-        match self {
-            PreconnectionBlobPayload::VmConnect(vm_id) => Some(vm_id),
-            PreconnectionBlobPayload::General(_) => None,
-        }
-    }
-}
+pub use ironrdp_connector::PreconnectionBlobPayload;
 
 /// A configuration value that the consumer must supply before [`ConfigBuilder::build`] can succeed.
 ///

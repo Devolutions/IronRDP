@@ -1,12 +1,12 @@
 use std::io::{Read, Write};
 
-use ironrdp_connector::credssp::{CredsspProcessGenerator, KerberosConfig};
+use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, KerberosConfig};
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::sspi::network_client::NetworkClient;
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorCore, ConnectorError, ConnectorResult,
-    CredsspSequenceFactory as _, SecurityConnector, Sequence, ServerName, general_err,
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, SecurityConnector,
+    Sequence, ServerName, general_err,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
@@ -17,7 +17,7 @@ use crate::framed::Framed;
 pub struct ShouldUpgrade;
 
 #[instrument(skip_all)]
-pub fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut dyn ConnectorCore) -> ConnectorResult<ShouldUpgrade>
+pub fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut dyn SecurityConnector) -> ConnectorResult<ShouldUpgrade>
 where
     S: Sync + Read + Write,
 {
@@ -132,10 +132,10 @@ where
     assert!(connector.should_perform_credssp());
 
     let selected_protocol = connector
-        .selected_protocol()
+        .credssp_protocol()
         .ok_or_else(|| general_err!("CredSSP protocol not selected, cannot perform CredSSP step"))?;
 
-    let (mut sequence, mut ts_request) = connector.init_credssp(
+    let (mut sequence, mut ts_request) = CredsspSequence::init(
         connector.config().credentials.clone(),
         connector.config().domain.as_deref(),
         selected_protocol,

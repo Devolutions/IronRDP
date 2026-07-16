@@ -19,7 +19,7 @@ use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::pdu::{FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::credssp::KerberosConfig;
-use ironrdp::connector::{self, ClientConnector, ConnectorCore, Credentials};
+use ironrdp::connector::{self, ClientConnector, Credentials, PreconnectionBlobPayload, SecurityConnector};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
@@ -33,6 +33,7 @@ use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, fast_path};
 use ironrdp_core::WriteBuf;
 use ironrdp_futures::{FramedRead, FramedWrite, single_sequence_step_read};
+use ironrdp_vmconnect::VmClientConnector;
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use tracing::{debug, error, info, trace, warn};
@@ -91,25 +92,6 @@ struct SessionBuilderInner {
     use_display_control: bool,
     enable_credssp: bool,
     outbound_message_size_limit: Option<usize>,
-}
-
-/// How the preconnection blob payload should be interpreted.
-///
-/// `VmConnect` carries a Hyper-V VM ID, which the gateway forwards as a preconnection blob and
-/// the vmconnect connector handles with an extra pre-CredSSP exchange.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PreconnectionBlobPayload {
-    General(String),
-    VmConnect(String),
-}
-
-impl PreconnectionBlobPayload {
-    pub(crate) fn general(&self) -> Option<&str> {
-        match self {
-            PreconnectionBlobPayload::General(pcb) => Some(pcb),
-            PreconnectionBlobPayload::VmConnect(_) => None,
-        }
-    }
 }
 
 impl Default for SessionBuilderInner {
@@ -1617,30 +1599,55 @@ async fn connect(
         );
     }
 
-    let (upgraded, server_public_key, mut connector) =
-        connect_rdcleanpath(&mut framed, connector, destination.clone(), proxy_auth_token, &pcb).await?;
+    let connection_result = match &pcb {
+        Some(PreconnectionBlobPayload::VmConnect(_)) => {
+            // The gateway forwards the VM ID as a preconnection blob, so the vmconnect
+            // pre-connection sequence (CredSSP first, then X.224) runs through the tunnel.
+            let mut vm = VmClientConnector::take_over(ironrdp_futures::mark_pcb_sent_by_rdcleanpath(), connector)?;
 
-    let mut credssp_finished = ironrdp_futures::perform_credssp(
-        upgraded,
-        connector.as_mut(),
-        &mut framed,
-        (&destination).into(),
-        server_public_key,
-        Some(&mut WasmNetworkClient),
-        url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
-            .ok()
-            .map(|url| KerberosConfig {
-                kdc_proxy_url: Some(url),
-                // HACK: It's supposed to be the computer name of the client, but since it's not easy to retrieve this information in the browser,
-                // we set the destination hostname instead because it happens to work.
-                hostname: destination,
-            }),
-    )
-    .await?;
+            let (upgraded, server_public_key) =
+                connect_rdcleanpath(&mut framed, &mut vm, destination.clone(), proxy_auth_token, &pcb).await?;
 
-    let connector = downcast_back_to_client_connector(connector, &mut credssp_finished, &mut framed).await?;
+            let credssp_finished = ironrdp_futures::perform_credssp(
+                upgraded,
+                &mut vm,
+                &mut framed,
+                (&destination).into(),
+                server_public_key,
+                Some(&mut WasmNetworkClient),
+                None, // vmconnect CredSSP is NTLM-only
+            )
+            .await?;
 
-    let connection_result = ironrdp_futures::connect_finalize(credssp_finished, &mut framed, connector).await?;
+            let connector = ironrdp_vmconnect::run_until_handover(&mut framed, vm).await?;
+
+            ironrdp_futures::connect_finalize(credssp_finished, &mut framed, connector).await?
+        }
+        _ => {
+            let (upgraded, server_public_key) =
+                connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, &pcb).await?;
+
+            let credssp_finished = ironrdp_futures::perform_credssp(
+                upgraded,
+                &mut connector,
+                &mut framed,
+                (&destination).into(),
+                server_public_key,
+                Some(&mut WasmNetworkClient),
+                url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
+                    .ok()
+                    .map(|url| KerberosConfig {
+                        kdc_proxy_url: Some(url),
+                        // HACK: It's supposed to be the computer name of the client, but since it's not easy to retrieve this information in the browser,
+                        // we set the destination hostname instead because it happens to work.
+                        hostname: destination,
+                    }),
+            )
+            .await?;
+
+            ironrdp_futures::connect_finalize(credssp_finished, &mut framed, connector).await?
+        }
+    };
 
     let ws = framed.into_inner_no_leftover();
 
@@ -1649,15 +1656,14 @@ async fn connect(
 
 async fn connect_rdcleanpath<S>(
     framed: &mut ironrdp_futures::Framed<S>,
-    mut connector: ClientConnector,
+    connector: &mut dyn SecurityConnector,
     destination: String,
     proxy_auth_token: String,
     pcb: &Option<PreconnectionBlobPayload>,
-) -> Result<(ironrdp_futures::Upgraded, Vec<u8>, Box<dyn ConnectorCore>), IronError>
+) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronError>
 where
     S: FramedRead + FramedWrite,
 {
-    use ironrdp::connector::Sequence as _;
     use x509_cert::der::Decode as _;
 
     #[derive(Clone, Copy, Debug)]
@@ -1685,40 +1691,23 @@ where
     // RDCleanPath request
     //
     // For a Hyper-V target the X.224 request is omitted: the gateway forwards the VM ID as a
-    // preconnection blob and the vmconnect connector drives the pre-CredSSP exchange itself.
+    // preconnection blob and the vmconnect connector runs X.224 negotiation after CredSSP.
     debug_assert!(connector.next_pdu_hint().is_none());
-    let (rdcleanpath_req, mut connector): (ironrdp_rdcleanpath::RDCleanPathPdu, Box<dyn ConnectorCore>) =
-        if let Some(PreconnectionBlobPayload::VmConnect(vm_id)) = pcb {
-            let rdcleanpath_req = ironrdp_rdcleanpath::RDCleanPathPdu::new_request(
-                None,
-                destination,
-                proxy_auth_token,
-                Some(vm_id.to_owned()),
-            )
+    let (x224_pdu, pcb_payload) = if let Some(PreconnectionBlobPayload::VmConnect(vm_id)) = pcb {
+        (None, Some(vm_id.to_owned()))
+    } else {
+        let written = connector.step_no_input(&mut buf)?;
+        let x224_pdu_len = written.size().expect("written size");
+        debug_assert_eq!(x224_pdu_len, buf.filled_len());
+        (
+            Some(buf.filled().to_vec()),
+            pcb.as_ref().and_then(|pcb| pcb.general()).map(str::to_owned),
+        )
+    };
+
+    let rdcleanpath_req =
+        ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb_payload)
             .context("new RDCleanPath request")?;
-
-            let pcb_sent = ironrdp_futures::mark_pcb_sent_by_rdclean_path();
-            let connector = ironrdp_futures::vm_connector_take_over(pcb_sent, connector)?;
-            (rdcleanpath_req, Box::new(connector))
-        } else {
-            let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
-                return Err(anyhow::Error::msg("invalid connector state (send request)").into());
-            };
-
-            let written = connector.step_no_input(&mut buf)?;
-            let x224_pdu_len = written.size().expect("written size");
-            debug_assert_eq!(x224_pdu_len, buf.filled_len());
-            let x224_pdu = buf.filled().to_vec();
-
-            let rdcleanpath_req = ironrdp_rdcleanpath::RDCleanPathPdu::new_request(
-                Some(x224_pdu),
-                destination,
-                proxy_auth_token,
-                pcb.as_ref().and_then(|pcb| pcb.general()).map(str::to_owned),
-            )
-            .context("new RDCleanPath request")?;
-            (rdcleanpath_req, Box::new(connector))
-        };
 
     debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
     let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;
@@ -1731,18 +1720,18 @@ where
     {
         // RDCleanPath response
 
-        let rdcleanpath_res = framed
+        let rdcleanpath_response = framed
             .read_by_hint(&RDCLEANPATH_HINT)
             .await
             .context("read RDCleanPath request")?;
 
-        let rdcleanpath_res =
-            ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res).context("RDCleanPath response decode")?;
+        let rdcleanpath_response = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_response)
+            .context("RDCleanPath response decode")?;
 
-        debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
+        debug!(message = ?rdcleanpath_response, "Received RDCleanPath PDU");
 
         let (x224_connection_response, server_cert_chain) =
-            match rdcleanpath_res.into_enum().context("invalid RDCleanPath PDU")? {
+            match rdcleanpath_response.into_enum().context("invalid RDCleanPath PDU")? {
                 ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
                     return Err(anyhow::Error::msg("received an unexpected RDCleanPath type (request)").into());
                 }
@@ -1812,40 +1801,14 @@ where
             .context("subject public key BIT STRING is not aligned")?
             .to_owned();
 
-        let should_upgrade = ironrdp_futures::skip_connect_begin(connector.as_mut());
+        let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
 
         // At this point, proxy established the TLS session.
 
-        let upgraded = ironrdp_futures::mark_as_upgraded(should_upgrade, connector.as_mut());
+        let upgraded = ironrdp_futures::mark_as_upgraded(should_upgrade, connector);
 
-        Ok((upgraded, server_public_key, connector))
+        Ok((upgraded, server_public_key))
     }
-}
-
-/// Recover the concrete [`ClientConnector`] after CredSSP so `connect_finalize` can run.
-///
-/// A vmconnect connector must first replay its extra pre-connection exchange until it hands the
-/// session back to the inner client connector.
-async fn downcast_back_to_client_connector(
-    connector: Box<dyn ConnectorCore>,
-    credssp_finished: &mut ironrdp_futures::CredSSPFinished,
-    framed: &mut ironrdp_futures::Framed<impl FramedRead + FramedWrite>,
-) -> connector::ConnectorResult<ClientConnector> {
-    let connector: Box<dyn core::any::Any> = connector;
-
-    let client = match connector.downcast::<ironrdp_vmconnect::VmClientConnector>() {
-        Ok(vm_connector) => ironrdp_futures::run_until_handover(credssp_finished, framed, *vm_connector).await?,
-        Err(err) => match err.downcast::<ClientConnector>() {
-            Ok(c) => *c,
-            Err(_) => {
-                return Err(connector::general_err!(
-                    "connector is neither ClientConnector nor VmClientConnector"
-                ));
-            }
-        },
-    };
-
-    Ok(client)
 }
 
 #[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]

@@ -2451,7 +2451,6 @@ dependencies = [
  "ironrdp-connector",
  "ironrdp-core",
  "ironrdp-pdu",
- "ironrdp-vmconnect",
  "tracing",
 ]
 
@@ -3031,11 +3030,10 @@ dependencies = [
 name = "ironrdp-vmconnect"
 version = "0.1.0"
 dependencies = [
- "arbitrary",
+ "ironrdp-async",
  "ironrdp-connector",
  "ironrdp-core",
  "ironrdp-pdu",
- "sspi",
  "tracing",
 ]
 

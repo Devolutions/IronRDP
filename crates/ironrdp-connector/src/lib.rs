@@ -22,14 +22,12 @@ use ironrdp_pdu::rdp::client_info::{self, PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, x224};
 pub use sspi;
-use sspi::credssp::TsRequest;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use self::connection::{ClientConnector, ClientConnectorState, ConnectionResult, encode_send_data_request};
 pub use self::connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 pub use self::license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use self::server_name::ServerName;
-use crate::credssp::{CredsspSequenceTrait, KerberosConfig};
 pub use crate::license_exchange::LicenseCache;
 
 /// Provides user-friendly error messages for RDP negotiation failures
@@ -462,38 +460,52 @@ where
     Ok(written)
 }
 
-pub trait SecurityConnector {
+/// A connection sequence whose security phases (TLS upgrade, CredSSP) are driven externally.
+///
+/// The async/blocking drivers use this to run the pre-connection phases the same way for the
+/// standard [`ClientConnector`] and alternate front-ends like the vmconnect connector, which
+/// performs these phases before X.224 negotiation instead of after.
+pub trait SecurityConnector: Sequence {
     fn should_perform_security_upgrade(&self) -> bool;
 
     fn mark_security_upgrade_as_done(&mut self);
 
     fn should_perform_credssp(&self) -> bool;
 
-    fn selected_protocol(&self) -> Option<SecurityProtocol>;
+    /// The security protocol whose CredSSP semantics apply, while CredSSP is pending.
+    ///
+    /// For the standard connector this is the negotiated protocol. For vmconnect, CredSSP runs
+    /// before negotiation, so this is the plain HYBRID semantics the host expects there.
+    fn credssp_protocol(&self) -> Option<SecurityProtocol>;
 
     fn mark_credssp_as_done(&mut self);
 
     fn config(&self) -> &Config;
 }
 
-pub trait CredsspSequenceFactory {
-    fn init_credssp(
-        &self,
-        credentials: Credentials,
-        domain: Option<&str>,
-        protocol: SecurityProtocol,
-        server_name: ServerName,
-        server_public_key: Vec<u8>,
-        kerberos_config: Option<KerberosConfig>,
-    ) -> ConnectorResult<(Box<dyn CredsspSequenceTrait>, TsRequest)>;
+/// How a preconnection blob payload should be interpreted.
+///
+/// `VmConnect` carries a Hyper-V VM ID, sent ahead of the RDP handshake (directly as a
+/// preconnection PDU, or forwarded by a gateway) so the host routes the connection to that
+/// VM's console.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreconnectionBlobPayload {
+    General(String),
+    VmConnect(String),
 }
 
-pub trait ConnectorCore: Sequence + SecurityConnector + CredsspSequenceFactory + Any {
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
-}
+impl PreconnectionBlobPayload {
+    pub fn general(&self) -> Option<&str> {
+        match self {
+            PreconnectionBlobPayload::General(pcb) => Some(pcb),
+            PreconnectionBlobPayload::VmConnect(_) => None,
+        }
+    }
 
-impl<T: Sequence + SecurityConnector + CredsspSequenceFactory + 'static> ConnectorCore for T {
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
+    pub fn vmconnect(&self) -> Option<&str> {
+        match self {
+            PreconnectionBlobPayload::VmConnect(vm_id) => Some(vm_id),
+            PreconnectionBlobPayload::General(_) => None,
+        }
     }
 }

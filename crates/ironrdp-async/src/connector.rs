@@ -1,9 +1,9 @@
-use ironrdp_connector::credssp::{CredsspProcessGenerator, KerberosConfig};
+use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, KerberosConfig};
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorCore, ConnectorError, ConnectorResult,
-    SecurityConnector, ServerName, custom_err, general_err,
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, SecurityConnector,
+    ServerName, custom_err, general_err,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
@@ -17,7 +17,7 @@ pub struct ShouldUpgrade;
 #[instrument(skip_all)]
 pub async fn connect_begin<S>(
     framed: &mut Framed<S>,
-    connector: &mut dyn ConnectorCore,
+    connector: &mut dyn SecurityConnector,
 ) -> ConnectorResult<ShouldUpgrade>
 where
     S: Sync + FramedRead + FramedWrite,
@@ -59,7 +59,7 @@ pub struct CredSSPFinished {
 #[instrument(skip_all)]
 pub async fn perform_credssp<S, N>(
     _: Upgraded,
-    connector: &mut dyn ConnectorCore,
+    connector: &mut dyn SecurityConnector,
     framed: &mut Framed<S>,
     server_name: ServerName,
     server_public_key: Vec<u8>,
@@ -133,7 +133,7 @@ async fn resolve_generator<N: NetworkClient>(
 
 #[instrument(level = "trace", skip_all)]
 async fn perform_credssp_step<S, N>(
-    connector: &mut dyn ConnectorCore,
+    connector: &mut dyn SecurityConnector,
     framed: &mut Framed<S>,
     mut network_client: Option<&mut N>,
     buf: &mut WriteBuf,
@@ -148,10 +148,10 @@ where
     assert!(connector.should_perform_credssp());
 
     let selected_protocol = connector
-        .selected_protocol()
+        .credssp_protocol()
         .ok_or_else(|| general_err!("CredSSP protocol not selected, cannot perform CredSSP step"))?;
 
-    let (mut sequence, mut ts_request) = connector.init_credssp(
+    let (mut sequence, mut ts_request) = CredsspSequence::init(
         connector.config().credentials.clone(),
         connector.config().domain.as_deref(),
         selected_protocol,

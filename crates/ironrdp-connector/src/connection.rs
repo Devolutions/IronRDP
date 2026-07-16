@@ -15,9 +15,8 @@ use crate::connection_activation::{
 };
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
-    Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, CredsspSequenceFactory,
-    DesktopSize, NegotiationFailure, SecurityConnector, Sequence, State, Written, credssp, encode_x224_packet,
-    general_err, reason_err,
+    Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize,
+    NegotiationFailure, SecurityConnector, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
 };
 
 #[derive(Debug)]
@@ -201,7 +200,7 @@ impl SecurityConnector for ClientConnector {
         matches!(self.state, ClientConnectorState::Credssp { .. })
     }
 
-    fn selected_protocol(&self) -> Option<nego::SecurityProtocol> {
+    fn credssp_protocol(&self) -> Option<nego::SecurityProtocol> {
         match &self.state {
             ClientConnectorState::Credssp { selected_protocol } => Some(*selected_protocol),
             _ => None,
@@ -217,29 +216,6 @@ impl SecurityConnector for ClientConnector {
 
     fn config(&self) -> &Config {
         &self.config
-    }
-}
-
-impl CredsspSequenceFactory for ClientConnector {
-    fn init_credssp(
-        &self,
-        credentials: crate::Credentials,
-        domain: Option<&str>,
-        protocol: nego::SecurityProtocol,
-        server_name: crate::ServerName,
-        server_public_key: Vec<u8>,
-        kerberos_config: Option<credssp::KerberosConfig>,
-    ) -> ConnectorResult<(Box<dyn credssp::CredsspSequenceTrait>, sspi::credssp::TsRequest)> {
-        let (sequence, ts_request) = credssp::CredsspSequence::init(
-            credentials,
-            domain,
-            protocol,
-            server_name,
-            server_public_key,
-            kerberos_config,
-        )?;
-
-        Ok((Box::new(sequence), ts_request))
     }
 }
 
