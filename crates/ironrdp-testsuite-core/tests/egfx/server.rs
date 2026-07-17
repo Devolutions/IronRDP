@@ -1,10 +1,11 @@
-use ironrdp_core::{Encode, WriteCursor};
+use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::pdu::{
     Avc420Region, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
     CapabilitySet, GfxPdu,
 };
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, QoeMetrics, Surface};
+use ironrdp_graphics::zgfx::Decompressor;
 
 // ============================================================================
 // Test Handler
@@ -145,6 +146,44 @@ fn test_server_not_ready_before_capabilities() {
 
     let result = server.send_avc420_frame(0, &h264_data, &regions, 0);
     assert!(result.is_none());
+}
+
+#[test]
+fn test_planar_frame_uses_planar_codec() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::AVC_DISABLED,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(1280, 720).expect("surface creation failed");
+    server.drain_output();
+
+    let planar_data = [0x20, 0x00, 0x01, 0x02];
+    let frame_id = server.send_planar_frame(surface_id, &planar_data, 1280, 720, 42);
+    assert!(frame_id.is_some());
+
+    let output = server.drain_output();
+    assert_eq!(output.len(), 3);
+    let encoded = encode_vec(output[1].as_ref()).expect("encode should succeed");
+    let mut decoded = Vec::new();
+    Decompressor::new()
+        .decompress(&encoded, &mut decoded)
+        .expect("ZGFX decode should succeed");
+    let mut cursor = ReadCursor::new(&decoded);
+    let pdu = GfxPdu::decode(&mut cursor).expect("decode should succeed");
+    match pdu {
+        GfxPdu::WireToSurface1(pdu) => {
+            assert_eq!(pdu.codec_id, ironrdp_egfx::pdu::Codec1Type::Planar);
+            assert_eq!(pdu.bitmap_data, planar_data);
+            assert_eq!(pdu.destination_rectangle.right, 1280);
+            assert_eq!(pdu.destination_rectangle.bottom, 720);
+        }
+        pdu => panic!("expected WireToSurface1, got {pdu:?}"),
+    }
 }
 
 #[test]
