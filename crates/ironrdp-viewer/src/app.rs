@@ -361,7 +361,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             }
             RdpOutputEvent::ConnectionFailure(error) => {
                 error!(?error);
-                eprintln!("Connection error: {}", error.report());
+                eprintln!("Connection error: {}", error.report().with_source_location());
                 // TODO set proc_exit::sysexits::PROTOCOL_ERR.as_raw());
                 event_loop.exit();
             }
@@ -373,7 +373,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     }
                     Err(error) => {
                         error!(?error);
-                        eprintln!("Active session error: {}", error.report());
+                        eprintln!("Active session error: {}", error.report().with_source_location());
                         proc_exit::sysexits::PROTOCOL_ERR
                     }
                 };

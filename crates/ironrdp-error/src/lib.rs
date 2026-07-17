@@ -138,7 +138,31 @@ impl<Kind> Error<Kind> {
     }
 
     pub fn report(&self) -> ErrorReport<'_, Kind> {
-        ErrorReport(self)
+        ErrorReport {
+            error: self,
+            with_source_location: false,
+        }
+    }
+}
+
+impl<Kind> Error<Kind>
+where
+    Kind: fmt::Display,
+{
+    /// Formats the error head (`context` + `kind`), optionally prefixed with the
+    /// source code location at which the error was constructed.
+    fn fmt_head(&self, f: &mut fmt::Formatter<'_>, with_source_location: bool) -> fmt::Result {
+        #[cfg(feature = "alloc")]
+        let context = self.meta.context;
+        #[cfg(not(feature = "alloc"))]
+        let context = self.context;
+
+        if with_source_location {
+            let location = self.location();
+            write!(f, "[{context} @ {}:{}] {}", location.file(), location.line(), self.kind)
+        } else {
+            write!(f, "[{context}] {}", self.kind)
+        }
     }
 }
 
@@ -147,28 +171,11 @@ where
     Kind: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        #[cfg(feature = "alloc")]
-        {
-            write!(
-                f,
-                "[{} @ {}:{}] {}",
-                self.meta.context,
-                self.meta.location.file(),
-                self.meta.location.line(),
-                self.kind
-            )
-        }
-        #[cfg(not(feature = "alloc"))]
-        {
-            write!(
-                f,
-                "[{} @ {}:{}] {}",
-                self.context,
-                self.location.file(),
-                self.location.line(),
-                self.kind
-            )
-        }
+        // The source code location is intentionally omitted from the default
+        // `Display` output so that it stays stable for logging and `Display`-based
+        // snapshot testing. Use `error.report().with_source_location()` to opt into
+        // the `@ file:line` decoration.
+        self.fmt_head(f, false)
     }
 }
 
@@ -201,7 +208,30 @@ where
     }
 }
 
-pub struct ErrorReport<'a, Kind>(&'a Error<Kind>);
+/// Renders an [`Error`] together with its chain of sources.
+///
+/// Obtained via [`Error::report`]. By default the source code location where the
+/// error was constructed is **not** included, keeping the output stable for
+/// logging and `Display`-based snapshot testing. Call
+/// [`ErrorReport::with_source_location`] to opt into the `@ file:line` decoration
+/// for richer diagnostics.
+pub struct ErrorReport<'a, Kind> {
+    error: &'a Error<Kind>,
+    with_source_location: bool,
+}
+
+impl<Kind> ErrorReport<'_, Kind> {
+    /// Includes the source code location at which the error was constructed in the
+    /// rendered output.
+    ///
+    /// The location is captured by [`Error::new`] via [`core::panic::Location::caller`]
+    /// and `#[track_caller]`.
+    #[must_use]
+    pub fn with_source_location(mut self) -> Self {
+        self.with_source_location = true;
+        self
+    }
+}
 
 #[cfg(feature = "std")]
 impl<Kind> fmt::Display for ErrorReport<'_, Kind>
@@ -211,9 +241,9 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use core::error::Error as _;
 
-        write!(f, "{}", self.0)?;
+        self.error.fmt_head(f, self.with_source_location)?;
 
-        let mut next_source = self.0.source();
+        let mut next_source = self.error.source();
 
         while let Some(e) = next_source {
             write!(f, ", caused by: {e}")?;
@@ -230,10 +260,10 @@ where
     E: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)?;
+        self.error.fmt_head(f, self.with_source_location)?;
 
         #[cfg(feature = "alloc")]
-        if let Some(source) = &self.0.meta.source {
+        if let Some(source) = &self.error.meta.source {
             write!(f, ", caused by: {source}")?;
         }
 

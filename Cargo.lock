@@ -2930,6 +2930,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-echo",
  "ironrdp-egfx",
+ "ironrdp-error",
  "ironrdp-fuzzing",
  "ironrdp-graphics",
  "ironrdp-input",
