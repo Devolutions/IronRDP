@@ -2753,6 +2753,7 @@ dependencies = [
  "ironrdp-dvc-com-plugin",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-echo",
+ "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-mstsgu",
  "ironrdp-pdu",
