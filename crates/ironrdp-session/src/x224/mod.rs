@@ -1,6 +1,6 @@
 use ironrdp_bulk::BulkCompressor;
 use ironrdp_core::{WriteBuf, decode};
-use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
@@ -156,6 +156,10 @@ impl Processor {
 
     pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
         self.get_svc_processor::<DrdynvcClient>()?.get_dvc::<T>()
+    }
+
+    pub fn get_dvc_mut<T: DvcClientProcessor + 'static>(&mut self) -> Option<DynamicChannelMut<'_, T>> {
+        self.get_svc_processor_mut::<DrdynvcClient>()?.get_dvc_mut::<T>()
     }
 
     pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(
