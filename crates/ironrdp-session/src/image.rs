@@ -889,7 +889,6 @@ impl DecodedImage {
         }
     }
 
-    #[cfg(feature = "qoi")]
     fn apply_rgba32_iter<'a, I>(
         &mut self,
         rgba32: I,
@@ -934,7 +933,6 @@ impl DecodedImage {
         Ok(update_rectangle)
     }
 
-    #[cfg(feature = "qoi")]
     pub(crate) fn apply_rgba32(
         &mut self,
         rgba32: &[u8],
