@@ -13,6 +13,7 @@ use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
 #[cfg(all(windows, feature = "dvc-com-plugin"))]
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_echo::client::EchoClient;
+use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::ChannelName;
@@ -600,9 +601,17 @@ fn build_connector(
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
 
+    // The client-side compositor (ironrdp-egfx) holds the surface pixel state and
+    // the session drains it into the framebuffer, so the graphics pipeline's
+    // per-command notification callbacks are unused here. Without an H.264 decoder
+    // the client advertises only the non-AVC capability sets it can actually decode.
+    struct EgfxHandler;
+    impl GraphicsPipelineHandler for EgfxHandler {}
+
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
-        .with_dynamic_channel(EchoClient::new());
+        .with_dynamic_channel(EchoClient::new())
+        .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(EgfxHandler), None));
 
     // Attach DVC pipe proxies.
     #[cfg(feature = "dvc-pipe-proxy")]
