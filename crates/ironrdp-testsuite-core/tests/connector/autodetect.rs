@@ -171,3 +171,31 @@ fn first_licensing_pdu_leaves_autodetect_for_the_licensing_path() {
         "a completed licensing exchange advances the connector out of auto-detection"
     );
 }
+
+#[test]
+fn connect_time_bandwidth_measure_stop_is_answered_and_phase_continues() {
+    let mut connector = connect_time_autodetect_connector();
+
+    // A connect-time Bandwidth Measure Stop ([MS-RDPBCGR] 2.2.14.1.4) must be
+    // answered with a Bandwidth Measure Results reply. FreeRDP-based servers (for
+    // example GNOME Remote Desktop) block in their AWAIT_BW_RESULT state until they
+    // receive it, so no response stalls the whole connection.
+    let user_data = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(
+        0x5678,
+        vec![0u8; 1024],
+    )))
+    .unwrap();
+    let frame = server_send_data_indication(MESSAGE_CHANNEL_ID, user_data);
+
+    let mut output = WriteBuf::new();
+    let written = connector.step(&frame, &mut output).unwrap();
+
+    assert!(
+        written.size().is_some(),
+        "a connect-time Bandwidth Measure Stop must produce a Bandwidth Measure Results response frame"
+    );
+    assert!(
+        matches!(connector.state, ClientConnectorState::ConnectTimeAutoDetection { .. }),
+        "the connector keeps listening after answering the bandwidth measurement"
+    );
+}
