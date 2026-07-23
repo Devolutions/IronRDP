@@ -1477,6 +1477,17 @@ impl RdpServer {
                             let data = encode_autodetect_request(result, message_channel_id, user_channel_id)?;
                             writer.write_all(&data).await?;
                         }
+
+                        // Periodically measure bandwidth: Start → Payload → Stop sent
+                        // back-to-back so the client counts only the payload window, then
+                        // replies with a Bandwidth Measure Results PDU. The measured value
+                        // upgrades the next characteristics result to the all-fields form.
+                        if let Some(bw_pdus) = ad.build_bandwidth_measure() {
+                            for pdu in bw_pdus {
+                                let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
+                                writer.write_all(&data).await?;
+                            }
+                        }
                     }
                 }
             }

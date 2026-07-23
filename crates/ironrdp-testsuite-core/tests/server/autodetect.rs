@@ -98,6 +98,44 @@ fn netchar_result_reports_measured_rtt() {
 }
 
 #[test]
+fn bandwidth_measure_transacts_and_upgrades_netchar() {
+    let mut mgr = AutoDetectManager::new();
+    let req = mgr.send_rtt_request(0);
+    let _ = mgr.handle_response(
+        &AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        },
+        20,
+    );
+
+    // Drive a bandwidth measurement to completion (paced internally).
+    let pdus = loop {
+        if let Some(p) = mgr.build_bandwidth_measure() {
+            break p;
+        }
+    };
+    assert_eq!(
+        pdus[0].sequence_number(),
+        pdus[2].sequence_number(),
+        "Start and Stop share the transaction sequence"
+    );
+    let results = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: pdus[0].sequence_number(),
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 10,
+        byte_count: 100_000,
+    };
+    assert!(mgr.handle_response(&results, 20).is_none());
+
+    match mgr.build_netchar_result().expect("result once samples exist") {
+        AutoDetectRequest::NetworkCharacteristicsResult { bandwidth_kbps, .. } => {
+            assert_eq!(bandwidth_kbps, Some(80_000), "byte_count * 8 / time_delta_ms");
+        }
+        other => panic!("expected NetworkCharacteristicsResult, got {other:?}"),
+    }
+}
+
+#[test]
 fn sequence_number_wraps_at_u16_max() {
     let mut mgr = AutoDetectManager::new();
     // Advance sequence counter through all values, resolving each probe immediately
