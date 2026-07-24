@@ -376,8 +376,11 @@ fn build_connector(
         });
     }
 
-    let mut connector =
-        ironrdp_connector::ClientConnector::new(connector_config, client_addr).with_static_channel(drdynvc);
+    let base = match config.vm_id.clone() {
+        Some(vm_id) => ironrdp_connector::ClientConnector::new_vmconnect(connector_config, client_addr, vm_id),
+        None => ironrdp_connector::ClientConnector::new(connector_config, client_addr),
+    };
+    let mut connector = base.with_static_channel(drdynvc);
 
     // Attach RDPSND (audio).
     #[cfg(feature = "sound")]
