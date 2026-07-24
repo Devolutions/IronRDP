@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::x224::X224;
-use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
+use ironrdp_pdu::{PduHint, gcc, mcs, nego, pcb, rdp};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 use tracing::{debug, error, info, warn};
 
@@ -18,6 +18,126 @@ use crate::{
     Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize,
     NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
 };
+
+/// Security protocols advertised in the vmconnect X.224 connection request.
+///
+/// Matches what mstsc/FreeRDP offer for a Hyper-V console; a Direct Approach host answers with
+/// plain `HYBRID` (see the [RDP Negotiation Request]).
+///
+/// [RDP Negotiation Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+pub const HYPERV_SECURITY_PROTOCOL: nego::SecurityProtocol = nego::SecurityProtocol::HYBRID_EX
+    .union(nego::SecurityProtocol::SSL)
+    .union(nego::SecurityProtocol::HYBRID);
+
+/// The one protocol a Hyper-V console connection actually performs: NLA runs with it, and the host
+/// must confirm exactly it.
+const HYPERV_REQUIRED_PROTOCOL: nego::SecurityProtocol = nego::SecurityProtocol::HYBRID;
+
+/// How the beginning of the connection is ordered.
+///
+/// Standard RDP and a Hyper-V console run the same steps; they only disagree about when the X.224
+/// negotiation happens. Everything from the Basic Settings Exchange onward is shared, so this is the
+/// whole difference between the two — see the transition table in the [`Front`] methods below.
+#[derive(Debug)]
+enum Front {
+    /// Negotiate X.224 first, then upgrade security and authenticate.
+    Standard,
+    /// Route to the VM console with a Preconnection Blob, upgrade security and authenticate, and
+    /// negotiate X.224 last (the Direct Approach).
+    HyperV { vm_id: String },
+}
+
+impl Front {
+    /// Where the connection starts.
+    fn initial_state(&self) -> ClientConnectorState {
+        match self {
+            Self::Standard => ClientConnectorState::ConnectionInitiationSendRequest,
+            Self::HyperV { .. } => ClientConnectorState::SendPreconnectionBlob,
+        }
+    }
+
+    /// Where the X.224 negotiation leads.
+    fn after_initiation(&self, selected_protocol: nego::SecurityProtocol) -> ClientConnectorState {
+        match self {
+            Self::Standard => ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol },
+            Self::HyperV { .. } => ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
+        }
+    }
+
+    /// Where authentication leads. Mirrors [`Front::after_initiation`]: whichever of the two ran
+    /// last hands over to the Basic Settings Exchange.
+    fn after_credssp(&self, selected_protocol: nego::SecurityProtocol) -> ClientConnectorState {
+        match self {
+            Self::Standard => ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
+            Self::HyperV { .. } => ClientConnectorState::ConnectionInitiationSendRequest,
+        }
+    }
+
+    /// The security protocols to advertise in the X.224 connection request.
+    fn advertised_protocol(&self, config: &Config) -> ConnectorResult<nego::SecurityProtocol> {
+        match self {
+            Self::HyperV { .. } => Ok(HYPERV_SECURITY_PROTOCOL),
+            Self::Standard => {
+                let mut security_protocol = nego::SecurityProtocol::empty();
+
+                if config.enable_tls {
+                    security_protocol.insert(nego::SecurityProtocol::SSL);
+                }
+
+                if config.enable_credssp {
+                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+                    // The spec is stating that `PROTOCOL_SSL` "SHOULD" also be set when using `PROTOCOL_HYBRID`.
+                    // > PROTOCOL_HYBRID (0x00000002)
+                    // > Credential Security Support Provider protocol (CredSSP) (section 5.4.5.2).
+                    // > If this flag is set, then the PROTOCOL_SSL (0x00000001) flag SHOULD also be set
+                    // > because Transport Layer Security (TLS) is a subset of CredSSP.
+                    // However, crucially, it’s not strictly required (not "MUST").
+                    // In fact, we purposefully choose to not set `PROTOCOL_SSL` unless `enable_winlogon` is `true`.
+                    // This tells the server that we are not going to accept downgrading NLA to TLS security.
+                    security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
+                }
+
+                if security_protocol.is_standard_rdp_security() {
+                    return Err(reason_err!("Initiation", "standard RDP security is not supported",));
+                }
+
+                Ok(security_protocol)
+            }
+        }
+    }
+
+    /// Checks the protocol the server selected against what this ordering can accept.
+    fn accept_selected_protocol(
+        &self,
+        selected_protocol: nego::SecurityProtocol,
+        requested_protocol: nego::SecurityProtocol,
+    ) -> ConnectorResult<()> {
+        match self {
+            Self::Standard => {
+                if !selected_protocol.intersects(requested_protocol) {
+                    return Err(reason_err!(
+                        "Initiation",
+                        "client advertised {requested_protocol}, but server selected {selected_protocol}",
+                    ));
+                }
+            }
+            // NLA already ran with plain HYBRID before this exchange, so the host must confirm
+            // exactly that. Anything else — SSL, or HYBRID_EX, which would imply an Early User
+            // Authorization Result we never negotiated — would be echoed into Client Core Data as a
+            // protocol we did not actually perform.
+            Self::HyperV { .. } => {
+                if selected_protocol != HYPERV_REQUIRED_PROTOCOL {
+                    return Err(reason_err!(
+                        "Initiation",
+                        "Hyper-V requires the server to select {HYPERV_REQUIRED_PROTOCOL}, but it selected {selected_protocol}",
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 pub struct ConnectionResult {
@@ -61,6 +181,7 @@ pub enum ClientConnectorState {
     ConnectionInitiationWaitConfirm {
         requested_protocol: nego::SecurityProtocol,
     },
+    SendPreconnectionBlob,
     EnhancedSecurityUpgrade {
         selected_protocol: nego::SecurityProtocol,
     },
@@ -111,6 +232,7 @@ impl State for ClientConnectorState {
             Self::Consumed => "Consumed",
             Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
             Self::ConnectionInitiationWaitConfirm { .. } => "ConnectionInitiationWaitResponse",
+            Self::SendPreconnectionBlob => "SendPreconnectionBlob",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
             Self::Credssp { .. } => "Credssp",
             Self::BasicSettingsExchangeSendInitial { .. } => "BasicSettingsExchangeSendInitial",
@@ -148,16 +270,33 @@ pub struct ClientConnector {
     pub static_channels: StaticChannelSet,
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
+    /// How the front of this connection is ordered.
+    front: Front,
 }
 
 impl ClientConnector {
     pub fn new(config: Config, client_addr: SocketAddr) -> Self {
+        Self::with_front(config, client_addr, Front::Standard)
+    }
+
+    /// Creates a connector for a Hyper-V console session, identified by `vm_id` (a VM GUID).
+    ///
+    /// The connection runs the Hyper-V ordering: a Preconnection Blob carrying `vm_id`, then TLS,
+    /// then CredSSP, then the X.224 negotiation — after which it rejoins the shared sequence at the
+    /// Basic Settings Exchange. The async and blocking drivers run it exactly like a standard
+    /// connection.
+    pub fn new_vmconnect(config: Config, client_addr: SocketAddr, vm_id: String) -> Self {
+        Self::with_front(config, client_addr, Front::HyperV { vm_id })
+    }
+
+    fn with_front(config: Config, client_addr: SocketAddr, front: Front) -> Self {
         Self {
             config,
-            state: ClientConnectorState::ConnectionInitiationSendRequest,
+            state: front.initial_state(),
             client_addr,
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
+            front,
         }
     }
 
@@ -248,12 +387,40 @@ fn advance_licensing_exchange(
     Ok((written, next_state))
 }
 
+/// Decodes an X.224 Connection Confirm, mapping a negotiation Failure to an error.
+///
+/// Shared by the standard connection initiation and the Hyper-V vmconnect negotiation, which
+/// differ only in which selected protocol they then accept.
+fn decode_connection_confirm(input: &[u8]) -> ConnectorResult<(nego::ResponseFlags, nego::SecurityProtocol)> {
+    let connection_confirm = decode::<X224<nego::ConnectionConfirm>>(input)
+        .map_err(ConnectorError::decode)
+        .map(|p| p.0)?;
+
+    debug!(message = ?connection_confirm, "Received");
+
+    let (flags, selected_protocol) = match connection_confirm {
+        nego::ConnectionConfirm::Response { flags, protocol } => (flags, protocol),
+        nego::ConnectionConfirm::Failure { code } => {
+            error!(?code, "Received connection failure code");
+            return Err(ConnectorError::new(
+                "negotiation failure",
+                ConnectorErrorKind::Negotiation(NegotiationFailure::from(code)),
+            ));
+        }
+    };
+
+    info!(?selected_protocol, ?flags, "Server confirmed connection");
+
+    Ok((flags, selected_protocol))
+}
+
 impl Sequence for ClientConnector {
     fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
         match &self.state {
             ClientConnectorState::Consumed => None,
             ClientConnectorState::ConnectionInitiationSendRequest => None,
             ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(&ironrdp_pdu::X224_HINT),
+            ClientConnectorState::SendPreconnectionBlob => None,
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
             ClientConnectorState::Credssp { .. } => None,
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
@@ -298,32 +465,12 @@ impl Sequence for ClientConnector {
             }
 
             //== Connection Initiation ==//
-            // Exchange supported security protocols and a few other connection flags.
+            // Exchange supported security protocols and a few other connection flags. Runs first for
+            // a standard connection, and last in the front for a Hyper-V console.
             ClientConnectorState::ConnectionInitiationSendRequest => {
                 debug!("Connection Initiation");
 
-                let mut security_protocol = nego::SecurityProtocol::empty();
-
-                if self.config.enable_tls {
-                    security_protocol.insert(nego::SecurityProtocol::SSL);
-                }
-
-                if self.config.enable_credssp {
-                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
-                    // The spec is stating that `PROTOCOL_SSL` "SHOULD" also be set when using `PROTOCOL_HYBRID`.
-                    // > PROTOCOL_HYBRID (0x00000002)
-                    // > Credential Security Support Provider protocol (CredSSP) (section 5.4.5.2).
-                    // > If this flag is set, then the PROTOCOL_SSL (0x00000001) flag SHOULD also be set
-                    // > because Transport Layer Security (TLS) is a subset of CredSSP.
-                    // However, crucially, it’s not strictly required (not "MUST").
-                    // In fact, we purposefully choose to not set `PROTOCOL_SSL` unless `enable_winlogon` is `true`.
-                    // This tells the server that we are not going to accept downgrading NLA to TLS security.
-                    security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
-                }
-
-                if security_protocol.is_standard_rdp_security() {
-                    return Err(reason_err!("Initiation", "standard RDP security is not supported",));
-                }
+                let security_protocol = self.front.advertised_protocol(&self.config)?;
 
                 let connection_request = nego::ConnectionRequest {
                     nego_data: self.config.request_data.clone().or_else(|| {
@@ -349,35 +496,40 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
-                let connection_confirm = decode::<X224<nego::ConnectionConfirm>>(input)
-                    .map_err(ConnectorError::decode)
-                    .map(|p| p.0)?;
+                let (_flags, selected_protocol) = decode_connection_confirm(input)?;
 
-                debug!(message = ?connection_confirm, "Received");
+                self.front
+                    .accept_selected_protocol(selected_protocol, requested_protocol)?;
 
-                let (flags, selected_protocol) = match connection_confirm {
-                    nego::ConnectionConfirm::Response { flags, protocol } => (flags, protocol),
-                    nego::ConnectionConfirm::Failure { code } => {
-                        error!(?code, "Received connection failure code");
-                        return Err(ConnectorError::new(
-                            "negotiation failure",
-                            ConnectorErrorKind::Negotiation(NegotiationFailure::from(code)),
-                        ));
-                    }
+                (Written::Nothing, self.front.after_initiation(selected_protocol))
+            }
+
+            //== Preconnection Blob ==//
+            // Routes the connection to a Hyper-V VM console before anything else is exchanged. The
+            // shared EnhancedSecurityUpgrade and Credssp states below then service TLS and NLA, so
+            // the standard drivers run this ordering untouched.
+            ClientConnectorState::SendPreconnectionBlob => {
+                let Front::HyperV { vm_id } = &self.front else {
+                    return Err(general_err!(
+                        "Preconnection Blob is only sent for a Hyper-V connection (this is a bug)"
+                    ));
                 };
 
-                info!(?selected_protocol, ?flags, "Server confirmed connection");
+                debug!("Send Preconnection Blob");
 
-                if !selected_protocol.intersects(requested_protocol) {
-                    return Err(reason_err!(
-                        "Initiation",
-                        "client advertised {requested_protocol}, but server selected {selected_protocol}",
-                    ));
-                }
+                let pcb = pcb::PreconnectionBlob {
+                    id: 0,
+                    version: pcb::PcbVersion::V2,
+                    v2_payload: Some(vm_id.clone()),
+                };
+
+                let written = ironrdp_core::encode_buf(&pcb, output).map_err(ConnectorError::encode)?;
 
                 (
-                    Written::Nothing,
-                    ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol },
+                    Written::from_size(written)?,
+                    ClientConnectorState::EnhancedSecurityUpgrade {
+                        selected_protocol: HYPERV_REQUIRED_PROTOCOL,
+                    },
                 )
             }
 
@@ -399,10 +551,9 @@ impl Sequence for ClientConnector {
             }
 
             //== CredSSP ==//
-            ClientConnectorState::Credssp { selected_protocol } => (
-                Written::Nothing,
-                ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
-            ),
+            ClientConnectorState::Credssp { selected_protocol } => {
+                (Written::Nothing, self.front.after_credssp(selected_protocol))
+            }
 
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.
