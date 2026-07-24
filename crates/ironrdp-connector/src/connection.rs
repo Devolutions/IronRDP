@@ -19,13 +19,15 @@ use crate::{
     NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
 };
 
-/// Security protocols advertised in the vmconnect X.224 connection request.
+/// Security protocols advertised in the Hyper-V X.224 connection request.
 ///
-/// Matches what mstsc/FreeRDP offer for a Hyper-V console; a Direct Approach host answers with
-/// plain `HYBRID` (see the [RDP Negotiation Request]).
+/// Matches what mstsc offers for a Hyper-V console; a Direct Approach host answers with plain
+/// `HYBRID`.
 ///
-/// [RDP Negotiation Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
-pub const HYPERV_SECURITY_PROTOCOL: nego::SecurityProtocol = nego::SecurityProtocol::HYBRID_EX
+/// [2.2.1.1.1] RDP Negotiation Request (RDP_NEG_REQ)
+///
+/// [2.2.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+const HYPERV_SECURITY_PROTOCOL: nego::SecurityProtocol = nego::SecurityProtocol::HYBRID_EX
     .union(nego::SecurityProtocol::SSL)
     .union(nego::SecurityProtocol::HYBRID);
 
@@ -52,7 +54,7 @@ impl Front {
     fn initial_state(&self) -> ClientConnectorState {
         match self {
             Self::Standard => ClientConnectorState::ConnectionInitiationSendRequest,
-            Self::HyperV { .. } => ClientConnectorState::SendPreconnectionBlob,
+            Self::HyperV { .. } => ClientConnectorState::PreconnectionBlobSendRequest,
         }
     }
 
@@ -121,15 +123,13 @@ impl Front {
                     ));
                 }
             }
-            // NLA already ran with plain HYBRID before this exchange, so the host must confirm
-            // exactly that. Anything else — SSL, or HYBRID_EX, which would imply an Early User
-            // Authorization Result we never negotiated — would be echoed into Client Core Data as a
-            // protocol we did not actually perform.
+            // Accepting anything else would echo a protocol we never performed into Client Core
+            // Data: NLA already ran with plain HYBRID by this point.
             Self::HyperV { .. } => {
                 if selected_protocol != HYPERV_REQUIRED_PROTOCOL {
                     return Err(reason_err!(
                         "Initiation",
-                        "Hyper-V requires the server to select {HYPERV_REQUIRED_PROTOCOL}, but it selected {selected_protocol}",
+                        "server must select {HYPERV_REQUIRED_PROTOCOL} for a Hyper-V console, but it selected {selected_protocol}",
                     ));
                 }
             }
@@ -181,7 +181,7 @@ pub enum ClientConnectorState {
     ConnectionInitiationWaitConfirm {
         requested_protocol: nego::SecurityProtocol,
     },
-    SendPreconnectionBlob,
+    PreconnectionBlobSendRequest,
     EnhancedSecurityUpgrade {
         selected_protocol: nego::SecurityProtocol,
     },
@@ -232,7 +232,7 @@ impl State for ClientConnectorState {
             Self::Consumed => "Consumed",
             Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
             Self::ConnectionInitiationWaitConfirm { .. } => "ConnectionInitiationWaitResponse",
-            Self::SendPreconnectionBlob => "SendPreconnectionBlob",
+            Self::PreconnectionBlobSendRequest => "PreconnectionBlobSendRequest",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
             Self::Credssp { .. } => "Credssp",
             Self::BasicSettingsExchangeSendInitial { .. } => "BasicSettingsExchangeSendInitial",
@@ -387,11 +387,9 @@ fn advance_licensing_exchange(
     Ok((written, next_state))
 }
 
-/// Decodes an X.224 Connection Confirm, mapping a negotiation Failure to an error.
-///
-/// Shared by the standard connection initiation and the Hyper-V vmconnect negotiation, which
-/// differ only in which selected protocol they then accept.
-fn decode_connection_confirm(input: &[u8]) -> ConnectorResult<(nego::ResponseFlags, nego::SecurityProtocol)> {
+/// Decodes an X.224 Connection Confirm and returns the protocol the server selected, mapping a
+/// negotiation Failure to an error.
+fn decode_connection_confirm(input: &[u8]) -> ConnectorResult<nego::SecurityProtocol> {
     let connection_confirm = decode::<X224<nego::ConnectionConfirm>>(input)
         .map_err(ConnectorError::decode)
         .map(|p| p.0)?;
@@ -411,7 +409,7 @@ fn decode_connection_confirm(input: &[u8]) -> ConnectorResult<(nego::ResponseFla
 
     info!(?selected_protocol, ?flags, "Server confirmed connection");
 
-    Ok((flags, selected_protocol))
+    Ok(selected_protocol)
 }
 
 impl Sequence for ClientConnector {
@@ -420,7 +418,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::Consumed => None,
             ClientConnectorState::ConnectionInitiationSendRequest => None,
             ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(&ironrdp_pdu::X224_HINT),
-            ClientConnectorState::SendPreconnectionBlob => None,
+            ClientConnectorState::PreconnectionBlobSendRequest => None,
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
             ClientConnectorState::Credssp { .. } => None,
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
@@ -496,7 +494,7 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
-                let (_flags, selected_protocol) = decode_connection_confirm(input)?;
+                let selected_protocol = decode_connection_confirm(input)?;
 
                 self.front
                     .accept_selected_protocol(selected_protocol, requested_protocol)?;
@@ -505,13 +503,13 @@ impl Sequence for ClientConnector {
             }
 
             //== Preconnection Blob ==//
-            // Routes the connection to a Hyper-V VM console before anything else is exchanged. The
-            // shared EnhancedSecurityUpgrade and Credssp states below then service TLS and NLA, so
-            // the standard drivers run this ordering untouched.
-            ClientConnectorState::SendPreconnectionBlob => {
+            // The host needs this to route the connection to the VM console before anything else is
+            // exchanged.
+            ClientConnectorState::PreconnectionBlobSendRequest => {
+                // `Front::initial_state` only reaches this state for `Front::HyperV`.
                 let Front::HyperV { vm_id } = &self.front else {
                     return Err(general_err!(
-                        "Preconnection Blob is only sent for a Hyper-V connection (this is a bug)"
+                        "preconnection blob is only sent for a Hyper-V connection (this is a bug)"
                     ));
                 };
 

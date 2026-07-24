@@ -59,7 +59,7 @@ pub struct Config {
     pub(crate) destination: Destination,
     pub(crate) transport: Transport,
 
-    /// Hyper-V VM id to connect to via vmconnect, if this is a vmconnect session.
+    /// Hyper-V VM ID to connect to via vmconnect, if this is a vmconnect session.
     ///
     /// When set, the client sends a Preconnection Blob carrying this id and performs the Hyper-V
     /// connection ordering (PCB → TLS → CredSSP → X.224 negotiation) instead of the standard one.
@@ -106,7 +106,7 @@ impl Config {
         &self.transport
     }
 
-    /// Hyper-V VM id for a vmconnect session, if any.
+    /// Hyper-V VM ID for a vmconnect session, if any.
     pub fn vm_id(&self) -> Option<&str> {
         self.vm_id.as_deref()
     }
@@ -879,11 +879,11 @@ impl ConfigBuilder {
         self
     }
 
-    /// Connect to a Hyper-V VM console via vmconnect, identified by its VM id (a GUID string).
+    /// Connect to a Hyper-V VM console via vmconnect, identified by its VM ID (a GUID string).
     ///
     /// This switches the client to the Hyper-V connection ordering: a Preconnection Blob carrying
     /// `vm_id` is sent first, then TLS, CredSSP, and X.224 negotiation run in the order the Hyper-V
-    /// host expects. Only meaningful over the Direct transport.
+    /// host expects. Requires the Direct transport; [`build`](Self::build) fails otherwise.
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1142,6 +1142,12 @@ impl ConfigBuilder {
                 auth_token: self.rdcleanpath_token.unwrap(),
             }),
         };
+
+        // A gateway or RDCleanPath proxy performs the connection initiation itself, which the
+        // Hyper-V ordering moves after authentication; the two cannot be combined.
+        if self.vm_id.is_some() && !matches!(transport, Transport::Direct) {
+            anyhow::bail!("vmconnect requires the Direct transport");
+        }
 
         let client_name = self.client_name.unwrap_or_default();
         let kerberos_config = self
