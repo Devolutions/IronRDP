@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class InputDatabase: IDisposable
 {
-    private unsafe Raw.InputDatabase* _inner;
+    private unsafe RustHandle<Raw.InputDatabase> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.InputDatabase> _destroy = Raw.InputDatabase.Destroy;
 
     /// <summary>
     /// Creates a managed <c>InputDatabase</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class InputDatabase: IDisposable
     /// </remarks>
     internal unsafe InputDatabase(Raw.InputDatabase* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.InputDatabase>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe InputDatabase(Raw.InputDatabase* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.InputDatabase>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe InputDatabase(RustHandle<Raw.InputDatabase> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>InputDatabase</c> allocated on Rust side.
     /// </returns>
@@ -36,6 +69,7 @@ public partial class InputDatabase: IDisposable
             return new InputDatabase(result);
         }
     }
+
     /// <returns>
     /// A <c>FastPathInputEventIterator</c> allocated on Rust side.
     /// </returns>
@@ -43,14 +77,16 @@ public partial class InputDatabase: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("InputDatabase");
             }
             if (operation == null) throw new ArgumentNullException(nameof(operation));
             Raw.Operation* operationRaw = operation.AsFFI();
             if (operationRaw == null) throw new ObjectDisposedException(nameof(Operation));
-            Raw.FastPathInputEventIterator* result = Raw.InputDatabase.Apply(_inner, operationRaw);
+            Raw.FastPathInputEventIterator* result = Raw.InputDatabase.Apply(AsFFI(), operationRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(operation);
             return new FastPathInputEventIterator(result);
         }
     }
@@ -60,7 +96,7 @@ public partial class InputDatabase: IDisposable
     /// </summary>
     internal unsafe Raw.InputDatabase* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -70,13 +106,14 @@ public partial class InputDatabase: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.InputDatabase.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class GeneratorState: IDisposable
 {
-    private unsafe Raw.GeneratorState* _inner;
+    private unsafe RustHandle<Raw.GeneratorState> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.GeneratorState> _destroy = Raw.GeneratorState.Destroy;
+
     public ClientState ClientStateIfCompleted
     {
         get
@@ -18,6 +27,7 @@ public partial class GeneratorState: IDisposable
             return GetClientStateIfCompleted();
         }
     }
+
     /// <remarks>
     /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
     /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
@@ -41,30 +51,61 @@ public partial class GeneratorState: IDisposable
     /// </remarks>
     internal unsafe GeneratorState(Raw.GeneratorState* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.GeneratorState>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe GeneratorState(Raw.GeneratorState* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.GeneratorState>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe GeneratorState(RustHandle<Raw.GeneratorState> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public bool IsSuspended()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("GeneratorState");
             }
-            return Raw.GeneratorState.IsSuspended(_inner);
+            var result = Raw.GeneratorState.IsSuspended(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool IsCompleted()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("GeneratorState");
             }
-            return Raw.GeneratorState.IsCompleted(_inner);
+            var result = Raw.GeneratorState.IsCompleted(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <returns>
     /// A <c>NetworkRequest</c> allocated on Rust side.
     /// </returns>
@@ -76,14 +117,16 @@ public partial class GeneratorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("GeneratorState");
             }
-            Raw.NetworkRequest* result = Raw.GeneratorState.GetNetworkRequestIfSuspended(_inner);
-            return result == null ? null : new NetworkRequest(result);
+            Raw.NetworkRequest* result = Raw.GeneratorState.GetNetworkRequestIfSuspended(AsFFI());
+            GC.KeepAlive(this);
+            return result == null ? null : new NetworkRequest(result, new object[] { this });
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ClientState</c> allocated on Rust side.
@@ -92,11 +135,12 @@ public partial class GeneratorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("GeneratorState");
             }
-            var result = Raw.GeneratorState.GetClientStateIfCompleted(_inner);
+            var result = Raw.GeneratorState.GetClientStateIfCompleted(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -110,7 +154,7 @@ public partial class GeneratorState: IDisposable
     /// </summary>
     internal unsafe Raw.GeneratorState* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -120,13 +164,14 @@ public partial class GeneratorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.GeneratorState.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

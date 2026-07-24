@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class Log: IDisposable
 {
-    private unsafe Raw.Log* _inner;
+    private unsafe RustHandle<Raw.Log> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.Log> _destroy = Raw.Log.Destroy;
 
     /// <summary>
     /// Creates a managed <c>Log</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class Log: IDisposable
     /// </remarks>
     internal unsafe Log(Raw.Log* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.Log>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe Log(Raw.Log* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.Log>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe Log(RustHandle<Raw.Log> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public static void InitWithEnv()
     {
         unsafe
@@ -38,7 +71,7 @@ public partial class Log: IDisposable
     /// </summary>
     internal unsafe Raw.Log* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -48,13 +81,14 @@ public partial class Log: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.Log.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

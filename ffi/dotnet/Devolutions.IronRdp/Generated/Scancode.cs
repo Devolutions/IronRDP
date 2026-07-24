@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class Scancode: IDisposable
 {
-    private unsafe Raw.Scancode* _inner;
+    private unsafe RustHandle<Raw.Scancode> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.Scancode> _destroy = Raw.Scancode.Destroy;
 
     /// <summary>
     /// Creates a managed <c>Scancode</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class Scancode: IDisposable
     /// </remarks>
     internal unsafe Scancode(Raw.Scancode* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.Scancode>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe Scancode(Raw.Scancode* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.Scancode>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe Scancode(RustHandle<Raw.Scancode> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>Scancode</c> allocated on Rust side.
     /// </returns>
@@ -36,6 +69,7 @@ public partial class Scancode: IDisposable
             return new Scancode(result);
         }
     }
+
     /// <returns>
     /// A <c>Scancode</c> allocated on Rust side.
     /// </returns>
@@ -47,6 +81,7 @@ public partial class Scancode: IDisposable
             return new Scancode(result);
         }
     }
+
     /// <returns>
     /// A <c>Operation</c> allocated on Rust side.
     /// </returns>
@@ -54,14 +89,16 @@ public partial class Scancode: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("Scancode");
             }
-            Raw.Operation* result = Raw.Scancode.AsOperationKeyPressed(_inner);
+            Raw.Operation* result = Raw.Scancode.AsOperationKeyPressed(AsFFI());
+            GC.KeepAlive(this);
             return new Operation(result);
         }
     }
+
     /// <returns>
     /// A <c>Operation</c> allocated on Rust side.
     /// </returns>
@@ -69,11 +106,12 @@ public partial class Scancode: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("Scancode");
             }
-            Raw.Operation* result = Raw.Scancode.AsOperationKeyReleased(_inner);
+            Raw.Operation* result = Raw.Scancode.AsOperationKeyReleased(AsFFI());
+            GC.KeepAlive(this);
             return new Operation(result);
         }
     }
@@ -83,7 +121,7 @@ public partial class Scancode: IDisposable
     /// </summary>
     internal unsafe Raw.Scancode* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -93,13 +131,14 @@ public partial class Scancode: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.Scancode.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

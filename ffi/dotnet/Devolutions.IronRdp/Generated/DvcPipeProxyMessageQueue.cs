@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class DvcPipeProxyMessageQueue: IDisposable
 {
-    private unsafe Raw.DvcPipeProxyMessageQueue* _inner;
+    private unsafe RustHandle<Raw.DvcPipeProxyMessageQueue> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.DvcPipeProxyMessageQueue> _destroy = Raw.DvcPipeProxyMessageQueue.Destroy;
+
     public DvcPipeProxyMessageSink Sink
     {
         get
@@ -30,8 +39,33 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
     /// </remarks>
     internal unsafe DvcPipeProxyMessageQueue(Raw.DvcPipeProxyMessageQueue* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.DvcPipeProxyMessageQueue>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe DvcPipeProxyMessageQueue(Raw.DvcPipeProxyMessageQueue* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.DvcPipeProxyMessageQueue>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe DvcPipeProxyMessageQueue(RustHandle<Raw.DvcPipeProxyMessageQueue> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>DvcPipeProxyMessageQueue</c> allocated on Rust side.
     /// </returns>
@@ -43,6 +77,7 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
             return new DvcPipeProxyMessageQueue(result);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>DvcPipeProxyMessage</c> allocated on Rust side.
@@ -51,11 +86,12 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DvcPipeProxyMessageQueue");
             }
-            var result = Raw.DvcPipeProxyMessageQueue.NextMessage(_inner);
+            var result = Raw.DvcPipeProxyMessageQueue.NextMessage(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -63,6 +99,7 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
             return result.Ok == null ? null : new DvcPipeProxyMessage(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>DvcPipeProxyMessage</c> allocated on Rust side.
@@ -71,11 +108,12 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DvcPipeProxyMessageQueue");
             }
-            var result = Raw.DvcPipeProxyMessageQueue.NextMessageBlocking(_inner);
+            var result = Raw.DvcPipeProxyMessageQueue.NextMessageBlocking(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -83,6 +121,7 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
             return new DvcPipeProxyMessage(result.Ok);
         }
     }
+
     /// <returns>
     /// A <c>DvcPipeProxyMessageSink</c> allocated on Rust side.
     /// </returns>
@@ -90,11 +129,12 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DvcPipeProxyMessageQueue");
             }
-            Raw.DvcPipeProxyMessageSink* result = Raw.DvcPipeProxyMessageQueue.GetSink(_inner);
+            Raw.DvcPipeProxyMessageSink* result = Raw.DvcPipeProxyMessageQueue.GetSink(AsFFI());
+            GC.KeepAlive(this);
             return new DvcPipeProxyMessageSink(result);
         }
     }
@@ -104,7 +144,7 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
     /// </summary>
     internal unsafe Raw.DvcPipeProxyMessageQueue* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -114,13 +154,14 @@ public partial class DvcPipeProxyMessageQueue: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.DvcPipeProxyMessageQueue.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

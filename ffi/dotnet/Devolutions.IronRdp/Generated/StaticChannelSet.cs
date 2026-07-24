@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class StaticChannelSet: IDisposable
 {
-    private unsafe Raw.StaticChannelSet* _inner;
+    private unsafe RustHandle<Raw.StaticChannelSet> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.StaticChannelSet> _destroy = Raw.StaticChannelSet.Destroy;
 
     /// <summary>
     /// Creates a managed <c>StaticChannelSet</c> from a raw handle.
@@ -23,7 +31,31 @@ public partial class StaticChannelSet: IDisposable
     /// </remarks>
     internal unsafe StaticChannelSet(Raw.StaticChannelSet* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.StaticChannelSet>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
+    }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe StaticChannelSet(Raw.StaticChannelSet* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.StaticChannelSet>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe StaticChannelSet(RustHandle<Raw.StaticChannelSet> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
     }
 
     /// <summary>
@@ -31,7 +63,7 @@ public partial class StaticChannelSet: IDisposable
     /// </summary>
     internal unsafe Raw.StaticChannelSet* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -41,13 +73,14 @@ public partial class StaticChannelSet: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.StaticChannelSet.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

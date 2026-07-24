@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class CredsspProcessGenerator: IDisposable
 {
-    private unsafe Raw.CredsspProcessGenerator* _inner;
+    private unsafe RustHandle<Raw.CredsspProcessGenerator> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.CredsspProcessGenerator> _destroy = Raw.CredsspProcessGenerator.Destroy;
 
     /// <summary>
     /// Creates a managed <c>CredsspProcessGenerator</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class CredsspProcessGenerator: IDisposable
     /// </remarks>
     internal unsafe CredsspProcessGenerator(Raw.CredsspProcessGenerator* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.CredsspProcessGenerator>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe CredsspProcessGenerator(Raw.CredsspProcessGenerator* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.CredsspProcessGenerator>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe CredsspProcessGenerator(RustHandle<Raw.CredsspProcessGenerator> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>GeneratorState</c> allocated on Rust side.
@@ -33,11 +66,12 @@ public partial class CredsspProcessGenerator: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CredsspProcessGenerator");
             }
-            var result = Raw.CredsspProcessGenerator.Start(_inner);
+            var result = Raw.CredsspProcessGenerator.Start(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -45,6 +79,7 @@ public partial class CredsspProcessGenerator: IDisposable
             return new GeneratorState(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>GeneratorState</c> allocated on Rust side.
@@ -53,14 +88,15 @@ public partial class CredsspProcessGenerator: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CredsspProcessGenerator");
             }
             if (response == null) throw new ArgumentNullException(nameof(response));
             fixed (byte* responsePtr = response)
             {
-                var result = Raw.CredsspProcessGenerator.Resume(_inner, new DiplomatSliceU8 { Ptr = responsePtr, Len = (nuint)response.Length });
+                var result = Raw.CredsspProcessGenerator.Resume(AsFFI(), new DiplomatSliceU8 { Ptr = responsePtr, Len = (nuint)response.Length });
+                GC.KeepAlive(this);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -75,7 +111,7 @@ public partial class CredsspProcessGenerator: IDisposable
     /// </summary>
     internal unsafe Raw.CredsspProcessGenerator* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -85,13 +121,14 @@ public partial class CredsspProcessGenerator: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.CredsspProcessGenerator.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

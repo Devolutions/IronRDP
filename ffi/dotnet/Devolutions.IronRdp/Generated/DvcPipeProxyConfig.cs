@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class DvcPipeProxyConfig: IDisposable
 {
-    private unsafe Raw.DvcPipeProxyConfig* _inner;
+    private unsafe RustHandle<Raw.DvcPipeProxyConfig> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.DvcPipeProxyConfig> _destroy = Raw.DvcPipeProxyConfig.Destroy;
+
     public DvcPipeProxyMessageSink MessageSink
     {
         get
@@ -30,8 +39,33 @@ public partial class DvcPipeProxyConfig: IDisposable
     /// </remarks>
     internal unsafe DvcPipeProxyConfig(Raw.DvcPipeProxyConfig* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.DvcPipeProxyConfig>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe DvcPipeProxyConfig(Raw.DvcPipeProxyConfig* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.DvcPipeProxyConfig>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe DvcPipeProxyConfig(RustHandle<Raw.DvcPipeProxyConfig> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>DvcPipeProxyConfig</c> allocated on Rust side.
     /// </returns>
@@ -43,23 +77,28 @@ public partial class DvcPipeProxyConfig: IDisposable
             Raw.DvcPipeProxyMessageSink* messageSinkRaw = messageSink.AsFFI();
             if (messageSinkRaw == null) throw new ObjectDisposedException(nameof(DvcPipeProxyMessageSink));
             Raw.DvcPipeProxyConfig* result = Raw.DvcPipeProxyConfig.New(messageSinkRaw);
+            GC.KeepAlive(messageSink);
             return new DvcPipeProxyConfig(result);
         }
     }
+
     public void AddPipeProxy(DvcPipeProxyDescriptor descriptor)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DvcPipeProxyConfig");
             }
             if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
             Raw.DvcPipeProxyDescriptor* descriptorRaw = descriptor.AsFFI();
             if (descriptorRaw == null) throw new ObjectDisposedException(nameof(DvcPipeProxyDescriptor));
-            Raw.DvcPipeProxyConfig.AddPipeProxy(_inner, descriptorRaw);
+            Raw.DvcPipeProxyConfig.AddPipeProxy(AsFFI(), descriptorRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(descriptor);
         }
     }
+
     /// <returns>
     /// A <c>DvcPipeProxyMessageSink</c> allocated on Rust side.
     /// </returns>
@@ -67,11 +106,12 @@ public partial class DvcPipeProxyConfig: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DvcPipeProxyConfig");
             }
-            Raw.DvcPipeProxyMessageSink* result = Raw.DvcPipeProxyConfig.GetMessageSink(_inner);
+            Raw.DvcPipeProxyMessageSink* result = Raw.DvcPipeProxyConfig.GetMessageSink(AsFFI());
+            GC.KeepAlive(this);
             return new DvcPipeProxyMessageSink(result);
         }
     }
@@ -81,7 +121,7 @@ public partial class DvcPipeProxyConfig: IDisposable
     /// </summary>
     internal unsafe Raw.DvcPipeProxyConfig* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -91,13 +131,14 @@ public partial class DvcPipeProxyConfig: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.DvcPipeProxyConfig.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class FfiFileContentsResponse: IDisposable
 {
-    private unsafe Raw.FfiFileContentsResponse* _inner;
+    private unsafe RustHandle<Raw.FfiFileContentsResponse> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.FfiFileContentsResponse> _destroy = Raw.FfiFileContentsResponse.Destroy;
 
     /// <summary>
     /// Creates a managed <c>FfiFileContentsResponse</c> from a raw handle.
@@ -23,30 +31,61 @@ public partial class FfiFileContentsResponse: IDisposable
     /// </remarks>
     internal unsafe FfiFileContentsResponse(Raw.FfiFileContentsResponse* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.FfiFileContentsResponse>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe FfiFileContentsResponse(Raw.FfiFileContentsResponse* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.FfiFileContentsResponse>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe FfiFileContentsResponse(RustHandle<Raw.FfiFileContentsResponse> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public uint StreamId()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsResponse");
             }
-            return Raw.FfiFileContentsResponse.StreamId(_inner);
+            var result = Raw.FfiFileContentsResponse.StreamId(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool IsError()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsResponse");
             }
-            return Raw.FfiFileContentsResponse.IsError(_inner);
+            var result = Raw.FfiFileContentsResponse.IsError(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
@@ -54,11 +93,12 @@ public partial class FfiFileContentsResponse: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsResponse");
             }
-            Raw.VecU8* result = Raw.FfiFileContentsResponse.Data(_inner);
+            Raw.VecU8* result = Raw.FfiFileContentsResponse.Data(AsFFI());
+            GC.KeepAlive(this);
             return new VecU8(result);
         }
     }
@@ -68,7 +108,7 @@ public partial class FfiFileContentsResponse: IDisposable
     /// </summary>
     internal unsafe Raw.FfiFileContentsResponse* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -78,13 +118,14 @@ public partial class FfiFileContentsResponse: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.FfiFileContentsResponse.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

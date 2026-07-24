@@ -10,11 +10,11 @@ internal partial struct OptionalUsize
 {
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "OptionalUsize_is_some", CallingConvention = CallingConvention.Cdecl)]
-[return: MarshalAs(UnmanagedType.U1)]
-internal static unsafe extern bool IsSome(OptionalUsize* handle);
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe extern bool IsSome(OptionalUsize* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "OptionalUsize_get", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern DiplomatResultNUIntIronRdpError Get(OptionalUsize* handle);
+    internal static unsafe extern DiplomatResultNUIntIronRdpError Get(OptionalUsize* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "OptionalUsize_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(OptionalUsize* handle);

@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class DesktopSize: IDisposable
 {
-    private unsafe Raw.DesktopSize* _inner;
+    private unsafe RustHandle<Raw.DesktopSize> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.DesktopSize> _destroy = Raw.DesktopSize.Destroy;
+
     public ushort Height
     {
         get
@@ -18,6 +27,7 @@ public partial class DesktopSize: IDisposable
             return GetHeight();
         }
     }
+
     public ushort Width
     {
         get
@@ -37,28 +47,58 @@ public partial class DesktopSize: IDisposable
     /// </remarks>
     internal unsafe DesktopSize(Raw.DesktopSize* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.DesktopSize>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe DesktopSize(Raw.DesktopSize* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.DesktopSize>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe DesktopSize(RustHandle<Raw.DesktopSize> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public ushort GetWidth()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DesktopSize");
             }
-            return Raw.DesktopSize.GetWidth(_inner);
+            var result = Raw.DesktopSize.GetWidth(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ushort GetHeight()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DesktopSize");
             }
-            return Raw.DesktopSize.GetHeight(_inner);
+            var result = Raw.DesktopSize.GetHeight(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
 
@@ -67,7 +107,7 @@ public partial class DesktopSize: IDisposable
     /// </summary>
     internal unsafe Raw.DesktopSize* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -77,13 +117,14 @@ public partial class DesktopSize: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.DesktopSize.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

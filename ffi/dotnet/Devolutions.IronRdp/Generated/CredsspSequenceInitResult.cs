@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class CredsspSequenceInitResult: IDisposable
 {
-    private unsafe Raw.CredsspSequenceInitResult* _inner;
+    private unsafe RustHandle<Raw.CredsspSequenceInitResult> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.CredsspSequenceInitResult> _destroy = Raw.CredsspSequenceInitResult.Destroy;
+
     public CredsspSequence CredsspSequence
     {
         get
@@ -18,6 +27,7 @@ public partial class CredsspSequenceInitResult: IDisposable
             return GetCredsspSequence();
         }
     }
+
     public TsRequest TsRequest
     {
         get
@@ -37,8 +47,33 @@ public partial class CredsspSequenceInitResult: IDisposable
     /// </remarks>
     internal unsafe CredsspSequenceInitResult(Raw.CredsspSequenceInitResult* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.CredsspSequenceInitResult>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe CredsspSequenceInitResult(Raw.CredsspSequenceInitResult* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.CredsspSequenceInitResult>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe CredsspSequenceInitResult(RustHandle<Raw.CredsspSequenceInitResult> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>CredsspSequence</c> allocated on Rust side.
@@ -47,11 +82,12 @@ public partial class CredsspSequenceInitResult: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CredsspSequenceInitResult");
             }
-            var result = Raw.CredsspSequenceInitResult.GetCredsspSequence(_inner);
+            var result = Raw.CredsspSequenceInitResult.GetCredsspSequence(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -59,6 +95,7 @@ public partial class CredsspSequenceInitResult: IDisposable
             return new CredsspSequence(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>TsRequest</c> allocated on Rust side.
@@ -67,11 +104,12 @@ public partial class CredsspSequenceInitResult: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CredsspSequenceInitResult");
             }
-            var result = Raw.CredsspSequenceInitResult.GetTsRequest(_inner);
+            var result = Raw.CredsspSequenceInitResult.GetTsRequest(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -85,7 +123,7 @@ public partial class CredsspSequenceInitResult: IDisposable
     /// </summary>
     internal unsafe Raw.CredsspSequenceInitResult* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -95,13 +133,14 @@ public partial class CredsspSequenceInitResult: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.CredsspSequenceInitResult.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

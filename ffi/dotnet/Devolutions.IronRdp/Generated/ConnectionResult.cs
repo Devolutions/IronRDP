@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class ConnectionResult: IDisposable
 {
-    private unsafe Raw.ConnectionResult* _inner;
+    private unsafe RustHandle<Raw.ConnectionResult> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.ConnectionResult> _destroy = Raw.ConnectionResult.Destroy;
+
     public DesktopSize DesktopSize
     {
         get
@@ -18,6 +27,7 @@ public partial class ConnectionResult: IDisposable
             return GetDesktopSize();
         }
     }
+
     public bool EnableServerPointer
     {
         get
@@ -25,6 +35,7 @@ public partial class ConnectionResult: IDisposable
             return GetEnableServerPointer();
         }
     }
+
     public ushort IoChannelId
     {
         get
@@ -32,6 +43,7 @@ public partial class ConnectionResult: IDisposable
             return GetIoChannelId();
         }
     }
+
     public bool PointerSoftwareRendering
     {
         get
@@ -39,6 +51,7 @@ public partial class ConnectionResult: IDisposable
             return GetPointerSoftwareRendering();
         }
     }
+
     public uint ShareId
     {
         get
@@ -46,6 +59,7 @@ public partial class ConnectionResult: IDisposable
             return GetShareId();
         }
     }
+
     public ushort UserChannelId
     {
         get
@@ -65,18 +79,44 @@ public partial class ConnectionResult: IDisposable
     /// </remarks>
     internal unsafe ConnectionResult(Raw.ConnectionResult* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.ConnectionResult>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe ConnectionResult(Raw.ConnectionResult* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.ConnectionResult>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe ConnectionResult(RustHandle<Raw.ConnectionResult> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <exception cref="IronRdpException"></exception>
     public ushort GetIoChannelId()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            var result = Raw.ConnectionResult.GetIoChannelId(_inner);
+            var result = Raw.ConnectionResult.GetIoChannelId(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -84,16 +124,18 @@ public partial class ConnectionResult: IDisposable
             return result.Ok;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public ushort GetUserChannelId()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            var result = Raw.ConnectionResult.GetUserChannelId(_inner);
+            var result = Raw.ConnectionResult.GetUserChannelId(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -101,16 +143,18 @@ public partial class ConnectionResult: IDisposable
             return result.Ok;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public uint GetShareId()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            var result = Raw.ConnectionResult.GetShareId(_inner);
+            var result = Raw.ConnectionResult.GetShareId(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -118,6 +162,7 @@ public partial class ConnectionResult: IDisposable
             return result.Ok;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>DesktopSize</c> allocated on Rust side.
@@ -126,11 +171,12 @@ public partial class ConnectionResult: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            var result = Raw.ConnectionResult.GetDesktopSize(_inner);
+            var result = Raw.ConnectionResult.GetDesktopSize(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -138,16 +184,18 @@ public partial class ConnectionResult: IDisposable
             return new DesktopSize(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public bool GetEnableServerPointer()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            var result = Raw.ConnectionResult.GetEnableServerPointer(_inner);
+            var result = Raw.ConnectionResult.GetEnableServerPointer(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -155,16 +203,18 @@ public partial class ConnectionResult: IDisposable
             return result.Ok;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public bool GetPointerSoftwareRendering()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            var result = Raw.ConnectionResult.GetPointerSoftwareRendering(_inner);
+            var result = Raw.ConnectionResult.GetPointerSoftwareRendering(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -178,7 +228,7 @@ public partial class ConnectionResult: IDisposable
     /// </summary>
     internal unsafe Raw.ConnectionResult* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -188,13 +238,14 @@ public partial class ConnectionResult: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.ConnectionResult.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

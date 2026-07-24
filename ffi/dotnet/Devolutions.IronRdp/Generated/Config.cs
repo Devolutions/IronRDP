@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class Config: IDisposable
 {
-    private unsafe Raw.Config* _inner;
+    private unsafe RustHandle<Raw.Config> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.Config> _destroy = Raw.Config.Destroy;
+
     public DvcPipeProxyConfig? DvcPipeProxy
     {
         get
@@ -30,8 +39,33 @@ public partial class Config: IDisposable
     /// </remarks>
     internal unsafe Config(Raw.Config* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.Config>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe Config(Raw.Config* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.Config>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe Config(RustHandle<Raw.Config> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>ConfigBuilder</c> allocated on Rust side.
     /// </returns>
@@ -43,6 +77,7 @@ public partial class Config: IDisposable
             return new ConfigBuilder(result);
         }
     }
+
     /// <returns>
     /// A <c>DvcPipeProxyConfig</c> allocated on Rust side.
     /// </returns>
@@ -50,11 +85,12 @@ public partial class Config: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("Config");
             }
-            Raw.DvcPipeProxyConfig* result = Raw.Config.GetDvcPipeProxy(_inner);
+            Raw.DvcPipeProxyConfig* result = Raw.Config.GetDvcPipeProxy(AsFFI());
+            GC.KeepAlive(this);
             return result == null ? null : new DvcPipeProxyConfig(result);
         }
     }
@@ -64,7 +100,7 @@ public partial class Config: IDisposable
     /// </summary>
     internal unsafe Raw.Config* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -74,13 +110,14 @@ public partial class Config: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.Config.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

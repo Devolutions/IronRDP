@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class FfiFileContentsRequest: IDisposable
 {
-    private unsafe Raw.FfiFileContentsRequest* _inner;
+    private unsafe RustHandle<Raw.FfiFileContentsRequest> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.FfiFileContentsRequest> _destroy = Raw.FfiFileContentsRequest.Destroy;
 
     /// <summary>
     /// Creates a managed <c>FfiFileContentsRequest</c> from a raw handle.
@@ -23,95 +31,142 @@ public partial class FfiFileContentsRequest: IDisposable
     /// </remarks>
     internal unsafe FfiFileContentsRequest(Raw.FfiFileContentsRequest* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.FfiFileContentsRequest>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe FfiFileContentsRequest(Raw.FfiFileContentsRequest* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.FfiFileContentsRequest>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe FfiFileContentsRequest(RustHandle<Raw.FfiFileContentsRequest> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public uint StreamId()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsRequest");
             }
-            return Raw.FfiFileContentsRequest.StreamId(_inner);
+            var result = Raw.FfiFileContentsRequest.StreamId(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public int Index()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsRequest");
             }
-            return Raw.FfiFileContentsRequest.Index(_inner);
+            var result = Raw.FfiFileContentsRequest.Index(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool IsSizeRequest()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsRequest");
             }
-            return Raw.FfiFileContentsRequest.IsSizeRequest(_inner);
+            var result = Raw.FfiFileContentsRequest.IsSizeRequest(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool IsRangeRequest()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsRequest");
             }
-            return Raw.FfiFileContentsRequest.IsRangeRequest(_inner);
+            var result = Raw.FfiFileContentsRequest.IsRangeRequest(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ulong Position()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsRequest");
             }
-            return Raw.FfiFileContentsRequest.Position(_inner);
+            var result = Raw.FfiFileContentsRequest.Position(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public uint RequestedSize()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsRequest");
             }
-            return Raw.FfiFileContentsRequest.RequestedSize(_inner);
+            var result = Raw.FfiFileContentsRequest.RequestedSize(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool HasDataId()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsRequest");
             }
-            return Raw.FfiFileContentsRequest.HasDataId(_inner);
+            var result = Raw.FfiFileContentsRequest.HasDataId(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public uint DataId()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("FfiFileContentsRequest");
             }
-            var result = Raw.FfiFileContentsRequest.DataId(_inner);
+            var result = Raw.FfiFileContentsRequest.DataId(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -125,7 +180,7 @@ public partial class FfiFileContentsRequest: IDisposable
     /// </summary>
     internal unsafe Raw.FfiFileContentsRequest* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -135,13 +190,14 @@ public partial class FfiFileContentsRequest: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.FfiFileContentsRequest.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

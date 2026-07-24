@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class PerformanceFlags: IDisposable
 {
-    private unsafe Raw.PerformanceFlags* _inner;
+    private unsafe RustHandle<Raw.PerformanceFlags> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.PerformanceFlags> _destroy = Raw.PerformanceFlags.Destroy;
 
     /// <summary>
     /// Creates a managed <c>PerformanceFlags</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class PerformanceFlags: IDisposable
     /// </remarks>
     internal unsafe PerformanceFlags(Raw.PerformanceFlags* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.PerformanceFlags>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe PerformanceFlags(Raw.PerformanceFlags* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.PerformanceFlags>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe PerformanceFlags(RustHandle<Raw.PerformanceFlags> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>PerformanceFlags</c> allocated on Rust side.
     /// </returns>
@@ -36,6 +69,7 @@ public partial class PerformanceFlags: IDisposable
             return new PerformanceFlags(result);
         }
     }
+
     /// <returns>
     /// A <c>PerformanceFlags</c> allocated on Rust side.
     /// </returns>
@@ -47,15 +81,17 @@ public partial class PerformanceFlags: IDisposable
             return new PerformanceFlags(result);
         }
     }
+
     public void AddFlag(PerformanceFlagsType flag)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("PerformanceFlags");
             }
-            Raw.PerformanceFlags.AddFlag(_inner, flag);
+            Raw.PerformanceFlags.AddFlag(AsFFI(), flag);
+            GC.KeepAlive(this);
         }
     }
 
@@ -64,7 +100,7 @@ public partial class PerformanceFlags: IDisposable
     /// </summary>
     internal unsafe Raw.PerformanceFlags* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -74,13 +110,14 @@ public partial class PerformanceFlags: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.PerformanceFlags.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

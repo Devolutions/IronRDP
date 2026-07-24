@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class ConfigBuilder: IDisposable
 {
-    private unsafe Raw.ConfigBuilder* _inner;
+    private unsafe RustHandle<Raw.ConfigBuilder> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.ConfigBuilder> _destroy = Raw.ConfigBuilder.Destroy;
 
     /// <summary>
     /// Creates a managed <c>ConfigBuilder</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class ConfigBuilder: IDisposable
     /// </remarks>
     internal unsafe ConfigBuilder(Raw.ConfigBuilder* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.ConfigBuilder>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe ConfigBuilder(Raw.ConfigBuilder* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.ConfigBuilder>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe ConfigBuilder(RustHandle<Raw.ConfigBuilder> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>ConfigBuilder</c> allocated on Rust side.
     /// </returns>
@@ -36,268 +69,312 @@ public partial class ConfigBuilder: IDisposable
             return new ConfigBuilder(result);
         }
     }
+
     public void WithUsernameAndPassword(string username, string password)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             if (username == null) throw new ArgumentNullException(nameof(username));
             if (password == null) throw new ArgumentNullException(nameof(password));
-            byte[] usernameBytes = System.Text.Encoding.UTF8.GetBytes(username);
-            byte[] passwordBytes = System.Text.Encoding.UTF8.GetBytes(password);
+            byte[] usernameBytes = Diplomat.Utf8.Clone(username);
+            byte[] passwordBytes = Diplomat.Utf8.Clone(password);
             fixed (byte* usernamePtr = usernameBytes)
             fixed (byte* passwordPtr = passwordBytes)
             {
-                Raw.ConfigBuilder.WithUsernameAndPassword(_inner, new DiplomatSliceU8 { Ptr = usernamePtr, Len = (nuint)usernameBytes.Length }, new DiplomatSliceU8 { Ptr = passwordPtr, Len = (nuint)passwordBytes.Length });
+                Raw.ConfigBuilder.WithUsernameAndPassword(AsFFI(), new DiplomatSliceU8 { Ptr = usernamePtr, Len = (nuint)usernameBytes.Length }, new DiplomatSliceU8 { Ptr = passwordPtr, Len = (nuint)passwordBytes.Length });
+                GC.KeepAlive(this);
             }
         }
     }
+
     public void SetDomain(string domain)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             if (domain == null) throw new ArgumentNullException(nameof(domain));
-            byte[] domainBytes = System.Text.Encoding.UTF8.GetBytes(domain);
+            byte[] domainBytes = Diplomat.Utf8.Clone(domain);
             fixed (byte* domainPtr = domainBytes)
             {
-                Raw.ConfigBuilder.SetDomain(_inner, new DiplomatSliceU8 { Ptr = domainPtr, Len = (nuint)domainBytes.Length });
+                Raw.ConfigBuilder.SetDomain(AsFFI(), new DiplomatSliceU8 { Ptr = domainPtr, Len = (nuint)domainBytes.Length });
+                GC.KeepAlive(this);
             }
         }
     }
+
     public void SetEnableTls(bool enableTls)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetEnableTls(_inner, enableTls);
+            Raw.ConfigBuilder.SetEnableTls(AsFFI(), enableTls);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetEnableCredssp(bool enableCredssp)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetEnableCredssp(_inner, enableCredssp);
+            Raw.ConfigBuilder.SetEnableCredssp(AsFFI(), enableCredssp);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetKeyboardLayout(uint keyboardLayout)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetKeyboardLayout(_inner, keyboardLayout);
+            Raw.ConfigBuilder.SetKeyboardLayout(AsFFI(), keyboardLayout);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetKeyboardType(KeyboardType keyboardType)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetKeyboardType(_inner, keyboardType);
+            Raw.ConfigBuilder.SetKeyboardType(AsFFI(), keyboardType);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetKeyboardSubtype(uint keyboardSubtype)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetKeyboardSubtype(_inner, keyboardSubtype);
+            Raw.ConfigBuilder.SetKeyboardSubtype(AsFFI(), keyboardSubtype);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetKeyboardFunctionalKeysCount(uint keyboardFunctionalKeysCount)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetKeyboardFunctionalKeysCount(_inner, keyboardFunctionalKeysCount);
+            Raw.ConfigBuilder.SetKeyboardFunctionalKeysCount(AsFFI(), keyboardFunctionalKeysCount);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetImeFileName(string imeFileName)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             if (imeFileName == null) throw new ArgumentNullException(nameof(imeFileName));
-            byte[] imeFileNameBytes = System.Text.Encoding.UTF8.GetBytes(imeFileName);
+            byte[] imeFileNameBytes = Diplomat.Utf8.Clone(imeFileName);
             fixed (byte* imeFileNamePtr = imeFileNameBytes)
             {
-                Raw.ConfigBuilder.SetImeFileName(_inner, new DiplomatSliceU8 { Ptr = imeFileNamePtr, Len = (nuint)imeFileNameBytes.Length });
+                Raw.ConfigBuilder.SetImeFileName(AsFFI(), new DiplomatSliceU8 { Ptr = imeFileNamePtr, Len = (nuint)imeFileNameBytes.Length });
+                GC.KeepAlive(this);
             }
         }
     }
+
     public void SetDigProductId(string digProductId)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             if (digProductId == null) throw new ArgumentNullException(nameof(digProductId));
-            byte[] digProductIdBytes = System.Text.Encoding.UTF8.GetBytes(digProductId);
+            byte[] digProductIdBytes = Diplomat.Utf8.Clone(digProductId);
             fixed (byte* digProductIdPtr = digProductIdBytes)
             {
-                Raw.ConfigBuilder.SetDigProductId(_inner, new DiplomatSliceU8 { Ptr = digProductIdPtr, Len = (nuint)digProductIdBytes.Length });
+                Raw.ConfigBuilder.SetDigProductId(AsFFI(), new DiplomatSliceU8 { Ptr = digProductIdPtr, Len = (nuint)digProductIdBytes.Length });
+                GC.KeepAlive(this);
             }
         }
     }
+
     public void SetDesktopSize(ushort height, ushort width)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetDesktopSize(_inner, height, width);
+            Raw.ConfigBuilder.SetDesktopSize(AsFFI(), height, width);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetPerformanceFlags(PerformanceFlags performanceFlags)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             if (performanceFlags == null) throw new ArgumentNullException(nameof(performanceFlags));
             Raw.PerformanceFlags* performanceFlagsRaw = performanceFlags.AsFFI();
             if (performanceFlagsRaw == null) throw new ObjectDisposedException(nameof(PerformanceFlags));
-            Raw.ConfigBuilder.SetPerformanceFlags(_inner, performanceFlagsRaw);
+            Raw.ConfigBuilder.SetPerformanceFlags(AsFFI(), performanceFlagsRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(performanceFlags);
         }
     }
+
     public void SetBitmapConfig(BitmapConfig bitmap)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             if (bitmap == null) throw new ArgumentNullException(nameof(bitmap));
             Raw.BitmapConfig* bitmapRaw = bitmap.AsFFI();
             if (bitmapRaw == null) throw new ObjectDisposedException(nameof(BitmapConfig));
-            Raw.ConfigBuilder.SetBitmapConfig(_inner, bitmapRaw);
+            Raw.ConfigBuilder.SetBitmapConfig(AsFFI(), bitmapRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(bitmap);
         }
     }
+
     public void SetClientBuild(uint clientBuild)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetClientBuild(_inner, clientBuild);
+            Raw.ConfigBuilder.SetClientBuild(AsFFI(), clientBuild);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetClientName(string clientName)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             if (clientName == null) throw new ArgumentNullException(nameof(clientName));
-            byte[] clientNameBytes = System.Text.Encoding.UTF8.GetBytes(clientName);
+            byte[] clientNameBytes = Diplomat.Utf8.Clone(clientName);
             fixed (byte* clientNamePtr = clientNameBytes)
             {
-                Raw.ConfigBuilder.SetClientName(_inner, new DiplomatSliceU8 { Ptr = clientNamePtr, Len = (nuint)clientNameBytes.Length });
+                Raw.ConfigBuilder.SetClientName(AsFFI(), new DiplomatSliceU8 { Ptr = clientNamePtr, Len = (nuint)clientNameBytes.Length });
+                GC.KeepAlive(this);
             }
         }
     }
+
     public void SetClientDir(string clientDir)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             if (clientDir == null) throw new ArgumentNullException(nameof(clientDir));
-            byte[] clientDirBytes = System.Text.Encoding.UTF8.GetBytes(clientDir);
+            byte[] clientDirBytes = Diplomat.Utf8.Clone(clientDir);
             fixed (byte* clientDirPtr = clientDirBytes)
             {
-                Raw.ConfigBuilder.SetClientDir(_inner, new DiplomatSliceU8 { Ptr = clientDirPtr, Len = (nuint)clientDirBytes.Length });
+                Raw.ConfigBuilder.SetClientDir(AsFFI(), new DiplomatSliceU8 { Ptr = clientDirPtr, Len = (nuint)clientDirBytes.Length });
+                GC.KeepAlive(this);
             }
         }
     }
+
     public void SetEnableServerPointer(bool enableServerPointer)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetEnableServerPointer(_inner, enableServerPointer);
+            Raw.ConfigBuilder.SetEnableServerPointer(AsFFI(), enableServerPointer);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetAutologon(bool autologon)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetAutologon(_inner, autologon);
+            Raw.ConfigBuilder.SetAutologon(AsFFI(), autologon);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetPointerSoftwareRendering(bool pointerSoftwareRendering)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.ConfigBuilder.SetPointerSoftwareRendering(_inner, pointerSoftwareRendering);
+            Raw.ConfigBuilder.SetPointerSoftwareRendering(AsFFI(), pointerSoftwareRendering);
+            GC.KeepAlive(this);
         }
     }
+
     public void SetDvcPipeProxy(DvcPipeProxyConfig dvcPipeProxy)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             if (dvcPipeProxy == null) throw new ArgumentNullException(nameof(dvcPipeProxy));
             Raw.DvcPipeProxyConfig* dvcPipeProxyRaw = dvcPipeProxy.AsFFI();
             if (dvcPipeProxyRaw == null) throw new ObjectDisposedException(nameof(DvcPipeProxyConfig));
-            Raw.ConfigBuilder.SetDvcPipeProxy(_inner, dvcPipeProxyRaw);
+            Raw.ConfigBuilder.SetDvcPipeProxy(AsFFI(), dvcPipeProxyRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(dvcPipeProxy);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Config</c> allocated on Rust side.
@@ -306,11 +383,12 @@ public partial class ConfigBuilder: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            var result = Raw.ConfigBuilder.Build(_inner);
+            var result = Raw.ConfigBuilder.Build(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -324,7 +402,7 @@ public partial class ConfigBuilder: IDisposable
     /// </summary>
     internal unsafe Raw.ConfigBuilder* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -334,13 +412,14 @@ public partial class ConfigBuilder: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.ConfigBuilder.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

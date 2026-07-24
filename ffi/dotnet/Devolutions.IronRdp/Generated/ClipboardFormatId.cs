@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class ClipboardFormatId: IDisposable
 {
-    private unsafe Raw.ClipboardFormatId* _inner;
+    private unsafe RustHandle<Raw.ClipboardFormatId> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.ClipboardFormatId> _destroy = Raw.ClipboardFormatId.Destroy;
 
     /// <summary>
     /// Creates a managed <c>ClipboardFormatId</c> from a raw handle.
@@ -23,7 +31,31 @@ public partial class ClipboardFormatId: IDisposable
     /// </remarks>
     internal unsafe ClipboardFormatId(Raw.ClipboardFormatId* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.ClipboardFormatId>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
+    }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe ClipboardFormatId(Raw.ClipboardFormatId* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.ClipboardFormatId>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe ClipboardFormatId(RustHandle<Raw.ClipboardFormatId> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
     }
 
     /// <summary>
@@ -31,7 +63,7 @@ public partial class ClipboardFormatId: IDisposable
     /// </summary>
     internal unsafe Raw.ClipboardFormatId* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -41,13 +73,14 @@ public partial class ClipboardFormatId: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.ClipboardFormatId.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

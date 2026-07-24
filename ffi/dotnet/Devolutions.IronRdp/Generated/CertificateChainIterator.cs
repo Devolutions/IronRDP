@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class CertificateChainIterator: IDisposable
 {
-    private unsafe Raw.CertificateChainIterator* _inner;
+    private unsafe RustHandle<Raw.CertificateChainIterator> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.CertificateChainIterator> _destroy = Raw.CertificateChainIterator.Destroy;
 
     /// <summary>
     /// Creates a managed <c>CertificateChainIterator</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class CertificateChainIterator: IDisposable
     /// </remarks>
     internal unsafe CertificateChainIterator(Raw.CertificateChainIterator* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.CertificateChainIterator>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe CertificateChainIterator(Raw.CertificateChainIterator* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.CertificateChainIterator>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe CertificateChainIterator(RustHandle<Raw.CertificateChainIterator> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
@@ -32,34 +65,41 @@ public partial class CertificateChainIterator: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CertificateChainIterator");
             }
-            Raw.VecU8* result = Raw.CertificateChainIterator.Next(_inner);
+            Raw.VecU8* result = Raw.CertificateChainIterator.Next(AsFFI());
+            GC.KeepAlive(this);
             return result == null ? null : new VecU8(result);
         }
     }
+
     public nuint Len()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CertificateChainIterator");
             }
-            return Raw.CertificateChainIterator.Len(_inner);
+            var result = Raw.CertificateChainIterator.Len(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool IsEmpty()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CertificateChainIterator");
             }
-            return Raw.CertificateChainIterator.IsEmpty(_inner);
+            var result = Raw.CertificateChainIterator.IsEmpty(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
 
@@ -68,7 +108,7 @@ public partial class CertificateChainIterator: IDisposable
     /// </summary>
     internal unsafe Raw.CertificateChainIterator* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -78,13 +118,14 @@ public partial class CertificateChainIterator: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.CertificateChainIterator.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

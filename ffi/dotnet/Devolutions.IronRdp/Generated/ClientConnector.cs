@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class ClientConnector: IDisposable
 {
-    private unsafe Raw.ClientConnector* _inner;
+    private unsafe RustHandle<Raw.ClientConnector> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.ClientConnector> _destroy = Raw.ClientConnector.Destroy;
+
     /// <remarks>
     /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
     /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
@@ -34,8 +43,33 @@ public partial class ClientConnector: IDisposable
     /// </remarks>
     internal unsafe ClientConnector(Raw.ClientConnector* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.ClientConnector>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe ClientConnector(Raw.ClientConnector* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.ClientConnector>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe ClientConnector(RustHandle<Raw.ClientConnector> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ClientConnector</c> allocated on Rust side.
@@ -48,10 +82,11 @@ public partial class ClientConnector: IDisposable
             Raw.Config* configRaw = config.AsFFI();
             if (configRaw == null) throw new ObjectDisposedException(nameof(Config));
             if (clientAddr == null) throw new ArgumentNullException(nameof(clientAddr));
-            byte[] clientAddrBytes = System.Text.Encoding.UTF8.GetBytes(clientAddr);
+            byte[] clientAddrBytes = Diplomat.Utf8.Clone(clientAddr);
             fixed (byte* clientAddrPtr = clientAddrBytes)
             {
                 var result = Raw.ClientConnector.New(configRaw, new DiplomatSliceU8 { Ptr = clientAddrPtr, Len = (nuint)clientAddrBytes.Length });
+                GC.KeepAlive(config);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -60,16 +95,18 @@ public partial class ClientConnector: IDisposable
             }
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void WithStaticChannelRdpSnd()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            var result = Raw.ClientConnector.WithStaticChannelRdpSnd(_inner);
+            var result = Raw.ClientConnector.WithStaticChannelRdpSnd(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -77,20 +114,22 @@ public partial class ClientConnector: IDisposable
             return;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void WithStaticChannelRdpdr(string computerName, uint smartCardDeviceId)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
             if (computerName == null) throw new ArgumentNullException(nameof(computerName));
-            byte[] computerNameBytes = System.Text.Encoding.UTF8.GetBytes(computerName);
+            byte[] computerNameBytes = Diplomat.Utf8.Clone(computerName);
             fixed (byte* computerNamePtr = computerNameBytes)
             {
-                var result = Raw.ClientConnector.WithStaticChannelRdpdr(_inner, new DiplomatSliceU8 { Ptr = computerNamePtr, Len = (nuint)computerNameBytes.Length }, smartCardDeviceId);
+                var result = Raw.ClientConnector.WithStaticChannelRdpdr(AsFFI(), new DiplomatSliceU8 { Ptr = computerNamePtr, Len = (nuint)computerNameBytes.Length }, smartCardDeviceId);
+                GC.KeepAlive(this);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -99,16 +138,18 @@ public partial class ClientConnector: IDisposable
             }
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void WithDynamicChannelDisplayControl()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            var result = Raw.ClientConnector.WithDynamicChannelDisplayControl(_inner);
+            var result = Raw.ClientConnector.WithDynamicChannelDisplayControl(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -116,19 +157,22 @@ public partial class ClientConnector: IDisposable
             return;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void WithDynamicChannelPipeProxy(DvcPipeProxyConfig config)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
             if (config == null) throw new ArgumentNullException(nameof(config));
             Raw.DvcPipeProxyConfig* configRaw = config.AsFFI();
             if (configRaw == null) throw new ObjectDisposedException(nameof(DvcPipeProxyConfig));
-            var result = Raw.ClientConnector.WithDynamicChannelPipeProxy(_inner, configRaw);
+            var result = Raw.ClientConnector.WithDynamicChannelPipeProxy(AsFFI(), configRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(config);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -136,16 +180,18 @@ public partial class ClientConnector: IDisposable
             return;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public bool ShouldPerformSecurityUpgrade()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            var result = Raw.ClientConnector.ShouldPerformSecurityUpgrade(_inner);
+            var result = Raw.ClientConnector.ShouldPerformSecurityUpgrade(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -153,16 +199,18 @@ public partial class ClientConnector: IDisposable
             return result.Ok;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void MarkSecurityUpgradeAsDone()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            var result = Raw.ClientConnector.MarkSecurityUpgradeAsDone(_inner);
+            var result = Raw.ClientConnector.MarkSecurityUpgradeAsDone(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -170,16 +218,18 @@ public partial class ClientConnector: IDisposable
             return;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public bool ShouldPerformCredssp()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            var result = Raw.ClientConnector.ShouldPerformCredssp(_inner);
+            var result = Raw.ClientConnector.ShouldPerformCredssp(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -187,16 +237,18 @@ public partial class ClientConnector: IDisposable
             return result.Ok;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void MarkCredsspAsDone()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            var result = Raw.ClientConnector.MarkCredsspAsDone(_inner);
+            var result = Raw.ClientConnector.MarkCredsspAsDone(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -204,6 +256,7 @@ public partial class ClientConnector: IDisposable
             return;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Written</c> allocated on Rust side.
@@ -212,7 +265,7 @@ public partial class ClientConnector: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
@@ -222,7 +275,9 @@ public partial class ClientConnector: IDisposable
             if (writeBufRaw == null) throw new ObjectDisposedException(nameof(WriteBuf));
             fixed (byte* inputPtr = input)
             {
-                var result = Raw.ClientConnector.Step(_inner, new DiplomatSliceU8 { Ptr = inputPtr, Len = (nuint)input.Length }, writeBufRaw);
+                var result = Raw.ClientConnector.Step(AsFFI(), new DiplomatSliceU8 { Ptr = inputPtr, Len = (nuint)input.Length }, writeBufRaw);
+                GC.KeepAlive(this);
+                GC.KeepAlive(writeBuf);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -231,6 +286,7 @@ public partial class ClientConnector: IDisposable
             }
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Written</c> allocated on Rust side.
@@ -239,14 +295,16 @@ public partial class ClientConnector: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
             if (writeBuf == null) throw new ArgumentNullException(nameof(writeBuf));
             Raw.WriteBuf* writeBufRaw = writeBuf.AsFFI();
             if (writeBufRaw == null) throw new ObjectDisposedException(nameof(WriteBuf));
-            var result = Raw.ClientConnector.StepNoInput(_inner, writeBufRaw);
+            var result = Raw.ClientConnector.StepNoInput(AsFFI(), writeBufRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(writeBuf);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -254,19 +312,22 @@ public partial class ClientConnector: IDisposable
             return new Written(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void AttachStaticCliprdr(Cliprdr cliprdr)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
             if (cliprdr == null) throw new ArgumentNullException(nameof(cliprdr));
             Raw.Cliprdr* cliprdrRaw = cliprdr.AsFFI();
             if (cliprdrRaw == null) throw new ObjectDisposedException(nameof(Cliprdr));
-            var result = Raw.ClientConnector.AttachStaticCliprdr(_inner, cliprdrRaw);
+            var result = Raw.ClientConnector.AttachStaticCliprdr(AsFFI(), cliprdrRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(cliprdr);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -274,6 +335,7 @@ public partial class ClientConnector: IDisposable
             return;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>PduHint</c> allocated on Rust side.
@@ -286,18 +348,20 @@ public partial class ClientConnector: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            var result = Raw.ClientConnector.NextPduHint(_inner);
+            var result = Raw.ClientConnector.NextPduHint(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            return result.Ok == null ? null : new PduHint(result.Ok);
+            return result.Ok == null ? null : new PduHint(result.Ok, new object[] { this });
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>DynState</c> allocated on Rust side.
@@ -310,18 +374,20 @@ public partial class ClientConnector: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            var result = Raw.ClientConnector.GetDynState(_inner);
+            var result = Raw.ClientConnector.GetDynState(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            return new DynState(result.Ok);
+            return new DynState(result.Ok, new object[] { this });
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ClientConnectorState</c> allocated on Rust side.
@@ -330,11 +396,12 @@ public partial class ClientConnector: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            var result = Raw.ClientConnector.ConsumeAndCastToClientConnectorState(_inner);
+            var result = Raw.ClientConnector.ConsumeAndCastToClientConnectorState(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -348,7 +415,7 @@ public partial class ClientConnector: IDisposable
     /// </summary>
     internal unsafe Raw.ClientConnector* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -358,13 +425,14 @@ public partial class ClientConnector: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.ClientConnector.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

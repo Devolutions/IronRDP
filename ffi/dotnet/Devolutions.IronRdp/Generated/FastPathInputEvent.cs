@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class FastPathInputEvent: IDisposable
 {
-    private unsafe Raw.FastPathInputEvent* _inner;
+    private unsafe RustHandle<Raw.FastPathInputEvent> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.FastPathInputEvent> _destroy = Raw.FastPathInputEvent.Destroy;
 
     /// <summary>
     /// Creates a managed <c>FastPathInputEvent</c> from a raw handle.
@@ -23,7 +31,31 @@ public partial class FastPathInputEvent: IDisposable
     /// </remarks>
     internal unsafe FastPathInputEvent(Raw.FastPathInputEvent* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.FastPathInputEvent>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
+    }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe FastPathInputEvent(Raw.FastPathInputEvent* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.FastPathInputEvent>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe FastPathInputEvent(RustHandle<Raw.FastPathInputEvent> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
     }
 
     /// <summary>
@@ -31,7 +63,7 @@ public partial class FastPathInputEvent: IDisposable
     /// </summary>
     internal unsafe Raw.FastPathInputEvent* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -41,13 +73,14 @@ public partial class FastPathInputEvent: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.FastPathInputEvent.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

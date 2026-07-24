@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class BitmapConfig: IDisposable
 {
-    private unsafe Raw.BitmapConfig* _inner;
+    private unsafe RustHandle<Raw.BitmapConfig> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.BitmapConfig> _destroy = Raw.BitmapConfig.Destroy;
 
     /// <summary>
     /// Creates a managed <c>BitmapConfig</c> from a raw handle.
@@ -23,7 +31,31 @@ public partial class BitmapConfig: IDisposable
     /// </remarks>
     internal unsafe BitmapConfig(Raw.BitmapConfig* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.BitmapConfig>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
+    }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe BitmapConfig(Raw.BitmapConfig* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.BitmapConfig>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe BitmapConfig(RustHandle<Raw.BitmapConfig> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
     }
 
     /// <summary>
@@ -31,7 +63,7 @@ public partial class BitmapConfig: IDisposable
     /// </summary>
     internal unsafe Raw.BitmapConfig* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -41,13 +73,14 @@ public partial class BitmapConfig: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.BitmapConfig.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

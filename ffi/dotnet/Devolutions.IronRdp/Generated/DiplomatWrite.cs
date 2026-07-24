@@ -24,7 +24,7 @@ internal delegate bool WriteableGrow(IntPtr self, nuint capacity);
 // field corresponds to Rust's `grow_failed: bool`; Sequential layout pads
 // it to the next 8-byte boundary so `flush`/`grow` land at offsets 40/48.
 [StructLayout(LayoutKind.Sequential)]
-internal struct DiplomatWriteable : IDisposable
+internal struct DiplomatWrite : IDisposable
 {
     IntPtr context;
     IntPtr buf;
@@ -34,7 +34,7 @@ internal struct DiplomatWriteable : IDisposable
     readonly IntPtr flush;
     readonly IntPtr grow;
 
-    public DiplomatWriteable()
+    public DiplomatWrite()
     {
         WriteableFlush flushFunc = Flush;
         WriteableGrow growFunc = Grow;
@@ -45,7 +45,7 @@ internal struct DiplomatWriteable : IDisposable
         // Hold the delegate objects alive for as long as the function-pointer
         // form is in use. Without this, the GC could free the thunks and
         // Rust's callback into them would crash.
-        DiplomatWriteableContext ctx = new DiplomatWriteableContext
+        DiplomatWriteContext ctx = new DiplomatWriteContext
         {
             flushFunc = flushFunc,
             growFunc = growFunc,
@@ -65,7 +65,7 @@ internal struct DiplomatWriteable : IDisposable
     {
         if (len > int.MaxValue)
         {
-            throw new IndexOutOfRangeException("DiplomatWriteable buffer is too big");
+            throw new IndexOutOfRangeException("DiplomatWrite buffer is too big");
         }
         byte[] managedArray = new byte[(int)len];
         Marshal.Copy(buf, managedArray, 0, (int)len);
@@ -76,7 +76,7 @@ internal struct DiplomatWriteable : IDisposable
     {
         if (len > int.MaxValue)
         {
-            throw new IndexOutOfRangeException("DiplomatWriteable buffer is too big");
+            throw new IndexOutOfRangeException("DiplomatWrite buffer is too big");
         }
 #if NET6_0_OR_GREATER
         return Marshal.PtrToStringUTF8(buf, (int)len) ?? string.Empty;
@@ -123,7 +123,7 @@ internal struct DiplomatWriteable : IDisposable
         {
             return false;
         }
-        DiplomatWriteable* self = (DiplomatWriteable*)writeable;
+        DiplomatWrite* self = (DiplomatWrite*)writeable;
 
         nuint newCap = capacity;
         if (newCap > int.MaxValue)
@@ -159,7 +159,7 @@ internal struct DiplomatWriteable : IDisposable
     }
 }
 
-internal struct DiplomatWriteableContext
+internal struct DiplomatWriteContext
 {
     internal WriteableFlush flushFunc;
     internal WriteableGrow growFunc;

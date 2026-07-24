@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class MousePosition: IDisposable
 {
-    private unsafe Raw.MousePosition* _inner;
+    private unsafe RustHandle<Raw.MousePosition> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.MousePosition> _destroy = Raw.MousePosition.Destroy;
 
     /// <summary>
     /// Creates a managed <c>MousePosition</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class MousePosition: IDisposable
     /// </remarks>
     internal unsafe MousePosition(Raw.MousePosition* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.MousePosition>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe MousePosition(Raw.MousePosition* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.MousePosition>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe MousePosition(RustHandle<Raw.MousePosition> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>MousePosition</c> allocated on Rust side.
     /// </returns>
@@ -36,6 +69,7 @@ public partial class MousePosition: IDisposable
             return new MousePosition(result);
         }
     }
+
     /// <returns>
     /// A <c>Operation</c> allocated on Rust side.
     /// </returns>
@@ -43,11 +77,12 @@ public partial class MousePosition: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("MousePosition");
             }
-            Raw.Operation* result = Raw.MousePosition.AsMoveOperation(_inner);
+            Raw.Operation* result = Raw.MousePosition.AsMoveOperation(AsFFI());
+            GC.KeepAlive(this);
             return new Operation(result);
         }
     }
@@ -57,7 +92,7 @@ public partial class MousePosition: IDisposable
     /// </summary>
     internal unsafe Raw.MousePosition* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -67,13 +102,14 @@ public partial class MousePosition: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.MousePosition.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

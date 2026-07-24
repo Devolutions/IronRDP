@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class ClientConnectorState: IDisposable
 {
-    private unsafe Raw.ClientConnectorState* _inner;
+    private unsafe RustHandle<Raw.ClientConnectorState> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.ClientConnectorState> _destroy = Raw.ClientConnectorState.Destroy;
+
     public SecurityProtocol BasicSettingsExchangeSendInitialSelectedProtocol
     {
         get
@@ -18,6 +27,7 @@ public partial class ClientConnectorState: IDisposable
             return GetBasicSettingsExchangeSendInitialSelectedProtocol();
         }
     }
+
     public ConnectInitial BasicSettingsExchangeWaitResponseConnectInitial
     {
         get
@@ -25,6 +35,7 @@ public partial class ClientConnectorState: IDisposable
             return GetBasicSettingsExchangeWaitResponseConnectInitial();
         }
     }
+
     public ConnectionResult ConnectedResult
     {
         get
@@ -32,6 +43,7 @@ public partial class ClientConnectorState: IDisposable
             return GetConnectedResult();
         }
     }
+
     public ConnectionActivationSequence ConnectionFinalizationResult
     {
         get
@@ -39,6 +51,7 @@ public partial class ClientConnectorState: IDisposable
             return GetConnectionFinalizationResult();
         }
     }
+
     public SecurityProtocol ConnectionInitiationWaitConfirmRequestedProtocol
     {
         get
@@ -46,6 +59,7 @@ public partial class ClientConnectorState: IDisposable
             return GetConnectionInitiationWaitConfirmRequestedProtocol();
         }
     }
+
     public SecurityProtocol CredsspSelectedProtocol
     {
         get
@@ -53,6 +67,7 @@ public partial class ClientConnectorState: IDisposable
             return GetCredsspSelectedProtocol();
         }
     }
+
     public SecurityProtocol EnhancedSecurityUpgradeSelectedProtocol
     {
         get
@@ -60,6 +75,7 @@ public partial class ClientConnectorState: IDisposable
             return GetEnhancedSecurityUpgradeSelectedProtocol();
         }
     }
+
     public ClientConnectorStateType EnumType
     {
         get
@@ -79,18 +95,44 @@ public partial class ClientConnectorState: IDisposable
     /// </remarks>
     internal unsafe ClientConnectorState(Raw.ClientConnectorState* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.ClientConnectorState>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe ClientConnectorState(Raw.ClientConnectorState* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.ClientConnectorState>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe ClientConnectorState(RustHandle<Raw.ClientConnectorState> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <exception cref="IronRdpException"></exception>
     public ClientConnectorStateType GetEnumType()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            var result = Raw.ClientConnectorState.GetEnumType(_inner);
+            var result = Raw.ClientConnectorState.GetEnumType(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -98,6 +140,7 @@ public partial class ClientConnectorState: IDisposable
             return result.Ok;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>SecurityProtocol</c> allocated on Rust side.
@@ -106,11 +149,12 @@ public partial class ClientConnectorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            var result = Raw.ClientConnectorState.GetConnectionInitiationWaitConfirmRequestedProtocol(_inner);
+            var result = Raw.ClientConnectorState.GetConnectionInitiationWaitConfirmRequestedProtocol(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -118,6 +162,7 @@ public partial class ClientConnectorState: IDisposable
             return new SecurityProtocol(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>SecurityProtocol</c> allocated on Rust side.
@@ -126,11 +171,12 @@ public partial class ClientConnectorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            var result = Raw.ClientConnectorState.GetEnhancedSecurityUpgradeSelectedProtocol(_inner);
+            var result = Raw.ClientConnectorState.GetEnhancedSecurityUpgradeSelectedProtocol(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -138,6 +184,7 @@ public partial class ClientConnectorState: IDisposable
             return new SecurityProtocol(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>SecurityProtocol</c> allocated on Rust side.
@@ -146,11 +193,12 @@ public partial class ClientConnectorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            var result = Raw.ClientConnectorState.GetCredsspSelectedProtocol(_inner);
+            var result = Raw.ClientConnectorState.GetCredsspSelectedProtocol(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -158,6 +206,7 @@ public partial class ClientConnectorState: IDisposable
             return new SecurityProtocol(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>SecurityProtocol</c> allocated on Rust side.
@@ -166,11 +215,12 @@ public partial class ClientConnectorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            var result = Raw.ClientConnectorState.GetBasicSettingsExchangeSendInitialSelectedProtocol(_inner);
+            var result = Raw.ClientConnectorState.GetBasicSettingsExchangeSendInitialSelectedProtocol(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -178,6 +228,7 @@ public partial class ClientConnectorState: IDisposable
             return new SecurityProtocol(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ConnectInitial</c> allocated on Rust side.
@@ -186,11 +237,12 @@ public partial class ClientConnectorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            var result = Raw.ClientConnectorState.GetBasicSettingsExchangeWaitResponseConnectInitial(_inner);
+            var result = Raw.ClientConnectorState.GetBasicSettingsExchangeWaitResponseConnectInitial(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -198,6 +250,7 @@ public partial class ClientConnectorState: IDisposable
             return new ConnectInitial(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ConnectionResult</c> allocated on Rust side.
@@ -206,11 +259,12 @@ public partial class ClientConnectorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            var result = Raw.ClientConnectorState.GetConnectedResult(_inner);
+            var result = Raw.ClientConnectorState.GetConnectedResult(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -218,6 +272,7 @@ public partial class ClientConnectorState: IDisposable
             return new ConnectionResult(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ConnectionActivationSequence</c> allocated on Rust side.
@@ -226,11 +281,12 @@ public partial class ClientConnectorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            var result = Raw.ClientConnectorState.GetConnectionFinalizationResult(_inner);
+            var result = Raw.ClientConnectorState.GetConnectionFinalizationResult(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -244,7 +300,7 @@ public partial class ClientConnectorState: IDisposable
     /// </summary>
     internal unsafe Raw.ClientConnectorState* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -254,13 +310,14 @@ public partial class ClientConnectorState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.ClientConnectorState.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

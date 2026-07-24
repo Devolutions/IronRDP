@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class WinCliprdr: IDisposable
 {
-    private unsafe Raw.WinCliprdr* _inner;
+    private unsafe RustHandle<Raw.WinCliprdr> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.WinCliprdr> _destroy = Raw.WinCliprdr.Destroy;
 
     /// <summary>
     /// Creates a managed <c>WinCliprdr</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class WinCliprdr: IDisposable
     /// </remarks>
     internal unsafe WinCliprdr(Raw.WinCliprdr* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.WinCliprdr>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe WinCliprdr(Raw.WinCliprdr* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.WinCliprdr>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe WinCliprdr(RustHandle<Raw.WinCliprdr> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>WinCliprdr</c> allocated on Rust side.
@@ -41,6 +74,7 @@ public partial class WinCliprdr: IDisposable
             return new WinCliprdr(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ClipboardMessage</c> allocated on Rust side.
@@ -49,11 +83,12 @@ public partial class WinCliprdr: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("WinCliprdr");
             }
-            var result = Raw.WinCliprdr.NextClipboardMessage(_inner);
+            var result = Raw.WinCliprdr.NextClipboardMessage(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -61,6 +96,7 @@ public partial class WinCliprdr: IDisposable
             return result.Ok == null ? null : new ClipboardMessage(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ClipboardMessage</c> allocated on Rust side.
@@ -69,11 +105,12 @@ public partial class WinCliprdr: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("WinCliprdr");
             }
-            var result = Raw.WinCliprdr.NextClipboardMessageBlocking(_inner);
+            var result = Raw.WinCliprdr.NextClipboardMessageBlocking(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -81,6 +118,7 @@ public partial class WinCliprdr: IDisposable
             return new ClipboardMessage(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>CliprdrBackendFactory</c> allocated on Rust side.
@@ -89,11 +127,12 @@ public partial class WinCliprdr: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("WinCliprdr");
             }
-            var result = Raw.WinCliprdr.BackendFactory(_inner);
+            var result = Raw.WinCliprdr.BackendFactory(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -107,7 +146,7 @@ public partial class WinCliprdr: IDisposable
     /// </summary>
     internal unsafe Raw.WinCliprdr* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -117,13 +156,14 @@ public partial class WinCliprdr: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.WinCliprdr.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

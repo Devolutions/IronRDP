@@ -10,10 +10,10 @@ internal partial struct BytesSlice
 {
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "BytesSlice_get_size", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern nuint GetSize(BytesSlice* handle);
+    internal static unsafe extern nuint GetSize(BytesSlice* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "BytesSlice_fill", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern DiplomatResultVoidIronRdpError Fill(BytesSlice* handle, DiplomatSliceMutU8 buffer);
+    internal static unsafe extern DiplomatResultVoidIronRdpError Fill(BytesSlice* handle, DiplomatSliceMutU8 buffer);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "BytesSlice_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(BytesSlice* handle);

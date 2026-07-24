@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class DvcPipeProxyDescriptor: IDisposable
 {
-    private unsafe Raw.DvcPipeProxyDescriptor* _inner;
+    private unsafe RustHandle<Raw.DvcPipeProxyDescriptor> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.DvcPipeProxyDescriptor> _destroy = Raw.DvcPipeProxyDescriptor.Destroy;
 
     /// <summary>
     /// Creates a managed <c>DvcPipeProxyDescriptor</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class DvcPipeProxyDescriptor: IDisposable
     /// </remarks>
     internal unsafe DvcPipeProxyDescriptor(Raw.DvcPipeProxyDescriptor* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.DvcPipeProxyDescriptor>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe DvcPipeProxyDescriptor(Raw.DvcPipeProxyDescriptor* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.DvcPipeProxyDescriptor>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe DvcPipeProxyDescriptor(RustHandle<Raw.DvcPipeProxyDescriptor> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>DvcPipeProxyDescriptor</c> allocated on Rust side.
     /// </returns>
@@ -34,8 +67,8 @@ public partial class DvcPipeProxyDescriptor: IDisposable
         {
             if (channelName == null) throw new ArgumentNullException(nameof(channelName));
             if (pipeName == null) throw new ArgumentNullException(nameof(pipeName));
-            byte[] channelNameBytes = System.Text.Encoding.UTF8.GetBytes(channelName);
-            byte[] pipeNameBytes = System.Text.Encoding.UTF8.GetBytes(pipeName);
+            byte[] channelNameBytes = Diplomat.Utf8.Clone(channelName);
+            byte[] pipeNameBytes = Diplomat.Utf8.Clone(pipeName);
             fixed (byte* channelNamePtr = channelNameBytes)
             fixed (byte* pipeNamePtr = pipeNameBytes)
             {
@@ -50,7 +83,7 @@ public partial class DvcPipeProxyDescriptor: IDisposable
     /// </summary>
     internal unsafe Raw.DvcPipeProxyDescriptor* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -60,13 +93,14 @@ public partial class DvcPipeProxyDescriptor: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.DvcPipeProxyDescriptor.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class WriteBuf: IDisposable
 {
-    private unsafe Raw.WriteBuf* _inner;
+    private unsafe RustHandle<Raw.WriteBuf> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.WriteBuf> _destroy = Raw.WriteBuf.Destroy;
+
     public VecU8 Filled
     {
         get
@@ -30,8 +39,33 @@ public partial class WriteBuf: IDisposable
     /// </remarks>
     internal unsafe WriteBuf(Raw.WriteBuf* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.WriteBuf>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe WriteBuf(Raw.WriteBuf* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.WriteBuf>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe WriteBuf(RustHandle<Raw.WriteBuf> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>WriteBuf</c> allocated on Rust side.
     /// </returns>
@@ -43,30 +77,34 @@ public partial class WriteBuf: IDisposable
             return new WriteBuf(result);
         }
     }
+
     public void Clear()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("WriteBuf");
             }
-            Raw.WriteBuf.Clear(_inner);
+            Raw.WriteBuf.Clear(AsFFI());
+            GC.KeepAlive(this);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void ReadIntoBuf(byte[] buf)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("WriteBuf");
             }
             if (buf == null) throw new ArgumentNullException(nameof(buf));
             fixed (byte* bufPtr = buf)
             {
-                var result = Raw.WriteBuf.ReadIntoBuf(_inner, new DiplomatSliceMutU8 { Ptr = bufPtr, Len = (nuint)buf.Length });
+                var result = Raw.WriteBuf.ReadIntoBuf(AsFFI(), new DiplomatSliceMutU8 { Ptr = bufPtr, Len = (nuint)buf.Length });
+                GC.KeepAlive(this);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -75,6 +113,7 @@ public partial class WriteBuf: IDisposable
             }
         }
     }
+
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
@@ -82,11 +121,12 @@ public partial class WriteBuf: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("WriteBuf");
             }
-            Raw.VecU8* result = Raw.WriteBuf.GetFilled(_inner);
+            Raw.VecU8* result = Raw.WriteBuf.GetFilled(AsFFI());
+            GC.KeepAlive(this);
             return new VecU8(result);
         }
     }
@@ -96,7 +136,7 @@ public partial class WriteBuf: IDisposable
     /// </summary>
     internal unsafe Raw.WriteBuf* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -106,13 +146,14 @@ public partial class WriteBuf: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.WriteBuf.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class U32Slice: IDisposable
 {
-    private unsafe Raw.U32Slice* _inner;
+    private unsafe RustHandle<Raw.U32Slice> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.U32Slice> _destroy = Raw.U32Slice.Destroy;
+
     public nuint Size
     {
         get
@@ -30,32 +39,61 @@ public partial class U32Slice: IDisposable
     /// </remarks>
     internal unsafe U32Slice(Raw.U32Slice* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.U32Slice>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe U32Slice(Raw.U32Slice* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.U32Slice>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe U32Slice(RustHandle<Raw.U32Slice> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public nuint GetSize()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("U32Slice");
             }
-            return Raw.U32Slice.GetSize(_inner);
+            var result = Raw.U32Slice.GetSize(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void Fill(uint[] buffer)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("U32Slice");
             }
             if (buffer == null) throw new ArgumentNullException(nameof(buffer));
             fixed (uint* bufferPtr = buffer)
             {
-                var result = Raw.U32Slice.Fill(_inner, new DiplomatSliceMutU32 { Ptr = bufferPtr, Len = (nuint)buffer.Length });
+                var result = Raw.U32Slice.Fill(AsFFI(), new DiplomatSliceMutU32 { Ptr = bufferPtr, Len = (nuint)buffer.Length });
+                GC.KeepAlive(this);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -70,7 +108,7 @@ public partial class U32Slice: IDisposable
     /// </summary>
     internal unsafe Raw.U32Slice* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -80,13 +118,14 @@ public partial class U32Slice: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.U32Slice.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

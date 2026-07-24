@@ -27,7 +27,11 @@ const DOTNET_NATIVE_LIB_PATH: &str = "dependencies/runtimes/linux-x64/native/";
 const DOTNET_NATIVE_LIB_PATH: &str = "dependencies/runtimes/osx-x64/native/";
 
 const DIPLOMAT_GIT_URL: &str = "https://github.com/irvingoujAtDevolution/diplomat.git";
-const DIPLOMAT_BRANCH: &str = "dotnet-picky-ironrdp-compat";
+// Keep in sync with the `diplomat` / `diplomat-runtime` rev pinned in ffi/Cargo.toml —
+// `diplomat-tool` is the codegen half of the same monorepo and must match the
+// runtime crates commit-for-commit, or generated bindings drift from what the
+// runtime types actually support.
+const DIPLOMAT_REV: &str = "822b0b3effd892ca5babae7c1872d8c6be0685de";
 
 pub(crate) fn install(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("FFI-INSTALL");
@@ -39,12 +43,20 @@ pub(crate) fn install(sh: &Shell) -> anyhow::Result<()> {
 
 fn install_diplomat_tool(sh: &Shell) -> anyhow::Result<()> {
     if is_installed(sh, "diplomat-tool") {
-        trace!("Refresh diplomat-tool from {DIPLOMAT_GIT_URL}/{DIPLOMAT_BRANCH}");
+        trace!("Refresh diplomat-tool from {DIPLOMAT_GIT_URL}@{DIPLOMAT_REV}");
     } else {
-        trace!("Install diplomat-tool from {DIPLOMAT_GIT_URL}/{DIPLOMAT_BRANCH}");
+        trace!("Install diplomat-tool from {DIPLOMAT_GIT_URL}@{DIPLOMAT_REV}");
     }
 
-    sh.cmd(CARGO)
+    // This pinned commit's `diplomat_core` `hir` feature uses `if let` guards,
+    // which our workspace's pinned 1.89.0 toolchain (rust-toolchain.toml) doesn't
+    // support. `diplomat-tool` is a standalone dev-time codegen binary, not linked
+    // into `ffi`, so it doesn't need to match that pin — build it with `rustup`'s
+    // default stable toolchain instead of the directory-overridden one.
+    sh.cmd("rustup")
+        .arg("run")
+        .arg("stable")
+        .arg("cargo")
         .arg("install")
         .arg("--debug")
         .arg("--locked")
@@ -53,8 +65,8 @@ fn install_diplomat_tool(sh: &Shell) -> anyhow::Result<()> {
         .arg(crate::LOCAL_CARGO_ROOT)
         .arg("--git")
         .arg(DIPLOMAT_GIT_URL)
-        .arg("--branch")
-        .arg(DIPLOMAT_BRANCH)
+        .arg("--rev")
+        .arg(DIPLOMAT_REV)
         .arg("diplomat-tool")
         .run()?;
 
@@ -127,7 +139,14 @@ pub(crate) fn build_bindings(sh: &Shell, skip_dotnet_build: bool) -> anyhow::Res
     remove_cs_files(&generated_code_dir)?;
 
     if use_local_diplomat_tool {
-        sh.cmd("cargo")
+        // Same toolchain mismatch as `install_diplomat_tool`: the pinned commit's
+        // `diplomat_core` `hir` feature needs a newer Rust than our workspace's
+        // 1.89.0 pin (rust-toolchain.toml), which would otherwise apply here since
+        // cwd is inside the IronRDP tree.
+        sh.cmd("rustup")
+            .arg("run")
+            .arg("stable")
+            .arg("cargo")
             .arg("run")
             .arg("--manifest-path")
             .arg(local_diplomat_tool)

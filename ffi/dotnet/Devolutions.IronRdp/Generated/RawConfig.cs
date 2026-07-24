@@ -10,10 +10,10 @@ internal partial struct Config
 {
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "Config_get_builder", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern ConfigBuilder* GetBuilder();
+    internal static unsafe extern ConfigBuilder* GetBuilder();
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "Config_get_dvc_pipe_proxy", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern DvcPipeProxyConfig* GetDvcPipeProxy(Config* handle);
+    internal static unsafe extern DvcPipeProxyConfig* GetDvcPipeProxy(Config* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "Config_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(Config* handle);

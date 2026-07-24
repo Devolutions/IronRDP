@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class LicenseExchangeSequence: IDisposable
 {
-    private unsafe Raw.LicenseExchangeSequence* _inner;
+    private unsafe RustHandle<Raw.LicenseExchangeSequence> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.LicenseExchangeSequence> _destroy = Raw.LicenseExchangeSequence.Destroy;
 
     /// <summary>
     /// Creates a managed <c>LicenseExchangeSequence</c> from a raw handle.
@@ -23,7 +31,31 @@ public partial class LicenseExchangeSequence: IDisposable
     /// </remarks>
     internal unsafe LicenseExchangeSequence(Raw.LicenseExchangeSequence* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.LicenseExchangeSequence>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
+    }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe LicenseExchangeSequence(Raw.LicenseExchangeSequence* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.LicenseExchangeSequence>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe LicenseExchangeSequence(RustHandle<Raw.LicenseExchangeSequence> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
     }
 
     /// <summary>
@@ -31,7 +63,7 @@ public partial class LicenseExchangeSequence: IDisposable
     /// </summary>
     internal unsafe Raw.LicenseExchangeSequence* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -41,13 +73,14 @@ public partial class LicenseExchangeSequence: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.LicenseExchangeSequence.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

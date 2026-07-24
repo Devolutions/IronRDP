@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class VecU8: IDisposable
 {
-    private unsafe Raw.VecU8* _inner;
+    private unsafe RustHandle<Raw.VecU8> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.VecU8> _destroy = Raw.VecU8.Destroy;
+
     public nuint Size
     {
         get
@@ -30,8 +39,33 @@ public partial class VecU8: IDisposable
     /// </remarks>
     internal unsafe VecU8(Raw.VecU8* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.VecU8>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe VecU8(Raw.VecU8* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.VecU8>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe VecU8(RustHandle<Raw.VecU8> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
@@ -47,30 +81,35 @@ public partial class VecU8: IDisposable
             }
         }
     }
+
     public nuint GetSize()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("VecU8");
             }
-            return Raw.VecU8.GetSize(_inner);
+            var result = Raw.VecU8.GetSize(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void Fill(byte[] buffer)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("VecU8");
             }
             if (buffer == null) throw new ArgumentNullException(nameof(buffer));
             fixed (byte* bufferPtr = buffer)
             {
-                var result = Raw.VecU8.Fill(_inner, new DiplomatSliceMutU8 { Ptr = bufferPtr, Len = (nuint)buffer.Length });
+                var result = Raw.VecU8.Fill(AsFFI(), new DiplomatSliceMutU8 { Ptr = bufferPtr, Len = (nuint)buffer.Length });
+                GC.KeepAlive(this);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -79,6 +118,7 @@ public partial class VecU8: IDisposable
             }
         }
     }
+
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
@@ -96,7 +136,7 @@ public partial class VecU8: IDisposable
     /// </summary>
     internal unsafe Raw.VecU8* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -106,13 +146,14 @@ public partial class VecU8: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.VecU8.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

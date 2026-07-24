@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class DvcPipeProxyMessageSink: IDisposable
 {
-    private unsafe Raw.DvcPipeProxyMessageSink* _inner;
+    private unsafe RustHandle<Raw.DvcPipeProxyMessageSink> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.DvcPipeProxyMessageSink> _destroy = Raw.DvcPipeProxyMessageSink.Destroy;
 
     /// <summary>
     /// Creates a managed <c>DvcPipeProxyMessageSink</c> from a raw handle.
@@ -23,7 +31,31 @@ public partial class DvcPipeProxyMessageSink: IDisposable
     /// </remarks>
     internal unsafe DvcPipeProxyMessageSink(Raw.DvcPipeProxyMessageSink* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.DvcPipeProxyMessageSink>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
+    }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe DvcPipeProxyMessageSink(Raw.DvcPipeProxyMessageSink* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.DvcPipeProxyMessageSink>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe DvcPipeProxyMessageSink(RustHandle<Raw.DvcPipeProxyMessageSink> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
     }
 
     /// <summary>
@@ -31,7 +63,7 @@ public partial class DvcPipeProxyMessageSink: IDisposable
     /// </summary>
     internal unsafe Raw.DvcPipeProxyMessageSink* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -41,13 +73,14 @@ public partial class DvcPipeProxyMessageSink: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.DvcPipeProxyMessageSink.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class Char: IDisposable
 {
-    private unsafe Raw.Char* _inner;
+    private unsafe RustHandle<Raw.Char> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.Char> _destroy = Raw.Char.Destroy;
 
     /// <summary>
     /// Creates a managed <c>Char</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class Char: IDisposable
     /// </remarks>
     internal unsafe Char(Raw.Char* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.Char>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe Char(Raw.Char* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.Char>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe Char(RustHandle<Raw.Char> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Char</c> allocated on Rust side.
@@ -41,6 +74,7 @@ public partial class Char: IDisposable
             return new Char(result.Ok);
         }
     }
+
     /// <returns>
     /// A <c>Operation</c> allocated on Rust side.
     /// </returns>
@@ -48,14 +82,16 @@ public partial class Char: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("Char");
             }
-            Raw.Operation* result = Raw.Char.AsOperationUnicodeKeyPressed(_inner);
+            Raw.Operation* result = Raw.Char.AsOperationUnicodeKeyPressed(AsFFI());
+            GC.KeepAlive(this);
             return new Operation(result);
         }
     }
+
     /// <returns>
     /// A <c>Operation</c> allocated on Rust side.
     /// </returns>
@@ -63,11 +99,12 @@ public partial class Char: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("Char");
             }
-            Raw.Operation* result = Raw.Char.AsOperationUnicodeKeyReleased(_inner);
+            Raw.Operation* result = Raw.Char.AsOperationUnicodeKeyReleased(AsFFI());
+            GC.KeepAlive(this);
             return new Operation(result);
         }
     }
@@ -77,7 +114,7 @@ public partial class Char: IDisposable
     /// </summary>
     internal unsafe Raw.Char* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -87,13 +124,14 @@ public partial class Char: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.Char.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

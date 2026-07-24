@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class InclusiveRectangle: IDisposable
 {
-    private unsafe Raw.InclusiveRectangle* _inner;
+    private unsafe RustHandle<Raw.InclusiveRectangle> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.InclusiveRectangle> _destroy = Raw.InclusiveRectangle.Destroy;
+
     public ushort Bottom
     {
         get
@@ -18,6 +27,7 @@ public partial class InclusiveRectangle: IDisposable
             return GetBottom();
         }
     }
+
     public ushort Height
     {
         get
@@ -25,6 +35,7 @@ public partial class InclusiveRectangle: IDisposable
             return GetHeight();
         }
     }
+
     public ushort Left
     {
         get
@@ -32,6 +43,7 @@ public partial class InclusiveRectangle: IDisposable
             return GetLeft();
         }
     }
+
     public ushort Right
     {
         get
@@ -39,6 +51,7 @@ public partial class InclusiveRectangle: IDisposable
             return GetRight();
         }
     }
+
     public ushort Top
     {
         get
@@ -46,6 +59,7 @@ public partial class InclusiveRectangle: IDisposable
             return GetTop();
         }
     }
+
     public ushort Width
     {
         get
@@ -65,72 +79,114 @@ public partial class InclusiveRectangle: IDisposable
     /// </remarks>
     internal unsafe InclusiveRectangle(Raw.InclusiveRectangle* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.InclusiveRectangle>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe InclusiveRectangle(Raw.InclusiveRectangle* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.InclusiveRectangle>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe InclusiveRectangle(RustHandle<Raw.InclusiveRectangle> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public ushort GetLeft()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("InclusiveRectangle");
             }
-            return Raw.InclusiveRectangle.GetLeft(_inner);
+            var result = Raw.InclusiveRectangle.GetLeft(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ushort GetTop()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("InclusiveRectangle");
             }
-            return Raw.InclusiveRectangle.GetTop(_inner);
+            var result = Raw.InclusiveRectangle.GetTop(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ushort GetRight()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("InclusiveRectangle");
             }
-            return Raw.InclusiveRectangle.GetRight(_inner);
+            var result = Raw.InclusiveRectangle.GetRight(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ushort GetBottom()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("InclusiveRectangle");
             }
-            return Raw.InclusiveRectangle.GetBottom(_inner);
+            var result = Raw.InclusiveRectangle.GetBottom(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ushort GetWidth()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("InclusiveRectangle");
             }
-            return Raw.InclusiveRectangle.GetWidth(_inner);
+            var result = Raw.InclusiveRectangle.GetWidth(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ushort GetHeight()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("InclusiveRectangle");
             }
-            return Raw.InclusiveRectangle.GetHeight(_inner);
+            var result = Raw.InclusiveRectangle.GetHeight(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
 
@@ -139,7 +195,7 @@ public partial class InclusiveRectangle: IDisposable
     /// </summary>
     internal unsafe Raw.InclusiveRectangle* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -149,13 +205,14 @@ public partial class InclusiveRectangle: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.InclusiveRectangle.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

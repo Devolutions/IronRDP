@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class RDCleanPathDetectionResult: IDisposable
 {
-    private unsafe Raw.RDCleanPathDetectionResult* _inner;
+    private unsafe RustHandle<Raw.RDCleanPathDetectionResult> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.RDCleanPathDetectionResult> _destroy = Raw.RDCleanPathDetectionResult.Destroy;
+
     public nuint TotalLength
     {
         get
@@ -30,51 +39,86 @@ public partial class RDCleanPathDetectionResult: IDisposable
     /// </remarks>
     internal unsafe RDCleanPathDetectionResult(Raw.RDCleanPathDetectionResult* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.RDCleanPathDetectionResult>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe RDCleanPathDetectionResult(Raw.RDCleanPathDetectionResult* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.RDCleanPathDetectionResult>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe RDCleanPathDetectionResult(RustHandle<Raw.RDCleanPathDetectionResult> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public bool IsDetected()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathDetectionResult");
             }
-            return Raw.RDCleanPathDetectionResult.IsDetected(_inner);
+            var result = Raw.RDCleanPathDetectionResult.IsDetected(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool IsNotEnoughBytes()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathDetectionResult");
             }
-            return Raw.RDCleanPathDetectionResult.IsNotEnoughBytes(_inner);
+            var result = Raw.RDCleanPathDetectionResult.IsNotEnoughBytes(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool IsFailed()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathDetectionResult");
             }
-            return Raw.RDCleanPathDetectionResult.IsFailed(_inner);
+            var result = Raw.RDCleanPathDetectionResult.IsFailed(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public nuint GetTotalLength()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathDetectionResult");
             }
-            var result = Raw.RDCleanPathDetectionResult.GetTotalLength(_inner);
+            var result = Raw.RDCleanPathDetectionResult.GetTotalLength(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -88,7 +132,7 @@ public partial class RDCleanPathDetectionResult: IDisposable
     /// </summary>
     internal unsafe Raw.RDCleanPathDetectionResult* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -98,13 +142,14 @@ public partial class RDCleanPathDetectionResult: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.RDCleanPathDetectionResult.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

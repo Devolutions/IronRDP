@@ -10,7 +10,7 @@ internal partial struct Log
 {
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "Log_init_with_env", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern void InitWithEnv();
+    internal static unsafe extern void InitWithEnv();
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "Log_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(Log* handle);

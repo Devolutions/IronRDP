@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class PduHint: IDisposable
 {
-    private unsafe Raw.PduHint* _inner;
+    private unsafe RustHandle<Raw.PduHint> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.PduHint> _destroy = Raw.PduHint.Destroy;
 
     /// <summary>
     /// Creates a managed <c>PduHint</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class PduHint: IDisposable
     /// </remarks>
     internal unsafe PduHint(Raw.PduHint* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.PduHint>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe PduHint(Raw.PduHint* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.PduHint>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe PduHint(RustHandle<Raw.PduHint> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>OptionalUsize</c> allocated on Rust side.
@@ -33,14 +66,15 @@ public partial class PduHint: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("PduHint");
             }
             if (bytes == null) throw new ArgumentNullException(nameof(bytes));
             fixed (byte* bytesPtr = bytes)
             {
-                var result = Raw.PduHint.FindSize(_inner, new DiplomatSliceU8 { Ptr = bytesPtr, Len = (nuint)bytes.Length });
+                var result = Raw.PduHint.FindSize(AsFFI(), new DiplomatSliceU8 { Ptr = bytesPtr, Len = (nuint)bytes.Length });
+                GC.KeepAlive(this);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -55,7 +89,7 @@ public partial class PduHint: IDisposable
     /// </summary>
     internal unsafe Raw.PduHint* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -65,13 +99,14 @@ public partial class PduHint: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.PduHint.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

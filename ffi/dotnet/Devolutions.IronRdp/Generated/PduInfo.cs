@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class PduInfo: IDisposable
 {
-    private unsafe Raw.PduInfo* _inner;
+    private unsafe RustHandle<Raw.PduInfo> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.PduInfo> _destroy = Raw.PduInfo.Destroy;
+
     public Action Action
     {
         get
@@ -18,6 +27,7 @@ public partial class PduInfo: IDisposable
             return GetAction();
         }
     }
+
     public nuint Length
     {
         get
@@ -37,8 +47,33 @@ public partial class PduInfo: IDisposable
     /// </remarks>
     internal unsafe PduInfo(Raw.PduInfo* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.PduInfo>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe PduInfo(Raw.PduInfo* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.PduInfo>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe PduInfo(RustHandle<Raw.PduInfo> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>Action</c> allocated on Rust side.
     /// </returns>
@@ -46,23 +81,27 @@ public partial class PduInfo: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("PduInfo");
             }
-            Raw.Action* result = Raw.PduInfo.GetAction(_inner);
+            Raw.Action* result = Raw.PduInfo.GetAction(AsFFI());
+            GC.KeepAlive(this);
             return new Action(result);
         }
     }
+
     public nuint GetLength()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("PduInfo");
             }
-            return Raw.PduInfo.GetLength(_inner);
+            var result = Raw.PduInfo.GetLength(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
 
@@ -71,7 +110,7 @@ public partial class PduInfo: IDisposable
     /// </summary>
     internal unsafe Raw.PduInfo* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -81,13 +120,14 @@ public partial class PduInfo: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.PduInfo.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

@@ -10,7 +10,7 @@ internal partial struct PduHint
 {
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "PduHint_find_size", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern DiplomatResultOptionalUsizeIronRdpError FindSize(PduHint* handle, DiplomatSliceU8 bytes);
+    internal static unsafe extern DiplomatResultOptionalUsizeIronRdpError FindSize(PduHint* handle, DiplomatSliceU8 bytes);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "PduHint_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(PduHint* handle);

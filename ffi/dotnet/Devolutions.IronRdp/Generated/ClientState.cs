@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class ClientState: IDisposable
 {
-    private unsafe Raw.ClientState* _inner;
+    private unsafe RustHandle<Raw.ClientState> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.ClientState> _destroy = Raw.ClientState.Destroy;
+
     public TsRequest TsRequest
     {
         get
@@ -30,30 +39,61 @@ public partial class ClientState: IDisposable
     /// </remarks>
     internal unsafe ClientState(Raw.ClientState* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.ClientState>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe ClientState(Raw.ClientState* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.ClientState>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe ClientState(RustHandle<Raw.ClientState> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public bool IsReplyNeeded()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientState");
             }
-            return Raw.ClientState.IsReplyNeeded(_inner);
+            var result = Raw.ClientState.IsReplyNeeded(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool IsFinalMessage()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientState");
             }
-            return Raw.ClientState.IsFinalMessage(_inner);
+            var result = Raw.ClientState.IsFinalMessage(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>TsRequest</c> allocated on Rust side.
@@ -62,11 +102,12 @@ public partial class ClientState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClientState");
             }
-            var result = Raw.ClientState.GetTsRequest(_inner);
+            var result = Raw.ClientState.GetTsRequest(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -80,7 +121,7 @@ public partial class ClientState: IDisposable
     /// </summary>
     internal unsafe Raw.ClientState* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -90,13 +131,14 @@ public partial class ClientState: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.ClientState.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

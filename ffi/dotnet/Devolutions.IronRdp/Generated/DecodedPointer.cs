@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class DecodedPointer: IDisposable
 {
-    private unsafe Raw.DecodedPointer* _inner;
+    private unsafe RustHandle<Raw.DecodedPointer> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.DecodedPointer> _destroy = Raw.DecodedPointer.Destroy;
+
     /// <remarks>
     /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
     /// The caller is responsible for keeping any borrowed backing storage alive and undisposed while the returned value is in use.
@@ -22,6 +31,7 @@ public partial class DecodedPointer: IDisposable
             return GetData();
         }
     }
+
     public ushort Height
     {
         get
@@ -29,6 +39,7 @@ public partial class DecodedPointer: IDisposable
             return GetHeight();
         }
     }
+
     public ushort HotspotX
     {
         get
@@ -36,6 +47,7 @@ public partial class DecodedPointer: IDisposable
             return GetHotspotX();
         }
     }
+
     public ushort HotspotY
     {
         get
@@ -43,6 +55,7 @@ public partial class DecodedPointer: IDisposable
             return GetHotspotY();
         }
     }
+
     public ushort Width
     {
         get
@@ -62,52 +75,89 @@ public partial class DecodedPointer: IDisposable
     /// </remarks>
     internal unsafe DecodedPointer(Raw.DecodedPointer* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.DecodedPointer>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe DecodedPointer(Raw.DecodedPointer* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.DecodedPointer>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe DecodedPointer(RustHandle<Raw.DecodedPointer> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public ushort GetWidth()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DecodedPointer");
             }
-            return Raw.DecodedPointer.GetWidth(_inner);
+            var result = Raw.DecodedPointer.GetWidth(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ushort GetHeight()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DecodedPointer");
             }
-            return Raw.DecodedPointer.GetHeight(_inner);
+            var result = Raw.DecodedPointer.GetHeight(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ushort GetHotspotX()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DecodedPointer");
             }
-            return Raw.DecodedPointer.GetHotspotX(_inner);
+            var result = Raw.DecodedPointer.GetHotspotX(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public ushort GetHotspotY()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DecodedPointer");
             }
-            return Raw.DecodedPointer.GetHotspotY(_inner);
+            var result = Raw.DecodedPointer.GetHotspotY(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <returns>
     /// A <c>BytesSlice</c> allocated on Rust side.
     /// </returns>
@@ -119,12 +169,13 @@ public partial class DecodedPointer: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("DecodedPointer");
             }
-            Raw.BytesSlice* result = Raw.DecodedPointer.GetData(_inner);
-            return new BytesSlice(result);
+            Raw.BytesSlice* result = Raw.DecodedPointer.GetData(AsFFI());
+            GC.KeepAlive(this);
+            return new BytesSlice(result, new object[] { this });
         }
     }
 
@@ -133,7 +184,7 @@ public partial class DecodedPointer: IDisposable
     /// </summary>
     internal unsafe Raw.DecodedPointer* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -143,13 +194,14 @@ public partial class DecodedPointer: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.DecodedPointer.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

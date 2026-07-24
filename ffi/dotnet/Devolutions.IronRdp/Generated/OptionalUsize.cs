@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class OptionalUsize: IDisposable
 {
-    private unsafe Raw.OptionalUsize* _inner;
+    private unsafe RustHandle<Raw.OptionalUsize> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.OptionalUsize> _destroy = Raw.OptionalUsize.Destroy;
 
     /// <summary>
     /// Creates a managed <c>OptionalUsize</c> from a raw handle.
@@ -23,29 +31,58 @@ public partial class OptionalUsize: IDisposable
     /// </remarks>
     internal unsafe OptionalUsize(Raw.OptionalUsize* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.OptionalUsize>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe OptionalUsize(Raw.OptionalUsize* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.OptionalUsize>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe OptionalUsize(RustHandle<Raw.OptionalUsize> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public bool IsSome()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("OptionalUsize");
             }
-            return Raw.OptionalUsize.IsSome(_inner);
+            var result = Raw.OptionalUsize.IsSome(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public nuint Get()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("OptionalUsize");
             }
-            var result = Raw.OptionalUsize.Get(_inner);
+            var result = Raw.OptionalUsize.Get(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -59,7 +96,7 @@ public partial class OptionalUsize: IDisposable
     /// </summary>
     internal unsafe Raw.OptionalUsize* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -69,13 +106,14 @@ public partial class OptionalUsize: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.OptionalUsize.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

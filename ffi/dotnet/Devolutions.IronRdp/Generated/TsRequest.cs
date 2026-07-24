@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class TsRequest: IDisposable
 {
-    private unsafe Raw.TsRequest* _inner;
+    private unsafe RustHandle<Raw.TsRequest> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.TsRequest> _destroy = Raw.TsRequest.Destroy;
 
     /// <summary>
     /// Creates a managed <c>TsRequest</c> from a raw handle.
@@ -23,7 +31,31 @@ public partial class TsRequest: IDisposable
     /// </remarks>
     internal unsafe TsRequest(Raw.TsRequest* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.TsRequest>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
+    }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe TsRequest(Raw.TsRequest* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.TsRequest>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe TsRequest(RustHandle<Raw.TsRequest> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
     }
 
     /// <summary>
@@ -31,7 +63,7 @@ public partial class TsRequest: IDisposable
     /// </summary>
     internal unsafe Raw.TsRequest* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -41,13 +73,14 @@ public partial class TsRequest: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.TsRequest.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

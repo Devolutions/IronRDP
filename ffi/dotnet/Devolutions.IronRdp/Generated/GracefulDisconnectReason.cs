@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class GracefulDisconnectReason: IDisposable
 {
-    private unsafe Raw.GracefulDisconnectReason* _inner;
+    private unsafe RustHandle<Raw.GracefulDisconnectReason> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.GracefulDisconnectReason> _destroy = Raw.GracefulDisconnectReason.Destroy;
 
     /// <summary>
     /// Creates a managed <c>GracefulDisconnectReason</c> from a raw handle.
@@ -23,7 +31,31 @@ public partial class GracefulDisconnectReason: IDisposable
     /// </remarks>
     internal unsafe GracefulDisconnectReason(Raw.GracefulDisconnectReason* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.GracefulDisconnectReason>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
+    }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe GracefulDisconnectReason(Raw.GracefulDisconnectReason* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.GracefulDisconnectReason>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe GracefulDisconnectReason(RustHandle<Raw.GracefulDisconnectReason> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
     }
 
     /// <summary>
@@ -31,7 +63,7 @@ public partial class GracefulDisconnectReason: IDisposable
     /// </summary>
     internal unsafe Raw.GracefulDisconnectReason* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -41,13 +73,14 @@ public partial class GracefulDisconnectReason: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.GracefulDisconnectReason.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

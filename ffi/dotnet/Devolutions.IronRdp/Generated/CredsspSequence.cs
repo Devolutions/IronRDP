@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class CredsspSequence: IDisposable
 {
-    private unsafe Raw.CredsspSequence* _inner;
+    private unsafe RustHandle<Raw.CredsspSequence> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.CredsspSequence> _destroy = Raw.CredsspSequence.Destroy;
 
     /// <summary>
     /// Creates a managed <c>CredsspSequence</c> from a raw handle.
@@ -23,8 +31,33 @@ public partial class CredsspSequence: IDisposable
     /// </remarks>
     internal unsafe CredsspSequence(Raw.CredsspSequence* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.CredsspSequence>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe CredsspSequence(Raw.CredsspSequence* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.CredsspSequence>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe CredsspSequence(RustHandle<Raw.CredsspSequence> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <returns>
     /// A <c>PduHint</c> allocated on Rust side.
     /// </returns>
@@ -36,14 +69,16 @@ public partial class CredsspSequence: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CredsspSequence");
             }
-            Raw.PduHint* result = Raw.CredsspSequence.NextPduHint(_inner);
-            return result == null ? null : new PduHint(result);
+            Raw.PduHint* result = Raw.CredsspSequence.NextPduHint(AsFFI());
+            GC.KeepAlive(this);
+            return result == null ? null : new PduHint(result, new object[] { this });
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>CredsspSequenceInitResult</c> allocated on Rust side.
@@ -59,11 +94,13 @@ public partial class CredsspSequence: IDisposable
             if (serverPublicKey == null) throw new ArgumentNullException(nameof(serverPublicKey));
             Raw.KerberosConfig* kerberoConfigsRaw = kerberoConfigs == null ? null : kerberoConfigs.AsFFI();
             if (kerberoConfigs != null && kerberoConfigsRaw == null) throw new ObjectDisposedException(nameof(KerberosConfig));
-            byte[] serverNameBytes = System.Text.Encoding.UTF8.GetBytes(serverName);
+            byte[] serverNameBytes = Diplomat.Utf8.Clone(serverName);
             fixed (byte* serverNamePtr = serverNameBytes)
             fixed (byte* serverPublicKeyPtr = serverPublicKey)
             {
                 var result = Raw.CredsspSequence.Init(connectorRaw, new DiplomatSliceU8 { Ptr = serverNamePtr, Len = (nuint)serverNameBytes.Length }, new DiplomatSliceU8 { Ptr = serverPublicKeyPtr, Len = (nuint)serverPublicKey.Length }, kerberoConfigsRaw);
+                GC.KeepAlive(connector);
+                GC.KeepAlive(kerberoConfigs);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -72,6 +109,7 @@ public partial class CredsspSequence: IDisposable
             }
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>TsRequest</c> allocated on Rust side.
@@ -80,14 +118,15 @@ public partial class CredsspSequence: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CredsspSequence");
             }
             if (pdu == null) throw new ArgumentNullException(nameof(pdu));
             fixed (byte* pduPtr = pdu)
             {
-                var result = Raw.CredsspSequence.DecodeServerMessage(_inner, new DiplomatSliceU8 { Ptr = pduPtr, Len = (nuint)pdu.Length });
+                var result = Raw.CredsspSequence.DecodeServerMessage(AsFFI(), new DiplomatSliceU8 { Ptr = pduPtr, Len = (nuint)pdu.Length });
+                GC.KeepAlive(this);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -96,6 +135,7 @@ public partial class CredsspSequence: IDisposable
             }
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>CredsspProcessGenerator</c> allocated on Rust side.
@@ -108,21 +148,24 @@ public partial class CredsspSequence: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CredsspSequence");
             }
             if (tsRequest == null) throw new ArgumentNullException(nameof(tsRequest));
             Raw.TsRequest* tsRequestRaw = tsRequest.AsFFI();
             if (tsRequestRaw == null) throw new ObjectDisposedException(nameof(TsRequest));
-            var result = Raw.CredsspSequence.ProcessTsRequest(_inner, tsRequestRaw);
+            var result = Raw.CredsspSequence.ProcessTsRequest(AsFFI(), tsRequestRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(tsRequest);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            return new CredsspProcessGenerator(result.Ok);
+            return new CredsspProcessGenerator(result.Ok, new object[] { this });
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Written</c> allocated on Rust side.
@@ -131,7 +174,7 @@ public partial class CredsspSequence: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("CredsspSequence");
             }
@@ -141,7 +184,10 @@ public partial class CredsspSequence: IDisposable
             if (buf == null) throw new ArgumentNullException(nameof(buf));
             Raw.WriteBuf* bufRaw = buf.AsFFI();
             if (bufRaw == null) throw new ObjectDisposedException(nameof(WriteBuf));
-            var result = Raw.CredsspSequence.HandleProcessResult(_inner, clientStateRaw, bufRaw);
+            var result = Raw.CredsspSequence.HandleProcessResult(AsFFI(), clientStateRaw, bufRaw);
+            GC.KeepAlive(this);
+            GC.KeepAlive(clientState);
+            GC.KeepAlive(buf);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -155,7 +201,7 @@ public partial class CredsspSequence: IDisposable
     /// </summary>
     internal unsafe Raw.CredsspSequence* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -165,13 +211,14 @@ public partial class CredsspSequence: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.CredsspSequence.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class Written: IDisposable
 {
-    private unsafe Raw.Written* _inner;
+    private unsafe RustHandle<Raw.Written> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.Written> _destroy = Raw.Written.Destroy;
+
     public OptionalUsize Size
     {
         get
@@ -18,6 +27,7 @@ public partial class Written: IDisposable
             return GetSize();
         }
     }
+
     public WrittenType WrittenType
     {
         get
@@ -37,19 +47,47 @@ public partial class Written: IDisposable
     /// </remarks>
     internal unsafe Written(Raw.Written* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.Written>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe Written(Raw.Written* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.Written>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe Written(RustHandle<Raw.Written> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public WrittenType GetWrittenType()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("Written");
             }
-            return Raw.Written.GetWrittenType(_inner);
+            var result = Raw.Written.GetWrittenType(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <returns>
     /// A <c>OptionalUsize</c> allocated on Rust side.
     /// </returns>
@@ -57,11 +95,12 @@ public partial class Written: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("Written");
             }
-            Raw.OptionalUsize* result = Raw.Written.GetSize(_inner);
+            Raw.OptionalUsize* result = Raw.Written.GetSize(AsFFI());
+            GC.KeepAlive(this);
             return new OptionalUsize(result);
         }
     }
@@ -71,7 +110,7 @@ public partial class Written: IDisposable
     /// </summary>
     internal unsafe Raw.Written* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -81,13 +120,14 @@ public partial class Written: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.Written.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

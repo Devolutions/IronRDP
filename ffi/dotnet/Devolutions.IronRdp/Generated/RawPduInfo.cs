@@ -10,10 +10,10 @@ internal partial struct PduInfo
 {
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "PduInfo_get_action", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern Action* GetAction(PduInfo* handle);
+    internal static unsafe extern Action* GetAction(PduInfo* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "PduInfo_get_length", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern nuint GetLength(PduInfo* handle);
+    internal static unsafe extern nuint GetLength(PduInfo* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "PduInfo_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(PduInfo* handle);

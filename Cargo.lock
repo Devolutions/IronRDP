@@ -1319,7 +1319,7 @@ dependencies = [
 [[package]]
 name = "diplomat"
 version = "0.15.0"
-source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?rev=882006b1d35b1a30566e3d6d4b8f0bb5f4dae640#882006b1d35b1a30566e3d6d4b8f0bb5f4dae640"
+source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?rev=822b0b3effd892ca5babae7c1872d8c6be0685de#822b0b3effd892ca5babae7c1872d8c6be0685de"
 dependencies = [
  "diplomat_core",
  "proc-macro2",
@@ -1330,18 +1330,18 @@ dependencies = [
 [[package]]
 name = "diplomat-runtime"
 version = "0.15.1"
-source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?rev=882006b1d35b1a30566e3d6d4b8f0bb5f4dae640#882006b1d35b1a30566e3d6d4b8f0bb5f4dae640"
+source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?rev=822b0b3effd892ca5babae7c1872d8c6be0685de#822b0b3effd892ca5babae7c1872d8c6be0685de"
 
 [[package]]
 name = "diplomat_core"
 version = "0.15.0"
-source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?rev=882006b1d35b1a30566e3d6d4b8f0bb5f4dae640#882006b1d35b1a30566e3d6d4b8f0bb5f4dae640"
+source = "git+https://github.com/irvingoujAtDevolution/diplomat.git?rev=822b0b3effd892ca5babae7c1872d8c6be0685de#822b0b3effd892ca5babae7c1872d8c6be0685de"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde",
  "smallvec",
- "strck_ident",
+ "strck",
  "syn 2.0.118",
 ]
 

@@ -10,7 +10,7 @@ internal partial struct CliprdrBackendFactory
 {
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "CliprdrBackendFactory_build_cliprdr", CallingConvention = CallingConvention.Cdecl)]
-internal static unsafe extern Cliprdr* BuildCliprdr(CliprdrBackendFactory* handle);
+    internal static unsafe extern Cliprdr* BuildCliprdr(CliprdrBackendFactory* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "CliprdrBackendFactory_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(CliprdrBackendFactory* handle);

@@ -10,7 +10,15 @@ namespace Devolutions.IronRdp;
 
 public partial class ActiveStageOutputIterator: IDisposable
 {
-    private unsafe Raw.ActiveStageOutputIterator* _inner;
+    private unsafe RustHandle<Raw.ActiveStageOutputIterator> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.ActiveStageOutputIterator> _destroy = Raw.ActiveStageOutputIterator.Destroy;
 
     /// <summary>
     /// Creates a managed <c>ActiveStageOutputIterator</c> from a raw handle.
@@ -23,30 +31,61 @@ public partial class ActiveStageOutputIterator: IDisposable
     /// </remarks>
     internal unsafe ActiveStageOutputIterator(Raw.ActiveStageOutputIterator* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.ActiveStageOutputIterator>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe ActiveStageOutputIterator(Raw.ActiveStageOutputIterator* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.ActiveStageOutputIterator>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe ActiveStageOutputIterator(RustHandle<Raw.ActiveStageOutputIterator> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public nuint Len()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ActiveStageOutputIterator");
             }
-            return Raw.ActiveStageOutputIterator.Len(_inner);
+            var result = Raw.ActiveStageOutputIterator.Len(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     public bool IsEmpty()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ActiveStageOutputIterator");
             }
-            return Raw.ActiveStageOutputIterator.IsEmpty(_inner);
+            var result = Raw.ActiveStageOutputIterator.IsEmpty(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <returns>
     /// A <c>ActiveStageOutput</c> allocated on Rust side.
     /// </returns>
@@ -54,11 +93,12 @@ public partial class ActiveStageOutputIterator: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ActiveStageOutputIterator");
             }
-            Raw.ActiveStageOutput* result = Raw.ActiveStageOutputIterator.Next(_inner);
+            Raw.ActiveStageOutput* result = Raw.ActiveStageOutputIterator.Next(AsFFI());
+            GC.KeepAlive(this);
             return result == null ? null : new ActiveStageOutput(result);
         }
     }
@@ -68,7 +108,7 @@ public partial class ActiveStageOutputIterator: IDisposable
     /// </summary>
     internal unsafe Raw.ActiveStageOutputIterator* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -78,13 +118,14 @@ public partial class ActiveStageOutputIterator: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.ActiveStageOutputIterator.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

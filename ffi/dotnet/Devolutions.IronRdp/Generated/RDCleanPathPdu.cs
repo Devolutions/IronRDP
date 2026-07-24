@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class RDCleanPathPdu: IDisposable
 {
-    private unsafe Raw.RDCleanPathPdu* _inner;
+    private unsafe RustHandle<Raw.RDCleanPathPdu> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.RDCleanPathPdu> _destroy = Raw.RDCleanPathPdu.Destroy;
+
     public ushort ErrorCode
     {
         get
@@ -18,6 +27,7 @@ public partial class RDCleanPathPdu: IDisposable
             return GetErrorCode();
         }
     }
+
     public string ErrorMessage
     {
         get
@@ -25,6 +35,7 @@ public partial class RDCleanPathPdu: IDisposable
             return GetErrorMessage();
         }
     }
+
     public ushort HttpStatusCode
     {
         get
@@ -32,6 +43,7 @@ public partial class RDCleanPathPdu: IDisposable
             return GetHttpStatusCode();
         }
     }
+
     public string ServerAddr
     {
         get
@@ -39,6 +51,7 @@ public partial class RDCleanPathPdu: IDisposable
             return GetServerAddr();
         }
     }
+
     public CertificateChainIterator ServerCertChain
     {
         get
@@ -46,6 +59,7 @@ public partial class RDCleanPathPdu: IDisposable
             return GetServerCertChain();
         }
     }
+
     public RDCleanPathResultType Type
     {
         get
@@ -53,6 +67,7 @@ public partial class RDCleanPathPdu: IDisposable
             return GetType();
         }
     }
+
     public VecU8 X224Response
     {
         get
@@ -72,8 +87,33 @@ public partial class RDCleanPathPdu: IDisposable
     /// </remarks>
     internal unsafe RDCleanPathPdu(Raw.RDCleanPathPdu* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.RDCleanPathPdu>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe RDCleanPathPdu(Raw.RDCleanPathPdu* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.RDCleanPathPdu>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe RDCleanPathPdu(RustHandle<Raw.RDCleanPathPdu> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>RDCleanPathPdu</c> allocated on Rust side.
@@ -86,9 +126,9 @@ public partial class RDCleanPathPdu: IDisposable
             if (destination == null) throw new ArgumentNullException(nameof(destination));
             if (proxyAuth == null) throw new ArgumentNullException(nameof(proxyAuth));
             if (pcb == null) throw new ArgumentNullException(nameof(pcb));
-            byte[] destinationBytes = System.Text.Encoding.UTF8.GetBytes(destination);
-            byte[] proxyAuthBytes = System.Text.Encoding.UTF8.GetBytes(proxyAuth);
-            byte[] pcbBytes = System.Text.Encoding.UTF8.GetBytes(pcb);
+            byte[] destinationBytes = Diplomat.Utf8.Clone(destination);
+            byte[] proxyAuthBytes = Diplomat.Utf8.Clone(proxyAuth);
+            byte[] pcbBytes = Diplomat.Utf8.Clone(pcb);
             fixed (byte* x224PduPtr = x224Pdu)
             fixed (byte* destinationPtr = destinationBytes)
             fixed (byte* proxyAuthPtr = proxyAuthBytes)
@@ -103,6 +143,7 @@ public partial class RDCleanPathPdu: IDisposable
             }
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>RDCleanPathPdu</c> allocated on Rust side.
@@ -123,6 +164,7 @@ public partial class RDCleanPathPdu: IDisposable
             }
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.
@@ -131,11 +173,12 @@ public partial class RDCleanPathPdu: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            var result = Raw.RDCleanPathPdu.ToDer(_inner);
+            var result = Raw.RDCleanPathPdu.ToDer(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -143,6 +186,7 @@ public partial class RDCleanPathPdu: IDisposable
             return new VecU8(result.Ok);
         }
     }
+
     /// <returns>
     /// A <c>RDCleanPathDetectionResult</c> allocated on Rust side.
     /// </returns>
@@ -158,16 +202,18 @@ public partial class RDCleanPathPdu: IDisposable
             }
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public RDCleanPathResultType GetType()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            var result = Raw.RDCleanPathPdu.GetType(_inner);
+            var result = Raw.RDCleanPathPdu.GetType(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -175,6 +221,7 @@ public partial class RDCleanPathPdu: IDisposable
             return result.Ok;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.
@@ -183,11 +230,12 @@ public partial class RDCleanPathPdu: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            var result = Raw.RDCleanPathPdu.GetX224Response(_inner);
+            var result = Raw.RDCleanPathPdu.GetX224Response(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -195,6 +243,7 @@ public partial class RDCleanPathPdu: IDisposable
             return new VecU8(result.Ok);
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>CertificateChainIterator</c> allocated on Rust side.
@@ -203,11 +252,12 @@ public partial class RDCleanPathPdu: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            var result = Raw.RDCleanPathPdu.GetServerCertChain(_inner);
+            var result = Raw.RDCleanPathPdu.GetServerCertChain(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -215,18 +265,20 @@ public partial class RDCleanPathPdu: IDisposable
             return new CertificateChainIterator(result.Ok);
         }
     }
+
     public string GetServerAddr()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            DiplomatWriteable writeable = new DiplomatWriteable();
+            DiplomatWrite writeable = new DiplomatWrite();
             try
             {
-                Raw.RDCleanPathPdu.GetServerAddr(_inner, &writeable);
+                Raw.RDCleanPathPdu.GetServerAddr(AsFFI(), &writeable);
+                GC.KeepAlive(this);
                 return writeable.ToUnicode();
             }
             finally
@@ -235,18 +287,20 @@ public partial class RDCleanPathPdu: IDisposable
             }
         }
     }
+
     public string GetErrorMessage()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            DiplomatWriteable writeable = new DiplomatWriteable();
+            DiplomatWrite writeable = new DiplomatWrite();
             try
             {
-                Raw.RDCleanPathPdu.GetErrorMessage(_inner, &writeable);
+                Raw.RDCleanPathPdu.GetErrorMessage(AsFFI(), &writeable);
+                GC.KeepAlive(this);
                 return writeable.ToUnicode();
             }
             finally
@@ -255,16 +309,18 @@ public partial class RDCleanPathPdu: IDisposable
             }
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public ushort GetErrorCode()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            var result = Raw.RDCleanPathPdu.GetErrorCode(_inner);
+            var result = Raw.RDCleanPathPdu.GetErrorCode(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -272,16 +328,18 @@ public partial class RDCleanPathPdu: IDisposable
             return result.Ok;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public ushort GetHttpStatusCode()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            var result = Raw.RDCleanPathPdu.GetHttpStatusCode(_inner);
+            var result = Raw.RDCleanPathPdu.GetHttpStatusCode(AsFFI());
+            GC.KeepAlive(this);
             if (!result.IsOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -295,7 +353,7 @@ public partial class RDCleanPathPdu: IDisposable
     /// </summary>
     internal unsafe Raw.RDCleanPathPdu* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -305,13 +363,14 @@ public partial class RDCleanPathPdu: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.RDCleanPathPdu.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class ClipboardMessage: IDisposable
 {
-    private unsafe Raw.ClipboardMessage* _inner;
+    private unsafe RustHandle<Raw.ClipboardMessage> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.ClipboardMessage> _destroy = Raw.ClipboardMessage.Destroy;
+
     public IronRdpError? Error
     {
         get
@@ -18,6 +27,7 @@ public partial class ClipboardMessage: IDisposable
             return GetError();
         }
     }
+
     public ClipboardMessageType MessageType
     {
         get
@@ -25,6 +35,7 @@ public partial class ClipboardMessage: IDisposable
             return GetMessageType();
         }
     }
+
     public FfiFileContentsRequest? SendFileContentsRequest
     {
         get
@@ -32,6 +43,7 @@ public partial class ClipboardMessage: IDisposable
             return GetSendFileContentsRequest();
         }
     }
+
     public FfiFileContentsResponse? SendFileContentsResponse
     {
         get
@@ -39,6 +51,7 @@ public partial class ClipboardMessage: IDisposable
             return GetSendFileContentsResponse();
         }
     }
+
     public FormatDataResponse? SendFormatData
     {
         get
@@ -46,6 +59,7 @@ public partial class ClipboardMessage: IDisposable
             return GetSendFormatData();
         }
     }
+
     public ClipboardFormatIterator? SendInitiateCopy
     {
         get
@@ -53,6 +67,7 @@ public partial class ClipboardMessage: IDisposable
             return GetSendInitiateCopy();
         }
     }
+
     public ClipboardFormatId? SendInitiatePaste
     {
         get
@@ -72,19 +87,47 @@ public partial class ClipboardMessage: IDisposable
     /// </remarks>
     internal unsafe ClipboardMessage(Raw.ClipboardMessage* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.ClipboardMessage>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe ClipboardMessage(Raw.ClipboardMessage* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.ClipboardMessage>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe ClipboardMessage(RustHandle<Raw.ClipboardMessage> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public ClipboardMessageType GetMessageType()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClipboardMessage");
             }
-            return Raw.ClipboardMessage.GetMessageType(_inner);
+            var result = Raw.ClipboardMessage.GetMessageType(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <returns>
     /// A <c>ClipboardFormatIterator</c> allocated on Rust side.
     /// </returns>
@@ -92,14 +135,16 @@ public partial class ClipboardMessage: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClipboardMessage");
             }
-            Raw.ClipboardFormatIterator* result = Raw.ClipboardMessage.GetSendInitiateCopy(_inner);
+            Raw.ClipboardFormatIterator* result = Raw.ClipboardMessage.GetSendInitiateCopy(AsFFI());
+            GC.KeepAlive(this);
             return result == null ? null : new ClipboardFormatIterator(result);
         }
     }
+
     /// <returns>
     /// A <c>FormatDataResponse</c> allocated on Rust side.
     /// </returns>
@@ -107,14 +152,16 @@ public partial class ClipboardMessage: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClipboardMessage");
             }
-            Raw.FormatDataResponse* result = Raw.ClipboardMessage.GetSendFormatData(_inner);
+            Raw.FormatDataResponse* result = Raw.ClipboardMessage.GetSendFormatData(AsFFI());
+            GC.KeepAlive(this);
             return result == null ? null : new FormatDataResponse(result);
         }
     }
+
     /// <returns>
     /// A <c>ClipboardFormatId</c> allocated on Rust side.
     /// </returns>
@@ -122,14 +169,16 @@ public partial class ClipboardMessage: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClipboardMessage");
             }
-            Raw.ClipboardFormatId* result = Raw.ClipboardMessage.GetSendInitiatePaste(_inner);
+            Raw.ClipboardFormatId* result = Raw.ClipboardMessage.GetSendInitiatePaste(AsFFI());
+            GC.KeepAlive(this);
             return result == null ? null : new ClipboardFormatId(result);
         }
     }
+
     /// <returns>
     /// A <c>FfiFileContentsRequest</c> allocated on Rust side.
     /// </returns>
@@ -137,14 +186,16 @@ public partial class ClipboardMessage: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClipboardMessage");
             }
-            Raw.FfiFileContentsRequest* result = Raw.ClipboardMessage.GetSendFileContentsRequest(_inner);
+            Raw.FfiFileContentsRequest* result = Raw.ClipboardMessage.GetSendFileContentsRequest(AsFFI());
+            GC.KeepAlive(this);
             return result == null ? null : new FfiFileContentsRequest(result);
         }
     }
+
     /// <returns>
     /// A <c>FfiFileContentsResponse</c> allocated on Rust side.
     /// </returns>
@@ -152,14 +203,16 @@ public partial class ClipboardMessage: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClipboardMessage");
             }
-            Raw.FfiFileContentsResponse* result = Raw.ClipboardMessage.GetSendFileContentsResponse(_inner);
+            Raw.FfiFileContentsResponse* result = Raw.ClipboardMessage.GetSendFileContentsResponse(AsFFI());
+            GC.KeepAlive(this);
             return result == null ? null : new FfiFileContentsResponse(result);
         }
     }
+
     /// <returns>
     /// A <c>IronRdpError</c> allocated on Rust side.
     /// </returns>
@@ -167,11 +220,12 @@ public partial class ClipboardMessage: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("ClipboardMessage");
             }
-            Raw.IronRdpError* result = Raw.ClipboardMessage.GetError(_inner);
+            Raw.IronRdpError* result = Raw.ClipboardMessage.GetError(AsFFI());
+            GC.KeepAlive(this);
             return result == null ? null : new IronRdpError(result);
         }
     }
@@ -181,7 +235,7 @@ public partial class ClipboardMessage: IDisposable
     /// </summary>
     internal unsafe Raw.ClipboardMessage* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -191,13 +245,14 @@ public partial class ClipboardMessage: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.ClipboardMessage.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }

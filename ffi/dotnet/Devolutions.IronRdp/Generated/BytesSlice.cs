@@ -10,7 +10,16 @@ namespace Devolutions.IronRdp;
 
 public partial class BytesSlice: IDisposable
 {
-    private unsafe Raw.BytesSlice* _inner;
+    private unsafe RustHandle<Raw.BytesSlice> _inner;
+
+    /// <summary>
+    /// Roots the wrappers this value borrows from so the GC cannot finalize
+    /// a borrowed-from parent while this value is alive.
+    /// </summary>
+    private object[] _edges;
+
+    private static readonly unsafe RustDestructor<Raw.BytesSlice> _destroy = Raw.BytesSlice.Destroy;
+
     public nuint Size
     {
         get
@@ -30,32 +39,61 @@ public partial class BytesSlice: IDisposable
     /// </remarks>
     internal unsafe BytesSlice(Raw.BytesSlice* handle)
     {
-        _inner = handle;
+        _inner = RustHandle<Raw.BytesSlice>.Owned(handle, _destroy);
+        _edges = System.Array.Empty<object>();
     }
+
+    /// <remarks>
+    /// Edges only keep the borrowed-from objects GC-reachable. Explicitly
+    /// <c>Dispose</c>-ing a parent while a borrowing child is in use is still a
+    /// use-after-free and remains the caller's responsibility.
+    /// </remarks>
+    internal unsafe BytesSlice(Raw.BytesSlice* handle, object[] edges)
+    {
+        _inner = RustHandle<Raw.BytesSlice>.Owned(handle, _destroy);
+        _edges = edges;
+    }
+
+    /// <summary>
+    /// Wraps a handle that already knows whether it owns the pointer. A
+    /// borrowed return passes a non-owning handle, so Dispose and the finalizer
+    /// leave Rust's pointer alone; the edges keep the borrowed-from owners alive
+    /// while this view is in use.
+    /// </summary>
+    internal unsafe BytesSlice(RustHandle<Raw.BytesSlice> inner, object[] edges)
+    {
+        _inner = inner;
+        _edges = edges;
+    }
+
     public nuint GetSize()
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("BytesSlice");
             }
-            return Raw.BytesSlice.GetSize(_inner);
+            var result = Raw.BytesSlice.GetSize(AsFFI());
+            GC.KeepAlive(this);
+            return result;
         }
     }
+
     /// <exception cref="IronRdpException"></exception>
     public void Fill(byte[] buffer)
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 throw new ObjectDisposedException("BytesSlice");
             }
             if (buffer == null) throw new ArgumentNullException(nameof(buffer));
             fixed (byte* bufferPtr = buffer)
             {
-                var result = Raw.BytesSlice.Fill(_inner, new DiplomatSliceMutU8 { Ptr = bufferPtr, Len = (nuint)buffer.Length });
+                var result = Raw.BytesSlice.Fill(AsFFI(), new DiplomatSliceMutU8 { Ptr = bufferPtr, Len = (nuint)buffer.Length });
+                GC.KeepAlive(this);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -70,7 +108,7 @@ public partial class BytesSlice: IDisposable
     /// </summary>
     internal unsafe Raw.BytesSlice* AsFFI()
     {
-        return _inner;
+        return _inner.Ptr;
     }
 
     /// <summary>
@@ -80,13 +118,14 @@ public partial class BytesSlice: IDisposable
     {
         unsafe
         {
-            if (_inner == null)
+            if (_inner.IsNull)
             {
                 return;
             }
 
-            Raw.BytesSlice.Destroy(_inner);
-            _inner = null;
+            _inner.Release();
+            _inner = default;
+            _edges = System.Array.Empty<object>(); // release refs so borrowed-from owners can be GC'd
 
             GC.SuppressFinalize(this);
         }
