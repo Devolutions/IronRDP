@@ -30,16 +30,7 @@ fn to_bulk_compression_type(ct: PduCompressionType) -> ironrdp_bulk::Compression
     }
 }
 
-pub struct ActiveStage {
-    x224_processor: x224::Processor,
-    fast_path_processor: fast_path::Processor,
-    enable_server_pointer: bool,
-    /// The bulk compression type negotiated for the connection, retained so the FastPath
-    /// decompressor can be recreated when the fast-path processor is rebuilt (reactivation).
-    compression_type: Option<PduCompressionType>,
-}
-
-/// Creates the FastPath bulk decompressor for a negotiated compression type, if any.
+/// Creates the fast-path bulk decompressor for a negotiated compression type, if any.
 fn make_bulk_decompressor(compression_type: Option<PduCompressionType>) -> Option<BulkCompressor> {
     compression_type.and_then(|ct| {
         let bulk_ct = to_bulk_compression_type(ct);
@@ -54,6 +45,15 @@ fn make_bulk_decompressor(compression_type: Option<PduCompressionType>) -> Optio
             }
         }
     })
+}
+
+pub struct ActiveStage {
+    x224_processor: x224::Processor,
+    fast_path_processor: fast_path::Processor,
+    enable_server_pointer: bool,
+    /// The bulk compression type negotiated for the connection, retained so the fast-path
+    /// decompressor can be recreated when the fast-path processor is rebuilt (reactivation).
+    compression_type: Option<PduCompressionType>,
 }
 
 /// Builder for [`ActiveStage`].
@@ -231,12 +231,19 @@ impl ActiveStage {
         Ok(stage_outputs)
     }
 
+    /// Replaces the fast-path processor wholesale.
+    ///
+    /// Prefer [`ActiveStage::reactivate`] for a Deactivation-Reactivation Sequence: a processor
+    /// built here carries whatever decompressor the caller supplied, so passing none silently
+    /// disables bulk decompression for the rest of the session.
     pub fn set_fastpath_processor(&mut self, processor: fast_path::Processor) {
         self.fast_path_processor = processor;
     }
 
     /// Updates the share_id used by the x224 processor for encoding ShareDataPdu.
-    /// Must be called during Deactivation-Reactivation if the server assigns a new share_id.
+    ///
+    /// [`ActiveStage::reactivate`] already does this, so a Deactivation-Reactivation Sequence does
+    /// not need to call it.
     pub fn set_share_id(&mut self, share_id: u32) {
         self.x224_processor.set_share_id(share_id);
     }
@@ -245,12 +252,14 @@ impl ActiveStage {
         self.enable_server_pointer = enable_server_pointer;
     }
 
-    /// Rebuilds the fast-path processor for a Deactivation-Reactivation Sequence.
+    /// Rebuilds the fast-path processor for a [Deactivation-Reactivation Sequence].
     ///
     /// The negotiated bulk compression is preserved by recreating the decompressor from the
     /// retained compression type — the fast-path processor is stateless across reactivation except
     /// for that, so rebuilding it without the decompressor (as a naive rebuild would) silently
     /// breaks decoding of every subsequent compressed update.
+    ///
+    /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     pub fn reactivate(
         &mut self,
         io_channel_id: u16,
