@@ -158,3 +158,35 @@ pub fn read_opt_u16(src: &mut ReadCursor<'_>) -> DecodeResult<Option<u16>> {
         )),
     }
 }
+
+/// Size on the wire of an optional `u64`.
+pub fn opt_u64_size(value: Option<u64>) -> usize {
+    1 /* presence */ + value.map_or(0, |_| 8)
+}
+
+pub fn write_opt_u64(dst: &mut WriteCursor<'_>, value: Option<u64>) -> EncodeResult<()> {
+    ensure_size!(in: dst, size: opt_u64_size(value));
+    match value {
+        Some(value) => {
+            dst.write_u8(1);
+            dst.write_u64(value);
+        }
+        None => dst.write_u8(0),
+    }
+    Ok(())
+}
+
+pub fn read_opt_u64(src: &mut ReadCursor<'_>) -> DecodeResult<Option<u64>> {
+    ensure_size!(in: src, size: 1);
+    match src.read_u8() {
+        0 => Ok(None),
+        1 => {
+            ensure_size!(in: src, size: 8);
+            Ok(Some(src.read_u64()))
+        }
+        _ => Err(ironrdp_core::invalid_field_err!(
+            "optional u64",
+            "invalid presence flag"
+        )),
+    }
+}

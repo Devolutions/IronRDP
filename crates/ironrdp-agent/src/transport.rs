@@ -55,11 +55,17 @@ where
 
 /// Opens the endpoint, sends one `request`, and returns the daemon's `Response`.
 pub async fn send_request(endpoint: &Endpoint, request: &Request) -> anyhow::Result<Response> {
+    let mut stream = open_stream(endpoint, request).await?;
+    read_message(&mut stream).await
+}
+
+/// Opens an IPC connection, sends `request`, and leaves the stream available for streamed replies.
+pub async fn open_stream(endpoint: &Endpoint, request: &Request) -> anyhow::Result<ClientStream> {
     let mut stream = connect(endpoint)
         .await
         .with_context(|| format!("connect to daemon at {endpoint}"))?;
     write_message(&mut stream, request).await?;
-    read_message(&mut stream).await
+    Ok(stream)
 }
 
 #[cfg(unix)]
@@ -193,3 +199,8 @@ mod imp {
 }
 
 pub use imp::{Endpoint, Listener, connect, default_endpoint};
+
+#[cfg(unix)]
+pub type ClientStream = tokio::net::UnixStream;
+#[cfg(windows)]
+pub type ClientStream = tokio::net::windows::named_pipe::NamedPipeClient;

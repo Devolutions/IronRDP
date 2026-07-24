@@ -13,7 +13,6 @@ categories.workspace = true
 
 [lib]
 doctest = false
-test = false
 
 [[bin]]
 name = "ironrdp-agent"
@@ -27,7 +26,7 @@ internal = []
 
 [dependencies]
 # RDP client engine: only the TLS backend is mandated
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls"] }
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls", "dvc-pipe-proxy"] }
 
 # Configuration model and codecs
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] }
@@ -39,6 +38,10 @@ ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 
 # Async runtime and IPC transport
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time", "signal"] }
+
+# NOW execution protocol client. The agent owns only its local DVC endpoint and durable operation state.
+now-client = "0.1.0" # public
+uuid = { version = "1", features = ["v4"] }
 
 # CLI
 clap = { version = "4.6", features = ["derive", "cargo"] }
@@ -53,6 +56,11 @@ png = "0.18"
 # Utils
 anyhow = "1"
 whoami = "2.1"
+serde_json = "1"
+
+[dev-dependencies]
+# Test-only NOW peer fixture for the adapter boundary regression.
+now-proto-pdu = { version = "0.4", features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

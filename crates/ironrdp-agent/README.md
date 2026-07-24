@@ -76,6 +76,46 @@ Two logging concerns are kept separate:
   subscriber. It defaults to `debug`; a per-`Connect` `log_directive` (e.g. `ironrdp_connector=trace`)
   refines the filter to troubleshoot IronRDP itself.
 
+## NOW remote execution
+
+After an RDP session connects, the daemon injects a per-session `Devolutions::Now::Agent` DVC
+endpoint. The endpoint is local to the daemon and is not shared between RDP sessions. NOW protocol
+framing, negotiation, heartbeats, capability gates, and command PDU handling are owned by the
+`now-client` dependency; the agent owns only the endpoint/reconnect boundary and durable operation
+state.
+
+Use the supported commands below after `connect`:
+
+```shell
+ironrdp-agent now capabilities
+ironrdp-agent now run "notepad.exe"
+ironrdp-agent now powershell "Get-Process"
+ironrdp-agent now pwsh "Get-Date"
+ironrdp-agent now exec process cmd.exe --parameters "/c echo hello"
+ironrdp-agent now exec batch "echo hello"
+```
+
+`now run` is deliberately untracked and reports only local submission. Process, Batch, PowerShell,
+and pwsh commands are daemon-tracked unless `--detached` is supplied. Tracked raw stdout and stderr
+chunks are streamed without line buffering; a terminal nonzero exit code is returned by the CLI
+(1–255 directly, wider values as 255). `now cancel`, `now stdin`, `now attach`, `now list`, and
+`now status` operate on daemon-owned operation IDs. Initial stdin comes from `--stdin FILE` (or
+`-`); live stdin is bounded to 1 MiB per request. Use `--operation-id-file FILE` to persist an
+operation ID immediately after local submission for a later attach, cancellation, or stdin call.
+
+PowerShell and pwsh use `-NoProfile` and `-NonInteractive` by default. `--profile` and
+`--interactive` are explicit opt-outs. The agent retains at most 8 MiB of output per operation, 32
+terminal records, and 32 MiB across retained records. `now attach --after-sequence N` replays
+bounded output then follows a running operation. Live attachments are bounded and disconnect when
+they cannot keep up; attach again with the last sequence number to resume from retained output. Use
+`now --format human|json|ndjson` for raw human streaming, a JSON result, or JSON event lines; JSON
+represents output bytes as arrays and is bounded to 8,192 events and 2 MiB of output. Use NDJSON
+for unbounded streaming.
+
+The local DVC endpoint is connected only on a NOW request. Its first readiness deadline is 30
+seconds; a replacement after a worker/transport failure has a 10-second deadline. No Shell command,
+IPC request, capability, or execution mapping is exposed, even when a remote peer supports Shell.
+
 [`ironrdp-client`]: ../ironrdp-client
 [`ironrdp-core`]: ../ironrdp-core
 [`ironrdp-propertyset`]: ../ironrdp-propertyset
