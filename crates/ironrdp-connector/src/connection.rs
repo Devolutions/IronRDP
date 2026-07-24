@@ -285,6 +285,9 @@ impl ClientConnector {
     /// then CredSSP, then the X.224 negotiation — after which it rejoins the shared sequence at the
     /// Basic Settings Exchange. The async and blocking drivers run it exactly like a standard
     /// connection.
+    ///
+    /// A Hyper-V console only accepts TLS and NLA, so [`Config::enable_tls`] and
+    /// [`Config::enable_credssp`] are not consulted: both always happen.
     pub fn new_vmconnect(config: Config, client_addr: SocketAddr, vm_id: String) -> Self {
         Self::with_front(config, client_addr, Front::HyperV { vm_id })
     }
@@ -523,6 +526,8 @@ impl Sequence for ClientConnector {
 
                 let written = ironrdp_core::encode_buf(&pcb, output).map_err(ConnectorError::encode)?;
 
+                // Nothing is negotiated yet, so this is the protocol we are going to perform rather
+                // than one the host picked; the X.224 exchange later holds the host to it.
                 (
                     Written::from_size(written)?,
                     ClientConnectorState::EnhancedSecurityUpgrade {

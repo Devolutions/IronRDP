@@ -9,12 +9,10 @@
 
 use std::borrow::Cow;
 
-use ironrdp_connector::{ClientConnector, ClientConnectorState, Credentials, DesktopSize, Sequence as _, Written};
+use ironrdp_connector::{ClientConnector, ClientConnectorState, Sequence as _, Written};
 use ironrdp_core::{WriteBuf, encode_vec};
-use ironrdp_pdu::gcc;
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest};
-use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 use ironrdp_pdu::rdp::server_license::{
     LicenseErrorCode, LicenseHeader, LicensePdu, LicensingErrorMessage, LicensingStateTransition, PreambleFlags,
@@ -22,50 +20,11 @@ use ironrdp_pdu::rdp::server_license::{
 };
 use ironrdp_pdu::x224::X224;
 
+use super::test_config;
+
 const USER_CHANNEL_ID: u16 = 1002;
 const IO_CHANNEL_ID: u16 = 1003;
 const MESSAGE_CHANNEL_ID: u16 = 1004;
-
-fn test_config() -> ironrdp_connector::Config {
-    ironrdp_connector::Config {
-        desktop_size: DesktopSize {
-            width: 1024,
-            height: 768,
-        },
-        desktop_scale_factor: 0,
-        enable_tls: true,
-        enable_credssp: false,
-        credentials: Credentials::UsernamePassword {
-            username: "test".into(),
-            password: "test".into(),
-        },
-        domain: None,
-        client_build: 0,
-        client_name: "test".into(),
-        keyboard_type: gcc::KeyboardType::IbmEnhanced,
-        keyboard_subtype: 0,
-        keyboard_layout: 0,
-        keyboard_functional_keys_count: 12,
-        ime_file_name: String::new(),
-        bitmap: None,
-        dig_product_id: String::new(),
-        client_dir: String::new(),
-        platform: MajorPlatformType::UNIX,
-        hardware_id: None,
-        request_data: None,
-        autologon: false,
-        enable_audio_playback: false,
-        license_cache: None,
-        compression_type: None,
-        enable_server_pointer: false,
-        pointer_software_rendering: false,
-        multitransport_flags: None,
-        performance_flags: Default::default(),
-        timezone_info: Default::default(),
-        alternate_shell: String::new(),
-        work_dir: String::new(),
-    }
-}
 
 /// A client connector parked in `ConnectTimeAutoDetection` with a negotiated
 /// message channel, ready to receive the first PDU of that phase.
