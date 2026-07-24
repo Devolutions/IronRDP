@@ -19,7 +19,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 #[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult, fast_path};
+use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
@@ -978,19 +978,13 @@ async fn active_session(
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-                            active_stage.set_fastpath_processor(
-                                fast_path::ProcessorBuilder {
-                                    io_channel_id: connection_activation.io_channel_id(),
-                                    user_channel_id: connection_activation.user_channel_id(),
-                                    share_id,
-                                    enable_server_pointer,
-                                    pointer_software_rendering,
-                                    bulk_decompressor: None,
-                                }
-                                .build(),
+                            active_stage.reactivate(
+                                connection_activation.io_channel_id(),
+                                connection_activation.user_channel_id(),
+                                share_id,
+                                enable_server_pointer,
+                                pointer_software_rendering,
                             );
-                            active_stage.set_share_id(share_id);
-                            active_stage.set_enable_server_pointer(enable_server_pointer);
                             break 'activation_seq;
                         }
                     }

@@ -100,19 +100,13 @@ async fn test_deactivation_reactivation() {
                                 // Update image size with the new desktop size.
                                 // image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                                 // Update the active stage with the new channel IDs and pointer settings.
-                                stage.set_fastpath_processor(
-                                    session::fast_path::ProcessorBuilder {
-                                        io_channel_id: connection_activation.io_channel_id(),
-                                        user_channel_id: connection_activation.user_channel_id(),
-                                        share_id,
-                                        enable_server_pointer,
-                                        pointer_software_rendering,
-                                        bulk_decompressor: None,
-                                    }
-                                    .build(),
+                                stage.reactivate(
+                                    connection_activation.io_channel_id(),
+                                    connection_activation.user_channel_id(),
+                                    share_id,
+                                    enable_server_pointer,
+                                    pointer_software_rendering,
                                 );
-                                stage.set_share_id(share_id);
-                                stage.set_enable_server_pointer(enable_server_pointer);
                                 break 'activation_seq;
                             }
                         }

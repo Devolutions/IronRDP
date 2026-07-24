@@ -30,7 +30,7 @@ use ironrdp::rdpdr::Rdpdr;
 use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, fast_path};
+use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp_core::WriteBuf;
 use ironrdp_futures::{FramedWrite, single_sequence_step_read};
 use rgb::AsPixels as _;
@@ -1033,21 +1033,13 @@ impl iron_remote_desktop::Session for Session {
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-                                // Create a new [`FastPathProcessor`] with potentially updated
-                                // io/user channel ids.
-                                active_stage.set_fastpath_processor(
-                                    fast_path::ProcessorBuilder {
-                                        io_channel_id: connection_activation.io_channel_id(),
-                                        user_channel_id: connection_activation.user_channel_id(),
-                                        share_id,
-                                        enable_server_pointer,
-                                        pointer_software_rendering,
-                                        bulk_decompressor: None,
-                                    }
-                                    .build(),
+                                active_stage.reactivate(
+                                    connection_activation.io_channel_id(),
+                                    connection_activation.user_channel_id(),
+                                    share_id,
+                                    enable_server_pointer,
+                                    pointer_software_rendering,
                                 );
-                                active_stage.set_share_id(share_id);
-                                active_stage.set_enable_server_pointer(enable_server_pointer);
                                 break 'activation_seq;
                             }
                         }
