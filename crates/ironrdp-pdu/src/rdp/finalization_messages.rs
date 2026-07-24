@@ -164,6 +164,15 @@ impl Encode for FontPdu {
 
 impl<'de> Decode<'de> for FontPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        // Some servers (e.g. VirtualBox VRDP) send the Server Font Map PDU with
+        // an empty body. Its fields are unused by the client — the Font Map only
+        // signals the end of the connection finalization sequence (MS-RDPBCGR
+        // 1.3.1.1) — so an empty body decodes to the recommended defaults rather
+        // than failing the whole connection, matching mstsc/FreeRDP leniency.
+        if src.is_empty() {
+            return Ok(Self::default());
+        }
+
         ensure_fixed_part_size!(in: src);
 
         let number = src.read_u16();
@@ -262,5 +271,32 @@ bitflags! {
     pub struct SequenceFlags: u16 {
         const FIRST = 1;
         const LAST = 2;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_core::decode;
+
+    use super::*;
+
+    #[test]
+    fn font_pdu_decodes_full_body() {
+        // number=1, total_number=1, flags=FIRST|LAST, entry_size=4
+        let bytes = [0x01, 0x00, 0x01, 0x00, 0x03, 0x00, 0x04, 0x00];
+        let pdu: FontPdu = decode(&bytes).unwrap();
+        assert_eq!(pdu.number, 1);
+        assert_eq!(pdu.total_number, 1);
+        assert_eq!(pdu.flags, SequenceFlags::FIRST | SequenceFlags::LAST);
+        assert_eq!(pdu.entry_size, 4);
+    }
+
+    #[test]
+    fn font_pdu_decodes_empty_body_to_defaults() {
+        // Some servers (e.g. VirtualBox VRDP) send the Server Font Map with an
+        // empty body. It must decode to the recommended defaults rather than
+        // failing with NotEnoughBytes.
+        let pdu: FontPdu = decode(&[]).unwrap();
+        assert_eq!(pdu, FontPdu::default());
     }
 }
