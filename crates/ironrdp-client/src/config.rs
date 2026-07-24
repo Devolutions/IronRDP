@@ -58,6 +58,12 @@ pub struct Config {
     pub(crate) connector: ironrdp_connector::Config,
     pub(crate) destination: Destination,
     pub(crate) transport: Transport,
+
+    /// Hyper-V VM id to connect to via vmconnect, if this is a vmconnect session.
+    ///
+    /// When set, the client sends a Preconnection Blob carrying this id and performs the Hyper-V
+    /// connection ordering (PCB → TLS → CredSSP → X.224 negotiation) instead of the standard one.
+    pub(crate) vm_id: Option<String>,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
@@ -100,6 +106,11 @@ impl Config {
         &self.transport
     }
 
+    /// Hyper-V VM id for a vmconnect session, if any.
+    pub fn vm_id(&self) -> Option<&str> {
+        self.vm_id.as_deref()
+    }
+
     /// Optional Kerberos/KDC proxy configuration.
     pub fn kerberos_config(&self) -> Option<&ironrdp_connector::credssp::KerberosConfig> {
         self.kerberos_config.as_ref()
@@ -139,6 +150,7 @@ impl fmt::Debug for Config {
         s.field("connector", &self.connector);
         s.field("destination", &self.destination);
         s.field("transport", &self.transport);
+        s.field("vm_id", &self.vm_id);
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
@@ -564,6 +576,7 @@ pub struct ConfigBuilder {
     work_dir: Option<String>,
 
     transport: TransportKind,
+    vm_id: Option<String>,
     rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     fake_events_interval: Option<Duration>,
@@ -863,6 +876,17 @@ impl ConfigBuilder {
             }
         }
         self.transport = transport;
+        self
+    }
+
+    /// Connect to a Hyper-V VM console via vmconnect, identified by its VM id (a GUID string).
+    ///
+    /// This switches the client to the Hyper-V connection ordering: a Preconnection Blob carrying
+    /// `vm_id` is sent first, then TLS, CredSSP, and X.224 negotiation run in the order the Hyper-V
+    /// host expects. Only meaningful over the Direct transport.
+    #[must_use]
+    pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
+        self.vm_id = Some(vm_id.into());
         self
     }
 
@@ -1196,6 +1220,7 @@ impl ConfigBuilder {
             connector,
             destination: self.destination.context("server address is required")?,
             transport,
+            vm_id: self.vm_id,
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
