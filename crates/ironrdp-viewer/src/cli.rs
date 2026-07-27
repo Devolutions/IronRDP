@@ -98,6 +98,12 @@ struct Args {
     #[clap(long, requires("rdcleanpath_url"))]
     rdcleanpath_token: Option<String>,
 
+    /// Connect to a Hyper-V VM console instead of an RDP host, by VM ID (`Get-VM | Select Id`).
+    ///
+    /// The destination is the Hyper-V host, which listens on port 2179.
+    #[clap(long, value_name = "VM_ID")]
+    vmconnect: Option<String>,
+
     /// The keyboard type
     #[clap(long, value_enum, default_value_t = KeyboardType::IbmEnhanced)]
     keyboard_type: KeyboardType,
@@ -351,6 +357,10 @@ fn apply_cli_to_builder(mut builder: ConfigBuilder, args: Args, redirect_clipboa
     }
 
     // Transport overrides: RDCleanPath takes precedence over Gateway.
+    if let Some(vm_id) = args.vmconnect {
+        builder = builder.with_vmconnect(vm_id);
+    }
+
     if let Some(url) = args.rdcleanpath_url {
         builder = builder.with_transport(TransportKind::RDCleanPath { url });
 
