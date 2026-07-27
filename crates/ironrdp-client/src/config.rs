@@ -883,7 +883,13 @@ impl ConfigBuilder {
     ///
     /// This switches the client to the Hyper-V connection ordering: a Preconnection Blob carrying
     /// `vm_id` is sent first, then TLS, CredSSP, and X.224 negotiation run in the order the Hyper-V
-    /// host expects. Requires the Direct transport; [`build`](Self::build) fails otherwise.
+    /// host expects. A console listens on port 2179, not 3389, so the destination must say so.
+    ///
+    /// Works over the Direct and gateway transports, but not RDCleanPath, whose proxy negotiates
+    /// X.224 before this ordering is ready for it; [`build`](Self::build) rejects that pair.
+    ///
+    /// Not mirrored into the [`PropertySet`]: `.rdp` files carry the VM ID in the `pcb` key, which
+    /// `ironrdp-cfg` does not model yet.
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1143,10 +1149,10 @@ impl ConfigBuilder {
             }),
         };
 
-        // A gateway or RDCleanPath proxy performs the connection initiation itself, which the
-        // Hyper-V ordering moves after authentication; the two cannot be combined.
-        if self.vm_id.is_some() && !matches!(transport, Transport::Direct) {
-            anyhow::bail!("vmconnect requires the Direct transport");
+        // An RDCleanPath proxy negotiates X.224 for us before the Hyper-V ordering gets there. A
+        // gateway is only a tunnel, so the connector still drives the whole handshake itself.
+        if self.vm_id.is_some() && matches!(transport, Transport::RDCleanPath(_)) {
+            anyhow::bail!("vmconnect cannot be used over an RDCleanPath proxy");
         }
 
         let client_name = self.client_name.unwrap_or_default();
