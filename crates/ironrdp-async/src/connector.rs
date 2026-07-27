@@ -136,6 +136,7 @@ where
         connector.config.domain.as_deref(),
         selected_protocol,
         server_name,
+        connector.spn_service_class(),
         server_public_key,
         kerberos_config,
     )?;

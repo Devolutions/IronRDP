@@ -13,6 +13,7 @@ use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionStat
 use crate::connection_activation::{
     ConnectionActivationFactory, ConnectionActivationSequence, ConnectionActivationState,
 };
+use crate::credssp::DEFAULT_SPN_SERVICE_CLASS;
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
     Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize,
@@ -22,7 +23,7 @@ use crate::{
 /// Security protocols advertised in the Hyper-V X.224 connection request.
 ///
 /// Matches what mstsc offers for a Hyper-V console; a Direct Approach host answers with plain
-/// `HYBRID`.
+/// `HYBRID`. Wider than [`HYPERV_REQUIRED_PROTOCOL`], which is the only answer we accept.
 ///
 /// [2.2.1.1.1] RDP Negotiation Request (RDP_NEG_REQ)
 ///
@@ -32,8 +33,17 @@ const HYPERV_SECURITY_PROTOCOL: nego::SecurityProtocol = nego::SecurityProtocol:
     .union(nego::SecurityProtocol::HYBRID);
 
 /// The one protocol a Hyper-V console connection actually performs: NLA runs with it, and the host
-/// must confirm exactly it.
+/// must confirm exactly it. We advertise `HYBRID_EX` but refuse it if selected, because it would
+/// have the host answer CredSSP with an Early User Authorization Result PDU that nothing reads —
+/// by the time the negotiation happens here, CredSSP is long finished.
 const HYPERV_REQUIRED_PROTOCOL: nego::SecurityProtocol = nego::SecurityProtocol::HYBRID;
+
+/// SPN service class for a Hyper-V console. The console is a separate service from the Remote
+/// Desktop host and registers its own SPN, so [`DEFAULT_SPN_SERVICE_CLASS`] fails Kerberos here.
+///
+/// See the SPNs `setspn` registers for VMConnect.exe: [Missing or incorrect service principal
+/// names](https://learn.microsoft.com/en-us/troubleshoot/system-center/vmm/authentication-authorization-problems).
+const HYPERV_SPN_SERVICE_CLASS: &str = "Microsoft Virtual Console Service";
 
 /// How the beginning of the connection is ordered.
 ///
@@ -72,6 +82,14 @@ impl Front {
         match self {
             Self::Standard => ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
             Self::HyperV { .. } => ClientConnectorState::ConnectionInitiationSendRequest,
+        }
+    }
+
+    /// The service we authenticate against.
+    fn spn_service_class(&self) -> &'static str {
+        match self {
+            Self::Standard => DEFAULT_SPN_SERVICE_CLASS,
+            Self::HyperV { .. } => HYPERV_SPN_SERVICE_CLASS,
         }
     }
 
@@ -262,6 +280,7 @@ impl State for ClientConnectorState {
 }
 
 #[derive(Debug)]
+#[expect(clippy::partial_pub_fields, reason = "`Front` is an implementation detail")]
 pub struct ClientConnector {
     pub config: Config,
     pub state: ClientConnectorState,
@@ -288,6 +307,10 @@ impl ClientConnector {
     ///
     /// A Hyper-V console only accepts TLS and NLA, so [`Config::enable_tls`] and
     /// [`Config::enable_credssp`] are not consulted: both always happen.
+    ///
+    /// The transport underneath must be plain bytes to the host: a socket, or a tunnel such as an
+    /// RDS gateway. A proxy that negotiates X.224 for you, the way RDCleanPath does, expects that
+    /// to happen first, but here it happens last — `skip_connect_begin` panics on the mismatch.
     pub fn new_vmconnect(config: Config, client_addr: SocketAddr, vm_id: String) -> Self {
         Self::with_front(config, client_addr, Front::HyperV { vm_id })
     }
@@ -335,6 +358,14 @@ impl ClientConnector {
         self.static_channels
             .get_by_type_mut::<T>()
             .and_then(|channel| channel.channel_processor_downcast_mut())
+    }
+
+    /// The SPN service class to authenticate against, for [`CredsspSequence::init`]. Only the
+    /// connector knows whether this connection targets a Hyper-V console or a Remote Desktop host.
+    ///
+    /// [`CredsspSequence::init`]: crate::credssp::CredsspSequence::init
+    pub fn spn_service_class(&self) -> &'static str {
+        self.front.spn_service_class()
     }
 
     pub fn should_perform_security_upgrade(&self) -> bool {
