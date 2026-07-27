@@ -166,6 +166,16 @@ fn out_of_range_desktop_dimensions_fall_back_to_defaults() {
     );
 }
 
+#[test]
+fn vmconnect_cli_flag_reaches_the_config() {
+    let config = parse_config_from_rdp(
+        "full address:s:hyperv-host.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+        &["--vmconnect", "efd1efab-c750-4262-b1bb-af0f7733bdd6"],
+    );
+
+    assert_eq!(config.vm_id(), Some("efd1efab-c750-4262-b1bb-af0f7733bdd6"));
+}
+
 /// A builder with every required field filled in, ready for a transport to be selected.
 fn vmconnect_builder() -> ConfigBuilder {
     ConfigBuilder::new()
