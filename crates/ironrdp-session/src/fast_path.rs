@@ -64,10 +64,10 @@ impl Processor {
     ) -> SessionResult<Vec<UpdateKind>> {
         let mut processor_updates = Vec::new();
 
-        if let Some((x, y)) = self.mouse_pos_update.take() {
-            if let Some(rect) = image.move_pointer(x, y)? {
-                processor_updates.push(UpdateKind::Region(rect));
-            }
+        if let Some((x, y)) = self.mouse_pos_update.take()
+            && let Some(rect) = image.move_pointer(x, y)?
+        {
+            processor_updates.push(UpdateKind::Region(rect));
         }
 
         let mut input = ReadCursor::new(input);

@@ -1256,7 +1256,6 @@ impl NCrushContext {
 
         // Process all bytes except the last 2 (match needs at least 2 bytes ahead)
         while src_pos < src_size.saturating_sub(2) {
-            let mut match_length: usize = 0;
             let ho = history_ptr;
 
             if ho > history_ptr_limit {
@@ -1271,13 +1270,13 @@ impl NCrushContext {
             }
 
             // Try to find a match via the hash chain
-            let mut match_offset: u16 = 0;
-            if self.match_table[ho] != 0 {
-                if let Some((mlen, moff)) = self.find_best_match(ho as u16)? {
-                    match_length = mlen;
-                    match_offset = moff;
-                }
-            }
+            let (mut match_length, match_offset): (usize, u16) = if self.match_table[ho] != 0
+                && let Some((mlen, moff)) = self.find_best_match(ho as u16)?
+            {
+                (mlen, moff)
+            } else {
+                (0, 0)
+            };
 
             // Compute CopyOffset if we found a match
             let copy_offset = if match_length > 0 {
@@ -1668,14 +1667,14 @@ mod tests {
         ctx.hash_table_add(data, data.len(), 100);
 
         // The 2-byte hash for "AB" is u16::from_le_bytes([0x41, 0x42]) = 0x4241
-        let hash_ab = usize::from(u16::from_le_bytes([b'A', b'B']));
+        let hash_ab = usize::from(u16::from_le_bytes(*b"AB"));
 
         // The last occurrence of "AB" should be at the highest offset
         // that was inserted. With src_size=10, end_offset = 100+10-8 = 102.
         // So we insert at offsets 100, 101.
         // "AB" appears at offset 100 (data[0..2]) only; offset 101 would
         // hash "BA" which is different.
-        let hash_ba = usize::from(u16::from_le_bytes([b'B', b'A']));
+        let hash_ba = usize::from(u16::from_le_bytes(*b"BA"));
 
         // hash_table[hash_ab] should point to offset 100
         // (only "AB" at position 100 — the later "AB" at 102 is not inserted
@@ -1707,7 +1706,7 @@ mod tests {
         let data2 = b"XYXYXYXYXY"; // 10 bytes at offset 200
         ctx.hash_table_add(data2, data2.len(), 200);
 
-        let hash_xy = usize::from(u16::from_le_bytes([b'X', b'Y']));
+        let hash_xy = usize::from(u16::from_le_bytes(*b"XY"));
 
         // hash_table[hash_xy] should point to most recent (200)
         assert_eq!(ctx.hash_table[hash_xy], 200);

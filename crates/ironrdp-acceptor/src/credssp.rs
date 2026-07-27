@@ -24,6 +24,10 @@ struct CredsspTsRequestHint;
 const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
 
 impl PduHint for CredsspTsRequestHint {
+    #[expect(
+        clippy::std_instead_of_core,
+        reason = "core::io is unstable, see rust-lang/rust#154046"
+    )]
     fn find_size(&self, bytes: &[u8]) -> ironrdp_core::DecodeResult<Option<(bool, usize)>> {
         match TsRequest::read_length(bytes) {
             Ok(length) => Ok(Some((true, length))),

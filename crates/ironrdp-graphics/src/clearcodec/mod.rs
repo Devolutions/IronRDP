@@ -54,10 +54,10 @@ impl ClearCodecDecoder {
         }
 
         // Validate glyph index range per spec: 0..3999 inclusive
-        if let Some(idx) = stream.glyph_index {
-            if idx >= GLYPH_CACHE_WRAP {
-                return Err(invalid_field_err!("glyphIndex", "glyph index out of range 0-3999"));
-            }
+        if let Some(idx) = stream.glyph_index
+            && idx >= GLYPH_CACHE_WRAP
+        {
+            return Err(invalid_field_err!("glyphIndex", "glyph index out of range 0-3999"));
         }
 
         let w = usize::from(width);
@@ -107,19 +107,18 @@ impl ClearCodecDecoder {
         }
 
         // Store in glyph cache if applicable (area <= 1024 pixels)
-        if stream.flags & FLAG_GLYPH_INDEX != 0 {
-            if let Some(glyph_index) = stream.glyph_index {
-                if pixel_count <= 1024 {
-                    self.glyph_cache.store(
-                        glyph_index,
-                        GlyphEntry {
-                            width,
-                            height,
-                            pixels: output.clone(),
-                        },
-                    );
-                }
-            }
+        if stream.flags & FLAG_GLYPH_INDEX != 0
+            && let Some(glyph_index) = stream.glyph_index
+            && pixel_count <= 1024
+        {
+            self.glyph_cache.store(
+                glyph_index,
+                GlyphEntry {
+                    width,
+                    height,
+                    pixels: output.clone(),
+                },
+            );
         }
 
         Ok(output)
@@ -387,10 +386,8 @@ impl ClearCodecEncoder {
         let use_glyph = pixel_count <= 1024;
 
         // Check glyph cache for exact match
-        if use_glyph {
-            if let Some((hit_index, _)) = self.find_glyph_match(bgra, width, height) {
-                return self.encode_glyph_hit(hit_index);
-            }
+        if use_glyph && let Some((hit_index, _)) = self.find_glyph_match(bgra, width, height) {
+            return self.encode_glyph_hit(hit_index);
         }
 
         // Convert BGRA to BGR run segments
@@ -449,10 +446,12 @@ impl ClearCodecEncoder {
         // For small cache usage this is fine; a hash index could be added later.
         let search_range = GLYPH_CACHE_WRAP;
         for idx in 0..search_range {
-            if let Some(entry) = self.glyph_cache.get(idx) {
-                if entry.width == width && entry.height == height && entry.pixels == bgra {
-                    return Some((idx, entry));
-                }
+            if let Some(entry) = self.glyph_cache.get(idx)
+                && entry.width == width
+                && entry.height == height
+                && entry.pixels == bgra
+            {
+                return Some((idx, entry));
             }
         }
         None

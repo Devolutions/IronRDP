@@ -912,64 +912,64 @@ impl XCrushContext {
             let sig_copy = self.signatures[i];
             let prev_chunk_idx = self.insert_chunk(&sig_copy, offset)?;
 
-            if let Some(mut chunk_idx) = prev_chunk_idx {
-                if src_offset + history_offset + usize::from(sig_size) >= prev_match_end {
-                    let mut max_match_length: usize = 0;
-                    let mut best_match: Option<XCrushMatchInfo> = None;
-                    let mut chunk_count: usize = 0;
+            if let Some(mut chunk_idx) = prev_chunk_idx
+                && src_offset + history_offset + usize::from(sig_size) >= prev_match_end
+            {
+                let mut max_match_length: usize = 0;
+                let mut best_match: Option<XCrushMatchInfo> = None;
+                let mut chunk_count: usize = 0;
 
-                    loop {
-                        let chunk_offset = self.chunks[chunk_idx as usize].offset as usize;
+                loop {
+                    let chunk_offset = self.chunks[chunk_idx as usize].offset as usize;
 
-                        if chunk_offset < history_offset
-                            || chunk_offset < offset as usize
-                            || chunk_offset > src_size + history_offset
-                        {
-                            let result = self.find_match_length(
-                                offset as usize,
-                                chunk_offset,
-                                history_offset,
-                                src_size,
-                                max_match_length,
-                            )?;
+                    if chunk_offset < history_offset
+                        || chunk_offset < offset as usize
+                        || chunk_offset > src_size + history_offset
+                    {
+                        let result = self.find_match_length(
+                            offset as usize,
+                            chunk_offset,
+                            history_offset,
+                            src_size,
+                            max_match_length,
+                        )?;
 
-                            if let Some(info) = result {
-                                let match_len = info.match_length as usize;
-                                if match_len > max_match_length {
-                                    max_match_length = match_len;
-                                    best_match = Some(info);
-                                    if match_len > 256 {
-                                        break;
-                                    }
+                        if let Some(info) = result {
+                            let match_len = info.match_length as usize;
+                            if match_len > max_match_length {
+                                max_match_length = match_len;
+                                best_match = Some(info);
+                                if match_len > 256 {
+                                    break;
                                 }
                             }
                         }
-
-                        chunk_count += 1;
-                        if chunk_count > 4 {
-                            break;
-                        }
-
-                        match self.find_next_matching_chunk(chunk_idx)? {
-                            Some(next) => chunk_idx = next,
-                            None => break,
-                        }
                     }
 
-                    if let Some(best) = best_match {
-                        self.original_matches[j] = best;
+                    chunk_count += 1;
+                    if chunk_count > 4 {
+                        break;
+                    }
 
-                        if (self.original_matches[j].match_offset as usize) < history_offset {
-                            return Err(BulkError::InvalidCompressedData("XCRUSH: match offset before history"));
-                        }
+                    match self.find_next_matching_chunk(chunk_idx)? {
+                        Some(next) => chunk_idx = next,
+                        None => break,
+                    }
+                }
 
-                        prev_match_end = self.original_matches[j].match_length as usize
-                            + self.original_matches[j].match_offset as usize;
-                        j += 1;
+                if let Some(best) = best_match {
+                    self.original_matches[j] = best;
 
-                        if j >= MAX_MATCH_COUNT {
-                            return Err(BulkError::InvalidCompressedData("XCRUSH: too many matches"));
-                        }
+                    if (self.original_matches[j].match_offset as usize) < history_offset {
+                        return Err(BulkError::InvalidCompressedData("XCRUSH: match offset before history"));
+                    }
+
+                    prev_match_end =
+                        self.original_matches[j].match_length as usize + self.original_matches[j].match_offset as usize;
+                    j += 1;
+
+                    if j >= MAX_MATCH_COUNT {
+                        return Err(BulkError::InvalidCompressedData("XCRUSH: too many matches"));
                     }
                 }
             }

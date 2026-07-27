@@ -569,13 +569,13 @@ impl WasmClipboard {
             // All text/image formats were read, send clipboard data to JS.
             let clipboard_data = core::mem::take(&mut self.remote_clipboard);
 
-            if !clipboard_data.is_empty() {
-                if let Err(e) = self.js_callbacks.on_remote_clipboard_changed.call1(
+            if !clipboard_data.is_empty()
+                && let Err(e) = self.js_callbacks.on_remote_clipboard_changed.call1(
                     &JsValue::NULL,
                     &JsValue::from(crate::wasm_bridge::ClipboardData::from(clipboard_data)),
-                ) {
-                    error!(error = ?e, "Failed to call remote clipboard changed callback");
-                }
+                )
+            {
+                error!(error = ?e, "Failed to call remote clipboard changed callback");
             }
 
             // Now trigger the deferred file list fetch if the FormatList included
@@ -673,10 +673,10 @@ impl WasmClipboard {
                             error!(error = ?e, field = "name", file_name = %file.name, "Failed to set JS file metadata property");
                         }
                         // Set path if present (relative directory within the copied collection)
-                        if let Some(path) = &file.path {
-                            if let Err(e) = js_sys::Reflect::set(&js_file, &"path".into(), &JsValue::from_str(path)) {
-                                error!(error = ?e, field = "path", file_name = %file.name, "Failed to set JS file metadata property");
-                            }
+                        if let Some(path) = &file.path
+                            && let Err(e) = js_sys::Reflect::set(&js_file, &"path".into(), &JsValue::from_str(path))
+                        {
+                            error!(error = ?e, field = "path", file_name = %file.name, "Failed to set JS file metadata property");
                         }
                         #[expect(clippy::as_conversions, clippy::cast_precision_loss)]
                         let size_f64 = file.size as f64;
@@ -758,12 +758,11 @@ impl WasmClipboard {
                         error!(error = ?e, field = "size", stream_id, "Failed to set JS file contents request property");
                     }
                     // data_id is optional - only set if present
-                    if let Some(id) = data_id {
-                        if let Err(e) =
+                    if let Some(id) = data_id
+                        && let Err(e) =
                             js_sys::Reflect::set(&js_request, &"dataId".into(), &JsValue::from_f64(f64::from(id)))
-                        {
-                            error!(error = ?e, field = "dataId", stream_id, "Failed to set JS file contents request property");
-                        }
+                    {
+                        error!(error = ?e, field = "dataId", stream_id, "Failed to set JS file contents request property");
                     }
                     if let Err(e) = callback.call1(&JsValue::NULL, &js_request) {
                         error!(error = ?e, stream_id, "Failed to call JS file contents request callback");

@@ -45,6 +45,10 @@ struct CredsspTsRequestHint;
 const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
 
 impl PduHint for CredsspTsRequestHint {
+    #[expect(
+        clippy::std_instead_of_core,
+        reason = "core::io is unstable, see rust-lang/rust#154046"
+    )]
     fn find_size(&self, bytes: &[u8]) -> ironrdp_core::DecodeResult<Option<(bool, usize)>> {
         match credssp::TsRequest::read_length(bytes) {
             Ok(length) => Ok(Some((true, length))),
@@ -140,7 +144,7 @@ impl CredsspSequence {
 
         let server_name = server_name.into_inner();
 
-        let service_principal_name = format!("TERMSRV/{}", &server_name);
+        let service_principal_name = format!("TERMSRV/{server_name}");
 
         let client_mode = match kerberos_config {
             Some(ref krb_config) => {

@@ -1136,7 +1136,7 @@ impl iron_remote_desktop::Session for Session {
                 width,
                 height,
                 scale_factor,
-                physical_size: physical_width.and_then(|width| physical_height.map(|height| (width, height))),
+                physical_size: physical_width.zip(physical_height),
             })
             .is_err()
         {
@@ -1718,15 +1718,14 @@ where
                     if let Ok(x224_confirm) = ironrdp_core::decode::<
                         ironrdp::pdu::x224::X224<ironrdp::pdu::nego::ConnectionConfirm>,
                     >(&x224_connection_response)
+                        && let ironrdp::pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0
                     {
-                        if let ironrdp::pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0 {
-                            // Convert to negotiation failure instead of generic RDCleanPath error.
-                            let negotiation_failure = connector::NegotiationFailure::from(code);
-                            return Err(IronError::from(
-                                anyhow::Error::new(negotiation_failure).context("RDP negotiation failed"),
-                            )
-                            .with_kind(IronErrorKind::NegotiationFailure));
-                        }
+                        // Convert to negotiation failure instead of generic RDCleanPath error.
+                        let negotiation_failure = connector::NegotiationFailure::from(code);
+                        return Err(IronError::from(
+                            anyhow::Error::new(negotiation_failure).context("RDP negotiation failed"),
+                        )
+                        .with_kind(IronErrorKind::NegotiationFailure));
                     }
 
                     // Fallback to generic error if we can't decode the negotiation failure.

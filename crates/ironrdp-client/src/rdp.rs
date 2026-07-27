@@ -669,14 +669,13 @@ where
                 if let Ok(x224_confirm) = ironrdp_core::decode::<
                     ironrdp_pdu::x224::X224<ironrdp_pdu::nego::ConnectionConfirm>,
                 >(&x224_connection_response)
+                    && let ironrdp_pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0
                 {
-                    if let ironrdp_pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0 {
-                        let negotiation_failure = ironrdp_connector::NegotiationFailure::from(code);
-                        return Err(ironrdp_connector::ConnectorError::new(
-                            "RDP negotiation failed",
-                            ironrdp_connector::ConnectorErrorKind::Negotiation(negotiation_failure),
-                        ));
-                    }
+                    let negotiation_failure = ironrdp_connector::NegotiationFailure::from(code);
+                    return Err(ironrdp_connector::ConnectorError::new(
+                        "RDP negotiation failed",
+                        ironrdp_connector::ConnectorErrorKind::Negotiation(negotiation_failure),
+                    ));
                 }
                 return Err(ironrdp_connector::general_err!(
                     "received RDCleanPath negotiation error"

@@ -402,11 +402,7 @@ impl QoeCollector {
             },
             max_rtt_ms: self.max_rtt_ms,
             total_bytes_sent: self.total_bytes_sent,
-            avg_frame_size_bytes: if self.total_frames_acked == 0 {
-                0
-            } else {
-                self.total_bytes_sent / self.total_frames_acked
-            },
+            avg_frame_size_bytes: self.total_bytes_sent.checked_div(self.total_frames_acked).unwrap_or(0),
             backpressure_count: self.backpressure_count,
         }
     }

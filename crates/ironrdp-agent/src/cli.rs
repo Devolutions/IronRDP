@@ -439,10 +439,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     return Err(error);
                 }
             };
-            if let Some(exit_code) = exit_code {
-                if exit_code != 0 {
-                    std::process::exit(remote_exit_status(exit_code));
-                }
+            if let Some(exit_code) = exit_code
+                && exit_code != 0
+            {
+                std::process::exit(remote_exit_status(exit_code));
             }
             return Ok(());
         }
@@ -713,6 +713,10 @@ async fn now_single(endpoint: &Endpoint, request: Request, format: OutputFormat)
     Ok(payload_remote_exit(&payload))
 }
 
+#[expect(
+    clippy::std_instead_of_core,
+    reason = "core::io is unstable, see rust-lang/rust#154046"
+)]
 async fn now_stream(
     endpoint: &Endpoint,
     request: Request,

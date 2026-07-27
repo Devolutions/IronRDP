@@ -79,6 +79,10 @@ impl ChannelName {
     /// # Panics
     ///
     /// Panics if input is not null-terminated.
+    #[expect(
+        clippy::panic,
+        reason = "const fn cannot return an error; callers hit this at compile time"
+    )]
     pub const fn from_static(value: &'static [u8; 8]) -> Self {
         // ensure the last byte is always the null terminator
         if value[Self::SIZE - 1] != 0 {

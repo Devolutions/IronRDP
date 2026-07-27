@@ -339,6 +339,10 @@ fn connect(
     Ok((connection_result, upgraded_framed))
 }
 
+#[expect(
+    clippy::std_instead_of_core,
+    reason = "core::io is unstable, see rust-lang/rust#154046"
+)]
 fn active_stage(
     connection_result: ConnectionResult,
     mut framed: UpgradedFramed,

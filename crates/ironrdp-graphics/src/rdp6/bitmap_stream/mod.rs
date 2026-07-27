@@ -6,6 +6,11 @@ pub use encoder::*;
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::std_instead_of_core,
+        reason = "core::io is unstable, see rust-lang/rust#154046"
+    )]
+
     use super::*;
 
     fn buffer_from_bmp(bmp_image: &[u8], width: usize, height: usize) -> Vec<u8> {

@@ -1001,10 +1001,10 @@ pub fn decode_progressive_stream<'a>(data: &'a [u8]) -> DecodeResult<Vec<Progres
             ProgressiveBlockType::Context => Some(ProgressiveContextPdu::FIXED_PART_SIZE),
             _ => None,
         };
-        if let Some(expected) = expected_body {
-            if body_len != expected {
-                return Err(invalid_field_err!("blockLen", "unexpected size for fixed-size block"));
-            }
+        if let Some(expected) = expected_body
+            && body_len != expected
+        {
+            return Err(invalid_field_err!("blockLen", "unexpected size for fixed-size block"));
         }
 
         let body_src = &mut ReadCursor::new(src.read_slice(body_len));

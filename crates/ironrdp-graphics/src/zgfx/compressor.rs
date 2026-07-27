@@ -53,13 +53,13 @@ impl Compressor {
         while pos < input.len() {
             let best_match = self.find_best_match(input, pos);
 
-            if let Some(m) = best_match {
-                if m.length >= MIN_MATCH_LENGTH {
-                    Self::encode_match(&mut bit_writer, m.distance, m.length)?;
-                    self.add_to_history(&input[pos..pos + m.length]);
-                    pos += m.length;
-                    continue;
-                }
+            if let Some(m) = best_match
+                && m.length >= MIN_MATCH_LENGTH
+            {
+                Self::encode_match(&mut bit_writer, m.distance, m.length)?;
+                self.add_to_history(&input[pos..pos + m.length]);
+                pos += m.length;
+                continue;
             }
 
             let byte = input[pos];
@@ -265,10 +265,10 @@ impl Compressor {
     /// Return the index of the literal token for `byte`, if one exists.
     fn find_literal_token(byte: u8) -> Option<usize> {
         for (i, token) in TOKEN_TABLE.iter().enumerate().take(26).skip(1) {
-            if let super::TokenType::Literal { literal_value } = token.ty {
-                if literal_value == byte {
-                    return Some(i);
-                }
+            if let super::TokenType::Literal { literal_value } = token.ty
+                && literal_value == byte
+            {
+                return Some(i);
             }
         }
         None

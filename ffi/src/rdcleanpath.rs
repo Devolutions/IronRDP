@@ -163,10 +163,9 @@ pub mod ffi {
             if self.0.server_addr.is_some()
                 && self.0.server_cert_chain.is_some()
                 && self.0.x224_connection_pdu.is_some()
+                && let Some(server_addr) = &self.0.server_addr
             {
-                if let Some(server_addr) = &self.0.server_addr {
-                    let _ = write!(writeable, "{server_addr}");
-                }
+                let _ = write!(writeable, "{server_addr}");
             }
         }
 

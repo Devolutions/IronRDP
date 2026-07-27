@@ -191,14 +191,12 @@ pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<IoChann
         let flags_raw = u16::from_le_bytes([ctx.user_data[0], ctx.user_data[1]]);
         let flags_hi = u16::from_le_bytes([ctx.user_data[2], ctx.user_data[3]]);
 
-        if flags_hi == 0 {
-            if let Some(flags) = BasicSecurityHeaderFlags::from_bits(flags_raw) {
-                if flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ) {
-                    if let Ok(pdu) = decode::<MultitransportRequestPdu>(ctx.user_data) {
-                        return Ok(IoChannelPdu::MultitransportRequest(pdu));
-                    }
-                }
-            }
+        if flags_hi == 0
+            && let Some(flags) = BasicSecurityHeaderFlags::from_bits(flags_raw)
+            && flags.contains(BasicSecurityHeaderFlags::TRANSPORT_REQ)
+            && let Ok(pdu) = decode::<MultitransportRequestPdu>(ctx.user_data)
+        {
+            return Ok(IoChannelPdu::MultitransportRequest(pdu));
         }
     }
 

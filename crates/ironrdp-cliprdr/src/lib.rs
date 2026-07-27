@@ -127,10 +127,11 @@ pub(crate) fn is_absolute_path(filename: &str) -> bool {
     // Both reveal drive information and should be blocked
     if filename.len() >= 2 {
         let mut chars = filename.chars();
-        if let (Some(first), Some(second)) = (chars.next(), chars.next()) {
-            if first.is_ascii_alphabetic() && second == ':' {
-                return true;
-            }
+        if let (Some(first), Some(second)) = (chars.next(), chars.next())
+            && first.is_ascii_alphabetic()
+            && second == ':'
+        {
+            return true;
         }
     }
 
@@ -318,10 +319,12 @@ fn strip_absolute_prefix<'a>(components: &'a [&str]) -> &'a [&'a str] {
         // Long path prefix: \\?\C:\path or \\.\device\path
         // Skip the prefix marker and any following drive letter.
         let rest = &components[1..];
-        if let Some(second) = rest.first() {
-            if second.len() == 2 && second.as_bytes()[0].is_ascii_alphabetic() && second.as_bytes()[1] == b':' {
-                return &rest[1..];
-            }
+        if let Some(second) = rest.first()
+            && second.len() == 2
+            && second.as_bytes()[0].is_ascii_alphabetic()
+            && second.as_bytes()[1] == b':'
+        {
+            return &rest[1..];
         }
         return rest;
     }
@@ -754,10 +757,10 @@ impl<R: Role> Cliprdr<R> {
         // [MS-RDPECLIP] 2.2.4.1 / Figure 3 - Automatically lock remote clipboard
         // when file data is detected. Sent after FormatListResponse to complete
         // the copy sequence first.
-        if file_list_format.is_some() {
-            if let Some(lock_messages) = self.send_lock() {
-                messages.extend(lock_messages);
-            }
+        if file_list_format.is_some()
+            && let Some(lock_messages) = self.send_lock()
+        {
+            messages.extend(lock_messages);
         }
 
         Ok(messages)
@@ -1167,10 +1170,10 @@ impl<R: Role> Cliprdr<R> {
         }
 
         // Clear current_lock_id if it was expired
-        if let Some(current_id) = self.current_lock_id {
-            if expired_ids.contains(&current_id) {
-                self.current_lock_id = None;
-            }
+        if let Some(current_id) = self.current_lock_id
+            && expired_ids.contains(&current_id)
+        {
+            self.current_lock_id = None;
         }
 
         // Notify backend of timeout-expired locks
@@ -1294,15 +1297,15 @@ impl<R: Role> Cliprdr<R> {
         }
 
         // Update last_used_at to track activity and prevent timeout
-        if let Some(clip_data_id) = request.data_id {
-            if let Some(lock) = self.outgoing_locks.get_mut(&clip_data_id) {
-                lock.last_used_at_ms = self.backend.now_ms();
-                trace!(
-                    clip_data_id,
-                    stream_id = request.stream_id,
-                    "Updated lock activity timestamp"
-                );
-            }
+        if let Some(clip_data_id) = request.data_id
+            && let Some(lock) = self.outgoing_locks.get_mut(&clip_data_id)
+        {
+            lock.last_used_at_ms = self.backend.now_ms();
+            trace!(
+                clip_data_id,
+                stream_id = request.stream_id,
+                "Updated lock activity timestamp"
+            );
         }
 
         // [MS-RDPECLIP] 2.2.5.3 - Validate flags are spec-compliant
@@ -1365,17 +1368,17 @@ impl<R: Role> Cliprdr<R> {
                     ));
                 }
 
-                if let Some(file_desc) = file_list.files.get(validated_file_index) {
-                    if let Some(file_size) = file_desc.file_size {
-                        let end_position = request.position.saturating_add(u64::from(request.requested_size));
-                        if file_size < end_position {
-                            return Err(ironrdp_pdu::PduError::new(
-                                "request_file_contents",
-                                ironrdp_pdu::PduErrorKind::Other {
-                                    description: "RANGE request exceeds file bounds",
-                                },
-                            ));
-                        }
+                if let Some(file_desc) = file_list.files.get(validated_file_index)
+                    && let Some(file_size) = file_desc.file_size
+                {
+                    let end_position = request.position.saturating_add(u64::from(request.requested_size));
+                    if file_size < end_position {
+                        return Err(ironrdp_pdu::PduError::new(
+                            "request_file_contents",
+                            ironrdp_pdu::PduErrorKind::Other {
+                                description: "RANGE request exceeds file bounds",
+                            },
+                        ));
                     }
                 }
             }
@@ -1971,6 +1974,10 @@ impl Role for Server {
 /// fields without making them part of the public API.
 #[cfg(feature = "__test")]
 #[doc(hidden)]
+#[expect(
+    clippy::multiple_inherent_impl,
+    reason = "kept separate so the whole block can be cfg-gated behind __test"
+)]
 impl<R: Role> Cliprdr<R> {
     pub fn __test_state(&self) -> &CliprdrState {
         &self.state
