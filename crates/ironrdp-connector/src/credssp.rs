@@ -11,6 +11,9 @@ use crate::{
     ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written, custom_err, general_err,
 };
 
+/// SPN service class for a Remote Desktop host, the service a normal RDP connection targets.
+pub const DEFAULT_SPN_SERVICE_CLASS: &str = "TERMSRV";
+
 #[derive(Debug, Clone)]
 pub struct KerberosConfig {
     pub kdc_proxy_url: Option<url::Url>,
@@ -90,12 +93,20 @@ impl CredsspSequence {
         }
     }
 
-    /// `server_name` must be the actual target server hostname (as opposed to the proxy)
+    /// `server_name` must be the actual target server hostname (as opposed to the proxy).
+    ///
+    /// `spn_service_class` is joined with `server_name` to form the SPN. Driving a
+    /// [`ClientConnector`]? Use [`ClientConnector::spn_service_class`]. Otherwise
+    /// [`DEFAULT_SPN_SERVICE_CLASS`] targets a Remote Desktop host.
+    ///
+    /// [`ClientConnector`]: crate::ClientConnector
+    /// [`ClientConnector::spn_service_class`]: crate::ClientConnector::spn_service_class
     pub fn init(
         credentials: Credentials,
         domain: Option<&str>,
         protocol: nego::SecurityProtocol,
         server_name: ServerName,
+        spn_service_class: &str,
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
@@ -140,7 +151,7 @@ impl CredsspSequence {
 
         let server_name = server_name.into_inner();
 
-        let service_principal_name = format!("TERMSRV/{}", &server_name);
+        let service_principal_name = format!("{spn_service_class}/{server_name}");
 
         let client_mode = match kerberos_config {
             Some(ref krb_config) => {

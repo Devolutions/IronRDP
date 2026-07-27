@@ -66,6 +66,7 @@ pub mod ffi {
                         connector.config.domain.as_deref(),
                         selected_protocol,
                         server_name.into(),
+                        connector.spn_service_class(),
                         server_public_key.to_owned(),
                         kerbero_configs.map(|config| config.0.clone()),
                     )?;

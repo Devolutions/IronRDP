@@ -109,6 +109,20 @@ fn vmconnect_rejects_a_host_that_does_not_select_plain_hybrid() {
     }
 }
 
+/// The console is a separate service from the Remote Desktop host and registers its own SPN, so
+/// asking for `TERMSRV` would fail Kerberos against a Hyper-V host.
+#[test]
+fn vmconnect_authenticates_against_the_virtual_console_service() {
+    assert_eq!(
+        vmconnect_connector().spn_service_class(),
+        "Microsoft Virtual Console Service"
+    );
+    assert_eq!(
+        ClientConnector::new(test_config(), "127.0.0.1:12345".parse().unwrap()).spn_service_class(),
+        "TERMSRV"
+    );
+}
+
 #[test]
 fn standard_connection_still_negotiates_x224_first() {
     let mut connector = ClientConnector::new(test_config(), "127.0.0.1:12345".parse().unwrap());
