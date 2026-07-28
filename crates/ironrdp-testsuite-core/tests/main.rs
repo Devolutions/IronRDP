@@ -19,6 +19,7 @@ mod displaycontrol;
 mod dvc;
 mod echo;
 mod egfx;
+mod error;
 mod fuzz_regression;
 mod graphics;
 mod input;

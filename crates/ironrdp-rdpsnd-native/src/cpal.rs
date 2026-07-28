@@ -93,7 +93,7 @@ impl RdpsndClientHandler for RdpsndBackend {
                 let stream = match DecodeStream::new(&format, rx) {
                     Ok(stream) => stream,
                     Err(e) => {
-                        error!(error = %e.report());
+                        error!(error = %e.report().with_locations());
                         return;
                     }
                 };

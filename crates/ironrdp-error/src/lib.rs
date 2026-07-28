@@ -138,7 +138,10 @@ impl<Kind> Error<Kind> {
     }
 
     pub fn report(&self) -> ErrorReport<'_, Kind> {
-        ErrorReport(self)
+        ErrorReport {
+            error: self,
+            include_locations: false,
+        }
     }
 }
 
@@ -148,26 +151,14 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         #[cfg(feature = "alloc")]
-        {
-            write!(
-                f,
-                "[{} @ {}:{}] {}",
-                self.meta.context,
-                self.meta.location.file(),
-                self.meta.location.line(),
-                self.kind
-            )
-        }
+        let (context, location) = (self.meta.context, self.meta.location);
         #[cfg(not(feature = "alloc"))]
-        {
-            write!(
-                f,
-                "[{} @ {}:{}] {}",
-                self.context,
-                self.location.file(),
-                self.location.line(),
-                self.kind
-            )
+        let (context, location) = (self.context, self.location);
+
+        if f.alternate() {
+            write!(f, "[{context} @ {}:{}] {}", location.file(), location.line(), self.kind)
+        } else {
+            write!(f, "[{context}] {}", self.kind)
         }
     }
 }
@@ -201,7 +192,21 @@ where
     }
 }
 
-pub struct ErrorReport<'a, Kind>(&'a Error<Kind>);
+pub struct ErrorReport<'a, Kind> {
+    error: &'a Error<Kind>,
+    include_locations: bool,
+}
+
+impl<Kind> ErrorReport<'_, Kind> {
+    /// Includes source locations when formatting this error report.
+    ///
+    /// Alternate formatting (`{report:#}`) also includes source locations.
+    #[must_use]
+    pub fn with_locations(mut self) -> Self {
+        self.include_locations = true;
+        self
+    }
+}
 
 #[cfg(feature = "std")]
 impl<Kind> fmt::Display for ErrorReport<'_, Kind>
@@ -211,12 +216,22 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use core::error::Error as _;
 
-        write!(f, "{}", self.0)?;
+        let include_locations = self.include_locations || f.alternate();
 
-        let mut next_source = self.0.source();
+        if include_locations {
+            write!(f, "{:#}", self.error)?;
+        } else {
+            write!(f, "{}", self.error)?;
+        }
+
+        let mut next_source = self.error.source();
 
         while let Some(e) = next_source {
-            write!(f, ", caused by: {e}")?;
+            if include_locations {
+                write!(f, ", caused by: {e:#}")?;
+            } else {
+                write!(f, ", caused by: {e}")?;
+            }
             next_source = e.source();
         }
 
@@ -230,11 +245,21 @@ where
     E: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)?;
+        let include_locations = self.include_locations || f.alternate();
+
+        if include_locations {
+            write!(f, "{:#}", self.error)?;
+        } else {
+            write!(f, "{}", self.error)?;
+        }
 
         #[cfg(feature = "alloc")]
-        if let Some(source) = &self.0.meta.source {
-            write!(f, ", caused by: {source}")?;
+        if let Some(source) = &self.error.meta.source {
+            if include_locations {
+                write!(f, ", caused by: {source:#}")?;
+            } else {
+                write!(f, ", caused by: {source}")?;
+            }
         }
 
         Ok(())
