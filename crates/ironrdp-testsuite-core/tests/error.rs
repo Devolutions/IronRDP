@@ -35,7 +35,7 @@ impl fmt::Display for OuterKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Canonical => write!(f, "canonical"),
-            Self::Wrapped(error) => write!(f, "wrapped"),
+            Self::Wrapped(_) => write!(f, "wrapped"),
             Self::Source => write!(f, "source"),
         }
     }
