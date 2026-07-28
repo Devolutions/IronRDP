@@ -1,6 +1,6 @@
-use core::fmt;
+use core::{error::Error as _, fmt};
 
-use ironrdp_error::Error;
+use ironrdp_error::{Error, ErrorMapping, ResultExt as _};
 
 #[derive(Debug)]
 struct TestKind(&'static str);
@@ -12,6 +12,50 @@ impl fmt::Display for TestKind {
 }
 
 impl core::error::Error for TestKind {}
+
+#[derive(Debug)]
+struct InnerKind;
+
+impl fmt::Display for InnerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "inner")
+    }
+}
+
+impl core::error::Error for InnerKind {}
+
+#[derive(Debug)]
+enum OuterKind {
+    Canonical,
+    Wrapped(Error<InnerKind>),
+    Source,
+}
+
+impl fmt::Display for OuterKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Canonical => write!(f, "canonical"),
+            Self::Wrapped(error) => write!(f, "wrapped"),
+            Self::Source => write!(f, "source"),
+        }
+    }
+}
+
+impl core::error::Error for OuterKind {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Wrapped(error) => Some(error),
+            Self::Canonical | Self::Source => None,
+        }
+    }
+}
+
+impl ErrorMapping<InnerKind> for OuterKind {
+    #[track_caller]
+    fn map_error(_: Error<InnerKind>) -> Error<Self> {
+        Error::new("canonical", Self::Canonical)
+    }
+}
 
 #[derive(Debug)]
 struct NestedKind {
@@ -28,6 +72,25 @@ impl core::error::Error for NestedKind {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         Some(&self.source)
     }
+}
+
+fn inner_result() -> Result<(), Error<InnerKind>> {
+    Err(Error::new("inner", InnerKind))
+}
+
+#[track_caller]
+fn map_canonical() -> Error<OuterKind> {
+    inner_result().map_err_as::<OuterKind>().unwrap_err()
+}
+
+#[track_caller]
+fn map_kind() -> Error<OuterKind> {
+    inner_result().map_err_kind("wrapped", OuterKind::Wrapped).unwrap_err()
+}
+
+#[track_caller]
+fn map_source() -> Error<OuterKind> {
+    inner_result().map_err_source("source", OuterKind::Source).unwrap_err()
 }
 
 #[test]
@@ -105,4 +168,52 @@ fn report_preserves_foreign_source_errors() {
         error.report().with_locations().to_string(),
         format!("{error_with_location}, caused by: foreign")
     );
+}
+
+#[test]
+fn map_err_as_uses_the_canonical_mapping() {
+    let error = map_canonical();
+
+    assert!(matches!(error.kind(), OuterKind::Canonical));
+    assert_eq!(error.to_string(), "[canonical] canonical");
+}
+
+#[test]
+fn map_err_kind_embeds_the_complete_inner_error() {
+    let error = map_kind();
+
+    let OuterKind::Wrapped(inner) = error.kind() else {
+        panic!("expected wrapped error kind");
+    };
+    assert_eq!(error.to_string(), "[wrapped] wrapped");
+    assert_eq!(inner.to_string(), "[inner] inner");
+    assert_eq!(error.source().unwrap().to_string(), "[inner] inner");
+}
+
+#[test]
+fn map_err_source_attaches_the_inner_error_as_source() {
+    let error = map_source();
+
+    assert!(matches!(error.kind(), OuterKind::Source));
+    assert_eq!(error.to_string(), "[source] source");
+    assert_eq!(error.source().unwrap().to_string(), "[inner] inner");
+    assert_eq!(error.report().to_string(), "[source] source, caused by: [inner] inner");
+}
+
+#[test]
+fn error_mapping_preserves_the_callers_location() {
+    let canonical_line = line!() + 1;
+    let canonical = map_canonical();
+    assert_eq!(canonical.location().file(), file!());
+    assert_eq!(canonical.location().line(), canonical_line);
+
+    let kind_line = line!() + 1;
+    let kind = map_kind();
+    assert_eq!(kind.location().file(), file!());
+    assert_eq!(kind.location().line(), kind_line);
+
+    let source_line = line!() + 1;
+    let source = map_source();
+    assert_eq!(source.location().file(), file!());
+    assert_eq!(source.location().line(), source_line);
 }
