@@ -2983,6 +2983,7 @@ dependencies = [
  "ironrdp",
  "ironrdp-agent",
  "ironrdp-async",
+ "ironrdp-bulk",
  "ironrdp-client",
  "ironrdp-core 0.2.1",
  "ironrdp-dvc",

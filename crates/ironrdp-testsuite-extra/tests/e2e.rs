@@ -7,9 +7,15 @@ use std::time::Instant;
 
 use anyhow::Result;
 use ironrdp::connector;
+use ironrdp::core::Encode as _;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::echo::client::EchoClient;
+use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
+use ironrdp::pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
+use ironrdp::pdu::geometry::InclusiveRectangle;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
+use ironrdp::pdu::rdp::client_info::CompressionType as PduCompressionType;
+use ironrdp::pdu::rdp::headers::CompressionFlags;
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
     self, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
@@ -17,7 +23,9 @@ use ironrdp::server::{
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
+use ironrdp::svc::StaticChannelSet;
 use ironrdp_async::{Framed, FramedWrite as _};
+use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags as bulk_flags};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
@@ -118,6 +126,73 @@ async fn test_deactivation_reactivation() {
         },
     )
     .await
+}
+
+#[test]
+fn test_reactivation_processes_compressed_fastpath_updates() {
+    let mut stage = ActiveStageBuilder {
+        static_channels: StaticChannelSet::new(),
+        user_channel_id: 1001,
+        io_channel_id: 1003,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: Some(PduCompressionType::K64),
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
+    }
+    .build();
+    stage.reactivate(1003, 1001, 2, false, false);
+
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    let outputs = stage
+        .process(&mut image, pdu::Action::FastPath, &compressed_bitmap_fastpath_frame())
+        .expect("compressed FastPath update after reactivation");
+
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
+    );
+}
+
+fn compressed_bitmap_fastpath_frame() -> Vec<u8> {
+    let bitmap = BitmapUpdateData {
+        rectangles: vec![BitmapData {
+            rectangle: InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 3,
+                bottom: 3,
+            },
+            width: 4,
+            height: 4,
+            bits_per_pixel: 32,
+            compression_flags: Compression::empty(),
+            compressed_data_header: None,
+            bitmap_data: &[0x40; 64],
+        }],
+    };
+    let bitmap_data = ironrdp::core::encode_vec(&bitmap).expect("encode bitmap update");
+
+    let mut compressor = BulkCompressor::new(BulkCompressionType::Rdp5).expect("create bulk compressor");
+    let (compressed_size, flags) = compressor.compress(&bitmap_data).expect("compress bitmap update");
+    assert_ne!(flags & bulk_flags::PACKET_COMPRESSED, 0);
+
+    let compressed_data = compressor.compressed_data(compressed_size);
+    let update = FastPathUpdatePdu {
+        fragmentation: Fragmentation::Single,
+        update_code: UpdateCode::Bitmap,
+        compression_flags: Some(CompressionFlags::from_bits_retain(
+            u8::try_from(flags & !bulk_flags::COMPRESSION_TYPE_MASK).expect("compression flags fit in u8"),
+        )),
+        compression_type: Some(PduCompressionType::K64),
+        data: compressed_data,
+    };
+    let header = FastPathHeader::new(EncryptionFlags::empty(), update.size());
+
+    let mut frame = ironrdp::core::encode_vec(&header).expect("encode FastPath header");
+    frame.extend(ironrdp::core::encode_vec(&update).expect("encode FastPath update"));
+    frame
 }
 
 #[tokio::test]
