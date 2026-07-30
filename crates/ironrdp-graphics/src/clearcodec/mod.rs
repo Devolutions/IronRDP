@@ -75,8 +75,18 @@ impl ClearCodecDecoder {
                 .glyph_cache
                 .get(glyph_index)
                 .ok_or_else(|| invalid_field_err!("glyphIndex", "glyph cache miss on hit"))?;
-            if entry.width != width || entry.height != height {
-                return Err(invalid_field_err!("glyphIndex", "cached glyph dimensions mismatch"));
+            // MS-RDPEGFX 4.1.1.5 stores a glyph as a dimensionless linear pixel stream, so the
+            // destination rectangle supplies the shape and any rectangle of the same area is
+            // valid (a glyph cached at 2x8 may be hit as 4x4). Only the pixel count has to
+            // agree. Dividing the cached length rather than multiplying `pixel_count` keeps this
+            // free of overflow: the per-axis cap below has not been applied yet, so
+            // `pixel_count` can still be as large as 65535 * 65535, which times four does not
+            // fit a 32-bit usize.
+            if entry.pixels.len() / 4 != pixel_count {
+                return Err(invalid_field_err!(
+                    "glyphIndex",
+                    "cached glyph area does not match destination"
+                ));
             }
             return Ok(entry.pixels.clone());
         }
@@ -142,6 +152,12 @@ impl ClearCodecDecoder {
             let max_offset = output.len();
             let mut offset = 0;
             for seg in &segments {
+                // Trim each segment's run_length to the bytes remaining in the
+                // output buffer. When a segment's declared run would exceed
+                // the buffer, the excess is intentionally dropped (not a
+                // parse error) so a single malformed segment cannot CPU-spin
+                // the decoder. Subsequent segments are also skipped via the
+                // `break` below once the buffer is full.
                 let pixels_remaining = (max_offset.saturating_sub(offset)) / 4;
                 let effective_run = u32::try_from(pixels_remaining).unwrap_or(u32::MAX).min(seg.run_length);
                 for _ in 0..effective_run {
@@ -220,6 +236,12 @@ impl ClearCodecDecoder {
                     .vbar_cache
                     .get_short_vbar(*index)
                     .ok_or_else(|| invalid_field_err!("shortVbarIndex", "short V-bar cache miss on hit"))?;
+                if usize::from(*y_on) + usize::from(cached_short.pixel_count) > usize::from(band_height) {
+                    return Err(invalid_field_err!(
+                        "shortVBarYOn",
+                        "y_on + pixel_count exceeds band height"
+                    ));
+                }
                 // Create a modified short vbar with the y_on from this reference
                 let modified = ShortVBar {
                     y_on: *y_on,
@@ -291,46 +313,51 @@ impl ClearCodecDecoder {
             SubcodecId::Rlex => {
                 let rlex = ironrdp_pdu::codecs::clearcodec::decode_rlex(sub.bitmap_data)?;
                 let w = usize::from(sub.width);
-                let region_pixels = usize::from(sub.width) * usize::from(sub.height);
-                let palette_len = rlex.palette.len();
+                let h = usize::from(sub.height);
+                let pixel_budget = w * h;
                 let mut px = 0usize;
 
                 for seg in &rlex.segments {
-                    if usize::from(seg.start_index) >= palette_len {
-                        return Err(invalid_field_err!("rlex", "start_index exceeds palette size"));
-                    }
-                    if usize::from(seg.stop_index) >= palette_len {
-                        return Err(invalid_field_err!("rlex", "stop_index exceeds palette size"));
-                    }
-
-                    let color = &rlex.palette[usize::from(seg.start_index)];
-                    for _ in 0..seg.run_length {
-                        if px >= region_pixels {
-                            return Err(invalid_field_err!("rlex", "run exceeds region pixel count"));
+                    // Run: repeat start_index color for run_length pixels
+                    if let Some(color) = rlex.palette.get(usize::from(seg.start_index)) {
+                        for _ in 0..seg.run_length {
+                            if px >= pixel_budget {
+                                break;
+                            }
+                            let col = px % w;
+                            let row = px / w;
+                            let x = usize::from(sub.x_start) + col;
+                            let y = usize::from(sub.y_start) + row;
+                            let dst_idx = (y * sw + x) * 4;
+                            if dst_idx + 3 < output.len() {
+                                output[dst_idx] = color[0]; // B
+                                output[dst_idx + 1] = color[1]; // G
+                                output[dst_idx + 2] = color[2]; // R
+                                output[dst_idx + 3] = 0xFF;
+                            }
+                            px += 1;
                         }
-                        let x = usize::from(sub.x_start) + px % w;
-                        let y = usize::from(sub.y_start) + px / w;
-                        let dst_idx = (y * sw + x) * 4;
-                        output[dst_idx] = color[0];
-                        output[dst_idx + 1] = color[1];
-                        output[dst_idx + 2] = color[2];
-                        output[dst_idx + 3] = 0xFF;
-                        px += 1;
                     }
 
+                    // Suite: sequential palette walk from start_index to stop_index
                     for palette_idx in seg.start_index..=seg.stop_index {
-                        if px >= region_pixels {
-                            return Err(invalid_field_err!("rlex", "suite exceeds region pixel count"));
+                        if px >= pixel_budget {
+                            break;
                         }
-                        let color = &rlex.palette[usize::from(palette_idx)];
-                        let x = usize::from(sub.x_start) + px % w;
-                        let y = usize::from(sub.y_start) + px / w;
-                        let dst_idx = (y * sw + x) * 4;
-                        output[dst_idx] = color[0];
-                        output[dst_idx + 1] = color[1];
-                        output[dst_idx + 2] = color[2];
-                        output[dst_idx + 3] = 0xFF;
-                        px += 1;
+                        if let Some(color) = rlex.palette.get(usize::from(palette_idx)) {
+                            let col = px % w;
+                            let row = px / w;
+                            let x = usize::from(sub.x_start) + col;
+                            let y = usize::from(sub.y_start) + row;
+                            let dst_idx = (y * sw + x) * 4;
+                            if dst_idx + 3 < output.len() {
+                                output[dst_idx] = color[0];
+                                output[dst_idx + 1] = color[1];
+                                output[dst_idx + 2] = color[2];
+                                output[dst_idx + 3] = 0xFF;
+                            }
+                            px += 1;
+                        }
                     }
                 }
             }
@@ -428,6 +455,8 @@ impl ClearCodecEncoder {
         }
 
         // Composite payload: residual only (bands=0, subcodec=0)
+        // ClearCodec tiles are bounded by EGFX surface limits, so residual
+        // data for a single tile is always well within u32 range.
         let residual_len = u32::try_from(residual_data.len()).unwrap_or(u32::MAX);
         out.extend_from_slice(&residual_len.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes()); // bandsByteCount
