@@ -1,10 +1,19 @@
 [CmdletBinding()]
 param(
-    [string] $AgentPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\ironrdp-agent.exe'),
+    [string] $WorkspaceRoot = $(
+        if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+            [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        }
+        else {
+            $env:GITHUB_WORKSPACE
+        }
+    ),
+
+    [string] $AgentPath = (Join-Path $WorkspaceRoot 'target\release\ironrdp-agent.exe'),
 
     [string] $Endpoint = "\\.\pipe\ironrdp-agent-ci-$PID",
 
-    [string] $ArtifactsDir = (Join-Path $env:GITHUB_WORKSPACE 'artifacts\agentic-rdp'),
+    [string] $ArtifactsDir = (Join-Path $WorkspaceRoot 'artifacts\agentic-rdp'),
 
     [string] $StatePath = (Join-Path $ArtifactsDir 'agent-daemon.json'),
 
@@ -42,19 +51,20 @@ finally {
     $env:IRONRDP_LOG = $previousLogFilter
 }
 
+$state = [pscustomobject]@{
+    ProcessId = $process.Id
+    Endpoint = $Endpoint
+    AgentPath = $AgentPath
+    LogPath = $stderrPath
+    StandardOutputPath = $stdoutPath
+    StandardErrorPath = $stderrPath
+}
+$state | ConvertTo-Json -Depth 4 | Set-Content -Path $StatePath -Encoding utf8NoBOM
+
 $deadline = (Get-Date).AddSeconds(30)
 do {
     try {
         Invoke-Agent status | Out-Null
-        $state = [pscustomobject]@{
-            ProcessId = $process.Id
-            Endpoint = $Endpoint
-            AgentPath = $AgentPath
-            LogPath = $stderrPath
-            StandardOutputPath = $stdoutPath
-            StandardErrorPath = $stderrPath
-        }
-        $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StatePath -Encoding utf8NoBOM
         $state | ConvertTo-Json -Compress
         return
     }
@@ -62,5 +72,14 @@ do {
         Start-Sleep -Milliseconds 250
     }
 } while ((Get-Date) -lt $deadline)
+
+try {
+    if (-not $process.HasExited) {
+        Stop-Process -Id $process.Id -Force
+    }
+}
+catch {
+    Write-Warning "Could not stop ironrdp-agent after startup timeout: $($_.Exception.Message)"
+}
 
 throw "Timed out waiting for ironrdp-agent daemon on $Endpoint"

@@ -12,7 +12,19 @@ param(
     [Parameter(ParameterSetName = 'Register')]
     [Parameter(ParameterSetName = 'RunServer')]
     [Parameter(ParameterSetName = 'Wait')]
-    [string] $EndpointPath = (Join-Path $env:GITHUB_WORKSPACE 'artifacts\agentic-rdp\pshost-endpoint.json'),
+    [string] $WorkspaceRoot = $(
+        if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+            [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        }
+        else {
+            $env:GITHUB_WORKSPACE
+        }
+    ),
+
+    [Parameter(ParameterSetName = 'Register')]
+    [Parameter(ParameterSetName = 'RunServer')]
+    [Parameter(ParameterSetName = 'Wait')]
+    [string] $EndpointPath = (Join-Path $WorkspaceRoot 'artifacts\agentic-rdp\pshost-endpoint.json'),
 
     [Parameter(ParameterSetName = 'Register')]
     [Parameter(ParameterSetName = 'RunServer')]
@@ -20,7 +32,7 @@ param(
 
     [Parameter(ParameterSetName = 'Register')]
     [Parameter(ParameterSetName = 'RunServer')]
-    [string] $ArtifactsDir = (Join-Path $env:GITHUB_WORKSPACE 'artifacts\agentic-rdp'),
+    [string] $ArtifactsDir = (Join-Path $WorkspaceRoot 'artifacts\agentic-rdp'),
 
     [Parameter(ParameterSetName = 'Register')]
     [string] $TaskName = 'IronRdpAgenticPSHost',

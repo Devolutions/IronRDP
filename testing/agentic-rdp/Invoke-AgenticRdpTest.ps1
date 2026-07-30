@@ -5,9 +5,18 @@ param(
 
     [string] $DesktopSize = '1920x1080',
 
-    [string] $AgentPath = (Join-Path $env:GITHUB_WORKSPACE 'target\release\ironrdp-agent.exe'),
+    [string] $WorkspaceRoot = $(
+        if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+            [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        }
+        else {
+            $env:GITHUB_WORKSPACE
+        }
+    ),
 
-    [string] $ArtifactsDir = (Join-Path $env:GITHUB_WORKSPACE 'artifacts\agentic-rdp'),
+    [string] $AgentPath = (Join-Path $WorkspaceRoot 'target\release\ironrdp-agent.exe'),
+
+    [string] $ArtifactsDir = (Join-Path $WorkspaceRoot 'artifacts\agentic-rdp'),
 
     [switch] $CleanupOnly
 )

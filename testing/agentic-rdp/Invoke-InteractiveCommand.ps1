@@ -3,9 +3,18 @@ param(
     [ValidateSet('Verify')]
     [string] $Mode = 'Verify',
 
-    [string] $EndpointPath = (Join-Path $env:GITHUB_WORKSPACE 'artifacts\agentic-rdp\pshost-endpoint.json'),
+    [string] $WorkspaceRoot = $(
+        if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+            [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        }
+        else {
+            $env:GITHUB_WORKSPACE
+        }
+    ),
 
-    [string] $ArtifactsDir = (Join-Path $env:GITHUB_WORKSPACE 'artifacts\agentic-rdp')
+    [string] $EndpointPath = (Join-Path $WorkspaceRoot 'artifacts\agentic-rdp\pshost-endpoint.json'),
+
+    [string] $ArtifactsDir = (Join-Path $WorkspaceRoot 'artifacts\agentic-rdp')
 )
 
 Set-StrictMode -Version Latest

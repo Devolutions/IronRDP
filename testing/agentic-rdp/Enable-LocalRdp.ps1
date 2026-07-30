@@ -2,7 +2,14 @@
 param(
     [Parameter(ParameterSetName = 'Enable')]
     [Parameter(ParameterSetName = 'Cleanup')]
-    [string] $StatePath = (Join-Path $env:RUNNER_TEMP 'ironrdp-agentic-rdp-state.json'),
+    [string] $StatePath = (Join-Path $(
+            if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+                [System.IO.Path]::GetTempPath()
+            }
+            else {
+                $env:RUNNER_TEMP
+            }
+        ) 'ironrdp-agentic-rdp-state.json'),
 
     [Parameter(ParameterSetName = 'Cleanup')]
     [switch] $Cleanup
@@ -111,9 +118,14 @@ if ($Cleanup) {
         Set-ItemProperty -Path $rdpTcpPath -Name 'UserAuthentication' -Value ([int] $state.UserAuthentication)
     }
 
-    foreach ($rule in @($state.FirewallRules)) {
-        if ($null -ne $rule.Name -and $null -ne $rule.Enabled) {
-            Set-NetFirewallRule -Name $rule.Name -Enabled $rule.Enabled -ErrorAction SilentlyContinue
+    if ($state.PSObject.Properties.Name -contains 'FirewallRuleName') {
+        Remove-NetFirewallRule -Name $state.FirewallRuleName -ErrorAction SilentlyContinue
+    }
+    else {
+        foreach ($rule in @($state.FirewallRules)) {
+            if ($null -ne $rule.Name -and $null -ne $rule.Enabled) {
+                Set-NetFirewallRule -Name $rule.Name -Enabled $rule.Enabled -ErrorAction SilentlyContinue
+            }
         }
     }
 
@@ -137,13 +149,14 @@ Write-Host "::add-mask::$temporaryPassword"
 $currentMembers = @(Get-LocalGroupMember -Group $rdpGroupName -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
 $memberNames = @($localUserName, "$env:COMPUTERNAME\$localUserName")
 $wasRdpMember = [bool]($currentMembers | Where-Object { $memberNames -contains $_ } | Select-Object -First 1)
+$firewallRuleName = "IronRdpAgenticRdp-$PID"
 
 $state = [pscustomobject]@{
     LocalUserName = $localUserName
     DomainUserName = "$env:COMPUTERNAME\$localUserName"
     fDenyTSConnections = Get-RegistryValue -Path $terminalServerPath -Name 'fDenyTSConnections'
     UserAuthentication = Get-RegistryValue -Path $rdpTcpPath -Name 'UserAuthentication'
-    FirewallRules = @(Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue | Select-Object -Property Name, Enabled)
+    FirewallRuleName = $firewallRuleName
     AddedToRemoteDesktopUsers = (-not $wasRdpMember)
 }
 Write-JsonFile -Path $StatePath -Value $state
@@ -159,7 +172,14 @@ Set-ItemProperty -Path $terminalServerPath -Name 'fDenyTSConnections' -Value 0
 Set-ItemProperty -Path $rdpTcpPath -Name 'UserAuthentication' -Value 0
 Set-Service -Name TermService -StartupType Automatic
 Start-Service -Name TermService
-Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' | Out-Null
+New-NetFirewallRule `
+    -Name $firewallRuleName `
+    -DisplayName 'IronRDP agentic RDP loopback' `
+    -Direction Inbound `
+    -Action Allow `
+    -Protocol TCP `
+    -LocalPort 3389 `
+    -RemoteAddress '127.0.0.1' | Out-Null
 Wait-TcpPort -HostName '127.0.0.1' -Port 3389
 
 [pscustomobject]@{
