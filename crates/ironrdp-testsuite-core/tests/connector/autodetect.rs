@@ -10,10 +10,12 @@
 use std::borrow::Cow;
 
 use ironrdp_connector::{ClientConnector, ClientConnectorState, Credentials, DesktopSize, Sequence as _, Written};
-use ironrdp_core::{WriteBuf, encode_vec};
+use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc;
-use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
-use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest};
+use ironrdp_pdu::mcs::{McsMessage, SendDataIndication, SendDataRequest};
+use ironrdp_pdu::rdp::autodetect::{
+    AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME,
+};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 use ironrdp_pdu::rdp::server_license::{
@@ -74,6 +76,8 @@ fn connect_time_autodetect_connector() -> ClientConnector {
     connector.state = ClientConnectorState::ConnectTimeAutoDetection {
         io_channel_id: IO_CHANNEL_ID,
         user_channel_id: USER_CHANNEL_ID,
+        bandwidth_measurement_start: None,
+        bandwidth_measurement_byte_count: 0,
     };
     connector.message_channel_id = Some(MESSAGE_CHANNEL_ID);
     connector
@@ -175,24 +179,45 @@ fn first_licensing_pdu_leaves_autodetect_for_the_licensing_path() {
 fn connect_time_bandwidth_measure_stop_is_answered_and_phase_continues() {
     let mut connector = connect_time_autodetect_connector();
 
+    let start = AutoDetectReqPdu::new(AutoDetectRequest::bw_start_connect_time(0x1234));
+    let start_frame = server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&start).unwrap());
+    let mut output = WriteBuf::new();
+    assert_eq!(connector.step(&start_frame, &mut output).unwrap(), Written::Nothing);
+
+    let payload = AutoDetectReqPdu::new(AutoDetectRequest::bw_payload(0x2345, vec![0u8; 512]));
+    let payload_frame = server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&payload).unwrap());
+    assert_eq!(connector.step(&payload_frame, &mut output).unwrap(), Written::Nothing);
+
     // A connect-time Bandwidth Measure Stop ([MS-RDPBCGR] 2.2.14.1.4) must be
     // answered with a Bandwidth Measure Results reply. FreeRDP-based servers (for
     // example GNOME Remote Desktop) block in their AWAIT_BW_RESULT state until they
     // receive it, so no response stalls the whole connection.
-    let user_data = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(
-        0x5678,
-        vec![0u8; 1024],
-    )))
-    .unwrap();
-    let frame = server_send_data_indication(MESSAGE_CHANNEL_ID, user_data);
+    let stop = AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(0x5678, vec![0u8; 1024]));
+    let frame = server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&stop).unwrap());
 
-    let mut output = WriteBuf::new();
     let written = connector.step(&frame, &mut output).unwrap();
 
     assert!(
         written.size().is_some(),
         "a connect-time Bandwidth Measure Stop must produce a Bandwidth Measure Results response frame"
     );
+    let X224(McsMessage::SendDataRequest(SendDataRequest { user_data, .. })) = decode(output.filled()).unwrap() else {
+        panic!("expected SendDataRequest");
+    };
+    let AutoDetectRspPdu { response, .. } = decode(&user_data).unwrap();
+    let AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number,
+        response_type,
+        time_delta_ms,
+        byte_count,
+    } = response
+    else {
+        panic!("expected BandwidthMeasureResults");
+    };
+    assert_eq!(sequence_number, 0x5678);
+    assert_eq!(response_type, BW_RESULTS_CONNECT_TIME);
+    assert!(time_delta_ms >= 1);
+    assert_eq!(byte_count, 512 + 8 + 1024 + 8);
     assert!(
         matches!(connector.state, ClientConnectorState::ConnectTimeAutoDetection { .. }),
         "the connector keeps listening after answering the bandwidth measurement"
