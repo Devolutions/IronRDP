@@ -471,7 +471,7 @@ pub struct RdpServer {
     /// RTT for flow control.
     autodetect_rtt: Arc<AtomicU32>,
 
-    /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.3
+    /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`). When `Some`, the server sends a Save Session
     /// Info PDU carrying it once per connection, right after activation. A
     /// client only enters its automatic reconnection sequence (MS-RDPBCGR
@@ -599,7 +599,7 @@ impl RdpServer {
         self.credential_validator = validator;
     }
 
-    /// Set or clear the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.3
+    /// Set or clear the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
     ///
     /// When set to `Some`, the server sends a Save Session Info PDU carrying the
@@ -621,7 +621,7 @@ impl RdpServer {
     ///
     /// This only *enables* the client's automatic reconnection; it does not
     /// validate the `ARC_CS_PRIVATE_PACKET` the client sends back on reconnect
-    /// (MS-RDPBCGR 2.2.4.4). A server that re-authenticates every connection by
+    /// (MS-RDPBCGR 2.2.4.3). A server that re-authenticates every connection by
     /// other means (e.g. NLA/CredSSP) does not need to; a server that wants the
     /// cookie itself to be an authentication factor must verify the returned
     /// value.

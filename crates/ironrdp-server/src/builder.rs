@@ -293,7 +293,7 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// Provision the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.3
+    /// Provision the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
     ///
     /// When set to `Some`, the server sends a Save Session Info PDU carrying the
