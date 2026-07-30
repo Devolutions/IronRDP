@@ -1,7 +1,7 @@
 use core::mem;
 
 use ironrdp_pdu::rdp;
-use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, InputFlags};
 use tracing::{debug, warn};
 
 use crate::{
@@ -211,6 +211,19 @@ impl Sequence for ConnectionActivationSequence {
                     }
                 }
 
+                // Keep the server's Input capability flags so the session layer can tell whether
+                // fast-path input was negotiated: per [MS-RDPBCGR] 2.2.8.1.2, the client MUST NOT
+                // send fast-path input events unless the server advertised
+                // `INPUT_FLAG_FASTPATH_INPUT` or `INPUT_FLAG_FASTPATH_INPUT2`. Servers that omit
+                // both (e.g. VirtualBox VRDP) may reject fast-path input PDUs outright.
+                let input_flags = capability_sets
+                    .iter()
+                    .find_map(|c| match c {
+                        CapabilitySet::Input(i) => Some(i.input_flags),
+                        _ => None,
+                    })
+                    .unwrap_or_else(InputFlags::empty);
+
                 // At this point we have already sent a requested desktop size to the server -- either as a part of the
                 // [`TS_UD_CS_CORE`] (on initial connection) or the [`DISPLAYCONTROL_MONITOR_LAYOUT`] (on resize event).
                 //
@@ -256,6 +269,7 @@ impl Sequence for ConnectionActivationSequence {
                     ConnectionActivationState::ConnectionFinalization {
                         desktop_size,
                         share_id,
+                        input_flags,
                         connection_finalization: ConnectionFinalizationSequence::new(
                             self.io_channel_id,
                             self.user_channel_id,
@@ -267,6 +281,7 @@ impl Sequence for ConnectionActivationSequence {
             ConnectionActivationState::ConnectionFinalization {
                 desktop_size,
                 share_id,
+                input_flags,
                 mut connection_finalization,
             } => {
                 debug!("Connection Finalization");
@@ -277,12 +292,14 @@ impl Sequence for ConnectionActivationSequence {
                     ConnectionActivationState::ConnectionFinalization {
                         desktop_size,
                         share_id,
+                        input_flags,
                         connection_finalization,
                     }
                 } else {
                     ConnectionActivationState::Finalized {
                         desktop_size,
                         share_id,
+                        input_flags,
                         enable_server_pointer: self.config.enable_server_pointer,
                         pointer_software_rendering: self.config.pointer_software_rendering,
                     }
@@ -306,11 +323,20 @@ pub enum ConnectionActivationState {
     ConnectionFinalization {
         desktop_size: DesktopSize,
         share_id: u32,
+        /// The server's Input capability flags from the Server Demand Active PDU.
+        input_flags: InputFlags,
         connection_finalization: ConnectionFinalizationSequence,
     },
     Finalized {
         desktop_size: DesktopSize,
         share_id: u32,
+        /// The server's Input capability flags from the Server Demand Active PDU.
+        ///
+        /// Per [MS-RDPBCGR] 2.2.8.1.2, fast-path input events may only be sent when
+        /// `INPUT_FLAG_FASTPATH_INPUT` or `INPUT_FLAG_FASTPATH_INPUT2` is present.
+        ///
+        /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b8e7c588-51cb-455b-bb73-92d480903133
+        input_flags: InputFlags,
         enable_server_pointer: bool,
         pointer_software_rendering: bool,
     },
@@ -345,7 +371,7 @@ fn create_client_confirm_active(
     use ironrdp_pdu::rdp::capability_sets::{
         BITMAP_CACHE_ENTRIES_NUM, Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry,
         ClientConfirmActive, CmdFlags, DemandActive, FrameAcknowledge, GLYPH_CACHE_NUM, General, GeneralExtraFlags,
-        GlyphCache, GlyphSupportLevel, Input, InputFlags, LargePointer, LargePointerSupportFlags, MultifragmentUpdate,
+        GlyphCache, GlyphSupportLevel, Input, LargePointer, LargePointerSupportFlags, MultifragmentUpdate,
         OffscreenBitmapCache, Order, OrderFlags, OrderSupportExFlags, Pointer, SERVER_CHANNEL_ID, Sound, SoundFlags,
         SupportLevel, SurfaceCommands, VirtualChannel, VirtualChannelFlags, client_codecs_capabilities,
     };

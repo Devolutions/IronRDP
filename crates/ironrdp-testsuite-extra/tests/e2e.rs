@@ -100,6 +100,7 @@ async fn test_deactivation_reactivation() {
                             if let connector::connection_activation::ConnectionActivationState::Finalized {
                                 desktop_size,
                                 share_id,
+                                input_flags: _,
                                 enable_server_pointer,
                                 pointer_software_rendering,
                             } = connection_activation.connection_activation_state()

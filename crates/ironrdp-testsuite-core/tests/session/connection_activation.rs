@@ -211,3 +211,51 @@ fn demand_active_after_deactivate_all_transitions_to_connection_finalization() {
         "state should transition to ConnectionFinalization after DemandActive"
     );
 }
+
+#[test]
+fn demand_active_captures_server_input_flags() {
+    use ironrdp_pdu::rdp::capability_sets::InputFlags;
+
+    let config = test_config();
+    let mut seq = ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let mut output = WriteBuf::new();
+
+    let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()));
+    seq.step(&frame, &mut output).unwrap();
+
+    match seq.connection_activation_state() {
+        ConnectionActivationState::ConnectionFinalization { input_flags, .. } => {
+            assert_eq!(
+                input_flags,
+                InputFlags::SCANCODES | InputFlags::MOUSEX | InputFlags::UNICODE | InputFlags::FASTPATH_INPUT_2,
+                "input_flags should mirror the Input capability in the Server Demand Active"
+            );
+        }
+        other => panic!("expected ConnectionFinalization, got: {other:?}"),
+    }
+}
+
+#[test]
+fn demand_active_without_input_capability_yields_empty_input_flags() {
+    use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, InputFlags};
+
+    let config = test_config();
+    let mut seq = ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let mut output = WriteBuf::new();
+
+    let mut demand_active = SERVER_DEMAND_ACTIVE.clone();
+    demand_active
+        .pdu
+        .capability_sets
+        .retain(|c| !matches!(c, CapabilitySet::Input(_)));
+
+    let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(demand_active));
+    seq.step(&frame, &mut output).unwrap();
+
+    match seq.connection_activation_state() {
+        ConnectionActivationState::ConnectionFinalization { input_flags, .. } => {
+            assert_eq!(input_flags, InputFlags::empty());
+        }
+        other => panic!("expected ConnectionFinalization, got: {other:?}"),
+    }
+}
