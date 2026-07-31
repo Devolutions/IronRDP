@@ -38,7 +38,9 @@ public static class RDCleanPathConnection
         System.Diagnostics.Debug.WriteLine($"Client local address: {clientAddr}");
 
         // Step 3: Setup ClientConnector
-        var connector = ClientConnector.New(config, clientAddr);
+        var connector = string.IsNullOrEmpty(pcb)
+            ? ClientConnector.New(config, clientAddr)
+            : ClientConnector.NewVmconnect(config, clientAddr, pcb);
         ConnectionHelpers.SetupConnector(connector, config, factory);
 
         // Step 4: Perform RDCleanPath handshake
@@ -69,16 +71,17 @@ public static class RDCleanPathConnection
     {
         var writeBuf = WriteBuf.New();
 
-        // Step 1: Generate X.224 Connection Request
-        System.Diagnostics.Debug.WriteLine("Generating X.224 Connection Request...");
+        // Step 1: Generate the first server PDU.
         var written = connector.StepNoInput(writeBuf);
-        var x224PduSize = (int)written.GetSize().Get();
-        var x224Pdu = new byte[x224PduSize];
-        writeBuf.ReadIntoBuf(x224Pdu);
+        var firstPduSize = (int)written.GetSize().Get();
+        var firstPdu = new byte[firstPduSize];
+        writeBuf.ReadIntoBuf(firstPdu);
 
         // Step 2: Create and send RDCleanPath Request
         System.Diagnostics.Debug.WriteLine($"Sending RDCleanPath request to {destination}...");
-        var rdCleanPathReq = RDCleanPathPdu.NewRequest(x224Pdu, destination, authToken, pcb);
+        var rdCleanPathReq = string.IsNullOrEmpty(pcb)
+            ? RDCleanPathPdu.NewRequest(firstPdu, destination, authToken, string.Empty)
+            : RDCleanPathPdu.NewV2Request(destination, authToken, firstPdu);
         var reqBytes = rdCleanPathReq.ToDer();
         var reqBytesArray = new byte[reqBytes.GetSize()];
         reqBytes.Fill(reqBytesArray);
@@ -96,14 +99,15 @@ public static class RDCleanPathConnection
         {
             System.Diagnostics.Debug.WriteLine("RDCleanPath handshake successful!");
 
-            // Extract X.224 response
-            var x224Response = rdCleanPathResp.GetX224Response();
-            var x224ResponseBytes = new byte[x224Response.GetSize()];
-            x224Response.Fill(x224ResponseBytes);
+            if (!rdCleanPathResp.IsVersion2())
+            {
+                var x224Response = rdCleanPathResp.GetX224Response();
+                var x224ResponseBytes = new byte[x224Response.GetSize()];
+                x224Response.Fill(x224ResponseBytes);
 
-            // Process X.224 response with connector
-            writeBuf.Clear();
-            connector.Step(x224ResponseBytes, writeBuf);
+                writeBuf.Clear();
+                connector.Step(x224ResponseBytes, writeBuf);
+            }
 
             // Extract server public key from certificate chain
             var certChain = rdCleanPathResp.GetServerCertChain();

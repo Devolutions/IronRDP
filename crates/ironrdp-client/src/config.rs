@@ -1336,15 +1336,11 @@ impl ConfigBuilder {
             if !self.enable_credssp.unwrap_or(true) {
                 anyhow::bail!("vmconnect requires CredSSP");
             }
-            if matches!(transport, Transport::RDCleanPath(_)) {
-                anyhow::bail!("vmconnect cannot be used over an RDCleanPath proxy");
-            }
             #[cfg(feature = "gateway")]
             if matches!(transport, Transport::Gateway(_)) {
                 anyhow::bail!("vmconnect cannot be used over an RDS gateway until the target port is propagated");
             }
         }
-
         let client_name = self.client_name.unwrap_or_default();
         let kerberos_config = self
             .kerberos_config

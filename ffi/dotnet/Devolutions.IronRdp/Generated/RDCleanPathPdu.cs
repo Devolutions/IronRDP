@@ -63,6 +63,14 @@ public partial class RDCleanPathPdu: IDisposable
         }
     }
 
+    public ulong Version
+    {
+        get
+        {
+            return GetVersion();
+        }
+    }
+
     public VecU8 X224Response
     {
         get
@@ -129,6 +137,67 @@ public partial class RDCleanPathPdu: IDisposable
                     }
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Creates a version 2 request for a server that expects TLS before X.224.
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>RDCleanPathPdu</c> allocated on Rust side.
+    /// </returns>
+    public static RDCleanPathPdu NewV2Request(string destination, string proxyAuth, byte[] serverPreconnectionPdu)
+    {
+        unsafe
+        {
+            byte[] destinationBuf = DiplomatUtils.StringToUtf8(destination);
+            byte[] proxyAuthBuf = DiplomatUtils.StringToUtf8(proxyAuth);
+            nuint serverPreconnectionPduLength = (nuint)serverPreconnectionPdu.Length;
+            nuint destinationBufLength = (nuint)destinationBuf.Length;
+            nuint proxyAuthBufLength = (nuint)proxyAuthBuf.Length;
+            fixed (byte* serverPreconnectionPduPtr = serverPreconnectionPdu)
+            {
+                fixed (byte* destinationBufPtr = destinationBuf)
+                {
+                    fixed (byte* proxyAuthBufPtr = proxyAuthBuf)
+                    {
+                        Raw.RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError result = Raw.RDCleanPathPdu.NewV2Request(destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, serverPreconnectionPduPtr, serverPreconnectionPduLength);
+                        if (!result.isOk)
+                        {
+                            throw new IronRdpException(new IronRdpError(result.Err));
+                        }
+                        Raw.RDCleanPathPdu* retVal = result.Ok;
+                        return new RDCleanPathPdu(retVal);
+                    }
+                }
+            }
+        }
+    }
+
+    public ulong GetVersion()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            ulong retVal = Raw.RDCleanPathPdu.GetVersion(_inner);
+            return retVal;
+        }
+    }
+
+    public bool IsVersion2()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            bool retVal = Raw.RDCleanPathPdu.IsVersion2(_inner);
+            return retVal;
         }
     }
 
