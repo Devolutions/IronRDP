@@ -1,3 +1,4 @@
+mod autodetect;
 mod gcc;
 mod gfx;
 mod input;

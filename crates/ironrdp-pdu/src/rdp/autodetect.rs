@@ -305,7 +305,14 @@ impl Encode for AutoDetectRequest {
                 request_type,
                 payload,
             } => {
-                if let Some(data) = payload {
+                // Whether the payload fields appear on the wire is decided by
+                // `requestType`, not by whether a payload was supplied: MS-RDPBCGR
+                // 2.2.14.1.4 puts `payloadLength` and `payload` on the connect-time stop
+                // and on no other. Branching on the `Option` let this disagree with the
+                // decoder, which reads those fields back for `BW_STOP_CONNECT_TIME` and
+                // never for the UDP variants.
+                if *request_type == BW_STOP_CONNECT_TIME {
+                    let data = payload.as_deref().unwrap_or(&[]);
                     dst.write_u8(0x08); // headerLength (with payload)
                     dst.write_u8(TYPE_ID_AUTODETECT_REQUEST);
                     dst.write_u16(*sequence_number);
@@ -361,10 +368,16 @@ impl Encode for AutoDetectRequest {
                 HEADER_MIN_SIZE + 2 /* payloadLength */ + payload.len()
             }
 
-            Self::BandwidthMeasureStop { payload, .. } => match payload {
-                Some(data) => HEADER_MIN_SIZE + 2 /* payloadLength */ + data.len(),
-                None => HEADER_MIN_SIZE,
-            },
+            // Mirrors `encode`: the payload fields are keyed off `requestType`.
+            Self::BandwidthMeasureStop {
+                request_type, payload, ..
+            } => {
+                if *request_type == BW_STOP_CONNECT_TIME {
+                    HEADER_MIN_SIZE + 2 /* payloadLength */ + payload.as_ref().map_or(0, Vec::len)
+                } else {
+                    HEADER_MIN_SIZE
+                }
+            }
 
             Self::NetworkCharacteristicsResult {
                 base_rtt_ms,
