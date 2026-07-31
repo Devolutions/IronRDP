@@ -155,6 +155,8 @@ jobs:
     name: Check public API compatibility
     needs: label
     runs-on: ubuntu-latest
+    env:
+      CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
     permissions:
       contents: read
       pull-requests: read
@@ -204,7 +206,15 @@ jobs:
           fi
 
       - name: Install cargo-semver-checks
-        run: cargo install cargo-semver-checks --locked
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl "https://github.com/obi1kenobi/cargo-semver-checks/releases/download/v${CARGO_SEMVER_CHECKS_VERSION}/cargo-semver-checks-x86_64-unknown-linux-gnu.tar.gz" \
+            --output /tmp/cargo-semver-checks.tar.gz \
+            --fail \
+            --location
+          tar -xzvf /tmp/cargo-semver-checks.tar.gz -C "$HOME/.local/bin" cargo-semver-checks
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Check public API compatibility
         id: semver-checks
