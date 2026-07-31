@@ -558,7 +558,15 @@ impl ShareDataPdu {
             ShareDataPduType::Synchronize => Ok(ShareDataPdu::Synchronize(SynchronizePdu::decode(src)?)),
             ShareDataPduType::Control => Ok(ShareDataPdu::Control(ControlPdu::decode(src)?)),
             ShareDataPduType::FontList => Ok(ShareDataPdu::FontList(FontPdu::decode(src)?)),
-            ShareDataPduType::FontMap => Ok(ShareDataPdu::FontMap(FontPdu::decode(src)?)),
+            ShareDataPduType::FontMap => {
+                let font_pdu = if src.is_empty() {
+                    FontPdu::default()
+                } else {
+                    FontPdu::decode(src)?
+                };
+
+                Ok(ShareDataPdu::FontMap(font_pdu))
+            }
             ShareDataPduType::MonitorLayoutPdu => Ok(ShareDataPdu::MonitorLayout(MonitorLayoutPdu::decode(src)?)),
             ShareDataPduType::SaveSessionInfo => Ok(ShareDataPdu::SaveSessionInfo(SaveSessionInfoPdu::decode(src)?)),
             ShareDataPduType::FrameAcknowledgePdu => {
