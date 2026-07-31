@@ -58,6 +58,7 @@ use std::collections::BTreeMap;
 use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_graphics::clearcodec::ClearCodecDecoder;
+use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::zgfx;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::{PduResult, decode_cursor, decode_err, pdu_other_err};
@@ -386,6 +387,7 @@ pub struct GraphicsPipelineClient {
     handler: Box<dyn GraphicsPipelineHandler>,
     h264_decoder: Option<Box<dyn H264Decoder>>,
     clearcodec_decoder: ClearCodecDecoder,
+    planar_decoder: BitmapStreamDecoder,
 
     decompressor: zgfx::Decompressor,
     decompressed_buffer: Vec<u8>,
@@ -411,6 +413,7 @@ impl GraphicsPipelineClient {
             handler,
             h264_decoder,
             clearcodec_decoder: ClearCodecDecoder::new(),
+            planar_decoder: BitmapStreamDecoder::default(),
             decompressor: zgfx::Decompressor::new(),
             decompressed_buffer: Vec::new(),
             state: ClientState::WaitingForConfirm,
@@ -765,6 +768,9 @@ impl GraphicsPipelineClient {
             Codec1Type::ClearCodec => {
                 self.decode_clearcodec(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
             }
+            Codec1Type::Planar => {
+                self.decode_planar(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)?;
+            }
             Codec1Type::Uncompressed => {
                 self.handle_uncompressed(pdu);
             }
@@ -847,6 +853,51 @@ impl GraphicsPipelineClient {
             surface_id,
             destination_rectangle: dest_rect.clone(),
             codec_id: Codec1Type::ClearCodec,
+            data: rgba,
+            width: dest_width,
+            height: dest_height,
+        };
+
+        self.handler.on_bitmap_updated(&update);
+        Ok(())
+    }
+
+    /// Decode an RDP 6.0 Planar bitmap ([MS-RDPEGFX] `RDPGFX_CODECID_PLANAR`, 0x000A).
+    ///
+    /// The payload is an `RDP6_BITMAP_STREAM` ([MS-RDPEGDI] 2.2.2.5.1), the same
+    /// structure the fast-path bitmap route already decodes, so this reuses
+    /// `ironrdp-graphics`' decoder rather than adding a second implementation.
+    fn decode_planar(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
+        // MS-RDPEGFX 2.2.2.1: destRect gives both the target point and "the
+        // dimensions (width and height) of the bitmap data". It is only a bounding
+        // rectangle for the AVC codecs, so for Planar these are exact.
+        let dest_width = dest_rect.right - dest_rect.left;
+        let dest_height = dest_rect.bottom - dest_rect.top;
+
+        let mut rgb24 = Vec::new();
+        self.planar_decoder
+            .decode_bitmap_stream_to_rgb24(
+                bitmap_data,
+                &mut rgb24,
+                usize::from(dest_width),
+                usize::from(dest_height),
+            )
+            .map_err(|e| pdu_other_err!("Planar decode", source: e))?;
+
+        // The decoder emits RGB24 top-down row-major, which is the order surfaces
+        // are stored in, so no vertical flip is needed.
+        //
+        // Opacity is not carried here. An `RDP6_BITMAP_STREAM` can include an alpha
+        // plane (FormatHeader NA bit clear), but EGFX conveys per-pixel opacity in a
+        // separate `RDPGFX_CODECID_ALPHA` (0x000C) command carrying an
+        // `ALPHACODEC_BITMAP_STREAM` ([MS-RDPEGFX] 2.2.4.3), so a Planar command
+        // contributes color only and the pixels are opaque.
+        let rgba = convert_rgb24_to_rgba(&rgb24);
+
+        let update = BitmapUpdate {
+            surface_id,
+            destination_rectangle: dest_rect.clone(),
+            codec_id: Codec1Type::Planar,
             data: rgba,
             width: dest_width,
             height: dest_height,
@@ -987,6 +1038,20 @@ impl DvcClientProcessor for GraphicsPipelineClient {}
 ///
 /// ClearCodec produces BGRA output per [MS-RDPEGFX 2.2.4.1]. Reorder to
 /// [R, G, B, A] for the uniform `BitmapUpdate` pixel format.
+/// Widen tightly-packed RGB24 to RGBA, marking every pixel opaque.
+///
+/// The RDP 6.0 Planar decoder emits three bytes per pixel; `BitmapUpdate` carries
+/// four. See `decode_planar` for why the alpha byte is synthesized rather than
+/// taken from the stream.
+fn convert_rgb24_to_rgba(src: &[u8]) -> Vec<u8> {
+    debug_assert!(src.len().is_multiple_of(3), "RGB24 input length not aligned to 3 bytes");
+    let mut dst = Vec::with_capacity(src.len() / 3 * 4);
+    for pixel in src.chunks_exact(3) {
+        dst.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 0xFF]);
+    }
+    dst
+}
+
 fn convert_bgra_to_rgba(src: &[u8]) -> Vec<u8> {
     debug_assert!(src.len().is_multiple_of(4), "BGRA input length not aligned to 4 bytes");
     let mut dst = Vec::with_capacity(src.len());
@@ -1071,6 +1136,8 @@ fn crop_decoded_frame(
 /// Integration tests exercising the public DVC API are in ironrdp-testsuite-core/tests/egfx/client.rs.
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
 
     struct TestHandler;
@@ -1084,6 +1151,125 @@ mod tests {
         fn on_frame_complete(&mut self, _frame_id: u32) {}
         fn on_close(&mut self) {}
         fn on_unhandled_pdu(&mut self, _pdu: &GfxPdu) {}
+    }
+
+    /// Captures bitmap updates and unhandled PDUs so a test can tell decode from
+    /// fallthrough.
+    /// `(codec_id, width, height, rgba)` extracted from each update, since
+    /// `BitmapUpdate` is not `Clone` and does not need to be.
+    type CapturedUpdate = (Codec1Type, u16, u16, Vec<u8>);
+
+    struct CapturingHandler {
+        updates: Arc<Mutex<Vec<CapturedUpdate>>>,
+        unhandled: Arc<Mutex<usize>>,
+    }
+    impl GraphicsPipelineHandler for CapturingHandler {
+        fn on_capabilities_confirmed(&mut self, _caps: &CapabilitySet) {}
+        fn on_reset_graphics(&mut self, _width: u32, _height: u32) {}
+        fn on_surface_created(&mut self, _surface: &Surface) {}
+        fn on_surface_deleted(&mut self, _surface_id: u16) {}
+        fn on_surface_mapped(&mut self, _surface_id: u16, _x: u32, _y: u32) {}
+        fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
+            self.updates.lock().expect("updates lock").push((
+                update.codec_id,
+                update.width,
+                update.height,
+                update.data.clone(),
+            ));
+        }
+        fn on_frame_complete(&mut self, _frame_id: u32) {}
+        fn on_close(&mut self) {}
+        fn on_unhandled_pdu(&mut self, _pdu: &GfxPdu) {
+            *self.unhandled.lock().expect("unhandled lock") += 1;
+        }
+    }
+
+    /// A Planar `WireToSurface1` decodes to the pixels that were encoded, rather
+    /// than falling through to the handler as an unsupported codec.
+    ///
+    /// The payload is built with IronRDP's own RDP6 encoder, so this exercises the
+    /// real `RDP6_BITMAP_STREAM` framing ([MS-RDPEGDI] 2.2.2.5.1) that
+    /// `RDPGFX_CODECID_PLANAR` carries, not a hand-rolled approximation.
+    #[test]
+    fn planar_wire_to_surface_decodes_to_rgba() {
+        use ironrdp_graphics::rdp6::{BitmapStreamEncoder, RgbChannels};
+
+        const W: u16 = 4;
+        const H: u16 = 2;
+
+        // Distinct per-channel values so a channel swap or row reversal fails.
+        let mut rgb = Vec::new();
+        for i in 0..u8::try_from(W).unwrap() * u8::try_from(H).unwrap() {
+            rgb.extend_from_slice(&[i, 100 + i, 200 + i]);
+        }
+
+        for rle in [false, true] {
+            let mut encoded = vec![0u8; rgb.len() * 4 + 64];
+            let len = BitmapStreamEncoder::new(usize::from(W), usize::from(H))
+                .encode_bitmap::<RgbChannels>(&rgb, &mut encoded, rle)
+                .unwrap();
+            encoded.truncate(len);
+
+            let updates = Arc::new(Mutex::new(Vec::new()));
+            let unhandled = Arc::new(Mutex::new(0));
+            let mut client = GraphicsPipelineClient::new(
+                Box::new(CapturingHandler {
+                    updates: Arc::clone(&updates),
+                    unhandled: Arc::clone(&unhandled),
+                }),
+                None,
+            );
+
+            let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: W,
+                height: H,
+                pixel_format: PixelFormat::XRgb,
+            }));
+
+            client
+                .handle_pdu(GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
+                    surface_id: 1,
+                    codec_id: Codec1Type::Planar,
+                    pixel_format: PixelFormat::XRgb,
+                    destination_rectangle: ExclusiveRectangle {
+                        left: 0,
+                        top: 0,
+                        right: W,
+                        bottom: H,
+                    },
+                    bitmap_data: encoded,
+                }))
+                .unwrap();
+
+            assert_eq!(
+                *unhandled.lock().expect("unhandled lock"),
+                0,
+                "rle={rle}: Planar must not fall through"
+            );
+            let updates = updates.lock().expect("updates lock");
+            assert_eq!(updates.len(), 1, "rle={rle}");
+            let (codec_id, width, height, data) = &updates[0];
+            assert_eq!(*codec_id, Codec1Type::Planar, "rle={rle}");
+            assert_eq!(*width, W, "rle={rle}");
+            assert_eq!(*height, H, "rle={rle}");
+
+            let expected: Vec<u8> = rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 0xFF]).collect();
+            assert_eq!(*data, expected, "rle={rle}");
+        }
+    }
+
+    #[test]
+    fn convert_rgb24_to_rgba_widens_and_marks_opaque() {
+        let rgb = vec![
+            0x10, 0x20, 0x30, // R=16, G=32, B=48
+            0x40, 0x50, 0x60, // R=64, G=80, B=96
+        ];
+
+        assert_eq!(
+            convert_rgb24_to_rgba(&rgb),
+            vec![0x10, 0x20, 0x30, 0xFF, 0x40, 0x50, 0x60, 0xFF]
+        );
     }
 
     #[test]
