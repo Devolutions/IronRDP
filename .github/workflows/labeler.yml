@@ -201,10 +201,10 @@ jobs:
         shell: bash
         run: |
           BASE="${{ steps.merge-base.outputs.base }}"
-          echo "Checking compatibility against $BASE"
+          echo "Checking ironrdp compatibility against $BASE"
 
           set +e
-          cargo semver-checks --baseline-rev "$BASE"
+          cargo semver-checks --package ironrdp --baseline-rev "$BASE"
           status=$?
           set -e
 
