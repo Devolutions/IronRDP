@@ -68,8 +68,10 @@ impl<'de> Decode<'de> for BasicSecurityHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = BasicSecurityHeaderFlags::from_bits(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("securityHeader", "invalid basic security header"))?;
+        // Use from_bits_truncate to tolerate unknown flag bits that some servers
+        // (e.g., Windows Server 2019 with RDS licensing) may set.
+        // This matches FreeRDP behavior which masks for known flags without rejecting the PDU.
+        let flags = BasicSecurityHeaderFlags::from_bits_truncate(src.read_u16());
         let _flags_hi = src.read_u16(); // unused
 
         Ok(Self { flags })
