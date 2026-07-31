@@ -211,7 +211,7 @@ jobs:
           echo "Checking ironrdp compatibility against $BASE"
 
           set +e
-          cargo semver-checks --package ironrdp --baseline-rev "$BASE"
+          cargo semver-checks --package ironrdp --default-features --baseline-rev "$BASE"
           status=$?
           set -e
 
