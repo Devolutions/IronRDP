@@ -74,6 +74,7 @@ A-core:
           - "crates/ironrdp-error/**"
           - "crates/ironrdp-propertyset/**"
           - "crates/ironrdp-rdpfile/**"
+          - "crates/ironrdp-str/**"
 
 A-extra:
   - changed-files:
@@ -134,6 +135,7 @@ A-virtual-channel:
           - "crates/ironrdp-rdpeusb/**"
           - "crates/ironrdp-dvc-com-plugin/**"
           - "crates/ironrdp-dvc-pipe-proxy/**"
+          - "crates/ironrdp-echo/**"
 
 A-web-client:
   - changed-files:

@@ -29,7 +29,7 @@ jobs:
         with:
           script: |
             const pullRequestNumber = context.eventName === "workflow_dispatch"
-              ? Number(core.getInput("pr-number", { required: true }))
+              ? Number(context.payload.inputs["pr-number"])
               : context.payload.pull_request.number;
 
             if (!Number.isSafeInteger(pullRequestNumber) || pullRequestNumber <= 0) {
@@ -64,7 +64,7 @@ jobs:
         with:
           script: |
             const pullRequestNumber = Number("${{ steps.pull-request.outputs.number }}");
-            const sourceFile = /\.(?:rs|cs|[cm]?js|jsx|[cm]?ts|tsx)$/i;
+            const sourceFile = /\.(?:rs|cs|[cm]?js|jsx|[cm]?ts|tsx|svelte)$/i;
             let changedLines = 0;
 
             for await (const response of github.paginate.iterator(github.rest.pulls.listFiles, {
@@ -133,14 +133,16 @@ jobs:
             });
             const hasLabel = issue.labels.some((label) => label.name === firstTimeContributorLabel);
 
-            if (authorAssociation === "FIRST_TIME_CONTRIBUTOR" && !hasLabel) {
+            const firstTimeContributor = ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER"].includes(authorAssociation);
+
+            if (firstTimeContributor && !hasLabel) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pullRequestNumber,
                 labels: [firstTimeContributorLabel],
               });
-            } else if (authorAssociation !== "FIRST_TIME_CONTRIBUTOR" && hasLabel) {
+            } else if (!firstTimeContributor && hasLabel) {
               await github.rest.issues.removeLabel({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
