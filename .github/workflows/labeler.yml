@@ -10,6 +10,10 @@ on:
         required: true
         type: number
 
+concurrency:
+  group: labeler-${{ github.event.pull_request.number || inputs.pr-number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
@@ -157,6 +161,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
+      CARGO_SEMVER_CHECKS_SHA256: "72f6834d75d28a66e02c9fd6a230ce901bb30eee6067b85867a97445df040e4a"
     permissions: {}
     outputs:
       breaking_change: ${{ steps.semver-checks.outputs.breaking-change }}
@@ -193,6 +198,8 @@ jobs:
             --output /tmp/cargo-semver-checks.tar.gz \
             --fail \
             --location
+          echo "$CARGO_SEMVER_CHECKS_SHA256  /tmp/cargo-semver-checks.tar.gz" |
+            sha256sum --check --strict
           tar -xzvf /tmp/cargo-semver-checks.tar.gz -C "$HOME/.local/bin" cargo-semver-checks
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
@@ -273,6 +280,26 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: Verify pull request head
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
+          EXPECTED_HEAD_SHA: ${{ needs.label.outputs.head-sha }}
+        with:
+          script: |
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullRequestNumber,
+            });
+
+            if (pullRequest.head.sha !== process.env.EXPECTED_HEAD_SHA) {
+              throw new Error(
+                `pull request head changed from ${process.env.EXPECTED_HEAD_SHA} to ${pullRequest.head.sha}`,
+              );
+            }
+
       - name: Add breaking change label
         if: needs.semver.outputs.breaking_change == 'true'
         uses: actions/github-script@v8
