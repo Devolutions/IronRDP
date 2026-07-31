@@ -84,6 +84,20 @@ pub const BW_STOP_RELIABLE_UDP: u16 = 0x0429;
 /// Bandwidth Measure Stop for continuous detection over lossy UDP.
 pub const BW_STOP_LOSSY_UDP: u16 = 0x0629;
 
+/// Which optional fields a Network Characteristics Result carries, as
+/// `(baseRTT, bandwidth)`.
+///
+/// [MS-RDPBCGR] 2.2.14.1.5 assigns these by `requestType` alone, so encode,
+/// `size` and decode all consult this rather than inspecting the values.
+fn netchar_fields(request_type: u16) -> (bool, bool) {
+    match request_type {
+        NETCHAR_RESULT_RTT => (true, false),
+        NETCHAR_RESULT_BW_RTT => (false, true),
+        NETCHAR_RESULT_ALL => (true, true),
+        _ => (false, false),
+    }
+}
+
 /// Network Characteristics Result: baseRTT + averageRTT (no bandwidth).
 ///
 /// [\[MS-RDPBCGR\] 2.2.14.1.5]
@@ -223,6 +237,11 @@ impl AutoDetectRequest {
     }
 
     /// Construct a Bandwidth Measure Stop for connect-time detection.
+    ///
+    /// `payload` must be non-empty: [MS-RDPBCGR] 2.2.14.1.4 requires `payloadLength`
+    /// to be greater than zero for this request type, so an empty one has no
+    /// conforming encoding and is refused by [`Encode`] rather than written as a
+    /// zero length.
     pub fn bw_stop_connect_time(sequence_number: u16, payload: Vec<u8>) -> Self {
         Self::BandwidthMeasureStop {
             sequence_number,
@@ -305,7 +324,24 @@ impl Encode for AutoDetectRequest {
                 request_type,
                 payload,
             } => {
-                if let Some(data) = payload {
+                // Whether the payload fields appear on the wire is decided by
+                // `requestType`, not by whether a payload was supplied: MS-RDPBCGR
+                // 2.2.14.1.4 puts `payloadLength` and `payload` on the connect-time stop
+                // and on no other. Branching on the `Option` let this disagree with the
+                // decoder, which reads those fields back for `BW_STOP_CONNECT_TIME` and
+                // never for the UDP variants.
+                if *request_type == BW_STOP_CONNECT_TIME {
+                    // 2.2.14.1.4 does not merely make `payloadLength` present for the
+                    // connect-time stop, it requires a value "greater than zero". An
+                    // absent or empty payload has no conforming encoding, so it is
+                    // refused rather than written as a zero length.
+                    let data = payload.as_deref().unwrap_or(&[]);
+                    if data.is_empty() {
+                        return Err(invalid_field_err!(
+                            "payload",
+                            "connect-time Bandwidth Measure Stop requires a non-empty payload"
+                        ));
+                    }
                     dst.write_u8(0x08); // headerLength (with payload)
                     dst.write_u8(TYPE_ID_AUTODETECT_REQUEST);
                     dst.write_u16(*sequence_number);
@@ -336,11 +372,26 @@ impl Encode for AutoDetectRequest {
                 dst.write_u16(*sequence_number);
                 dst.write_u16(*request_type);
 
-                if let Some(rtt) = base_rtt_ms {
-                    dst.write_u32(*rtt);
+                // Same rule as the stop above: which fields appear is decided by
+                // `requestType`, not by which `Option`s happen to be set. MS-RDPBCGR
+                // 2.2.14.1.5 assigns 0x0840 baseRTT + averageRTT, 0x0880 bandwidth +
+                // averageRTT, and 0x08C0 all three, and the decoder reads them back on
+                // exactly that basis. Branching on the `Option`s let the two disagree:
+                // a `NETCHAR_RESULT_RTT` with no `base_rtt_ms` wrote a body the decoder
+                // could not read, and one carrying `bandwidth_kbps` instead wrote the
+                // bandwidth where the decoder expects baseRTT, corrupting it silently.
+                let (want_base_rtt, want_bandwidth) = netchar_fields(*request_type);
+                if want_base_rtt {
+                    dst.write_u32(
+                        base_rtt_ms
+                            .ok_or_else(|| invalid_field_err!("baseRTT", "requestType requires a baseRTT value"))?,
+                    );
                 }
-                if let Some(bw) = bandwidth_kbps {
-                    dst.write_u32(*bw);
+                if want_bandwidth {
+                    dst.write_u32(
+                        bandwidth_kbps
+                            .ok_or_else(|| invalid_field_err!("bandwidth", "requestType requires a bandwidth value"))?,
+                    );
                 }
                 dst.write_u32(*average_rtt_ms);
             }
@@ -361,20 +412,21 @@ impl Encode for AutoDetectRequest {
                 HEADER_MIN_SIZE + 2 /* payloadLength */ + payload.len()
             }
 
-            Self::BandwidthMeasureStop { payload, .. } => match payload {
-                Some(data) => HEADER_MIN_SIZE + 2 /* payloadLength */ + data.len(),
-                None => HEADER_MIN_SIZE,
-            },
-
-            Self::NetworkCharacteristicsResult {
-                base_rtt_ms,
-                bandwidth_kbps,
-                ..
+            // Mirrors `encode`: the payload fields are keyed off `requestType`.
+            Self::BandwidthMeasureStop {
+                request_type, payload, ..
             } => {
-                HEADER_MIN_SIZE
-                    + if base_rtt_ms.is_some() { 4 } else { 0 }
-                    + if bandwidth_kbps.is_some() { 4 } else { 0 }
-                    + 4 /* averageRTT */
+                if *request_type == BW_STOP_CONNECT_TIME {
+                    HEADER_MIN_SIZE + 2 /* payloadLength */ + payload.as_ref().map_or(0, Vec::len)
+                } else {
+                    HEADER_MIN_SIZE
+                }
+            }
+
+            // Mirrors `encode`: which fields are present is keyed off `requestType`.
+            Self::NetworkCharacteristicsResult { request_type, .. } => {
+                let (want_base_rtt, want_bandwidth) = netchar_fields(*request_type);
+                HEADER_MIN_SIZE + if want_base_rtt { 4 } else { 0 } + if want_bandwidth { 4 } else { 0 } + 4 /* averageRTT */
             }
         }
     }
@@ -425,6 +477,16 @@ impl<'de> Decode<'de> for AutoDetectRequest {
                 // Connect-time stop has payloadLength + payload.
                 ensure_size!(in: src, size: 2);
                 let payload_length = src.read_u16();
+                // Same rule as the encoder: 2.2.14.1.4 requires a value greater than
+                // zero here, so a zero length is a malformed PDU rather than an empty
+                // payload. Accepting what we refuse to emit would leave the two sides
+                // disagreeing about what the wire permits.
+                if payload_length == 0 {
+                    return Err(invalid_field_err!(
+                        "payloadLength",
+                        "connect-time Bandwidth Measure Stop requires a payload length greater than zero"
+                    ));
+                }
                 ensure_size!(in: src, size: usize::from(payload_length));
                 let payload = src.read_slice(usize::from(payload_length)).to_vec();
                 Ok(Self::BandwidthMeasureStop {
