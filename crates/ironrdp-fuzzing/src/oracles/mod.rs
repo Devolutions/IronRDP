@@ -192,18 +192,34 @@ pub fn pdu_decode(data: &[u8]) {
 
 /// Helper for [`pdu_round_trip`].
 ///
-/// Exercises `decode` → `encode_vec` → re-`decode`, silently dropping `Err`
-/// results from any stage. The oracle's value is in detecting INTERNAL
-/// panics from inside the encoder/decoder (e.g., `unreachable!()` reached
-/// on a valid decoded state), not in asserting Err-result symmetry. Many
-/// `ironrdp-pdu` types have known asymmetric `Encode` impls that return
-/// `"Encoding not implemented"` for variants the decoder still accepts;
-/// those are tracked separately and not in scope for this oracle.
+/// Exercises `decode` → `encode_vec` → re-`decode` → re-`encode_vec`.
+///
+/// A failing `decode` of the fuzzer's input is expected and skipped, and a
+/// failing `encode` is tolerated because several `ironrdp-pdu` types return
+/// `"Encoding not implemented"` for variants the decoder still accepts.
+///
+/// A *successful* encode is asserted to be re-decodable, because at that point the
+/// bytes were produced by this crate from a state this crate accepted. Emitting
+/// bytes we cannot read back is an encoder/decoder disagreement, and on the wire
+/// that is a peer refusing our PDU.
+///
+/// Byte stability across the round trip is deliberately NOT asserted. Several
+/// decoders normalise: `LogonInfoVersion1` reads `domainNameSize`, range-checks it,
+/// and then keeps only the trimmed string, so a PDU whose size field disagrees with
+/// its own padding cannot re-encode to identical bytes no matter how correct both
+/// halves are. That is a property of types that discard redundant wire fields, not
+/// a defect, so asserting it would report design as breakage.
 macro_rules! pdu_round_trip_one {
     ($data:expr, $ty:ty) => {{
         if let Ok(pdu) = ironrdp_core::decode::<$ty>($data) {
             if let Ok(encoded) = ironrdp_core::encode_vec(&pdu) {
-                let _ = ironrdp_core::decode::<$ty>(&encoded);
+                if let Err(e) = ironrdp_core::decode::<$ty>(&encoded) {
+                    panic!(
+                        "{}: encoded {} bytes that failed to decode again: {e}",
+                        stringify!($ty),
+                        encoded.len(),
+                    );
+                }
             }
         }
     }};
@@ -226,13 +242,20 @@ macro_rules! pdu_round_trip_one {
 ///   decoder-accepted inputs.
 /// - Panics in the decoder when fed encoder-produced bytes (re-decode path).
 ///
+/// - An encoder that emits bytes it cannot read back.
+///
 /// What this does NOT catch:
 ///
 /// - Encode returning `Err`. Many PDU types intentionally return errors for
 ///   partially-implemented variants; exercising them is the encoder
 ///   developer's responsibility, not this oracle's.
-/// - Re-decode returning `Err`. Surfaces an asymmetry but not a memory-safety
-///   bug; tracked via filed follow-up issues, not this oracle.
+///
+/// Re-decode returning `Err` used to be excluded here, on the grounds that an
+/// encode/decode disagreement is not a memory-safety bug and could be tracked
+/// separately. In practice it was not: the `BandwidthMeasureStop` asymmetry
+/// fixed in the preceding commit went unnoticed because nothing asserted this,
+/// and it was found by hand while writing an unrelated test. Emitting bytes we
+/// cannot read back is a real defect on the wire, so it is asserted now.
 ///
 /// Initial type coverage mirrors `pdu_decode` so the same corpus feeds both
 /// oracles. As new PDU types gain `Encode` impls, they auto-extend coverage
@@ -242,7 +265,7 @@ pub fn pdu_round_trip(data: &[u8]) {
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
     use ironrdp_pdu::rdp::headers::ShareControlHeader;
-    use ironrdp_pdu::rdp::{ClientInfoPdu, multitransport, server_error_info, server_license, vc};
+    use ironrdp_pdu::rdp::{self, ClientInfoPdu, multitransport, server_error_info, server_license, vc};
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
 
@@ -287,6 +310,12 @@ pub fn pdu_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, surface_commands::FrameMarkerPdu);
     pdu_round_trip_one!(data, surface_commands::ExtendedBitmapDataPdu<'_>);
     pdu_round_trip_one!(data, surface_commands::BitmapDataHeader);
+
+    // Network auto-detect. The `BandwidthMeasureStop` encode/decode asymmetry fixed in
+    // the preceding commit lives here; with the re-decode assertion above, this coverage
+    // is what would have caught it.
+    pdu_round_trip_one!(data, rdp::autodetect::AutoDetectReqPdu);
+    pdu_round_trip_one!(data, rdp::autodetect::AutoDetectRspPdu);
 
     // Codecs
     pdu_round_trip_one!(data, codecs::rfx::Block<'_>);
