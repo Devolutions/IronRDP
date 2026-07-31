@@ -160,8 +160,10 @@ pub enum ClientConnectorState {
         /// caller.
         requests_seen: usize,
         /// Whether both peers advertised Soft-Sync, captured when this state was
-        /// entered. Decides whether the completion and skip paths may emit an
-        /// Initiate Multitransport Response at all.
+        /// entered. Combined with the reported outcome this decides whether the
+        /// completion and skip paths emit an Initiate Multitransport Response:
+        /// a failure is always reported, while success is withheld unless
+        /// Soft-Sync was negotiated.
         soft_sync: bool,
     },
     CapabilitiesExchange {
@@ -220,9 +222,10 @@ pub struct ClientConnector {
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
     /// Multitransport flags the server advertised in its GCC
-    /// `MultiTransportChannelData` block, if it sent one. Retained because the
-    /// Initiate Multitransport Response is only permitted once both peers have
-    /// advertised Soft-Sync; see [`Self::soft_sync_negotiated`].
+    /// `MultiTransportChannelData` block, if it sent one. Retained because
+    /// MS-RDPBCGR 2.2.15.2 permits an `S_OK` response only to a server that
+    /// advertised `SOFTSYNC_TCP_TO_UDP`, so the outcome reported back depends on
+    /// what both peers advertised.
     pub server_multitransport_flags: Option<gcc::MultiTransportFlags>,
 }
 
@@ -238,14 +241,13 @@ impl ClientConnector {
         }
     }
 
-    /// Whether Soft-Sync (`SOFTSYNC_TCP_TO_UDP`) was mutually advertised.
+    /// Whether Soft-Sync (`SOFTSYNC_TCP_TO_UDP`) was mutually advertised, meaning
+    /// both peers set the flag in their GCC `MultiTransportChannelData` block.
     ///
-    /// Per [\[MS-RDPBCGR\] 2.2.15.2] the Initiate Multitransport Response is
-    /// the Soft-Sync signalling path, and is only sent when *both* peers
-    /// advertised the flag in their GCC `MultiTransportChannelData` block.
-    /// Without Soft-Sync the client reports the outcome in band on the new
-    /// transport and sends nothing back on the main channel, so emitting a
-    /// response there would be a protocol violation rather than a courtesy.
+    /// This does not by itself decide whether a response is sent. It gates
+    /// success only: per [\[MS-RDPBCGR\] 2.2.15.2] `S_OK` "MUST only be sent to a
+    /// server that advertises the SOFTSYNC_TCP_TO_UDP flag", while a failure is
+    /// reported either way. See [`Self::multitransport_response_channel`].
     ///
     /// [\[MS-RDPBCGR\] 2.2.15.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/44044233-e498-46f8-8e16-1ffa595a8e8b
     fn soft_sync_negotiated(&self) -> bool {
@@ -354,8 +356,9 @@ impl ClientConnector {
     /// [`multitransport_request()`](Self::multitransport_request).
     ///
     /// The connector builds the response PDU internally from the stored request
-    /// ID, sends it on the MCS message channel when Soft-Sync was mutually
-    /// negotiated, and returns to reading. The next PDU may be a second request
+    /// ID, sends it on the MCS message channel when one is owed for this outcome,
+    /// and returns to reading. A failure is always reported; success is withheld
+    /// unless Soft-Sync was negotiated, per MS-RDPBCGR 2.2.15.2. The next PDU may be a second request
     /// or the Demand Active that ends bootstrapping; either way the caller does
     /// not have to know which.
     ///
@@ -372,8 +375,9 @@ impl ClientConnector {
     /// Decline the multitransport request currently surfaced.
     ///
     /// Use this when the application doesn't support or doesn't want UDP
-    /// transport. Under Soft-Sync this sends `E_ABORT`, which MS-RDPBCGR
-    /// 3.2.5.15.1 requires; the server then continues TCP-only.
+    /// transport. This reports `E_ABORT`, which MS-RDPBCGR 3.2.5.15.1 asks for
+    /// whenever the client cannot initiate the sideband channel, with no
+    /// Soft-Sync condition attached; the server then continues TCP-only.
     ///
     /// Returns an error if the connector is not in `MultitransportPending`
     /// state.
@@ -388,12 +392,17 @@ impl ClientConnector {
     /// The channel an Initiate Multitransport Response goes out on, or `None`
     /// when no response is owed.
     ///
-    /// Without Soft-Sync the response PDU has no place on the main channel:
-    /// MS-RDPBCGR 2.2.15.2 makes it the Soft-Sync signalling path, and the
-    /// outcome is otherwise reported in band on the new transport. With
-    /// Soft-Sync the message channel is presupposed, and falling back to the
-    /// I/O channel would put the response somewhere the server is not reading,
-    /// so its absence is an error rather than a reason to improvise.
+    /// Which of the two applies is decided by the outcome as well as the mode.
+    /// MS-RDPBCGR 3.2.5.15.1 asks for a response whenever the client could not
+    /// initiate the sideband channel, with no Soft-Sync condition, and requires
+    /// one either way once Soft-Sync is negotiated. 2.2.15.2 restricts only
+    /// `S_OK`, which "MUST only be sent to a server that advertises the
+    /// SOFTSYNC_TCP_TO_UDP flag". So a failure is reported whenever there is a
+    /// channel to report it on, and only success is withheld.
+    ///
+    /// Under Soft-Sync the message channel is presupposed, and falling back to
+    /// the I/O channel would put the response somewhere the server is not
+    /// reading, so its absence is an error rather than a reason to improvise.
     ///
     /// Borrows rather than consuming, so the caller can resolve this while the
     /// connector is still in a state it can act on.

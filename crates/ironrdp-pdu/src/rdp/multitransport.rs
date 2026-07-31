@@ -246,12 +246,17 @@ impl<'de> Decode<'de> for MultitransportResponsePdu {
 
         let security_header = BasicSecurityHeader::decode(src)?;
 
-        // Must be EXACTLY SEC_TRANSPORT_RSP (MS-RDPBCGR 2.2.15.2), not merely
-        // contain the bit; see the note on `MultitransportRequestPdu::decode`.
-        if security_header.flags != BasicSecurityHeaderFlags::TRANSPORT_RSP {
+        // MS-RDPBCGR 2.2.15.2 requires the flags to *contain* SEC_TRANSPORT_RSP,
+        // and the ignorable sequence-number flags are masked off first, exactly as
+        // on the request side; see the note on `MultitransportRequestPdu::decode`
+        // for why what remains is then compared for equality.
+        let flags = security_header
+            .flags
+            .difference(BasicSecurityHeaderFlags::RESET_SEQNO | BasicSecurityHeaderFlags::IGNORE_SEQNO);
+        if flags != BasicSecurityHeaderFlags::TRANSPORT_RSP {
             return Err(invalid_field_err!(
                 "securityHeader",
-                "expected securityHeader flags to be exactly SEC_TRANSPORT_RSP"
+                "expected securityHeader flags to contain SEC_TRANSPORT_RSP and no other PDU-type flag"
             ));
         }
 
@@ -396,34 +401,55 @@ mod tests {
 
     /// MS-RDPBCGR 2.2.8.1.1.2.1 says SEC_RESET_SEQNO and SEC_IGNORE_SEQNO "MUST
     /// be ignored", and the spec's own worked examples carry them alongside other
-    /// flags. Rejecting a request that sets them would abort the connection over
-    /// bits the client is told to disregard.
+    /// flags. Rejecting a PDU that sets them would abort the connection over bits
+    /// the peer is told to disregard.
+    ///
+    /// Both directions are covered because the two decoders are symmetric: 2.2.15.1
+    /// and 2.2.15.2 each say the flags MUST *contain* their respective discriminator.
     #[test]
-    fn decode_request_ignores_the_seqno_flags() {
-        for (label, flags) in [
-            ("SEC_TRANSPORT_REQ | SEC_RESET_SEQNO", 0x0012u16),
-            ("SEC_TRANSPORT_REQ | SEC_IGNORE_SEQNO", 0x0022),
-            ("SEC_TRANSPORT_REQ | both seqno flags", 0x0032),
-        ] {
-            let mut wire = REQUEST_WIRE.to_vec();
-            wire[0..2].copy_from_slice(&flags.to_le_bytes());
+    fn decode_ignores_the_seqno_flags_in_both_directions() {
+        const RESET_SEQNO: u16 = 0x0010;
+        const IGNORE_SEQNO: u16 = 0x0020;
 
-            let pdu = ironrdp_core::decode::<MultitransportRequestPdu>(&wire)
-                .unwrap_or_else(|e| panic!("{label} must decode: {e}"));
-            assert_eq!(pdu.request_id, 42, "{label}");
+        for (label, base) in [("request", 0x0002u16), ("response", 0x0004)] {
+            for (variant, extra) in [
+                ("SEC_RESET_SEQNO", RESET_SEQNO),
+                ("SEC_IGNORE_SEQNO", IGNORE_SEQNO),
+                ("both seqno flags", RESET_SEQNO | IGNORE_SEQNO),
+            ] {
+                let flags = base | extra;
+
+                if base == 0x0002 {
+                    let mut wire = REQUEST_WIRE.to_vec();
+                    wire[0..2].copy_from_slice(&flags.to_le_bytes());
+                    let pdu = ironrdp_core::decode::<MultitransportRequestPdu>(&wire)
+                        .unwrap_or_else(|e| panic!("{label} with {variant} must decode: {e}"));
+                    assert_eq!(pdu.request_id, 42, "{label} with {variant}");
+                } else {
+                    let mut wire = RESPONSE_SUCCESS_WIRE.to_vec();
+                    wire[0..2].copy_from_slice(&flags.to_le_bytes());
+                    let pdu = ironrdp_core::decode::<MultitransportResponsePdu>(&wire)
+                        .unwrap_or_else(|e| panic!("{label} with {variant} must decode: {e}"));
+                    assert_eq!(pdu.request_id, 42, "{label} with {variant}");
+                }
+            }
         }
     }
 
     /// The equality check past the ignorable flags is what keeps other traffic on
-    /// the shared message channel from decoding as a request. Auto-detect is the
-    /// case that actually shares the channel.
+    /// the shared message channel from decoding as multitransport. Auto-detect is
+    /// the case that actually shares the channel.
     #[test]
-    fn decode_request_rejects_another_pdu_type_alongside_transport_req() {
-        let mut wire = REQUEST_WIRE.to_vec();
-        // SEC_TRANSPORT_REQ | SEC_AUTODETECT_REQ
-        wire[0..2].copy_from_slice(&0x1002u16.to_le_bytes());
+    fn decode_rejects_another_pdu_type_alongside_the_discriminator_in_both_directions() {
+        const AUTODETECT_REQ: u16 = 0x1000;
 
-        assert!(ironrdp_core::decode::<MultitransportRequestPdu>(&wire).is_err());
+        let mut request = REQUEST_WIRE.to_vec();
+        request[0..2].copy_from_slice(&(0x0002u16 | AUTODETECT_REQ).to_le_bytes());
+        assert!(ironrdp_core::decode::<MultitransportRequestPdu>(&request).is_err());
+
+        let mut response = RESPONSE_SUCCESS_WIRE.to_vec();
+        response[0..2].copy_from_slice(&(0x0004u16 | AUTODETECT_REQ).to_le_bytes());
+        assert!(ironrdp_core::decode::<MultitransportResponsePdu>(&response).is_err());
     }
 
     #[test]
