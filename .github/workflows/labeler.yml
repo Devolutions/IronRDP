@@ -157,9 +157,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
-    permissions:
-      contents: read
-      pull-requests: read
+    permissions: {}
     outputs:
       breaking_change: ${{ steps.semver-checks.outputs.breaking-change }}
       sspi_label_required: ${{ steps.sspi-label.outputs.required }}
@@ -171,6 +169,7 @@ jobs:
           ref: ${{ needs.label.outputs.head-sha }}
           fetch-depth: 0
           persist-credentials: false
+          token: ""
 
       - name: Determine merge base
         id: merge-base
