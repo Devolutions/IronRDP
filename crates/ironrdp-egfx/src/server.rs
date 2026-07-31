@@ -850,7 +850,10 @@ mod capability_negotiation_tests {
         ];
 
         for (client, server) in cases {
-            assert_eq!(negotiate_capabilities(&[client.clone()], &[server]), Some(client));
+            assert_eq!(
+                negotiate_capabilities(core::slice::from_ref(&client), &[server]),
+                Some(client)
+            );
         }
     }
 
