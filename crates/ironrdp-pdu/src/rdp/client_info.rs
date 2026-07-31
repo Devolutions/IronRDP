@@ -12,6 +12,8 @@ use crate::utils;
 use crate::utils::CharacterSet;
 
 const RECONNECT_COOKIE_LEN: usize = 28;
+const RECONNECT_COOKIE_VERSION: u32 = 1;
+const RECONNECT_SECURITY_VERIFIER_LEN: usize = 16;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
 const COMPRESSION_TYPE_MASK: u32 = 0x0000_1E00;
 
@@ -275,6 +277,39 @@ impl ExtendedClientInfo {
     }
 }
 
+/// [2.2.4.3] Client Auto-Reconnect Packet (ARC_CS_PRIVATE_PACKET).
+///
+/// [2.2.4.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ca0c58c8-b1a3-41f7-9f75-2f18c7f0b943
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientAutoReconnect {
+    pub logon_id: u32,
+    pub security_verifier: [u8; RECONNECT_SECURITY_VERIFIER_LEN],
+}
+
+impl ClientAutoReconnect {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: RECONNECT_COOKIE_LEN);
+
+        let packet_length = src.read_u32();
+        if packet_length != u32::try_from(RECONNECT_COOKIE_LEN).expect("RECONNECT_COOKIE_LEN fits into u32") {
+            return Err(invalid_field_err!("cbLen", "invalid auto-reconnect cookie size"));
+        }
+
+        let version = src.read_u32();
+        if version != RECONNECT_COOKIE_VERSION {
+            return Err(invalid_field_err!("version", "invalid auto-reconnect cookie version"));
+        }
+
+        let logon_id = src.read_u32();
+        let security_verifier = src.read_array();
+
+        Ok(Self {
+            logon_id,
+            security_verifier,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ExtendedClientOptionalInfo {
@@ -282,6 +317,7 @@ pub struct ExtendedClientOptionalInfo {
     session_id: Option<u32>,
     performance_flags: Option<PerformanceFlags>,
     reconnect_cookie: Option<[u8; RECONNECT_COOKIE_LEN]>,
+    auto_reconnect: Option<ClientAutoReconnect>,
     // other fields are read by RdpVersion::Ten+
 }
 
@@ -308,6 +344,11 @@ impl ExtendedClientOptionalInfo {
 
     pub fn reconnect_cookie(&self) -> Option<&[u8; RECONNECT_COOKIE_LEN]> {
         self.reconnect_cookie.as_ref()
+    }
+
+    /// The validated Client Auto-Reconnect Packet, if supplied by the client.
+    pub fn auto_reconnect(&self) -> Option<&ClientAutoReconnect> {
+        self.auto_reconnect.as_ref()
     }
 }
 
@@ -391,7 +432,9 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
             if src.len() < RECONNECT_COOKIE_LEN {
                 return Err(invalid_field_err!("cbAutoReconnectCookie", "missing cookie data"));
             }
-            optional_data.reconnect_cookie = Some(src.read_array());
+            let reconnect_cookie = src.read_array();
+            optional_data.auto_reconnect = Some(ClientAutoReconnect::decode(&mut ReadCursor::new(&reconnect_cookie))?);
+            optional_data.reconnect_cookie = Some(reconnect_cookie);
         }
 
         if src.len() < 2 * 2 {
@@ -401,6 +444,42 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
         src.read_u16(); // reserved2
 
         Ok(optional_data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_core::ReadCursor;
+
+    use super::ClientAutoReconnect;
+
+    fn reconnect_cookie() -> [u8; 28] {
+        let mut cookie = [0; 28];
+        cookie[0..4].copy_from_slice(&28u32.to_le_bytes());
+        cookie[4..8].copy_from_slice(&1u32.to_le_bytes());
+        cookie[8..12].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        cookie[12..].copy_from_slice(&[0xA5; 16]);
+        cookie
+    }
+
+    #[test]
+    fn client_auto_reconnect_decodes() {
+        let cookie = reconnect_cookie();
+        let decoded = ClientAutoReconnect::decode(&mut ReadCursor::new(&cookie)).unwrap();
+
+        assert_eq!(decoded.logon_id, 0x1234_5678);
+        assert_eq!(decoded.security_verifier, [0xA5; 16]);
+    }
+
+    #[test]
+    fn client_auto_reconnect_rejects_invalid_length_and_version() {
+        let mut invalid_length = reconnect_cookie();
+        invalid_length[0..4].copy_from_slice(&27u32.to_le_bytes());
+        assert!(ClientAutoReconnect::decode(&mut ReadCursor::new(&invalid_length)).is_err());
+
+        let mut invalid_version = reconnect_cookie();
+        invalid_version[4..8].copy_from_slice(&2u32.to_le_bytes());
+        assert!(ClientAutoReconnect::decode(&mut ReadCursor::new(&invalid_version)).is_err());
     }
 }
 

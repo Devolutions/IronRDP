@@ -297,14 +297,15 @@ impl RdpServerBuilder<BuilderDone> {
     /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
     ///
     /// When set to `Some`, the server sends a Save Session Info PDU carrying the
-    /// cookie once per connection, right after activation, which is what lets a
-    /// client automatically re-establish the session after an *ungraceful*
-    /// disconnect (MS-RDPBCGR 1.3.1.5, "Automatic Reconnection") rather than
-    /// reporting the connection as simply lost. Generate the cookie's 16-byte
-    /// `random_bits` from a CSPRNG. `None` (the default) sends no cookie.
+    /// cookie right after activation. It validates the returning client cookie,
+    /// generates a fresh CSPRNG random whenever a client connects, and updates
+    /// the active client hourly. Automatic reconnection requires TLS or Hybrid
+    /// security, which provides the all-zero client random required for Enhanced
+    /// RDP Security. `None` (the default) sends no cookie.
     ///
-    /// See [`RdpServer::set_auto_reconnect_cookie`] for the runtime equivalent
-    /// and a note on the (unvalidated) returning `ARC_CS_PRIVATE_PACKET`.
+    /// See [`RdpServer::set_auto_reconnect_cookie`] for post-construction
+    /// configuration and [`RdpServer::auto_reconnect_cookie_handle`] for
+    /// updates while the server is running.
     pub fn with_auto_reconnect_cookie(mut self, cookie: Option<ServerAutoReconnect>) -> Self {
         self.state.auto_reconnect_cookie = cookie;
         self

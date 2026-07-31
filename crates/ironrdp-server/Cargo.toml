@@ -34,7 +34,10 @@ __bench = ["dep:visibility"]
 
 [dependencies]
 anyhow = "1.0"
-tokio = { version = "1", features = ["net", "macros", "sync", "rt"] } # public
+hmac = "0.12"
+md5 = { package = "md-5", version = "0.10" }
+rand = "0.9"
+tokio = { version = "1", features = ["net", "macros", "sync", "rt", "time"] } # public
 tokio-rustls = "0.26" # public
 async-trait = "0.1"
 ironrdp-async = { path = "../ironrdp-async", version = "0.10" }
