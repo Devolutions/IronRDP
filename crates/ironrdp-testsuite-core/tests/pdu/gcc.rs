@@ -200,12 +200,14 @@ fn decode_raw_returns_raw_block_type_for_unknown_type() {
 
 #[test]
 fn from_buffer_skips_unknown_client_gcc_block_and_parses_known_blocks() {
-    // An undocumented block (type 0xC00D, blockLen 8, 4 body bytes) trailing an
-    // otherwise valid set must be skipped without affecting the known blocks.
+    // An undocumented block (type 0xC00D, blockLen 8, 4 body bytes) preceding
+    // known blocks must be skipped without affecting the known blocks.
     // Recent Microsoft clients emit such blocks; rejecting them would break the
     // connection (see ClientGccBlocks::decode).
-    let mut buffer = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS_BUFFER.to_vec();
+    let mut buffer = CLIENT_GCC_CORE_BLOCK_BUFFER.to_vec();
     buffer.extend_from_slice(&[0x0d, 0xc0, 0x08, 0x00, 0xde, 0xad, 0xbe, 0xef]);
+    buffer.extend_from_slice(&CLIENT_GCC_SECURITY_BLOCK_BUFFER);
+    buffer.extend_from_slice(&CLIENT_GCC_NETWORK_BLOCK_BUFFER);
 
     assert_eq!(*CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS, decode(buffer.as_slice()).unwrap());
 }
@@ -214,11 +216,29 @@ fn from_buffer_skips_unknown_client_gcc_block_and_parses_known_blocks() {
 fn from_buffer_ignores_cs_unused1_client_gcc_block() {
     // TS_UD_CS_UNUSED1 (type 0xC00C, blockLen 6, 2 pad octets) is a documented
     // padding block the server "SHOULD ignore" (MS-RDPBCGR 2.2.1.3.9). It is
-    // recognised and dropped, leaving the parsed blocks unchanged.
-    let mut buffer = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS_BUFFER.to_vec();
+    // skipped through the forward-compatible unknown-block path.
+    let mut buffer = CLIENT_GCC_CORE_BLOCK_BUFFER.to_vec();
     buffer.extend_from_slice(&[0x0c, 0xc0, 0x06, 0x00, 0x00, 0x00]);
+    buffer.extend_from_slice(&CLIENT_GCC_SECURITY_BLOCK_BUFFER);
+    buffer.extend_from_slice(&CLIENT_GCC_NETWORK_BLOCK_BUFFER);
 
     assert_eq!(*CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS, decode(buffer.as_slice()).unwrap());
+}
+
+#[test]
+fn from_buffer_rejects_truncated_unknown_client_gcc_block() {
+    let mut buffer = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS_BUFFER.to_vec();
+    buffer.extend_from_slice(&[0x0d, 0xc0, 0xff, 0xff]);
+
+    assert!(decode::<ClientGccBlocks>(buffer.as_slice()).is_err());
+}
+
+#[test]
+fn from_buffer_rejects_truncated_unknown_server_gcc_block() {
+    let mut buffer = SERVER_GCC_WITHOUT_OPTIONAL_FIELDS_BUFFER.to_vec();
+    buffer.extend_from_slice(&[0x0d, 0x0c, 0xff, 0xff]);
+
+    assert!(decode::<ServerGccBlocks>(buffer.as_slice()).is_err());
 }
 
 #[test]

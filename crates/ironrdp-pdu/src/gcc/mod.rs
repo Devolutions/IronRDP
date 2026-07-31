@@ -1,6 +1,6 @@
 use ironrdp_core::{
-    Decode, DecodeErrorKind, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode,
-    ensure_fixed_part_size, ensure_size, invalid_field_err,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode, ensure_fixed_part_size,
+    ensure_size, invalid_field_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -32,16 +32,6 @@ pub use self::monitor_extended_data::{ClientMonitorExtendedData, ExtendedMonitor
 pub use self::multi_transport_channel_data::{MultiTransportChannelData, MultiTransportFlags};
 pub use self::network_data::{ChannelDef, ChannelName, ChannelOptions, ClientNetworkData, ServerNetworkData};
 pub use self::security_data::{ClientSecurityData, EncryptionLevel, EncryptionMethod, ServerSecurityData};
-
-macro_rules! user_header_try {
-    ($e:expr) => {
-        match $e {
-            Ok(user_header) => user_header,
-            Err(e) if matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }) => break,
-            Err(e) => return Err(e),
-        }
-    };
-}
 
 const USER_DATA_HEADER_SIZE: usize = 4;
 
@@ -148,8 +138,8 @@ impl<'de> Decode<'de> for ClientGccBlocks {
         let mut multi_transport_channel = None;
         let mut monitor_extended = None;
 
-        loop {
-            let (raw_ty, cur) = user_header_try!(UserDataHeader::decode_raw(src));
+        while !src.is_empty() {
+            let (raw_ty, cur) = UserDataHeader::decode_raw(src)?;
             let Some(ty) = ClientGccType::from_u16(raw_ty) else {
                 // Forward-compat: a user-data block with a type IronRDP does not
                 // model is skipped rather than rejected. The block table in
@@ -170,8 +160,6 @@ impl<'de> Decode<'de> for ClientGccBlocks {
                 ClientGccType::MessageChannelData => message_channel = Some(decode(cur)?),
                 ClientGccType::MonitorExtendedData => monitor_extended = Some(decode(cur)?),
                 ClientGccType::MultiTransportChannelData => multi_transport_channel = Some(decode(cur)?),
-                // Padding-only block the server is told to ignore (2.2.1.3.9).
-                ClientGccType::Unused1 => {}
             };
         }
 
@@ -255,8 +243,8 @@ impl<'de> Decode<'de> for ServerGccBlocks {
         let mut message_channel = None;
         let mut multi_transport_channel = None;
 
-        loop {
-            let (raw_ty, cur) = user_header_try!(UserDataHeader::decode_raw(src));
+        while !src.is_empty() {
+            let (raw_ty, cur) = UserDataHeader::decode_raw(src)?;
             let Some(ty) = ServerGccType::from_u16(raw_ty) else {
                 // Forward-compat: skip server user-data blocks IronRDP does not
                 // model rather than rejecting the connection (see the matching
@@ -295,13 +283,6 @@ pub enum ClientGccType {
     MessageChannelData = 0xC006,
     MonitorExtendedData = 0xC008,
     MultiTransportChannelData = 0xC00A,
-    /// TS_UD_CS_UNUSED1, a padding-only block that, per [MS-RDPBCGR 2.2.1.3.9],
-    /// "SHOULD be ignored by the server if sent by the client". It carries no
-    /// data IronRDP consumes, so it is recognised purely so it can be skipped
-    /// explicitly rather than treated as an unknown type.
-    ///
-    /// [MS-RDPBCGR 2.2.1.3.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/bd4c2741-8842-4a43-8770-791b50dd2207
-    Unused1 = 0xC00C,
 }
 
 impl ClientGccType {
