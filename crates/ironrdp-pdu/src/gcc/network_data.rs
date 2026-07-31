@@ -80,10 +80,7 @@ impl ChannelName {
     ///
     /// Panics if input is not null-terminated.
     pub const fn from_static(value: &'static [u8; 8]) -> Self {
-        // ensure the last byte is always the null terminator
-        if value[Self::SIZE - 1] != 0 {
-            panic!("channel name must be null-terminated")
-        }
+        assert!(value[Self::SIZE - 1] == 0, "channel name must be null-terminated");
 
         Self {
             inner: Cow::Borrowed(value),

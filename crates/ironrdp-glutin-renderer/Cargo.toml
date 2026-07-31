@@ -4,7 +4,7 @@ version = "0.1.0"
 readme = "README.md"
 description = "`glutin` primitives for OpenGL rendering"
 edition.workspace = true
-rust-version = "1.89"
+rust-version = "1.94"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -26,4 +26,3 @@ openh264 = { version = "0.6", optional = true, default-features = false, feature
 
 [lints]
 workspace = true
-

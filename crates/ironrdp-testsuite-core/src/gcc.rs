@@ -36,9 +36,7 @@ const fn make_gcc_block_buffer<const N: usize>(data_type: u16, buffer: &[u8]) ->
         dst
     }
 
-    if N != buffer.len() + USER_HEADER_LEN {
-        panic!("invalid output array len");
-    }
+    assert!(N == buffer.len() + USER_HEADER_LEN, "invalid output array len");
 
     let array = copy_slice(&data_type.to_le_bytes(), [0; N], 0);
 

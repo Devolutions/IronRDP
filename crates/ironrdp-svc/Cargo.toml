@@ -4,7 +4,7 @@ version = "0.8.0"
 readme = "README.md"
 description = "IronRDP traits to implement RDP static virtual channels"
 edition.workspace = true
-rust-version = "1.89"
+rust-version = "1.94"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -27,4 +27,3 @@ bitflags = "2.11"
 
 [lints]
 workspace = true
-

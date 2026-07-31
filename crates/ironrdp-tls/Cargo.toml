@@ -4,7 +4,7 @@ version = "0.2.2"
 readme = "README.md"
 description = "TLS boilerplate common with most IronRDP clients"
 edition.workspace = true
-rust-version = "1.89"
+rust-version = "1.94"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -39,4 +39,3 @@ tokio-rustls = { version = "0.26", default-features = false, optional = true } #
 
 [lints]
 workspace = true
-

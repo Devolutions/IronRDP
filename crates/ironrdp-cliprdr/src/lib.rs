@@ -1971,6 +1971,10 @@ impl Role for Server {
 /// fields without making them part of the public API.
 #[cfg(feature = "__test")]
 #[doc(hidden)]
+#[expect(
+    clippy::multiple_inherent_impl,
+    reason = "test-only accessors must remain inherent methods for integration tests"
+)]
 impl<R: Role> Cliprdr<R> {
     pub fn __test_state(&self) -> &CliprdrState {
         &self.state
