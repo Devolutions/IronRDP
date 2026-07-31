@@ -115,22 +115,24 @@ impl<'de> Decode<'de> for MultitransportRequestPdu {
 
         let security_header = BasicSecurityHeader::decode(src)?;
 
-        // Must be EXACTLY SEC_TRANSPORT_REQ (MS-RDPBCGR 2.2.15.1), not merely
-        // contain the bit. Callers use a successful decode to decide that what
-        // arrived really is a request, so a `contains` check would accept any
-        // PDU whose leading bytes happen to alias onto this field with the
-        // TRANSPORT_REQ bit set. The connector narrows by MCS channel first,
-        // but the message channel also carries auto-detect traffic, so this
-        // decode is still the thing that has to tell them apart.
+        // MS-RDPBCGR 2.2.15.1 requires the flags to *contain* SEC_TRANSPORT_REQ,
+        // and 2.2.8.1.1.2.1 says SEC_RESET_SEQNO and SEC_IGNORE_SEQNO "MUST be
+        // ignored", so they are masked off before comparing rather than treated
+        // as a mismatch.
         //
-        // Note this guard is only as strong as what `BasicSecurityHeader`
-        // admits: a decoder that masks unknown bits away rather than rejecting
-        // them widens the set of byte patterns that reach the comparison
-        // already equal to TRANSPORT_REQ.
-        if security_header.flags != BasicSecurityHeaderFlags::TRANSPORT_REQ {
+        // What remains is compared for equality, which is stricter than the
+        // spec requires and deliberately so: a successful decode is what tells
+        // the connector that what arrived really is a request. The connector
+        // narrows by MCS channel first, but the message channel also carries
+        // auto-detect traffic, whose SEC_AUTODETECT_REQ/RSP a bare `contains`
+        // check would happily accept as a multitransport request.
+        let flags = security_header
+            .flags
+            .difference(BasicSecurityHeaderFlags::RESET_SEQNO | BasicSecurityHeaderFlags::IGNORE_SEQNO);
+        if flags != BasicSecurityHeaderFlags::TRANSPORT_REQ {
             return Err(invalid_field_err!(
                 "securityHeader",
-                "expected securityHeader flags to be exactly SEC_TRANSPORT_REQ"
+                "expected securityHeader flags to contain SEC_TRANSPORT_REQ and no other PDU-type flag"
             ));
         }
 
@@ -390,6 +392,38 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         assert!(ironrdp_core::decode::<MultitransportRequestPdu>(bad_wire).is_err());
+    }
+
+    /// MS-RDPBCGR 2.2.8.1.1.2.1 says SEC_RESET_SEQNO and SEC_IGNORE_SEQNO "MUST
+    /// be ignored", and the spec's own worked examples carry them alongside other
+    /// flags. Rejecting a request that sets them would abort the connection over
+    /// bits the client is told to disregard.
+    #[test]
+    fn decode_request_ignores_the_seqno_flags() {
+        for (label, flags) in [
+            ("SEC_TRANSPORT_REQ | SEC_RESET_SEQNO", 0x0012u16),
+            ("SEC_TRANSPORT_REQ | SEC_IGNORE_SEQNO", 0x0022),
+            ("SEC_TRANSPORT_REQ | both seqno flags", 0x0032),
+        ] {
+            let mut wire = REQUEST_WIRE.to_vec();
+            wire[0..2].copy_from_slice(&flags.to_le_bytes());
+
+            let pdu = ironrdp_core::decode::<MultitransportRequestPdu>(&wire)
+                .unwrap_or_else(|e| panic!("{label} must decode: {e}"));
+            assert_eq!(pdu.request_id, 42, "{label}");
+        }
+    }
+
+    /// The equality check past the ignorable flags is what keeps other traffic on
+    /// the shared message channel from decoding as a request. Auto-detect is the
+    /// case that actually shares the channel.
+    #[test]
+    fn decode_request_rejects_another_pdu_type_alongside_transport_req() {
+        let mut wire = REQUEST_WIRE.to_vec();
+        // SEC_TRANSPORT_REQ | SEC_AUTODETECT_REQ
+        wire[0..2].copy_from_slice(&0x1002u16.to_le_bytes());
+
+        assert!(ironrdp_core::decode::<MultitransportRequestPdu>(&wire).is_err());
     }
 
     #[test]

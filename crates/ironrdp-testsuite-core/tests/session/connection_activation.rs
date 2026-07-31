@@ -465,11 +465,10 @@ fn complete_multitransport_carries_failure_results() {
 }
 
 #[test]
-fn complete_multitransport_omits_responses_without_soft_sync() {
-    // MS-RDPBCGR 2.2.15.2 makes the Initiate Multitransport Response the
-    // Soft-Sync signalling path. Without Soft-Sync mutually advertised the
-    // client reports the outcome in band on the new transport, so nothing may
-    // go back on the main channel.
+fn complete_multitransport_omits_success_without_soft_sync() {
+    // MS-RDPBCGR 2.2.15.2: `S_OK` "MUST only be sent to a server that advertises
+    // the SOFTSYNC_TCP_TO_UDP flag". Success is therefore the one outcome that
+    // has to stay off the wire here; the failure case below still reports.
     let mut connector = multitransport_pending_connector(false, multitransport_request(1, RequestedProtocol::UdpFecR));
     let mut output = WriteBuf::new();
 
@@ -479,7 +478,7 @@ fn complete_multitransport_omits_responses_without_soft_sync() {
 
     assert!(
         output.filled().is_empty(),
-        "no response may be emitted when Soft-Sync was not negotiated"
+        "S_OK may not be emitted when Soft-Sync was not negotiated"
     );
     assert!(matches!(
         connector.state,
@@ -513,15 +512,27 @@ fn skip_multitransport_declines_with_e_abort_under_soft_sync() {
 }
 
 #[test]
-fn skip_multitransport_stays_silent_without_soft_sync() {
+fn skip_multitransport_reports_e_abort_without_soft_sync() {
+    // MS-RDPBCGR 3.2.5.15.1 asks for the response whenever the client could not
+    // initiate the sideband channel, with no Soft-Sync condition attached, and
+    // only `S_OK` is restricted by 2.2.15.2. Declining is a failure, so it is
+    // reported either way.
     let mut connector = multitransport_pending_connector(false, multitransport_request(1, RequestedProtocol::UdpFecR));
     let mut output = WriteBuf::new();
 
     connector.skip_multitransport(&mut output).unwrap();
 
-    assert!(
-        output.filled().is_empty(),
-        "no E_ABORT may be emitted when Soft-Sync was never negotiated"
+    let X224(McsMessage::SendDataRequest(request)) = decode(output.filled()).unwrap() else {
+        panic!("declining must put a failure response on the wire");
+    };
+    assert_eq!(request.channel_id, MESSAGE_CHANNEL_ID);
+
+    let response: MultitransportResponsePdu = decode(&request.user_data).unwrap();
+    assert_eq!(response.request_id, 1);
+    assert_eq!(
+        response.hr_response,
+        MultitransportResponsePdu::E_ABORT,
+        "the specified failure report must not be dropped just because Soft-Sync is absent"
     );
 }
 
@@ -576,6 +587,14 @@ fn complete_multitransport_outside_pending_state_errors() {
         connector
             .complete_multitransport(MultitransportResult::Success, &mut output)
             .is_err()
+    );
+
+    // The error must not cost the caller the state it was in. Reporting
+    // "you called this from the wrong state" while destroying that state
+    // leaves nothing to recover to.
+    assert!(
+        matches!(connector.state, ClientConnectorState::CapabilitiesExchange { .. }),
+        "the connector must still be in CapabilitiesExchange after the outside-state error"
     );
 }
 

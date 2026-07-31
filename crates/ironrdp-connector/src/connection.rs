@@ -397,18 +397,37 @@ impl ClientConnector {
     ///
     /// Borrows rather than consuming, so the caller can resolve this while the
     /// connector is still in a state it can act on.
-    fn multitransport_response_channel(&self) -> ConnectorResult<Option<u16>> {
-        match &self.state {
-            ClientConnectorState::MultitransportPending {
-                message_channel_id,
-                soft_sync: true,
-                ..
-            } => message_channel_id
+    fn multitransport_response_channel(&self, result: &MultitransportResult) -> ConnectorResult<Option<u16>> {
+        let ClientConnectorState::MultitransportPending {
+            message_channel_id,
+            soft_sync,
+            ..
+        } = &self.state
+        else {
+            return Ok(None);
+        };
+
+        match (*soft_sync, result) {
+            // Soft-Sync obliges a response either way, and presupposes the
+            // message channel. Falling back to the I/O channel would put the
+            // response somewhere the server is not reading, so its absence is an
+            // error rather than a reason to improvise.
+            (true, _) => message_channel_id
                 .ok_or_else(|| {
                     general_err!("Soft-Sync was negotiated but the server never offered an MCS message channel")
                 })
                 .map(Some),
-            _ => Ok(None),
+            // `S_OK` is the one value 2.2.15.2 forbids here, so success and only
+            // success is withheld. The outcome is still consumed and the
+            // handshake proceeds, so a caller that established the transport does
+            // not have to know which mode is in play.
+            (false, MultitransportResult::Success) => Ok(None),
+            // A failure is still reported: 3.2.5.15.1 asks for it whenever the
+            // client could not initiate the channel, with no Soft-Sync condition.
+            // It is a SHOULD, so a missing message channel means staying silent
+            // rather than failing a connection over an optional report. In
+            // practice one exists, since 2.2.15.1 puts the request on it.
+            (false, MultitransportResult::Failure(_)) => Ok(*message_channel_id),
         }
     }
 
@@ -421,12 +440,13 @@ impl ClientConnector {
         result: MultitransportResult,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
-        // Resolved before the state is taken. Taking first and failing after
-        // would leave the connector `Consumed`, so a caller that hits this could
-        // neither see what happened nor decline: the error would destroy the
-        // state needed to act on it.
-        let response_channel = self.multitransport_response_channel()?;
-
+        // The state is read, never taken. Everything this needs is a scalar, so
+        // nothing has to be moved out of `self.state`, and the transition at the
+        // end is the only mutation. That makes state preservation structural: an
+        // error anywhere above it leaves the connector exactly as it was, so the
+        // caller can still see what failed and decline. Taking the state up front
+        // and failing afterwards would leave it `Consumed`, with the error having
+        // destroyed the state needed to act on it.
         let ClientConnectorState::MultitransportPending {
             io_channel_id,
             user_channel_id,
@@ -434,26 +454,27 @@ impl ClientConnector {
             request,
             requests_seen,
             ..
-        } = mem::replace(&mut self.state, ClientConnectorState::Consumed)
+        } = &self.state
         else {
             return Err(reason_err!(
                 "MultitransportPending",
                 "{caller} called outside MultitransportPending state",
             ));
         };
+        let (io_channel_id, user_channel_id, message_channel_id, requests_seen) =
+            (*io_channel_id, *user_channel_id, *message_channel_id, *requests_seen);
+        let request_id = request.request_id;
 
-        // Without Soft-Sync the response PDU has no place on the main channel:
-        // MS-RDPBCGR 2.2.15.2 makes it the Soft-Sync signalling path, and the
-        // outcome is otherwise reported in band on the new transport. The
-        // outcome is still consumed and the handshake still proceeds, so a
-        // caller that established the transport does not have to know which
-        // mode is in play.
+        let response_channel = self.multitransport_response_channel(&result)?;
+
+        // Whether a response is owed at all is decided by
+        // `multitransport_response_channel`, which weighs the outcome against
+        // Soft-Sync. Either way the outcome is consumed and the handshake
+        // proceeds.
         let total_written = if let Some(response_channel) = response_channel {
             let response = match result {
-                MultitransportResult::Success => {
-                    rdp::multitransport::MultitransportResponsePdu::success(request.request_id)
-                }
-                MultitransportResult::Failure(hr) => multitransport_response(request.request_id, hr),
+                MultitransportResult::Success => rdp::multitransport::MultitransportResponsePdu::success(request_id),
+                MultitransportResult::Failure(hr) => multitransport_response(request_id, hr),
             };
 
             encode_send_data_request(user_channel_id, response_channel, &response, output)?
@@ -470,7 +491,7 @@ impl ClientConnector {
             requests_seen,
         };
 
-        // Without Soft-Sync nothing goes on the wire at all, and `from_size`
+        // Nothing goes on the wire when no response is owed, and `from_size`
         // rejects a zero length.
         if total_written == 0 {
             Ok(Written::Nothing)
