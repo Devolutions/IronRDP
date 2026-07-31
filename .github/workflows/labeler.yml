@@ -247,51 +247,82 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Label breaking change and SSPI changes
+      - name: Add breaking change label
+        if: needs.semver.outputs.breaking_change == 'true'
         uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
         with:
           script: |
-            const pullRequestNumber = Number("${{ needs.label.outputs.pr-number }}");
-            const breakingChange = "${{ needs.semver.outputs.breaking_change }}" === "true";
-            const sspiLabelRequired = "${{ needs.semver.outputs.sspi_label_required }}" === "true";
-            const breakingChangeLabel = "breaking-change";
-            const sspiLabel = "A-sspi";
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+              labels: ["breaking-change"],
+            });
+
+      - name: Remove breaking change label
+        if: needs.semver.outputs.breaking_change != 'true'
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
+        with:
+          script: |
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
 
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pullRequestNumber,
             });
-            const existingLabels = new Set(issue.labels.map((label) => label.name));
 
-            if (breakingChange && !existingLabels.has(breakingChangeLabel)) {
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pullRequestNumber,
-                labels: [breakingChangeLabel],
-              });
-            } else if (!breakingChange && existingLabels.has(breakingChangeLabel)) {
+            if (issue.labels.some((label) => label.name === "breaking-change")) {
               await github.rest.issues.removeLabel({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pullRequestNumber,
-                name: breakingChangeLabel,
+                name: "breaking-change",
               });
             }
 
-            if (sspiLabelRequired && !existingLabels.has(sspiLabel)) {
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pullRequestNumber,
-                labels: [sspiLabel],
-              });
-            } else if (!sspiLabelRequired && existingLabels.has(sspiLabel)) {
+      - name: Add SSPI label
+        if: needs.semver.outputs.sspi_label_required == 'true'
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
+        with:
+          script: |
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+              labels: ["A-sspi"],
+            });
+
+      - name: Remove SSPI label
+        if: needs.semver.outputs.sspi_label_required != 'true'
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
+        with:
+          script: |
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
+
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+            });
+
+            if (issue.labels.some((label) => label.name === "A-sspi")) {
               await github.rest.issues.removeLabel({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pullRequestNumber,
-                name: sspiLabel,
+                name: "A-sspi",
               });
             }
