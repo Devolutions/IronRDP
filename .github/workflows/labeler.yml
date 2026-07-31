@@ -64,7 +64,7 @@ jobs:
         with:
           script: |
             const pullRequestNumber = Number("${{ steps.pull-request.outputs.number }}");
-            const sourceFile = /\.(?:rs|cs|[cm]?js|jsx|[cm]?ts|tsx|svelte)$/i;
+            const sourceFile = /\.(?:rs|cs|[cm]?js|jsx|[cm]?ts|tsx|svelte|ya?ml|toml)$/i;
             let changedLines = 0;
 
             for await (const response of github.paginate.iterator(github.rest.pulls.listFiles, {
@@ -178,6 +178,12 @@ jobs:
         run: |
           git fetch origin master
           echo "base=$(git merge-base HEAD origin/master)" >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get -y install libasound2-dev
 
       - name: Install cargo-semver-checks
         shell: bash
