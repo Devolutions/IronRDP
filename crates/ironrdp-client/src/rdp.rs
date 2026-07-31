@@ -903,7 +903,7 @@ where
     Ok((connection_result, upgraded_framed))
 }
 
-/// Hyper-V front via `ironrdp-vmconnect`, then the shared RDP tail.
+/// Hyper-V console connect via ironrdp-vmconnect, then shared RDP tail.
 async fn vmconnect_handshake_and_finalize<S>(
     mut framed: ironrdp_tokio::TokioFramed<S>,
     mut connector: ironrdp_connector::ClientConnector,

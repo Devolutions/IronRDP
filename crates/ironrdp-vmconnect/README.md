@@ -2,18 +2,19 @@
 
 Hyper-V console front-end: **PCB → TLS → CredSSP → X.224**.
 
+PCB payload is always `{vm_id};EnhancedMode=1`.
+After pre-X.224 CredSSP, the host may select either `HYBRID` or `HYBRID_EX`.
+
 | API | Role |
 | --- | --- |
 | `PORT` | 2179 |
-| `send_preconnection_blob` | pre-TLS routing blob → `PcbSent` receipt |
-| `connect_front` | post-TLS CredSSP + X.224; **requires** `PcbSent` by value → `Upgraded` |
-| `PcbSent` | opaque receipt; only produced by `send_preconnection_blob` |
-
-Caller owns TLS between the two steps. Hand `Upgraded` to `ironrdp_async::connect_finalize`.
+| `encode_preconnection_blob` | PCB V2 bytes |
+| `send_preconnection_blob` | write PCB → `PcbSent` |
+| `connect_front` | CredSSP + X.224 after TLS; takes `PcbSent` → `Upgraded` |
 
 ```rust,ignore
 let pcb_sent = ironrdp_vmconnect::send_preconnection_blob(&mut framed, vm_id).await?;
-// caller: TLS upgrade on the same stream
+// caller: TLS
 let upgraded = ironrdp_vmconnect::connect_front(
     pcb_sent, &mut framed, &mut connector, &mut network, server_name, &pubkey, kerberos,
 ).await?;

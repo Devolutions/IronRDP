@@ -61,10 +61,7 @@ pub struct Config {
     pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
 
-    /// Hyper-V VM ID to connect to via vmconnect, if this is a vmconnect session.
-    ///
-    /// When set, the client sends a Preconnection Blob carrying this id and performs the Hyper-V
-    /// connection ordering (PCB → TLS → CredSSP → X.224 negotiation) instead of the standard one.
+    /// Hyper-V VM ID when connecting to a VM console (port [`ironrdp_vmconnect::PORT`]).
     pub(crate) vm_id: Option<String>,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
@@ -986,17 +983,8 @@ impl ConfigBuilder {
         self
     }
 
-    /// Connect to a Hyper-V VM console via vmconnect, identified by its VM ID (a GUID string).
-    ///
-    /// The Hyper-V front (Preconnection Blob → TLS → CredSSP → X.224) is driven by
-    /// `ironrdp-vmconnect` outside the plain RDP connector. A console listens on port
-    /// [`ironrdp_vmconnect::PORT`] (2179), not 3389, so the destination must say so.
-    ///
-    /// Works over the Direct and gateway transports, but not RDCleanPath, whose proxy negotiates
-    /// X.224 before this ordering is ready for it; [`build`](Self::build) rejects that pair.
-    ///
-    /// Not mirrored into the [`PropertySet`]: `.rdp` files carry the VM ID in the `pcb` key, which
-    /// `ironrdp-cfg` does not model yet.
+    /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
+    /// [`ironrdp_vmconnect::PORT`] (2179). Not supported over RDCleanPath.
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1294,8 +1282,6 @@ impl ConfigBuilder {
             }),
         };
 
-        // An RDCleanPath proxy negotiates X.224 for us before the Hyper-V ordering gets there. A
-        // gateway is only a tunnel, so the connector still drives the whole handshake itself.
         if self.vm_id.is_some() && matches!(transport, Transport::RDCleanPath(_)) {
             anyhow::bail!("vmconnect cannot be used over an RDCleanPath proxy");
         }

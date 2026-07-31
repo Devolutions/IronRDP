@@ -378,11 +378,7 @@ impl ClientConnector {
         matches!(self.state, ClientConnectorState::EnhancedSecurityUpgrade { .. })
     }
 
-    /// Record that the security upgrade (typically TLS) has already been performed out of band.
-    ///
-    /// Drivers call this after upgrading the transport. Callers that completed TLS before
-    /// entering the standard connection sequence (for example Hyper-V vmconnect, which runs
-    /// CredSSP before X.224) may also use it once [`should_perform_security_upgrade`] is true.
+    /// Advance past [`ClientConnectorState::EnhancedSecurityUpgrade`] after TLS is already done.
     ///
     /// # Panics
     ///
@@ -397,12 +393,7 @@ impl ClientConnector {
         matches!(self.state, ClientConnectorState::Credssp { .. })
     }
 
-    /// Record that CredSSP/NLA has already been performed out of band.
-    ///
-    /// The standard driver calls this after running [`crate::credssp::CredsspSequence`]. Callers
-    /// that authenticated before X.224 (Hyper-V Direct Approach) may call it after
-    /// [`mark_security_upgrade_as_done`] so the shared RDP tail starts at the Basic Settings
-    /// Exchange with the already-selected protocol.
+    /// Advance past [`ClientConnectorState::Credssp`] after NLA is already done.
     ///
     /// # Panics
     ///

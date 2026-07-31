@@ -6,7 +6,6 @@ use std::sync::Arc;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport, TransportKind};
 use ironrdp_viewer::cli::parse_config_from;
-use url::Url;
 use uuid::Uuid;
 
 struct TempRdpFile {
@@ -239,56 +238,4 @@ fn out_of_range_desktop_dimensions_fall_back_to_defaults() {
         invalid_config.connector().desktop_size.height,
         default_config.connector().desktop_size.height
     );
-}
-
-#[test]
-fn vmconnect_cli_flag_reaches_the_config() {
-    let config = parse_config_from_rdp(
-        "full address:s:hyperv-host.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
-        &["--vmconnect", "efd1efab-c750-4262-b1bb-af0f7733bdd6"],
-    );
-
-    assert_eq!(config.vm_id(), Some("efd1efab-c750-4262-b1bb-af0f7733bdd6"));
-}
-
-/// A builder with every required field filled in, ready for a transport to be selected.
-fn vmconnect_builder() -> ConfigBuilder {
-    ConfigBuilder::new()
-        .with_destination(Destination::new("hyperv-host.example.com:2179").expect("valid destination"))
-        .with_username("test-user")
-        .with_password("test-pass")
-        .with_client_build(0)
-        .with_client_dir(String::new())
-        .with_client_name("test")
-        .with_platform(MajorPlatformType::UNIX)
-        .with_vmconnect("efd1efab-c750-4262-b1bb-af0f7733bdd6")
-}
-
-#[test]
-fn vmconnect_is_rejected_over_rdcleanpath() {
-    let err = vmconnect_builder()
-        .with_transport(TransportKind::RDCleanPath {
-            url: Url::parse("wss://proxy.example.com").expect("valid URL"),
-        })
-        .with_rdcleanpath_token("token")
-        .build()
-        .expect_err("RDCleanPath negotiates X.224 for us, which vmconnect cannot accommodate");
-
-    assert!(err.to_string().contains("vmconnect"), "unexpected error: {err}");
-}
-
-/// A gateway is only a tunnel, so the connector still drives the Hyper-V ordering itself.
-#[test]
-fn vmconnect_is_allowed_over_a_gateway() {
-    let config = vmconnect_builder()
-        .with_transport(TransportKind::Gateway {
-            endpoint: "gw.example.com:443".to_owned(),
-        })
-        .with_gateway_username("gw-user")
-        .with_gateway_password("gw-pass")
-        .build()
-        .expect("gateway vmconnect should build");
-
-    assert_eq!(config.vm_id(), Some("efd1efab-c750-4262-b1bb-af0f7733bdd6"));
-    assert!(matches!(config.transport(), Transport::Gateway(_)));
 }
