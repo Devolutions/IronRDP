@@ -127,7 +127,7 @@ fn truncated() {
 
     expect![[r#"
         Error {
-            context: "<ironrdp_pdu::pcb::PreconnectionBlob as ironrdp_core::decode::Decode>::decode",
+            context: "<ironrdp_pdu::pcb::PreconnectionBlob as ironrdp_core::decode::Decode<'_>>::decode",
             kind: NotEnoughBytes {
                 received: 0,
                 expected: 239,
