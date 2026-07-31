@@ -971,6 +971,7 @@ async fn active_session(
                         if let ConnectionActivationState::Finalized {
                             desktop_size,
                             share_id,
+                            input_flags: _,
                             enable_server_pointer,
                             pointer_software_rendering,
                         } = connection_activation.connection_activation_state()

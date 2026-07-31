@@ -82,6 +82,7 @@ pub mod ffi {
                 ironrdp::connector::connection_activation::ConnectionActivationState::ConnectionFinalization {
                     desktop_size,
                     share_id: _,
+                    input_flags: _,
                     connection_finalization,
                 } => Ok(Box::new(ConnectionActivationStateConnectionFinalization {
                     desktop_size,
@@ -98,6 +99,7 @@ pub mod ffi {
                 ironrdp::connector::connection_activation::ConnectionActivationState::Finalized {
                     desktop_size,
                     share_id,
+                    input_flags: _,
                     enable_server_pointer,
                     pointer_software_rendering,
                 } => Ok(Box::new(ConnectionActivationStateFinalized {
