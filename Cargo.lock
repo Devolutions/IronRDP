@@ -2549,6 +2549,7 @@ dependencies = [
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-vmconnect",
  "smallvec",
  "tokio",
  "tokio-tungstenite",
@@ -3072,6 +3073,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -3122,6 +3124,17 @@ dependencies = [
  "url",
  "whoami",
  "winit",
+]
+
+[[package]]
+name = "ironrdp-vmconnect"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-async",
+ "ironrdp-connector",
+ "ironrdp-core 0.2.1",
+ "ironrdp-pdu",
+ "tracing",
 ]
 
 [[package]]

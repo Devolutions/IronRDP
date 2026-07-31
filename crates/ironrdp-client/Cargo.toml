@@ -64,6 +64,7 @@ ironrdp-echo = { path = "../ironrdp-echo", version = "0.4" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqwest"] }
 ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.2" }
+ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.1" }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
 

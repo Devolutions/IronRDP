@@ -44,6 +44,7 @@ semver = "1.0"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["sync", "time", "net", "rt", "macros", "io-util"] }
+url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [lints]
