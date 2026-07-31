@@ -409,7 +409,11 @@ impl Compositor {
     /// deleted or remapped mid-frame contributes nothing: its output region is
     /// repainted by whatever maps there next.
     pub(crate) fn end_frame(&mut self) {
-        for dirty in core::mem::take(&mut self.frame) {
+        let frame = core::mem::take(&mut self.frame);
+        // Released before materializing so the pixel copies can spend the budget the
+        // metadata was holding.
+        self.release(frame.len() * size_of::<DirtyRegion>());
+        for dirty in frame {
             self.materialize(&dirty);
         }
     }
@@ -499,6 +503,16 @@ impl Compositor {
             if last.surface_id == surface_id && covers(&last.rect, &rect) {
                 return;
             }
+        }
+
+        // The filter above only collapses consecutive repeats, so alternating
+        // rectangles still land one entry each and the frame stays open until the
+        // peer sends `EndFrame`. Charging the entry puts that growth under the same
+        // ceiling as the pixel buffers: `RDPGFX_POINT16` is four bytes on the wire
+        // against ten resident here, so an uncharged queue would let a peer trade
+        // its own bandwidth for 2.5 times as much of the client's memory.
+        if !self.charge(size_of::<DirtyRegion>()) {
+            return;
         }
         self.frame.push(DirtyRegion { surface_id, rect });
     }
@@ -1125,6 +1139,40 @@ mod tests {
             "the queue must refuse deltas once the shared budget is exhausted"
         );
         assert!(c.allocated_bytes <= MAX_COMPOSITOR_BYTES);
+    }
+
+    /// The repeat filter only collapses consecutive repeats, so a peer that never
+    /// sends `EndFrame` can alternate two rectangles and add a dirty entry per
+    /// rectangle indefinitely. The entries are charged, so that growth stops at the
+    /// budget instead of running to exhaustion.
+    #[test]
+    fn alternating_dirty_rectangles_stop_at_the_budget() {
+        const ENTRY: usize = size_of::<DirtyRegion>();
+        const FIT: usize = 64;
+        let mut c = Compositor::default();
+        c.reset(64, 64);
+        c.create_surface(1, 64, 64);
+
+        // Spend the budget down to a known headroom rather than allocating 256 MiB
+        // of surfaces to reach it, so the loop below stays short.
+        let reserve = MAX_COMPOSITOR_BYTES - c.allocated_bytes - FIT * ENTRY;
+        assert!(c.charge(reserve));
+
+        // Neither rectangle contains the other, so every one of these survives the
+        // repeat filter and reaches the push. No `EndFrame` in between: this is the
+        // single unbounded frame the filter cannot collapse.
+        let black = Color {
+            b: 0,
+            g: 0,
+            r: 0,
+            xa: 0,
+        };
+        for _ in 0..FIT {
+            c.solid_fill(1, &black, &[rect(0, 0, 64, 63), rect(0, 1, 64, 64)]);
+        }
+
+        assert_eq!(c.frame.len(), FIT, "the frame must stop growing at the budget");
+        assert_eq!(c.allocated_bytes, MAX_COMPOSITOR_BYTES);
     }
 
     /// Draining hands the pixels to the consumer, so the queue's charge returns to
