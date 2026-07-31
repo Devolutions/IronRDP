@@ -1,0 +1,286 @@
+name: Label pull request
+
+on:
+  pull_request_target:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Pull request number to label
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    name: Label pull request
+    runs-on: ubuntu-latest
+    outputs:
+      pr-number: ${{ steps.pull-request.outputs.number }}
+      head-sha: ${{ steps.pull-request.outputs.head-sha }}
+
+    steps:
+      - name: Resolve pull request
+        id: pull-request
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pullRequestNumber = context.eventName === "workflow_dispatch"
+              ? Number(core.getInput("pr-number", { required: true }))
+              : context.payload.pull_request.number;
+
+            if (!Number.isSafeInteger(pullRequestNumber) || pullRequestNumber <= 0) {
+              core.setFailed("pr-number must be a positive integer");
+              return;
+            }
+
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullRequestNumber,
+            });
+
+            if (pullRequest.state !== "open") {
+              core.setFailed(`pull request #${pullRequestNumber} is not open`);
+              return;
+            }
+
+            core.setOutput("number", pullRequest.number);
+            core.setOutput("head-sha", pullRequest.head.sha);
+            core.setOutput("author-association", pullRequest.author_association);
+
+      - name: Label changed paths
+        uses: actions/labeler@v6
+        with:
+          configuration-path: .github/labeler.yml
+          pr-number: ${{ steps.pull-request.outputs.number }}
+          sync-labels: true
+
+      - name: Label pull request size
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pullRequestNumber = Number("${{ steps.pull-request.outputs.number }}");
+            const sourceFile = /\.(?:rs|cs|[cm]?js|jsx|[cm]?ts|tsx)$/i;
+            let changedLines = 0;
+
+            for await (const response of github.paginate.iterator(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullRequestNumber,
+              per_page: 100,
+            })) {
+              for (const file of response.data) {
+                if (sourceFile.test(file.filename)) {
+                  changedLines += file.additions + file.deletions;
+                }
+              }
+            }
+
+            const sizeLabels = ["size/XS", "size/S", "size/M", "size/L", "size/XL"];
+            const sizeLabel = changedLines < 30
+              ? "size/XS"
+              : changedLines < 150
+                ? "size/S"
+                : changedLines < 400
+                  ? "size/M"
+                  : changedLines < 800
+                    ? "size/L"
+                    : "size/XL";
+
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+            });
+            const existingLabels = issue.labels.map((label) => label.name);
+
+            for (const label of existingLabels) {
+              if (sizeLabels.includes(label)) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pullRequestNumber,
+                  name: label,
+                });
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+              labels: [sizeLabel],
+            });
+
+            core.info(`Applied ${sizeLabel} for ${changedLines} changed source lines`);
+
+      - name: Label first-time contributor
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pullRequestNumber = Number("${{ steps.pull-request.outputs.number }}");
+            const authorAssociation = "${{ steps.pull-request.outputs.author-association }}";
+            const firstTimeContributorLabel = "contributor/first-time";
+
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+            });
+            const hasLabel = issue.labels.some((label) => label.name === firstTimeContributorLabel);
+
+            if (authorAssociation === "FIRST_TIME_CONTRIBUTOR" && !hasLabel) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullRequestNumber,
+                labels: [firstTimeContributorLabel],
+              });
+            } else if (authorAssociation !== "FIRST_TIME_CONTRIBUTOR" && hasLabel) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullRequestNumber,
+                name: firstTimeContributorLabel,
+              });
+            }
+
+  semver:
+    name: Check public API compatibility
+    needs: label
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      breaking_change: ${{ steps.semver-checks.outputs.breaking-change }}
+      sspi_label_required: ${{ steps.sspi-label.outputs.required }}
+
+    steps:
+      - name: Check out pull request head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.label.outputs.head-sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Determine merge base
+        id: merge-base
+        shell: bash
+        run: |
+          git fetch origin master
+          echo "base=$(git merge-base HEAD origin/master)" >> "$GITHUB_OUTPUT"
+
+      - name: Detect SSPI changes
+        id: sspi-label
+        shell: bash
+        run: |
+          BASE="${{ steps.merge-base.outputs.base }}"
+          sspi_path_changed=false
+
+          if ! git diff --quiet "$BASE" HEAD -- \
+            ':(glob)**/*credssp*' \
+            ':(glob)**/*sspi*' \
+            crates/ironrdp-pdu/src/nego.rs; then
+            sspi_path_changed=true
+          fi
+
+          sspi_dependency_changed=false
+          if git diff --unified=0 "$BASE" HEAD -- Cargo.toml ':(glob)**/Cargo.toml' |
+            grep -Eq '^[+-][[:space:]]*"?sspi"?[[:space:]]*='; then
+            sspi_dependency_changed=true
+          fi
+
+          if [ "$sspi_path_changed" = true ] || [ "$sspi_dependency_changed" = true ]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "required=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
+
+      - name: Check public API compatibility
+        id: semver-checks
+        shell: bash
+        run: |
+          BASE="${{ steps.merge-base.outputs.base }}"
+          echo "Checking compatibility against $BASE"
+
+          set +e
+          cargo semver-checks --baseline-rev "$BASE"
+          status=$?
+          set -e
+
+          case "$status" in
+            0)
+              echo "breaking-change=false" >> "$GITHUB_OUTPUT"
+              ;;
+            100)
+              echo "breaking-change=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              exit "$status"
+              ;;
+          esac
+
+  label-derived-changes:
+    name: Label derived changes
+    needs: [label, semver]
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Label breaking change and SSPI changes
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pullRequestNumber = Number("${{ needs.label.outputs.pr-number }}");
+            const breakingChange = "${{ needs.semver.outputs.breaking_change }}" === "true";
+            const sspiLabelRequired = "${{ needs.semver.outputs.sspi_label_required }}" === "true";
+            const breakingChangeLabel = "breaking-change";
+            const sspiLabel = "A-sspi";
+
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+            });
+            const existingLabels = new Set(issue.labels.map((label) => label.name));
+
+            if (breakingChange && !existingLabels.has(breakingChangeLabel)) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullRequestNumber,
+                labels: [breakingChangeLabel],
+              });
+            } else if (!breakingChange && existingLabels.has(breakingChangeLabel)) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullRequestNumber,
+                name: breakingChangeLabel,
+              });
+            }
+
+            if (sspiLabelRequired && !existingLabels.has(sspiLabel)) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullRequestNumber,
+                labels: [sspiLabel],
+              });
+            } else if (!sspiLabelRequired && existingLabels.has(sspiLabel)) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullRequestNumber,
+                name: sspiLabel,
+              });
+            }
