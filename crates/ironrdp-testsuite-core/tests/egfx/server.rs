@@ -1,4 +1,4 @@
-use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor, encode_vec};
+use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::pdu::{
     Avc420Region, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
