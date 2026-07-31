@@ -176,11 +176,11 @@ impl UsbBcdVersion {
 
     fn to_supported_usb_version(self) -> SupportedUsbVer {
         if self.0 >= 0x0200 {
-            SupportedUsbVer::Usb20
+            SupportedUsbVer::USB_20
         } else if self.0 >= 0x0110 {
-            SupportedUsbVer::Usb11
+            SupportedUsbVer::USB_11
         } else {
-            SupportedUsbVer::Usb10
+            SupportedUsbVer::USB_10
         }
     }
 
@@ -292,7 +292,7 @@ fn usb_device_caps(info: &DeviceInfo) -> PduResult<UsbDeviceCaps> {
     // `urbdrc_send_add_device()`.
     Ok(UsbDeviceCaps {
         usb_bus_iface_ver: UsbBusIfaceVer::V2,
-        usbdi_ver: UsbdiVer::V0x600,
+        usbdi_ver: UsbdiVer::V0X600,
         supported_usb_ver: info.descriptor.usb_version.to_supported_usb_version(),
         device_speed: device_speed(info)?,
         no_ack_isoch_write_jitter_buf_size: NoAckIsochWriteJitterBufSizeInMs::try_from(
@@ -304,15 +304,15 @@ fn usb_device_caps(info: &DeviceInfo) -> PduResult<UsbDeviceCaps> {
 
 fn device_speed(info: &DeviceInfo) -> PduResult<DeviceSpeed> {
     match info.speed {
-        UsbConnectionSpeed::Low | UsbConnectionSpeed::Full => Ok(DeviceSpeed::FullSpeed),
+        UsbConnectionSpeed::Low | UsbConnectionSpeed::Full => Ok(DeviceSpeed::FULL_SPEED),
         UsbConnectionSpeed::High | UsbConnectionSpeed::Super | UsbConnectionSpeed::SuperPlus => {
-            Ok(DeviceSpeed::HighSpeed)
+            Ok(DeviceSpeed::HIGH_SPEED)
         }
         UsbConnectionSpeed::Unknown => {
             if info.descriptor.usb_version.is_at_least_usb20() {
-                Ok(DeviceSpeed::HighSpeed)
+                Ok(DeviceSpeed::HIGH_SPEED)
             } else {
-                Ok(DeviceSpeed::FullSpeed)
+                Ok(DeviceSpeed::FULL_SPEED)
             }
         }
     }
