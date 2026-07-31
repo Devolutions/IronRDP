@@ -33,11 +33,12 @@ fn connect_time_stop_without_a_payload_is_refused() {
     }
 }
 
-/// The decoder enforces the same rule, so the two sides agree on what the wire
-/// permits. Accepting a zero length here would mean accepting what we refuse to
-/// emit.
+/// The decoder does not enforce the same rule, and that asymmetry is the point: a
+/// zero length is refused on the way out and accepted on the way in. The sequence
+/// number and request type survive intact, so the Bandwidth Measure Results reply
+/// is fully determined and there is nothing a rejection would protect.
 #[test]
-fn connect_time_stop_with_a_zero_payload_length_is_rejected() {
+fn connect_time_stop_with_a_zero_payload_length_is_accepted() {
     // A well-formed connect-time stop, then its payloadLength forced to zero.
     let valid = AutoDetectRequest::BandwidthMeasureStop {
         sequence_number: 7,
@@ -52,7 +53,37 @@ fn connect_time_stop_with_a_zero_payload_length_is_rejected() {
     wire[7] = 0;
     wire.truncate(8);
 
-    assert!(decode::<AutoDetectRequest>(&wire).is_err());
+    let decoded = decode::<AutoDetectRequest>(&wire).expect("a zero payload length must still decode");
+
+    let AutoDetectRequest::BandwidthMeasureStop {
+        sequence_number,
+        request_type,
+        payload,
+    } = decoded
+    else {
+        panic!("expected a BandwidthMeasureStop, got {decoded:?}");
+    };
+    assert_eq!(sequence_number, 7);
+    assert_eq!(request_type, BW_STOP_CONNECT_TIME);
+    assert_eq!(
+        payload,
+        Some(Vec::new()),
+        "the payload is present and empty, not absent: the wire carried a length field"
+    );
+}
+
+/// What the peer sent is answerable, but it is not something we will echo back:
+/// re-encoding the decoded value still fails, which is the asymmetry stated as a
+/// test rather than only as a comment.
+#[test]
+fn a_decoded_zero_length_stop_does_not_re_encode() {
+    let request = AutoDetectRequest::BandwidthMeasureStop {
+        sequence_number: 7,
+        request_type: BW_STOP_CONNECT_TIME,
+        payload: Some(Vec::new()),
+    };
+
+    assert!(encode_vec(&request).is_err());
 }
 
 #[test]
