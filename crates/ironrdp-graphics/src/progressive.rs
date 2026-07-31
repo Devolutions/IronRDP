@@ -75,7 +75,7 @@ pub fn decode_first_pass(
     // Step 2: LL3 differential decoding (reverse delta encoding on last subband)
     crate::subband_reconstruction::decode(&mut coefficients[ll3_offset(use_reduce_extrapolate)..]);
 
-    // Step 3: Base dequantization (shift left by quant - 1)
+    // Step 3: Base dequantization (scale by 2^(quant - 6))
     dequantize_component_ccq(coefficients, base_quant, use_reduce_extrapolate);
 
     // Step 4: Progressive dequantization (shift left by BitPos)
@@ -296,7 +296,7 @@ pub fn encode_first_pass(
         crate::dwt::encode(coefficients, &mut temp);
     }
 
-    // Step 2: Base quantization (right-shift by quant - 1)
+    // Step 2: Base quantization (scale by 2^(quant - 6))
     quantize_component_ccq(coefficients, base_quant, use_reduce_extrapolate);
 
     // Step 3: Progressive quantization (right-shift by BitPos)
@@ -311,25 +311,30 @@ pub fn encode_first_pass(
 
 /// Base quantization using `ComponentCodecQuant` (progressive format).
 ///
-/// Each band is right-shifted by `(quant_value - 1)`. Inverse of `dequantize_component_ccq`.
+/// Each band is divided by `2^(quant_value - 6)` and rounded. This is the
+/// scale specified by MS-RDPRFX section 3.1.8.1.5.
 fn quantize_component_ccq(coefficients: &mut [i16], quant: &ComponentCodecQuant, use_reduce_extrapolate: bool) {
     let bands = get_band_layout(use_reduce_extrapolate);
 
     for (band_idx, band) in bands.iter().enumerate() {
         let q = quant.for_band(band_idx);
-        let factor = q.saturating_sub(1);
-        if factor > 0 {
-            let start = band.offset;
-            let end = start + band.count();
-            for coeff in &mut coefficients[start..end] {
-                // Truncation toward zero (same as classic quantization::encode)
-                let val = i32::from(*coeff);
-                if val >= 0 {
-                    *coeff = clamp_i16(val >> i32::from(factor));
-                } else {
-                    *coeff = clamp_i16(-((-val) >> i32::from(factor)));
+        let start = band.offset;
+        let end = start + band.count();
+
+        match q.cmp(&6) {
+            core::cmp::Ordering::Greater => {
+                let shift = q - 6;
+                for coeff in &mut coefficients[start..end] {
+                    *coeff = round_shift_right(*coeff, shift);
                 }
             }
+            core::cmp::Ordering::Less => {
+                let shift = 6 - q;
+                for coeff in &mut coefficients[start..end] {
+                    *coeff = clamp_i16(i32::from(*coeff) << i32::from(shift));
+                }
+            }
+            core::cmp::Ordering::Equal => {}
         }
     }
 }
@@ -457,20 +462,31 @@ pub fn rgba_to_ycbcr(pixels: &[u8], y_out: &mut [i16], cb_out: &mut [i16], cr_ou
 
 /// Base dequantization using `ComponentCodecQuant` (progressive-format quantization).
 ///
-/// Each band is shifted left by `(quant_value - 1)`. Uses `for_band()` to map
-/// band indices to quant values, which handles the progressive nibble ordering.
+/// Each band is multiplied by `2^(quant_value - 6)` and rounded. Uses
+/// `for_band()` to map band indices to quant values, which handles the
+/// progressive nibble ordering.
 fn dequantize_component_ccq(coefficients: &mut [i16], quant: &ComponentCodecQuant, use_reduce_extrapolate: bool) {
     let bands = get_band_layout(use_reduce_extrapolate);
 
     for (band_idx, band) in bands.iter().enumerate() {
         let q = quant.for_band(band_idx);
-        let factor = i16::from(q).saturating_sub(1);
-        if factor > 0 {
-            let start = band.offset;
-            let end = start + band.count();
-            for coeff in &mut coefficients[start..end] {
-                *coeff <<= factor;
+        let start = band.offset;
+        let end = start + band.count();
+
+        match q.cmp(&6) {
+            core::cmp::Ordering::Greater => {
+                let shift = q - 6;
+                for coeff in &mut coefficients[start..end] {
+                    *coeff = clamp_i16(i32::from(*coeff) << i32::from(shift));
+                }
             }
+            core::cmp::Ordering::Less => {
+                let shift = 6 - q;
+                for coeff in &mut coefficients[start..end] {
+                    *coeff = round_shift_right(*coeff, shift);
+                }
+            }
+            core::cmp::Ordering::Equal => {}
         }
     }
 }
@@ -565,6 +581,14 @@ fn clamp_u8(value: i32) -> u8 {
 )]
 fn clamp_i16(value: i32) -> i16 {
     value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+}
+
+/// Divide by a power of two using the base-quantization rounding rule.
+fn round_shift_right(value: i16, shift: u8) -> i16 {
+    debug_assert!(shift > 0);
+
+    let half = 1i32 << (i32::from(shift) - 1);
+    clamp_i16((i32::from(value) + half) >> i32::from(shift))
 }
 
 // ---------------------------------------------------------------------------
@@ -1671,24 +1695,24 @@ mod tests {
         coefficients[4032] = 5; // LL3 band (index 9, standard layout)
 
         let quant = ComponentCodecQuant {
-            ll3: 3,
+            ll3: 7,
             hl3: 0,
             lh3: 0,
             hh3: 0,
             hl2: 0,
             lh2: 0,
             hh2: 0,
-            hl1: 4,
+            hl1: 8,
             lh1: 0,
             hh1: 0,
         };
 
         dequantize_component_ccq(&mut coefficients, &quant, false);
 
-        // HL1: shift left by (4 - 1) = 3 -> 10 << 3 = 80
-        assert_eq!(coefficients[0], 80);
-        // LL3: shift left by (3 - 1) = 2 -> 5 << 2 = 20
-        assert_eq!(coefficients[4032], 20);
+        // HL1: scale 2^(8 - 6) = 4 -> 10 * 4 = 40
+        assert_eq!(coefficients[0], 40);
+        // LL3: scale 2^(7 - 6) = 2 -> 5 * 2 = 10
+        assert_eq!(coefficients[4032], 10);
     }
 
     // --- B10: Server encode pipeline tests ---
@@ -1727,36 +1751,148 @@ mod tests {
     }
 
     #[test]
-    fn quantize_ccq_right_shifts() {
+    fn base_quantization_handles_all_wire_factors() {
+        for factor in 0..=15 {
+            let input = if factor < 6 { 1 } else { 1i16 << u32::from(factor - 6) };
+            let quant = ComponentCodecQuant {
+                ll3: factor,
+                hl3: factor,
+                lh3: factor,
+                hh3: factor,
+                hl2: factor,
+                lh2: factor,
+                hh2: factor,
+                hl1: factor,
+                lh1: factor,
+                hh1: factor,
+            };
+            let mut coefficients = [0i16; COEFFICIENTS_PER_COMPONENT];
+            coefficients[0] = input;
+
+            quantize_component_ccq(&mut coefficients, &quant, false);
+            dequantize_component_ccq(&mut coefficients, &quant, false);
+
+            assert_eq!(coefficients[0], input, "factor {factor}");
+        }
+    }
+
+    #[test]
+    fn base_dequantization_rounds_fractional_scales() {
+        let quant = ComponentCodecQuant {
+            ll3: 5,
+            hl3: 5,
+            lh3: 5,
+            hh3: 5,
+            hl2: 5,
+            lh2: 5,
+            hh2: 5,
+            hl1: 5,
+            lh1: 5,
+            hh1: 5,
+        };
+        let mut coefficients = [0i16; COEFFICIENTS_PER_COMPONENT];
+        coefficients[0] = 7;
+        coefficients[1] = -7;
+
+        dequantize_component_ccq(&mut coefficients, &quant, false);
+
+        assert_eq!(coefficients[0], 4);
+        assert_eq!(coefficients[1], -3);
+    }
+
+    #[test]
+    fn progressive_q6_reconstructs_rgb_color_vectors() {
+        let base_quant = ComponentCodecQuant {
+            ll3: 6,
+            hl3: 6,
+            lh3: 6,
+            hh3: 6,
+            hl2: 6,
+            lh2: 6,
+            hh2: 6,
+            hl1: 6,
+            lh1: 6,
+            hh1: 6,
+        };
+
+        for expected in [
+            [0, 0, 0],
+            [255, 255, 255],
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [64, 128, 192],
+        ] {
+            let mut pixels = vec![0u8; 64 * 64 * 4];
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel[..3].copy_from_slice(&expected);
+                pixel[3] = 0xFF;
+            }
+
+            let mut y = [0i16; COEFFICIENTS_PER_COMPONENT];
+            let mut cb = [0i16; COEFFICIENTS_PER_COMPONENT];
+            let mut cr = [0i16; COEFFICIENTS_PER_COMPONENT];
+            rgba_to_ycbcr(&pixels, &mut y, &mut cb, &mut cr);
+
+            let mut temp = [0i16; COEFFICIENTS_PER_COMPONENT];
+            crate::dwt::encode(&mut y, &mut temp);
+            crate::dwt::encode(&mut cb, &mut temp);
+            crate::dwt::encode(&mut cr, &mut temp);
+
+            quantize_component_ccq(&mut y, &base_quant, false);
+            quantize_component_ccq(&mut cb, &base_quant, false);
+            quantize_component_ccq(&mut cr, &base_quant, false);
+            dequantize_component_ccq(&mut y, &base_quant, false);
+            dequantize_component_ccq(&mut cb, &base_quant, false);
+            dequantize_component_ccq(&mut cr, &base_quant, false);
+
+            let mut tile = TileState::new();
+            tile.coefficients = [y, cb, cr];
+
+            let mut actual = vec![0u8; 64 * 64 * 4];
+            tile.reconstruct_to_rgba(&mut actual);
+
+            for actual in actual.chunks_exact(4) {
+                for channel in 0..3 {
+                    let difference = i16::from(expected[channel]) - i16::from(actual[channel]);
+                    assert!(difference.abs() <= 2, "expected {:?}, got {:?}", expected, &actual[..3]);
+                }
+                assert_eq!(actual[3], 0xFF);
+            }
+        }
+    }
+
+    #[test]
+    fn quantize_ccq_scales_coefficients() {
         let mut coefficients = [0i16; 4096];
-        coefficients[0] = 80; // HL1 band
-        coefficients[4032] = 20; // LL3 band
+        coefficients[0] = 40; // HL1 band
+        coefficients[4032] = 10; // LL3 band
 
         let quant = ComponentCodecQuant {
-            ll3: 3,
+            ll3: 7,
             hl3: 0,
             lh3: 0,
             hh3: 0,
             hl2: 0,
             lh2: 0,
             hh2: 0,
-            hl1: 4,
+            hl1: 8,
             lh1: 0,
             hh1: 0,
         };
 
         quantize_component_ccq(&mut coefficients, &quant, false);
 
-        // HL1: 80 >> (4 - 1) = 80 >> 3 = 10
+        // HL1: 40 / 2^(8 - 6) = 40 / 4 = 10
         assert_eq!(coefficients[0], 10);
-        // LL3: 20 >> (3 - 1) = 20 >> 2 = 5
+        // LL3: 10 / 2^(7 - 6) = 10 / 2 = 5
         assert_eq!(coefficients[4032], 5);
     }
 
     #[test]
-    fn quantize_ccq_negative_truncates_toward_zero() {
+    fn quantize_ccq_preserves_negative_sign() {
         let mut coefficients = [0i16; 4096];
-        coefficients[0] = -80; // HL1 band, negative
+        coefficients[0] = -40; // HL1 band, negative
 
         let quant = ComponentCodecQuant {
             ll3: 0,
@@ -1766,14 +1902,14 @@ mod tests {
             hl2: 0,
             lh2: 0,
             hh2: 0,
-            hl1: 4,
+            hl1: 8,
             lh1: 0,
             hh1: 0,
         };
 
         quantize_component_ccq(&mut coefficients, &quant, false);
 
-        // -80 truncated toward zero: -(80 >> 3) = -10
+        // -40 / 2^(8 - 6) = -40 / 4 = -10
         assert_eq!(coefficients[0], -10);
     }
 
