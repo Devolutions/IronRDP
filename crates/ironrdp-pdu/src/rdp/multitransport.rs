@@ -116,11 +116,17 @@ impl<'de> Decode<'de> for MultitransportRequestPdu {
         let security_header = BasicSecurityHeader::decode(src)?;
 
         // Must be EXACTLY SEC_TRANSPORT_REQ (MS-RDPBCGR 2.2.15.1), not merely
-        // contain the bit. A `contains` check false-positives when this decode
-        // is used to distinguish a request from another PDU: e.g. a Demand
-        // Active's leading `ShareControlHeader::totalLength` aliases onto this
-        // flags field and can carry the TRANSPORT_REQ bit as part of an
-        // otherwise-valid flag combination.
+        // contain the bit. Callers use a successful decode to decide that what
+        // arrived really is a request, so a `contains` check would accept any
+        // PDU whose leading bytes happen to alias onto this field with the
+        // TRANSPORT_REQ bit set. The connector narrows by MCS channel first,
+        // but the message channel also carries auto-detect traffic, so this
+        // decode is still the thing that has to tell them apart.
+        //
+        // Note this guard is only as strong as what `BasicSecurityHeader`
+        // admits: a decoder that masks unknown bits away rather than rejecting
+        // them widens the set of byte patterns that reach the comparison
+        // already equal to TRANSPORT_REQ.
         if security_header.flags != BasicSecurityHeaderFlags::TRANSPORT_REQ {
             return Err(invalid_field_err!(
                 "securityHeader",
