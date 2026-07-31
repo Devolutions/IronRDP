@@ -129,7 +129,20 @@ if ($Cleanup) {
         }
     }
 
-    if ($state.AddedToRemoteDesktopUsers) {
+    if ($state.PSObject.Properties.Name -contains 'TemporaryUserName') {
+        $temporaryUser = Get-LocalUser -Name $state.TemporaryUserName -ErrorAction SilentlyContinue
+        if ($null -ne $temporaryUser `
+            -and $state.PSObject.Properties.Name -contains 'TemporaryUserSid' `
+            -and $temporaryUser.SID.Value -eq $state.TemporaryUserSid) {
+            Remove-LocalGroupMember -Group $rdpGroupName -Member $state.TemporaryUserName -ErrorAction SilentlyContinue
+            Remove-LocalUser -Name $state.TemporaryUserName -ErrorAction SilentlyContinue
+        }
+        elseif ($null -ne $temporaryUser) {
+            Write-Warning "Skipping cleanup because temporary RDP user does not match state file: $($state.TemporaryUserName)"
+        }
+    }
+    elseif ($state.AddedToRemoteDesktopUsers) {
+        # Preserve cleanup compatibility with state files created by older versions of this script.
         Remove-LocalGroupMember -Group $rdpGroupName -Member $state.LocalUserName -ErrorAction SilentlyContinue
     }
 
@@ -137,36 +150,31 @@ if ($Cleanup) {
     return
 }
 
-$localUserName = $env:USERNAME
-if ([string]::IsNullOrWhiteSpace($localUserName)) {
-    throw 'USERNAME is not set; cannot configure a local RDP user'
+$temporaryUserName = "IronRdpAgent$PID"
+if (Get-LocalUser -Name $temporaryUserName -ErrorAction SilentlyContinue) {
+    throw "Temporary RDP user already exists: $temporaryUserName"
 }
 
 $passwordBytes = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(24)
 $temporaryPassword = 'RdpAgent!' + [Convert]::ToBase64String($passwordBytes) + 'aA1!'
 Write-Host "::add-mask::$temporaryPassword"
 
-$currentMembers = @(Get-LocalGroupMember -Group $rdpGroupName -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
-$memberNames = @($localUserName, "$env:COMPUTERNAME\$localUserName")
-$wasRdpMember = [bool]($currentMembers | Where-Object { $memberNames -contains $_ } | Select-Object -First 1)
 $firewallRuleName = "IronRdpAgenticRdp-$PID"
 
 $state = [pscustomobject]@{
-    LocalUserName = $localUserName
-    DomainUserName = "$env:COMPUTERNAME\$localUserName"
+    TemporaryUserName = $temporaryUserName
+    TemporaryUserSid = $null
     fDenyTSConnections = Get-RegistryValue -Path $terminalServerPath -Name 'fDenyTSConnections'
     UserAuthentication = Get-RegistryValue -Path $rdpTcpPath -Name 'UserAuthentication'
     FirewallRuleName = $firewallRuleName
-    AddedToRemoteDesktopUsers = (-not $wasRdpMember)
 }
 Write-JsonFile -Path $StatePath -Value $state
 
 $securePassword = ConvertTo-SecureString -String $temporaryPassword -AsPlainText -Force
-Set-LocalUser -Name $localUserName -Password $securePassword
-
-if (-not $wasRdpMember) {
-    Add-LocalGroupMember -Group $rdpGroupName -Member $localUserName
-}
+$temporaryUser = New-LocalUser -Name $temporaryUserName -Password $securePassword -Description 'Temporary IronRDP agentic RDP test account'
+$state.TemporaryUserSid = $temporaryUser.SID.Value
+Write-JsonFile -Path $StatePath -Value $state
+Add-LocalGroupMember -Group $rdpGroupName -Member $temporaryUserName
 
 Set-ItemProperty -Path $terminalServerPath -Name 'fDenyTSConnections' -Value 0
 Set-ItemProperty -Path $rdpTcpPath -Name 'UserAuthentication' -Value 0
@@ -183,8 +191,8 @@ New-NetFirewallRule `
 Wait-TcpPort -HostName '127.0.0.1' -Port 3389
 
 [pscustomobject]@{
-    UserName = $localUserName
-    DomainUserName = "$env:COMPUTERNAME\$localUserName"
+    UserName = $temporaryUserName
+    DomainUserName = "$env:COMPUTERNAME\$temporaryUserName"
     Password = $temporaryPassword
     HostName = '127.0.0.1'
     Port = 3389

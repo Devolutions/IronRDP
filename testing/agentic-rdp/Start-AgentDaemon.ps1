@@ -30,6 +30,9 @@ function Invoke-Agent {
     )
 
     & $AgentPath --endpoint $Endpoint @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "ironrdp-agent command failed with exit code $LASTEXITCODE"
+    }
 }
 
 New-Item -Path $ArtifactsDir -ItemType Directory -Force | Out-Null
@@ -53,6 +56,8 @@ finally {
 
 $state = [pscustomobject]@{
     ProcessId = $process.Id
+    ProcessPath = $process.Path
+    ProcessStartTimeUtcTicks = $process.StartTime.ToUniversalTime().Ticks
     Endpoint = $Endpoint
     AgentPath = $AgentPath
     LogPath = $stderrPath
@@ -64,7 +69,7 @@ $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StatePath -Encoding utf8No
 $deadline = (Get-Date).AddSeconds(30)
 do {
     try {
-        Invoke-Agent status | Out-Null
+        Invoke-Agent status 2>$null | Out-Null
         $state | ConvertTo-Json -Compress
         return
     }
@@ -80,6 +85,9 @@ try {
 }
 catch {
     Write-Warning "Could not stop ironrdp-agent after startup timeout: $($_.Exception.Message)"
+}
+finally {
+    Remove-Item -Path $StatePath -Force -ErrorAction SilentlyContinue
 }
 
 throw "Timed out waiting for ironrdp-agent daemon on $Endpoint"

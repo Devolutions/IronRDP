@@ -127,8 +127,8 @@ cargo build -p ironrdp-agent --release
 .\testing\agentic-rdp\Invoke-AgenticRdpTest.ps1 -DesktopSize 1920x1080
 ```
 
-The script temporarily changes local RDP settings and the current user's password. Use it only on a
-disposable test machine.
+The script temporarily changes local RDP settings and creates a temporary local account for the RDP
+session. Use it only on a disposable test machine.
 
 ## Live end-to-end test
 

@@ -115,6 +115,8 @@ if ($RunServer) {
             HostName = '127.0.0.1'
             Port = $Port
             ProcessId = $PID
+            ProcessPath = $process.Path
+            ProcessStartTimeUtcTicks = $process.StartTime.ToUniversalTime().Ticks
             SessionId = $process.SessionId
             UserName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
             State = [string] $server.State

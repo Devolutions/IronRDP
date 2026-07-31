@@ -54,14 +54,34 @@ function Stop-ProcessFromState {
         return
     }
 
-    $state = Get-Content -Path $Path -Raw | ConvertFrom-Json
-    if ($null -eq $state.ProcessId) {
-        return
-    }
+    try {
+        $state = Get-Content -Path $Path -Raw | ConvertFrom-Json
+        if ($null -eq $state.ProcessId `
+            -or $state.PSObject.Properties.Name -notcontains 'ProcessPath' `
+            -or $state.PSObject.Properties.Name -notcontains 'ProcessStartTimeUtcTicks') {
+            Write-Warning "Skipping process cleanup for incomplete state file: $Path"
+            return
+        }
 
-    $process = Get-Process -Id ([int] $state.ProcessId) -ErrorAction SilentlyContinue
-    if ($null -ne $process) {
+        $process = Get-Process -Id ([int] $state.ProcessId) -ErrorAction SilentlyContinue
+        if ($null -eq $process) {
+            return
+        }
+
+        $expectedPath = [System.IO.Path]::GetFullPath([string] $state.ProcessPath)
+        $actualPath = [System.IO.Path]::GetFullPath($process.Path)
+        $expectedStartTime = [int64] $state.ProcessStartTimeUtcTicks
+        $actualStartTime = $process.StartTime.ToUniversalTime().Ticks
+        if (-not [string]::Equals($actualPath, $expectedPath, [System.StringComparison]::OrdinalIgnoreCase) `
+            -or $actualStartTime -ne $expectedStartTime) {
+            Write-Warning "Skipping cleanup because process $($process.Id) does not match state file: $Path"
+            return
+        }
+
         Stop-Process -Id $process.Id -Force
+    }
+    finally {
+        Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -72,18 +92,23 @@ function Invoke-Agent {
     )
 
     & $AgentPath --endpoint $endpoint @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "ironrdp-agent command failed with exit code $LASTEXITCODE"
+    }
 }
 
 function Invoke-Cleanup {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
     if (Test-Path $sessionStatePath) {
-        $sessionState = Get-Content -Path $sessionStatePath -Raw | ConvertFrom-Json
         try {
             Invoke-Agent disconnect | Out-Null
         }
         catch {
             Write-Warning "Could not disconnect the agent session: $($_.Exception.Message)"
+        }
+        finally {
+            Remove-Item -Path $sessionStatePath -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -94,14 +119,11 @@ function Invoke-Cleanup {
         Write-Warning "Could not stop agent daemon: $($_.Exception.Message)"
     }
 
-    if (Test-Path $psHostEndpointPath) {
-        $endpointInfo = Get-Content -Path $psHostEndpointPath -Raw | ConvertFrom-Json
-        if ($endpointInfo.PSObject.Properties.Name -contains 'ProcessId') {
-            $process = Get-Process -Id ([int] $endpointInfo.ProcessId) -ErrorAction SilentlyContinue
-            if ($null -ne $process) {
-                Stop-Process -Id $process.Id -Force
-            }
-        }
+    try {
+        Stop-ProcessFromState -Path $psHostEndpointPath
+    }
+    catch {
+        Write-Warning "Could not stop interactive PSHostServer: $($_.Exception.Message)"
     }
 
     try {

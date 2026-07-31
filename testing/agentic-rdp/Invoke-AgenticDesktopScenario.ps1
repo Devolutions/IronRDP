@@ -22,6 +22,9 @@ function Invoke-Agent {
     )
 
     & $AgentPath --endpoint $Endpoint @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "ironrdp-agent command failed with exit code $LASTEXITCODE"
+    }
 }
 
 function Get-AgentStatus {
