@@ -156,7 +156,7 @@ impl UnframedString {
     /// Returns a `DecodeError` if `byte_len` is odd (UTF-16LE is always 2 bytes per code unit).
     /// Otherwise equivalent to `decode(src, byte_len / 2)`.
     pub fn decode_from_byte_len(src: &mut ReadCursor<'_>, byte_len: usize) -> DecodeResult<Self> {
-        if byte_len % 2 != 0 {
+        if !byte_len.is_multiple_of(2) {
             return Err(invalid_field_err!("byte_len", "odd byte count for utf-16 string field"));
         }
         Self::decode(src, byte_len / 2)

@@ -812,6 +812,26 @@ impl WavePdu<'_> {
             .checked_add(self.data.len())
             .expect("never overflow")
     }
+
+    fn decode(src: &mut ReadCursor<'_>, body_size: u16) -> DecodeResult<Self> {
+        let info = WaveInfoPdu::decode(src)?;
+        let body_size = usize::from(body_size);
+        let data_len = body_size
+            .checked_sub(info.size())
+            .ok_or_else(|| invalid_field_err!("Length", "WaveInfo body_size is too small"))?;
+        let wave = SndWavePdu::decode(src, data_len)?;
+
+        let mut data = Vec::with_capacity(wave.size());
+        data.extend_from_slice(&info.data);
+        data.extend_from_slice(&wave.data);
+
+        Ok(Self {
+            timestamp: info.timestamp,
+            format_no: info.format_no,
+            block_no: info.block_no,
+            data: data.into(),
+        })
+    }
 }
 
 impl Encode for WavePdu<'_> {
@@ -840,28 +860,6 @@ impl Encode for WavePdu<'_> {
         (WaveInfoPdu::FIXED_PART_SIZE + SndWavePdu::FIXED_PART_SIZE - 4)
             .checked_add(self.data.len())
             .expect("never overflow")
-    }
-}
-
-impl WavePdu<'_> {
-    fn decode(src: &mut ReadCursor<'_>, body_size: u16) -> DecodeResult<Self> {
-        let info = WaveInfoPdu::decode(src)?;
-        let body_size = usize::from(body_size);
-        let data_len = body_size
-            .checked_sub(info.size())
-            .ok_or_else(|| invalid_field_err!("Length", "WaveInfo body_size is too small"))?;
-        let wave = SndWavePdu::decode(src, data_len)?;
-
-        let mut data = Vec::with_capacity(wave.size());
-        data.extend_from_slice(&info.data);
-        data.extend_from_slice(&wave.data);
-
-        Ok(Self {
-            timestamp: info.timestamp,
-            format_no: info.format_no,
-            block_no: info.block_no,
-            data: data.into(),
-        })
     }
 }
 
