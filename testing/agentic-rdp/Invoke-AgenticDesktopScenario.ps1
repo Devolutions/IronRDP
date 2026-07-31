@@ -94,9 +94,7 @@ function Test-PngScreenshot {
             }
         }
 
-        if (-not $hasDifferentPixel) {
-            throw 'Screenshot appears uniform; the framebuffer is likely blank'
-        }
+        return $hasDifferentPixel
     }
     finally {
         $bitmap.Dispose()
@@ -124,11 +122,22 @@ Send-Text -Text 'msedge.exe about:blank'
 Send-Scancode -Scancode '0x1c' -Pressed $true
 Send-Scancode -Scancode '0x1c' -Pressed $false
 
-Start-Sleep -Seconds 8
-
 $screenshotPath = Join-Path $ArtifactsDir 'agent-desktop.png'
-Invoke-Agent screenshot $screenshotPath | Out-Null
-Test-PngScreenshot -Path $screenshotPath -ExpectedWidth $expectedWidth -ExpectedHeight $expectedHeight
+$frameDeadline = (Get-Date).AddSeconds(60)
+$hasDesktopFrame = $false
+do {
+    Invoke-Agent screenshot $screenshotPath | Out-Null
+    $hasDesktopFrame = Test-PngScreenshot -Path $screenshotPath -ExpectedWidth $expectedWidth -ExpectedHeight $expectedHeight
+    if ($hasDesktopFrame) {
+        break
+    }
+
+    Start-Sleep -Seconds 2
+} while ((Get-Date) -lt $frameDeadline)
+
+if (-not $hasDesktopFrame) {
+    throw 'Timed out waiting for a non-uniform RDP framebuffer'
+}
 
 $finalStatus = Get-AgentStatus
 $result = [pscustomobject]@{
