@@ -1604,6 +1604,60 @@ impl GraphicsPipelineServer {
         Some(frame_id)
     }
 
+    /// Queue a pre-encoded RDP6 Planar bitmap stream for transmission via EGFX.
+    ///
+    /// `planar_data` must represent a bitmap with the supplied destination
+    /// dimensions and use the target surface's pixel format.
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if the server is not ready,
+    /// the surface does not exist, the destination exceeds the surface, or
+    /// backpressure is active.
+    pub fn send_planar_frame(
+        &mut self,
+        surface_id: u16,
+        planar_data: &[u8],
+        dest_width: u16,
+        dest_height: u16,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        if !self.is_ready() {
+            return None;
+        }
+        if self.should_backpressure() {
+            self.qoe.record_backpressure();
+            return None;
+        }
+
+        let surface = self.surfaces.get(surface_id)?;
+        if dest_width > surface.width || dest_height > surface.height {
+            return None;
+        }
+
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+        let destination_rectangle = ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: dest_width,
+            bottom: dest_height,
+        };
+
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+
+        self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id,
+            codec_id: Codec1Type::Planar,
+            pixel_format: surface.pixel_format,
+            destination_rectangle,
+            bitmap_data: planar_data.to_vec(),
+        }));
+
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Some(frame_id)
+    }
+
     /// Queue an uncompressed bitmap frame for transmission via EGFX
     ///
     /// Sends raw pixel data through `WireToSurface1` with `Codec1Type::Uncompressed`.
