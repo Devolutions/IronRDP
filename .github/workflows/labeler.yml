@@ -162,6 +162,7 @@ jobs:
     env:
       CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
       CARGO_SEMVER_CHECKS_SHA256: "72f6834d75d28a66e02c9fd6a230ce901bb30eee6067b85867a97445df040e4a"
+      CARGO_SEMVER_CHECKS_FEATURES: "core,pdu,cliprdr,connector,acceptor,session,graphics,input,server,svc,dvc,rdpdr,rdpsnd,displaycontrol,echo,mstsgu,client,rustls,client-all,qoi,qoiz"
     permissions: {}
     outputs:
       breaking_change: ${{ steps.semver-checks.outputs.breaking-change }}
@@ -211,7 +212,11 @@ jobs:
           echo "Checking ironrdp compatibility against $BASE"
 
           set +e
-          cargo semver-checks --package ironrdp --default-features --baseline-rev "$BASE"
+          cargo semver-checks \
+            --package ironrdp \
+            --only-explicit-features \
+            --features "$CARGO_SEMVER_CHECKS_FEATURES" \
+            --baseline-rev "$BASE"
           status=$?
           set -e
 
