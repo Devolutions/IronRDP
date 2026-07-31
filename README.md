@@ -21,10 +21,6 @@ WebAssembly, or from .NET through FFI bindings.
 The core protocol crates do no I/O, are `no_std`-compatible, and are continuously fuzzed. You bring
 the transport and the runtime; IronRDP brings the protocol.
 
-## Demonstration
-
-https://user-images.githubusercontent.com/3809077/202049929-76f42471-aeb0-41da-9118-0dc6ea491bd2.mp4
-
 ## Highlights
 
 - **Sans-I/O core.** Connection and session logic are state machines with no sockets, no threads, and
@@ -227,9 +223,13 @@ and invariants. Read [ARCHITECTURE.md](./ARCHITECTURE.md) before making non-triv
 
 ## Who uses IronRDP
 
-- [Devolutions Gateway](https://github.com/Devolutions/devolutions-gateway) and its free standalone
-  web interface, as well as Devolutions Server, Devolutions Hub, and Remote Desktop Manager
-- [Teleport](https://github.com/gravitational/teleport), for its remote desktop access
+- [Devolutions Gateway](https://github.com/Devolutions/devolutions-gateway) for browser-based and
+  native RDP client access
+- [Cloudflare Access](https://blog.cloudflare.com/browser-based-rdp/) for browser-based RDP
+- [Teleport](https://goteleport.com/) for its remote desktop web access
+- [Lamco RDP Server](https://lamco.ai/products/lamco-rdp-server/), a Wayland-native RDP server for
+  Linux desktop sharing
+- [MacRDP](https://github.com/clintcan/macrdp), a native RDP server for macOS
 - [`qemu-rdp`](https://gitlab.com/marcandre.lureau/qemu-display), an RDP server for QEMU displays
 - A growing set of community projects building RDP servers and clients on top of the crate suite
 
@@ -247,6 +247,20 @@ and [Fedora stable](https://packages.fedoraproject.org/pkgs/rust/rust/). The too
 Contributions are welcome. Start with [ARCHITECTURE.md](./ARCHITECTURE.md) and
 [STYLE.md](./STYLE.md), keep changes scoped, and make sure `cargo xtask ci` passes before opening a
 pull request.
+
+## AI-assisted development
+
+AI-assisted development is encouraged when used thoughtfully. Contributors remain responsible for
+understanding, reviewing, and validating every change produced with AI assistance.
+
+For RDP protocol work, install the
+[Windows Protocols skill](https://github.com/awakecoding/openspecs) so AI agents can navigate the
+Microsoft Open Specifications corpus. It significantly improves the correctness of AI-assisted work
+involving RDP protocol details:
+
+```shell
+npx skills add https://github.com/awakecoding/openspecs --skill windows-protocols -y -g
+```
 
 ## Getting help
 
