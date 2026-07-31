@@ -10,6 +10,10 @@ on:
         required: true
         type: number
 
+concurrency:
+  group: labeler-${{ github.event.pull_request.number || inputs.pr-number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
@@ -64,7 +68,7 @@ jobs:
         with:
           script: |
             const pullRequestNumber = Number("${{ steps.pull-request.outputs.number }}");
-            const sourceFile = /\.(?:rs|cs|[cm]?js|jsx|[cm]?ts|tsx|svelte)$/i;
+            const sourceFile = /\.(?:rs|cs|[cm]?js|jsx|[cm]?ts|tsx|svelte|ya?ml|toml)$/i;
             let changedLines = 0;
 
             for await (const response of github.paginate.iterator(github.rest.pulls.listFiles, {
@@ -155,20 +159,24 @@ jobs:
     name: Check public API compatibility
     needs: label
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
+    env:
+      CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
+      CARGO_SEMVER_CHECKS_SHA256: "72f6834d75d28a66e02c9fd6a230ce901bb30eee6067b85867a97445df040e4a"
+      CARGO_SEMVER_CHECKS_FEATURES: "core,pdu,cliprdr,connector,acceptor,session,graphics,input,server,svc,dvc,rdpdr,rdpsnd,displaycontrol,echo,mstsgu,client,rustls,client-all,qoi,qoiz"
+    permissions: {}
     outputs:
       breaking_change: ${{ steps.semver-checks.outputs.breaking-change }}
-      sspi_label_required: ${{ steps.sspi-label.outputs.required }}
 
     steps:
-      - name: Check out pull request head
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.label.outputs.head-sha }}
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Fetch pull request head
+        shell: bash
+        env:
+          HEAD_SHA: ${{ needs.label.outputs.head-sha }}
+        run: |
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin "+$HEAD_SHA:refs/remotes/origin/pull-request-head"
+          git checkout --detach origin/pull-request-head
 
       - name: Determine merge base
         id: merge-base
@@ -177,44 +185,38 @@ jobs:
           git fetch origin master
           echo "base=$(git merge-base HEAD origin/master)" >> "$GITHUB_OUTPUT"
 
-      - name: Detect SSPI changes
-        id: sspi-label
+      - name: Install build dependencies
         shell: bash
         run: |
-          BASE="${{ steps.merge-base.outputs.base }}"
-          sspi_path_changed=false
-
-          if ! git diff --quiet "$BASE" HEAD -- \
-            ':(glob)**/*credssp*' \
-            ':(glob)**/*sspi*' \
-            crates/ironrdp-pdu/src/nego.rs; then
-            sspi_path_changed=true
-          fi
-
-          sspi_dependency_changed=false
-          if git diff --unified=0 "$BASE" HEAD -- Cargo.toml ':(glob)**/Cargo.toml' |
-            grep -Eq '^[+-][[:space:]]*"?sspi"?[[:space:]]*='; then
-            sspi_dependency_changed=true
-          fi
-
-          if [ "$sspi_path_changed" = true ] || [ "$sspi_dependency_changed" = true ]; then
-            echo "required=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "required=false" >> "$GITHUB_OUTPUT"
-          fi
+          sudo apt-get update -qq
+          sudo apt-get -y install libasound2-dev
 
       - name: Install cargo-semver-checks
-        run: cargo install cargo-semver-checks --locked
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl "https://github.com/obi1kenobi/cargo-semver-checks/releases/download/v${CARGO_SEMVER_CHECKS_VERSION}/cargo-semver-checks-x86_64-unknown-linux-gnu.tar.gz" \
+            --output /tmp/cargo-semver-checks.tar.gz \
+            --fail \
+            --location
+          echo "$CARGO_SEMVER_CHECKS_SHA256  /tmp/cargo-semver-checks.tar.gz" |
+            sha256sum --check --strict
+          tar -xzvf /tmp/cargo-semver-checks.tar.gz -C "$HOME/.local/bin" cargo-semver-checks
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Check public API compatibility
         id: semver-checks
         shell: bash
         run: |
           BASE="${{ steps.merge-base.outputs.base }}"
-          echo "Checking compatibility against $BASE"
+          echo "Checking ironrdp compatibility against $BASE"
 
           set +e
-          cargo semver-checks --baseline-rev "$BASE"
+          cargo semver-checks \
+            --package ironrdp \
+            --only-explicit-features \
+            --features "$CARGO_SEMVER_CHECKS_FEATURES" \
+            --baseline-rev "$BASE"
           status=$?
           set -e
 
@@ -230,59 +232,155 @@ jobs:
               ;;
           esac
 
+  sspi:
+    name: Detect SSPI changes
+    needs: label
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      label_required: ${{ steps.sspi-label.outputs.required }}
+
+    steps:
+      - name: Fetch pull request history
+        shell: bash
+        env:
+          HEAD_SHA: ${{ needs.label.outputs.head-sha }}
+        run: |
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin "+$HEAD_SHA:refs/remotes/origin/pull-request-head"
+          git fetch --no-tags origin master
+
+      - name: Detect SSPI changes
+        id: sspi-label
+        shell: bash
+        run: |
+          BASE="$(git merge-base origin/pull-request-head origin/master)"
+          sspi_path_changed=false
+
+          if ! git diff --quiet "$BASE" origin/pull-request-head -- \
+            ':(glob)**/*credssp*' \
+            ':(glob)**/*sspi*' \
+            crates/ironrdp-pdu/src/nego.rs; then
+            sspi_path_changed=true
+          fi
+
+          sspi_dependency_changed=false
+          if git diff --unified=0 "$BASE" origin/pull-request-head -- Cargo.toml ':(glob)**/Cargo.toml' |
+            grep -Eq '^[+-][[:space:]]*"?sspi"?[[:space:]]*='; then
+            sspi_dependency_changed=true
+          fi
+
+          if [ "$sspi_path_changed" = true ] || [ "$sspi_dependency_changed" = true ]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "required=false" >> "$GITHUB_OUTPUT"
+          fi
+
   label-derived-changes:
     name: Label derived changes
-    needs: [label, semver]
+    needs: [label, semver, sspi]
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
 
     steps:
-      - name: Label breaking change and SSPI changes
+      - name: Verify pull request head
         uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
+          EXPECTED_HEAD_SHA: ${{ needs.label.outputs.head-sha }}
         with:
           script: |
-            const pullRequestNumber = Number("${{ needs.label.outputs.pr-number }}");
-            const breakingChange = "${{ needs.semver.outputs.breaking_change }}" === "true";
-            const sspiLabelRequired = "${{ needs.semver.outputs.sspi_label_required }}" === "true";
-            const breakingChangeLabel = "breaking-change";
-            const sspiLabel = "A-sspi";
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullRequestNumber,
+            });
+
+            if (pullRequest.head.sha !== process.env.EXPECTED_HEAD_SHA) {
+              throw new Error(
+                `pull request head changed from ${process.env.EXPECTED_HEAD_SHA} to ${pullRequest.head.sha}`,
+              );
+            }
+
+      - name: Add breaking change label
+        if: needs.semver.outputs.breaking_change == 'true'
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
+        with:
+          script: |
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+              labels: ["breaking-change"],
+            });
+
+      - name: Remove breaking change label
+        if: needs.semver.outputs.breaking_change != 'true'
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
+        with:
+          script: |
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
 
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pullRequestNumber,
             });
-            const existingLabels = new Set(issue.labels.map((label) => label.name));
 
-            if (breakingChange && !existingLabels.has(breakingChangeLabel)) {
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pullRequestNumber,
-                labels: [breakingChangeLabel],
-              });
-            } else if (!breakingChange && existingLabels.has(breakingChangeLabel)) {
+            if (issue.labels.some((label) => label.name === "breaking-change")) {
               await github.rest.issues.removeLabel({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pullRequestNumber,
-                name: breakingChangeLabel,
+                name: "breaking-change",
               });
             }
 
-            if (sspiLabelRequired && !existingLabels.has(sspiLabel)) {
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pullRequestNumber,
-                labels: [sspiLabel],
-              });
-            } else if (!sspiLabelRequired && existingLabels.has(sspiLabel)) {
+      - name: Add SSPI label
+        if: needs.sspi.outputs.label_required == 'true'
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
+        with:
+          script: |
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+              labels: ["A-sspi"],
+            });
+
+      - name: Remove SSPI label
+        if: needs.sspi.outputs.label_required != 'true'
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
+        with:
+          script: |
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
+
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequestNumber,
+            });
+
+            if (issue.labels.some((label) => label.name === "A-sspi")) {
               await github.rest.issues.removeLabel({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pullRequestNumber,
-                name: sspiLabel,
+                name: "A-sspi",
               });
             }
