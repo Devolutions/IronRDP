@@ -1,7 +1,10 @@
 //! Codec tests for the Network Auto-Detect PDUs ([MS-RDPBCGR] 2.2.14).
 
 use ironrdp_core::{Encode as _, decode, encode_vec};
-use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, BW_STOP_CONNECT_TIME, BW_STOP_LOSSY_UDP, BW_STOP_RELIABLE_UDP};
+use ironrdp_pdu::rdp::autodetect::{
+    AutoDetectRequest, BW_STOP_CONNECT_TIME, BW_STOP_LOSSY_UDP, BW_STOP_RELIABLE_UDP, NETCHAR_RESULT_ALL,
+    NETCHAR_RESULT_BW_RTT, NETCHAR_RESULT_RTT,
+};
 
 /// Round-trip a request and hand back what came out plus the bytes it produced.
 fn round_trip(request: &AutoDetectRequest) -> (AutoDetectRequest, Vec<u8>) {
@@ -10,35 +13,46 @@ fn round_trip(request: &AutoDetectRequest) -> (AutoDetectRequest, Vec<u8>) {
     (decoded, encoded)
 }
 
+/// MS-RDPBCGR 2.2.14.1.4 does not merely make `payloadLength` present for the
+/// connect-time stop, it requires a value "greater than zero". So an absent or
+/// empty payload has no conforming encoding and must be refused rather than
+/// written as a zero length.
 #[test]
-fn connect_time_stop_without_a_payload_round_trips() {
-    // MS-RDPBCGR 2.2.14.1.4 puts `payloadLength` on the connect-time stop
-    // unconditionally, so the encoder must emit it even when no payload was supplied.
-    // Omitting it produced bytes the decoder rejected, because the decoder reads that
-    // field back for every `BW_STOP_CONNECT_TIME`.
-    let request = AutoDetectRequest::BandwidthMeasureStop {
+fn connect_time_stop_without_a_payload_is_refused() {
+    for (label, payload) in [("absent", None), ("empty", Some(Vec::new()))] {
+        let request = AutoDetectRequest::BandwidthMeasureStop {
+            sequence_number: 7,
+            request_type: BW_STOP_CONNECT_TIME,
+            payload,
+        };
+
+        assert!(
+            encode_vec(&request).is_err(),
+            "an {label} payload on a connect-time stop must not encode"
+        );
+    }
+}
+
+/// The decoder enforces the same rule, so the two sides agree on what the wire
+/// permits. Accepting a zero length here would mean accepting what we refuse to
+/// emit.
+#[test]
+fn connect_time_stop_with_a_zero_payload_length_is_rejected() {
+    // A well-formed connect-time stop, then its payloadLength forced to zero.
+    let valid = AutoDetectRequest::BandwidthMeasureStop {
         sequence_number: 7,
         request_type: BW_STOP_CONNECT_TIME,
-        payload: None,
+        payload: Some(vec![0xAA; 4]),
     };
+    let mut wire = encode_vec(&valid).expect("encode");
 
-    let (decoded, encoded) = round_trip(&request);
+    // headerLength(1) + headerTypeId(1) + sequenceNumber(2) + requestType(2) = 6,
+    // so payloadLength is the u16 at offset 6.
+    wire[6] = 0;
+    wire[7] = 0;
+    wire.truncate(8);
 
-    assert_eq!(encoded.len(), request.size(), "size() must agree with encode()");
-    match decoded {
-        AutoDetectRequest::BandwidthMeasureStop {
-            sequence_number,
-            request_type,
-            payload,
-        } => {
-            assert_eq!(sequence_number, 7);
-            assert_eq!(request_type, BW_STOP_CONNECT_TIME);
-            // An absent payload is indistinguishable on the wire from an empty one,
-            // so it comes back as `Some(empty)`. The bytes are what has to be stable.
-            assert_eq!(payload.as_deref(), Some(&[][..]));
-        }
-        other => panic!("expected a BandwidthMeasureStop, got {other:?}"),
-    }
+    assert!(decode::<AutoDetectRequest>(&wire).is_err());
 }
 
 #[test]
@@ -87,14 +101,16 @@ fn connect_time_stop_preserves_its_payload() {
 
 #[test]
 fn encoding_a_stop_is_stable_across_a_second_round_trip() {
-    // What the wire form has to guarantee is byte stability, since the type can express
-    // states the protocol cannot (an absent payload on a connect-time stop, a present
-    // one on a UDP stop). Decoding then re-encoding must reproduce the same bytes.
+    // What the wire form has to guarantee is byte stability, since the type can still
+    // express one state the protocol cannot: a payload on a UDP stop, which is dropped
+    // rather than emitted. (The other such state, an absent payload on a connect-time
+    // stop, is now refused outright rather than normalised, so it has no bytes to be
+    // stable about.) Decoding then re-encoding must reproduce the same bytes.
     for request in [
         AutoDetectRequest::BandwidthMeasureStop {
             sequence_number: 1,
             request_type: BW_STOP_CONNECT_TIME,
-            payload: None,
+            payload: Some(vec![7; 3]),
         },
         AutoDetectRequest::BandwidthMeasureStop {
             sequence_number: 2,
@@ -106,4 +122,91 @@ fn encoding_a_stop_is_stable_across_a_second_round_trip() {
         let second = encode_vec(&decoded).expect("re-encode");
         assert_eq!(first, second, "decode then encode must reproduce the same bytes");
     }
+}
+
+/// MS-RDPBCGR 2.2.14.1.5 assigns the optional fields by `requestType`: 0x0840
+/// carries baseRTT, 0x0880 carries bandwidth, 0x08C0 carries both. The decoder
+/// already read them back on that basis, so the encoder must write them on the
+/// same basis or the two disagree about the wire.
+#[test]
+fn netchar_result_fields_follow_the_request_type() {
+    for (label, request_type, base_rtt, bandwidth) in [
+        ("RTT", NETCHAR_RESULT_RTT, Some(11), None),
+        ("BW_RTT", NETCHAR_RESULT_BW_RTT, None, Some(22)),
+        ("ALL", NETCHAR_RESULT_ALL, Some(33), Some(44)),
+    ] {
+        let request = AutoDetectRequest::NetworkCharacteristicsResult {
+            sequence_number: 5,
+            request_type,
+            base_rtt_ms: base_rtt,
+            bandwidth_kbps: bandwidth,
+            average_rtt_ms: 99,
+        };
+
+        let (decoded, encoded) = round_trip(&request);
+        assert_eq!(
+            encoded.len(),
+            request.size(),
+            "{label}: size() must agree with encode()"
+        );
+        assert_eq!(decoded, request, "{label}: must survive a round trip");
+    }
+}
+
+/// A value the `requestType` does not call for is dropped rather than written.
+///
+/// This is the case that distinguishes the two rules: with the fields keyed off
+/// the `Option`s, a `NETCHAR_RESULT_RTT` carrying a bandwidth wrote twelve bytes
+/// of body that the decoder reads as eight, so the extra value both corrupted
+/// the frame and disagreed with `headerLength`, which was always derived from
+/// `requestType`.
+#[test]
+fn netchar_result_drops_a_value_its_request_type_does_not_carry() {
+    let extra = AutoDetectRequest::NetworkCharacteristicsResult {
+        sequence_number: 5,
+        request_type: NETCHAR_RESULT_RTT,
+        base_rtt_ms: Some(11),
+        bandwidth_kbps: Some(22), // not carried by 0x0840
+        average_rtt_ms: 99,
+    };
+
+    let (decoded, encoded) = round_trip(&extra);
+
+    assert_eq!(encoded.len(), extra.size(), "size() must agree with encode()");
+    match decoded {
+        AutoDetectRequest::NetworkCharacteristicsResult {
+            base_rtt_ms,
+            bandwidth_kbps,
+            average_rtt_ms,
+            ..
+        } => {
+            assert_eq!(base_rtt_ms, Some(11));
+            assert_eq!(bandwidth_kbps, None, "the uncarried bandwidth must not reach the wire");
+            assert_eq!(
+                average_rtt_ms, 99,
+                "averageRTT must not be displaced by the extra value"
+            );
+        }
+        other => panic!("expected a NetworkCharacteristicsResult, got {other:?}"),
+    }
+}
+
+/// A value the `requestType` does not call for is not silently written into the
+/// slot of one it does. Before this, a `NETCHAR_RESULT_RTT` carrying only a
+/// bandwidth wrote that bandwidth where the decoder expects baseRTT, so the
+/// value came back corrupted rather than rejected.
+#[test]
+fn netchar_result_rejects_a_payload_that_contradicts_its_request_type() {
+    let mismatched = AutoDetectRequest::NetworkCharacteristicsResult {
+        sequence_number: 5,
+        request_type: NETCHAR_RESULT_RTT,
+        base_rtt_ms: None,
+        bandwidth_kbps: Some(22),
+        average_rtt_ms: 99,
+    };
+
+    assert!(
+        encode_vec(&mismatched).is_err(),
+        "a baseRTT-carrying request type with no baseRTT must not encode"
+    );
 }
