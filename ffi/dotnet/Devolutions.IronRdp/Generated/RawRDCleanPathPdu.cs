@@ -30,6 +30,19 @@ public partial struct RDCleanPathPdu
     public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewRequest(byte* x224Pdu, nuint x224PduSz, byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcb, nuint pcbSz);
 
     /// <summary>
+    /// Creates a version 2 request for a server that expects TLS before X.224.
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_v2_request", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewV2Request(byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* serverPreconnectionPdu, nuint serverPreconnectionPduSz);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_version", ExactSpelling = true)]
+    public static unsafe extern ulong GetVersion(RDCleanPathPdu* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_is_version_2", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static unsafe extern bool IsVersion2(RDCleanPathPdu* self);
+
+    /// <summary>
     /// Decodes a RDCleanPath PDU from DER-encoded bytes
     /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_from_der", ExactSpelling = true)]

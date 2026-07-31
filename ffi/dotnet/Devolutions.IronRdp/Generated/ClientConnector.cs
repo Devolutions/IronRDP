@@ -66,6 +66,40 @@ public partial class ClientConnector: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ClientConnector</c> allocated on Rust side.
+    /// </returns>
+    public static ClientConnector NewVmconnect(Config config, string clientAddr, string vmId)
+    {
+        unsafe
+        {
+            byte[] clientAddrBuf = DiplomatUtils.StringToUtf8(clientAddr);
+            byte[] vmIdBuf = DiplomatUtils.StringToUtf8(vmId);
+            nuint clientAddrBufLength = (nuint)clientAddrBuf.Length;
+            nuint vmIdBufLength = (nuint)vmIdBuf.Length;
+            Raw.Config* configRaw;
+            configRaw = config.AsFFI();
+            if (configRaw == null)
+            {
+                throw new ObjectDisposedException("Config");
+            }
+            fixed (byte* clientAddrBufPtr = clientAddrBuf)
+            {
+                fixed (byte* vmIdBufPtr = vmIdBuf)
+                {
+                    Raw.ConnectorFfiResultBoxClientConnectorBoxIronRdpError result = Raw.ClientConnector.NewVmconnect(configRaw, clientAddrBufPtr, clientAddrBufLength, vmIdBufPtr, vmIdBufLength);
+                    if (!result.isOk)
+                    {
+                        throw new IronRdpException(new IronRdpError(result.Err));
+                    }
+                    Raw.ClientConnector* retVal = result.Ok;
+                    return new ClientConnector(retVal);
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// Must use
     /// </summary>

@@ -1230,22 +1230,40 @@ where
     let mut buf = WriteBuf::new();
     info!("Begin RDCleanPath connection procedure");
 
-    // Send X224 + RDCleanPath request.
-    {
-        let ironrdp_connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
-            return Err(ironrdp_connector::general_err!(
-                "invalid connector state (send request)"
-            ));
-        };
-        debug_assert!(connector.next_pdu_hint().is_none());
-        let written = connector.step_no_input(&mut buf)?;
-        let x224_pdu_len = written.size().expect("written size");
-        debug_assert_eq!(x224_pdu_len, buf.filled_len());
-        let x224_pdu = buf.filled().to_vec();
+    let vmconnect = matches!(
+        connector.state,
+        ironrdp_connector::ClientConnectorState::PreconnectionBlobSendRequest
+    );
 
-        let rdcleanpath_req =
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
-                .map_err(|e| ironrdp_connector::custom_err!("new RDCleanPath request", e))?;
+    // Send RDCleanPath request.
+    {
+        let rdcleanpath_req = if vmconnect {
+            let written = connector.step_no_input(&mut buf)?;
+            let server_preconnection_pdu = buf.filled()[..written.size().expect("written size")].to_vec();
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_v2_request(
+                destination,
+                proxy_auth_token,
+                server_preconnection_pdu,
+            )
+        } else {
+            let ironrdp_connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+                return Err(ironrdp_connector::general_err!(
+                    "invalid connector state (send request)"
+                ));
+            };
+            debug_assert!(connector.next_pdu_hint().is_none());
+            let written = connector.step_no_input(&mut buf)?;
+            let x224_pdu_len = written.size().expect("written size");
+            debug_assert_eq!(x224_pdu_len, buf.filled_len());
+            let x224_pdu = buf.filled().to_vec();
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(
+                x224_pdu,
+                destination,
+                proxy_auth_token,
+                pcb,
+            )
+        }
+        .map_err(|e| ironrdp_connector::custom_err!("new RDCleanPath request", e))?;
         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
         let rdcleanpath_req = rdcleanpath_req
             .to_der()
@@ -1270,22 +1288,28 @@ where
             .into_enum()
             .map_err(|e| ironrdp_connector::custom_err!("invalid RDCleanPath PDU", e))?
         {
-            ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
+            ironrdp_rdcleanpath::RDCleanPath::V1(ironrdp_rdcleanpath::RDCleanPathV1::Request { .. })
+            | ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::Request { .. }) => {
                 return Err(ironrdp_connector::general_err!(
                     "received unexpected RDCleanPath type (request)"
                 ));
             }
-            ironrdp_rdcleanpath::RDCleanPath::Response {
+            ironrdp_rdcleanpath::RDCleanPath::V1(ironrdp_rdcleanpath::RDCleanPathV1::Response {
                 x224_connection_response,
                 server_cert_chain,
                 server_addr: _,
-            } => (x224_connection_response, server_cert_chain),
-            ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error) => {
+            }) => (Some(x224_connection_response), server_cert_chain),
+            ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::Response {
+                server_cert_chain,
+                server_addr: _,
+            }) => (None, server_cert_chain),
+            ironrdp_rdcleanpath::RDCleanPath::V1(ironrdp_rdcleanpath::RDCleanPathV1::GeneralErr(error))
+            | ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::GeneralErr(error)) => {
                 return Err(ironrdp_connector::custom_err!("received RDCleanPath error", error));
             }
-            ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
+            ironrdp_rdcleanpath::RDCleanPath::V1(ironrdp_rdcleanpath::RDCleanPathV1::NegotiationErr {
                 x224_connection_response,
-            } => {
+            }) => {
                 if let Ok(x224_confirm) = ironrdp_core::decode::<
                     ironrdp_pdu::x224::X224<ironrdp_pdu::nego::ConnectionConfirm>,
                 >(&x224_connection_response)
@@ -1304,16 +1328,22 @@ where
             }
         };
 
-        let ironrdp_connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
-            return Err(ironrdp_connector::general_err!(
-                "invalid connector state (wait confirm)"
-            ));
-        };
-        debug_assert!(connector.next_pdu_hint().is_some());
+        if let Some(x224_connection_response) = x224_connection_response {
+            let ironrdp_connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
+                return Err(ironrdp_connector::general_err!(
+                    "invalid connector state (wait confirm)"
+                ));
+            };
+            debug_assert!(connector.next_pdu_hint().is_some());
 
-        buf.clear();
-        let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
-        debug_assert!(written.is_nothing());
+            buf.clear();
+            let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+            debug_assert!(written.is_nothing());
+        } else if !connector.should_perform_security_upgrade() {
+            return Err(ironrdp_connector::general_err!(
+                "invalid connector state (security upgrade)"
+            ));
+        }
 
         let server_cert = server_cert_chain
             .into_iter()

@@ -40,6 +40,31 @@ pub mod ffi {
             Ok(Box::new(RDCleanPathPdu(pdu)))
         }
 
+        /// Creates a version 2 request for a server that expects TLS before X.224.
+        pub fn new_v2_request(
+            destination: &str,
+            proxy_auth: &str,
+            server_preconnection_pdu: &[u8],
+        ) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
+            let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::new_v2_request(
+                destination.to_owned(),
+                proxy_auth.to_owned(),
+                server_preconnection_pdu.to_vec(),
+            )
+            .context("failed to create RDCleanPath version 2 request")
+            .map_err(GenericError)?;
+
+            Ok(Box::new(RDCleanPathPdu(pdu)))
+        }
+
+        pub fn get_version(&self) -> u64 {
+            self.0.version
+        }
+
+        pub fn is_version_2(&self) -> bool {
+            self.0.version == ironrdp_rdcleanpath::VERSION_2
+        }
+
         /// Decodes a RDCleanPath PDU from DER-encoded bytes
         pub fn from_der(bytes: &[u8]) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
             let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(bytes)
@@ -73,13 +98,16 @@ pub mod ffi {
                     return Err(Self::missing_field("proxy_auth"));
                 }
 
-                if self.0.x224_connection_pdu.is_none() {
+                if self.0.version == ironrdp_rdcleanpath::VERSION_1 && self.0.x224_connection_pdu.is_none() {
                     return Err(Self::missing_field("x224_connection_pdu"));
+                }
+                if self.0.version == ironrdp_rdcleanpath::VERSION_2 && self.0.server_preconnection_pdu.is_none() {
+                    return Err(Self::missing_field("server_preconnection_pdu"));
                 }
 
                 Ok(RDCleanPathResultType::Request)
             } else if self.0.server_addr.is_some() {
-                if self.0.x224_connection_pdu.is_none() {
+                if self.0.version == ironrdp_rdcleanpath::VERSION_1 && self.0.x224_connection_pdu.is_none() {
                     return Err(Self::missing_field("x224_connection_pdu"));
                 }
 
@@ -138,10 +166,6 @@ pub mod ffi {
         /// Returns a vector iterator of certificate bytes
         pub fn get_server_cert_chain(&self) -> Result<Box<CertificateChainIterator>, Box<IronRdpError>> {
             if self.0.server_addr.is_some() {
-                self.0
-                    .x224_connection_pdu
-                    .as_ref()
-                    .ok_or_else(|| Self::missing_field("x224_connection_pdu"))?;
                 let certs = self
                     .0
                     .server_cert_chain
@@ -160,10 +184,7 @@ pub mod ffi {
 
         /// Gets the server address string (for Response variant)
         pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
-            if self.0.server_addr.is_some()
-                && self.0.server_cert_chain.is_some()
-                && self.0.x224_connection_pdu.is_some()
-            {
+            if self.0.server_addr.is_some() && self.0.server_cert_chain.is_some() {
                 if let Some(server_addr) = &self.0.server_addr {
                     let _ = write!(writeable, "{server_addr}");
                 }
