@@ -64,6 +64,7 @@ use ironrdp_pdu::{PduResult, decode_cursor, decode_err, pdu_other_err};
 use tracing::{debug, trace, warn};
 
 use crate::CHANNEL_NAME;
+use crate::compositor::{Compositor, OutputUpdate};
 use crate::decode::H264Decoder;
 use crate::pdu::{
     Avc420BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesV8Flags,
@@ -394,6 +395,7 @@ pub struct GraphicsPipelineClient {
     codec_caps: CodecCapabilities,
 
     surfaces: BTreeMap<u16, Surface>,
+    compositor: Compositor,
     current_frame_id: Option<u32>,
     frames_queued: u32,
     total_frames_decoded: u32,
@@ -415,6 +417,7 @@ impl GraphicsPipelineClient {
             negotiated_caps: None,
             codec_caps: CodecCapabilities::default(),
             surfaces: BTreeMap::new(),
+            compositor: Compositor::default(),
             current_frame_id: None,
             frames_queued: 0,
             total_frames_decoded: 0,
@@ -453,6 +456,18 @@ impl GraphicsPipelineClient {
     #[must_use]
     pub fn total_frames_decoded(&self) -> u32 {
         self.total_frames_decoded
+    }
+
+    /// Take the output-buffer regions that changed in completed frames.
+    ///
+    /// The client-side compositor applies every surface command (`WireToSurface1`
+    /// decodes, `SolidFill`, `SurfaceToSurface`, and the bitmap cache) into
+    /// persistent RGBA8888 surfaces and maps them onto the graphics output. This
+    /// drains the accumulated output-space deltas, committed per `EndFrame` and
+    /// ready to blit into a framebuffer. Each call empties the queue.
+    #[must_use]
+    pub fn drain_output(&mut self) -> Vec<OutputUpdate> {
+        self.compositor.drain_output()
     }
 
     // ========================================================================
@@ -501,6 +516,8 @@ impl GraphicsPipelineClient {
             // Surface operations
             GfxPdu::SolidFill(pdu) => {
                 trace!(surface_id = pdu.surface_id, "SolidFill");
+                self.compositor
+                    .solid_fill(pdu.surface_id, &pdu.fill_pixel, &pdu.rectangles);
                 self.handler.on_solid_fill(&pdu);
                 Ok(vec![])
             }
@@ -509,6 +526,12 @@ impl GraphicsPipelineClient {
                     src = pdu.source_surface_id,
                     dst = pdu.destination_surface_id,
                     "SurfaceToSurface"
+                );
+                self.compositor.surface_to_surface(
+                    pdu.source_surface_id,
+                    pdu.destination_surface_id,
+                    &pdu.source_rectangle,
+                    &pdu.destination_points,
                 );
                 self.handler.on_surface_to_surface(&pdu);
                 Ok(vec![])
@@ -521,6 +544,8 @@ impl GraphicsPipelineClient {
                     cache_slot = pdu.cache_slot,
                     "SurfaceToCache"
                 );
+                self.compositor
+                    .surface_to_cache(pdu.surface_id, pdu.cache_slot, &pdu.source_rectangle);
                 self.handler.on_surface_to_cache(&pdu);
                 Ok(vec![])
             }
@@ -530,11 +555,14 @@ impl GraphicsPipelineClient {
                     surface_id = pdu.surface_id,
                     "CacheToSurface"
                 );
+                self.compositor
+                    .cache_to_surface(pdu.cache_slot, pdu.surface_id, &pdu.destination_points);
                 self.handler.on_cache_to_surface(&pdu);
                 Ok(vec![])
             }
             GfxPdu::EvictCacheEntry(pdu) => {
                 trace!(cache_slot = pdu.cache_slot, "EvictCacheEntry");
+                self.compositor.evict_cache_entry(pdu.cache_slot);
                 self.handler.on_evict_cache_entry(&pdu);
                 Ok(vec![])
             }
@@ -623,6 +651,7 @@ impl GraphicsPipelineClient {
     fn handle_reset_graphics(&mut self, width: u32, height: u32) {
         // Per spec, ResetGraphics implicitly destroys all surfaces
         self.surfaces.clear();
+        self.compositor.reset(width, height);
 
         // Reset frame tracking state so subsequent FrameAcknowledge PDUs
         // don't report stale queue depth from a previous stream.
@@ -664,12 +693,14 @@ impl GraphicsPipelineClient {
         };
 
         debug!(surface_id, width, height, ?pixel_format, "Surface created");
+        self.compositor.create_surface(surface_id, width, height);
         self.handler.on_surface_created(&surface);
         self.surfaces.insert(surface_id, surface);
     }
 
     fn handle_delete_surface(&mut self, surface_id: u16) {
         if self.surfaces.remove(&surface_id).is_some() {
+            self.compositor.delete_surface(surface_id);
             debug!(surface_id, "Surface deleted");
             self.handler.on_surface_deleted(surface_id);
         } else {
@@ -682,6 +713,7 @@ impl GraphicsPipelineClient {
             surface.is_mapped = true;
             surface.output_origin_x = origin_x;
             surface.output_origin_y = origin_y;
+            self.compositor.map_surface(surface_id, origin_x, origin_y);
             debug!(surface_id, origin_x, origin_y, "Surface mapped to output");
             self.handler.on_surface_mapped(surface_id, origin_x, origin_y);
         } else {
@@ -788,6 +820,7 @@ impl GraphicsPipelineClient {
             height: dest_height,
         };
 
+        self.compositor.apply_bitmap(surface_id, dest_rect, &update.data);
         self.handler.on_bitmap_updated(&update);
         Ok(())
     }
@@ -843,6 +876,8 @@ impl GraphicsPipelineClient {
             height: dest_height,
         };
 
+        self.compositor
+            .apply_bitmap(update.surface_id, &update.destination_rectangle, &update.data);
         self.handler.on_bitmap_updated(&update);
     }
 
@@ -851,6 +886,9 @@ impl GraphicsPipelineClient {
         self.total_frames_decoded = self.total_frames_decoded.wrapping_add(1);
         self.current_frame_id = None;
         self.frames_queued = self.frames_queued.saturating_sub(1);
+
+        // Commit the frame's compositor deltas so `drain_output` can surface them.
+        self.compositor.end_frame();
 
         self.handler.on_frame_complete(frame_id);
 
