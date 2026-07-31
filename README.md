@@ -87,6 +87,9 @@ cargo install ironrdp-viewer
 cargo install ironrdp-agent
 ```
 
+Both binaries link native audio, so Linux builds need the ALSA development headers
+(`libasound2-dev` on Debian/Ubuntu) and Windows builds need NASM.
+
 ### `ironrdp-viewer`
 
 `ironrdp-viewer` is a portable, windowed RDP client that uses asynchronous I/O and software
@@ -112,10 +115,14 @@ logging, and the full option list.
 convenient for scripts and LLM-driven automation:
 
 ```shell
-ironrdp-agent daemon-start                                    # in one terminal
+ironrdp-agent daemon-start --overlay ./credentials.rdp        # in one terminal
 ironrdp-agent connect --server <HOSTNAME> --username <USER>   # in another
 ironrdp-agent screenshot ./desktop.png
 ```
+
+`connect` fails with `missing required fields` unless credentials are available, so either preload
+them into the daemon with `daemon-start --overlay <FILE>` — which keeps secrets away from the IPC
+caller — or pass `--password` to `connect`.
 
 Run `ironrdp-agent --help-agent` for a machine-readable description of every operation, and see the
 [agent README](./crates/ironrdp-agent/README.md) for the IPC format, secret handling, and remote
@@ -150,6 +157,8 @@ cargo run --example=server -- --bind-addr 127.0.0.1:3389
 
 - The Rust toolchain pinned in [`rust-toolchain.toml`](./rust-toolchain.toml) (installed
   automatically by `rustup`)
+- Native build dependencies: ALSA headers on Linux (`libasound2-dev` on Debian/Ubuntu), NASM on
+  Windows
 - Node.js >= 24 LTS, for the web client only
 - The .NET SDK, for the FFI bindings only
 
@@ -170,10 +179,12 @@ cargo xtask bootstrap        # install development requirements
 cargo xtask check fmt        # formatting
 cargo xtask check lints      # clippy
 cargo xtask check tests      # test suites
-cargo xtask ci               # everything CI runs
+cargo xtask ci               # the full sweep, minus the FFI/.NET checks
 ```
 
-A successful `cargo xtask ci` locally is expected to imply a green CI run.
+`cargo xtask ci` covers formatting, typos, lints, tests, feature combinations, fuzzing, WASM, and
+the web client. The FFI and .NET builds run as a separate CI job — reproduce them locally with the
+`cargo xtask ffi` commands below.
 
 ### Web client
 
@@ -253,14 +264,10 @@ pull request.
 AI-assisted development is encouraged when used thoughtfully. Contributors remain responsible for
 understanding, reviewing, and validating every change produced with AI assistance.
 
-For RDP protocol work, install the
-[Windows Protocols skill](https://github.com/awakecoding/openspecs) so AI agents can navigate the
-Microsoft Open Specifications corpus. It significantly improves the correctness of AI-assisted work
-involving RDP protocol details:
-
-```shell
-npx skills add https://github.com/awakecoding/openspecs --skill windows-protocols -y -g
-```
+For RDP protocol work, install the Windows Protocols skill so AI agents can navigate the Microsoft
+Open Specifications corpus. It significantly improves the correctness of AI-assisted work involving
+RDP protocol details. See [awakecoding/openspecs](https://github.com/awakecoding/openspecs) for
+installation instructions.
 
 ## Getting help
 
