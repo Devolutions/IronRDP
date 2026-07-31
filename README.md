@@ -151,86 +151,27 @@ cargo run --example=screenshot -- --host <HOSTNAME> -u <USERNAME> -p <PASSWORD> 
 cargo run --example=server -- --bind-addr 127.0.0.1:3389
 ```
 
-## Building from source
+## Tips
 
-### Prerequisites
+<details>
+<summary>Enabling RemoteFX on a Windows server</summary>
 
-- The Rust toolchain pinned in [`rust-toolchain.toml`](./rust-toolchain.toml) (installed
-  automatically by `rustup`)
-- Native build dependencies: ALSA headers on Linux (`libasound2-dev` on Debian/Ubuntu), NASM on
-  Windows
-- Node.js >= 24 LTS, for the web client only
-- The .NET SDK, for the FFI bindings only
+Run the following PowerShell commands, then reboot:
 
-### Build and check
-
-```shell
-git clone https://github.com/Devolutions/IronRDP.git
-cd IronRDP
-cargo build
+```pwsh
+Set-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services' -Name 'ColorDepth' -Type DWORD -Value 5
+Set-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fEnableVirtualizedGraphics' -Type DWORD -Value 1
 ```
 
-Project automation lives in [`xtask`](./xtask), following the
-[`cargo xtask`](https://github.com/matklad/cargo-xtask) convention. Run `cargo xtask --help` for the
-full list. The most useful ones:
+Alternatively, enable the following group policies with `gpedit.msc` and reboot. All of them live
+under _Computer Configuration → Administrative Templates → Windows Components → Remote Desktop
+Services → Remote Desktop Session Host → Remote Session Environment_:
 
-```shell
-cargo xtask bootstrap        # install development requirements
-cargo xtask check fmt        # formatting
-cargo xtask check lints      # clippy
-cargo xtask check tests      # test suites
-cargo xtask ci               # the full sweep, minus the FFI/.NET checks
-```
+1. _RemoteFX for Windows Server 2008 R2 → Configure RemoteFX_
+2. _Enable RemoteFX encoding for RemoteFX clients designed for Windows Server 2008 R2 SP1_
+3. _Limit maximum color depth_
 
-`cargo xtask ci` covers formatting, typos, lints, tests, feature combinations, fuzzing, WASM, and
-the web client. The FFI and .NET builds run as a separate CI job — reproduce them locally with the
-`cargo xtask ffi` commands below.
-
-### Web client
-
-```shell
-cargo xtask web install
-cargo xtask web run
-```
-
-This builds the WebAssembly module and serves the SvelteKit demonstration client. See
-[`web-client/`](./web-client) for details. The demo client is a showcase, not a production build.
-
-### .NET bindings
-
-```shell
-cargo xtask ffi install
-cargo xtask ffi build
-cargo xtask ffi bindings
-```
-
-Then run one of the samples, e.g. `dotnet run --project ffi/dotnet/Devolutions.IronRdp.ConnectExample`.
-See [`ffi/`](./ffi) for details.
-
-### Fuzzing
-
-```shell
-cargo xtask fuzz install
-cargo xtask fuzz run
-```
-
-See [`fuzz/README.md`](./fuzz/README.md).
-
-## Repository layout
-
-| Path | Contents |
-| --- | --- |
-| [`crates/`](./crates) | The crate suite: protocol, channels, codecs, client, server, bindings |
-| [`crates/ironrdp`](./crates/ironrdp) | Meta crate re-exporting the others, plus runnable examples |
-| [`web-client/`](./web-client) | Web component, RDP backend, and Svelte demonstration client |
-| [`ffi/`](./ffi) | Diplomat-based FFI and .NET bindings with examples |
-| [`fuzz/`](./fuzz) | Fuzz targets for the core tier |
-| [`benches/`](./benches) | Benchmarks |
-| [`xtask/`](./xtask) | Project automation |
-
-Crates are organized into core, extra, internal, and community tiers, each with its own guarantees
-and invariants. Read [ARCHITECTURE.md](./ARCHITECTURE.md) before making non-trivial changes, and
-[STYLE.md](./STYLE.md) for coding conventions.
+</details>
 
 ## Who uses IronRDP
 
@@ -256,8 +197,17 @@ and [Fedora stable](https://packages.fedoraproject.org/pkgs/rust/rust/). The too
 ## Contributing
 
 Contributions are welcome. Start with [ARCHITECTURE.md](./ARCHITECTURE.md) and
-[STYLE.md](./STYLE.md), keep changes scoped, and make sure `cargo xtask ci` passes before opening a
-pull request.
+[STYLE.md](./STYLE.md), and keep changes scoped.
+
+Project automation lives in [`xtask`](./xtask), following the
+[`cargo xtask`](https://github.com/matklad/cargo-xtask) convention. Run `cargo xtask --help` for the
+full list, `cargo xtask bootstrap` to install the development requirements, and `cargo xtask ci`
+before opening a pull request — it runs everything CI does except the FFI and .NET checks, which
+have their own `cargo xtask ffi` commands.
+
+Building the workspace needs the ALSA development headers on Linux (`libasound2-dev` on
+Debian/Ubuntu) and NASM on Windows. The web client additionally needs Node.js >= 24 LTS, and the FFI
+bindings need the .NET SDK.
 
 ## AI-assisted development
 
