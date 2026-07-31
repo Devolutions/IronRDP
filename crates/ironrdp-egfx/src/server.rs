@@ -703,7 +703,9 @@ fn negotiate_capabilities(client_caps: &[CapabilitySet], server_caps: &[Capabili
     for server_cap in server_sorted {
         for client_cap in client_caps {
             if core::mem::discriminant(client_cap) == core::mem::discriminant(server_cap) {
-                return Some(intersect_flags(client_cap, server_cap));
+                return Some(sanitize_capabilities_for_confirm(intersect_flags(
+                    client_cap, server_cap,
+                )));
             }
         }
     }
@@ -711,37 +713,235 @@ fn negotiate_capabilities(client_caps: &[CapabilitySet], server_caps: &[Capabili
     None
 }
 
-/// Intersect flags for matching capability set versions
+/// Intersect positive flags while preserving the client AVC decoder constraint.
 fn intersect_flags(client: &CapabilitySet, server: &CapabilitySet) -> CapabilitySet {
     match (client, server) {
         (CapabilitySet::V8 { flags: cf }, CapabilitySet::V8 { flags: sf }) => CapabilitySet::V8 { flags: *cf & *sf },
         (CapabilitySet::V8_1 { flags: cf }, CapabilitySet::V8_1 { flags: sf }) => {
             CapabilitySet::V8_1 { flags: *cf & *sf }
         }
-        (CapabilitySet::V10 { flags: cf }, CapabilitySet::V10 { flags: sf }) => CapabilitySet::V10 { flags: *cf & *sf },
-        (CapabilitySet::V10_2 { flags: cf }, CapabilitySet::V10_2 { flags: sf }) => {
-            CapabilitySet::V10_2 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_3 { flags: cf }, CapabilitySet::V10_3 { flags: sf }) => {
-            CapabilitySet::V10_3 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_4 { flags: cf }, CapabilitySet::V10_4 { flags: sf }) => {
-            CapabilitySet::V10_4 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_5 { flags: cf }, CapabilitySet::V10_5 { flags: sf }) => {
-            CapabilitySet::V10_5 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_6 { flags: cf }, CapabilitySet::V10_6 { flags: sf }) => {
-            CapabilitySet::V10_6 { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_6Err { flags: cf }, CapabilitySet::V10_6Err { flags: sf }) => {
-            CapabilitySet::V10_6Err { flags: *cf & *sf }
-        }
-        (CapabilitySet::V10_7 { flags: cf }, CapabilitySet::V10_7 { flags: sf }) => {
-            CapabilitySet::V10_7 { flags: *cf & *sf }
-        }
+        (CapabilitySet::V10 { flags: cf }, CapabilitySet::V10 { flags: sf }) => CapabilitySet::V10 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV10Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_2 { flags: cf }, CapabilitySet::V10_2 { flags: sf }) => CapabilitySet::V10_2 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV10Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_3 { flags: cf }, CapabilitySet::V10_3 { flags: sf }) => CapabilitySet::V10_3 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV103Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_4 { flags: cf }, CapabilitySet::V10_4 { flags: sf }) => CapabilitySet::V10_4 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_5 { flags: cf }, CapabilitySet::V10_5 { flags: sf }) => CapabilitySet::V10_5 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_6 { flags: cf }, CapabilitySet::V10_6 { flags: sf }) => CapabilitySet::V10_6 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_6Err { flags: cf }, CapabilitySet::V10_6Err { flags: sf }) => CapabilitySet::V10_6Err {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+        },
+        (CapabilitySet::V10_7 { flags: cf }, CapabilitySet::V10_7 { flags: sf }) => CapabilitySet::V10_7 {
+            flags: (*cf & *sf) | (*cf & CapabilitiesV107Flags::AVC_DISABLED),
+        },
         // V10_1 has no flags; mismatched variants return server as-is.
         _ => server.clone(),
+    }
+}
+
+/// Ensure a capabilities confirm never combines incompatible AVC flags.
+fn sanitize_capabilities_for_confirm(mut capabilities: CapabilitySet) -> CapabilitySet {
+    match &mut capabilities {
+        CapabilitySet::V10_3 { flags } => {
+            if flags.contains(CapabilitiesV103Flags::AVC_DISABLED) {
+                flags.remove(CapabilitiesV103Flags::AVC_THIN_CLIENT);
+            }
+        }
+        CapabilitySet::V10_4 { flags }
+        | CapabilitySet::V10_5 { flags }
+        | CapabilitySet::V10_6 { flags }
+        | CapabilitySet::V10_6Err { flags } => {
+            if flags.contains(CapabilitiesV104Flags::AVC_DISABLED) {
+                flags.remove(CapabilitiesV104Flags::AVC_THIN_CLIENT);
+            }
+        }
+        CapabilitySet::V10_7 { flags } => {
+            if flags.contains(CapabilitiesV107Flags::AVC_DISABLED) {
+                flags.remove(CapabilitiesV107Flags::AVC_THIN_CLIENT);
+            }
+        }
+        _ => {}
+    }
+
+    capabilities
+}
+
+#[cfg(test)]
+mod capability_negotiation_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_client_avc_disabled_constraint() {
+        let cases = [
+            (
+                CapabilitySet::V10 {
+                    flags: CapabilitiesV10Flags::AVC_DISABLED | CapabilitiesV10Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10 {
+                    flags: CapabilitiesV10Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_2 {
+                    flags: CapabilitiesV10Flags::AVC_DISABLED | CapabilitiesV10Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_2 {
+                    flags: CapabilitiesV10Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::AVC_DISABLED,
+                },
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::empty(),
+                },
+            ),
+            (
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::AVC_DISABLED | CapabilitiesV107Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::SMALL_CACHE,
+                },
+            ),
+        ];
+
+        for (client, server) in cases {
+            assert_eq!(
+                negotiate_capabilities(core::slice::from_ref(&client), &[server]),
+                Some(client)
+            );
+        }
+    }
+
+    #[test]
+    fn removes_avc_thin_client_from_malformed_avc_disabled_capabilities() {
+        let cases = [
+            (
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::AVC_DISABLED | CapabilitiesV103Flags::AVC_THIN_CLIENT,
+                },
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::AVC_THIN_CLIENT,
+                },
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::AVC_DISABLED,
+                },
+            ),
+            (
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED
+                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED
+                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED
+                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED
+                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::AVC_DISABLED
+                        | CapabilitiesV107Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV107Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::AVC_THIN_CLIENT | CapabilitiesV107Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::AVC_DISABLED | CapabilitiesV107Flags::SMALL_CACHE,
+                },
+            ),
+        ];
+
+        for (client, server, expected) in cases {
+            assert_eq!(sanitize_capabilities_for_confirm(client.clone()), expected);
+            assert_eq!(negotiate_capabilities(&[client], &[server]), Some(expected));
+        }
     }
 }
 
@@ -1707,14 +1907,16 @@ impl GraphicsPipelineServer {
         // When no version overlaps with server preferences, confirm the client's
         // highest-priority capability to avoid confirming a version the client
         // did not advertise.
-        let negotiated = negotiate_capabilities(&client_caps, &server_caps).unwrap_or_else(|| {
-            warn!("No capability match with server preferences, selecting client's highest version");
-            let mut client_sorted = client_caps.clone();
-            client_sorted.sort_by_key(|cap| core::cmp::Reverse(capability_priority(cap)));
-            client_sorted.into_iter().next().unwrap_or(CapabilitySet::V8 {
-                flags: CapabilitiesV8Flags::empty(),
-            })
-        });
+        let negotiated = sanitize_capabilities_for_confirm(
+            negotiate_capabilities(&client_caps, &server_caps).unwrap_or_else(|| {
+                warn!("No capability match with server preferences, selecting client's highest version");
+                let mut client_sorted = client_caps.clone();
+                client_sorted.sort_by_key(|cap| core::cmp::Reverse(capability_priority(cap)));
+                client_sorted.into_iter().next().unwrap_or(CapabilitySet::V8 {
+                    flags: CapabilitiesV8Flags::empty(),
+                })
+            }),
+        );
 
         self.codec_caps = CodecCapabilities::from_capability_set(&negotiated);
         self.state = ServerState::Ready;
