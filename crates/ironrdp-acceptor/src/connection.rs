@@ -32,6 +32,7 @@ pub struct Acceptor {
     message_channel_id: Option<u16>,
     desktop_size: DesktopSize,
     keyboard_layout: u32,
+    multitransport_flags: gcc::MultiTransportFlags,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
@@ -96,6 +97,13 @@ pub struct AcceptorResult {
     /// announce one. Servers can use it to pick a server-side keyboard layout
     /// matching the client without changing any local input state.
     pub keyboard_layout: u32,
+    /// Multitransport (MS-RDPEMT) capability flags announced by the client in
+    /// its GCC `MultiTransportChannelData` block (section 2.2.1.3.8).
+    ///
+    /// Empty when the client did not send a multitransport block. Servers that
+    /// implement UDP multitransport can use it to decide whether to send a
+    /// Server Initiate Multitransport Request.
+    pub multitransport_flags: gcc::MultiTransportFlags,
     /// Credentials received from the client during SecureSettingsExchange.
     ///
     /// Present for TLS-mode connections where the client sends credentials
@@ -122,6 +130,7 @@ impl Acceptor {
             message_channel_id: None,
             desktop_size,
             keyboard_layout: 0,
+            multitransport_flags: gcc::MultiTransportFlags::empty(),
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
@@ -194,6 +203,7 @@ impl Acceptor {
             message_channel_id: consumed.message_channel_id,
             desktop_size,
             keyboard_layout: consumed.keyboard_layout,
+            multitransport_flags: consumed.multitransport_flags,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
@@ -255,6 +265,7 @@ impl Acceptor {
                 io_channel_id: self.io_channel_id,
                 message_channel_id: self.message_channel_id,
                 keyboard_layout: self.keyboard_layout,
+                multitransport_flags: self.multitransport_flags,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
             }),
@@ -513,6 +524,11 @@ impl Sequence for Acceptor {
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
+                self.multitransport_flags = gcc_blocks
+                    .multi_transport_channel
+                    .as_ref()
+                    .map(|m| m.flags)
+                    .unwrap_or_else(gcc::MultiTransportFlags::empty);
 
                 // Adopt the client's requested desktop size (from its Client
                 // Core Data) before Demand Active is sent, so the session is

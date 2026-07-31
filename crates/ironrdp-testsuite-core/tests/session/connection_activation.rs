@@ -6,7 +6,12 @@ use ironrdp_core::{WriteBuf, encode_vec};
 use ironrdp_pdu::gcc;
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
-use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlHeader, ShareControlPdu};
+use ironrdp_pdu::rdp::client_info::CompressionType;
+use ironrdp_pdu::rdp::headers::{
+    CompressionFlags, ServerDeactivateAll, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu,
+    StreamPriority,
+};
+use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 
 use ironrdp_testsuite_core::capsets::SERVER_DEMAND_ACTIVE;
@@ -116,6 +121,72 @@ fn client_connector_stays_in_capabilities_exchange_on_deactivate_all() {
 }
 
 #[test]
+fn set_error_info_during_capabilities_exchange_surfaces_the_disconnect_reason() {
+    // Instead of reactivating after a Deactivate-All, a server may end the session
+    // (MS-RDPBCGR §1.3.1.3) by sending a Set Error Info PDU carrying the disconnect
+    // reason. The sequence must surface that reason rather than a generic
+    // "unexpected Share Control PDU" error.
+    let config = test_config();
+    let mut seq = ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID);
+
+    let error_info = ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+            ProtocolIndependentCode::RpcInitiatedDisconnect,
+        ))),
+        stream_priority: StreamPriority::Medium,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: CompressionType::K8,
+    });
+    let frame = encode_server_share_control(error_info);
+    let mut output = WriteBuf::new();
+
+    let err = seq
+        .step(&frame, &mut output)
+        .expect_err("a Set Error Info PDU during capabilities exchange must end the sequence with an error");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("error info"),
+        "the error should surface the server's disconnect reason, got: {message}"
+    );
+    assert!(
+        !message.contains("unexpected Share Control PDU"),
+        "the disconnect reason must not be masked by the generic unexpected-PDU error, got: {message}"
+    );
+}
+
+#[test]
+fn none_error_info_during_capabilities_exchange_is_skipped() {
+    // An ERRINFO_NONE Set Error Info PDU is informational, not a disconnect. It must
+    // be skipped (staying in Capabilities Exchange to await Demand Active), not treated
+    // as a session-ending error.
+    let config = test_config();
+    let mut seq = ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID);
+
+    let none_error_info = ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+            ProtocolIndependentCode::None,
+        ))),
+        stream_priority: StreamPriority::Medium,
+        compression_flags: CompressionFlags::empty(),
+        compression_type: CompressionType::K8,
+    });
+    let frame = encode_server_share_control(none_error_info);
+    let mut output = WriteBuf::new();
+
+    let written = seq.step(&frame, &mut output).unwrap();
+
+    assert_eq!(written, Written::Nothing);
+    assert!(
+        matches!(
+            seq.connection_activation_state(),
+            ConnectionActivationState::CapabilitiesExchange
+        ),
+        "state should remain CapabilitiesExchange after a benign ERRINFO_NONE PDU"
+    );
+}
+
+#[test]
 fn demand_active_after_deactivate_all_transitions_to_connection_finalization() {
     let config = test_config();
     let mut seq = ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID);
@@ -139,4 +210,52 @@ fn demand_active_after_deactivate_all_transitions_to_connection_finalization() {
         ),
         "state should transition to ConnectionFinalization after DemandActive"
     );
+}
+
+#[test]
+fn demand_active_captures_server_input_flags() {
+    use ironrdp_pdu::rdp::capability_sets::InputFlags;
+
+    let config = test_config();
+    let mut seq = ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let mut output = WriteBuf::new();
+
+    let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()));
+    seq.step(&frame, &mut output).unwrap();
+
+    match seq.connection_activation_state() {
+        ConnectionActivationState::ConnectionFinalization { input_flags, .. } => {
+            assert_eq!(
+                input_flags,
+                InputFlags::SCANCODES | InputFlags::MOUSEX | InputFlags::UNICODE | InputFlags::FASTPATH_INPUT_2,
+                "input_flags should mirror the Input capability in the Server Demand Active"
+            );
+        }
+        other => panic!("expected ConnectionFinalization, got: {other:?}"),
+    }
+}
+
+#[test]
+fn demand_active_without_input_capability_yields_empty_input_flags() {
+    use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, InputFlags};
+
+    let config = test_config();
+    let mut seq = ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let mut output = WriteBuf::new();
+
+    let mut demand_active = SERVER_DEMAND_ACTIVE.clone();
+    demand_active
+        .pdu
+        .capability_sets
+        .retain(|c| !matches!(c, CapabilitySet::Input(_)));
+
+    let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(demand_active));
+    seq.step(&frame, &mut output).unwrap();
+
+    match seq.connection_activation_state() {
+        ConnectionActivationState::ConnectionFinalization { input_flags, .. } => {
+            assert_eq!(input_flags, InputFlags::empty());
+        }
+        other => panic!("expected ConnectionFinalization, got: {other:?}"),
+    }
 }

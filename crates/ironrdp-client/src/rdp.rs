@@ -745,7 +745,6 @@ async fn active_session(
         io_channel_id: connection_result.io_channel_id,
         message_channel_id: connection_result.message_channel_id,
         share_id: connection_result.share_id,
-        compression_type: connection_result.compression_type,
         enable_server_pointer: connection_result.enable_server_pointer,
         pointer_software_rendering: connection_result.pointer_software_rendering,
     }
@@ -975,6 +974,7 @@ async fn active_session(
                         if let ConnectionActivationState::Finalized {
                             desktop_size,
                             share_id,
+                            input_flags: _,
                             enable_server_pointer,
                             pointer_software_rendering,
                         } = connection_activation.connection_activation_state()

@@ -87,21 +87,33 @@ impl<'de> Decode<'de> for DisplayControlPdu {
         let kind = src.read_u32();
         let pdu_length = src.read_u32();
 
-        let _payload_length = pdu_length
+        let payload_length = pdu_length
             .checked_sub(Self::FIXED_PART_SIZE.try_into().expect("always in range"))
             .ok_or_else(|| invalid_field_err!("Length", "Display control PDU length is too small"))?;
 
-        match kind {
-            DISPLAYCONTROL_PDU_TYPE_CAPS => {
-                let caps = DisplayControlCapabilities::decode(src)?;
-                Ok(DisplayControlPdu::Caps(caps))
-            }
-            DISPLAYCONTROL_PDU_TYPE_MONITOR_LAYOUT => {
-                let layout = DisplayControlMonitorLayout::decode(src)?;
-                Ok(DisplayControlPdu::MonitorLayout(layout))
-            }
-            _ => Err(invalid_field_err!("Type", "Unknown display control PDU type")),
+        if usize::try_from(payload_length).unwrap_or(usize::MAX) != src.len() {
+            return Err(invalid_field_err!(
+                "Length",
+                "Display control PDU length does not match the payload size"
+            ));
         }
+
+        let pdu = match kind {
+            DISPLAYCONTROL_PDU_TYPE_CAPS => DisplayControlPdu::Caps(DisplayControlCapabilities::decode(src)?),
+            DISPLAYCONTROL_PDU_TYPE_MONITOR_LAYOUT => {
+                DisplayControlPdu::MonitorLayout(DisplayControlMonitorLayout::decode(src)?)
+            }
+            _ => return Err(invalid_field_err!("Type", "Unknown display control PDU type")),
+        };
+
+        if !src.is_empty() {
+            return Err(invalid_field_err!(
+                "Length",
+                "trailing bytes after display control PDU body"
+            ));
+        }
+
+        Ok(pdu)
     }
 }
 

@@ -2434,6 +2434,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "whoami",
+ "windows",
 ]
 
 [[package]]
@@ -2941,6 +2942,7 @@ dependencies = [
  "expect-test",
  "hex",
  "ironrdp-acceptor",
+ "ironrdp-bulk",
  "ironrdp-cfg",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
@@ -2950,6 +2952,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-echo",
  "ironrdp-egfx",
+ "ironrdp-error 0.2.0",
  "ironrdp-fuzzing",
  "ironrdp-graphics",
  "ironrdp-input",
@@ -2983,12 +2986,14 @@ dependencies = [
  "ironrdp",
  "ironrdp-agent",
  "ironrdp-async",
+ "ironrdp-bulk",
  "ironrdp-client",
  "ironrdp-core 0.2.1",
  "ironrdp-dvc",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
  "ironrdp-propertyset",
+ "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
  "ironrdp-viewer",

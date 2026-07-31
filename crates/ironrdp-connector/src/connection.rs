@@ -166,6 +166,16 @@ pub struct ConnectionResult {
     pub share_id: u32,
     pub static_channels: StaticChannelSet,
     pub desktop_size: DesktopSize,
+    /// The server's Input capability flags from the Server Demand Active PDU.
+    ///
+    /// Per [MS-RDPBCGR] 2.2.8.1.2, fast-path input events may only be sent when
+    /// `INPUT_FLAG_FASTPATH_INPUT` or `INPUT_FLAG_FASTPATH_INPUT2` is present; some
+    /// servers (e.g. VirtualBox VRDP) close the connection on unsolicited fast-path
+    /// input, so clients should fall back to slow-path input PDUs when neither flag
+    /// is set.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b8e7c588-51cb-455b-bb73-92d480903133
+    pub input_flags: rdp::capability_sets::InputFlags,
     pub enable_server_pointer: bool,
     pub pointer_software_rendering: bool,
     /// Factory for producing connection activation sequences.
@@ -874,6 +884,7 @@ impl Sequence for ClientConnector {
                         ConnectionActivationState::Finalized {
                             desktop_size,
                             share_id,
+                            input_flags,
                             enable_server_pointer,
                             pointer_software_rendering,
                         } => ClientConnectorState::Connected {
@@ -884,6 +895,7 @@ impl Sequence for ClientConnector {
                                 share_id,
                                 static_channels: mem::take(&mut self.static_channels),
                                 desktop_size,
+                                input_flags,
                                 enable_server_pointer,
                                 pointer_software_rendering,
                                 activation_factory: ConnectionActivationFactory::new(

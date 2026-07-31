@@ -71,7 +71,7 @@ fn bench_compress_decompress(c: &mut Criterion, ct: CompressionType, data: &[u8]
     let name = algo_name(ct);
 
     // Verify data actually compresses with this algorithm
-    let mut test_comp = BulkCompressor::new(ct).expect("bulk compressor should initialize");
+    let mut test_comp = BulkCompressor::new(ct);
     let (test_size, test_flags) = test_comp.compress(data).expect("bulk compression should succeed");
     let is_compressed = test_flags & flags::PACKET_COMPRESSED != 0;
 
@@ -85,7 +85,7 @@ fn bench_compress_decompress(c: &mut Criterion, ct: CompressionType, data: &[u8]
 
             group.bench_function(BenchmarkId::new("compress", data.len()), |b| {
                 b.iter_batched(
-                    || BulkCompressor::new(ct).expect("bulk compressor should initialize"),
+                    || BulkCompressor::new(ct),
                     |mut compressor| {
                         black_box(
                             compressor
@@ -107,7 +107,7 @@ fn bench_compress_decompress(c: &mut Criterion, ct: CompressionType, data: &[u8]
 
             group.bench_function(BenchmarkId::new("decompress", data.len()), |b| {
                 b.iter_batched(
-                    || BulkCompressor::new(ct).expect("bulk compressor should initialize"),
+                    || BulkCompressor::new(ct),
                     |mut decompressor| {
                         black_box(
                             decompressor

@@ -45,7 +45,7 @@ impl From<ConnectorError> for Box<ffi::IronRdpError> {
             ironrdp::connector::ConnectorErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
             _ => IronRdpErrorKind::Generic,
         };
-        let repr = value.report().to_string();
+        let repr = value.report().with_locations().to_string();
         make_ffi_error(repr, kind)
     }
 }
@@ -58,28 +58,28 @@ impl From<SessionError> for Box<ffi::IronRdpError> {
             ironrdp::session::SessionErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
             _ => IronRdpErrorKind::Generic,
         };
-        let repr = value.report().to_string();
+        let repr = value.report().with_locations().to_string();
         make_ffi_error(repr, kind)
     }
 }
 
 impl From<ironrdp::pdu::PduError> for Box<ffi::IronRdpError> {
     fn from(value: ironrdp::pdu::PduError) -> Self {
-        let repr = value.report().to_string();
+        let repr = value.report().with_locations().to_string();
         make_ffi_error(repr, IronRdpErrorKind::PduError)
     }
 }
 
 impl From<ironrdp::core::EncodeError> for Box<ffi::IronRdpError> {
     fn from(value: ironrdp::core::EncodeError) -> Self {
-        let repr = value.report().to_string();
+        let repr = value.report().with_locations().to_string();
         make_ffi_error(repr, IronRdpErrorKind::EncodeError)
     }
 }
 
 impl From<ironrdp::core::DecodeError> for Box<ffi::IronRdpError> {
     fn from(value: ironrdp::core::DecodeError) -> Self {
-        let repr = value.report().to_string();
+        let repr = value.report().with_locations().to_string();
         make_ffi_error(repr, IronRdpErrorKind::DecodeError)
     }
 }
