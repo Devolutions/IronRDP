@@ -72,6 +72,18 @@ fn from_buffer_correctly_parses_rdp_pdu_server_font_map() {
 }
 
 #[test]
+fn from_header_only_buffer_defaults_rdp_pdu_server_font_map() {
+    let buf = &SERVER_FONT_MAP_BUFFER[..18];
+
+    assert_eq!(SERVER_FONT_MAP.clone(), decode(buf).unwrap());
+}
+
+#[test]
+fn from_header_only_buffer_rejects_rdp_pdu_client_font_list() {
+    assert!(decode::<ironrdp_pdu::rdp::headers::ShareControlHeader>(&CLIENT_FONT_LIST_BUFFER[..18]).is_err());
+}
+
+#[test]
 fn from_buffer_correctly_parses_rdp_pdu_server_monitor_layout() {
     let buf = MONITOR_LAYOUT_PDU_BUFFER.clone();
 
