@@ -163,13 +163,15 @@ jobs:
       sspi_label_required: ${{ steps.sspi-label.outputs.required }}
 
     steps:
-      - name: Check out pull request head
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.label.outputs.head-sha }}
-          fetch-depth: 0
-          persist-credentials: false
-          token: ""
+      - name: Fetch pull request head
+        shell: bash
+        env:
+          HEAD_SHA: ${{ needs.label.outputs.head-sha }}
+        run: |
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin "+$HEAD_SHA:refs/remotes/origin/pull-request-head"
+          git checkout --detach origin/pull-request-head
 
       - name: Determine merge base
         id: merge-base
