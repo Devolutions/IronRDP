@@ -443,8 +443,11 @@ async fn connect_direct(
     let framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
-
-    tls_handshake_and_finalize(framed, connector, config).await
+    if config.vm_id().is_some() {
+        vmconnect_handshake_and_finalize(framed, connector, config).await
+    } else {
+        tls_handshake_and_finalize(framed, connector, config).await
+    }
 }
 
 /// RDS gateway TCP → gateway auth → TLS connection.
@@ -473,8 +476,11 @@ async fn connect_gateway(
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
-
-    tls_handshake_and_finalize(framed, connector, config).await
+    if config.vm_id().is_some() {
+        vmconnect_handshake_and_finalize(framed, connector, config).await
+    } else {
+        tls_handshake_and_finalize(framed, connector, config).await
+    }
 }
 
 /// RDCleanPath WebSocket → RDCleanPath handshake connection.
@@ -565,6 +571,62 @@ where
         &mut upgraded_framed,
         &mut ReqwestNetworkClient::new(),
         (&config.destination).into(),
+        server_public_key,
+        config.kerberos_config.clone(),
+    )
+    .await?;
+
+    Ok((connection_result, upgraded_framed))
+}
+
+/// Hyper-V front via `ironrdp-vmconnect`, then the shared RDP tail.
+async fn vmconnect_handshake_and_finalize<S>(
+    mut framed: ironrdp_tokio::TokioFramed<S>,
+    mut connector: ironrdp_connector::ClientConnector,
+    config: &Config,
+) -> ConnectorResult<(ConnectionResult, UpgradedFramed)>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+{
+    let vm_id = config
+        .vm_id()
+        .ok_or_else(|| ironrdp_connector::general_err!("vmconnect path requires a VM ID"))?;
+
+    let pcb_sent = ironrdp_vmconnect::send_preconnection_blob(&mut framed, vm_id).await?;
+
+    debug!("TLS upgrade");
+
+    let (initial_stream, leftover_bytes) = framed.into_inner();
+    let (tls_stream, tls_cert) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("TLS upgrade", e))?;
+
+    let erased_stream: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(tls_stream);
+    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
+
+    let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert)
+        .ok_or_else(|| ironrdp_connector::general_err!("unable to extract tls server public key"))?
+        .to_owned();
+
+    let mut network_client = ReqwestNetworkClient::new();
+    let server_name = ironrdp_connector::ServerName::from(&config.destination);
+    let upgraded = ironrdp_vmconnect::connect_front(
+        pcb_sent,
+        &mut upgraded_framed,
+        &mut connector,
+        &mut network_client,
+        server_name.clone(),
+        &server_public_key,
+        config.kerberos_config.clone(),
+    )
+    .await?;
+
+    let connection_result = ironrdp_tokio::connect_finalize(
+        upgraded,
+        connector,
+        &mut upgraded_framed,
+        &mut network_client,
+        server_name,
         server_public_key,
         config.kerberos_config.clone(),
     )

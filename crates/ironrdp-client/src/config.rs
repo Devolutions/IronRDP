@@ -58,6 +58,12 @@ pub struct Config {
     pub(crate) connector: ironrdp_connector::Config,
     pub(crate) destination: Destination,
     pub(crate) transport: Transport,
+
+    /// Hyper-V VM ID to connect to via vmconnect, if this is a vmconnect session.
+    ///
+    /// When set, the client sends a Preconnection Blob carrying this id and performs the Hyper-V
+    /// connection ordering (PCB → TLS → CredSSP → X.224 negotiation) instead of the standard one.
+    pub(crate) vm_id: Option<String>,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
@@ -100,6 +106,11 @@ impl Config {
         &self.transport
     }
 
+    /// Hyper-V VM ID for a vmconnect session, if any.
+    pub fn vm_id(&self) -> Option<&str> {
+        self.vm_id.as_deref()
+    }
+
     /// Optional Kerberos/KDC proxy configuration.
     pub fn kerberos_config(&self) -> Option<&ironrdp_connector::credssp::KerberosConfig> {
         self.kerberos_config.as_ref()
@@ -139,6 +150,7 @@ impl fmt::Debug for Config {
         s.field("connector", &self.connector);
         s.field("destination", &self.destination);
         s.field("transport", &self.transport);
+        s.field("vm_id", &self.vm_id);
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
@@ -564,6 +576,7 @@ pub struct ConfigBuilder {
     work_dir: Option<String>,
 
     transport: TransportKind,
+    vm_id: Option<String>,
     rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     fake_events_interval: Option<Duration>,
@@ -866,6 +879,23 @@ impl ConfigBuilder {
         self
     }
 
+    /// Connect to a Hyper-V VM console via vmconnect, identified by its VM ID (a GUID string).
+    ///
+    /// The Hyper-V front (Preconnection Blob → TLS → CredSSP → X.224) is driven by
+    /// `ironrdp-vmconnect` outside the plain RDP connector. A console listens on port
+    /// [`ironrdp_vmconnect::PORT`] (2179), not 3389, so the destination must say so.
+    ///
+    /// Works over the Direct and gateway transports, but not RDCleanPath, whose proxy negotiates
+    /// X.224 before this ordering is ready for it; [`build`](Self::build) rejects that pair.
+    ///
+    /// Not mirrored into the [`PropertySet`]: `.rdp` files carry the VM ID in the `pcb` key, which
+    /// `ironrdp-cfg` does not model yet.
+    #[must_use]
+    pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
+        self.vm_id = Some(vm_id.into());
+        self
+    }
+
     /// Set the RDCleanPath authentication token (only meaningful with an RDCleanPath transport).
     ///
     /// The token is a secret: like the gateway password, it is *not* mirrored into the PropertySet,
@@ -1119,6 +1149,12 @@ impl ConfigBuilder {
             }),
         };
 
+        // An RDCleanPath proxy negotiates X.224 for us before the Hyper-V ordering gets there. A
+        // gateway is only a tunnel, so the connector still drives the whole handshake itself.
+        if self.vm_id.is_some() && matches!(transport, Transport::RDCleanPath(_)) {
+            anyhow::bail!("vmconnect cannot be used over an RDCleanPath proxy");
+        }
+
         let client_name = self.client_name.unwrap_or_default();
         let kerberos_config = self
             .kerberos_config
@@ -1196,6 +1232,7 @@ impl ConfigBuilder {
             connector,
             destination: self.destination.context("server address is required")?,
             transport,
+            vm_id: self.vm_id,
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
