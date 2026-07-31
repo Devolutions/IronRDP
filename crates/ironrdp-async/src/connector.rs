@@ -78,6 +78,24 @@ where
     }
 
     let result = loop {
+        if connector.should_perform_multitransport() {
+            // Auto-skip multitransport bootstrapping: this driver does not own
+            // UDP transport setup, so it declines on the application's behalf
+            // and the connection continues TCP-only. Applications that want to
+            // participate in multitransport must drive the connector directly
+            // using `ClientConnector::complete_multitransport()` instead of
+            // calling `connect_finalize`.
+            buf.clear();
+            let written = connector.skip_multitransport(&mut buf)?;
+            if written.size().is_some() {
+                framed
+                    .write_all(buf.filled())
+                    .await
+                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+            }
+            continue;
+        }
+
         single_sequence_step(framed, &mut connector, &mut buf).await?;
 
         if let ClientConnectorState::Connected { result } = connector.state {

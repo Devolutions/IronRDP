@@ -7,7 +7,7 @@ use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_activation::{
@@ -18,6 +18,27 @@ use crate::{
     Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize,
     NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
 };
+
+/// Maximum number of `Initiate Multitransport Request` PDUs the server is
+/// permitted to send during bootstrapping, per MS-RDPBCGR 2.2.15.1 (one per
+/// transport protocol: reliable + lossy UDP).
+const MAX_MULTITRANSPORT_REQUESTS: usize = 2;
+
+/// Outcome of a single multitransport bootstrapping request, passed to
+/// [`ClientConnector::complete_multitransport()`].
+///
+/// The connector uses this to build the response PDU internally, carrying the
+/// request ID from the server's original request. The request's 16-byte
+/// security cookie is not echoed here: it binds the UDP transport itself, not
+/// the main-channel response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MultitransportResult {
+    /// UDP transport was established successfully (`S_OK`).
+    Success,
+    /// UDP transport failed. The `u32` is the HRESULT error code (typically
+    /// [`MultitransportResponsePdu::E_ABORT`](rdp::multitransport::MultitransportResponsePdu::E_ABORT)).
+    Failure(u32),
+}
 
 #[derive(Debug)]
 pub struct ConnectionResult {
@@ -90,9 +111,60 @@ pub enum ClientConnectorState {
         user_channel_id: u16,
         license_exchange: LicenseExchangeSequence,
     },
+    /// Waiting for either an Initiate Multitransport Request or the Demand
+    /// Active that ends the optional bootstrapping phase.
+    ///
+    /// The server may send 0, 1, or 2 requests, and there is no end marker for
+    /// the set: it is not obliged to send Demand Active before the client acts
+    /// on a request it has already sent. So each request is surfaced to the
+    /// caller the moment it decodes, and the connector comes back here for the
+    /// next PDU rather than trying to collect a batch it cannot know the size
+    /// of. A PDU on the I/O channel is the Demand Active and ends the phase.
     MultitransportBootstrapping {
         io_channel_id: u16,
         user_channel_id: u16,
+        /// MCS message channel negotiated during GCC, when the server offered
+        /// one. Multitransport travels on it in both directions per
+        /// MS-RDPBCGR 2.2.15.1 and 2.2.15.2, so it is both the channel inbound
+        /// requests arrive on and the channel responses go out on. `None` means
+        /// the server never offered one, in which case no request can be valid.
+        message_channel_id: Option<u16>,
+        /// How many requests have been surfaced so far, to enforce the cap in
+        /// MS-RDPBCGR 2.2.15.1 now that they are handled one at a time.
+        requests_seen: usize,
+    },
+    /// A single Initiate Multitransport Request has been surfaced and the
+    /// connector is waiting for the caller to establish that UDP transport
+    /// (RDPEUDP2 + TLS + RDPEMT) or decline it.
+    ///
+    /// Call [`ClientConnector::complete_multitransport()`] or
+    /// [`ClientConnector::skip_multitransport()`] to advance. Either returns
+    /// the connector to [`Self::MultitransportBootstrapping`] to read whatever
+    /// the server sends next, which may be a second request or the Demand
+    /// Active.
+    ///
+    /// On the wire, TCP and UDP negotiation happen in parallel: the UDP
+    /// transport is established alongside the ongoing TCP handshake, and
+    /// its completion is a signal to the dynamic-channel layer that
+    /// subsequent channels may migrate to UDP. The connector's suspension
+    /// here is a Rust-API affordance, not a spec-mandated TCP pause.
+    MultitransportPending {
+        io_channel_id: u16,
+        user_channel_id: u16,
+        /// MCS message channel the Initiate Multitransport Response must go out
+        /// on; see the same field on [`Self::MultitransportBootstrapping`].
+        message_channel_id: Option<u16>,
+        /// The request awaiting the caller's outcome.
+        request: rdp::multitransport::MultitransportRequestPdu,
+        /// Carried through so the cap survives the round trip through the
+        /// caller.
+        requests_seen: usize,
+        /// Whether both peers advertised Soft-Sync, captured when this state was
+        /// entered. Combined with the reported outcome this decides whether the
+        /// completion and skip paths emit an Initiate Multitransport Response:
+        /// a failure is always reported, while success is withheld unless
+        /// Soft-Sync was negotiated.
+        soft_sync: bool,
     },
     CapabilitiesExchange {
         connection_activation: ConnectionActivationSequence,
@@ -120,6 +192,7 @@ impl State for ClientConnectorState {
             Self::ConnectTimeAutoDetection { .. } => "ConnectTimeAutoDetection",
             Self::LicensingExchange { .. } => "LicensingExchange",
             Self::MultitransportBootstrapping { .. } => "MultitransportBootstrapping",
+            Self::MultitransportPending { .. } => "MultitransportPending",
             Self::CapabilitiesExchange {
                 connection_activation, ..
             } => connection_activation.state().name(),
@@ -148,6 +221,12 @@ pub struct ClientConnector {
     pub static_channels: StaticChannelSet,
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
+    /// Multitransport flags the server advertised in its GCC
+    /// `MultiTransportChannelData` block, if it sent one. Retained because
+    /// MS-RDPBCGR 2.2.15.2 permits an `S_OK` response only to a server that
+    /// advertised `SOFTSYNC_TCP_TO_UDP`, so the outcome reported back depends on
+    /// what both peers advertised.
+    pub server_multitransport_flags: Option<gcc::MultiTransportFlags>,
 }
 
 impl ClientConnector {
@@ -158,7 +237,25 @@ impl ClientConnector {
             client_addr,
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
+            server_multitransport_flags: None,
         }
+    }
+
+    /// Whether Soft-Sync (`SOFTSYNC_TCP_TO_UDP`) was mutually advertised, meaning
+    /// both peers set the flag in their GCC `MultiTransportChannelData` block.
+    ///
+    /// This does not by itself decide whether a response is sent. It gates
+    /// success only: per [\[MS-RDPBCGR\] 2.2.15.2] `S_OK` "MUST only be sent to a
+    /// server that advertises the SOFTSYNC_TCP_TO_UDP flag", while a failure is
+    /// reported either way. See [`Self::multitransport_response_channel`].
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.15.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/44044233-e498-46f8-8e16-1ffa595a8e8b
+    fn soft_sync_negotiated(&self) -> bool {
+        fn advertised(flags: Option<gcc::MultiTransportFlags>) -> bool {
+            flags.is_some_and(|flags| flags.contains(gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP))
+        }
+
+        advertised(self.config.multitransport_flags) && advertised(self.server_multitransport_flags)
     }
 
     #[must_use]
@@ -221,12 +318,218 @@ impl ClientConnector {
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
     }
+
+    /// Returns `true` when the server has sent an Initiate Multitransport
+    /// Request and the connector is waiting for the application to either
+    /// establish that UDP transport or decline it.
+    ///
+    /// The application should:
+    ///
+    /// 1. Call [`multitransport_request()`](Self::multitransport_request) to
+    ///    get the server's request
+    /// 2. Establish UDP transport (RDPEUDP2 + TLS + RDPEMT), or decide not to
+    /// 3. Call [`complete_multitransport()`](Self::complete_multitransport) with
+    ///    the [`MultitransportResult`], or
+    ///    [`skip_multitransport()`](Self::skip_multitransport) to decline
+    ///
+    /// This can come round more than once. MS-RDPBCGR 2.2.15.1 permits two
+    /// requests, one per transport protocol, and each is surfaced on its own
+    /// as soon as it decodes rather than batched, because the server is not
+    /// obliged to announce that it has finished sending them.
+    pub fn should_perform_multitransport(&self) -> bool {
+        matches!(self.state, ClientConnectorState::MultitransportPending { .. })
+    }
+
+    /// Returns the multitransport request PDU awaiting an outcome.
+    ///
+    /// `None` unless
+    /// [`should_perform_multitransport()`](Self::should_perform_multitransport)
+    /// returns `true`.
+    pub fn multitransport_request(&self) -> Option<&rdp::multitransport::MultitransportRequestPdu> {
+        match &self.state {
+            ClientConnectorState::MultitransportPending { request, .. } => Some(request),
+            _ => None,
+        }
+    }
+
+    /// Report the outcome of the multitransport request currently surfaced by
+    /// [`multitransport_request()`](Self::multitransport_request).
+    ///
+    /// The connector builds the response PDU internally from the stored request
+    /// ID, sends it on the MCS message channel when one is owed for this outcome,
+    /// and returns to reading. A failure is always reported; success is withheld
+    /// unless Soft-Sync was negotiated, per MS-RDPBCGR 2.2.15.2. The next PDU may be a second request
+    /// or the Demand Active that ends bootstrapping; either way the caller does
+    /// not have to know which.
+    ///
+    /// Returns an error if the connector is not in `MultitransportPending`
+    /// state.
+    pub fn complete_multitransport(
+        &mut self,
+        result: MultitransportResult,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        self.respond_to_multitransport("complete_multitransport", result, output)
+    }
+
+    /// Decline the multitransport request currently surfaced.
+    ///
+    /// Use this when the application doesn't support or doesn't want UDP
+    /// transport. This reports `E_ABORT`, which MS-RDPBCGR 3.2.5.15.1 asks for
+    /// whenever the client cannot initiate the sideband channel, with no
+    /// Soft-Sync condition attached; the server then continues TCP-only.
+    ///
+    /// Returns an error if the connector is not in `MultitransportPending`
+    /// state.
+    pub fn skip_multitransport(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
+        self.respond_to_multitransport(
+            "skip_multitransport",
+            MultitransportResult::Failure(rdp::multitransport::MultitransportResponsePdu::E_ABORT),
+            output,
+        )
+    }
+
+    /// The channel an Initiate Multitransport Response goes out on, or `None`
+    /// when no response is owed.
+    ///
+    /// Which of the two applies is decided by the outcome as well as the mode.
+    /// MS-RDPBCGR 3.2.5.15.1 asks for a response whenever the client could not
+    /// initiate the sideband channel, with no Soft-Sync condition, and requires
+    /// one either way once Soft-Sync is negotiated. 2.2.15.2 restricts only
+    /// `S_OK`, which "MUST only be sent to a server that advertises the
+    /// SOFTSYNC_TCP_TO_UDP flag". So a failure is reported whenever there is a
+    /// channel to report it on, and only success is withheld.
+    ///
+    /// Under Soft-Sync the message channel is presupposed, and falling back to
+    /// the I/O channel would put the response somewhere the server is not
+    /// reading, so its absence is an error rather than a reason to improvise.
+    ///
+    /// Borrows rather than consuming, so the caller can resolve this while the
+    /// connector is still in a state it can act on.
+    fn multitransport_response_channel(&self, result: &MultitransportResult) -> ConnectorResult<Option<u16>> {
+        let ClientConnectorState::MultitransportPending {
+            message_channel_id,
+            soft_sync,
+            ..
+        } = &self.state
+        else {
+            return Ok(None);
+        };
+
+        match (*soft_sync, result) {
+            // Soft-Sync obliges a response either way, and presupposes the
+            // message channel. Falling back to the I/O channel would put the
+            // response somewhere the server is not reading, so its absence is an
+            // error rather than a reason to improvise.
+            (true, _) => message_channel_id
+                .ok_or_else(|| {
+                    general_err!("Soft-Sync was negotiated but the server never offered an MCS message channel")
+                })
+                .map(Some),
+            // `S_OK` is the one value 2.2.15.2 forbids here, so success and only
+            // success is withheld. The outcome is still consumed and the
+            // handshake proceeds, so a caller that established the transport does
+            // not have to know which mode is in play.
+            (false, MultitransportResult::Success) => Ok(None),
+            // A failure is still reported: 3.2.5.15.1 asks for it whenever the
+            // client could not initiate the channel, with no Soft-Sync condition.
+            // It is a SHOULD, so a missing message channel means staying silent
+            // rather than failing a connection over an optional report. In
+            // practice one exists, since 2.2.15.1 puts the request on it.
+            (false, MultitransportResult::Failure(_)) => Ok(*message_channel_id),
+        }
+    }
+
+    /// Shared body of [`Self::complete_multitransport`] and
+    /// [`Self::skip_multitransport`]: declining is just an `E_ABORT` outcome,
+    /// so the two differ only in the HRESULT they report.
+    fn respond_to_multitransport(
+        &mut self,
+        caller: &str,
+        result: MultitransportResult,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        // The state is read, never taken. Everything this needs is a scalar, so
+        // nothing has to be moved out of `self.state`, and the transition at the
+        // end is the only mutation. That makes state preservation structural: an
+        // error anywhere above it leaves the connector exactly as it was, so the
+        // caller can still see what failed and decline. Taking the state up front
+        // and failing afterwards would leave it `Consumed`, with the error having
+        // destroyed the state needed to act on it.
+        let ClientConnectorState::MultitransportPending {
+            io_channel_id,
+            user_channel_id,
+            message_channel_id,
+            request,
+            requests_seen,
+            ..
+        } = &self.state
+        else {
+            return Err(reason_err!(
+                "MultitransportPending",
+                "{caller} called outside MultitransportPending state",
+            ));
+        };
+        let (io_channel_id, user_channel_id, message_channel_id, requests_seen) =
+            (*io_channel_id, *user_channel_id, *message_channel_id, *requests_seen);
+        let request_id = request.request_id;
+
+        let response_channel = self.multitransport_response_channel(&result)?;
+
+        // Whether a response is owed at all is decided by
+        // `multitransport_response_channel`, which weighs the outcome against
+        // Soft-Sync. Either way the outcome is consumed and the handshake
+        // proceeds.
+        let total_written = if let Some(response_channel) = response_channel {
+            let response = match result {
+                MultitransportResult::Success => rdp::multitransport::MultitransportResponsePdu::success(request_id),
+                MultitransportResult::Failure(hr) => multitransport_response(request_id, hr),
+            };
+
+            encode_send_data_request(user_channel_id, response_channel, &response, output)?
+        } else {
+            0
+        };
+
+        // Back to reading. The server may send another request or the Demand
+        // Active; nothing here needs to predict which.
+        self.state = ClientConnectorState::MultitransportBootstrapping {
+            io_channel_id,
+            user_channel_id,
+            message_channel_id,
+            requests_seen,
+        };
+
+        // Nothing goes on the wire when no response is owed, and `from_size`
+        // rejects a zero length.
+        if total_written == 0 {
+            Ok(Written::Nothing)
+        } else {
+            Written::from_size(total_written)
+        }
+    }
+}
+
+/// Build an Initiate Multitransport Response carrying `hr_response`.
+///
+/// [`MultitransportResponsePdu::success`] covers `S_OK`; every other HRESULT,
+/// whether a caller-supplied failure or the `E_ABORT` the skip path sends,
+/// comes through here so the security-header framing lives in one place.
+fn multitransport_response(request_id: u32, hr_response: u32) -> rdp::multitransport::MultitransportResponsePdu {
+    rdp::multitransport::MultitransportResponsePdu {
+        security_header: rdp::headers::BasicSecurityHeader {
+            flags: rdp::headers::BasicSecurityHeaderFlags::TRANSPORT_RSP,
+        },
+        request_id,
+        hr_response,
+    }
 }
 
 fn advance_licensing_exchange(
     mut license_exchange: LicenseExchangeSequence,
     io_channel_id: u16,
     user_channel_id: u16,
+    message_channel_id: Option<u16>,
     input: &[u8],
     output: &mut WriteBuf,
 ) -> ConnectorResult<(Written, ClientConnectorState)> {
@@ -236,6 +539,8 @@ fn advance_licensing_exchange(
         ClientConnectorState::MultitransportBootstrapping {
             io_channel_id,
             user_channel_id,
+            message_channel_id,
+            requests_seen: 0,
         }
     } else {
         ClientConnectorState::LicensingExchange {
@@ -275,7 +580,8 @@ impl Sequence for ClientConnector {
                 }
             }
             ClientConnectorState::LicensingExchange { license_exchange, .. } => license_exchange.next_pdu_hint(),
-            ClientConnectorState::MultitransportBootstrapping { .. } => None,
+            ClientConnectorState::MultitransportBootstrapping { .. } => Some(&ironrdp_pdu::X224_HINT),
+            ClientConnectorState::MultitransportPending { .. } => None,
             ClientConnectorState::CapabilitiesExchange {
                 connection_activation, ..
             } => connection_activation.next_pdu_hint(),
@@ -448,9 +754,10 @@ impl Sequence for ClientConnector {
                     .as_ref()
                     .map(|data| data.mcs_message_channel_id);
 
-                if server_gcc_blocks.multi_transport_channel.is_some() {
-                    warn!("Unexpected MultiTransportChannelData GCC block (not supported)");
-                }
+                self.server_multitransport_flags = server_gcc_blocks
+                    .multi_transport_channel
+                    .as_ref()
+                    .map(|data| data.flags);
 
                 let static_channel_ids = server_gcc_blocks.network.channel_ids;
                 let io_channel_id = server_gcc_blocks.network.io_channel;
@@ -618,7 +925,14 @@ impl Sequence for ClientConnector {
                     // nothing was read and the licensing sequence runs from its
                     // first step when the next PDU arrives.
                     if self.message_channel_id.is_some() {
-                        advance_licensing_exchange(license_exchange, io_channel_id, user_channel_id, input, output)?
+                        advance_licensing_exchange(
+                            license_exchange,
+                            io_channel_id,
+                            user_channel_id,
+                            self.message_channel_id,
+                            input,
+                            output,
+                        )?
                     } else {
                         (
                             Written::Nothing,
@@ -642,24 +956,111 @@ impl Sequence for ClientConnector {
             } => {
                 debug!("Licensing Exchange");
 
-                advance_licensing_exchange(license_exchange, io_channel_id, user_channel_id, input, output)?
+                advance_licensing_exchange(
+                    license_exchange,
+                    io_channel_id,
+                    user_channel_id,
+                    self.message_channel_id,
+                    input,
+                    output,
+                )?
             }
 
             //== Optional Multitransport Bootstrapping ==//
-            // NOTE: our implementation is not expecting the Auto-Detect Request PDU from server
+            //
+            // After licensing the server may send 0, 1, or 2 Initiate Multitransport
+            // Request PDUs (MS-RDPBCGR 2.2.15.1), and it is under no obligation to
+            // send the Demand Active before the client acts on one it has already
+            // sent. There is therefore no end marker for the set, and waiting for a
+            // following PDU to decide what to do with the current one can stall the
+            // handshake outright. Each request is surfaced the moment it decodes,
+            // per MS-RDPBCGR 3.2.5.15.1.
+            //
+            // Routing is by channel. Requests travel on the MCS message channel; the
+            // Demand Active is on the I/O channel and ends the phase. The message
+            // channel also carries auto-detect PDUs, so a decode still confirms what
+            // arrived there, but the I/O channel is never speculatively decoded as
+            // multitransport any more.
             ClientConnectorState::MultitransportBootstrapping {
                 io_channel_id,
                 user_channel_id,
-            } => (
-                Written::Nothing,
-                ClientConnectorState::CapabilitiesExchange {
-                    connection_activation: ConnectionActivationSequence::new(
-                        self.config.clone(),
+                message_channel_id,
+                requests_seen,
+            } => {
+                let ctx = mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
+
+                if Some(ctx.channel_id) == message_channel_id {
+                    let pdu = decode::<rdp::multitransport::MultitransportRequestPdu>(ctx.user_data)
+                        .map_err(ConnectorError::decode)?;
+
+                    if requests_seen >= MAX_MULTITRANSPORT_REQUESTS {
+                        return Err(reason_err!(
+                            "MultitransportBootstrapping",
+                            "server sent more than {} multitransport requests (MS-RDPBCGR 2.2.15.1 caps the count at {})",
+                            MAX_MULTITRANSPORT_REQUESTS,
+                            MAX_MULTITRANSPORT_REQUESTS,
+                        ));
+                    }
+
+                    debug!(
+                        request_id = pdu.request_id,
+                        protocol = ?pdu.requested_protocol,
+                        "Received Initiate Multitransport Request"
+                    );
+
+                    // Captured on entry rather than read back at completion time: the
+                    // GCC exchange carrying both peers' flags is long finished, and
+                    // freezing it here keeps the response paths from depending on
+                    // connector fields that could move in between.
+                    let soft_sync = self.soft_sync_negotiated();
+
+                    (
+                        Written::Nothing,
+                        ClientConnectorState::MultitransportPending {
+                            io_channel_id,
+                            user_channel_id,
+                            message_channel_id,
+                            request: pdu,
+                            requests_seen: requests_seen + 1,
+                            soft_sync,
+                        },
+                    )
+                } else if ctx.channel_id == io_channel_id {
+                    // Demand Active: bootstrapping is over, hand off to capabilities
+                    // exchange with the PDU intact.
+                    let mut connection_activation =
+                        ConnectionActivationSequence::new(self.config.clone(), io_channel_id, user_channel_id);
+                    let written = connection_activation.step(input, output)?;
+
+                    (
+                        written,
+                        match connection_activation.connection_activation_state() {
+                            ConnectionActivationState::ConnectionFinalization { .. } => {
+                                ClientConnectorState::ConnectionFinalization { connection_activation }
+                            }
+                            _ => ClientConnectorState::CapabilitiesExchange { connection_activation },
+                        },
+                    )
+                } else {
+                    return Err(reason_err!(
+                        "MultitransportBootstrapping",
+                        "PDU on unexpected channel {} (message channel is {}, I/O channel is {})",
+                        ctx.channel_id,
+                        message_channel_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "not negotiated".to_owned()),
                         io_channel_id,
-                        user_channel_id,
-                    ),
-                },
-            ),
+                    ));
+                }
+            }
+
+            // MultitransportPending: application should call complete_multitransport()
+            // or skip_multitransport() instead of step()
+            ClientConnectorState::MultitransportPending { .. } => {
+                return Err(general_err!(
+                    "multitransport pending: call complete_multitransport() or skip_multitransport()"
+                ));
+            }
 
             //== Capabilities Exchange ==/
             // The server sends the set of capabilities it supports to the client.
