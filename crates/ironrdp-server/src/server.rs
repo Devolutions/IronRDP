@@ -6,7 +6,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
-use hmac::{Hmac, Mac as _};
 use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
@@ -27,7 +26,6 @@ use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
-use md5::Md5;
 use rand::RngCore as _;
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
@@ -50,9 +48,6 @@ use crate::{SoundServerFactory, builder, capabilities};
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
 const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
-const AUTO_RECONNECT_CLIENT_RANDOM: [u8; 32] = [0; 32];
-
-type HmacMd5 = Hmac<Md5>;
 
 /// Action to take after a client disconnects.
 ///
@@ -708,7 +703,7 @@ impl RdpServer {
         [&self.auto_reconnect_cookie, &self.previous_auto_reconnect_cookie]
             .into_iter()
             .flatten()
-            .any(|cookie| auto_reconnect_cookie_matches(cookie, reconnect))
+            .any(|cookie| reconnect.verify(cookie))
     }
 
     fn generate_auto_reconnect_cookie(logon_id: u32) -> rdp::session_info::ServerAutoReconnect {
@@ -2071,22 +2066,6 @@ fn encode_autodetect_request(
     Ok(encode_vec(&X224(mcs_pdu))?)
 }
 
-fn auto_reconnect_cookie_matches(
-    cookie: &rdp::session_info::ServerAutoReconnect,
-    reconnect: &rdp::client_info::ClientAutoReconnect,
-) -> bool {
-    reconnect.logon_id == cookie.logon_id
-        && auto_reconnect_verifier_matches(&cookie.random_bits, &reconnect.security_verifier)
-}
-
-fn auto_reconnect_verifier_matches(random_bits: &[u8; 16], security_verifier: &[u8; 16]) -> bool {
-    let Ok(mut verifier) = HmacMd5::new_from_slice(random_bits) else {
-        unreachable!("the auto-reconnect random has a valid HMAC-MD5 key length")
-    };
-    verifier.update(&AUTO_RECONNECT_CLIENT_RANDOM);
-    verifier.verify_slice(security_verifier).is_ok()
-}
-
 /// Encode a Share Data PDU wrapped in a Share Control header and carried in an
 /// MCS Send Data Indication on the I/O channel.
 ///
@@ -2200,52 +2179,5 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
         Self {
             writer: Rc::new(Mutex::new(writer)),
         }
-    }
-}
-
-#[cfg(test)]
-mod auto_reconnect_tests {
-    use ironrdp_pdu::rdp::client_info::ClientAutoReconnect;
-    use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
-
-    use super::{auto_reconnect_cookie_matches, auto_reconnect_verifier_matches};
-
-    // Independently computed with Python's hmac/hashlib:
-    // HMAC-MD5(key = 01..10, msg = 32 zero bytes) = 894025a9...261c.
-    const RANDOM_BITS: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-    const EXPECTED_VERIFIER: [u8; 16] = [
-        0x89, 0x40, 0x25, 0xa9, 0x9d, 0x64, 0xab, 0x96, 0x64, 0x19, 0xec, 0x1e, 0xf1, 0x3c, 0x26, 0x1c,
-    ];
-
-    #[test]
-    fn verifier_matches_reference_hmac_md5() {
-        assert!(auto_reconnect_verifier_matches(&RANDOM_BITS, &EXPECTED_VERIFIER));
-    }
-
-    #[test]
-    fn verifier_rejects_a_wrong_value() {
-        let mut wrong = EXPECTED_VERIFIER;
-        wrong[0] ^= 0xff;
-
-        assert!(!auto_reconnect_verifier_matches(&RANDOM_BITS, &wrong));
-    }
-
-    #[test]
-    fn cookie_match_requires_both_logon_id_and_verifier() {
-        let cookie = ServerAutoReconnect {
-            logon_id: 0x1234_5678,
-            random_bits: RANDOM_BITS,
-        };
-        let valid = ClientAutoReconnect {
-            logon_id: 0x1234_5678,
-            security_verifier: EXPECTED_VERIFIER,
-        };
-        assert!(auto_reconnect_cookie_matches(&cookie, &valid));
-
-        let wrong_logon_id = ClientAutoReconnect {
-            logon_id: 1,
-            security_verifier: EXPECTED_VERIFIER,
-        };
-        assert!(!auto_reconnect_cookie_matches(&cookie, &wrong_logon_id));
     }
 }

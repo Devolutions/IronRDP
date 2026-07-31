@@ -1056,6 +1056,9 @@ impl iron_remote_desktop::Session for Session {
                     ActiveStageOutput::AutoDetect(request) => {
                         debug!(?request, "Auto-detect");
                     }
+                    ActiveStageOutput::AutoReconnectCookie(_) => {
+                        debug!("Server Auto-Reconnect Cookie received (automatic reconnection not implemented)");
+                    }
                     ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
                         debug!("RDP login complete");
                     }

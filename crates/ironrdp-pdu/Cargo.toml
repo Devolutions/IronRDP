@@ -35,6 +35,7 @@ tap = "1"
 bit_field = "0.10"
 byteorder = "1.5" # TODO: remove
 der-parser = "10.0"
+hmac = { version = "0.12", default-features = false }
 md5 = { package = "md-5", version = "0.10" }
 num-bigint = "0.4"
 num-derive.workspace = true # TODO: remove
