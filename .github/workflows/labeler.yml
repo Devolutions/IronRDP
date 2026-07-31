@@ -160,7 +160,6 @@ jobs:
     permissions: {}
     outputs:
       breaking_change: ${{ steps.semver-checks.outputs.breaking-change }}
-      sspi_label_required: ${{ steps.sspi-label.outputs.required }}
 
     steps:
       - name: Fetch pull request head
@@ -179,32 +178,6 @@ jobs:
         run: |
           git fetch origin master
           echo "base=$(git merge-base HEAD origin/master)" >> "$GITHUB_OUTPUT"
-
-      - name: Detect SSPI changes
-        id: sspi-label
-        shell: bash
-        run: |
-          BASE="${{ steps.merge-base.outputs.base }}"
-          sspi_path_changed=false
-
-          if ! git diff --quiet "$BASE" HEAD -- \
-            ':(glob)**/*credssp*' \
-            ':(glob)**/*sspi*' \
-            crates/ironrdp-pdu/src/nego.rs; then
-            sspi_path_changed=true
-          fi
-
-          sspi_dependency_changed=false
-          if git diff --unified=0 "$BASE" HEAD -- Cargo.toml ':(glob)**/Cargo.toml' |
-            grep -Eq '^[+-][[:space:]]*"?sspi"?[[:space:]]*='; then
-            sspi_dependency_changed=true
-          fi
-
-          if [ "$sspi_path_changed" = true ] || [ "$sspi_dependency_changed" = true ]; then
-            echo "required=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "required=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Install cargo-semver-checks
         shell: bash
@@ -241,9 +214,54 @@ jobs:
               ;;
           esac
 
+  sspi:
+    name: Detect SSPI changes
+    needs: label
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      label_required: ${{ steps.sspi-label.outputs.required }}
+
+    steps:
+      - name: Fetch pull request history
+        shell: bash
+        env:
+          HEAD_SHA: ${{ needs.label.outputs.head-sha }}
+        run: |
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin "+$HEAD_SHA:refs/remotes/origin/pull-request-head"
+          git fetch --no-tags origin master
+
+      - name: Detect SSPI changes
+        id: sspi-label
+        shell: bash
+        run: |
+          BASE="$(git merge-base origin/pull-request-head origin/master)"
+          sspi_path_changed=false
+
+          if ! git diff --quiet "$BASE" origin/pull-request-head -- \
+            ':(glob)**/*credssp*' \
+            ':(glob)**/*sspi*' \
+            crates/ironrdp-pdu/src/nego.rs; then
+            sspi_path_changed=true
+          fi
+
+          sspi_dependency_changed=false
+          if git diff --unified=0 "$BASE" origin/pull-request-head -- Cargo.toml ':(glob)**/Cargo.toml' |
+            grep -Eq '^[+-][[:space:]]*"?sspi"?[[:space:]]*='; then
+            sspi_dependency_changed=true
+          fi
+
+          if [ "$sspi_path_changed" = true ] || [ "$sspi_dependency_changed" = true ]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "required=false" >> "$GITHUB_OUTPUT"
+          fi
+
   label-derived-changes:
     name: Label derived changes
-    needs: [label, semver]
+    needs: [label, semver, sspi]
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -290,7 +308,7 @@ jobs:
             }
 
       - name: Add SSPI label
-        if: needs.semver.outputs.sspi_label_required == 'true'
+        if: needs.sspi.outputs.label_required == 'true'
         uses: actions/github-script@v8
         env:
           PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
@@ -306,7 +324,7 @@ jobs:
             });
 
       - name: Remove SSPI label
-        if: needs.semver.outputs.sspi_label_required != 'true'
+        if: needs.sspi.outputs.label_required != 'true'
         uses: actions/github-script@v8
         env:
           PULL_REQUEST_NUMBER: ${{ needs.label.outputs.pr-number }}
