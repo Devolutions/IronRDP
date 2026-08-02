@@ -1,3 +1,4 @@
+use core::any::TypeId;
 use core::mem;
 use core::net::SocketAddr;
 use std::borrow::Cow;
@@ -6,8 +7,8 @@ use std::sync::Arc;
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
-use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
-use tracing::{debug, error, info};
+use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
+use tracing::{debug, error, info, warn};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_activation::{
@@ -263,7 +264,7 @@ impl ClientConnector {
     where
         T: SvcClientProcessor + 'static,
     {
-        self.static_channels.insert(channel);
+        self.attach_static_channel(channel);
         self
     }
 
@@ -271,7 +272,38 @@ impl ClientConnector {
     where
         T: SvcClientProcessor + 'static,
     {
+        let channel_name = channel.channel_name();
+        let channel_key = StaticChannelKey::Typed(TypeId::of::<T>());
+        if self.static_channels.get_by_type::<T>().is_none() && self.static_channels.len() >= MAX_STATIC_CHANNELS {
+            warn!(max_channels = MAX_STATIC_CHANNELS, "Static channel limit reached");
+            return;
+        }
+        if let Some((existing_key, _)) = self.static_channels.get_by_channel_name_key(&channel_name)
+            && existing_key != channel_key
+        {
+            warn!(?channel_name, "Static channel name is already registered");
+            return;
+        }
         self.static_channels.insert(channel);
+    }
+
+    /// Attaches a runtime-defined static virtual channel.
+    ///
+    /// This permits multiple instances of the same processor type, each with its own negotiated
+    /// channel name. `false` means the static-channel limit was reached or the name is already
+    /// registered.
+    pub fn attach_dynamic_static_channel<T>(&mut self, channel: T) -> bool
+    where
+        T: SvcClientProcessor + 'static,
+    {
+        let channel_name = channel.channel_name();
+        if self.static_channels.len() >= MAX_STATIC_CHANNELS
+            || self.static_channels.get_by_channel_name_key(&channel_name).is_some()
+        {
+            return false;
+        }
+
+        self.static_channels.insert_dynamic(channel).is_some()
     }
 
     pub fn get_static_channel_processor<T>(&mut self) -> Option<&T>
@@ -766,12 +798,12 @@ impl Sequence for ClientConnector {
 
                 let zipped: Vec<_> = self
                     .static_channels
-                    .type_ids()
+                    .keys()
                     .zip(static_channel_ids.iter().copied())
                     .collect();
 
                 zipped.into_iter().for_each(|(channel, channel_id)| {
-                    self.static_channels.attach_channel_id(channel, channel_id);
+                    self.static_channels.attach_channel_id_by_key(channel, channel_id);
                 });
 
                 let skip_channel_join = server_gcc_blocks

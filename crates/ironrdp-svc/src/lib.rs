@@ -37,6 +37,9 @@ pub use ironrdp_core::impl_as_any;
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
 
+/// The maximum number of optional static virtual channels negotiated in one RDP session.
+pub const MAX_STATIC_CHANNELS: usize = 31;
+
 /// SVC data to be sent to the server. See [`SvcMessage`] for more information.
 /// Usually returned by the channel-specific methods.
 pub struct SvcProcessorMessages<P: SvcProcessor> {
@@ -270,6 +273,18 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
         CompressionCondition::Never
     }
 
+    /// Defines the channel options sent in the GCC Client Network Data block.
+    ///
+    /// The default preserves the legacy compression-only configuration. Processors that need
+    /// additional static-channel options can override this method.
+    fn channel_options(&self) -> ChannelOptions {
+        match self.compression_condition() {
+            CompressionCondition::Never => ChannelOptions::empty(),
+            CompressionCondition::WhenRdpDataIsCompressed => ChannelOptions::COMPRESS_RDP,
+            CompressionCondition::Always => ChannelOptions::COMPRESS,
+        }
+    }
+
     /// Start a channel, after the connection is established and the channel is joined.
     ///
     /// Returns a list of PDUs to be sent back.
@@ -300,12 +315,15 @@ struct ChunkProcessor {
     /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
     /// usually chunked when transferred over svc.
     chunked_pdu: Vec<u8>,
+    /// Declared total length of the current chunk sequence.
+    expected_length: Option<usize>,
 }
 
 impl ChunkProcessor {
     fn new() -> Self {
         Self {
             chunked_pdu: Vec::new(),
+            expected_length: None,
         }
     }
 
@@ -327,26 +345,78 @@ impl ChunkProcessor {
     /// it returns `Ok(Some(payload))`.
     fn dechunkify(&mut self, payload: &[u8]) -> DecodeResult<Option<Vec<u8>>> {
         let mut cursor = ReadCursor::new(payload);
-        let last = Self::process_header(&mut cursor)?;
+        let header: ironrdp_pdu::rdp::vc::ChannelPduHeader = decode_cursor(&mut cursor)?;
+        let chunk = cursor.remaining();
+        let expected_length = usize::try_from(header.length)
+            .map_err(|_| ironrdp_core::invalid_field_err!("length", "channel data length is too large"))?;
+        let first = header.flags.contains(ChannelControlFlags::FLAG_FIRST);
+        let last = header.flags.contains(ChannelControlFlags::FLAG_LAST);
 
-        // Extend the chunked_pdu buffer with the payload
-        self.chunked_pdu.extend_from_slice(cursor.remaining());
+        if !first && !last && self.expected_length.is_none() {
+            if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && chunk.len() != expected_length {
+                return Err(ironrdp_core::invalid_field_err!(
+                    "length",
+                    "unfragmented channel data does not match its declared length"
+                ));
+            }
 
-        // If this was an unchunked message, or the last in a series of chunks, return the payload
-        if last {
-            // Take the chunked_pdu buffer and replace it with an empty one
-            return Ok(Some(core::mem::take(&mut self.chunked_pdu)));
+            return Ok(Some(chunk.to_vec()));
         }
 
-        // This was an intermediate chunk, return None
-        Ok(None)
+        if first {
+            if self.expected_length.is_some() {
+                self.clear_sequence();
+                return Err(ironrdp_core::invalid_field_err!(
+                    "flags",
+                    "received an initial channel fragment before completing the previous sequence"
+                ));
+            }
+
+            self.expected_length = Some(expected_length);
+        } else if self.expected_length != Some(expected_length) {
+            self.clear_sequence();
+            return Err(ironrdp_core::invalid_field_err!(
+                "length",
+                "received a channel fragment without a matching initial fragment"
+            ));
+        }
+
+        self.chunked_pdu.extend_from_slice(chunk);
+
+        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && self.chunked_pdu.len() > expected_length {
+            self.clear_sequence();
+            return Err(ironrdp_core::invalid_field_err!(
+                "length",
+                "channel fragment sequence exceeds its declared length"
+            ));
+        }
+
+        if !last {
+            return Ok(None);
+        }
+
+        let Some(sequence_length) = self.expected_length else {
+            return Err(ironrdp_core::invalid_field_err!(
+                "flags",
+                "received a terminal channel fragment without an initial fragment"
+            ));
+        };
+
+        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && self.chunked_pdu.len() != sequence_length {
+            self.clear_sequence();
+            return Err(ironrdp_core::invalid_field_err!(
+                "length",
+                "terminal channel fragment does not match its declared length"
+            ));
+        }
+
+        self.expected_length = None;
+        Ok(Some(core::mem::take(&mut self.chunked_pdu)))
     }
 
-    /// Returns whether this was the last chunk based on the flags in the channel header.
-    fn process_header(payload: &mut ReadCursor<'_>) -> DecodeResult<bool> {
-        let channel_header: ironrdp_pdu::rdp::vc::ChannelPduHeader = decode_cursor(payload)?;
-
-        Ok(channel_header.flags.contains(ChannelControlFlags::FLAG_LAST))
+    fn clear_sequence(&mut self) {
+        self.chunked_pdu.clear();
+        self.expected_length = None;
     }
 
     /// Takes a single PDU and breaks it into chunks prefixed with a [`ChannelPduHeader`].
@@ -364,6 +434,7 @@ impl ChunkProcessor {
         let mut chunks = Vec::new();
 
         let total_len = encoded_pdu.filled_len();
+        let is_chunked = total_len > max_chunk_len;
         let mut chunk_start_index: usize = 0;
         let mut chunk_end_index = core::cmp::min(total_len, max_chunk_len);
         loop {
@@ -385,6 +456,9 @@ impl ChunkProcessor {
                 }
                 if last {
                     flags |= ChannelFlags::LAST;
+                }
+                if is_chunked {
+                    flags |= ChannelFlags::SHOW_PROTOCOL;
                 }
 
                 flags |= message.flags;
@@ -424,11 +498,7 @@ impl Default for ChunkProcessor {
 
 /// Builds the [`ChannelOptions`] bitfield to be used in the [`ChannelDef`] structure.
 pub fn make_channel_options(channel: &StaticVirtualChannel) -> ChannelOptions {
-    match channel.compression_condition() {
-        CompressionCondition::Never => ChannelOptions::empty(),
-        CompressionCondition::WhenRdpDataIsCompressed => ChannelOptions::COMPRESS_RDP,
-        CompressionCondition::Always => ChannelOptions::COMPRESS,
-    }
+    channel.channel_processor.channel_options()
 }
 
 /// Builds the [`ChannelDef`] structure containing information for this channel.
@@ -438,12 +508,22 @@ pub fn make_channel_definition(channel: &StaticVirtualChannel) -> ChannelDef {
     ChannelDef { name, options }
 }
 
-/// A set holding at most one [`StaticVirtualChannel`] for any given type
-/// implementing [`SvcProcessor`].
+/// A key identifying a static virtual channel in a [`StaticChannelSet`].
 ///
-/// To ensure uniqueness, each trait object is associated to the [`TypeId`] of it’s original type.
-/// Once joined, channels may have their ID attached using [`Self::attach_channel_id()`], effectively
-/// associating them together.
+/// Typed channels retain their historical [`TypeId`]-based identity. Runtime-defined channel
+/// instances receive a unique dynamic key, allowing multiple instances of one processor type.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum StaticChannelKey {
+    Typed(TypeId),
+    Dynamic(u64),
+}
+
+/// A set holding static virtual channels.
+///
+/// Typed processors are associated with their [`TypeId`], preserving the existing typed lookup
+/// API. Runtime-defined processor instances receive unique keys through [`Self::insert_dynamic`].
+/// Once joined, channels may have their ID attached using [`Self::attach_channel_id()`] or
+/// [`Self::attach_channel_id_by_key`], effectively associating them together.
 ///
 /// At this point, it’s possible to retrieve the trait object using either
 /// the type ID ([`Self::get_by_type_id()`]), the original type ([`Self::get_by_type()`]) or
@@ -453,9 +533,10 @@ pub fn make_channel_definition(channel: &StaticVirtualChannel) -> ChannelDef {
 /// since all [`SvcProcessor`]s are also implementing the [`AsAny`] trait.
 #[derive(Debug)]
 pub struct StaticChannelSet {
-    channels: BTreeMap<TypeId, StaticVirtualChannel>,
-    to_channel_id: BTreeMap<TypeId, StaticChannelId>,
-    to_type_id: BTreeMap<StaticChannelId, TypeId>,
+    channels: BTreeMap<StaticChannelKey, StaticVirtualChannel>,
+    to_channel_id: BTreeMap<StaticChannelKey, StaticChannelId>,
+    to_channel_key: BTreeMap<StaticChannelId, StaticChannelKey>,
+    next_dynamic_key: u64,
 }
 
 impl StaticChannelSet {
@@ -464,25 +545,59 @@ impl StaticChannelSet {
         Self {
             channels: BTreeMap::new(),
             to_channel_id: BTreeMap::new(),
-            to_type_id: BTreeMap::new(),
+            to_channel_key: BTreeMap::new(),
+            next_dynamic_key: 0,
         }
     }
 
     /// Inserts a [`StaticVirtualChannel`] into this [`StaticChannelSet`].
     ///
-    /// If a static virtual channel of this type already exists, it is returned.
+    /// If a static virtual channel of this type already exists, it is returned. A new channel is
+    /// not inserted after reaching [`MAX_STATIC_CHANNELS`].
     pub fn insert<T: SvcProcessor + 'static>(&mut self, val: T) -> Option<StaticVirtualChannel> {
-        self.channels.insert(TypeId::of::<T>(), StaticVirtualChannel::new(val))
+        let key = StaticChannelKey::Typed(TypeId::of::<T>());
+        if !self.channels.contains_key(&key) && self.len() >= MAX_STATIC_CHANNELS {
+            return None;
+        }
+
+        self.channels.insert(key, StaticVirtualChannel::new(val))
+    }
+
+    /// Inserts a runtime-defined static virtual channel.
+    ///
+    /// Unlike [`Self::insert`], this never replaces an existing processor of the same Rust type.
+    /// `None` indicates that the static-channel limit or dynamic key space was exhausted.
+    pub fn insert_dynamic<T: SvcProcessor + 'static>(&mut self, val: T) -> Option<StaticChannelKey> {
+        if self.len() >= MAX_STATIC_CHANNELS {
+            return None;
+        }
+
+        let next_dynamic_key = self.next_dynamic_key.checked_add(1)?;
+        let key = StaticChannelKey::Dynamic(self.next_dynamic_key);
+        self.next_dynamic_key = next_dynamic_key;
+        let replaced = self.channels.insert(key, StaticVirtualChannel::new(val));
+        debug_assert!(replaced.is_none());
+        Some(key)
     }
 
     /// Gets a reference to a [`StaticVirtualChannel`] by looking up its internal [`SvcProcessor`]'s [`TypeId`].
     pub fn get_by_type_id(&self, type_id: TypeId) -> Option<&StaticVirtualChannel> {
-        self.channels.get(&type_id)
+        self.channels.get(&StaticChannelKey::Typed(type_id))
     }
 
     /// Gets a mutable reference to a [`StaticVirtualChannel`] by looking up its internal [`SvcProcessor`]'s [`TypeId`].
     pub fn get_by_type_id_mut(&mut self, type_id: TypeId) -> Option<&mut StaticVirtualChannel> {
-        self.channels.get_mut(&type_id)
+        self.channels.get_mut(&StaticChannelKey::Typed(type_id))
+    }
+
+    /// Gets a reference to a static virtual channel by its key.
+    pub fn get_by_key(&self, key: StaticChannelKey) -> Option<&StaticVirtualChannel> {
+        self.channels.get(&key)
+    }
+
+    /// Gets a mutable reference to a static virtual channel by its key.
+    pub fn get_by_key_mut(&mut self, key: StaticChannelKey) -> Option<&mut StaticVirtualChannel> {
+        self.channels.get_mut(&key)
     }
 
     /// Gets a reference to a [`StaticVirtualChannel`] by looking up its internal [`SvcProcessor`]'s [`TypeId`].
@@ -500,25 +615,32 @@ impl StaticChannelSet {
         self.iter().find(|(_, x)| x.channel_processor.channel_name() == *name)
     }
 
+    /// Gets a reference to a static virtual channel by name, including runtime-defined channels.
+    pub fn get_by_channel_name_key(&self, name: &ChannelName) -> Option<(StaticChannelKey, &StaticVirtualChannel)> {
+        self.iter_by_key()
+            .find(|(_, x)| x.channel_processor.channel_name() == *name)
+    }
+
     /// Gets a reference to a [`StaticVirtualChannel`] by looking up its channel ID.
     pub fn get_by_channel_id(&self, channel_id: StaticChannelId) -> Option<&StaticVirtualChannel> {
-        self.get_type_id_by_channel_id(channel_id)
-            .and_then(|type_id| self.get_by_type_id(type_id))
+        self.get_key_by_channel_id(channel_id)
+            .and_then(|key| self.get_by_key(key))
     }
 
     /// Gets a mutable reference to a [`StaticVirtualChannel`] by looking up its channel ID.
     pub fn get_by_channel_id_mut(&mut self, channel_id: StaticChannelId) -> Option<&mut StaticVirtualChannel> {
-        self.get_type_id_by_channel_id(channel_id)
-            .and_then(|type_id| self.get_by_type_id_mut(type_id))
+        self.get_key_by_channel_id(channel_id)
+            .and_then(|key| self.get_by_key_mut(key))
     }
 
     /// Removes a [`StaticVirtualChannel`] from this [`StaticChannelSet`].
     ///
     /// If a static virtual channel of this type existed, it will be returned.
     pub fn remove_by_type_id(&mut self, type_id: TypeId) -> Option<StaticVirtualChannel> {
-        let svc = self.channels.remove(&type_id);
-        if let Some(channel_id) = self.to_channel_id.remove(&type_id) {
-            self.to_type_id.remove(&channel_id);
+        let key = StaticChannelKey::Typed(type_id);
+        let svc = self.channels.remove(&key);
+        if let Some(channel_id) = self.to_channel_id.remove(&key) {
+            self.to_channel_key.remove(&channel_id);
         }
         svc
     }
@@ -535,13 +657,38 @@ impl StaticChannelSet {
     ///
     /// If a channel ID was already attached, it will be returned.
     pub fn attach_channel_id(&mut self, type_id: TypeId, channel_id: StaticChannelId) -> Option<StaticChannelId> {
-        self.to_type_id.insert(channel_id, type_id);
-        self.to_channel_id.insert(type_id, channel_id)
+        self.attach_channel_id_by_key(StaticChannelKey::Typed(type_id), channel_id)
+    }
+
+    /// Attaches a channel ID to a static virtual channel identified by its key.
+    ///
+    /// If a channel ID was already attached, it will be returned.
+    pub fn attach_channel_id_by_key(
+        &mut self,
+        key: StaticChannelKey,
+        channel_id: StaticChannelId,
+    ) -> Option<StaticChannelId> {
+        if !self.channels.contains_key(&key) {
+            return None;
+        }
+
+        let previous_channel_id = self.to_channel_id.insert(key, channel_id);
+        if let Some(previous_channel_id) = previous_channel_id.filter(|previous| *previous != channel_id) {
+            self.to_channel_key.remove(&previous_channel_id);
+        }
+        if let Some(previous_key) = self
+            .to_channel_key
+            .insert(channel_id, key)
+            .filter(|previous| *previous != key)
+        {
+            self.to_channel_id.remove(&previous_key);
+        }
+        previous_channel_id
     }
 
     /// Gets the attached channel ID for a given static virtual channel.
     pub fn get_channel_id_by_type_id(&self, type_id: TypeId) -> Option<StaticChannelId> {
-        self.to_channel_id.get(&type_id).copied()
+        self.to_channel_id.get(&StaticChannelKey::Typed(type_id)).copied()
     }
 
     /// Gets the attached channel ID for a given static virtual channel.
@@ -551,13 +698,28 @@ impl StaticChannelSet {
 
     /// Gets the [`TypeId`] of the static virtual channel associated to this channel ID.
     pub fn get_type_id_by_channel_id(&self, channel_id: StaticChannelId) -> Option<TypeId> {
-        self.to_type_id.get(&channel_id).copied()
+        match self.get_key_by_channel_id(channel_id)? {
+            StaticChannelKey::Typed(type_id) => Some(type_id),
+            StaticChannelKey::Dynamic(_) => None,
+        }
+    }
+
+    /// Gets the key of the static virtual channel associated to this channel ID.
+    pub fn get_key_by_channel_id(&self, channel_id: StaticChannelId) -> Option<StaticChannelKey> {
+        self.to_channel_key.get(&channel_id).copied()
+    }
+
+    /// Gets the attached channel ID for a channel name.
+    pub fn get_channel_id_by_channel_name(&self, name: &ChannelName) -> Option<StaticChannelId> {
+        self.get_by_channel_name_key(name)
+            .and_then(|(key, _)| self.to_channel_id.get(&key).copied())
     }
 
     /// Detaches the channel ID associated to a given static virtual channel.
     pub fn detach_channel_id(&mut self, type_id: TypeId) -> Option<StaticChannelId> {
-        if let Some(channel_id) = self.to_channel_id.remove(&type_id) {
-            self.to_type_id.remove(&channel_id);
+        let key = StaticChannelKey::Typed(type_id);
+        if let Some(channel_id) = self.to_channel_id.remove(&key) {
+            self.to_channel_key.remove(&channel_id);
             Some(channel_id)
         } else {
             None
@@ -566,15 +728,36 @@ impl StaticChannelSet {
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (TypeId, &StaticVirtualChannel)> {
-        self.channels.iter().map(|(type_id, svc)| (*type_id, svc))
+        self.channels.iter().filter_map(|(key, svc)| match key {
+            StaticChannelKey::Typed(type_id) => Some((*type_id, svc)),
+            StaticChannelKey::Dynamic(_) => None,
+        })
+    }
+
+    /// Iterates over all static virtual channels, including runtime-defined channels.
+    #[inline]
+    pub fn iter_by_key(&self) -> impl Iterator<Item = (StaticChannelKey, &StaticVirtualChannel)> {
+        self.channels.iter().map(|(key, svc)| (*key, svc))
     }
 
     #[inline]
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (TypeId, &mut StaticVirtualChannel, Option<StaticChannelId>)> {
         let to_channel_id = self.to_channel_id.clone();
+        self.channels.iter_mut().filter_map(move |(key, svc)| match key {
+            StaticChannelKey::Typed(type_id) => Some((*type_id, svc, to_channel_id.get(key).copied())),
+            StaticChannelKey::Dynamic(_) => None,
+        })
+    }
+
+    /// Mutably iterates over all static virtual channels, including runtime-defined channels.
+    #[inline]
+    pub fn iter_by_key_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (StaticChannelKey, &mut StaticVirtualChannel, Option<StaticChannelId>)> {
+        let to_channel_id = self.to_channel_id.clone();
         self.channels
             .iter_mut()
-            .map(move |(type_id, svc)| (*type_id, svc, to_channel_id.get(type_id).copied()))
+            .map(move |(key, svc)| (*key, svc, to_channel_id.get(key).copied()))
     }
 
     #[inline]
@@ -582,8 +765,29 @@ impl StaticChannelSet {
         self.channels.values()
     }
 
+    /// Returns the number of registered static virtual channels.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.channels.len()
+    }
+
+    /// Returns true if no static virtual channels are registered.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.channels.is_empty()
+    }
+
     #[inline]
     pub fn type_ids(&self) -> impl Iterator<Item = TypeId> + '_ {
+        self.channels.keys().filter_map(|key| match key {
+            StaticChannelKey::Typed(type_id) => Some(*type_id),
+            StaticChannelKey::Dynamic(_) => None,
+        })
+    }
+
+    /// Iterates over all static channel keys in channel-negotiation order.
+    #[inline]
+    pub fn keys(&self) -> impl Iterator<Item = StaticChannelKey> + '_ {
         self.channels.keys().copied()
     }
 
@@ -596,7 +800,7 @@ impl StaticChannelSet {
     pub fn clear(&mut self) {
         self.channels.clear();
         self.to_channel_id.clear();
-        self.to_type_id.clear();
+        self.to_channel_key.clear();
     }
 }
 
