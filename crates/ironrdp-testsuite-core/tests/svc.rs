@@ -5,8 +5,8 @@ use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
 use ironrdp_session::x224::Processor;
 use ironrdp_svc::{
-    MAX_STATIC_CHANNELS, StaticChannelSet, StaticVirtualChannel, SvcClientProcessor, SvcMessage, SvcProcessor,
-    SvcServerProcessor, make_channel_options,
+    MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, StaticVirtualChannel, SvcClientProcessor, SvcMessage,
+    SvcProcessor, SvcServerProcessor, make_channel_options,
 };
 
 #[derive(Debug)]
@@ -83,6 +83,12 @@ fn runtime_channels_have_independent_keys_options_and_ids() {
     channels.attach_channel_id_by_key(second, 1006);
     assert_eq!(channels.get_channel_id_by_channel_name(&first_name), Some(1005));
     assert_eq!(channels.get_channel_id_by_channel_name(&second_name), Some(1006));
+
+    assert_eq!(
+        channels.attach_channel_id_by_key(StaticChannelKey::Dynamic(u64::MAX), 1005),
+        None
+    );
+    assert_eq!(channels.get_channel_id_by_channel_name(&first_name), Some(1005));
 
     channels.attach_channel_id_by_key(second, 1005);
     assert_eq!(channels.get_channel_id_by_channel_name(&first_name), None);

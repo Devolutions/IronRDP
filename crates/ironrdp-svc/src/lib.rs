@@ -661,6 +661,10 @@ impl StaticChannelSet {
         key: StaticChannelKey,
         channel_id: StaticChannelId,
     ) -> Option<StaticChannelId> {
+        if !self.channels.contains_key(&key) {
+            return None;
+        }
+
         let previous_channel_id = self.to_channel_id.insert(key, channel_id);
         if let Some(previous_channel_id) = previous_channel_id.filter(|previous| *previous != channel_id) {
             self.to_channel_key.remove(&previous_channel_id);
