@@ -46,17 +46,17 @@ pub type CertificateValidationCallback = Arc<dyn Fn(&[u8], &str) -> bool + Send 
 
 /// Certificate-validation policy applied during a TLS handshake.
 ///
-/// [`CertificateValidation::Strict`] is the default and validates the peer certificate
-/// chain and server name against the platform trust store. The dangerous variant is
-/// only for explicitly controlled development and test environments.
+/// [`CertificateValidation::DangerouslyAcceptInvalidCertificate`] is the default to
+/// preserve the historic client behavior. Select [`CertificateValidation::Strict`] to
+/// validate the peer certificate chain and server name against the platform trust store.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CertificateValidation {
     /// Validate the peer certificate chain and server name.
-    #[default]
     Strict,
-    /// Accept any peer certificate and server name.
+    /// Accept any peer certificate and server name, preserving historic behavior.
     ///
     /// This disables TLS authentication and is vulnerable to on-path attacks.
+    #[default]
     DangerouslyAcceptInvalidCertificate,
 }
 

@@ -795,9 +795,9 @@ impl ConfigBuilder {
 
     /// Set the TLS peer-certificate validation policy.
     ///
-    /// The default is [`ironrdp_tls::CertificateValidation::Strict`]. Disabling
-    /// validation is unsafe and must be limited to explicitly controlled development
-    /// or test environments.
+    /// The default preserves historic behavior by accepting invalid certificates. Use
+    /// [`ironrdp_tls::CertificateValidation::Strict`] to validate the certificate
+    /// chain and server name against the platform trust store.
     #[must_use]
     pub fn with_certificate_validation(mut self, validation: ironrdp_tls::CertificateValidation) -> Self {
         self.certificate_validation = Some(validation);
@@ -1172,6 +1172,13 @@ impl ConfigBuilder {
         let kerberos_config = self
             .kerberos_config
             .or_else(|| kerberos_config_from_properties(&self.properties, &client_name));
+        let certificate_validation = self.certificate_validation.unwrap_or_else(|| {
+            if self.certificate_validation_callback.is_some() {
+                ironrdp_tls::CertificateValidation::Strict
+            } else {
+                ironrdp_tls::CertificateValidation::default()
+            }
+        });
 
         // Bulk compression is enabled by default. We default to MPPC 64K (RDP5) rather than the
         // richer XCRUSH (RDP6.1) because it is the most universally supported and lowest-state
@@ -1245,7 +1252,7 @@ impl ConfigBuilder {
             connector,
             destination: self.destination.context("server address is required")?,
             transport,
-            certificate_validation: self.certificate_validation.unwrap_or_default(),
+            certificate_validation,
             certificate_validation_callback: self.certificate_validation_callback,
             kerberos_config,
             fake_events_interval: self.fake_events_interval,

@@ -5,7 +5,7 @@ use tokio_native_tls::native_tls::{Identity, TlsAcceptor as NativeTlsAcceptor};
 use x509_cert as _;
 
 #[tokio::test]
-async fn strict_rejects_self_signed_certificates_and_dangerous_accepts_them() {
+async fn default_accepts_self_signed_certificates_and_strict_rejects_them() {
     let identity = Identity::from_pkcs8(
         include_bytes!("certs/server-cert.pem"),
         include_bytes!("certs/server-key.pem"),
@@ -18,6 +18,9 @@ async fn strict_rejects_self_signed_certificates_and_dangerous_accepts_them() {
     let address = listener.local_addr().expect("TLS test listener address");
 
     let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept default TLS client");
+        acceptor.accept(stream).await.expect("accept default TLS client");
+
         let (stream, _) = listener.accept().await.expect("accept strict TLS client");
         let _ = acceptor.accept(stream).await;
 
@@ -25,9 +28,18 @@ async fn strict_rejects_self_signed_certificates_and_dangerous_accepts_them() {
         acceptor.accept(stream).await.expect("accept dangerous TLS client");
     });
 
-    let strict_result = upgrade(
+    let (tls_stream, _) = upgrade(
+        TcpStream::connect(address).await.expect("connect default TLS client"),
+        "localhost",
+    )
+    .await
+    .expect("default validation accepts the self-signed test certificate");
+    drop(tls_stream);
+
+    let strict_result = upgrade_with_certificate_validation(
         TcpStream::connect(address).await.expect("connect strict TLS client"),
         "localhost",
+        CertificateValidation::Strict,
     )
     .await;
     assert!(

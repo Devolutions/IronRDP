@@ -36,7 +36,7 @@ pub async fn upgrade<S>(stream: S, server_name: &str) -> io::Result<(TlsStream<S
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
-    upgrade_with_certificate_validation(stream, server_name, CertificateValidation::Strict).await
+    upgrade_with_certificate_validation(stream, server_name, CertificateValidation::default()).await
 }
 
 /// The stub backend performs no handshake regardless of the requested policy.

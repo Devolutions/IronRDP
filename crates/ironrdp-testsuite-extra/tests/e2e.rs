@@ -251,7 +251,7 @@ async fn test_echo_virtual_channel_end_to_end() {
 }
 
 #[tokio::test]
-async fn tls_validation_is_strict_by_default_and_callback_is_explicit() {
+async fn tls_validation_preserves_the_default_and_strict_is_explicit() {
     let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
     let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
     let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
@@ -262,16 +262,25 @@ async fn tls_validation_is_strict_by_default_and_callback_is_explicit() {
     let address = listener.local_addr().expect("TLS test listener address");
 
     let server = tokio::spawn(async move {
-        for expected_success in [false, true] {
+        for expected_success in [true, false, true] {
             let (stream, _) = listener.accept().await.expect("accept TLS test connection");
             let result = acceptor.accept(stream).await;
             assert_eq!(result.is_ok(), expected_success);
         }
     });
 
-    let strict_result = ironrdp_tls::upgrade(
+    let (tls_stream, _) = ironrdp_tls::upgrade(
+        TcpStream::connect(address).await.expect("connect default TLS client"),
+        "localhost",
+    )
+    .await
+    .expect("default validation accepts the self-signed test certificate");
+    drop(tls_stream);
+
+    let strict_result = ironrdp_tls::upgrade_with_certificate_validation(
         TcpStream::connect(address).await.expect("connect strict TLS client"),
         "localhost",
+        ironrdp_tls::CertificateValidation::Strict,
     )
     .await;
     assert!(

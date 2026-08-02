@@ -134,14 +134,14 @@ fn invalid_audiomode_falls_back_to_audio_playback_enabled() {
 }
 
 #[test]
-fn certificate_validation_is_strict_by_default_and_callbacks_are_explicit() {
+fn certificate_validation_preserves_the_default_and_callbacks_are_explicit() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
         &[],
     );
     assert_eq!(
         config.certificate_validation(),
-        ironrdp_tls::CertificateValidation::Strict
+        ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate
     );
 
     let callback: ironrdp_tls::CertificateValidationCallback =

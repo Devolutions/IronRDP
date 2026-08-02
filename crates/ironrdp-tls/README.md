@@ -12,11 +12,10 @@ These backends are mutually exclusive and only one may be enabled at a time.
 When more than one backend is enabled, a compile-time error is emitted.
 For this reason, no feature is enabled by default.
 
-TLS certificate chains and server names are validated against the platform trust store
-by default. For controlled tests or development environments that intentionally use a
-self-signed endpoint, call `upgrade_with_certificate_validation` with
-`CertificateValidation::DangerouslyAcceptInvalidCertificate`. This disables TLS
-authentication and must not be used in production.
+TLS certificate validation is disabled by default to preserve historic client
+compatibility, including connections to self-signed endpoints. Call
+`upgrade_with_certificate_validation` with `CertificateValidation::Strict` to validate
+the certificate chain and server name against the platform trust store.
 
 The Rustls backend also supports `upgrade_with_certificate_validation_callback` for
 an explicit, per-handshake decision after normal validation fails. The callback must

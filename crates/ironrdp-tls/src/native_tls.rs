@@ -10,7 +10,7 @@ pub async fn upgrade<S>(stream: S, server_name: &str) -> io::Result<(TlsStream<S
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
-    upgrade_with_certificate_validation(stream, server_name, CertificateValidation::Strict).await
+    upgrade_with_certificate_validation(stream, server_name, CertificateValidation::default()).await
 }
 
 /// Upgrades `stream` to TLS using the explicitly selected certificate-validation policy.
@@ -29,6 +29,7 @@ where
         if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate {
             builder.danger_accept_invalid_certs(true);
             builder.danger_accept_invalid_hostnames(true);
+            builder.use_sni(false);
         }
         let connector = builder
             .build()
