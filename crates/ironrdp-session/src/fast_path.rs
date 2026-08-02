@@ -301,7 +301,7 @@ impl Processor {
             }
             Ok(FastPathUpdate::Palette(palette_data)) => {
                 trace!("Received palette update");
-                self.palette.process_update(palette_data);
+                self.process_palette_update(palette_data);
             }
             Err(e) => {
                 // FIXME: This seems to be a way of special-handling the error case in FastPathUpdate::decode_cursor_with_code
@@ -317,6 +317,11 @@ impl Processor {
         };
 
         Ok(processor_updates)
+    }
+
+    /// Process a palette update shared between fast-path and slow-path pipelines.
+    pub(crate) fn process_palette_update(&mut self, palette_data: &[u8]) {
+        self.palette.process_update(palette_data);
     }
 
     /// Process a bitmap update, shared between fast-path and slow-path pipelines.

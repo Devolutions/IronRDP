@@ -459,7 +459,7 @@ fn process_slow_path_graphics(
             Ok(Vec::new())
         }
         GraphicsUpdateType::Palette => {
-            warn!("Slow-path palette update not supported (8bpp)");
+            fast_path_processor.process_palette_update(data);
             Ok(Vec::new())
         }
         // Synchronize is an artifact from the T.128 multipoint protocol
@@ -480,4 +480,54 @@ fn process_slow_path_pointer(
     let mut src = ReadCursor::new(data);
     let pointer = slow_path::decode_slow_path_pointer(&mut src).map_err(SessionError::decode)?;
     fast_path_processor.process_pointer_update(image, pointer)
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_graphics::image_processing::PixelFormat;
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
+
+    use super::*;
+
+    #[test]
+    fn slow_path_palette_applies_to_indexed_pointer() {
+        let mut palette_data = vec![0; 8 + 256 * 3];
+        palette_data[0..2].copy_from_slice(&0x0002u16.to_le_bytes());
+        palette_data[4..8].copy_from_slice(&256u32.to_le_bytes());
+        palette_data[8 + 3..8 + 6].copy_from_slice(&[0x10, 0x20, 0x30]);
+
+        let mut processor = fast_path::ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+
+        let palette_updates = process_slow_path_graphics(&mut processor, &mut image, &palette_data)
+            .expect("slow-path palette update should succeed");
+        assert!(palette_updates.is_empty());
+
+        let pointer = PointerAttribute {
+            xor_bpp: 8,
+            color_pointer: ColorPointerAttribute {
+                cache_index: 0,
+                hot_spot: Point16 { x: 0, y: 0 },
+                width: 1,
+                height: 1,
+                xor_mask: &[1, 0],
+                and_mask: &[0, 0],
+            },
+        };
+        let pointer_updates = processor
+            .process_pointer_update(&mut image, PointerUpdateData::New(pointer))
+            .expect("indexed pointer should decode with slow-path palette");
+
+        let [UpdateKind::PointerBitmap(pointer)] = pointer_updates.as_slice() else {
+            panic!("expected an accelerated pointer bitmap");
+        };
+        assert_eq!(pointer.bitmap_data, [0x10, 0x20, 0x30, 0xff]);
+    }
 }
