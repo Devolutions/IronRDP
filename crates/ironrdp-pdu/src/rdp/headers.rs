@@ -149,6 +149,8 @@ pub struct ShareDataCtx {
     pub channel_id: u16,
     pub share_id: u32,
     pub pdu_source: u16,
+    pub compression_flags: CompressionFlags,
+    pub compression_type: client_info::CompressionType,
     pub pdu: ShareDataPdu,
 }
 
@@ -168,6 +170,8 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<ShareDa
         channel_id: ctx.channel_id,
         share_id: ctx.share_id,
         pdu_source: ctx.pdu_source,
+        compression_flags: share_data_header.compression_flags,
+        compression_type: share_data_header.compression_type,
         pdu: share_data_header.share_data_pdu,
     })
 }
@@ -214,6 +218,8 @@ pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<IoChann
                 channel_id: ctx.channel_id,
                 share_id: ctx.share_id,
                 pdu_source: ctx.pdu_source,
+                compression_flags: share_data_header.compression_flags,
+                compression_type: share_data_header.compression_type,
                 pdu: share_data_header.share_data_pdu,
             };
 
@@ -822,9 +828,16 @@ impl Encode for ServerDeactivateAll {
 
 #[cfg(test)]
 mod tests {
-    use ironrdp_core::decode;
+    use std::borrow::Cow;
 
-    use super::{ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu};
+    use crate::mcs::{McsMessage, SendDataIndication};
+    use crate::x224::X224;
+    use ironrdp_core::{decode, encode_vec};
+
+    use super::{
+        CompressionFlags, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, StreamPriority,
+        decode_share_data,
+    };
 
     fn zero_length_empty_data_pdu(pdu_type: u8) -> [u8; 18] {
         [
@@ -885,5 +898,38 @@ mod tests {
                 expected: 18
             }
         ));
+    }
+
+    #[test]
+    fn share_data_context_retains_compression_metadata() {
+        let user_data = encode_vec(&ShareControlHeader {
+            share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+                share_data_pdu: ShareDataPdu::Update(vec![0x10, 0x20]),
+                stream_priority: StreamPriority::Medium,
+                compression_flags: CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED,
+                compression_type: crate::rdp::client_info::CompressionType::K64,
+            }),
+            pdu_source: 1002,
+            share_id: 1,
+        })
+        .expect("encode Share Control PDU");
+        let frame = encode_vec(&X224(McsMessage::SendDataIndication(SendDataIndication {
+            initiator_id: 1002,
+            channel_id: 1003,
+            user_data: Cow::Owned(user_data),
+        })))
+        .expect("encode SendDataIndication");
+
+        let data_ctx = crate::mcs::decode_send_data_indication(&frame).expect("decode SendDataIndication");
+        let share_data_ctx = decode_share_data(data_ctx).expect("decode Share Data PDU");
+
+        assert_eq!(
+            share_data_ctx.compression_flags,
+            CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED
+        );
+        assert_eq!(
+            share_data_ctx.compression_type,
+            crate::rdp::client_info::CompressionType::K64
+        );
     }
 }

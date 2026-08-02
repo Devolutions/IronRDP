@@ -75,8 +75,9 @@ fn fastpath_frame(update_pdu: &[u8]) -> Vec<u8> {
 fn render(frame: &[u8]) -> DecodedImage {
     let mut image = DecodedImage::new(PixelFormat::RgbA32, IMAGE_DIM, IMAGE_DIM);
     let mut output = WriteBuf::new();
+    let mut bulk_decompressor = Some(BulkCompressor::new(BulkCompressionType::Rdp5));
     processor()
-        .process(&mut image, frame, &mut output)
+        .process(&mut image, frame, &mut output, &mut bulk_decompressor)
         .expect("process FastPath frame");
     image
 }

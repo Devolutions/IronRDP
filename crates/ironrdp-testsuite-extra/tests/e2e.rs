@@ -138,6 +138,7 @@ fn test_reactivation_processes_compressed_fastpath_updates() {
         io_channel_id: 1003,
         message_channel_id: None,
         share_id: 1,
+        compression_type: Some(PduCompressionType::K64),
         enable_server_pointer: false,
         pointer_software_rendering: false,
     }
@@ -461,6 +462,7 @@ where
                     io_channel_id: connection_result.io_channel_id,
                     message_channel_id: connection_result.message_channel_id,
                     share_id: connection_result.share_id,
+                    compression_type: connection_result.compression_type,
                     enable_server_pointer: connection_result.enable_server_pointer,
                     pointer_software_rendering: connection_result.pointer_software_rendering,
                 }
