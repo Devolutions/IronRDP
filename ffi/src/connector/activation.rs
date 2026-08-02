@@ -84,6 +84,7 @@ pub mod ffi {
                     share_id: _,
                     input_flags: _,
                     connection_finalization,
+                    ..
                 } => Ok(Box::new(ConnectionActivationStateConnectionFinalization {
                     desktop_size,
                     connection_finalization,
@@ -102,6 +103,7 @@ pub mod ffi {
                     input_flags: _,
                     enable_server_pointer,
                     pointer_software_rendering,
+                    ..
                 } => Ok(Box::new(ConnectionActivationStateFinalized {
                     share_id: *share_id,
                     desktop_size: *desktop_size,

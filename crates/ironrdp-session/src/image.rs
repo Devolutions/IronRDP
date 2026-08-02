@@ -8,7 +8,7 @@ use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use tracing::{debug, trace};
 
-use crate::{SessionResult, custom_err};
+use crate::{SessionError, SessionErrorExt as _, SessionErrorKind, SessionResult, custom_err};
 
 const TILE_SIZE: u16 = 64;
 
@@ -202,7 +202,45 @@ impl DecodedImage {
 
     /// Returns `true` if the rectangle fits entirely within the image bounds.
     fn rect_fits(&self, rect: &InclusiveRectangle) -> bool {
-        rect.right < self.width && rect.bottom < self.height
+        rect.left <= rect.right
+            && rect.top <= rect.bottom
+            && rect.left < self.width
+            && rect.top < self.height
+            && rect.right < self.width
+            && rect.bottom < self.height
+    }
+
+    fn require_bitmap_data_size(
+        data: &[u8],
+        update_rectangle: &InclusiveRectangle,
+        source_width: u16,
+        bytes_per_pixel: usize,
+    ) -> SessionResult<()> {
+        let pixel_count = usize::from(source_width)
+            .checked_mul(usize::from(update_rectangle.height()))
+            .ok_or_else(|| SessionError::general("bitmap rectangle dimensions overflow"))?;
+        let expected_length = pixel_count
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(|| SessionError::general("bitmap source dimensions overflow"))?;
+
+        if data.len() != expected_length {
+            return Err(SessionError::new(
+                "ApplyBitmap",
+                SessionErrorKind::InvalidBitmapSourceLength,
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn bitmap_destination(
+        &self,
+        update_rectangle: &InclusiveRectangle,
+        width: u16,
+        height: u16,
+    ) -> Option<InclusiveRectangle> {
+        (self.rect_fits(update_rectangle) && width >= update_rectangle.width() && update_rectangle.height() == height)
+            .then_some(update_rectangle.clone())
     }
 
     fn apply_pointer_layer(&mut self, layer: PointerLayer) -> SessionResult<Option<InclusiveRectangle>> {
@@ -565,6 +603,8 @@ impl DecodedImage {
         const SRC_COLOR_DEPTH: usize = 2;
         const DST_COLOR_DEPTH: usize = 4;
 
+        Self::require_bitmap_data_size(rgb16, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
+
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
         let source_width = usize::from(source_width);
@@ -622,6 +662,8 @@ impl DecodedImage {
 
         const SRC_COLOR_DEPTH: usize = 2;
         const DST_COLOR_DEPTH: usize = 4;
+
+        Self::require_bitmap_data_size(rgb15, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
 
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
@@ -683,6 +725,8 @@ impl DecodedImage {
         const SRC_COLOR_DEPTH: usize = 3;
         const DST_COLOR_DEPTH: usize = 4;
 
+        Self::require_bitmap_data_size(bgr24, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
+
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
         let source_width = usize::from(source_width);
@@ -735,7 +779,10 @@ impl DecodedImage {
             return Ok(InclusiveRectangle::empty());
         }
 
+        const SRC_COLOR_DEPTH: usize = 1;
         const DST_COLOR_DEPTH: usize = 4;
+
+        Self::require_bitmap_data_size(indexed, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
 
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
@@ -824,6 +871,14 @@ impl DecodedImage {
         flip: bool,
     ) -> SessionResult<InclusiveRectangle> {
         const SRC_COLOR_DEPTH: usize = 3;
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgb24 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+        Self::require_bitmap_data_size(rgb24, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
         let source_width = usize::from(source_width);
         let rectangle_height = usize::from(update_rectangle.height());
         let lines = rgb24.chunks_exact(source_width * SRC_COLOR_DEPTH);
@@ -887,6 +942,14 @@ impl DecodedImage {
         flip: bool,
     ) -> SessionResult<InclusiveRectangle> {
         const SRC_COLOR_DEPTH: usize = 4;
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgba32 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+        Self::require_bitmap_data_size(rgba32, update_rectangle, update_rectangle.width(), SRC_COLOR_DEPTH)?;
         let rectangle_width = usize::from(update_rectangle.width());
         let lines = rgba32.chunks_exact(rectangle_width * SRC_COLOR_DEPTH);
         if flip {
@@ -913,6 +976,8 @@ impl DecodedImage {
 
         const SRC_COLOR_DEPTH: usize = 4;
         const DST_COLOR_DEPTH: usize = 4;
+
+        Self::require_bitmap_data_size(rgb32, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
 
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
@@ -1034,5 +1099,33 @@ mod tests {
         assert_eq!(pixel(&image, 1, 1), [13, 14, 15, 255]);
         assert_eq!(pixel(&image, 2, 1), [16, 17, 18, 255]);
         assert_eq!(pixel(&image, 3, 1), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn bitmap_application_rejects_invalid_rectangles_and_source_lengths() {
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
+        let invalid_rectangle = InclusiveRectangle {
+            left: 2,
+            top: 0,
+            right: 1,
+            bottom: 0,
+        };
+        assert_eq!(image.bitmap_destination(&invalid_rectangle, 1, 1), None);
+        assert_eq!(
+            image.apply_rgb16_bitmap(&[], &invalid_rectangle, 1).unwrap(),
+            InclusiveRectangle::empty()
+        );
+
+        let encoded_rectangle = InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 1,
+            bottom: 1,
+        };
+        assert_eq!(image.bitmap_destination(&encoded_rectangle, 1, 1), None);
+        assert!(
+            image.apply_rgb16_bitmap(&[0; 6], &encoded_rectangle, 1).is_err(),
+            "oversized bitmap data must not be applied"
+        );
     }
 }

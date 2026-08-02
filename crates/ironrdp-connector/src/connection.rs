@@ -62,6 +62,10 @@ pub struct ConnectionResult {
     pub input_flags: rdp::capability_sets::InputFlags,
     pub enable_server_pointer: bool,
     pub pointer_software_rendering: bool,
+    /// Whether the server permits client Refresh Rect PDUs for visual recovery.
+    pub refresh_rect_support: bool,
+    /// Whether the server permits Suppress Output PDUs for visual recovery.
+    pub suppress_output_support: bool,
     /// Factory for producing connection activation sequences.
     ///
     /// Used to drive the [Deactivation-Reactivation Sequence] when a Server Deactivate All PDU is
@@ -1135,6 +1139,8 @@ impl Sequence for ClientConnector {
                             input_flags,
                             enable_server_pointer,
                             pointer_software_rendering,
+                            refresh_rect_support,
+                            suppress_output_support,
                         } => ClientConnectorState::Connected {
                             result: ConnectionResult {
                                 io_channel_id: connection_activation.io_channel_id(),
@@ -1146,6 +1152,8 @@ impl Sequence for ClientConnector {
                                 input_flags,
                                 enable_server_pointer,
                                 pointer_software_rendering,
+                                refresh_rect_support,
+                                suppress_output_support,
                                 activation_factory: ConnectionActivationFactory::new(
                                     self.config.clone(),
                                     connection_activation.io_channel_id(),

@@ -114,7 +114,9 @@ impl FastPathBulkDecompressionFailure {
 #[cfg(test)]
 mod tests {
     use ironrdp_pdu::bitmap::{BitmapData, Compression};
+    use ironrdp_pdu::geometry::ExclusiveRectangle;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute};
+    use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu};
 
     use super::*;
 
@@ -168,6 +170,170 @@ mod tests {
         assert_eq!(pixel(3, 0), [0, 0, 0, 0]);
     }
     #[test]
+    fn malformed_bitmap_requests_one_recovery_without_terminating_the_session() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let mut frame = ironrdp_core::encode_vec(&FastPathHeader::new(
+            ironrdp_pdu::fast_path::EncryptionFlags::empty(),
+            1 /* update header */ + 2 /* update data length */ + 3_200, /* truncated update data */
+        ))
+        .unwrap();
+        frame.push(UpdateCode::Bitmap.as_u8());
+        frame.extend_from_slice(&48_788u16.to_le_bytes());
+        frame.resize(frame.len() + 3_200, 0);
+        let mut output = WriteBuf::new();
+        let mut bulk_decompressor = None;
+
+        assert!(
+            processor
+                .process(&mut image, &frame, &mut output, &mut bulk_decompressor)
+                .is_ok()
+        );
+        assert!(processor.take_bitmap_recovery_request());
+        assert!(!processor.take_bitmap_recovery_request());
+
+        assert!(
+            processor
+                .process(&mut image, &frame, &mut output, &mut bulk_decompressor)
+                .is_ok()
+        );
+        assert!(!processor.take_bitmap_recovery_request());
+    }
+
+    #[test]
+    fn malformed_bitmap_content_requests_recovery_without_terminating_the_session() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let bitmap_update = BitmapUpdateData {
+            rectangles: vec![BitmapData {
+                rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                width: 1,
+                height: 1,
+                bits_per_pixel: 16,
+                compression_flags: Compression::empty(),
+                compressed_data_header: None,
+                bitmap_data: &[],
+            }],
+        };
+
+        assert!(processor.process_bitmap_update(&mut image, bitmap_update).is_ok());
+        assert!(processor.take_bitmap_recovery_request());
+    }
+
+    #[test]
+    fn malformed_surface_bitmap_requests_recovery_without_terminating_the_session() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let mut output = WriteBuf::new();
+        let surface_bits = SurfaceBitsPdu {
+            destination: ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            },
+            extended_bitmap_data: ExtendedBitmapDataPdu {
+                bpp: 16,
+                codec_id: 0,
+                width: 1,
+                height: 1,
+                header: None,
+                data: &[],
+            },
+        };
+
+        assert!(
+            processor
+                .process_surface_commands(
+                    &mut image,
+                    &mut output,
+                    vec![SurfaceCommand::SetSurfaceBits(surface_bits)]
+                )
+                .is_ok()
+        );
+        assert!(processor.take_bitmap_recovery_request());
+    }
+
+    #[test]
+    fn truncated_fast_path_pointer_updates_do_not_terminate_the_session() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let mut output = WriteBuf::new();
+        let mut bulk_decompressor = None;
+
+        let mut truncated_outer = ironrdp_core::encode_vec(&FastPathHeader::new(
+            ironrdp_pdu::fast_path::EncryptionFlags::empty(),
+            1 /* update header */ + 2 /* update data length */ + 3_200, /* truncated update data */
+        ))
+        .unwrap();
+        truncated_outer.push(UpdateCode::ColorPointer.as_u8());
+        truncated_outer.extend_from_slice(&48_788u16.to_le_bytes());
+        truncated_outer.resize(truncated_outer.len() + 3_200, 0);
+
+        assert!(
+            processor
+                .process(&mut image, &truncated_outer, &mut output, &mut bulk_decompressor)
+                .is_ok()
+        );
+        assert!(!processor.take_bitmap_recovery_request());
+
+        let truncated_pointer = ironrdp_core::encode_vec(&FastPathUpdatePdu {
+            fragmentation: Fragmentation::Single,
+            update_code: UpdateCode::ColorPointer,
+            compression_flags: None,
+            compression_type: None,
+            data: &[],
+        })
+        .unwrap();
+        let mut truncated_inner = ironrdp_core::encode_vec(&FastPathHeader::new(
+            ironrdp_pdu::fast_path::EncryptionFlags::empty(),
+            truncated_pointer.len(),
+        ))
+        .unwrap();
+        truncated_inner.extend_from_slice(&truncated_pointer);
+
+        assert!(
+            processor
+                .process(&mut image, &truncated_inner, &mut output, &mut bulk_decompressor)
+                .is_ok()
+        );
+        assert!(!processor.take_bitmap_recovery_request());
+    }
+
+    #[test]
     fn unsupported_new_pointer_uses_default_and_evicts_cached_shape() {
         let mut processor = ProcessorBuilder {
             io_channel_id: 0,
@@ -192,7 +358,6 @@ mod tests {
                 and_mask: &[],
             },
         };
-
         let updates = processor
             .process_pointer_update(&mut image, PointerUpdateData::New(pointer))
             .expect("unsupported pointer must not fail the session");
@@ -255,6 +420,12 @@ pub struct Processor {
     pointer_software_rendering: bool,
     /// Current 8bpp color palette. Updated by Palette fast-path updates.
     palette: Palette,
+    /// A malformed bitmap was discarded and the client should request a complete visual recovery.
+    ///
+    /// Only one request is issued per activation to prevent a malformed server stream from
+    /// repeatedly triggering redraw traffic.
+    bitmap_recovery_requested: bool,
+    bitmap_recovery_pending: bool,
     #[cfg(feature = "qoiz")]
     zdctx: zstd_safe::DCtx<'static>,
 }
@@ -262,6 +433,18 @@ pub struct Processor {
 impl Processor {
     pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
         self.mouse_pos_update = Some((x, y));
+    }
+
+    /// Returns whether a malformed visual update requires a one-time full redraw request.
+    pub(crate) fn take_bitmap_recovery_request(&mut self) -> bool {
+        core::mem::take(&mut self.bitmap_recovery_pending)
+    }
+
+    fn request_bitmap_recovery(&mut self) {
+        if !self.bitmap_recovery_requested {
+            self.bitmap_recovery_requested = true;
+            self.bitmap_recovery_pending = true;
+        }
     }
 
     /// Process input fast path frame and return list of updates.
@@ -305,7 +488,31 @@ impl Processor {
     ) -> SessionResult<Vec<UpdateKind>> {
         let mut processor_updates = Vec::new();
 
-        let update_pdu = decode_cursor::<FastPathUpdatePdu<'_>>(input).map_err(SessionError::decode)?;
+        let raw_update_code = input.remaining().first().map(|header| header & 0x0F);
+        let update_pdu = match decode_cursor::<FastPathUpdatePdu<'_>>(input) {
+            Ok(update_pdu) => update_pdu,
+            Err(error)
+                if raw_update_code.is_some_and(is_visual_update_code)
+                    && matches!(error.kind(), DecodeErrorKind::NotEnoughBytes { .. }) =>
+            {
+                let DecodeErrorKind::NotEnoughBytes { received, expected } = error.kind() else {
+                    return Err(SessionError::decode(error));
+                };
+                let discarded_bytes = input.read_remaining().len();
+                self.complete_data.discard();
+                if raw_update_code == Some(UpdateCode::Bitmap.as_u8()) {
+                    self.request_bitmap_recovery();
+                }
+                warn!(
+                    update_code = ?raw_update_code,
+                    payload_length = discarded_bytes,
+                    received, expected, "Ignoring truncated Fast-Path visual update PDU"
+                );
+                processor_updates.push(UpdateKind::None);
+                return Ok(processor_updates);
+            }
+            Err(error) => return Err(SessionError::decode(error)),
+        };
         trace!(fast_path_update_fragmentation = ?update_pdu.fragmentation);
 
         let attributes = FragmentAttributes::from(&update_pdu);
@@ -353,6 +560,22 @@ impl Processor {
                 match e.kind() {
                     DecodeErrorKind::InvalidField { field, reason } => {
                         warn!(field, reason, "Ignoring invalid Fast-Path update");
+                        processor_updates.push(UpdateKind::None);
+                    }
+                    DecodeErrorKind::NotEnoughBytes { received, expected }
+                        if is_visual_update_code(attributes.update_code.as_u8()) =>
+                    {
+                        warn!(
+                            update_code = attributes.update_code.as_u8(),
+                            fragmentation = attributes.fragmentation.as_u8(),
+                            payload_length = data.len(),
+                            received,
+                            expected,
+                            "Ignoring truncated Fast-Path visual update"
+                        );
+                        if attributes.update_code == UpdateCode::Bitmap {
+                            self.request_bitmap_recovery();
+                        }
                         processor_updates.push(UpdateKind::None);
                     }
                     _ => {
@@ -419,35 +642,30 @@ impl Processor {
 
         for update in bitmap_update.rectangles {
             trace!("{update:?}");
+            let Some(update_rectangle) = image.bitmap_destination(&update.rectangle, update.width, update.height)
+            else {
+                warn!("Ignoring bitmap update with an invalid declared destination");
+                self.request_bitmap_recovery();
+                continue;
+            };
             buf.clear();
 
-            let width = update.width.min(update.rectangle.width());
-            let height = update.height.min(update.rectangle.height());
-            if width == 0 || height == 0 {
-                warn!(
-                    bitmap_width = update.width,
-                    bitmap_height = update.height,
-                    destination = ?update.rectangle,
-                    "Skipping bitmap with an empty source or destination"
-                );
-                continue;
-            }
-
-            // `width` and `height` describe the source bitmap layout, while
-            // destination bounds describe where its visible portion is drawn.
-            // Servers can send source rows wider than the destination; preserve
-            // that source stride and discard only the excess source extent.
-            let bitmap_rectangle = InclusiveRectangle {
-                left: update.rectangle.left,
-                top: update.rectangle.top,
-                right: update.rectangle.left + width - 1,
-                bottom: update.rectangle.top + height - 1,
-            };
+            let apply_bitmap =
+                |result: SessionResult<InclusiveRectangle>| -> SessionResult<Option<InclusiveRectangle>> {
+                    match result {
+                        Ok(rectangle) => Ok(Some(rectangle)),
+                        Err(error) if matches!(error.kind(), SessionErrorKind::InvalidBitmapSourceLength) => {
+                            warn!("Ignoring bitmap update with an invalid source length");
+                            Ok(None)
+                        }
+                        Err(error) => Err(error),
+                    }
+                };
 
             // Bitmap data is either compressed or uncompressed, depending
             // on whether the BITMAP_COMPRESSION flag is present in the
             // flags field.
-            let update_rectangle = if update
+            let applied_rectangle = if update
                 .compression_flags
                 .contains(ironrdp_pdu::bitmap::Compression::BITMAP_COMPRESSION)
             {
@@ -464,10 +682,10 @@ impl Processor {
                         usize::from(update.height),
                     ) {
                         // The RDP 6 decoder writes its planes in row-major (top-down) order.
-                        Ok(()) => image.apply_rgb24(&buf, &bitmap_rectangle, update.width, false)?,
+                        Ok(()) => apply_bitmap(image.apply_rgb24(&buf, &update_rectangle, update.width, false))?,
                         Err(err) => {
                             warn!("Invalid RDP6_BITMAP_STREAM: {err}");
-                            update.rectangle.clone()
+                            None
                         }
                     }
                 } else {
@@ -483,19 +701,25 @@ impl Processor {
                         usize::from(update.height),
                         usize::from(update.bits_per_pixel),
                     ) {
-                        Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &bitmap_rectangle, update.width)?,
-                        Ok(RlePixelFormat::Rgb15) => image.apply_rgb15_bitmap(&buf, &bitmap_rectangle, update.width)?,
-                        Ok(RlePixelFormat::Rgb24) => image.apply_bgr24_bitmap(&buf, &bitmap_rectangle, update.width)?,
-                        Ok(RlePixelFormat::Rgb8) => image.apply_rgb8_with_palette(
+                        Ok(RlePixelFormat::Rgb16) => {
+                            apply_bitmap(image.apply_rgb16_bitmap(&buf, &update_rectangle, update.width))?
+                        }
+                        Ok(RlePixelFormat::Rgb15) => {
+                            apply_bitmap(image.apply_rgb15_bitmap(&buf, &update_rectangle, update.width))?
+                        }
+                        Ok(RlePixelFormat::Rgb24) => {
+                            apply_bitmap(image.apply_bgr24_bitmap(&buf, &update_rectangle, update.width))?
+                        }
+                        Ok(RlePixelFormat::Rgb8) => apply_bitmap(image.apply_rgb8_with_palette(
                             &buf,
-                            &bitmap_rectangle,
+                            &update_rectangle,
                             self.palette.colors(),
                             update.width,
-                        )?,
+                        ))?,
 
                         Err(e) => {
                             warn!("Invalid RLE-compressed bitmap: {e}");
-                            update.rectangle.clone()
+                            None
                         }
                     }
                 }
@@ -525,49 +749,64 @@ impl Processor {
                     }
 
                     match update.bits_per_pixel {
-                        8 => image.apply_rgb8_with_palette(
+                        8 => apply_bitmap(image.apply_rgb8_with_palette(
                             &buf,
-                            &bitmap_rectangle,
+                            &update_rectangle,
                             self.palette.colors(),
                             update.width,
-                        )?,
-                        15 => image.apply_rgb15_bitmap(&buf, &bitmap_rectangle, update.width)?,
-                        16 => image.apply_rgb16_bitmap(&buf, &bitmap_rectangle, update.width)?,
-                        24 => image.apply_bgr24_bitmap(&buf, &bitmap_rectangle, update.width)?,
-                        32 => image.apply_rgb32_bitmap(&buf, PixelFormat::BgrX32, &bitmap_rectangle, update.width)?,
+                        ))?,
+                        15 => apply_bitmap(image.apply_rgb15_bitmap(&buf, &update_rectangle, update.width))?,
+                        16 => apply_bitmap(image.apply_rgb16_bitmap(&buf, &update_rectangle, update.width))?,
+                        24 => apply_bitmap(image.apply_bgr24_bitmap(&buf, &update_rectangle, update.width))?,
+                        32 => apply_bitmap(image.apply_rgb32_bitmap(
+                            &buf,
+                            PixelFormat::BgrX32,
+                            &update_rectangle,
+                            update.width,
+                        ))?,
                         _ => {
                             warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
-                            update.rectangle.clone()
+                            None
                         }
                     }
                 } else {
                     match update.bits_per_pixel {
-                        8 => image.apply_rgb8_with_palette(
+                        8 => apply_bitmap(image.apply_rgb8_with_palette(
                             update.bitmap_data,
-                            &bitmap_rectangle,
+                            &update_rectangle,
                             self.palette.colors(),
                             update.width,
-                        )?,
-                        15 => image.apply_rgb15_bitmap(update.bitmap_data, &bitmap_rectangle, update.width)?,
-                        16 => image.apply_rgb16_bitmap(update.bitmap_data, &bitmap_rectangle, update.width)?,
-                        24 => image.apply_bgr24_bitmap(update.bitmap_data, &bitmap_rectangle, update.width)?,
-                        32 => image.apply_rgb32_bitmap(
+                        ))?,
+                        15 => {
+                            apply_bitmap(image.apply_rgb15_bitmap(update.bitmap_data, &update_rectangle, update.width))?
+                        }
+                        16 => {
+                            apply_bitmap(image.apply_rgb16_bitmap(update.bitmap_data, &update_rectangle, update.width))?
+                        }
+                        24 => {
+                            apply_bitmap(image.apply_bgr24_bitmap(update.bitmap_data, &update_rectangle, update.width))?
+                        }
+                        32 => apply_bitmap(image.apply_rgb32_bitmap(
                             update.bitmap_data,
                             PixelFormat::BgrX32,
-                            &bitmap_rectangle,
+                            &update_rectangle,
                             update.width,
-                        )?,
+                        ))?,
                         _ => {
                             warn!("Unsupported uncompressed bitmap depth: {bpp} bpp");
-                            update.rectangle.clone()
+                            None
                         }
                     }
                 }
             };
 
-            match update_kind {
-                UpdateKind::Region(current) => update_kind = UpdateKind::Region(current.union(&update_rectangle)),
-                _ => update_kind = UpdateKind::Region(update_rectangle),
+            if let Some(update_rectangle) = applied_rectangle {
+                match update_kind {
+                    UpdateKind::Region(current) => update_kind = UpdateKind::Region(current.union(&update_rectangle)),
+                    _ => update_kind = UpdateKind::Region(update_rectangle),
+                }
+            } else {
+                self.request_bitmap_recovery();
             }
         }
 
@@ -788,20 +1027,29 @@ impl Processor {
                                     &destination,
                                     self.palette.colors(),
                                     source_width,
-                                )?,
-                                15 => image.apply_rgb15_bitmap(ext_data.data, &destination, source_width)?,
-                                16 => image.apply_rgb16_bitmap(ext_data.data, &destination, source_width)?,
-                                24 => image.apply_bgr24_bitmap(ext_data.data, &destination, source_width)?,
+                                ),
+                                15 => image.apply_rgb15_bitmap(ext_data.data, &destination, source_width),
+                                16 => image.apply_rgb16_bitmap(ext_data.data, &destination, source_width),
+                                24 => image.apply_bgr24_bitmap(ext_data.data, &destination, source_width),
                                 32 => image.apply_rgb32_bitmap(
                                     ext_data.data,
                                     PixelFormat::BgrX32,
                                     &destination,
                                     source_width,
-                                )?,
+                                ),
                                 bpp => {
                                     warn!("Unsupported surface CODEC_ID_NONE bpp: {bpp}");
                                     continue;
                                 }
+                            };
+                            let rectangle = match rectangle {
+                                Ok(rectangle) => rectangle,
+                                Err(error) if matches!(error.kind(), SessionErrorKind::InvalidBitmapSourceLength) => {
+                                    warn!("Ignoring surface bitmap with an invalid source length");
+                                    self.request_bitmap_recovery();
+                                    continue;
+                                }
+                                Err(error) => return Err(error),
                             };
                             update_rectangle = update_rectangle
                                 .map(|rect: InclusiveRectangle| rect.union(&rectangle))
@@ -936,6 +1184,8 @@ impl ProcessorBuilder {
             enable_server_pointer: self.enable_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
             palette: Palette::system_default(),
+            bitmap_recovery_requested: false,
+            bitmap_recovery_pending: false,
             #[cfg(feature = "qoiz")]
             zdctx: zstd_safe::DCtx::default(),
         }
@@ -1022,6 +1272,12 @@ impl CompleteData {
         }
     }
 
+    fn discard(&mut self) {
+        if self.fragmented_data.take().is_some() {
+            warn!("Discarding pending Fast-Path update after malformed visual data");
+        }
+    }
+
     fn append_data(&mut self, data: &[u8], attributes: FragmentAttributes) -> SessionResult<()> {
         if let Some(fragmented_update) = self.fragmented_data.as_mut() {
             if fragmented_update.attributes.update_code != attributes.update_code
@@ -1042,6 +1298,20 @@ impl CompleteData {
             ))
         }
     }
+}
+
+fn is_visual_update_code(update_code: u8) -> bool {
+    update_code == UpdateCode::Bitmap.as_u8()
+        || matches!(
+            update_code,
+            code if code == UpdateCode::HiddenPointer.as_u8()
+                || code == UpdateCode::DefaultPointer.as_u8()
+                || code == UpdateCode::PositionPointer.as_u8()
+                || code == UpdateCode::ColorPointer.as_u8()
+                || code == UpdateCode::CachedPointer.as_u8()
+                || code == UpdateCode::NewPointer.as_u8()
+                || code == UpdateCode::LargePointer.as_u8()
+        )
 }
 
 #[cfg(test)]
