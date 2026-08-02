@@ -33,7 +33,6 @@ fn to_bulk_compression_type(compression_type: CompressionType) -> BulkCompressio
 pub struct ActiveStage {
     x224_processor: x224::Processor,
     fast_path_processor: fast_path::Processor,
-    compression_type: Option<CompressionType>,
     /// Shared server-to-client compression history across all output transports.
     bulk_decompressor: Option<BulkCompressor>,
     enable_server_pointer: bool,
@@ -90,7 +89,6 @@ impl ActiveStageBuilder {
         ActiveStage {
             x224_processor,
             fast_path_processor,
-            compression_type,
             bulk_decompressor: new_bulk_decompressor(compression_type),
             enable_server_pointer,
         }
@@ -242,9 +240,8 @@ impl ActiveStage {
 
     /// Rebuilds the fast-path processor for a [Deactivation-Reactivation Sequence].
     ///
-    /// The rebuilt session uses a fresh shared bulk decompressor. Decompression history is not carried across reactivation;
-    /// the server signals history resets with the PACKET_FLUSHED and PACKET_AT_FRONT
-    /// compression flags, which are applied per update.
+    /// The shared bulk decompression history is retained. The server signals any history reset
+    /// with the PACKET_FLUSHED and PACKET_AT_FRONT compression flags, which are applied per update.
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     pub fn reactivate(
@@ -263,7 +260,6 @@ impl ActiveStage {
             pointer_software_rendering,
         }
         .build();
-        self.bulk_decompressor = new_bulk_decompressor(self.compression_type);
         // The x224 processor encodes ShareDataPdu with the server's (possibly new) share_id.
         self.x224_processor.set_share_id(share_id);
         self.enable_server_pointer = enable_server_pointer;
