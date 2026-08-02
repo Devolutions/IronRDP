@@ -112,6 +112,37 @@ mod tests {
         assert!(!processor.pointer_cache.is_cached(0));
     }
 
+    #[test]
+    fn malformed_color_pointer_uses_default_and_evicts_cached_shape() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+        processor
+            .pointer_cache
+            .insert(0, Arc::new(DecodedPointer::new_invisible()));
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
+        let pointer = ColorPointerAttribute {
+            cache_index: 0,
+            hot_spot: Point16 { x: 0, y: 0 },
+            width: 1,
+            height: 1,
+            xor_mask: &[],
+            and_mask: &[],
+        };
+
+        let updates = processor
+            .process_pointer_update(&mut image, PointerUpdateData::Color(pointer))
+            .expect("malformed pointer must not fail the session");
+
+        assert!(matches!(updates.as_slice(), [UpdateKind::PointerDefault]));
+        assert!(!processor.pointer_cache.is_cached(0));
+    }
+
     /// The decompressor is owned by the library, but a session that never receives a
     /// compressed update should not pay for the algorithm contexts. `ironrdp-web` never
     /// negotiates compression, so this is its normal case.
@@ -540,10 +571,13 @@ impl Processor {
             PointerUpdateData::Color(pointer) => {
                 let cache_index = pointer.cache_index;
 
-                let decoded_pointer = Arc::new(
-                    DecodedPointer::decode_color_pointer_attribute(&pointer, bitmap_target)
-                        .map_err(|e| SessionError::custom("failed to decode color pointer attribute", e))?,
-                );
+                let decoded_pointer = match DecodedPointer::decode_color_pointer_attribute(&pointer, bitmap_target) {
+                    Ok(pointer) => Arc::new(pointer),
+                    Err(error) => {
+                        self.fallback_after_pointer_decode_failure(image, &mut processor_updates, cache_index, error)?;
+                        return Ok(processor_updates);
+                    }
+                };
 
                 let _ = self
                     .pointer_cache
