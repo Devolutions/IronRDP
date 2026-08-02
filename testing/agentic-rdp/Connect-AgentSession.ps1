@@ -96,7 +96,7 @@ $connectOutput | Set-Content -Path (Join-Path $ArtifactsDir 'agent-connect.txt')
 $deadline = (Get-Date).AddSeconds(120)
 do {
     $status = Get-SessionStatus
-    if ($status.state -eq 'Connected') {
+    if ($status.state -eq 'Connected' -and $null -ne $status.width -and $null -ne $status.height) {
         break
     }
 
