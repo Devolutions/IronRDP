@@ -131,23 +131,40 @@ async fn test_deactivation_reactivation() {
 }
 
 #[test]
-fn test_reactivation_processes_compressed_fastpath_updates() {
+fn test_reactivation_preserves_bulk_decompression_history() {
     let mut stage = ActiveStageBuilder {
         static_channels: StaticChannelSet::new(),
         user_channel_id: 1001,
         io_channel_id: 1003,
         message_channel_id: None,
         share_id: 1,
+        compression_type: Some(PduCompressionType::K64),
         enable_server_pointer: false,
         pointer_software_rendering: false,
     }
     .build();
-    stage.reactivate(1003, 1001, 2, false, false);
 
     let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    let mut compressor = BulkCompressor::new(BulkCompressionType::Rdp5);
+    let (first_frame, first_flags) = compressed_bitmap_fastpath_frame(&mut compressor);
+    assert_ne!(first_flags & bulk_flags::PACKET_COMPRESSED, 0);
+
+    stage
+        .process(&mut image, pdu::Action::FastPath, &first_frame)
+        .expect("compressed FastPath update before reactivation");
+
+    stage.reactivate(1003, 1001, 2, false, false);
+
+    let (second_frame, second_flags) = compressed_bitmap_fastpath_frame(&mut compressor);
+    assert_ne!(second_flags & bulk_flags::PACKET_COMPRESSED, 0);
+    assert_eq!(
+        second_flags & (bulk_flags::PACKET_FLUSHED | bulk_flags::PACKET_AT_FRONT),
+        0
+    );
+
     let outputs = stage
-        .process(&mut image, pdu::Action::FastPath, &compressed_bitmap_fastpath_frame())
-        .expect("compressed FastPath update after reactivation");
+        .process(&mut image, pdu::Action::FastPath, &second_frame)
+        .expect("compressed FastPath update referencing pre-reactivation history");
 
     assert!(
         outputs
@@ -156,7 +173,7 @@ fn test_reactivation_processes_compressed_fastpath_updates() {
     );
 }
 
-fn compressed_bitmap_fastpath_frame() -> Vec<u8> {
+fn compressed_bitmap_fastpath_frame(compressor: &mut BulkCompressor) -> (Vec<u8>, u32) {
     let bitmap = BitmapUpdateData {
         rectangles: vec![BitmapData {
             rectangle: InclusiveRectangle {
@@ -175,9 +192,7 @@ fn compressed_bitmap_fastpath_frame() -> Vec<u8> {
     };
     let bitmap_data = ironrdp::core::encode_vec(&bitmap).expect("encode bitmap update");
 
-    let mut compressor = BulkCompressor::new(BulkCompressionType::Rdp5);
     let (compressed_size, flags) = compressor.compress(&bitmap_data).expect("compress bitmap update");
-    assert_ne!(flags & bulk_flags::PACKET_COMPRESSED, 0);
 
     let compressed_data = compressor.compressed_data(compressed_size);
     let update = FastPathUpdatePdu {
@@ -193,7 +208,7 @@ fn compressed_bitmap_fastpath_frame() -> Vec<u8> {
 
     let mut frame = ironrdp::core::encode_vec(&header).expect("encode FastPath header");
     frame.extend(ironrdp::core::encode_vec(&update).expect("encode FastPath update"));
-    frame
+    (frame, flags)
 }
 
 #[tokio::test]
@@ -461,6 +476,7 @@ where
                     io_channel_id: connection_result.io_channel_id,
                     message_channel_id: connection_result.message_channel_id,
                     share_id: connection_result.share_id,
+                    compression_type: connection_result.compression_type,
                     enable_server_pointer: connection_result.enable_server_pointer,
                     pointer_software_rendering: connection_result.pointer_software_rendering,
                 }

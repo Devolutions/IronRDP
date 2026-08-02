@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
 use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
@@ -8,6 +9,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
+use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::slow_path::{self, GraphicsUpdateType};
@@ -19,9 +21,20 @@ use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::{SessionError, SessionErrorExt as _, SessionResult, fast_path, x224};
 
+fn to_bulk_compression_type(compression_type: CompressionType) -> BulkCompressionType {
+    match compression_type {
+        CompressionType::K8 => BulkCompressionType::Rdp4,
+        CompressionType::K64 => BulkCompressionType::Rdp5,
+        CompressionType::Rdp6 => BulkCompressionType::Rdp6,
+        CompressionType::Rdp61 => BulkCompressionType::Rdp61,
+    }
+}
+
 pub struct ActiveStage {
     x224_processor: x224::Processor,
     fast_path_processor: fast_path::Processor,
+    /// Shared server-to-client compression history across all output transports.
+    bulk_decompressor: Option<BulkCompressor>,
     enable_server_pointer: bool,
 }
 
@@ -35,6 +48,8 @@ pub struct ActiveStageBuilder {
     pub io_channel_id: u16,
     pub message_channel_id: Option<u16>,
     pub share_id: u32,
+    /// The bulk compression type negotiated during connection activation.
+    pub compression_type: Option<CompressionType>,
     /// Enable server-side pointer updates (client-side pointer rendering).
     pub enable_server_pointer: bool,
     /// Use software rendering mode for pointer bitmap generation.
@@ -49,6 +64,7 @@ impl ActiveStageBuilder {
             io_channel_id,
             message_channel_id,
             share_id,
+            compression_type,
             enable_server_pointer,
             pointer_software_rendering,
         } = self;
@@ -73,9 +89,14 @@ impl ActiveStageBuilder {
         ActiveStage {
             x224_processor,
             fast_path_processor,
+            bulk_decompressor: new_bulk_decompressor(compression_type),
             enable_server_pointer,
         }
     }
+}
+
+fn new_bulk_decompressor(compression_type: Option<CompressionType>) -> Option<BulkCompressor> {
+    compression_type.map(|compression_type| BulkCompressor::new(to_bulk_compression_type(compression_type)))
 }
 
 impl ActiveStage {
@@ -140,14 +161,16 @@ impl ActiveStage {
         let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
                 let mut output = WriteBuf::new();
-                let processor_updates = self.fast_path_processor.process(image, frame, &mut output)?;
+                let processor_updates =
+                    self.fast_path_processor
+                        .process(image, frame, &mut output, &mut self.bulk_decompressor)?;
                 (
                     vec![ActiveStageOutput::ResponseFrame(output.into_inner())],
                     processor_updates,
                 )
             }
             Action::X224 => {
-                let x224_outputs = self.x224_processor.process(frame)?;
+                let x224_outputs = self.x224_processor.process(frame, &mut self.bulk_decompressor)?;
                 let mut stage_outputs = Vec::new();
                 let mut processor_updates = Vec::new();
 
@@ -217,10 +240,8 @@ impl ActiveStage {
 
     /// Rebuilds the fast-path processor for a [Deactivation-Reactivation Sequence].
     ///
-    /// The rebuilt processor owns a fresh bulk decompressor, so compressed updates keep
-    /// decoding after reactivation. Decompression history is not carried across the rebuild;
-    /// the server signals history resets with the PACKET_FLUSHED and PACKET_AT_FRONT
-    /// compression flags, which are applied per update.
+    /// The shared bulk decompression history is retained. The server signals any history reset
+    /// with the PACKET_FLUSHED and PACKET_AT_FRONT compression flags, which are applied per update.
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     pub fn reactivate(

@@ -11,9 +11,7 @@ use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags
 use ironrdp_core::{WriteBuf, encode_vec};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
-use ironrdp_pdu::fast_path::{
-    Compression as FpCompression, EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode,
-};
+use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::CompressionFlags;
@@ -75,8 +73,9 @@ fn fastpath_frame(update_pdu: &[u8]) -> Vec<u8> {
 fn render(frame: &[u8]) -> DecodedImage {
     let mut image = DecodedImage::new(PixelFormat::RgbA32, IMAGE_DIM, IMAGE_DIM);
     let mut output = WriteBuf::new();
+    let mut bulk_decompressor = Some(BulkCompressor::new(BulkCompressionType::Rdp5));
     processor()
-        .process(&mut image, frame, &mut output)
+        .process(&mut image, frame, &mut output, &mut bulk_decompressor)
         .expect("process FastPath frame");
     image
 }
@@ -107,7 +106,7 @@ fn compressed_fastpath_update_decompresses_like_its_uncompressed_twin() {
     );
     let compressed_data = compressor.compressed_data(size).to_vec();
 
-    let mut compressed_pdu = encode_vec(&FastPathUpdatePdu {
+    let compressed_pdu = encode_vec(&FastPathUpdatePdu {
         fragmentation: Fragmentation::Single,
         update_code: UpdateCode::Bitmap,
         // Carry the compressor's control bits (notably PACKET_AT_FRONT) so the
@@ -119,11 +118,6 @@ fn compressed_fastpath_update_decompresses_like_its_uncompressed_twin() {
         data: &compressed_data,
     })
     .expect("encode compressed FastPath update");
-    // `FastPathUpdatePdu::encode` writes the update header byte before it sets the
-    // COMPRESSION_USED bit, so the encoded header does not flag the trailing
-    // compression byte. Set it here so the PDU decodes as compressed (idempotent
-    // if the encoder is corrected).
-    compressed_pdu[0] |= FpCompression::COMPRESSION_USED.bits() << 6;
     let compressed = fastpath_frame(&compressed_pdu);
 
     let from_uncompressed = render(&uncompressed);
@@ -143,4 +137,82 @@ fn compressed_fastpath_update_decompresses_like_its_uncompressed_twin() {
         blank.data(),
         "the bitmap update should have modified the framebuffer"
     );
+}
+
+#[test]
+fn fragmented_compressed_fastpath_update_decompresses_before_reassembly() {
+    let payload = bitmap_update_payload();
+    let split = payload.len() / 2;
+    let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5);
+
+    let (first_size, first_flags) = sender.compress(&payload[..split]).expect("compress first fragment");
+    assert_ne!(
+        first_flags & bulk_flags::PACKET_COMPRESSED,
+        0,
+        "first fragment must compress"
+    );
+    let first_data = sender.compressed_data(first_size).to_vec();
+    let first = fastpath_frame(
+        &encode_vec(&FastPathUpdatePdu {
+            fragmentation: Fragmentation::First,
+            update_code: UpdateCode::Bitmap,
+            compression_flags: Some(CompressionFlags::from_bits_retain(
+                u8::try_from(first_flags & 0xe0).expect("control-flag byte fits in u8"),
+            )),
+            compression_type: Some(PduCompressionType::K64),
+            data: &first_data,
+        })
+        .expect("encode first FastPath fragment"),
+    );
+
+    let (last_size, last_flags) = sender.compress(&payload[split..]).expect("compress last fragment");
+    assert_ne!(
+        last_flags & bulk_flags::PACKET_COMPRESSED,
+        0,
+        "last fragment must compress"
+    );
+    let last_data = sender.compressed_data(last_size).to_vec();
+    let last = fastpath_frame(
+        &encode_vec(&FastPathUpdatePdu {
+            fragmentation: Fragmentation::Last,
+            update_code: UpdateCode::Bitmap,
+            compression_flags: Some(CompressionFlags::from_bits_retain(
+                u8::try_from(last_flags & 0xe0).expect("control-flag byte fits in u8"),
+            )),
+            compression_type: Some(PduCompressionType::K64),
+            data: &last_data,
+        })
+        .expect("encode last FastPath fragment"),
+    );
+
+    let uncompressed = fastpath_frame(
+        &encode_vec(&FastPathUpdatePdu {
+            fragmentation: Fragmentation::Single,
+            update_code: UpdateCode::Bitmap,
+            compression_flags: None,
+            compression_type: None,
+            data: &payload,
+        })
+        .expect("encode uncompressed FastPath update"),
+    );
+    let expected = render(&uncompressed);
+
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, IMAGE_DIM, IMAGE_DIM);
+    let mut output = WriteBuf::new();
+    let mut bulk_decompressor = Some(BulkCompressor::new(BulkCompressionType::Rdp5));
+    let mut processor = processor();
+
+    assert!(
+        processor
+            .process(&mut image, &first, &mut output, &mut bulk_decompressor)
+            .expect("process first FastPath fragment")
+            .is_empty()
+    );
+    assert!(
+        !processor
+            .process(&mut image, &last, &mut output, &mut bulk_decompressor)
+            .expect("process last FastPath fragment")
+            .is_empty()
+    );
+    assert_eq!(image.data(), expected.data());
 }

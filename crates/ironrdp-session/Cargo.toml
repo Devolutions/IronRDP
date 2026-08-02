@@ -22,7 +22,7 @@ qoi = ["dep:qoicoubeh", "ironrdp-pdu/qoi"]
 qoiz = ["dep:zstd-safe", "qoi"]
 
 [dependencies]
-ironrdp-bulk = { path = "../ironrdp-bulk", version = "0.1" }
+ironrdp-bulk = { path = "../ironrdp-bulk", version = "0.1" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public

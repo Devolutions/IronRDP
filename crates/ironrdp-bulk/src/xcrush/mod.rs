@@ -349,7 +349,18 @@ impl XCrushContext {
     ///
     ///
     /// Returns a reference to the decompressed data.
-    pub(crate) fn decompress<'a>(&'a mut self, src_data: &[u8], outer_flags: u32) -> Result<&'a [u8], BulkError> {
+    pub(crate) fn decompress<'a>(&'a mut self, src_data: &'a [u8], outer_flags: u32) -> Result<&'a [u8], BulkError> {
+        if outer_flags & flags::PACKET_FLUSHED != 0 {
+            self.history_buffer[..self.history_buffer_size].fill(0);
+            self.history_offset = 0;
+        }
+
+        // An uncompressed bulk packet has no XCRUSH L1/L2 header. It can still
+        // carry an outer flush flag, which must be applied before returning it.
+        if outer_flags & flags::PACKET_COMPRESSED == 0 {
+            return Ok(src_data);
+        }
+
         if src_data.len() < 2 {
             return Err(BulkError::InvalidCompressedData(
                 "XCRUSH: input too short for L1/L2 flags",
@@ -359,11 +370,6 @@ impl XCrushContext {
         let level1_compr_flags = u32::from(src_data[0]);
         let level2_compr_flags = u32::from(src_data[1]);
         let inner_data = &src_data[2..];
-
-        if outer_flags & flags::PACKET_FLUSHED != 0 {
-            self.history_buffer[..self.history_buffer_size].fill(0);
-            self.history_offset = 0;
-        }
 
         if level2_compr_flags & flags::PACKET_COMPRESSED == 0 {
             // No Level-2 (MPPC) compression — go straight to L1
@@ -1332,15 +1338,28 @@ mod tests {
         let mut packet = vec![0x06u8, 0x00u8];
         packet.extend_from_slice(b"raw data here");
 
-        let result = ctx.decompress(&packet, 0).unwrap();
+        let result = ctx.decompress(&packet, flags::PACKET_COMPRESSED).unwrap();
         assert_eq!(result, b"raw data here");
     }
 
     #[test]
     fn test_decompress_too_short_error() {
         let mut ctx = XCrushContext::new();
-        let result = ctx.decompress(&[0x00], 0);
+        let result = ctx.decompress(&[0x00], flags::PACKET_COMPRESSED);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decompress_uncompressed_flushed_packet() {
+        let mut ctx = XCrushContext::new();
+        ctx.history_buffer[0] = 0xFF;
+        ctx.history_offset = 100;
+
+        let result = ctx.decompress(b"raw data", flags::PACKET_FLUSHED).unwrap();
+
+        assert_eq!(result, b"raw data");
+        assert_eq!(ctx.history_buffer[0], 0);
+        assert_eq!(ctx.history_offset, 0);
     }
 
     #[test]
@@ -1354,7 +1373,9 @@ mod tests {
         let mut packet = vec![0x06u8, 0x00u8];
         packet.extend_from_slice(b"test");
 
-        let result = ctx.decompress(&packet, flags::PACKET_FLUSHED).unwrap();
+        let result = ctx
+            .decompress(&packet, flags::PACKET_FLUSHED | flags::PACKET_COMPRESSED)
+            .unwrap();
         assert_eq!(result, b"test");
         // History should have been cleared
         assert_eq!(ctx.history_buffer[0], b't'); // first byte of "test"

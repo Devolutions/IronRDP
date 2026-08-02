@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ironrdp_bulk::{BulkCompressor, CompressionType};
+use ironrdp_bulk::{BulkCompressor, BulkError};
 use ironrdp_core::{DecodeErrorKind, ReadCursor, WriteBuf, decode_cursor};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget, PointerError};
@@ -8,7 +8,7 @@ use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::rle::RlePixelFormat;
 use ironrdp_pdu::bitmap::BitmapUpdateData;
 use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
-use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
+use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
 use ironrdp_pdu::rdp::capability_sets::{CODEC_ID_NONE, CODEC_ID_REMOTEFX, CodecId};
@@ -19,7 +19,97 @@ use tracing::{debug, trace, warn};
 use crate::image::DecodedImage;
 use crate::palette::Palette;
 use crate::pointer::PointerCache;
-use crate::{SessionError, SessionErrorExt as _, SessionResult, custom_err, reason_err, rfx};
+use crate::{SessionError, SessionErrorExt as _, SessionErrorKind, SessionResult, reason_err, rfx};
+
+/// A bounded category for a failed Fast-Path bulk decompression operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BulkDecompressionErrorKind {
+    UnsupportedCompressionType,
+    InvalidCompressedData,
+    OutputBufferTooSmall,
+    HistoryBufferOverflow,
+    UnexpectedEndOfInput,
+}
+
+impl BulkDecompressionErrorKind {
+    /// Returns the stable, value-free trace label for this category.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnsupportedCompressionType => "UnsupportedCompressionType",
+            Self::InvalidCompressedData => "InvalidCompressedData",
+            Self::OutputBufferTooSmall => "OutputBufferTooSmall",
+            Self::HistoryBufferOverflow => "HistoryBufferOverflow",
+            Self::UnexpectedEndOfInput => "UnexpectedEndOfInput",
+        }
+    }
+}
+
+/// Bounded metadata describing a failed Fast-Path bulk decompression operation.
+///
+/// This deliberately retains protocol metadata only. It never retains the compressed data or
+/// detailed decoder error text, which can contain information derived from the remote endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FastPathBulkDecompressionFailure {
+    compression_flags: u8,
+    compression_type: Option<u8>,
+    update_code: u8,
+    fragmentation: u8,
+    payload_length: usize,
+    error_kind: BulkDecompressionErrorKind,
+}
+
+impl FastPathBulkDecompressionFailure {
+    fn new(attributes: FragmentAttributes, payload_length: usize, error: &BulkError) -> Self {
+        let error_kind = match error {
+            BulkError::UnsupportedCompressionType(_) => BulkDecompressionErrorKind::UnsupportedCompressionType,
+            BulkError::InvalidCompressedData(_) => BulkDecompressionErrorKind::InvalidCompressedData,
+            BulkError::OutputBufferTooSmall { .. } => BulkDecompressionErrorKind::OutputBufferTooSmall,
+            BulkError::HistoryBufferOverflow => BulkDecompressionErrorKind::HistoryBufferOverflow,
+            BulkError::UnexpectedEndOfInput => BulkDecompressionErrorKind::UnexpectedEndOfInput,
+        };
+
+        Self {
+            compression_flags: attributes.compression_flags.map_or(0, |flags| flags.bits()),
+            compression_type: attributes
+                .compression_type
+                .map(|compression_type| compression_type.as_u8()),
+            update_code: attributes.update_code.as_u8(),
+            fragmentation: attributes.fragmentation.as_u8(),
+            payload_length,
+            error_kind,
+        }
+    }
+
+    /// Returns the Fast-Path bulk compression control flags.
+    pub const fn compression_flags(self) -> u8 {
+        self.compression_flags
+    }
+
+    /// Returns the Fast-Path bulk compression type, if the PDU provided one.
+    pub const fn compression_type(self) -> Option<u8> {
+        self.compression_type
+    }
+
+    /// Returns the Fast-Path update code.
+    pub const fn update_code(self) -> u8 {
+        self.update_code
+    }
+
+    /// Returns the initial Fast-Path fragmentation mode.
+    pub const fn fragmentation(self) -> u8 {
+        self.fragmentation
+    }
+
+    /// Returns the failing fragment's compressed payload size in bytes.
+    pub const fn payload_length(self) -> usize {
+        self.payload_length
+    }
+
+    /// Returns the bounded bulk decoder error category.
+    pub const fn error_kind(self) -> BulkDecompressionErrorKind {
+        self.error_kind
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -77,7 +167,6 @@ mod tests {
         assert_eq!(pixel(2, 1), [4, 5, 6, 255]);
         assert_eq!(pixel(3, 0), [0, 0, 0, 0]);
     }
-
     #[test]
     fn unsupported_new_pointer_uses_default_and_evicts_cached_shape() {
         let mut processor = ProcessorBuilder {
@@ -142,49 +231,6 @@ mod tests {
         assert!(matches!(updates.as_slice(), [UpdateKind::PointerDefault]));
         assert!(!processor.pointer_cache.is_cached(0));
     }
-
-    /// The decompressor is owned by the library, but a session that never receives a
-    /// compressed update should not pay for the algorithm contexts. `ironrdp-web` never
-    /// negotiates compression, so this is its normal case.
-    #[test]
-    fn decompressor_is_not_built_until_an_update_needs_it() {
-        use ironrdp_core::encode_vec;
-        use ironrdp_pdu::fast_path::UpdateCode;
-
-        let mut processor = ProcessorBuilder {
-            io_channel_id: 0,
-            user_channel_id: 0,
-            share_id: 0,
-            enable_server_pointer: false,
-            pointer_software_rendering: false,
-        }
-        .build();
-
-        assert!(
-            processor.bulk_decompressor.is_none(),
-            "a freshly built processor must not allocate the bulk contexts"
-        );
-
-        let frame = encode_vec(&FastPathUpdatePdu {
-            fragmentation: Fragmentation::Single,
-            update_code: UpdateCode::Bitmap,
-            compression_flags: None,
-            compression_type: None,
-            data: &[],
-        })
-        .expect("encode uncompressed FastPath update");
-
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
-        let mut output = WriteBuf::new();
-        // The empty bitmap payload does not decode; only the allocation behaviour on the
-        // way there is under test, so the update result is deliberately ignored.
-        let _result = processor.process_single_update(&mut ReadCursor::new(&frame), &mut image, &mut output);
-
-        assert!(
-            processor.bulk_decompressor.is_none(),
-            "an update carrying no compression flags must not build a decompressor"
-        );
-    }
 }
 
 #[derive(Debug)]
@@ -207,13 +253,6 @@ pub struct Processor {
     mouse_pos_update: Option<(u16, u16)>,
     enable_server_pointer: bool,
     pointer_software_rendering: bool,
-    /// Bulk decompressor for server-to-client compressed PDUs. Owned by the library
-    /// and built on the first update that needs one, so a compressed update is always
-    /// decodable without a session that never receives one paying for the algorithm
-    /// contexts (the two XCRUSH history buffers are 2 MB each). This is not a
-    /// consumer-visible option: `ProcessorBuilder` has no corresponding field, so
-    /// there is no way to construct a `Processor` that cannot decompress.
-    bulk_decompressor: Option<BulkCompressor>,
     /// Current 8bpp color palette. Updated by Palette fast-path updates.
     palette: Palette,
     #[cfg(feature = "qoiz")]
@@ -231,6 +270,7 @@ impl Processor {
         image: &mut DecodedImage,
         input: &[u8],
         output: &mut WriteBuf,
+        bulk_decompressor: &mut Option<BulkCompressor>,
     ) -> SessionResult<Vec<UpdateKind>> {
         let mut processor_updates = Vec::new();
 
@@ -248,7 +288,7 @@ impl Processor {
         // A single FastPath output PDU can contain multiple updates.
         // Loop over all updates within the PDU payload.
         while !input.is_empty() {
-            let update_result = self.process_single_update(&mut input, image, output)?;
+            let update_result = self.process_single_update(&mut input, image, output, bulk_decompressor)?;
             processor_updates.extend(update_result);
         }
 
@@ -261,59 +301,31 @@ impl Processor {
         input: &mut ReadCursor<'_>,
         image: &mut DecodedImage,
         output: &mut WriteBuf,
+        bulk_decompressor: &mut Option<BulkCompressor>,
     ) -> SessionResult<Vec<UpdateKind>> {
         let mut processor_updates = Vec::new();
 
         let update_pdu = decode_cursor::<FastPathUpdatePdu<'_>>(input).map_err(SessionError::decode)?;
         trace!(fast_path_update_fragmentation = ?update_pdu.fragmentation);
 
-        // Decompress the payload if the server sent it compressed.
+        let attributes = FragmentAttributes::from(&update_pdu);
         let decompressed_data;
-        let payload = if let Some(flags) = update_pdu.compression_flags {
-            if flags.contains(CompressionFlags::COMPRESSED) || flags.contains(CompressionFlags::FLUSHED) {
-                let bulk_flags =
-                    u32::from(flags.bits()) | u32::from(update_pdu.compression_type.map_or(0, |ct| ct.as_u8()));
-
-                // Built on first use. The construction-time type does not constrain what
-                // can be decoded: `decompress` selects the algorithm per update from the
-                // packet's own type bits, so Rdp61 here is an arbitrary starting point.
-                let decompressor = self
-                    .bulk_decompressor
-                    .get_or_insert_with(|| BulkCompressor::new(CompressionType::Rdp61));
-                let decompressed = decompressor
-                    .decompress(update_pdu.data, bulk_flags)
-                    .map_err(|e| reason_err!("FastPath", "bulk decompression failed: {}", e))?;
-                // Copy decompressed data before accessing metrics (releases the mutable borrow).
-                decompressed_data = decompressed.to_vec();
-                debug!(
-                    compressed_size = update_pdu.data.len(),
-                    decompressed_size = decompressed_data.len(),
-                    compression_type = ?update_pdu.compression_type,
-                    compression_ratio = format_args!("{:.2}x", decompressor.compression_ratio()),
-                    total_compressed = decompressor.total_compressed_bytes(),
-                    total_uncompressed = decompressor.total_uncompressed_bytes(),
-                    "Decompressed FastPath update"
-                );
-                decompressed_data.as_slice()
-            } else {
-                // Compression flags present but COMPRESSED bit not set — pass data through.
-                // Still need to inform the decompressor of FLUSHED/AT_FRONT flags even
-                // without compressed payload.
-                update_pdu.data
-            }
+        let update_data = if attributes.compression_flags.is_some_and(|flags| !flags.is_empty()) {
+            decompressed_data = Self::decompress_fragment_data(update_pdu.data, attributes, bulk_decompressor)?;
+            decompressed_data.as_slice()
         } else {
             update_pdu.data
         };
 
-        let processed_complete_data = self.complete_data.process_data(payload, update_pdu.fragmentation);
-
-        let update_code = update_pdu.update_code;
-
-        let Some(data) = processed_complete_data else {
+        let Some(data) = self
+            .complete_data
+            .process_data(update_data, update_pdu.fragmentation, attributes)?
+        else {
             return Ok(processor_updates);
         };
+        let FragmentedUpdate { data, attributes } = data;
 
-        let update = FastPathUpdate::decode_with_code(data.as_slice(), update_code);
+        let update = FastPathUpdate::decode_with_code(data.as_slice(), attributes.update_code);
 
         match update {
             Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
@@ -338,11 +350,16 @@ impl Processor {
                 // FIXME: This seems to be a way of special-handling the error case in FastPathUpdate::decode_cursor_with_code
                 // to ignore the unsupported update PDUs, but this is a fragile logic and the rationale behind it is not
                 // obvious.
-                if let DecodeErrorKind::InvalidField { field, reason } = e.kind() {
-                    warn!(field, reason, "Received invalid Fast-Path update");
-                    processor_updates.push(UpdateKind::None);
-                } else {
-                    return Err(custom_err!("Fast-Path", e));
+                match e.kind() {
+                    DecodeErrorKind::InvalidField { field, reason } => {
+                        warn!(field, reason, "Ignoring invalid Fast-Path update");
+                        processor_updates.push(UpdateKind::None);
+                    }
+                    _ => {
+                        let mut session_error = SessionError::decode(e);
+                        session_error.set_context("FastPathUpdate");
+                        return Err(session_error);
+                    }
                 }
             }
         };
@@ -353,6 +370,42 @@ impl Processor {
     /// Process a palette update shared between fast-path and slow-path pipelines.
     pub(crate) fn process_palette_update(&mut self, palette_data: &[u8]) {
         self.palette.process_update(palette_data);
+    }
+    fn decompress_fragment_data(
+        data: &[u8],
+        attributes: FragmentAttributes,
+        bulk_decompressor: &mut Option<BulkCompressor>,
+    ) -> SessionResult<Vec<u8>> {
+        let decompressor = bulk_decompressor
+            .as_mut()
+            .ok_or_else(|| reason_err!("FastPath", "received compression control flags without a decompressor"))?;
+        let bulk_flags = u32::from(attributes.compression_flags.map_or(0, |flags| flags.bits()))
+            | u32::from(
+                attributes
+                    .compression_type
+                    .map_or(0, |compression_type| compression_type.as_u8()),
+            );
+        let decompressed = decompressor.decompress(data, bulk_flags).map_err(|error| {
+            SessionError::new(
+                "FastPath bulk decompression",
+                SessionErrorKind::FastPathBulkDecompression(FastPathBulkDecompressionFailure::new(
+                    attributes,
+                    data.len(),
+                    &error,
+                )),
+            )
+        })?;
+        let decompressed_data = decompressed.to_vec();
+        debug!(
+            compressed_size = data.len(),
+            decompressed_size = decompressed_data.len(),
+            compression_type = ?attributes.compression_type,
+            compression_ratio = format_args!("{:.2}x", decompressor.compression_ratio()),
+            total_compressed = decompressor.total_compressed_bytes(),
+            total_uncompressed = decompressor.total_uncompressed_bytes(),
+            "Decompressed Fast-Path update fragment"
+        );
+        Ok(decompressed_data)
     }
 
     /// Process a bitmap update, shared between fast-path and slow-path pipelines.
@@ -882,8 +935,6 @@ impl ProcessorBuilder {
             mouse_pos_update: None,
             enable_server_pointer: self.enable_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
-            // Built on the first update that needs it; see the field documentation.
-            bulk_decompressor: None,
             palette: Palette::system_default(),
             #[cfg(feature = "qoiz")]
             zdctx: zstd_safe::DCtx::default(),
@@ -891,9 +942,34 @@ impl ProcessorBuilder {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FragmentAttributes {
+    fragmentation: Fragmentation,
+    update_code: UpdateCode,
+    compression_flags: Option<CompressionFlags>,
+    compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
+}
+
+impl From<&FastPathUpdatePdu<'_>> for FragmentAttributes {
+    fn from(update: &FastPathUpdatePdu<'_>) -> Self {
+        Self {
+            fragmentation: update.fragmentation,
+            update_code: update.update_code,
+            compression_flags: update.compression_flags,
+            compression_type: update.compression_type,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct FragmentedUpdate {
+    data: Vec<u8>,
+    attributes: FragmentAttributes,
+}
+
 #[derive(Debug, PartialEq)]
 struct CompleteData {
-    fragmented_data: Option<Vec<u8>>,
+    fragmented_data: Option<FragmentedUpdate>,
 }
 
 impl CompleteData {
@@ -901,29 +977,40 @@ impl CompleteData {
         Self { fragmented_data: None }
     }
 
-    fn process_data(&mut self, data: &[u8], fragmentation: Fragmentation) -> Option<Vec<u8>> {
+    fn process_data(
+        &mut self,
+        data: &[u8],
+        fragmentation: Fragmentation,
+        attributes: FragmentAttributes,
+    ) -> SessionResult<Option<FragmentedUpdate>> {
         match fragmentation {
             Fragmentation::Single => {
                 self.check_data_is_empty();
 
-                Some(data.to_vec())
+                Ok(Some(FragmentedUpdate {
+                    data: data.to_vec(),
+                    attributes,
+                }))
             }
             Fragmentation::First => {
                 self.check_data_is_empty();
 
-                self.fragmented_data = Some(data.to_vec());
+                self.fragmented_data = Some(FragmentedUpdate {
+                    data: data.to_vec(),
+                    attributes,
+                });
 
-                None
+                Ok(None)
             }
             Fragmentation::Next => {
-                self.append_data(data);
+                self.append_data(data, attributes)?;
 
-                None
+                Ok(None)
             }
             Fragmentation::Last => {
-                self.append_data(data);
+                self.append_data(data, attributes)?;
 
-                self.fragmented_data.take()
+                Ok(self.fragmented_data.take())
             }
         }
     }
@@ -935,12 +1022,119 @@ impl CompleteData {
         }
     }
 
-    fn append_data(&mut self, data: &[u8]) {
-        if let Some(fragmented_data) = self.fragmented_data.as_mut() {
-            fragmented_data.extend_from_slice(data);
+    fn append_data(&mut self, data: &[u8], attributes: FragmentAttributes) -> SessionResult<()> {
+        if let Some(fragmented_update) = self.fragmented_data.as_mut() {
+            if fragmented_update.attributes.update_code != attributes.update_code
+                || fragmented_update.attributes.compression_flags.is_some() != attributes.compression_flags.is_some()
+            {
+                return Err(reason_err!("FastPath", "inconsistent fragmented update metadata"));
+            }
+
+            // MS-RDPBCGR 3.2.5.9.3.1 requires equal updateCode and header compression
+            // subfield values, but does not require equal compressionFlags. Each fragment
+            // has already applied its own compression flags before reassembly.
+            fragmented_update.data.extend_from_slice(data);
+            Ok(())
         } else {
-            warn!("Got unexpected Next fragmentation PDU without prior First fragmentation PDU");
+            Err(reason_err!(
+                "FastPath",
+                "received a non-initial fragment without an active fragment sequence"
+            ))
         }
+    }
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+
+    #[test]
+    fn fragmented_updates_reassemble_with_initial_attributes() {
+        let mut complete_data = CompleteData::new();
+        let first_attributes = FragmentAttributes {
+            fragmentation: Fragmentation::First,
+            update_code: UpdateCode::Bitmap,
+            compression_flags: Some(CompressionFlags::COMPRESSED),
+            compression_type: Some(ironrdp_pdu::rdp::client_info::CompressionType::K64),
+        };
+        let last_attributes = FragmentAttributes {
+            fragmentation: Fragmentation::Last,
+            compression_type: Some(ironrdp_pdu::rdp::client_info::CompressionType::K8),
+            ..first_attributes
+        };
+
+        assert_eq!(
+            complete_data
+                .process_data(b"first", Fragmentation::First, first_attributes)
+                .expect("first fragment should be accepted"),
+            None
+        );
+        assert_eq!(
+            complete_data
+                .process_data(b"last", Fragmentation::Last, last_attributes)
+                .expect("last fragment should be accepted"),
+            Some(FragmentedUpdate {
+                data: b"firstlast".to_vec(),
+                attributes: first_attributes,
+            })
+        );
+    }
+
+    #[test]
+    fn fragmented_updates_reject_inconsistent_metadata() {
+        let mut complete_data = CompleteData::new();
+        let first_attributes = FragmentAttributes {
+            fragmentation: Fragmentation::First,
+            update_code: UpdateCode::Bitmap,
+            compression_flags: Some(CompressionFlags::COMPRESSED),
+            compression_type: Some(ironrdp_pdu::rdp::client_info::CompressionType::K64),
+        };
+        let invalid_attributes = FragmentAttributes {
+            fragmentation: Fragmentation::Last,
+            update_code: UpdateCode::Palette,
+            ..first_attributes
+        };
+
+        assert!(
+            complete_data
+                .process_data(b"first", Fragmentation::First, first_attributes)
+                .expect("first fragment should be accepted")
+                .is_none()
+        );
+        assert!(
+            complete_data
+                .process_data(b"last", Fragmentation::Last, invalid_attributes)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn bulk_decompression_failure_retains_only_bounded_metadata() {
+        let attributes = FragmentAttributes {
+            fragmentation: Fragmentation::First,
+            update_code: UpdateCode::Bitmap,
+            compression_flags: Some(CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED),
+            compression_type: Some(ironrdp_pdu::rdp::client_info::CompressionType::Rdp6),
+        };
+
+        let failure = FastPathBulkDecompressionFailure::new(
+            attributes,
+            1_024,
+            &BulkError::InvalidCompressedData("details must not escape"),
+        );
+
+        assert_eq!(
+            failure.compression_flags(),
+            CompressionFlags::COMPRESSED.bits() | CompressionFlags::FLUSHED.bits()
+        );
+        assert_eq!(
+            failure.compression_type(),
+            Some(ironrdp_pdu::rdp::client_info::CompressionType::Rdp6.as_u8())
+        );
+        assert_eq!(failure.update_code(), UpdateCode::Bitmap.as_u8());
+        assert_eq!(failure.fragmentation(), Fragmentation::First.as_u8());
+        assert_eq!(failure.payload_length(), 1_024);
+        assert_eq!(failure.error_kind(), BulkDecompressionErrorKind::InvalidCompressedData);
     }
 }
 
