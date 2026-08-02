@@ -461,7 +461,14 @@ impl<'de> Decode<'de> for ShareDataHeader {
                 .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type"))?;
         let _compressed_length = src.read_u16();
 
-        let share_data_pdu = ShareDataPdu::from_type(src, pdu_type)?;
+        let share_data_pdu = if compression_flags.is_empty() {
+            ShareDataPdu::from_type(src, pdu_type)?
+        } else {
+            ShareDataPdu::Compressed {
+                pdu_type,
+                data: src.read_remaining().to_vec(),
+            }
+        };
 
         Ok(Self {
             share_data_pdu,
@@ -500,6 +507,11 @@ pub enum ShareDataPdu {
     DrawGdiPusErrorPdu(Vec<u8>),
     ArcStatusPdu(Vec<u8>),
     StatusInfoPdu(Vec<u8>),
+    /// A compressed Share Data PDU body that must be decompressed before decoding.
+    Compressed {
+        pdu_type: ShareDataPduType,
+        data: Vec<u8>,
+    },
 }
 
 impl ShareDataPdu {
@@ -532,6 +544,7 @@ impl ShareDataPdu {
             ShareDataPdu::DrawGdiPusErrorPdu(_) => "Draw GDI PUS Error PDU",
             ShareDataPdu::ArcStatusPdu(_) => "Arc Status PDU",
             ShareDataPdu::StatusInfoPdu(_) => "Status Info PDU",
+            ShareDataPdu::Compressed { .. } => "Compressed Share Data PDU",
         }
     }
 
@@ -562,7 +575,14 @@ impl ShareDataPdu {
             ShareDataPdu::DrawGdiPusErrorPdu(_) => ShareDataPduType::DrawGdiPusErrorPdu,
             ShareDataPdu::ArcStatusPdu(_) => ShareDataPduType::ArcStatusPdu,
             ShareDataPdu::StatusInfoPdu(_) => ShareDataPduType::StatusInfoPdu,
+            ShareDataPdu::Compressed { pdu_type, .. } => *pdu_type,
         }
+    }
+
+    /// Decodes the body of a Share Data PDU after its `pduType2` has been read.
+    pub fn decode_with_type(data: &[u8], pdu_type: ShareDataPduType) -> DecodeResult<Self> {
+        let mut src = ReadCursor::new(data);
+        Self::from_type(&mut src, pdu_type)
     }
 
     fn from_type(src: &mut ReadCursor<'_>, share_type: ShareDataPduType) -> DecodeResult<Self> {
@@ -628,6 +648,7 @@ impl Encode for ShareDataPdu {
             ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => Ok(()),
             ShareDataPdu::SuppressOutput(pdu) => pdu.encode(dst),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.encode(dst),
+            ShareDataPdu::Compressed { .. } => Err(other_err!("Encoding compressed Share Data PDU is not implemented")),
             _ => Err(other_err!("Encoding not implemented")),
         }
     }
@@ -660,7 +681,8 @@ impl Encode for ShareDataPdu {
             | ShareDataPdu::DrawNineGridErrorPdu(buffer)
             | ShareDataPdu::DrawGdiPusErrorPdu(buffer)
             | ShareDataPdu::ArcStatusPdu(buffer)
-            | ShareDataPdu::StatusInfoPdu(buffer) => buffer.len(),
+            | ShareDataPdu::StatusInfoPdu(buffer)
+            | ShareDataPdu::Compressed { data: buffer, .. } => buffer.len(),
         }
     }
 }
@@ -836,7 +858,7 @@ mod tests {
 
     use super::{
         CompressionFlags, PADDING_FIELD_SIZE, PDU_TYPE_FIELD_SIZE, SHARE_CONTROL_HEADER_SIZE, STREAM_ID_FIELD_SIZE,
-        ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, StreamPriority,
+        ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, ShareDataPduType, StreamPriority,
         UNCOMPRESSED_LENGTH_FIELD_SIZE, decode_share_data,
     };
 
@@ -941,5 +963,12 @@ mod tests {
             share_data_ctx.compression_type,
             crate::rdp::client_info::CompressionType::K64
         );
+        assert!(matches!(
+            share_data_ctx.pdu,
+            ShareDataPdu::Compressed {
+                pdu_type: ShareDataPduType::ShutdownRequest,
+                ..
+            }
+        ));
     }
 }

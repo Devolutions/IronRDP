@@ -38,7 +38,7 @@ impl fmt::Display for SessionErrorKind {
             SessionErrorKind::Pdu(_) => write!(f, "PDU error"),
             SessionErrorKind::Encode(_) => write!(f, "encode error"),
             SessionErrorKind::Decode(_) => write!(f, "decode error"),
-            SessionErrorKind::FastPathBulkDecompression(_) => write!(f, "Fast-Path bulk decompression error"),
+            SessionErrorKind::FastPathBulkDecompression(_) => write!(f, "fast-path bulk decompression error"),
             SessionErrorKind::Reason(description) => write!(f, "reason: {description}"),
             SessionErrorKind::General => write!(f, "general error"),
             SessionErrorKind::Custom => write!(f, "custom error"),

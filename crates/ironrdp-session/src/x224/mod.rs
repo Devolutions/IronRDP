@@ -5,7 +5,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
-use ironrdp_pdu::rdp::headers::{CompressionFlags, ShareDataPdu};
+use ironrdp_pdu::rdp::headers::{CompressionFlags, ShareDataCtx, ShareDataPdu};
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
@@ -174,79 +174,7 @@ impl Processor {
         let io_channel = ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx).map_err(SessionError::decode)?;
 
         match io_channel {
-            ironrdp_pdu::rdp::headers::IoChannelPdu::Data(ctx) => {
-                match ctx.pdu {
-                    ShareDataPdu::SaveSessionInfo(session_info) => {
-                        debug!("Got Session Save Info PDU: {session_info:?}");
-                        Ok(Vec::new())
-                    }
-                    // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
-                    ShareDataPdu::SetKeyboardIndicators(data) => {
-                        debug!("Got Keyboard Indicators PDU: {data:?}");
-                        Ok(Vec::new())
-                    }
-                    ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
-                        ProtocolIndependentCode::None,
-                    ))) => {
-                        debug!("Received None server error");
-                        Ok(Vec::new())
-                    }
-                    ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => {
-                        // This is a part of server-side graceful disconnect procedure defined
-                        // in [MS-RDPBCGR].
-                        //
-                        // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/149070b0-ecec-4c20-af03-934bbc48adb8
-                        let desc = DisconnectDescription::ErrorInfo(e);
-                        Ok(vec![ProcessorOutput::Disconnect(desc)])
-                    }
-                    ShareDataPdu::ShutdownDenied => {
-                        debug!("ShutdownDenied received, session will be closed");
-
-                        // As defined in [MS-RDPBCGR], when `ShareDataPdu::ShutdownDenied` is received, we
-                        // need to send a disconnect ultimatum to the server if we want to proceed with the
-                        // session shutdown.
-                        //
-                        // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
-                        let ultimatum = McsMessage::DisconnectProviderUltimatum(
-                            DisconnectProviderUltimatum::from_reason(DisconnectReason::UserRequested),
-                        );
-
-                        let encoded_pdu = ironrdp_core::encode_vec(&X224(ultimatum)).map_err(SessionError::encode);
-
-                        Ok(vec![
-                            ProcessorOutput::ResponseFrame(encoded_pdu?),
-                            ProcessorOutput::Disconnect(DisconnectDescription::McsDisconnect(
-                                DisconnectReason::UserRequested,
-                            )),
-                        ])
-                    }
-                    ShareDataPdu::Update(data) => {
-                        let data = Self::decompress_share_data(
-                            data,
-                            ctx.compression_flags,
-                            ctx.compression_type,
-                            bulk_decompressor,
-                        )?;
-                        debug!("Got slow-path graphics update ({} bytes)", data.len());
-                        Ok(vec![ProcessorOutput::GraphicsUpdate(data)])
-                    }
-                    ShareDataPdu::Pointer(data) => {
-                        let data = Self::decompress_share_data(
-                            data,
-                            ctx.compression_flags,
-                            ctx.compression_type,
-                            bulk_decompressor,
-                        )?;
-                        debug!("Got slow-path pointer update ({} bytes)", data.len());
-                        Ok(vec![ProcessorOutput::PointerUpdate(data)])
-                    }
-                    _ => Err(reason_err!(
-                        "IO channel",
-                        "unhandled PDU: {:?}",
-                        ctx.pdu.as_short_name()
-                    )),
-                }
-            }
+            ironrdp_pdu::rdp::headers::IoChannelPdu::Data(ctx) => Self::process_share_data(ctx, bulk_decompressor),
             ironrdp_pdu::rdp::headers::IoChannelPdu::MultitransportRequest(pdu) => {
                 debug!(
                     "Received Initiate Multitransport Request: request_id={}",
@@ -255,6 +183,84 @@ impl Processor {
                 Ok(vec![ProcessorOutput::MultitransportRequest(pdu)])
             }
             ironrdp_pdu::rdp::headers::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
+        }
+    }
+
+    fn process_share_data(
+        ctx: ShareDataCtx,
+        bulk_decompressor: &mut Option<BulkCompressor>,
+    ) -> SessionResult<Vec<ProcessorOutput>> {
+        let ShareDataCtx {
+            compression_flags,
+            compression_type,
+            pdu,
+            ..
+        } = ctx;
+        let (pdu, compression_flags) = match pdu {
+            ShareDataPdu::Compressed { pdu_type, data } => {
+                let data = Self::decompress_share_data(data, compression_flags, compression_type, bulk_decompressor)?;
+                (
+                    ShareDataPdu::decode_with_type(&data, pdu_type).map_err(SessionError::decode)?,
+                    CompressionFlags::empty(),
+                )
+            }
+            pdu => (pdu, compression_flags),
+        };
+
+        match pdu {
+            ShareDataPdu::SaveSessionInfo(session_info) => {
+                debug!("Got Session Save Info PDU: {session_info:?}");
+                Ok(Vec::new())
+            }
+            // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
+            ShareDataPdu::SetKeyboardIndicators(data) => {
+                debug!("Got Keyboard Indicators PDU: {data:?}");
+                Ok(Vec::new())
+            }
+            ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+                ProtocolIndependentCode::None,
+            ))) => {
+                debug!("Received None server error");
+                Ok(Vec::new())
+            }
+            ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => {
+                // This is a part of server-side graceful disconnect procedure defined
+                // in [MS-RDPBCGR].
+                //
+                // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/149070b0-ecec-4c20-af03-934bbc48adb8
+                let desc = DisconnectDescription::ErrorInfo(e);
+                Ok(vec![ProcessorOutput::Disconnect(desc)])
+            }
+            ShareDataPdu::ShutdownDenied => {
+                debug!("ShutdownDenied received, session will be closed");
+
+                // As defined in [MS-RDPBCGR], when `ShareDataPdu::ShutdownDenied` is received, we
+                // need to send a disconnect ultimatum to the server if we want to proceed with the
+                // session shutdown.
+                //
+                // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
+                let ultimatum = McsMessage::DisconnectProviderUltimatum(DisconnectProviderUltimatum::from_reason(
+                    DisconnectReason::UserRequested,
+                ));
+
+                let encoded_pdu = ironrdp_core::encode_vec(&X224(ultimatum)).map_err(SessionError::encode);
+
+                Ok(vec![
+                    ProcessorOutput::ResponseFrame(encoded_pdu?),
+                    ProcessorOutput::Disconnect(DisconnectDescription::McsDisconnect(DisconnectReason::UserRequested)),
+                ])
+            }
+            ShareDataPdu::Update(data) => {
+                let data = Self::decompress_share_data(data, compression_flags, compression_type, bulk_decompressor)?;
+                debug!("Got slow-path graphics update ({} bytes)", data.len());
+                Ok(vec![ProcessorOutput::GraphicsUpdate(data)])
+            }
+            ShareDataPdu::Pointer(data) => {
+                let data = Self::decompress_share_data(data, compression_flags, compression_type, bulk_decompressor)?;
+                debug!("Got slow-path pointer update ({} bytes)", data.len());
+                Ok(vec![ProcessorOutput::PointerUpdate(data)])
+            }
+            pdu => Err(reason_err!("IO channel", "unhandled PDU: {:?}", pdu.as_short_name())),
         }
     }
 
@@ -349,6 +355,9 @@ fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id
 #[cfg(test)]
 mod tests {
     use ironrdp_bulk::{CompressionType as BulkCompressionType, flags};
+    use ironrdp_core::encode_vec;
+    use ironrdp_pdu::rdp::headers::ShareDataPduType;
+    use ironrdp_pdu::rdp::session_info::{InfoData, InfoType, SaveSessionInfoPdu};
 
     use super::*;
 
@@ -389,5 +398,40 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn processor_decompresses_compressed_save_session_info() {
+        let session_info = SaveSessionInfoPdu {
+            info_type: InfoType::PlainNotify,
+            info_data: InfoData::PlainNotify,
+        };
+        let source = encode_vec(&session_info).expect("encode save session info");
+        let mut compressor = BulkCompressor::new(BulkCompressionType::Rdp5);
+        let (compressed_size, flags) = compressor.compress(&source).expect("source should compress");
+        assert_ne!(flags & flags::PACKET_COMPRESSED, 0, "test data must be compressed");
+        let compressed = compressor.compressed_data(compressed_size).to_vec();
+        let mut bulk_decompressor = Some(BulkCompressor::new(BulkCompressionType::Rdp5));
+        let compression_flags = CompressionFlags::from_bits_retain(
+            u8::try_from(flags & !flags::COMPRESSION_TYPE_MASK).expect("bulk flags should fit in a byte"),
+        );
+        let outputs = Processor::process_share_data(
+            ShareDataCtx {
+                initiator_id: 0,
+                channel_id: 0,
+                share_id: 0,
+                pdu_source: 0,
+                compression_flags,
+                compression_type: CompressionType::K64,
+                pdu: ShareDataPdu::Compressed {
+                    pdu_type: ShareDataPduType::SaveSessionInfo,
+                    data: compressed,
+                },
+            },
+            &mut bulk_decompressor,
+        )
+        .expect("compressed save session info should be processed");
+
+        assert!(outputs.is_empty());
     }
 }

@@ -100,7 +100,7 @@ impl FastPathBulkDecompressionFailure {
         self.fragmentation
     }
 
-    /// Returns the complete compressed update size in bytes.
+    /// Returns the failing fragment's compressed payload size in bytes.
     pub const fn payload_length(self) -> usize {
         self.payload_length
     }
