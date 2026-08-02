@@ -146,14 +146,21 @@ pub fn find_size(bytes: &[u8]) -> DecodeResult<Option<PduInfo>> {
             ensure_enough!(bytes, 2);
             let a = bytes[1];
 
-            let fast_path_length = if a & 0x80 != 0 {
+            let (fast_path_length, header_length) = if a & 0x80 != 0 {
                 ensure_enough!(bytes, 3);
                 let b = bytes[2];
 
-                ((u16::from(a) & !0x80) << 8) + u16::from(b)
+                (((u16::from(a) & !0x80) << 8) + u16::from(b), 3)
             } else {
-                u16::from(a)
+                (u16::from(a), 2)
             };
+
+            if usize::from(fast_path_length) < header_length {
+                return Err(invalid_field_err!(
+                    "fastPathLength",
+                    "length is smaller than the Fast-Path header"
+                ));
+            }
 
             Ok(Some(PduInfo {
                 action,
@@ -169,6 +176,18 @@ pub trait PduHint: Send + Sync + fmt::Debug + 'static {
     /// Returns `Some((hint_matching, size))` if the size is known.
     /// Returns `None` if the size cannot be determined yet.
     fn find_size(&self, bytes: &[u8]) -> DecodeResult<Option<(bool, usize)>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_size_rejects_undersized_frames() {
+        assert!(find_size(&[0x00, 0x01]).is_err());
+        assert!(find_size(&[0x00, 0x80, 0x02]).is_err());
+        assert!(find_size(&[0x03, 0x00, 0x00, 0x06]).is_err());
+    }
 }
 
 // Matches both X224 and FastPath pdus
