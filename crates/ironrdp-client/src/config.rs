@@ -1127,9 +1127,14 @@ impl ConfigBuilder {
     {
         let cb: StaticChannelFn = Arc::new(move |connector: &mut ironrdp_connector::ClientConnector, ps| {
             for processor in factory(ps) {
-                if !connector.attach_dynamic_static_channel(processor) {
-                    tracing::error!("Unable to register runtime-defined static channel: key space exhausted");
-                    break;
+                match connector.try_attach_dynamic_static_channel(processor) {
+                    Ok(()) => {}
+                    Err(ironrdp_connector::DynamicStaticChannelAttachError::ChannelLimitReached) => {
+                        tracing::error!("Unable to register runtime-defined static channel: key space exhausted");
+                    }
+                    Err(ironrdp_connector::DynamicStaticChannelAttachError::DuplicateChannelName) => {
+                        tracing::warn!("Unable to register runtime-defined static channel: duplicate channel name");
+                    }
                 }
             }
         });

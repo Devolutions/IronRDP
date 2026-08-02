@@ -1049,7 +1049,6 @@ async fn active_session(
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
         let outputs = tokio::select! {
-            biased;
             _ = close_receiver.changed() => {
                 break 'outer GracefulDisconnectReason::UserInitiated;
             }
@@ -1316,7 +1315,7 @@ async fn active_session(
                         ));
                     }
                 }
-                ActiveStageOutput::SaveSessionInfo => {
+                ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
                     if !send_active_output_event(output_event_sender, RdpOutputEvent::LoginComplete, close_receiver)
                         .await?
                     {
@@ -1325,6 +1324,7 @@ async fn active_session(
                         ));
                     }
                 }
+                ActiveStageOutput::SaveSessionInfo { logon_complete: false } => {}
                 ActiveStageOutput::DeactivateAll => {
                     // Deactivation-Reactivation Sequence:
                     // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432

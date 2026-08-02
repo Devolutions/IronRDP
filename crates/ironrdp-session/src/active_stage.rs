@@ -477,7 +477,10 @@ pub enum ActiveStageOutput {
     ///
     /// This value-free event deliberately excludes server-provided session details, which can
     /// include credentials and auto-reconnect cookies.
-    SaveSessionInfo,
+    SaveSessionInfo {
+        /// Whether the notification unambiguously reports a completed logon.
+        logon_complete: bool,
+    },
     /// Received a Server Deactivate All PDU. The consumer should execute the [Deactivation-Reactivation Sequence].
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
@@ -518,7 +521,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
 
                 Ok(Self::Terminate(desc))
             }
-            x224::ProcessorOutput::SaveSessionInfo => Ok(Self::SaveSessionInfo),
+            x224::ProcessorOutput::SaveSessionInfo { logon_complete } => Ok(Self::SaveSessionInfo { logon_complete }),
             x224::ProcessorOutput::DeactivateAll => Ok(Self::DeactivateAll),
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),

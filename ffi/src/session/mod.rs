@@ -245,7 +245,7 @@ pub mod ffi {
                     ActiveStageOutputType::MultitransportRequest
                 }
                 ironrdp::session::ActiveStageOutput::AutoDetect { .. } => ActiveStageOutputType::AutoDetect,
-                ironrdp::session::ActiveStageOutput::SaveSessionInfo => ActiveStageOutputType::SaveSessionInfo,
+                ironrdp::session::ActiveStageOutput::SaveSessionInfo { .. } => ActiveStageOutputType::SaveSessionInfo,
             }
         }
 

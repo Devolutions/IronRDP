@@ -26,6 +26,11 @@ pub trait DvcChannelListener: Send {
     /// Called for each incoming DYNVC_CREATE_REQ matching this name.
     /// Return `None` to reject (NO_LISTENER).
     fn create(&mut self, channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>>;
+
+    /// Returns whether this listener can still create a channel.
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
@@ -53,6 +58,10 @@ impl DvcChannelListener for OnceListener {
 
     fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcProcessor>> {
         self.inner.take()
+    }
+
+    fn is_available(&self) -> bool {
+        self.inner.is_some()
     }
 }
 
@@ -358,7 +367,9 @@ impl DynamicChannelSet {
     }
 
     fn has_listener_by_type_id(&self, type_id: TypeId) -> bool {
-        self.listeners.values().any(|entry| entry.type_id == Some(type_id))
+        self.listeners
+            .values()
+            .any(|entry| entry.type_id == Some(type_id) && entry.listener.is_available())
     }
 
     fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {
@@ -391,4 +402,37 @@ impl SvcClientProcessor for DrdynvcClient {}
 
 fn decode_dvc_message(user_data: &[u8]) -> DecodeResult<DrdynvcServerPdu> {
     DrdynvcServerPdu::decode(&mut ReadCursor::new(user_data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDvc;
+
+    impl_as_any!(TestDvc);
+
+    impl DvcProcessor for TestDvc {
+        fn channel_name(&self) -> &str {
+            "test"
+        }
+
+        fn start(&mut self, _channel_id: u32) -> PduResult<Vec<crate::DvcMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<crate::DvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn consumed_typed_listener_is_not_registered() {
+        let mut channels = DynamicChannelSet::new();
+        channels.register_once(TestDvc);
+
+        assert!(channels.has_listener_by_type_id(TypeId::of::<TestDvc>()));
+        assert!(channels.try_create_channel(&"test".to_owned(), 1).is_some());
+        assert!(!channels.has_listener_by_type_id(TypeId::of::<TestDvc>()));
+    }
 }

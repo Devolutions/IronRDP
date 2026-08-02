@@ -1056,8 +1056,11 @@ impl iron_remote_desktop::Session for Session {
                     ActiveStageOutput::AutoDetect(request) => {
                         debug!(?request, "Auto-detect");
                     }
-                    ActiveStageOutput::SaveSessionInfo => {
+                    ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
                         debug!("RDP login complete");
+                    }
+                    ActiveStageOutput::SaveSessionInfo { logon_complete: false } => {
+                        debug!("RDP session info notification");
                     }
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }

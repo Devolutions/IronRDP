@@ -7,7 +7,6 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use ironrdp::client::rdp::{RdpInputEvent, RdpInputSender, RdpOutputEvent};
-use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
 use tracing::{debug, error, info, trace, warn};
@@ -183,9 +182,11 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                         event::ElementState::Released => ironrdp::input::Operation::KeyReleased(scancode),
                     };
 
-                    let input_events = self.input_database.apply(core::iter::once(operation));
-
-                    send_fast_path_events(&self.input_event_sender, input_events);
+                    apply_and_send_fast_path_events(
+                        &self.input_event_sender,
+                        &mut self.input_database,
+                        core::iter::once(operation),
+                    );
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -219,9 +220,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 add_operation(modifiers.state().alt_key(), ALT_LEFT);
                 add_operation(modifiers.state().super_key(), LOGO_LEFT);
 
-                let input_events = self.input_database.apply(operations);
-
-                send_fast_path_events(&self.input_event_sender, input_events);
+                apply_and_send_fast_path_events(&self.input_event_sender, &mut self.input_database, operations);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let win_size = window.inner_size();
@@ -231,9 +230,11 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 let y = (position.y / f64::from(win_size.height) * f64::from(self.buffer_size.1)) as u16;
                 let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition { x, y });
 
-                let input_events = self.input_database.apply(core::iter::once(operation));
-
-                send_fast_path_events(&self.input_event_sender, input_events);
+                apply_and_send_fast_path_events(
+                    &self.input_event_sender,
+                    &mut self.input_database,
+                    core::iter::once(operation),
+                );
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let mut operations = SmallVec::<[ironrdp::input::Operation; 2]>::new();
@@ -283,9 +284,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     }
                 };
 
-                let input_events = self.input_database.apply(operations);
-
-                send_fast_path_events(&self.input_event_sender, input_events);
+                apply_and_send_fast_path_events(&self.input_event_sender, &mut self.input_database, operations);
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let mouse_button = match button {
@@ -308,9 +307,11 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     event::ElementState::Released => ironrdp::input::Operation::MouseButtonReleased(mouse_button),
                 };
 
-                let input_events = self.input_database.apply(core::iter::once(operation));
-
-                send_fast_path_events(&self.input_event_sender, input_events);
+                apply_and_send_fast_path_events(
+                    &self.input_event_sender,
+                    &mut self.input_database,
+                    core::iter::once(operation),
+                );
             }
             WindowEvent::RedrawRequested => {
                 self.draw();
@@ -414,8 +415,16 @@ impl ApplicationHandler<RdpOutputEvent> for App {
     }
 }
 
-fn send_fast_path_events(input_event_sender: &RdpInputSender, input_events: SmallVec<[FastPathInputEvent; 2]>) {
+fn apply_and_send_fast_path_events(
+    input_event_sender: &RdpInputSender,
+    input_database: &mut ironrdp::input::Database,
+    operations: impl IntoIterator<Item = ironrdp::input::Operation>,
+) {
+    let Ok(permit) = input_event_sender.try_reserve() else {
+        return;
+    };
+    let input_events = input_database.apply(operations);
     if !input_events.is_empty() {
-        let _ = input_event_sender.try_send(RdpInputEvent::FastPath(input_events));
+        permit.send(RdpInputEvent::FastPath(input_events));
     }
 }
