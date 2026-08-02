@@ -275,6 +275,10 @@ impl RdpServerBuilder<BuilderDone> {
     /// error closes the connection. Pass `None` (the default) to skip
     /// validation entirely.
     ///
+    /// A valid Server Auto-Reconnect Cookie bypasses this validator. Applications
+    /// that must validate every connection should leave automatic reconnection
+    /// disabled.
+    ///
     /// Not used for CredSSP/Hybrid connections (those use pre-loaded
     /// credentials for NTLM challenge-response).
     pub fn with_credential_validator(mut self, validator: Option<Arc<dyn CredentialValidator>>) -> Self {

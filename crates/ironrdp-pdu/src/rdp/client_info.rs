@@ -281,6 +281,7 @@ impl ExtendedClientInfo {
 ///
 /// [2.2.4.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ca0c58c8-b1a3-41f7-9f75-2f18c7f0b943
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientAutoReconnect {
     pub logon_id: u32,
     pub security_verifier: [u8; RECONNECT_SECURITY_VERIFIER_LEN],
@@ -346,7 +347,10 @@ impl ExtendedClientOptionalInfo {
         self.reconnect_cookie.as_ref()
     }
 
-    /// The validated Client Auto-Reconnect Packet, if supplied by the client.
+    /// The well-formed Client Auto-Reconnect Packet, if supplied by the client.
+    ///
+    /// This validates only the packet's internal length and version. The server
+    /// must validate its security verifier before accepting a reconnect.
     pub fn auto_reconnect(&self) -> Option<&ClientAutoReconnect> {
         self.auto_reconnect.as_ref()
     }
@@ -433,7 +437,7 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
                 return Err(invalid_field_err!("cbAutoReconnectCookie", "missing cookie data"));
             }
             let reconnect_cookie = src.read_array();
-            optional_data.auto_reconnect = Some(ClientAutoReconnect::decode(&mut ReadCursor::new(&reconnect_cookie))?);
+            optional_data.auto_reconnect = ClientAutoReconnect::decode(&mut ReadCursor::new(&reconnect_cookie)).ok();
             optional_data.reconnect_cookie = Some(reconnect_cookie);
         }
 
@@ -449,9 +453,9 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
 
 #[cfg(test)]
 mod tests {
-    use ironrdp_core::ReadCursor;
+    use ironrdp_core::{ReadCursor, decode, encode_vec};
 
-    use super::ClientAutoReconnect;
+    use super::{ClientAutoReconnect, ExtendedClientOptionalInfo, PerformanceFlags, TimezoneInfo};
 
     fn reconnect_cookie() -> [u8; 28] {
         let mut cookie = [0; 28];
@@ -480,6 +484,38 @@ mod tests {
         let mut invalid_version = reconnect_cookie();
         invalid_version[4..8].copy_from_slice(&2u32.to_le_bytes());
         assert!(ClientAutoReconnect::decode(&mut ReadCursor::new(&invalid_version)).is_err());
+    }
+
+    #[test]
+    fn malformed_auto_reconnect_packet_is_preserved_but_not_offered() {
+        let mut reconnect_cookie = reconnect_cookie();
+        reconnect_cookie[4..8].copy_from_slice(&2u32.to_le_bytes());
+        let optional_info = ExtendedClientOptionalInfo {
+            timezone: Some(TimezoneInfo::default()),
+            session_id: Some(0),
+            performance_flags: Some(PerformanceFlags::default()),
+            reconnect_cookie: Some(reconnect_cookie),
+            auto_reconnect: None,
+        };
+
+        let decoded: ExtendedClientOptionalInfo = decode(&encode_vec(&optional_info).unwrap()).unwrap();
+        assert_eq!(decoded.reconnect_cookie(), Some(&reconnect_cookie));
+        assert!(decoded.auto_reconnect().is_none());
+    }
+
+    #[test]
+    fn builder_parses_valid_auto_reconnect_packet() {
+        let optional_info = ExtendedClientOptionalInfo::builder()
+            .timezone(TimezoneInfo::default())
+            .session_id(0)
+            .performance_flags(PerformanceFlags::default())
+            .reconnect_cookie(reconnect_cookie())
+            .build();
+
+        assert_eq!(
+            optional_info.auto_reconnect().map(|packet| packet.logon_id),
+            Some(0x1234_5678)
+        );
     }
 }
 
@@ -859,7 +895,11 @@ fn string_len(value: &str, character_set: CharacterSet) -> usize {
 pub mod builder {
     use core::marker::PhantomData;
 
-    use super::{ExtendedClientOptionalInfo, PerformanceFlags, RECONNECT_COOKIE_LEN, TimezoneInfo};
+    use ironrdp_core::ReadCursor;
+
+    use super::{
+        ClientAutoReconnect, ExtendedClientOptionalInfo, PerformanceFlags, RECONNECT_COOKIE_LEN, TimezoneInfo,
+    };
 
     pub struct ExtendedClientOptionalInfoBuilderStateSetTimeZone;
     pub struct ExtendedClientOptionalInfoBuilderStateSetSessionId;
@@ -940,6 +980,7 @@ pub mod builder {
             mut self,
             reconnect_cookie: [u8; RECONNECT_COOKIE_LEN],
         ) -> ExtendedClientOptionalInfoBuilder<ExtendedClientOptionalInfoBuilderStateFinal> {
+            self.inner.auto_reconnect = ClientAutoReconnect::decode(&mut ReadCursor::new(&reconnect_cookie)).ok();
             self.inner.reconnect_cookie = Some(reconnect_cookie);
             ExtendedClientOptionalInfoBuilder {
                 inner: self.inner,

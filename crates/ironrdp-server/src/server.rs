@@ -488,6 +488,12 @@ pub struct RdpServer {
     /// ([`RdpServer::builder`]) via `with_auto_reconnect_cookie`, or after
     /// construction via [`Self::set_auto_reconnect_cookie`].
     auto_reconnect_cookie: Option<rdp::session_info::ServerAutoReconnect>,
+    /// The cookie replaced by the current one, accepted until the next rotation.
+    ///
+    /// A successful socket write does not prove the client received the
+    /// replacement. Retaining one previous value lets a client that disconnects
+    /// during that window reconnect with the last cookie it knows.
+    previous_auto_reconnect_cookie: Option<rdp::session_info::ServerAutoReconnect>,
     /// Tracks whether the current cookie has reached a client. Subsequent
     /// connections and hourly updates replace it with a new random.
     auto_reconnect_sent: bool,
@@ -503,8 +509,9 @@ pub struct AutoReconnectCookieHandle {
 impl AutoReconnectCookieHandle {
     /// Queue a replacement cookie for the active client or the next connection.
     ///
-    /// `None` disables auto-reconnect and immediately invalidates the cookie
-    /// currently held by the server.
+    /// The change takes effect only after the server handles this event. `None`
+    /// then disables auto-reconnect and invalidates every cookie currently held
+    /// by the server.
     pub fn set(
         &self,
         cookie: Option<rdp::session_info::ServerAutoReconnect>,
@@ -513,7 +520,6 @@ impl AutoReconnectCookieHandle {
     }
 }
 
-#[derive(Debug)]
 pub enum ServerEvent {
     Quit(String),
     Clipboard(ClipboardMessage),
@@ -527,6 +533,24 @@ pub enum ServerEvent {
     Egfx(EgfxServerMessage),
     /// Trigger an RTT measurement probe (requires auto-detect enabled).
     AutoDetectRttRequest,
+}
+
+impl fmt::Debug for ServerEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Quit(reason) => f.debug_tuple("Quit").field(reason).finish(),
+            Self::Clipboard(..) => f.write_str("Clipboard(..)"),
+            Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
+            Self::Echo(..) => f.write_str("Echo(..)"),
+            Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
+            Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
+            Self::SetAutoReconnectCookie(None) => f.write_str("SetAutoReconnectCookie(None)"),
+            Self::GetLocalAddr(..) => f.write_str("GetLocalAddr(..)"),
+            #[cfg(feature = "egfx")]
+            Self::Egfx(..) => f.write_str("Egfx(..)"),
+            Self::AutoDetectRttRequest => f.write_str("AutoDetectRttRequest"),
+        }
+    }
 }
 
 pub trait ServerEventSender {
@@ -600,6 +624,7 @@ impl RdpServer {
                 handle
             },
             auto_reconnect_cookie: None,
+            previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
         }
     }
@@ -616,6 +641,10 @@ impl RdpServer {
     /// [`CredentialDecision::Reject`] (or a [`CredentialValidationError`]),
     /// the connection is rejected. Passing `None` clears any previously
     /// configured validator.
+    ///
+    /// A valid Server Auto-Reconnect Cookie bypasses this validator. Applications
+    /// that must validate every connection should leave automatic reconnection
+    /// disabled.
     ///
     /// Most callers should configure the validator at construction time via
     /// the builder's `with_credential_validator` method
@@ -649,6 +678,7 @@ impl RdpServer {
     /// [`ServerAutoReconnect`]: ironrdp_pdu::rdp::session_info::ServerAutoReconnect
     pub fn set_auto_reconnect_cookie(&mut self, cookie: Option<rdp::session_info::ServerAutoReconnect>) {
         self.auto_reconnect_cookie = cookie;
+        self.previous_auto_reconnect_cookie = None;
         self.auto_reconnect_sent = false;
     }
 
@@ -672,9 +702,10 @@ impl RdpServer {
             return false;
         }
 
-        self.auto_reconnect_cookie
-            .as_ref()
-            .is_some_and(|cookie| auto_reconnect_cookie_matches(cookie, reconnect))
+        [&self.auto_reconnect_cookie, &self.previous_auto_reconnect_cookie]
+            .into_iter()
+            .flatten()
+            .any(|cookie| auto_reconnect_cookie_matches(cookie, reconnect))
     }
 
     fn generate_auto_reconnect_cookie(logon_id: u32) -> rdp::session_info::ServerAutoReconnect {
@@ -696,6 +727,15 @@ impl RdpServer {
         } else {
             Some(cookie.clone())
         }
+    }
+
+    fn commit_auto_reconnect_rotation(&mut self, cookie: rdp::session_info::ServerAutoReconnect) {
+        if self.auto_reconnect_sent {
+            self.previous_auto_reconnect_cookie = self.auto_reconnect_cookie.replace(cookie);
+        } else {
+            self.auto_reconnect_cookie = Some(cookie);
+        }
+        self.auto_reconnect_sent = true;
     }
     async fn send_auto_reconnect_cookie(
         cookie: rdp::session_info::ServerAutoReconnect,
@@ -729,8 +769,7 @@ impl RdpServer {
         };
 
         Self::send_auto_reconnect_cookie(cookie.clone(), writer, io_channel_id, user_channel_id).await?;
-        self.auto_reconnect_cookie = Some(cookie);
-        self.auto_reconnect_sent = true;
+        self.commit_auto_reconnect_rotation(cookie);
 
         Ok(())
     }
@@ -751,7 +790,31 @@ impl RdpServer {
         let cookie = Self::generate_auto_reconnect_cookie(cookie.logon_id);
 
         Self::send_auto_reconnect_cookie(cookie.clone(), writer, io_channel_id, user_channel_id).await?;
+        self.commit_auto_reconnect_rotation(cookie);
+
+        Ok(())
+    }
+
+    async fn update_auto_reconnect_cookie(
+        &mut self,
+        cookie: Option<rdp::session_info::ServerAutoReconnect>,
+        writer: &mut impl FramedWrite,
+        io_channel_id: u16,
+        user_channel_id: u16,
+    ) -> Result<()> {
+        let Some(cookie) = cookie else {
+            self.set_auto_reconnect_cookie(None);
+            return Ok(());
+        };
+
+        if !self.supports_auto_reconnect() {
+            self.set_auto_reconnect_cookie(Some(cookie));
+            return Ok(());
+        }
+
+        Self::send_auto_reconnect_cookie(cookie.clone(), writer, io_channel_id, user_channel_id).await?;
         self.auto_reconnect_cookie = Some(cookie);
+        self.previous_auto_reconnect_cookie = None;
         self.auto_reconnect_sent = true;
 
         Ok(())
@@ -1289,8 +1352,7 @@ impl RdpServer {
                     self.set_credentials(Some(creds));
                 }
                 ServerEvent::SetAutoReconnectCookie(cookie) => {
-                    self.set_auto_reconnect_cookie(cookie);
-                    self.send_next_auto_reconnect_cookie(writer, io_channel_id, user_channel_id)
+                    self.update_auto_reconnect_cookie(cookie, writer, io_channel_id, user_channel_id)
                         .await?;
                 }
                 ServerEvent::Rdpsnd(s) => {
@@ -2135,5 +2197,52 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
         Self {
             writer: Rc::new(Mutex::new(writer)),
         }
+    }
+}
+
+#[cfg(test)]
+mod auto_reconnect_tests {
+    use ironrdp_pdu::rdp::client_info::ClientAutoReconnect;
+    use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
+
+    use super::{auto_reconnect_cookie_matches, auto_reconnect_verifier_matches};
+
+    // Independently computed with Python's hmac/hashlib:
+    // HMAC-MD5(key = 01..10, msg = 32 zero bytes) = 894025a9...261c.
+    const RANDOM_BITS: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+    const EXPECTED_VERIFIER: [u8; 16] = [
+        0x89, 0x40, 0x25, 0xa9, 0x9d, 0x64, 0xab, 0x96, 0x64, 0x19, 0xec, 0x1e, 0xf1, 0x3c, 0x26, 0x1c,
+    ];
+
+    #[test]
+    fn verifier_matches_reference_hmac_md5() {
+        assert!(auto_reconnect_verifier_matches(&RANDOM_BITS, &EXPECTED_VERIFIER));
+    }
+
+    #[test]
+    fn verifier_rejects_a_wrong_value() {
+        let mut wrong = EXPECTED_VERIFIER;
+        wrong[0] ^= 0xff;
+
+        assert!(!auto_reconnect_verifier_matches(&RANDOM_BITS, &wrong));
+    }
+
+    #[test]
+    fn cookie_match_requires_both_logon_id_and_verifier() {
+        let cookie = ServerAutoReconnect {
+            logon_id: 0x1234_5678,
+            random_bits: RANDOM_BITS,
+        };
+        let valid = ClientAutoReconnect {
+            logon_id: 0x1234_5678,
+            security_verifier: EXPECTED_VERIFIER,
+        };
+        assert!(auto_reconnect_cookie_matches(&cookie, &valid));
+
+        let wrong_logon_id = ClientAutoReconnect {
+            logon_id: 1,
+            security_verifier: EXPECTED_VERIFIER,
+        };
+        assert!(!auto_reconnect_cookie_matches(&cookie, &wrong_logon_id));
     }
 }

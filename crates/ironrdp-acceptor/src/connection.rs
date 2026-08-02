@@ -715,14 +715,17 @@ impl Sequence for Acceptor {
                 let client_info: rdp::ClientInfoPdu =
                     decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
 
-                debug!(message = ?client_info, "Received");
-
-                self.received_auto_reconnect = client_info
+                let auto_reconnect = client_info
                     .client_info
                     .extra_info
                     .optional_data
                     .auto_reconnect()
                     .cloned();
+                debug!(
+                    has_auto_reconnect = auto_reconnect.is_some(),
+                    "Received Client Info PDU"
+                );
+                self.received_auto_reconnect = auto_reconnect;
 
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
