@@ -259,9 +259,8 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
         {
             // Handle Foreground Run Orders.
 
-            ensure_size!(from: src, size: Mode::COLOR_DEPTH);
-
             if code == Code::LITE_SET_FG_FG_RUN || code == Code::MEGA_MEGA_SET_FG_RUN {
+                ensure_size!(from: src, size: Mode::COLOR_DEPTH);
                 fg_pel = Mode::read_pixel(&mut src);
             }
 
@@ -859,5 +858,17 @@ mod tests {
     #[test]
     fn buf_mut_24_bpp() {
         test_buf_mut!(Mode24Bpp);
+    }
+
+    #[test]
+    fn regular_foreground_run_does_not_consume_a_pixel() {
+        // [MS-RDPBCGR] 3.1.9 defines a regular foreground run entirely in
+        // its order header; only the set-foreground variants carry a pixel.
+        let mut output = Vec::new();
+
+        let format = decompress_16_bpp(&[0x22], &mut output, 1, 2).expect("regular foreground run");
+
+        assert_eq!(format, RlePixelFormat::Rgb16);
+        assert_eq!(output, [0xFF, 0xFF, 0xFF, 0xFF]);
     }
 }

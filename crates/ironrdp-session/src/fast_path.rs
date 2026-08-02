@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ironrdp_bulk::{BulkCompressor, CompressionType};
 use ironrdp_core::{DecodeErrorKind, ReadCursor, WriteBuf, decode_cursor};
 use ironrdp_graphics::image_processing::PixelFormat;
-use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
+use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget, PointerError};
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::rle::RlePixelFormat;
 use ironrdp_pdu::bitmap::BitmapUpdateData;
@@ -24,6 +24,7 @@ use crate::{SessionError, SessionErrorExt as _, SessionResult, custom_err, reaso
 #[cfg(test)]
 mod tests {
     use ironrdp_pdu::bitmap::{BitmapData, Compression};
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute};
 
     use super::*;
 
@@ -75,6 +76,40 @@ mod tests {
         assert_eq!(pixel(1, 1), [1, 2, 3, 255]);
         assert_eq!(pixel(2, 1), [4, 5, 6, 255]);
         assert_eq!(pixel(3, 0), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn unsupported_new_pointer_uses_default_and_evicts_cached_shape() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+        processor
+            .pointer_cache
+            .insert(0, Arc::new(DecodedPointer::new_invisible()));
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
+        let pointer = PointerAttribute {
+            xor_bpp: 2,
+            color_pointer: ColorPointerAttribute {
+                cache_index: 0,
+                hot_spot: Point16 { x: 0, y: 0 },
+                width: 1,
+                height: 1,
+                xor_mask: &[],
+                and_mask: &[],
+            },
+        };
+
+        let updates = processor
+            .process_pointer_update(&mut image, PointerUpdateData::New(pointer))
+            .expect("unsupported pointer must not fail the session");
+
+        assert!(matches!(updates.as_slice(), [UpdateKind::PointerDefault]));
+        assert!(!processor.pointer_cache.is_cached(0));
     }
 
     /// The decompressor is owned by the library, but a session that never receives a
@@ -540,10 +575,17 @@ impl Processor {
             PointerUpdateData::New(pointer) => {
                 let cache_index = pointer.color_pointer.cache_index;
 
-                let decoded_pointer = Arc::new(
-                    DecodedPointer::decode_pointer_attribute(&pointer, bitmap_target)
-                        .map_err(|e| SessionError::custom("failed to decode pointer attribute", e))?,
-                );
+                let decoded_pointer = match DecodedPointer::decode_pointer_attribute_with_palette(
+                    &pointer,
+                    bitmap_target,
+                    Some(self.palette.colors()),
+                ) {
+                    Ok(pointer) => Arc::new(pointer),
+                    Err(error) => {
+                        self.fallback_after_pointer_decode_failure(image, &mut processor_updates, cache_index, error)?;
+                        return Ok(processor_updates);
+                    }
+                };
 
                 let _ = self
                     .pointer_cache
@@ -558,10 +600,17 @@ impl Processor {
             PointerUpdateData::Large(pointer) => {
                 let cache_index = pointer.cache_index;
 
-                let decoded_pointer: Arc<DecodedPointer> = Arc::new(
-                    DecodedPointer::decode_large_pointer_attribute(&pointer, bitmap_target)
-                        .map_err(|e| SessionError::custom("failed to decode large pointer attribute", e))?,
-                );
+                let decoded_pointer = match DecodedPointer::decode_large_pointer_attribute_with_palette(
+                    &pointer,
+                    bitmap_target,
+                    Some(self.palette.colors()),
+                ) {
+                    Ok(pointer) => Arc::new(pointer),
+                    Err(error) => {
+                        self.fallback_after_pointer_decode_failure(image, &mut processor_updates, cache_index, error)?;
+                        return Ok(processor_updates);
+                    }
+                };
 
                 let _ = self
                     .pointer_cache
@@ -576,6 +625,33 @@ impl Processor {
         };
 
         Ok(processor_updates)
+    }
+
+    fn fallback_after_pointer_decode_failure(
+        &mut self,
+        image: &mut DecodedImage,
+        processor_updates: &mut Vec<UpdateKind>,
+        cache_index: u16,
+        error: PointerError,
+    ) -> SessionResult<()> {
+        let error_kind = match error {
+            PointerError::InvalidXorMaskSize { .. } => "InvalidXorMaskSize",
+            PointerError::InvalidAndMaskSize { .. } => "InvalidAndMaskSize",
+            PointerError::NotSupportedBpp { .. } => "NotSupportedBpp",
+            PointerError::Pdu(_) => "Pdu",
+        };
+        warn!(pointer_error = error_kind, "Ignoring unsupported pointer update");
+        let _ = self.pointer_cache.remove(usize::from(cache_index));
+
+        if self.pointer_software_rendering && !self.use_system_pointer {
+            self.use_system_pointer = true;
+            if let Some(rect) = image.hide_pointer()? {
+                processor_updates.push(UpdateKind::Region(rect));
+            }
+        }
+
+        processor_updates.push(UpdateKind::PointerDefault);
+        Ok(())
     }
 
     fn process_surface_commands(
