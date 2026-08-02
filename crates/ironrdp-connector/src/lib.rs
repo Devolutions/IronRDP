@@ -202,6 +202,8 @@ pub struct Config {
     pub keyboard_subtype: u32,
     pub keyboard_functional_keys_count: u32,
     pub keyboard_layout: u32,
+    /// Network profile advertised in the Client Core Data GCC block.
+    pub connection_type: gcc::ConnectionType,
     pub ime_file_name: String,
     pub bitmap: Option<BitmapConfig>,
     pub dig_product_id: String,

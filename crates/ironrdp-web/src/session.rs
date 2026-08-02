@@ -1056,6 +1056,9 @@ impl iron_remote_desktop::Session for Session {
                     ActiveStageOutput::AutoDetect(request) => {
                         debug!(?request, "Auto-detect");
                     }
+                    ActiveStageOutput::SaveSessionInfo => {
+                        debug!("RDP login complete");
+                    }
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
             }
@@ -1414,6 +1417,7 @@ fn build_config(
         keyboard_subtype: 0,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
         keyboard_functional_keys_count: 12,
+        connection_type: ironrdp::pdu::gcc::ConnectionType::Lan,
         ime_file_name: String::new(),
         dig_product_id: String::new(),
         desktop_size: connector::DesktopSize {

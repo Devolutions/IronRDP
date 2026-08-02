@@ -371,6 +371,22 @@ impl ActiveStage {
         self.x224_processor.get_dvc_by_channel_id(channel_id)
     }
 
+    /// Returns whether the Display Control channel is available and has received server capabilities.
+    ///
+    /// `None` means no Display Control client is configured. `Some(false)` means it is configured
+    /// but its dynamic channel is still opening or has not received its capabilities PDU.
+    pub fn display_control_ready(&mut self) -> Option<bool> {
+        let Some(dvc) = self.get_dvc::<DisplayControlClient>() else {
+            return self
+                .get_svc_processor::<DrdynvcClient>()
+                .and_then(|drdynvc| drdynvc.has_registered_dvc::<DisplayControlClient>().then_some(false));
+        };
+        let Some(_) = dvc.channel_id() else {
+            return Some(false);
+        };
+        Some(dvc.channel_processor_downcast_ref::<DisplayControlClient>()?.ready())
+    }
+
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
     pub fn process_svc_processor_messages<C: SvcProcessor + 'static>(
@@ -391,8 +407,8 @@ impl ActiveStage {
 
     /// Fully encodes a resize request for sending over the Display Control Virtual Channel.
     ///
-    /// If the Display Control Virtual Channel is not available, or not yet connected, this method
-    /// will return `None`.
+    /// If the Display Control Virtual Channel is not available, not yet connected, or has not
+    /// received its required server capabilities PDU, this method returns `None`.
     ///
     /// Per [2.2.2.2.1]:
     /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
@@ -412,25 +428,27 @@ impl ActiveStage {
         physical_dims: Option<(u32, u32)>,
     ) -> Option<SessionResult<Vec<u8>>> {
         if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
-            if let Some(channel_id) = dvc.channel_id() {
-                let display_control = dvc.channel_processor_downcast_ref::<DisplayControlClient>()?;
-                let svc_messages = match display_control.encode_single_primary_monitor(
-                    channel_id,
-                    width,
-                    height,
-                    scale_factor,
-                    physical_dims,
-                ) {
-                    Ok(messages) => messages,
-                    Err(e) => return Some(Err(SessionError::encode(e))),
-                };
-
-                return Some(
-                    self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)),
-                );
-            } else {
+            let Some(channel_id) = dvc.channel_id() else {
                 debug!("Could not encode a resize: Display Control Virtual Channel is not yet connected");
+                return None;
+            };
+            let display_control = dvc.channel_processor_downcast_ref::<DisplayControlClient>()?;
+            if !display_control.ready() {
+                debug!("Could not encode a resize: Display Control capabilities have not been received");
+                return None;
             }
+            let svc_messages = match display_control.encode_single_primary_monitor(
+                channel_id,
+                width,
+                height,
+                scale_factor,
+                physical_dims,
+            ) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
         } else {
             debug!("Could not encode a resize: Display Control Virtual Channel is not available");
         }
@@ -455,6 +473,11 @@ pub enum ActiveStageOutput {
     },
     PointerBitmap(Arc<DecodedPointer>),
     Terminate(GracefulDisconnectReason),
+    /// Server Save Session Info notification ([MS-RDPBCGR] 2.2.10.1).
+    ///
+    /// This value-free event deliberately excludes server-provided session details, which can
+    /// include credentials and auto-reconnect cookies.
+    SaveSessionInfo,
     /// Received a Server Deactivate All PDU. The consumer should execute the [Deactivation-Reactivation Sequence].
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
@@ -495,6 +518,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
 
                 Ok(Self::Terminate(desc))
             }
+            x224::ProcessorOutput::SaveSessionInfo => Ok(Self::SaveSessionInfo),
             x224::ProcessorOutput::DeactivateAll => Ok(Self::DeactivateAll),
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),

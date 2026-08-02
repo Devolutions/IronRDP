@@ -6,12 +6,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context as _;
-use ironrdp::client::rdp::{RdpInputEvent, RdpOutputEvent};
+use ironrdp::client::rdp::{RdpInputEvent, RdpInputSender, RdpOutputEvent};
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
-use tokio::sync::mpsc;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
@@ -22,7 +21,7 @@ use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
 pub struct App {
-    input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
+    input_event_sender: RdpInputSender,
     context: softbuffer::Context<DisplayHandle<'static>>,
     initial_window_size: PhysicalSize<u32>,
     window: Option<WindowSurface>,
@@ -36,7 +35,7 @@ pub struct App {
 impl App {
     pub fn new(
         event_loop: &EventLoop<RdpOutputEvent>,
-        input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
+        input_event_sender: &RdpInputSender,
         initial_window_size: PhysicalSize<u32>,
     ) -> anyhow::Result<Self> {
         // SAFETY: We drop the softbuffer context right before the event loop is stopped, thus making this safe.
@@ -76,7 +75,7 @@ impl App {
         let width = u16::try_from(size.width).expect("reasonable width");
         let height = u16::try_from(size.height).expect("reasonable height");
 
-        let _ = self.input_event_sender.send(RdpInputEvent::Resize {
+        let _ = self.input_event_sender.try_send(RdpInputEvent::Resize {
             width,
             height,
             scale_factor,
@@ -131,7 +130,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
+    fn window_event(&mut self, _event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
         let Some((window, _)) = self.window.as_mut() else {
             return;
         };
@@ -145,10 +144,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
             WindowEvent::CloseRequested => {
-                if self.input_event_sender.send(RdpInputEvent::Close).is_err() {
-                    error!("Failed to send graceful shutdown event, closing the window");
-                    event_loop.exit();
-                }
+                self.input_event_sender.request_close();
             }
             WindowEvent::DroppedFile(_) => {
                 // TODO(#110): File upload
@@ -348,6 +344,8 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             return;
         };
         match event {
+            RdpOutputEvent::Connected => info!("RDP session connected"),
+            RdpOutputEvent::LoginComplete => info!("RDP login complete"),
             RdpOutputEvent::Image { buffer, width, height } => {
                 trace!(width = ?width, height = ?height, "Received image with size");
                 trace!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");
@@ -406,15 +404,18 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 }
                 window.set_cursor_visible(true);
             }
+            RdpOutputEvent::DisplayResizeFallback(reason) => {
+                warn!(
+                    ?reason,
+                    "Reconnecting because dynamic display resize could not complete"
+                );
+            }
         }
     }
 }
 
-fn send_fast_path_events(
-    input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
-    input_events: SmallVec<[FastPathInputEvent; 2]>,
-) {
+fn send_fast_path_events(input_event_sender: &RdpInputSender, input_events: SmallVec<[FastPathInputEvent; 2]>) {
     if !input_events.is_empty() {
-        let _ = input_event_sender.send(RdpInputEvent::FastPath(input_events));
+        let _ = input_event_sender.try_send(RdpInputEvent::FastPath(input_events));
     }
 }

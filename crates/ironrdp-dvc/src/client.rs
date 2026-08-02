@@ -157,6 +157,14 @@ impl DrdynvcClient {
         self.dynamic_channels.get_by_type_id(TypeId::of::<T>())
     }
 
+    /// Returns whether a dynamic channel of type `T` was pre-registered with this client.
+    pub fn has_registered_dvc<T>(&self) -> bool
+    where
+        T: DvcProcessor,
+    {
+        self.dynamic_channels.has_listener_by_type_id(TypeId::of::<T>())
+    }
+
     pub fn get_dvc_by_channel_id(&self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
         self.dynamic_channels.get_by_channel_id(channel_id)
     }
@@ -347,6 +355,10 @@ impl DynamicChannelSet {
         self.type_id_to_channel_id
             .get(&type_id)
             .and_then(|id| self.active_channels.get(id))
+    }
+
+    fn has_listener_by_type_id(&self, type_id: TypeId) -> bool {
+        self.listeners.values().any(|entry| entry.type_id == Some(type_id))
     }
 
     fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {

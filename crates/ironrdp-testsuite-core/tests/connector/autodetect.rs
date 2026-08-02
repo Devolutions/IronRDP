@@ -46,6 +46,7 @@ fn test_config() -> ironrdp_connector::Config {
         keyboard_subtype: 0,
         keyboard_layout: 0,
         keyboard_functional_keys_count: 12,
+        connection_type: gcc::ConnectionType::Lan,
         ime_file_name: String::new(),
         bitmap: None,
         dig_product_id: String::new(),

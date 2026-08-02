@@ -26,6 +26,8 @@ pub enum ProcessorOutput {
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     DeactivateAll,
+    /// Server Save Session Info notification.
+    SaveSessionInfo,
     /// Server Initiate Multitransport Request. The application should establish a
     /// sideband UDP transport using the request ID and security cookie, then send
     /// a [`MultitransportResponsePdu`] back on the IO channel.
@@ -210,7 +212,7 @@ impl Processor {
         match pdu {
             ShareDataPdu::SaveSessionInfo(session_info) => {
                 debug!("Got Session Save Info PDU: {session_info:?}");
-                Ok(Vec::new())
+                Ok(vec![ProcessorOutput::SaveSessionInfo])
             }
             // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
             ShareDataPdu::SetKeyboardIndicators(data) => {

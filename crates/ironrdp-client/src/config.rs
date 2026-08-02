@@ -566,16 +566,20 @@ pub struct ConfigBuilder {
     keyboard_type: Option<ironrdp_pdu::gcc::KeyboardType>,
     keyboard_subtype: Option<u32>,
     keyboard_functional_keys_count: Option<u32>,
+    keyboard_layout: Option<u32>,
+    connection_type: Option<ironrdp_pdu::gcc::ConnectionType>,
     ime_file_name: Option<String>,
     dig_product_id: Option<String>,
     desktop_width: Option<u16>,
     desktop_height: Option<u16>,
     desktop_scale_factor: Option<u32>,
     color_depth: Option<u32>,
+    lossy_compression: Option<bool>,
     codecs: Vec<String>,
     autologon: Option<bool>,
     enable_server_pointer: Option<bool>,
     pointer_software_rendering: Option<bool>,
+    performance_flags: Option<ironrdp_pdu::rdp::client_info::PerformanceFlags>,
     enable_audio_playback: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
@@ -696,6 +700,20 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the keyboard layout (HKL) advertised in the GCC Client Core Data block.
+    #[must_use]
+    pub fn with_keyboard_layout(mut self, keyboard_layout: u32) -> Self {
+        self.keyboard_layout = Some(keyboard_layout);
+        self
+    }
+
+    /// Set the network profile advertised in the GCC Client Core Data block.
+    #[must_use]
+    pub fn with_connection_type(mut self, connection_type: ironrdp_pdu::gcc::ConnectionType) -> Self {
+        self.connection_type = Some(connection_type);
+        self
+    }
+
     #[must_use]
     pub fn with_ime_file_name(mut self, name: impl Into<String>) -> Self {
         self.ime_file_name = Some(name.into());
@@ -712,6 +730,13 @@ impl ConfigBuilder {
     pub fn with_color_depth(mut self, depth: u32) -> Self {
         self.color_depth = Some(depth);
         self.properties.set_color_depth(depth);
+        self
+    }
+
+    /// Permit dynamic color fidelity and chroma subsampling in RDP 6.0 bitmap updates.
+    #[must_use]
+    pub fn with_lossy_compression(mut self, enabled: bool) -> Self {
+        self.lossy_compression = Some(enabled);
         self
     }
 
@@ -777,6 +802,38 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the alternate shell to start after logon. Upserts the `alternate shell` property.
+    ///
+    /// An empty value clears the alternate shell and requests the server's normal user shell.
+    #[must_use]
+    pub fn with_alternate_shell(mut self, shell: impl Into<String>) -> Self {
+        let shell = shell.into();
+        if shell.is_empty() {
+            self.alternate_shell = None;
+            self.properties.clear_alternate_shell();
+        } else {
+            self.properties.set_alternate_shell(shell.clone());
+            self.alternate_shell = Some(shell);
+        }
+        self
+    }
+
+    /// Set the working directory for the alternate shell. Upserts the `shell working directory` property.
+    ///
+    /// An empty value clears the working directory.
+    #[must_use]
+    pub fn with_work_dir(mut self, work_dir: impl Into<String>) -> Self {
+        let work_dir = work_dir.into();
+        if work_dir.is_empty() {
+            self.work_dir = None;
+            self.properties.clear_shell_working_directory();
+        } else {
+            self.properties.set_shell_working_directory(work_dir.clone());
+            self.work_dir = Some(work_dir);
+        }
+        self
+    }
+
     /// Enable or disable TLS + Graphical login (legacy security protocol; also called SSL). Upserts
     /// the `ironrdp_tls` property.
     ///
@@ -831,6 +888,13 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_pointer_software_rendering(mut self, enabled: bool) -> Self {
         self.pointer_software_rendering = Some(enabled);
+        self
+    }
+
+    /// Set the Client Info PDU performance flags.
+    #[must_use]
+    pub fn with_performance_flags(mut self, flags: ironrdp_pdu::rdp::client_info::PerformanceFlags) -> Self {
+        self.performance_flags = Some(flags);
         self
     }
 
@@ -944,13 +1008,21 @@ impl ConfigBuilder {
     /// Enable or disable RDPSND (audio) playback.
     #[cfg(feature = "sound")]
     #[must_use]
-    pub fn with_sound(mut self, enabled: bool) -> Self {
-        self.channels.sound = enabled;
-        self.properties.set_audio_mode(if enabled {
+    pub fn with_sound(self, enabled: bool) -> Self {
+        self.with_audio_mode(if enabled {
             ironrdp_cfg::AudioMode::RedirectToClient
         } else {
             ironrdp_cfg::AudioMode::Disabled
-        });
+        })
+    }
+
+    /// Set the public RDP audio redirection mode.
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_mode(mut self, mode: ironrdp_cfg::AudioMode) -> Self {
+        self.channels.sound = matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient);
+        self.enable_audio_playback = Some(matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient));
+        self.properties.set_audio_mode(mode);
         self
     }
 
@@ -1046,6 +1118,25 @@ impl ConfigBuilder {
         self
     }
 
+    /// Register a factory for multiple runtime-defined instances of one static-channel processor.
+    #[must_use]
+    pub fn with_static_channel_instances<P, F>(mut self, factory: F) -> Self
+    where
+        F: Fn(&PropertySet) -> Vec<P> + Send + Sync + 'static,
+        P: ironrdp_svc::SvcClientProcessor + 'static,
+    {
+        let cb: StaticChannelFn = Arc::new(move |connector: &mut ironrdp_connector::ClientConnector, ps| {
+            for processor in factory(ps) {
+                if !connector.attach_dynamic_static_channel(processor) {
+                    tracing::error!("Unable to register runtime-defined static channel: key space exhausted");
+                    break;
+                }
+            }
+        });
+        self.extensions.static_channels.push(cb);
+        self
+    }
+
     /// Register a factory for a user-defined dynamic virtual channel.
     ///
     /// `factory` is called once per connection attempt with the shared (read-only) [`PropertySet`],
@@ -1116,7 +1207,7 @@ impl ConfigBuilder {
     )]
     pub fn build(self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
-        use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+        use ironrdp_pdu::rdp::client_info::TimezoneInfo;
 
         let missing = self.missing();
         if !missing.is_empty() {
@@ -1144,7 +1235,7 @@ impl ConfigBuilder {
         }
         let bitmap = ironrdp_connector::BitmapConfig {
             color_depth,
-            lossy_compression: true,
+            lossy_compression: self.lossy_compression.unwrap_or(true),
             codecs,
         };
 
@@ -1206,8 +1297,9 @@ impl ConfigBuilder {
                 .keyboard_type
                 .unwrap_or(ironrdp_pdu::gcc::KeyboardType::IbmEnhanced),
             keyboard_subtype: self.keyboard_subtype.unwrap_or(0),
-            keyboard_layout: 0,
+            keyboard_layout: self.keyboard_layout.unwrap_or(0),
             keyboard_functional_keys_count: self.keyboard_functional_keys_count.unwrap_or(12),
+            connection_type: self.connection_type.unwrap_or(ironrdp_pdu::gcc::ConnectionType::Lan),
             ime_file_name: self.ime_file_name.unwrap_or_default(),
             dig_product_id: self.dig_product_id.unwrap_or_default(),
             desktop_size: ironrdp_connector::DesktopSize {
@@ -1231,7 +1323,7 @@ impl ConfigBuilder {
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
             compression_type,
-            performance_flags: PerformanceFlags::default(),
+            performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
             alternate_shell: self.alternate_shell.unwrap_or_default(),
             work_dir: self.work_dir.unwrap_or_default(),

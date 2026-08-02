@@ -182,6 +182,7 @@ pub mod ffi {
                     .unwrap_or(ironrdp::pdu::gcc::KeyboardType::IbmEnhanced),
                 keyboard_subtype: self.keyboard_subtype.unwrap_or(0),
                 keyboard_functional_keys_count: self.keyboard_functional_keys_count.unwrap_or(12),
+                connection_type: ironrdp::pdu::gcc::ConnectionType::Lan,
                 ime_file_name: self.ime_file_name.clone().unwrap_or_default(),
                 dig_product_id: self.dig_product_id.clone().unwrap_or_default(),
                 desktop_size: self.desktop_size.ok_or("desktop size not set")?,
