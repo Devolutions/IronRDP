@@ -58,6 +58,8 @@ pub struct Config {
     pub(crate) connector: ironrdp_connector::Config,
     pub(crate) destination: Destination,
     pub(crate) transport: Transport,
+    pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
+    pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
@@ -100,6 +102,16 @@ impl Config {
         &self.transport
     }
 
+    /// TLS peer-certificate validation policy.
+    pub fn certificate_validation(&self) -> ironrdp_tls::CertificateValidation {
+        self.certificate_validation
+    }
+
+    /// Optional exception handler for an otherwise-invalid server certificate.
+    pub fn certificate_validation_callback(&self) -> Option<&ironrdp_tls::CertificateValidationCallback> {
+        self.certificate_validation_callback.as_ref()
+    }
+
     /// Optional Kerberos/KDC proxy configuration.
     pub fn kerberos_config(&self) -> Option<&ironrdp_connector::credssp::KerberosConfig> {
         self.kerberos_config.as_ref()
@@ -139,6 +151,11 @@ impl fmt::Debug for Config {
         s.field("connector", &self.connector);
         s.field("destination", &self.destination);
         s.field("transport", &self.transport);
+        s.field("certificate_validation", &self.certificate_validation);
+        s.field(
+            "certificate_validation_callback",
+            &self.certificate_validation_callback.as_ref().map(|_| "<configured>"),
+        );
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
@@ -544,6 +561,8 @@ pub struct ConfigBuilder {
     domain: Option<String>,
     enable_tls: Option<bool>,
     enable_credssp: Option<bool>,
+    certificate_validation: Option<ironrdp_tls::CertificateValidation>,
+    certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
     keyboard_type: Option<ironrdp_pdu::gcc::KeyboardType>,
     keyboard_subtype: Option<u32>,
     keyboard_functional_keys_count: Option<u32>,
@@ -771,6 +790,30 @@ impl ConfigBuilder {
     pub fn with_tls(mut self, enabled: bool) -> Self {
         self.enable_tls = Some(enabled);
         self.properties.set_enable_tls(enabled);
+        self
+    }
+
+    /// Set the TLS peer-certificate validation policy.
+    ///
+    /// The default is [`ironrdp_tls::CertificateValidation::Strict`]. Disabling
+    /// validation is unsafe and must be limited to explicitly controlled development
+    /// or test environments.
+    #[must_use]
+    pub fn with_certificate_validation(mut self, validation: ironrdp_tls::CertificateValidation) -> Self {
+        self.certificate_validation = Some(validation);
+        self
+    }
+
+    /// Set an explicit handler for otherwise-invalid server certificates.
+    ///
+    /// This requires the Rustls backend. The callback is invoked only after normal
+    /// platform-root and server-name validation fails.
+    #[must_use]
+    pub fn with_certificate_validation_callback(
+        mut self,
+        callback: ironrdp_tls::CertificateValidationCallback,
+    ) -> Self {
+        self.certificate_validation_callback = Some(callback);
         self
     }
 
@@ -1087,6 +1130,12 @@ impl ConfigBuilder {
             );
         }
 
+        if self.certificate_validation == Some(ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate)
+            && self.certificate_validation_callback.is_some()
+        {
+            anyhow::bail!("cannot combine a dangerous certificate policy with a validation callback");
+        }
+
         let codecs: Vec<&str> = self.codecs.iter().map(String::as_str).collect();
         let codecs = client_codecs_capabilities(&codecs).map_err(|help| anyhow::anyhow!("{help}"))?;
         let color_depth = self.color_depth.unwrap_or(32);
@@ -1196,6 +1245,8 @@ impl ConfigBuilder {
             connector,
             destination: self.destination.context("server address is required")?,
             transport,
+            certificate_validation: self.certificate_validation.unwrap_or_default(),
+            certificate_validation_callback: self.certificate_validation_callback,
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,

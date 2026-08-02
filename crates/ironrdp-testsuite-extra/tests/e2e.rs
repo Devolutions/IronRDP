@@ -1,5 +1,6 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::path::Path;
 use std::sync::Arc;
@@ -29,7 +30,7 @@ use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{Mutex, oneshot};
 use tracing::debug;
@@ -249,6 +250,54 @@ async fn test_echo_virtual_channel_end_to_end() {
     .await
 }
 
+#[tokio::test]
+async fn tls_validation_is_strict_by_default_and_callback_is_explicit() {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind TLS test listener");
+    let address = listener.local_addr().expect("TLS test listener address");
+
+    let server = tokio::spawn(async move {
+        for expected_success in [false, true] {
+            let (stream, _) = listener.accept().await.expect("accept TLS test connection");
+            let result = acceptor.accept(stream).await;
+            assert_eq!(result.is_ok(), expected_success);
+        }
+    });
+
+    let strict_result = ironrdp_tls::upgrade(
+        TcpStream::connect(address).await.expect("connect strict TLS client"),
+        "localhost",
+    )
+    .await;
+    assert!(
+        strict_result.is_err(),
+        "strict validation must reject the self-signed test certificate"
+    );
+
+    let callback_called = Arc::new(AtomicBool::new(false));
+    let callback_called_for_callback = Arc::clone(&callback_called);
+    let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(move |certificate, reason| {
+        callback_called_for_callback.store(true, Ordering::Relaxed);
+        !certificate.is_empty() && !reason.is_empty()
+    });
+    let (tls_stream, _) = ironrdp_tls::upgrade_with_certificate_validation_callback(
+        TcpStream::connect(address).await.expect("connect callback TLS client"),
+        "localhost",
+        callback,
+    )
+    .await
+    .expect("TLS callback accepts the self-signed test certificate");
+    drop(tls_stream);
+
+    assert!(callback_called.load(Ordering::Relaxed));
+    server.await.expect("TLS test server task");
+}
+
 type DisplayUpdatesRx = Arc<Mutex<UnboundedReceiver<DisplayUpdate>>>;
 
 struct TestDisplayUpdates {
@@ -371,9 +420,13 @@ where
                     .await
                     .expect("begin connection");
                 let initial_stream = framed.into_inner_no_leftover();
-                let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade(initial_stream, "localhost")
-                    .await
-                    .expect("TLS upgrade");
+                let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade_with_certificate_validation(
+                    initial_stream,
+                    "localhost",
+                    ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
+                )
+                .await
+                .expect("TLS upgrade");
                 let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
                 let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
                 let server_public_key =
