@@ -13,6 +13,7 @@ use ironrdp_client::rdp::{RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEve
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
+use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
@@ -270,6 +271,21 @@ impl Daemon {
                 );
             }
         };
+        let certificate_validation = match properties.get::<&str>("ironrdp_certificate_validation") {
+            None | Some("strict") => CertificateValidation::Strict,
+            Some("dangerously_accept_invalid_certificate") => {
+                CertificateValidation::DangerouslyAcceptInvalidCertificate
+            }
+            Some(value) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    format!(
+                        "invalid certificate validation policy '{value}'; expected 'strict' or 'dangerously_accept_invalid_certificate'"
+                    ),
+                );
+            }
+        };
+
         let builder = match ConfigBuilder::from_property_set(&properties) {
             Ok(builder) => builder,
             Err(error) => {
@@ -288,6 +304,7 @@ impl Daemon {
             .with_platform(current_platform())
             .with_client_name(client_name())
             .with_dvc_pipe_proxy(now_endpoint.dvc_proxy_info())
+            .with_certificate_validation(certificate_validation)
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);

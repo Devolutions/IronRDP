@@ -35,6 +35,7 @@ ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
 
 # Async runtime and IPC transport
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time", "signal"] }

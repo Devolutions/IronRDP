@@ -1187,6 +1187,9 @@ fn property_description(key: &str) -> Option<&'static str> {
         "ironrdp_rdpdr" => "enable the RDPDR device-redirection channel (0/1)",
         "ironrdp_smartcard" => "enable smart-card device redirection (0/1)",
         "ironrdp_tls" => "use plain TLS security instead of CredSSP/Hybrid (0/1)",
+        "ironrdp_certificate_validation" => {
+            "TLS certificate validation policy: strict or dangerously_accept_invalid_certificate (disables certificate and hostname validation; testing only)"
+        }
         "ironrdp_fakeeventsinterval" => "interval in minutes between synthetic keep-alive input events",
         "ironrdp_rdcleanpathtoken" => "RDCleanPath authentication token (secret)",
         "ironrdp_rdcleanpathurl" => "RDCleanPath proxy URL",
