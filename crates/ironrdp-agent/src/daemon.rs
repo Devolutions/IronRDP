@@ -396,13 +396,15 @@ impl Daemon {
             Some(session) => {
                 let mut live = session.live.lock().expect("session live state poisoned");
                 match live.state {
-                    ConnState::Connecting | ConnState::Connected => {
-                        info!(destination = %session.destination, "Disconnecting RDP session");
-                        // Request a graceful shutdown and move to `Disconnecting`. The engine thread
-                        // keeps running until it drains the close; `consume_output` flips the state
-                        // to a terminal one once it does, which is what re-enables `connect`. Leaving
-                        // it `Connected` here would let a new `connect` race the still-live thread.
+                    ConnState::Connecting => {
+                        info!(destination = %session.destination, "Cancelling RDP connection");
                         session.input_tx.request_close();
+                        live.state = ConnState::Disconnecting;
+                        Response::ok()
+                    }
+                    ConnState::Connected => {
+                        info!(destination = %session.destination, "Disconnecting RDP session");
+                        session.input_tx.request_graceful_close();
                         live.state = ConnState::Disconnecting;
                         Response::ok()
                     }

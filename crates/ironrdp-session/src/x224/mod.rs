@@ -373,7 +373,7 @@ mod tests {
     use ironrdp_bulk::{CompressionType as BulkCompressionType, flags};
     use ironrdp_core::encode_vec;
     use ironrdp_pdu::rdp::headers::ShareDataPduType;
-    use ironrdp_pdu::rdp::session_info::{InfoData, InfoType, LogonExFlags, LogonInfoExtended, SaveSessionInfoPdu};
+    use ironrdp_pdu::rdp::session_info::{InfoType, LogonExFlags, LogonInfoExtended};
 
     use super::*;
 
@@ -448,12 +448,10 @@ mod tests {
         )
         .expect("compressed save session info should be processed");
 
-        assert_eq!(
-            outputs,
-            vec![ProcessorOutput::SaveSessionInfo {
-                logon_complete: true,
-            }]
-        );
+        assert!(matches!(
+            outputs.as_slice(),
+            [ProcessorOutput::SaveSessionInfo { logon_complete: true }]
+        ));
     }
 
     #[test]

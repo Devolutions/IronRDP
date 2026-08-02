@@ -1,5 +1,5 @@
 use ironrdp::cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
-use ironrdp::client::rdp::{RdpInputEvent, RdpInputSender};
+use ironrdp::client::rdp::RdpInputSender;
 use tracing::error;
 
 /// Shim for sending and receiving CLIPRDR events as `RdpInputEvent`
@@ -16,9 +16,11 @@ impl ClientClipboardMessageProxy {
 
 impl ClipboardMessageProxy for ClientClipboardMessageProxy {
     fn send_clipboard_message(&self, message: ClipboardMessage) {
-        if self.tx.try_send(RdpInputEvent::Clipboard(message)).is_err() {
-            self.tx.request_close();
-            error!("Unable to enqueue OS clipboard message; cancelling RDP session");
+        match self.tx.send_clipboard(message) {
+            Ok(()) => {}
+            Err(_) => {
+                error!("Unable to enqueue OS clipboard message because the RDP session is closed");
+            }
         }
     }
 }

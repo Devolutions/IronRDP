@@ -21,7 +21,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 #[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
@@ -118,7 +118,9 @@ pub const RDP_INPUT_EVENT_QUEUE_CAPACITY: usize = 128;
 #[derive(Clone, Debug)]
 pub struct RdpInputSender {
     input_sender: mpsc::Sender<RdpInputEvent>,
+    clipboard_sender: mpsc::UnboundedSender<RdpInputEvent>,
     close_sender: watch::Sender<bool>,
+    graceful_close_sender: watch::Sender<bool>,
 }
 
 impl RdpInputSender {
@@ -128,20 +130,34 @@ impl RdpInputSender {
     ///
     /// Panics if `capacity` is zero.
     pub fn channel(capacity: usize) -> (Self, mpsc::Receiver<RdpInputEvent>) {
-        let (sender, receiver, _) = Self::channel_with_close_signal(capacity);
+        let (sender, receiver, _, _, _) = Self::channel_with_close_signal(capacity);
         (sender, receiver)
     }
 
-    fn channel_with_close_signal(capacity: usize) -> (Self, mpsc::Receiver<RdpInputEvent>, watch::Receiver<bool>) {
+    fn channel_with_close_signal(
+        capacity: usize,
+    ) -> (
+        Self,
+        mpsc::Receiver<RdpInputEvent>,
+        mpsc::UnboundedReceiver<RdpInputEvent>,
+        watch::Receiver<bool>,
+        watch::Receiver<bool>,
+    ) {
         let (input_sender, input_receiver) = mpsc::channel(capacity);
+        let (clipboard_sender, clipboard_receiver) = mpsc::unbounded_channel();
         let (close_sender, close_receiver) = watch::channel(false);
+        let (graceful_close_sender, graceful_close_receiver) = watch::channel(false);
         (
             Self {
                 input_sender,
+                clipboard_sender,
                 close_sender,
+                graceful_close_sender,
             },
             input_receiver,
+            clipboard_receiver,
             close_receiver,
+            graceful_close_receiver,
         )
     }
 
@@ -158,9 +174,27 @@ impl RdpInputSender {
         self.input_sender.try_reserve()
     }
 
+    /// Enqueues a clipboard protocol message independently of ordinary bounded input.
+    ///
+    /// Clipboard messages form an ordered CLIPRDR transaction, so dropping one while applying
+    /// backpressure to keyboard and pointer input can desynchronize the clipboard channel.
+    #[cfg(feature = "clipboard")]
+    pub fn send_clipboard(&self, message: ClipboardMessage) -> Result<(), mpsc::error::SendError<RdpInputEvent>> {
+        self.clipboard_sender.send(RdpInputEvent::Clipboard(message))
+    }
+
     /// Requests immediate session cancellation, bypassing the bounded input queue.
     pub fn request_close(&self) {
         self.close_sender.send_replace(true);
+    }
+
+    /// Requests a graceful RDP shutdown after the connection becomes active.
+    ///
+    /// This bypasses the bounded input queue so a full queue cannot prevent the client from
+    /// sending the RDP Shutdown Request PDU. Use [`request_close`](Self::request_close) to
+    /// immediately cancel a connection attempt or active session instead.
+    pub fn request_graceful_close(&self) {
+        self.graceful_close_sender.send_replace(true);
     }
 }
 
@@ -239,21 +273,30 @@ pub struct RdpClient {
     output_event_sender: mpsc::Sender<RdpOutputEvent>,
     input_event_sender: RdpInputSender,
     input_event_receiver: mpsc::Receiver<RdpInputEvent>,
+    clipboard_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
     close_receiver: watch::Receiver<bool>,
+    graceful_close_receiver: watch::Receiver<bool>,
     #[cfg(feature = "clipboard")]
     cliprdr_backend_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
 }
 
 impl RdpClient {
     pub fn new(config: Config, output_event_sender: mpsc::Sender<RdpOutputEvent>) -> Self {
-        let (input_event_sender, input_event_receiver, close_receiver) =
-            RdpInputSender::channel_with_close_signal(RDP_INPUT_EVENT_QUEUE_CAPACITY);
+        let (
+            input_event_sender,
+            input_event_receiver,
+            clipboard_event_receiver,
+            close_receiver,
+            graceful_close_receiver,
+        ) = RdpInputSender::channel_with_close_signal(RDP_INPUT_EVENT_QUEUE_CAPACITY);
         Self {
             config,
             output_event_sender,
             input_event_sender,
             input_event_receiver,
+            clipboard_event_receiver,
             close_receiver,
+            graceful_close_receiver,
             #[cfg(feature = "clipboard")]
             cliprdr_backend_factory: None,
         }
@@ -439,7 +482,9 @@ impl RdpClient {
                 connection_result,
                 &self.output_event_sender,
                 &mut self.input_event_receiver,
+                &mut self.clipboard_event_receiver,
                 &mut self.close_receiver,
+                &mut self.graceful_close_receiver,
                 self.config.fake_events_interval,
             )
             .await
@@ -998,12 +1043,18 @@ enum RdpControlFlow {
     TerminatedGracefully(GracefulDisconnectReason),
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the active loop owns independent transport, input, clipboard, and cancellation sources"
+)]
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
     output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::Receiver<RdpInputEvent>,
+    clipboard_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
     close_receiver: &mut watch::Receiver<bool>,
+    graceful_close_receiver: &mut watch::Receiver<bool>,
     fake_events_interval: Option<Duration>,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
@@ -1039,40 +1090,81 @@ async fn active_session(
     let mut fake_events_interval =
         fake_events_interval.map(|interval| tokio::time::interval(core::cmp::max(interval, Duration::from_secs(1))));
     let mut resize_queue = ResizeQueue::default();
+    let mut graceful_shutdown_sent = false;
+    let mut initial_outputs = if *graceful_close_receiver.borrow_and_update() {
+        graceful_shutdown_sent = true;
+        Some(active_stage.graceful_shutdown()?)
+    } else {
+        None
+    };
 
     if *close_receiver.borrow_and_update() {
         return Ok(RdpControlFlow::TerminatedGracefully(
             GracefulDisconnectReason::UserInitiated,
         ));
     }
+    #[cfg(not(feature = "clipboard"))]
+    let _ = clipboard_event_receiver;
 
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
-        let outputs = tokio::select! {
-            _ = close_receiver.changed() => {
-                break 'outer GracefulDisconnectReason::UserInitiated;
+        let clipboard_event = async {
+            #[cfg(feature = "clipboard")]
+            {
+                clipboard_event_receiver.recv().await
             }
-            frame = reader.read_pdu() => {
-                let (action, payload) = frame.map_err(|e| ironrdp_session::custom_err!("read frame", e))?;
-                trace!(?action, frame_length = payload.len(), "Frame received");
-                let mut outputs = active_stage.process(&mut image, action, &payload)?;
-                if active_stage.take_bitmap_recovery_request() {
-                    let redraw_frames = active_stage.request_full_redraw(
-                        image.width(),
-                        image.height(),
-                        refresh_rect_support,
-                        suppress_output_support,
-                    )?;
-                    outputs.extend(redraw_frames.into_iter().map(ActiveStageOutput::ResponseFrame));
+            #[cfg(not(feature = "clipboard"))]
+            {
+                core::future::pending::<Option<RdpInputEvent>>().await
+            }
+        };
+        let outputs = if let Some(outputs) = initial_outputs.take() {
+            outputs
+        } else {
+            tokio::select! {
+                _ = close_receiver.changed() => {
+                    break 'outer GracefulDisconnectReason::UserInitiated;
                 }
-                outputs
-            }
-            input_event = input_event_receiver.recv() => {
-                let input_event = input_event.ok_or_else(|| ironrdp_session::general_err!("GUI is stopped"))?;
+                _ = graceful_close_receiver.changed() => {
+                    if *graceful_close_receiver.borrow_and_update() && !graceful_shutdown_sent {
+                        graceful_shutdown_sent = true;
+                        active_stage.graceful_shutdown()?
+                    } else {
+                        Vec::new()
+                    }
+                }
+                frame = reader.read_pdu() => {
+                    let (action, payload) = frame.map_err(|e| ironrdp_session::custom_err!("read frame", e))?;
+                    trace!(?action, frame_length = payload.len(), "Frame received");
+                    let mut outputs = active_stage.process(&mut image, action, &payload)?;
+                    if active_stage.take_bitmap_recovery_request() {
+                        let redraw_frames = active_stage.request_full_redraw(
+                            image.width(),
+                            image.height(),
+                            refresh_rect_support,
+                            suppress_output_support,
+                        )?;
+                        outputs.extend(redraw_frames.into_iter().map(ActiveStageOutput::ResponseFrame));
+                    }
+                    outputs
+                }
+                clipboard_event = clipboard_event => {
+                    #[cfg(feature = "clipboard")]
+                    {
+                        let Some(RdpInputEvent::Clipboard(event)) = clipboard_event else {
+                            return Err(ironrdp_session::general_err!("clipboard event channel closed"));
+                        };
+                        process_clipboard_message(&mut active_stage, event)?
+                    }
+                    #[cfg(not(feature = "clipboard"))]
+                    unreachable!("clipboard receive is pending without the clipboard feature")
+                }
+                input_event = input_event_receiver.recv() => {
+                    let input_event = input_event.ok_or_else(|| ironrdp_session::general_err!("GUI is stopped"))?;
 
-                last_input = tokio::time::Instant::now();
+                    last_input = tokio::time::Instant::now();
 
-                match input_event {
+                    match input_event {
                     RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
                         trace!(width, height, "Resize event");
                         let width = u32::from(width);
@@ -1123,55 +1215,16 @@ async fn active_session(
                     }
                     #[cfg(feature = "clipboard")]
                     RdpInputEvent::Clipboard(event) => {
-                        if let Some(cliprdr_client) = active_stage.get_svc_processor_mut::<ironrdp_cliprdr::CliprdrClient>() {
-                            if let Some(svc_messages) = match event {
-                                ClipboardMessage::SendInitiateCopy(formats) => {
-                                    Some(cliprdr_client.initiate_copy(&formats)
-                                        .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?)
-                                }
-                                ClipboardMessage::SendInitiateFileCopy(files) => {
-                                    Some(cliprdr_client.initiate_file_copy(files)
-                                        .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?)
-                                }
-                                ClipboardMessage::SendFormatData(response) => {
-                                    Some(cliprdr_client.submit_format_data(response)
-                                        .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?)
-                                }
-                                ClipboardMessage::SendInitiatePaste(format) => {
-                                    Some(cliprdr_client.initiate_paste(format)
-                                        .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?)
-                                }
-                                ClipboardMessage::SendFileContentsRequest(request) => {
-                                    Some(cliprdr_client.request_file_contents(request)
-                                        .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?)
-                                }
-                                ClipboardMessage::SendFileContentsResponse(response) => {
-                                    Some(cliprdr_client.submit_file_contents(response)
-                                        .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?)
-                                }
-                                ClipboardMessage::Error(e) => {
-                                    error!("Clipboard backend error: {}", e);
-                                    None
-                                }
-                            } {
-                                let frame = active_stage.process_svc_processor_messages(svc_messages)?;
-                                vec![ActiveStageOutput::ResponseFrame(frame)]
-                            } else {
-                                Vec::new()
-                            }
-                        } else {
-                            warn!("Clipboard event received, but Cliprdr is not available");
-                            Vec::new()
-                        }
+                        process_clipboard_message(&mut active_stage, event)?
                     }
                     RdpInputEvent::SendDvcMessages { channel_id, messages } => {
                         trace!(channel_id, ?messages, "Send DVC messages");
                         let frame = active_stage.encode_dvc_messages(messages)?;
                         vec![ActiveStageOutput::ResponseFrame(frame)]
                     }
+                    }
                 }
-            }
-            _ = cleanup_interval.tick() => {
+                _ = cleanup_interval.tick() => {
                 // Drive clipboard lock timeout cleanup.
                 #[cfg(feature = "clipboard")]
                 if let Some(cliprdr_client) = active_stage.get_svc_processor_mut::<ironrdp_cliprdr::CliprdrClient>() {
@@ -1194,13 +1247,13 @@ async fn active_session(
                 }
                 #[cfg(not(feature = "clipboard"))]
                 Vec::new()
-            }
-            _ = async {
+                }
+                _ = async {
                 match resize_deadline {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
                     None => core::future::pending().await,
                 }
-            } => {
+                } => {
                 let (request, reason) = resize_queue
                     .timed_out_request(tokio::time::Instant::now())
                     .expect("resize deadline must correspond to a queued request");
@@ -1209,11 +1262,11 @@ async fn active_session(
                     height: request.height,
                     reason,
                 });
-            }
-            _ = async { match fake_events_interval.as_mut() {
+                }
+                _ = async { match fake_events_interval.as_mut() {
                 Some(interval) => interval.tick().await,
                 None => core::future::pending().await,
-            }} => {
+                }} => {
                 // Anti-idle: synthesize a no-op mouse move if the session has been idle for at least
                 // the configured interval, keeping the connection alive without user interaction.
                 if last_input.elapsed() >= fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) {
@@ -1228,6 +1281,7 @@ async fn active_session(
                     active_stage.process_fastpath_input(&mut image, &events)?
                 } else {
                     Vec::new()
+                }
                 }
             }
         };
@@ -1459,6 +1513,61 @@ async fn active_session(
     Ok(RdpControlFlow::TerminatedGracefully(disconnect_reason))
 }
 
+#[cfg(feature = "clipboard")]
+fn process_clipboard_message(
+    active_stage: &mut ActiveStage,
+    event: ClipboardMessage,
+) -> SessionResult<Vec<ActiveStageOutput>> {
+    let Some(cliprdr_client) = active_stage.get_svc_processor_mut::<ironrdp_cliprdr::CliprdrClient>() else {
+        warn!("Clipboard event received, but Cliprdr is not available");
+        return Ok(Vec::new());
+    };
+
+    let svc_messages = match event {
+        ClipboardMessage::SendInitiateCopy(formats) => Some(
+            cliprdr_client
+                .initiate_copy(&formats)
+                .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?,
+        ),
+        ClipboardMessage::SendInitiateFileCopy(files) => Some(
+            cliprdr_client
+                .initiate_file_copy(files)
+                .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?,
+        ),
+        ClipboardMessage::SendFormatData(response) => Some(
+            cliprdr_client
+                .submit_format_data(response)
+                .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?,
+        ),
+        ClipboardMessage::SendInitiatePaste(format) => Some(
+            cliprdr_client
+                .initiate_paste(format)
+                .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?,
+        ),
+        ClipboardMessage::SendFileContentsRequest(request) => Some(
+            cliprdr_client
+                .request_file_contents(request)
+                .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?,
+        ),
+        ClipboardMessage::SendFileContentsResponse(response) => Some(
+            cliprdr_client
+                .submit_file_contents(response)
+                .map_err(|e| ironrdp_session::custom_err!("CLIPRDR", e))?,
+        ),
+        ClipboardMessage::Error(error) => {
+            error!("Clipboard backend error: {error}");
+            None
+        }
+    };
+
+    let Some(svc_messages) = svc_messages else {
+        return Ok(Vec::new());
+    };
+
+    let frame = active_stage.process_svc_processor_messages(svc_messages)?;
+    Ok(vec![ActiveStageOutput::ResponseFrame(frame)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1506,7 +1615,7 @@ mod tests {
 
     #[test]
     fn input_sender_bounds_events_but_close_bypasses_the_queue() {
-        let (sender, mut receiver, mut close_receiver) = RdpInputSender::channel_with_close_signal(1);
+        let (sender, mut receiver, _, mut close_receiver, _) = RdpInputSender::channel_with_close_signal(1);
         sender
             .try_send(RdpInputEvent::Resize {
                 width: 1024,
@@ -1533,6 +1642,31 @@ mod tests {
     }
 
     #[test]
+    fn graceful_close_bypasses_the_input_queue_without_cancelling_the_session() {
+        let (sender, mut receiver, _, close_receiver, mut graceful_close_receiver) =
+            RdpInputSender::channel_with_close_signal(1);
+        sender
+            .try_send(RdpInputEvent::Resize {
+                width: 1024,
+                height: 768,
+                scale_factor: 100,
+                physical_size: None,
+            })
+            .expect("the first event fits");
+
+        sender.request_graceful_close();
+
+        assert!(!close_receiver.has_changed().expect("close sender is alive"));
+        assert!(
+            graceful_close_receiver
+                .has_changed()
+                .expect("graceful close sender is alive")
+        );
+        assert!(*graceful_close_receiver.borrow_and_update());
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::Resize { .. })));
+    }
+
+    #[test]
     fn input_sender_reservation_prevents_state_changes_without_queue_capacity() {
         let (sender, mut receiver) = RdpInputSender::channel(1);
         let permit = sender.try_reserve().expect("the empty queue has capacity");
@@ -1546,6 +1680,31 @@ mod tests {
         });
 
         assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::Resize { .. })));
+    }
+
+    #[cfg(feature = "clipboard")]
+    #[test]
+    fn clipboard_messages_bypass_the_bounded_input_queue() {
+        let (sender, _, mut clipboard_receiver, _, _) = RdpInputSender::channel_with_close_signal(1);
+        sender
+            .try_send(RdpInputEvent::Resize {
+                width: 1024,
+                height: 768,
+                scale_factor: 100,
+                physical_size: None,
+            })
+            .expect("the first event fits");
+
+        sender
+            .send_clipboard(ClipboardMessage::Error(Box::new(std::io::Error::other(
+                "test clipboard message",
+            ))))
+            .expect("clipboard messages use a dedicated queue");
+
+        assert!(matches!(
+            clipboard_receiver.try_recv(),
+            Ok(RdpInputEvent::Clipboard(ClipboardMessage::Error(_)))
+        ));
     }
 
     #[tokio::test]

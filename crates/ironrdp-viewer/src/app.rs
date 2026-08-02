@@ -62,7 +62,7 @@ impl App {
     }
 
     fn send_resize_event(&mut self) {
-        let Some(size) = self.last_size.take() else {
+        let Some(size) = self.last_size else {
             return;
         };
         let Some((window, _)) = self.window.as_mut() else {
@@ -74,7 +74,7 @@ impl App {
         let width = u16::try_from(size.width).expect("reasonable width");
         let height = u16::try_from(size.height).expect("reasonable height");
 
-        let _ = self.input_event_sender.try_send(RdpInputEvent::Resize {
+        match self.input_event_sender.try_send(RdpInputEvent::Resize {
             width,
             height,
             scale_factor,
@@ -83,7 +83,16 @@ impl App {
             // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
             // See also: https://github.com/rust-windowing/winit/issues/826
             physical_size: None,
-        });
+        }) {
+            Ok(()) => self.last_size = None,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.resize_timeout = Some(Instant::now() + Duration::from_millis(10));
+            }
+            Err(_) => {
+                self.last_size = None;
+                warn!("Unable to enqueue resize event because the RDP session is closed");
+            }
+        }
     }
 
     fn draw(&mut self) {
@@ -105,9 +114,15 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
                 event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
             } else {
-                self.send_resize_event();
                 self.resize_timeout = None;
-                event_loop.set_control_flow(ControlFlow::Wait);
+                self.send_resize_event();
+                if let Some(retry_timeout) = self.resize_timeout {
+                    event_loop.set_control_flow(ControlFlow::wait_duration(
+                        retry_timeout.saturating_duration_since(Instant::now()),
+                    ));
+                } else {
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                }
             }
         }
     }
@@ -143,7 +158,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
             WindowEvent::CloseRequested => {
-                self.input_event_sender.request_close();
+                self.input_event_sender.request_graceful_close();
             }
             WindowEvent::DroppedFile(_) => {
                 // TODO(#110): File upload
