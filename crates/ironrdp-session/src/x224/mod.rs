@@ -1,5 +1,6 @@
 use ironrdp_core::{WriteBuf, decode};
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
+use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
@@ -112,6 +113,20 @@ impl Processor {
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
         process_svc_messages(messages.into(), channel_id, self.user_channel_id)
+    }
+
+    /// Completes an SVC request for a runtime-defined channel name.
+    pub fn process_svc_messages_by_name(
+        &self,
+        channel_name: &ChannelName,
+        messages: Vec<SvcMessage>,
+    ) -> SessionResult<Vec<u8>> {
+        let channel_id = self
+            .static_channels
+            .get_channel_id_by_channel_name(channel_name)
+            .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
+
+        process_svc_messages(messages, channel_id, self.user_channel_id)
     }
 
     pub fn get_dvc<T: DvcProcessor + 'static>(&self) -> Option<&DynamicVirtualChannel> {

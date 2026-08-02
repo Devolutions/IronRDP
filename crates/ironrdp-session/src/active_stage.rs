@@ -4,6 +4,7 @@ use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_graphics::pointer::DecodedPointer;
+use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
@@ -285,6 +286,15 @@ impl ActiveStage {
         messages: SvcProcessorMessages<C>,
     ) -> SessionResult<Vec<u8>> {
         self.x224_processor.process_svc_processor_messages(messages)
+    }
+
+    /// Completes an SVC request for a runtime-defined channel name.
+    pub fn process_svc_messages_by_name(
+        &self,
+        channel_name: &ChannelName,
+        messages: Vec<SvcMessage>,
+    ) -> SessionResult<Vec<u8>> {
+        self.x224_processor.process_svc_messages_by_name(channel_name, messages)
     }
 
     /// Fully encodes a resize request for sending over the Display Control Virtual Channel.

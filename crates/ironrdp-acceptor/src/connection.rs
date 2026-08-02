@@ -1,3 +1,4 @@
+use core::any::TypeId;
 use core::mem;
 
 use ironrdp_connector::{
@@ -8,7 +9,7 @@ use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu as pdu;
 use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::x224::X224;
-use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
+use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::client_info::Credentials;
 use pdu::rdp::headers::ShareControlPdu;
@@ -230,7 +231,38 @@ impl Acceptor {
     where
         T: SvcServerProcessor + 'static,
     {
+        let channel_name = channel.channel_name();
+        let channel_key = StaticChannelKey::Typed(TypeId::of::<T>());
+        if self.static_channels.get_by_type::<T>().is_none() && self.static_channels.len() >= MAX_STATIC_CHANNELS {
+            warn!(max_channels = MAX_STATIC_CHANNELS, "Static channel limit reached");
+            return;
+        }
+        if let Some((existing_key, _)) = self.static_channels.get_by_channel_name_key(&channel_name)
+            && existing_key != channel_key
+        {
+            warn!(?channel_name, "Static channel name is already registered");
+            return;
+        }
         self.static_channels.insert(channel);
+    }
+
+    /// Attaches a runtime-defined static virtual channel.
+    ///
+    /// This permits multiple instances of the same processor type, each with its own negotiated
+    /// channel name. `false` means the static-channel limit was reached or the name is already
+    /// registered.
+    pub fn attach_dynamic_static_channel<T>(&mut self, channel: T) -> bool
+    where
+        T: SvcServerProcessor + 'static,
+    {
+        let channel_name = channel.channel_name();
+        if self.static_channels.len() >= MAX_STATIC_CHANNELS
+            || self.static_channels.get_by_channel_name_key(&channel_name).is_some()
+        {
+            return false;
+        }
+
+        self.static_channels.insert_dynamic(channel).is_some()
     }
 
     pub fn reached_security_upgrade(&self) -> Option<SecurityProtocol> {
@@ -584,8 +616,8 @@ impl Sequence for Acceptor {
                             .into_iter()
                             .map(|c| {
                                 self.static_channels
-                                    .get_by_channel_name(&c.name)
-                                    .map(|(type_id, _)| (type_id, c))
+                                    .get_by_channel_name_key(&c.name)
+                                    .map(|(key, _)| (key, c))
                             })
                             .collect()
                     })
@@ -597,8 +629,8 @@ impl Sequence for Acceptor {
                     .enumerate()
                     .map(|(i, channel)| {
                         let channel_id = u16::try_from(i).expect("always in the range") + self.io_channel_id + 1;
-                        if let Some((type_id, c)) = channel {
-                            self.static_channels.attach_channel_id(type_id, channel_id);
+                        if let Some((key, c)) = channel {
+                            self.static_channels.attach_channel_id_by_key(key, channel_id);
                             (channel_id, Some(c))
                         } else {
                             (channel_id, None)
