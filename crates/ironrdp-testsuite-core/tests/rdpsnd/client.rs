@@ -130,8 +130,8 @@ fn assert_in_stop_state(client: &mut Rdpsnd) {
 }
 
 #[test]
-fn malformed_encrypted_wave_disables_only_the_audio_channel() {
-    let mut client = client_in_start();
+fn malformed_encrypted_wave_is_ignored() {
+    let mut client = client_in_ready(pdu::Version::V8);
 
     // SNDWAVECRYPT carries its eight-byte fixed part but omits the mandatory v5 signature.
     let malformed_wave_encrypt = [
@@ -145,10 +145,12 @@ fn malformed_encrypted_wave_disables_only_the_audio_channel() {
     assert!(
         client
             .process(&malformed_wave_encrypt)
-            .expect("a malformed optional audio PDU must not fail the session")
+            .expect("a malformed RDPSND PDU must be ignored")
             .is_empty()
     );
-    assert_in_stop_state(&mut client);
+
+    let confirm = decode_single_response(&client.process(&encoded_wave2(1)).unwrap());
+    assert!(matches!(confirm, pdu::ClientAudioOutputPdu::WaveConfirm(_)));
 }
 
 fn decode_single_response(responses: &[ironrdp_svc::SvcMessage]) -> pdu::ClientAudioOutputPdu {

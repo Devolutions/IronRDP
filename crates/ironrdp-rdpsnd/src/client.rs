@@ -164,11 +164,7 @@ impl SvcProcessor for Rdpsnd {
         let pdu = match pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload)) {
             Ok(pdu) => pdu,
             Err(error) => {
-                // Audio is optional. A malformed server audio PDU must not tear down the primary
-                // desktop session; stop this channel and retain the client in a safe no-audio state.
-                error!(?error, "Disabling RDPSND after an invalid server audio PDU");
-                self.handler.close();
-                self.state = RdpsndState::Stop;
+                error!(?error, "Ignoring malformed RDPSND PDU");
                 return Ok(vec![]);
             }
         };
