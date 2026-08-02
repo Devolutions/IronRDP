@@ -104,6 +104,7 @@ async fn test_deactivation_reactivation() {
                                 input_flags: _,
                                 enable_server_pointer,
                                 pointer_software_rendering,
+                                ..
                             } = connection_activation.connection_activation_state()
                             {
                                 debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");

@@ -1030,6 +1030,7 @@ impl iron_remote_desktop::Session for Session {
                                 input_flags: _,
                                 enable_server_pointer,
                                 pointer_software_rendering,
+                                ..
                             } = connection_activation.connection_activation_state()
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
