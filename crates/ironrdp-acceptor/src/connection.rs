@@ -10,7 +10,7 @@ use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
-use pdu::rdp::client_info::Credentials;
+use pdu::rdp::client_info::{ClientAutoReconnect, Credentials};
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
@@ -38,6 +38,7 @@ pub struct Acceptor {
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
     received_credentials: Option<Credentials>,
+    received_auto_reconnect: Option<ClientAutoReconnect>,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
 }
@@ -113,6 +114,13 @@ pub struct AcceptorResult {
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
     /// can use this field for post-handshake validation.
     pub credentials: Option<Credentials>,
+    /// Client Auto-Reconnect Packet received in the Client Info PDU.
+    ///
+    /// This is present when the client resumes a session using an
+    /// `ARC_CS_PRIVATE_PACKET`. The packet has already passed wire-format
+    /// validation, but the server must still verify its security verifier
+    /// against the reconnect random for the target session.
+    pub auto_reconnect: Option<ClientAutoReconnect>,
 }
 
 impl Acceptor {
@@ -136,6 +144,7 @@ impl Acceptor {
             saved_for_reactivation: Default::default(),
             creds,
             received_credentials: None,
+            received_auto_reconnect: None,
             reactivation: false,
             honor_client_desktop_size: None,
         }
@@ -221,6 +230,7 @@ impl Acceptor {
             saved_for_reactivation,
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
+            received_auto_reconnect: consumed.received_auto_reconnect,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
         })
@@ -280,6 +290,7 @@ impl Acceptor {
                 multitransport_flags: self.multitransport_flags,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
+                auto_reconnect: self.received_auto_reconnect.take(),
             }),
             previous_state => {
                 self.state = previous_state;
@@ -724,7 +735,17 @@ impl Sequence for Acceptor {
                 let client_info: rdp::ClientInfoPdu =
                     decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
 
-                debug!(message = ?client_info, "Received");
+                let auto_reconnect = client_info
+                    .client_info
+                    .extra_info
+                    .optional_data
+                    .auto_reconnect()
+                    .cloned();
+                debug!(
+                    has_auto_reconnect = auto_reconnect.is_some(),
+                    "Received Client Info PDU"
+                );
+                self.received_auto_reconnect = auto_reconnect;
 
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
