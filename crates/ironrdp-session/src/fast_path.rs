@@ -371,7 +371,6 @@ impl Processor {
     pub(crate) fn process_palette_update(&mut self, palette_data: &[u8]) {
         self.palette.process_update(palette_data);
     }
-
     fn decompress_fragment_data(
         data: &[u8],
         attributes: FragmentAttributes,
