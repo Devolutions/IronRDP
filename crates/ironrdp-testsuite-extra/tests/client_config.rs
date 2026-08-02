@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use ironrdp_client::config::{ClipboardType, Transport};
+use std::sync::Arc;
+
+use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport};
 use ironrdp_viewer::cli::parse_config_from;
 use uuid::Uuid;
 
@@ -129,6 +131,41 @@ fn invalid_audiomode_falls_back_to_audio_playback_enabled() {
     );
 
     assert!(config.connector().enable_audio_playback);
+}
+
+#[test]
+fn certificate_validation_preserves_the_default_and_callbacks_are_explicit() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+        &[],
+    );
+    assert_eq!(
+        config.certificate_validation(),
+        ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate
+    );
+
+    let callback: ironrdp_tls::CertificateValidationCallback =
+        Arc::new(|certificate, reason| certificate == b"test certificate" && reason == "untrusted issuer");
+    let config = ConfigBuilder::new()
+        .with_destination(Destination::from_parts("rdp.example.com", 3389))
+        .with_username("test-user")
+        .with_password("test-pass")
+        .with_client_build(1)
+        .with_client_dir("C:\\Windows\\System32")
+        .with_client_name("ironrdp-tests")
+        .with_platform(ironrdp::pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
+        .with_certificate_validation_callback(Arc::clone(&callback))
+        .build()
+        .expect("valid callback configuration");
+    assert_eq!(
+        config.certificate_validation(),
+        ironrdp_tls::CertificateValidation::Strict
+    );
+    let callback = config
+        .certificate_validation_callback()
+        .expect("certificate validation callback must be retained");
+    assert!(callback(b"test certificate", "untrusted issuer"));
+    assert!(!callback(b"other certificate", "untrusted issuer"));
 }
 
 #[test]

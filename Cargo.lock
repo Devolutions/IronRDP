@@ -3021,6 +3021,7 @@ dependencies = [
 name = "ironrdp-tls"
 version = "0.2.2"
 dependencies = [
+ "rustls-native-certs",
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",

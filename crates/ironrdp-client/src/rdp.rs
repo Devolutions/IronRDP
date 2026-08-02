@@ -546,9 +546,22 @@ where
 
     let (initial_stream, leftover_bytes) = framed.into_inner();
 
-    let (tls_stream, tls_cert) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
+    let tls_upgrade = if let Some(callback) = config.certificate_validation_callback() {
+        ironrdp_tls::upgrade_with_certificate_validation_callback(
+            initial_stream,
+            config.destination.name(),
+            Arc::clone(callback),
+        )
         .await
-        .map_err(|e| ironrdp_connector::custom_err!("TLS upgrade", e))?;
+    } else {
+        ironrdp_tls::upgrade_with_certificate_validation(
+            initial_stream,
+            config.destination.name(),
+            config.certificate_validation(),
+        )
+        .await
+    };
+    let (tls_stream, tls_cert) = tls_upgrade.map_err(|e| ironrdp_connector::custom_err!("TLS upgrade", e))?;
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
