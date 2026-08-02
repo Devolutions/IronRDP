@@ -181,6 +181,44 @@ fn desktop_dimensions_are_parsed_from_rdp_file() {
 }
 
 #[test]
+fn generic_builder_options_reach_connector_configuration() {
+    use ironrdp::pdu::gcc::ConnectionType;
+    use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+
+    let performance_flags = PerformanceFlags::DISABLE_WALLPAPER | PerformanceFlags::DISABLE_THEMING;
+    let config = ConfigBuilder::new()
+        .with_destination(Destination::from_parts("rdp.example.com", 3389))
+        .with_username("test-user")
+        .with_password("test-pass")
+        .with_client_build(1)
+        .with_client_dir("C:\\Windows\\System32")
+        .with_client_name("ironrdp-tests")
+        .with_platform(ironrdp::pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
+        .with_keyboard_layout(0x0000_0409)
+        .with_connection_type(ConnectionType::BroadbandHigh)
+        .with_lossy_compression(false)
+        .with_performance_flags(performance_flags)
+        .with_alternate_shell("powershell.exe")
+        .with_work_dir("C:\\Users\\test-user")
+        .build()
+        .expect("valid generic configuration");
+
+    assert_eq!(config.connector().keyboard_layout, 0x0000_0409);
+    assert_eq!(config.connector().connection_type, ConnectionType::BroadbandHigh);
+    assert!(
+        !config
+            .connector()
+            .bitmap
+            .as_ref()
+            .expect("bitmap config")
+            .lossy_compression
+    );
+    assert_eq!(config.connector().performance_flags, performance_flags);
+    assert_eq!(config.connector().alternate_shell, "powershell.exe");
+    assert_eq!(config.connector().work_dir, "C:\\Users\\test-user");
+}
+
+#[test]
 fn out_of_range_desktop_dimensions_fall_back_to_defaults() {
     let default_config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n",

@@ -25,7 +25,8 @@ pub use sspi;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use self::connection::{
-    ClientConnector, ClientConnectorState, ConnectionResult, MultitransportResult, encode_send_data_request,
+    ClientConnector, ClientConnectorState, ConnectionResult, DynamicStaticChannelAttachError, MultitransportResult,
+    encode_send_data_request,
 };
 pub use self::connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 pub use self::license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
@@ -202,6 +203,8 @@ pub struct Config {
     pub keyboard_subtype: u32,
     pub keyboard_functional_keys_count: u32,
     pub keyboard_layout: u32,
+    /// Network profile advertised in the Client Core Data GCC block.
+    pub connection_type: gcc::ConnectionType,
     pub ime_file_name: String,
     pub bitmap: Option<BitmapConfig>,
     pub dig_product_id: String,

@@ -536,6 +536,7 @@ fn default_client_config() -> connector::Config {
         keyboard_subtype: 0,
         keyboard_layout: 0,
         keyboard_functional_keys_count: 12,
+        connection_type: gcc::ConnectionType::Lan,
         ime_file_name: "".into(),
         bitmap: None,
         dig_product_id: "".into(),

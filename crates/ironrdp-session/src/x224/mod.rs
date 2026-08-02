@@ -8,6 +8,7 @@ use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{CompressionFlags, ShareDataCtx, ShareDataPdu};
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages};
 use tracing::debug;
@@ -26,6 +27,12 @@ pub enum ProcessorOutput {
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     DeactivateAll,
+    /// Server Save Session Info notification.
+    ///
+    /// `logon_complete` is only set for PDU variants that unambiguously report a completed
+    /// logon; the source PDU is not retained because it can contain user details and
+    /// auto-reconnect cookies.
+    SaveSessionInfo { logon_complete: bool },
     /// Server Initiate Multitransport Request. The application should establish a
     /// sideband UDP transport using the request ID and security cookie, then send
     /// a [`MultitransportResponsePdu`] back on the IO channel.
@@ -210,7 +217,9 @@ impl Processor {
         match pdu {
             ShareDataPdu::SaveSessionInfo(session_info) => {
                 debug!("Got Session Save Info PDU: {session_info:?}");
-                Ok(Vec::new())
+                Ok(vec![ProcessorOutput::SaveSessionInfo {
+                    logon_complete: is_logon_complete(&session_info),
+                }])
             }
             // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
             ShareDataPdu::SetKeyboardIndicators(data) => {
@@ -342,6 +351,13 @@ impl Processor {
     }
 }
 
+fn is_logon_complete(session_info: &SaveSessionInfoPdu) -> bool {
+    matches!(
+        session_info.info_data,
+        InfoData::LogonInfoV1(_) | InfoData::LogonInfoV2(_) | InfoData::PlainNotify
+    )
+}
+
 /// Processes a vector of [`SvcMessage`] in preparation for sending them to the server on the `channel_id` channel.
 ///
 /// This includes chunkifying the messages, adding MCS, x224, and tpkt headers, and encoding them into a buffer.
@@ -357,7 +373,7 @@ mod tests {
     use ironrdp_bulk::{CompressionType as BulkCompressionType, flags};
     use ironrdp_core::encode_vec;
     use ironrdp_pdu::rdp::headers::ShareDataPduType;
-    use ironrdp_pdu::rdp::session_info::{InfoData, InfoType, SaveSessionInfoPdu};
+    use ironrdp_pdu::rdp::session_info::{InfoType, LogonExFlags, LogonInfoExtended};
 
     use super::*;
 
@@ -432,6 +448,33 @@ mod tests {
         )
         .expect("compressed save session info should be processed");
 
-        assert!(outputs.is_empty());
+        assert!(matches!(
+            outputs.as_slice(),
+            [ProcessorOutput::SaveSessionInfo { logon_complete: true }]
+        ));
+    }
+
+    #[test]
+    fn extended_session_info_does_not_signal_login_completion() {
+        let session_info = SaveSessionInfoPdu {
+            info_type: InfoType::LogonExtended,
+            info_data: InfoData::LogonExtended(LogonInfoExtended {
+                present_fields_flags: LogonExFlags::AUTO_RECONNECT_COOKIE,
+                auto_reconnect: None,
+                errors_info: None,
+            }),
+        };
+
+        assert!(!is_logon_complete(&session_info));
+    }
+
+    #[test]
+    fn plain_notify_signals_login_completion() {
+        let session_info = SaveSessionInfoPdu {
+            info_type: InfoType::PlainNotify,
+            info_data: InfoData::PlainNotify,
+        };
+
+        assert!(is_logon_complete(&session_info));
     }
 }

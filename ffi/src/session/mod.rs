@@ -227,6 +227,7 @@ pub mod ffi {
         /// Use `get_autodetect_network_characteristics()` to retrieve
         /// RTT and bandwidth values for connection quality monitoring.
         AutoDetect,
+        SaveSessionInfo,
     }
 
     impl ActiveStageOutput {
@@ -244,6 +245,7 @@ pub mod ffi {
                     ActiveStageOutputType::MultitransportRequest
                 }
                 ironrdp::session::ActiveStageOutput::AutoDetect { .. } => ActiveStageOutputType::AutoDetect,
+                ironrdp::session::ActiveStageOutput::SaveSessionInfo { .. } => ActiveStageOutputType::SaveSessionInfo,
             }
         }
 

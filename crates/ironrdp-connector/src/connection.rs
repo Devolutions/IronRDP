@@ -41,6 +41,15 @@ pub enum MultitransportResult {
     Failure(u32),
 }
 
+/// Why a runtime-defined static virtual channel could not be registered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicStaticChannelAttachError {
+    /// The negotiated static-channel key space has no remaining entries.
+    ChannelLimitReached,
+    /// Another static channel already uses the requested channel name.
+    DuplicateChannelName,
+}
+
 #[derive(Debug)]
 pub struct ConnectionResult {
     pub io_channel_id: u16,
@@ -300,14 +309,26 @@ impl ClientConnector {
     where
         T: SvcClientProcessor + 'static,
     {
-        let channel_name = channel.channel_name();
-        if self.static_channels.len() >= MAX_STATIC_CHANNELS
-            || self.static_channels.get_by_channel_name_key(&channel_name).is_some()
-        {
-            return false;
-        }
+        self.try_attach_dynamic_static_channel(channel).is_ok()
+    }
 
-        self.static_channels.insert_dynamic(channel).is_some()
+    /// Attaches a runtime-defined static virtual channel, returning the reason when it cannot be
+    /// registered.
+    pub fn try_attach_dynamic_static_channel<T>(&mut self, channel: T) -> Result<(), DynamicStaticChannelAttachError>
+    where
+        T: SvcClientProcessor + 'static,
+    {
+        let channel_name = channel.channel_name();
+        if self.static_channels.len() >= MAX_STATIC_CHANNELS {
+            return Err(DynamicStaticChannelAttachError::ChannelLimitReached);
+        }
+        if self.static_channels.get_by_channel_name_key(&channel_name).is_some() {
+            return Err(DynamicStaticChannelAttachError::DuplicateChannelName);
+        }
+        self.static_channels
+            .insert_dynamic(channel)
+            .map(|_| ())
+            .ok_or(DynamicStaticChannelAttachError::ChannelLimitReached)
     }
 
     pub fn get_static_channel_processor<T>(&mut self) -> Option<&T>
@@ -1233,8 +1254,8 @@ fn create_gcc_blocks<'a>(
 ) -> ConnectorResult<gcc::ClientGccBlocks> {
     use ironrdp_pdu::gcc::{
         ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks, ClientNetworkData,
-        ClientSecurityData, ColorDepth, ConnectionType, EncryptionMethod, HighColorDepth, MonitorOrientation,
-        RdpVersion, SecureAccessSequence, SupportedColorDepths,
+        ClientSecurityData, ColorDepth, EncryptionMethod, HighColorDepth, MonitorOrientation, RdpVersion,
+        SecureAccessSequence, SupportedColorDepths,
     };
 
     let max_color_depth = config.bitmap.as_ref().map(|bitmap| bitmap.color_depth).unwrap_or(32);
@@ -1301,7 +1322,7 @@ fn create_gcc_blocks<'a>(
                     Some(early_capability_flags)
                 },
                 dig_product_id: Some(config.dig_product_id.clone()),
-                connection_type: Some(ConnectionType::Lan),
+                connection_type: Some(config.connection_type),
                 server_selected_protocol: Some(selected_protocol),
                 desktop_physical_width: Some(0),  // 0 per FreeRDP
                 desktop_physical_height: Some(0), // 0 per FreeRDP

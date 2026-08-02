@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use ironrdp_client::config::{ConfigBuilder, MissingField};
-use ironrdp_client::rdp::{RdpClient, RdpInputEvent, RdpOutputEvent};
+use ironrdp_client::rdp::{RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
+use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
@@ -132,7 +133,7 @@ struct Daemon {
 
 /// Per-session state owned by the request handler.
 struct Session {
-    input_tx: mpsc::UnboundedSender<RdpInputEvent>,
+    input_tx: RdpInputSender,
     input_db: Database,
     destination: String,
     live: Arc<Mutex<Live>>,
@@ -270,6 +271,21 @@ impl Daemon {
                 );
             }
         };
+        let certificate_validation = match properties.get::<&str>("ironrdp_certificate_validation") {
+            None | Some("dangerously_accept_invalid_certificate") => {
+                CertificateValidation::DangerouslyAcceptInvalidCertificate
+            }
+            Some("strict") => CertificateValidation::Strict,
+            Some(value) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::InvalidRequest,
+                    format!(
+                        "invalid certificate validation policy '{value}'; expected 'strict' or 'dangerously_accept_invalid_certificate'"
+                    ),
+                );
+            }
+        };
+
         let builder = match ConfigBuilder::from_property_set(&properties) {
             Ok(builder) => builder,
             Err(error) => {
@@ -288,6 +304,7 @@ impl Daemon {
             .with_platform(current_platform())
             .with_client_name(client_name())
             .with_dvc_pipe_proxy(now_endpoint.dvc_proxy_info())
+            .with_certificate_validation(certificate_validation)
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
@@ -379,13 +396,15 @@ impl Daemon {
             Some(session) => {
                 let mut live = session.live.lock().expect("session live state poisoned");
                 match live.state {
-                    ConnState::Connecting | ConnState::Connected => {
+                    ConnState::Connecting => {
+                        info!(destination = %session.destination, "Cancelling RDP connection");
+                        session.input_tx.request_close();
+                        live.state = ConnState::Disconnecting;
+                        Response::ok()
+                    }
+                    ConnState::Connected => {
                         info!(destination = %session.destination, "Disconnecting RDP session");
-                        // Request a graceful shutdown and move to `Disconnecting`. The engine thread
-                        // keeps running until it drains the close; `consume_output` flips the state
-                        // to a terminal one once it does, which is what re-enables `connect`. Leaving
-                        // it `Connected` here would let a new `connect` race the still-live thread.
-                        let _ = session.input_tx.send(RdpInputEvent::Close);
+                        session.input_tx.request_graceful_close();
                         live.state = ConnState::Disconnecting;
                         Response::ok()
                     }
@@ -504,7 +523,7 @@ impl Daemon {
         let Some(session) = guard.as_ref() else {
             return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
         };
-        match session.input_tx.send(RdpInputEvent::Resize {
+        match session.input_tx.try_send(RdpInputEvent::Resize {
             width,
             height,
             // No window/DPI concept in a headless agent: request the plain pixel size unscaled.
@@ -524,17 +543,21 @@ impl Daemon {
         let Some(session) = guard.as_mut() else {
             return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
         };
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
         let events = session.input_db.apply([operation]);
         if events.is_empty() {
             return Response::ok();
         }
-        match session.input_tx.send(RdpInputEvent::FastPath(events)) {
-            Ok(()) => Response::ok(),
-            Err(_) => Response::typed_error(
-                crate::ipc::AgentErrorCategory::Unavailable,
-                "session input channel is closed",
-            ),
-        }
+        permit.send(RdpInputEvent::FastPath(events));
+        Response::ok()
     }
 
     fn operations(&self) -> Result<OperationManager, Response> {
@@ -679,6 +702,14 @@ async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc
         let mut guard = live.lock().expect("session live state poisoned");
         let previous = guard.state;
         match event {
+            RdpOutputEvent::Connected => {
+                guard.state = ConnState::Connected;
+                guard.error = None;
+                if previous != ConnState::Connected {
+                    info!("Session connected");
+                }
+            }
+            RdpOutputEvent::LoginComplete => {}
             RdpOutputEvent::Image { buffer, width, height } => {
                 let width = width.get();
                 let height = height.get();
