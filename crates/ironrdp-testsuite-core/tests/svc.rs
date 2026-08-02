@@ -5,8 +5,8 @@ use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
 use ironrdp_session::x224::Processor;
 use ironrdp_svc::{
-    MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, StaticVirtualChannel, SvcClientProcessor, SvcMessage,
-    SvcProcessor, SvcServerProcessor, make_channel_options,
+    CHANNEL_CHUNK_LENGTH, MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, StaticVirtualChannel,
+    SvcClientProcessor, SvcMessage, SvcProcessor, SvcServerProcessor, make_channel_options,
 };
 
 #[derive(Debug)]
@@ -157,6 +157,18 @@ fn static_channel_rejects_malformed_chunk_sequences() {
             ))
             .is_ok()
     );
+}
+
+#[test]
+fn static_channel_chunks_show_protocol_header() {
+    let chunks = StaticVirtualChannel::chunkify(vec![SvcMessage::from(vec![0; CHANNEL_CHUNK_LENGTH + 1])])
+        .expect("static channel message should chunk");
+
+    assert_eq!(chunks.len(), 2);
+    for chunk in chunks {
+        let header = decode::<ChannelPduHeader>(chunk.filled()).expect("channel header should decode");
+        assert!(header.flags.contains(ChannelControlFlags::FLAG_SHOW_PROTOCOL));
+    }
 }
 
 #[test]
