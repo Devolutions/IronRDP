@@ -103,6 +103,11 @@ pub fn install(sh: &Shell) -> anyhow::Result<()> {
 pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("TESTS-COMPILE");
     cmd!(sh, "{CARGO} test --workspace --locked --no-run").run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-tls --test native_tls --features native-tls --locked --no-run"
+    )
+    .run()?;
     println!("All good!");
     Ok(())
 }
@@ -110,6 +115,11 @@ pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
 pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("TESTS-RUN");
     cmd!(sh, "{CARGO} test --workspace --locked").run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-tls --test native_tls --features native-tls --locked"
+    )
+    .run()?;
     println!("All good!");
     Ok(())
 }

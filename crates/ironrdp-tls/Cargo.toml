@@ -16,6 +16,11 @@ categories.workspace = true
 doctest = false
 test = false
 
+[[test]]
+name = "native_tls"
+path = "tests/native_tls.rs"
+required-features = ["native-tls"]
+
 [features]
 default = [] # No default feature, the user must choose a TLS backend by enabling the appropriate feature.
 # The rustls backend. `rustls` keeps using the aws-lc-rs crypto provider (unchanged
@@ -44,6 +49,10 @@ rustls-native-certs = { version = "0.8", optional = true }
 x509-cert = { version = "0.2", default-features = false, features = ["std"], optional = true } # public
 tokio-native-tls = { version = "0.3", optional = true } # public
 tokio-rustls = { version = "0.26", default-features = false, optional = true } # public
+
+[dev-dependencies]
+tokio = { version = "1.52", features = ["macros", "net", "rt"] }
+tokio-native-tls = "0.3"
 
 [lints]
 workspace = true
